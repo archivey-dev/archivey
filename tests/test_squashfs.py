@@ -9,7 +9,6 @@ import importlib.util
 import io
 import random
 import struct
-import tracemalloc
 import zlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -38,6 +37,7 @@ from archivey.internal.backends.squashfs_reader import SquashfsReader
 from archivey.internal.excluded_libraries import EXCLUDED_REASON
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.streams.codecs import deps, lzo_decoder as archivey_lzo
+from tests.memory_util import traced_peak
 
 SQUASHFS = archivey.ArchiveFormat.SQUASHFS
 DATA = Path(__file__).parent / "fixtures" / "squashfs"
@@ -565,16 +565,15 @@ def _listed_with(path: Path, limits: ListingLimits) -> int:
     """The tracemalloc peak, in bytes, of listing ``path`` under ``limits``, which
     must refuse it for ``max_metadata_bytes``."""
     config = ArchiveyConfig(listing_limits=limits)
-    tracemalloc.start()
-    try:
+
+    def action() -> None:
         with (
             pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
             open_archive(path, config=config) as archive,
         ):
             archive.members()
-        return tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
+
+    return traced_peak(action)
 
 
 # A symlink inode's header and target size: the inodes below repeat it every 24
@@ -697,15 +696,17 @@ def test_a_listing_within_the_limit_is_not_refused_by_the_charge(
     tmp_path: Path,
 ) -> None:
     """The charge never passes what the members weigh: an image whose members add up
-    to exactly ``max_metadata_bytes`` lists, with its symlink inodes kept by the first
-    pass."""
-    inodes, starts = _overlapping_symlinks(8, 1000)
-    entries = [
-        (f"s{i}".encode(), 3, *_block_ref(start, 1000))
-        for i, start in enumerate(starts)
-    ]
+    to exactly ``max_metadata_bytes`` lists. In ``long.sqfs`` the first pass keeps a
+    symlink inode whose 65 535-byte target runs through more metadata blocks than the
+    cache keeps. The target is ASCII, so its member weighs it at one byte a byte: a
+    charge that counted a kept target more than once would refuse that image, and
+    one byte under its weight refuses it in the charge."""
+    stream = _inode_header(3, 2) + struct.pack("<II", 1, 65535) + b"t" * 65535
+    inodes = b"".join(
+        _metadata(stream[i : i + 1000]) for i in range(0, len(stream), 1000)
+    )
     shared = _image(tmp_path, _shared_listing(3, 5), "shared.sqfs")
-    long = _image(tmp_path, _flat_image(inodes, entries), "long.sqfs")
+    long = _image(tmp_path, _flat_image(inodes, [(b"s", 3, 0, 0)]), "long.sqfs")
     for path in [DATA / "gzip.sqfs", shared, long]:
         with open_archive(path) as archive:
             weight = sum(member_metadata_bytes(m) for m in archive.members())
@@ -714,6 +715,38 @@ def test_a_listing_within_the_limit_is_not_refused_by_the_charge(
             path, config=ArchiveyConfig(listing_limits=limits)
         ) as archive:
             assert sum(member_metadata_bytes(m) for m in archive.members()) == weight
+    # One byte less refuses ``long.sqfs`` in the charge, before any member is made.
+    limits = ListingLimits(max_metadata_bytes=weight - 1)
+    with (
+        pytest.raises(ResourceLimitError, match="the symlink targets kept"),
+        open_archive(long, config=ArchiveyConfig(listing_limits=limits)) as archive,
+    ):
+        archive.members()
+
+
+def test_a_damaged_walk_keeps_its_names_charged(tmp_path: Path) -> None:
+    """Four symlinks with 200-byte names share one inode whose ASCII target runs
+    through more metadata blocks than the cache keeps, and the walk then raises on
+    an entry listed as a directory whose inode is that symlink. The names charged
+    before the damage stay charged: with a limit 1 000 bytes over the target, the
+    names plus the target the first pass keeps cross it, and the listing is refused
+    there, before any member is made. The target alone would fit."""
+    stream = _inode_header(3, 2) + struct.pack("<II", 1, 65535) + b"t" * 65535
+    inodes = b"".join(
+        _metadata(stream[i : i + 1000]) for i in range(0, len(stream), 1000)
+    )
+    names = [b"%03d" % i + b"n" * 197 for i in range(4)]
+    entries = [(name, 3, 0, 0) for name in names] + [(b"z", 1, 0, 0)]
+    path = _image(tmp_path, _flat_image(inodes, entries))
+    limits = ListingLimits(max_metadata_bytes=65535 + 1000)
+    with (
+        pytest.raises(
+            ResourceLimitError,
+            match="before the members are made, for the symlink targets kept",
+        ),
+        open_archive(path, config=ArchiveyConfig(listing_limits=limits)) as archive,
+    ):
+        archive.members()
 
 
 # ── Damaged images ─────────────────────────────────────────────────────────────────

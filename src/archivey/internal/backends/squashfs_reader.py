@@ -779,12 +779,14 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         """Charge what the listing holds before its members are made to
         ``max_metadata_bytes``, and refuse the listing when the total crosses it.
 
-        The charge never passes what the members will be charged when they are made
-        (``member_metadata_bytes``): a path counts twice its length, once for the raw
-        name and once for the name, which UTF-8 or a code page decodes to at least as
-        many bytes as it weighs; a symlink target counts its length once, as its
-        member's target. So a listing this refuses would cross the limit as its members
-        come, and an image that lists within the limit is never refused here.
+        A path counts twice its length, once for the raw name and once for the name; a
+        symlink target counts its length once, as its member's target. For names that
+        are valid UTF-8, or decoded with a one-byte ``encoding``, each name weighs at
+        least its stored length, so the charge never passes what the members will be
+        charged when they are made (``member_metadata_bytes``): a listing this refuses
+        would cross the limit as its members come. A multibyte ``encoding`` that
+        decodes to fewer characters than the stored bytes (UTF-16) weighs the names
+        at less, so this can refuse such a listing up to about twice early.
         """
         self._charged += nbytes
         budget = self._context.config.listing_limits.max_metadata_bytes

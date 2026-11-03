@@ -390,6 +390,16 @@ data its pass keeps for link targets beside it.
   follows, the walk keeps each member's offset and descriptor fields (some 32 bytes a
   member) and the listing rebuilds each member from its local header, so the members'
   text is charged as they are listed, as from any directory.
+  SquashFS walks its whole directory tree before it lists a member. The walk charges
+  each path to `max_metadata_bytes` as it finds it (twice its length), and the first
+  pass charges each symlink target it keeps for the second pass, so the name and target
+  bytes held before the members are made stay within the limit, even where directories
+  share one listing or symlink inodes overlap (`SquashfsReader._charge`,
+  [formats/squashfs.md](formats/squashfs.md) §2.2). A target not kept is charged when
+  its member is made. For valid UTF-8 names or a one-byte `encoding=`, the charge is at
+  most the members' weight; a multibyte `encoding=` that decodes to fewer characters
+  than the stored bytes (UTF-16) can refuse a listing up to about twice early. The
+  fixed cost per entry is bounded by `max_members` only (the residual below).
   The TAR walker keeps nothing behind the member list, so nothing else is
   held. The caps bound memory, not work: a forward-only TAR walk reads through
   every member it skips, and a TAR walk in either mode reads the declared span of a

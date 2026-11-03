@@ -384,8 +384,12 @@ class ListingLimits:
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than is left of ``max_metadata_bytes``, before reading it.
     SquashFS walks the whole directory tree before it lists a member, and weighs the
-    paths it finds and the symlink targets it keeps against ``max_metadata_bytes`` as
-    it goes, so a listing that would cross the limit raises before its first member.
+    paths it finds, and the symlink targets it keeps for later, against
+    ``max_metadata_bytes`` as it goes: a listing whose names and kept targets cross the
+    limit raises before its first member. Other symlink targets are weighed as each
+    member is made. For names that are valid UTF-8 or use a one-byte ``encoding``, the
+    early weight is at most what the members weigh; a multibyte ``encoding`` such as
+    UTF-16 can make it refuse a listing up to about twice before its members would.
     """
 
     max_members: int | None = 262_144
