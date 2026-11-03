@@ -95,6 +95,13 @@ it replays the cache over the blocks the second pass would read, in the final me
 order, and when a block would decode twice it reads the table once more in table order
 and keeps every inode.
 
+What the first pass holds before the members are made is charged to
+`max_metadata_bytes` as it is held: each entry's path when the walk finds it (twice its
+length, for the raw name and the name), and the target of each symlink inode kept for
+the second pass (its length). The charge is at most what those members weigh when they
+are made, so it refuses only a listing that would cross the limit anyway, and it
+refuses it before making any member (§4).
+
 A block stored with size 0 is a hole and reads as zeros. `is_sparse` is true for a file
 whose block list holds one, read from the list at listing time: `mksquashfs` writes most
 sparse files under a basic inode, which has no "bytes saved" field to go by.
@@ -190,6 +197,19 @@ offsets the image declares:
   replay counts only the block where each inode starts and the one where it ends, so
   overlapping inodes shorter than that can still add up to 64 decodes per member in
   the second pass.
+- What the listing holds before it makes the members is bounded by
+  `max_metadata_bytes`, not by the image's size, which can be far smaller: several
+  directory inodes may point at one listing, and overlapping symlink inodes may each
+  name a 65 535-byte target made of the inodes after it. The walk charges each path,
+  and the first pass each symlink target it keeps, as it holds them (§2.2), whether
+  `max_members` is set or not. Measured peak RSS, refused with `ResourceLimitError` at
+  the default limits (`max_members=None` for the shared listing): 60 000 overlapping
+  symlink inodes kept whole (1.69 MB image) 3 841 MiB in 23 s before, 114 MiB in
+  0.5 s after; 20 000 kept for the second pass because the order strides the table
+  (668 KB) 1 313 MiB before, 106 MiB after; 3 000 directories sharing a listing of
+  2 000 250-byte names (140 KB) 3 597 MiB in 46 s before, 94 MiB in 0.6 s after. A
+  100 200-file image lists as before (168 MiB, 2.3 s), its charge 200 bytes under its
+  members' weight.
 - Directory inodes and listings are still read as the walk reaches them, since each is
   needed to find the next. Directories whose inodes or listings stride across more than
   64 metadata blocks decode an 8 KiB block for each: 20 480 empty directories strided

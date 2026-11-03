@@ -31,6 +31,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -303,6 +304,9 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         self._inode_end = 0
         self._inode_crossed = 0
         self._inode_capacity: int | None = None
+        # What the listing in progress holds before its members are made, charged
+        # against ``max_metadata_bytes`` (``_charge``).
+        self._charged = 0
 
     # ── Decoding ─────────────────────────────────────────────────────────────────────
 
@@ -676,14 +680,26 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         that order (the metadata cache replayed over where each inode starts and ends),
         the listing reads the table once more in table order and keeps every inode for
         the second pass instead.
+
+        What the first pass holds is charged to ``max_metadata_bytes`` as it is kept
+        (``_charge``): each entry's path, and the target of each symlink inode kept for
+        the second pass. The charge is at most what the members would be charged when
+        they are made, so a listing it refuses would cross the limit anyway; refusing
+        before the members are made bounds what the passes hold by the limit, where
+        directories that share one listing or overlapping symlink inodes would hold
+        far more than the image's size.
         """
         self._block_list_bytes = 0
+        self._charged = 0
         entries: list[_Entry] = []
-        limit = self._context.config.listing_limits.max_members
+        limits = self._context.config.listing_limits
         failure: ArchiveyError | None = None
         try:
-            complete = self._walk(entries, limit)
+            complete = self._walk(entries, limits.max_members)
         except ArchiveyError as exc:
+            budget = limits.max_metadata_bytes
+            if budget is not None and self._charged > budget:
+                raise  # ``_charge`` refused: making the members would hold more
             failure, complete = exc, False
         files = self._file_inodes(entries)
         first = _firsts(entries)
@@ -708,7 +724,10 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
     def _walk(self, entries: list[_Entry], limit: int | None) -> bool:
         """Append every entry of the tree to ``entries``, in listing order, reading only
         the directories' inodes. ``False`` when it stopped past ``limit`` entries, where
-        archivey refuses the listing anyway."""
+        archivey refuses the listing anyway. Each entry's path is charged
+        (``_charge``) as the walk finds it."""
+        budget = self._context.config.listing_limits.max_metadata_bytes
+        charged = self._charged
         root = self._sb.root_inode
         root_ref = (root >> 16, root & 0xFFFF)
         if root_ref[1] >= _METADATA_SIZE:
@@ -717,16 +736,24 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         if inode.type != _DIR:
             raise CorruptionError("the SquashFS root is not a directory")
         seen_dirs = {root_ref}
-        stack = [(-1, self._entries(_listing(inode)))]
+        # (directory's entry, its listing, the length of its path and a "/")
+        stack = [(-1, self._entries(_listing(inode)), 0)]
         while stack:
-            parent, listing = stack[-1]
+            parent, listing, prefix = stack[-1]
             item = next(listing, None)
             if item is None:
                 stack.pop()
                 continue
             if limit is not None and len(entries) > limit:
+                self._charged = charged
                 return False
             name, inode_block, inode_offset, kind = item
+            path = prefix + len(name)
+            # The member's raw name is the path's bytes, and its name decodes to at
+            # least as many: ``_charge``. Inlined, as it runs once per entry.
+            charged += 2 * path
+            if budget is not None and charged > budget:
+                self._charge(charged - self._charged, "the directory tree's names")
             entry = _Entry(parent, name, (inode_block, inode_offset), kind, None)
             if kind == _DIR:
                 inode = self._inode(*entry.ref)
@@ -738,9 +765,29 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                     )
                 seen_dirs.add(entry.ref)
                 entry = entry._replace(inode=inode)
-                stack.append((len(entries), self._entries(_listing(inode))))
+                stack.append((len(entries), self._entries(_listing(inode)), path + 1))
             entries.append(entry)
+        self._charged = charged
         return True
+
+    def _charge(self, nbytes: int, what: str) -> None:
+        """Charge what the listing holds before its members are made to
+        ``max_metadata_bytes``, and refuse the listing when the total crosses it.
+
+        The charge never passes what the members will be charged when they are made
+        (``member_metadata_bytes``): a path counts twice its length, once for the raw
+        name and once for the name, which UTF-8 or a code page decodes to at least as
+        many bytes as it weighs; a symlink target counts its length once, as its
+        member's target. So a listing this refuses would cross the limit as its members
+        come, and an image that lists within the limit is never refused here.
+        """
+        self._charged += nbytes
+        budget = self._context.config.listing_limits.max_metadata_bytes
+        if budget is not None and self._charged > budget:
+            raise ResourceLimitError(
+                f"Listing limit reached: max_metadata_bytes={budget} (at least "
+                f"{self._charged} bytes before the members are made, for {what})"
+            )
 
     def _file_inodes(self, entries: list[_Entry]) -> _FileScan:
         """Pass one over the inodes that are not directories, in table order so each
@@ -766,6 +813,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 if self._inode_end != ref[0]:
                     ends[ref] = self._inode_end
                 if self._inode_crossed >= _METADATA_CACHE:
+                    if isinstance(inode.body, bytes):
+                        self._charge(len(inode.body), "the symlink targets kept")
                     long[ref] = inode
                 location = inode.body
                 if isinstance(location, FileLocation):
@@ -820,14 +869,18 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
     ) -> dict[tuple[int, int], _Inode]:
         """The inodes that are not directories, read again in table order and kept for
         the second pass, when reading them in member order would thrash the metadata
-        cache. One that does not read is left out: its member reads it and raises."""
+        cache. One that does not read is left out: its member reads it and raises.
+        A symlink's target is charged as it is kept (``_charge``)."""
         inodes: dict[tuple[int, int], _Inode] = {}
         for ref in sorted({e.ref for e in entries if e.kind != _DIR}):
             if ref not in files.errors and ref not in files.long:
                 try:
-                    inodes[ref] = self._inode(*ref)
+                    inode = self._inode(*ref)
                 except ArchiveyError:
-                    pass
+                    continue
+                if isinstance(inode.body, bytes):
+                    self._charge(len(inode.body), "the symlink targets kept")
+                inodes[ref] = inode
         return inodes
 
     def _in_fragment_order(
