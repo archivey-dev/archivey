@@ -137,7 +137,9 @@ the action's execution file instead and writes the job summary: the main agent's
 calls, each subagent with its model and what it did, the largest results the main
 agent read, and any permission denial. It also uploads a `review-trace-*` artifact for
 30 days, one JSON line per turn and per tool call, with the model's own text and tool
-inputs capped and no result text, for finding where a round spends its turns.
+inputs capped, known token shapes redacted, and no result text, for finding where a
+round spends its turns. A round that the step timeout stopped, or that was cancelled,
+leaves no execution file, so it has no summary and no trace.
 
 ## Counting rounds
 

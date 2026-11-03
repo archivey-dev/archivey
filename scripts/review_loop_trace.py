@@ -12,8 +12,9 @@ the closing totals. `claude-code-action` still writes every SDK message to
 
 Neither output carries a tool's result text, only its size. A result is where a secret
 would show up (an `env`, a token in an error), and the job log is public while an
-artifact is not masked, so only what the model itself wrote is kept: its text, capped,
-and each tool call's input, capped.
+artifact is not masked, so only what the model itself wrote is kept: its text and each
+tool call's input, every string capped. The model can still repeat what a result
+showed, so every kept string also has known token shapes (`TOKEN_SHAPES`) replaced.
 
 Usage: review_loop_trace.py EXECUTION_FILE [--trace OUT.jsonl]
 """
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -35,7 +37,19 @@ TOP_RESULTS = 8
 SUBAGENT_TOOLS = ("Agent", "Task")
 
 
+# Token shapes the model could repeat from a result it read: Anthropic keys and OAuth
+# tokens, GitHub tokens of every prefix, and fine-grained GitHub PATs.
+TOKEN_SHAPES = re.compile(
+    r"sk-ant-[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+"
+)
+
+
+def _redact(text: str) -> str:
+    return TOKEN_SHAPES.sub("[redacted]", text)
+
+
 def _cap(text: str, limit: int) -> str:
+    text = _redact(text)
     return text if len(text) <= limit else text[:limit] + f"… [+{len(text) - limit}]"
 
 
@@ -125,18 +139,18 @@ def parse(messages: list[dict]) -> Trace:
         if kind == "assistant":
             # The SDK sends one event per content block; blocks of one API response
             # share its message id, and together they are one turn.
-            key = (agent, message.get("id") or f"anon-{len(turns)}")
-            turn = by_message.get(key)
+            turn_key = (agent, message.get("id") or f"anon-{len(turns)}")
+            turn = by_message.get(turn_key)
             if turn is None:
                 index = sum(1 for t in turns if t.agent == agent) + 1
                 turn = Turn(agent, index, message.get("model", "?"))
-                by_message[key] = turn
+                by_message[turn_key] = turn
                 turns.append(turn)
             # Each block's event repeats the response's usage; output counts in these
             # are partial, so the trace keeps only the input side.
-            for key, value in (message.get("usage") or {}).items():
+            for field_name, value in (message.get("usage") or {}).items():
                 if isinstance(value, int):
-                    turn.usage[key] = max(turn.usage.get(key, 0), value)
+                    turn.usage[field_name] = max(turn.usage.get(field_name, 0), value)
             for part in content if isinstance(content, list) else []:
                 if part.get("type") == "text":
                     turn.text += part.get("text", "")
@@ -167,7 +181,10 @@ def _cap_strings(value: object, limit: int) -> object:
     if isinstance(value, str):
         return _cap(value, limit)
     if isinstance(value, dict):
-        return {key: _cap_strings(item, limit) for key, item in value.items()}
+        return {
+            _cap(str(key), limit): _cap_strings(item, limit)
+            for key, item in value.items()
+        }
     if isinstance(value, list | tuple):
         return [_cap_strings(item, limit) for item in value]
     return value
@@ -309,7 +326,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trace", type=Path, help="write a JSON Lines trace here")
     args = parser.parse_args(argv)
     if not args.execution_file.is_file():
-        print(f"No execution file at {args.execution_file}; nothing to summarize.")
+        print(
+            f"No execution file at {args.execution_file}; nothing to summarize. "
+            "The review step may have timed out or been cancelled: the action writes "
+            "the file only once its session ends."
+        )
         return 0
     trace = parse(load_messages(args.execution_file))
     sys.stdout.write(summary(trace))

@@ -183,3 +183,44 @@ def test_tool_inputs_cannot_render_as_markdown_in_the_summary() -> None:
             # The image sits inside a code span: an odd count of backticks before it.
             before = line[: line.index("![i]")]
             assert before.count("`") % 2 == 1, line
+
+
+TOKENS = [
+    "sk-ant-oat01-" + "A" * 40,
+    "ghs_" + "B" * 36,
+    "ghp_" + "C" * 36,
+    "github_pat_" + "D" * 60,
+]
+
+
+def test_token_shapes_the_model_repeats_are_redacted_everywhere(tmp_path: Path) -> None:
+    said = " ".join(TOKENS)
+    messages = [
+        assistant("m1", {"type": "text", "text": f"env shows {said}"}),
+        assistant(
+            "m1",
+            tool_use(
+                "t1", "Agent", description=said, prompt=f"Check {said}", **{said: 1}
+            ),
+        ),
+        result("t1", "ok"),
+        {
+            "type": "result",
+            "permission_denials": [
+                {"tool_name": "Bash", "tool_input": {"command": said}}
+            ],
+        },
+    ]
+    source = tmp_path / "exec.json"
+    source.write_text(json.dumps(messages), encoding="utf-8")
+    out = tmp_path / "trace.jsonl"
+    trace_mod.main([str(source), "--trace", str(out)])
+    written = out.read_text() + trace_mod.summary(trace_mod.parse(messages))
+    for token in TOKENS:
+        assert token not in written
+    assert "[redacted]" in out.read_text()
+
+
+def test_dict_keys_are_capped() -> None:
+    call = trace_mod.Call(1, "main", 1, "Bash", {"command": "ls", "K" * 3000: 1})
+    assert len(json.dumps(trace_mod._capped_input(call))) < 1000
