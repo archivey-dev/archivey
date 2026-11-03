@@ -4278,8 +4278,11 @@ class BaseArchiveReader(ArchiveReader):
         # (``ArchiveMember._ceiling_provisional``), as it may still reach CHECKSUM.
         # So is one the last call found in a failed spanning check, at its ceiling or
         # not: the check is read again, to fail it again or (a password supplied
-        # since) to pass.
-        retry = self._spanning_retry
+        # since) to pass. So is each member of a spanning check that has not passed
+        # yet (``_awaiting_spanning_checks``): a read that skipped the check (a
+        # seekable read of a 7z folder member) can leave every member it covers at
+        # its ceiling, and only a read of them all in order runs it.
+        retry = self._spanning_retry | self._awaiting_spanning_checks()
 
         def selector(m: ArchiveMember) -> bool:
             ceiling = m.verifiable
@@ -4346,6 +4349,15 @@ class BaseArchiveReader(ArchiveReader):
         if spanning:
             failures = self._with_spanning_failures(failures, spanning)
         return tuple(failures)
+
+    def _awaiting_spanning_checks(self) -> set[int]:
+        """The ids of the members of each check that spans members and has not passed.
+
+        ``verify_all()`` reads each of them again, at its ceiling or not, as it reads
+        the members of a failed one (``_spanning_retry``). A backend with such checks
+        overrides this; the default has none.
+        """
+        return set()
 
     def _note_unraised_spanning(self, key: object, error: SpanningCheckError) -> None:
         """Keep a failed spanning check that no read raises, for ``verify_all()``.

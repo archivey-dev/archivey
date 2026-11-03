@@ -322,14 +322,59 @@ def test_seekable_member_reads_never_claim_the_folder_crc() -> None:
         for name in "abc":
             assert reader.read(members[name]) == _THREE[name]
         assert {m.verified for m in members.values()} == {Verification.LENGTH}
-        # Each file is at its LENGTH ceiling, so verify_all() reads none of them...
+        # Each file is at its LENGTH ceiling, but the folder CRC has not run: a pass
+        # over the whole folder still raises them, and verify_all() makes it.
         assert reader.verify_all() == ()
-        assert {m.verified for m in members.values()} == {Verification.LENGTH}
-        # ...and a pass over the whole folder still raises them.
-        for _member, stream in reader.stream_members():
-            assert stream is not None
-            stream.read()
         assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
+        assert reader._awaiting_spanning_checks() == set()  # type: ignore[attr-defined]
+
+
+def _lzma2_folder(files: dict[str, bytes], *, folder_crc: int) -> bytes:
+    """One LZMA2 folder holding ``files``, with ``folder_crc`` and no file CRCs."""
+    payload = b"".join(files.values())
+    packed = _lzma2(payload)
+    header = _header(
+        folders=[_linear([_coder(_LZMA2, props=b"\x10")])],
+        coder_unpack_sizes=[[len(payload)]],
+        pack_sizes=[len(packed)],
+        names=list(files),
+        folder_crcs=[folder_crc],
+        substreams=_substreams([len(data) for data in files.values()], None),
+    )
+    return _archive(packed, header)
+
+
+@pytest.mark.parametrize(
+    ("data", "failed"),
+    [
+        pytest.param(
+            _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C) ^ 1),
+            ["a", "b", "c"],
+            id="copy",
+        ),
+        # A seekable open of c decodes a and b too, but after a seek: no CRC runs.
+        pytest.param(
+            _lzma2_folder(_THREE, folder_crc=_crc(_A + _B + _C) ^ 1),
+            ["a", "b", "c"],
+            id="lzma2",
+        ),
+        pytest.param(_folder_with_one_own_crc("c"), ["a", "b"], id="last-own-crc"),
+    ],
+)
+def test_verify_all_after_seekable_reads_still_finds_a_mismatched_folder(
+    data: bytes, failed: list[str]
+) -> None:
+    # The seekable reads leave every file at its ceiling without running the folder
+    # CRC; verify_all() must still run it, as it does when called first.
+    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
+        members = _by_name(reader.members())
+        for name in "abc":
+            assert reader.read(members[name]) == _THREE[name]
+        assert all(m.verified >= m.verifiable for m in members.values())
+        for _ in range(2):
+            failures = reader.verify_all()
+            assert [m.name for m, _e in failures] == failed
+            assert all(isinstance(e, SpanningCheckError) for _m, e in failures)
 
 
 # Encrypted folders. pack -> AES -> LZMA2 -> output: LZMA2 rejects random input, so the

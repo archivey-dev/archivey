@@ -828,6 +828,10 @@ class SevenZipReader(BaseArchiveReader):
         # members, and one with no CRC. A one-file folder's digest is already its
         # member's (the parser hands it over).
         self._folder_crc_only: dict[int, int] = {}
+        # The folders of ``_folder_crc_only`` whose digest matched a whole in-order
+        # decode. ``verify_all()`` reads the members of every other one again
+        # (``_awaiting_spanning_checks``).
+        self._folder_crc_passed: set[int] = set()
         self._key_anchor_cache: dict[int, tuple[tuple[int, int, int], ...]] = {}
         # ``_folder_last_member`` per folder, filled on first use: each member's open
         # asks, and a scan per open makes a folder's read quadratic in its size.
@@ -1545,9 +1549,28 @@ class SevenZipReader(BaseArchiveReader):
         reach ``CHECKSUM``. Those with one reach it through their own reads.
         """
         self._folder_key_proved(folder_index)
+        self._folder_crc_passed.add(folder_index)
         for member in self._folder_members.get(folder_index, ()):
             if _member_crc(member) is None:
                 raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+
+    @override
+    def _awaiting_spanning_checks(self) -> set[int]:
+        """The members of each folder whose digest has not matched a whole decode.
+
+        A read of one member does not run a folder's digest unless it decodes the
+        folder in order from its start to its end, which a ``seekable_members=True``
+        read that seeks does not. Such reads still leave each member at its ceiling,
+        so without this ``verify_all()`` would select none of them and return no
+        failure for a folder whose digest does not match. The folder's last member is
+        among them, with or without a CRC of its own: its read is the one that ends
+        the folder and runs the digest.
+        """
+        pending: set[int] = set()
+        for index in self._folder_crc_only:
+            if index not in self._folder_crc_passed:
+                pending.update(id(m) for m in self._folder_members.get(index, ()))
+        return pending
 
     def _folder_tail(self, folder_index: int) -> tuple[int, int] | None:
         """``(start, crc)`` of the folder's last member when it carries a CRC.
@@ -1598,6 +1621,7 @@ class SevenZipReader(BaseArchiveReader):
         returns each. Their levels stay where their reads left them: below
         ``CHECKSUM``, which they can no longer reach.
         """
+        self._folder_crc_passed.discard(folder_index)
         members = self._folder_members.get(folder_index, ())
         last = self._folder_last_member(folder_index)
         if tail_matched and last is not None:
