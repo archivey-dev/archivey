@@ -829,6 +829,9 @@ class SevenZipReader(BaseArchiveReader):
         # member's (the parser hands it over).
         self._folder_crc_only: dict[int, int] = {}
         self._key_anchor_cache: dict[int, tuple[tuple[int, int, int], ...]] = {}
+        # ``_folder_last_member`` per folder, filled on first use: each member's open
+        # asks, and a scan per open makes a folder's read quadratic in its size.
+        self._folder_last: dict[int, ArchiveMember | None] = {}
         for index, members in self._folder_members.items():
             folder = self._archive.folders[index]
             if (
@@ -1559,6 +1562,16 @@ class SevenZipReader(BaseArchiveReader):
 
     def _folder_last_member(self, folder_index: int) -> ArchiveMember | None:
         """The member whose bytes end at the folder's end, if one does."""
+        try:
+            return self._folder_last[folder_index]
+        except KeyError:
+            last = self._folder_last[folder_index] = self._scan_folder_last_member(
+                folder_index
+            )
+            return last
+
+    def _scan_folder_last_member(self, folder_index: int) -> ArchiveMember | None:
+        """``_folder_last_member`` without the cache: one pass over the folder."""
         size = folder_unpack_size(self._archive.folders[folder_index])
         for member in self._folder_members.get(folder_index, ()):
             length = _member_stream_size(member)

@@ -189,6 +189,35 @@ def test_a_read_that_reaches_a_mismatched_folder_end_raises(streaming: bool) -> 
         assert caught.value.member_name == "c"
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_folder_crc_finds_the_folders_last_file_once(
+    monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    # Each open asks which file ends the folder. A scan of the folder per open
+    # makes a folder's read quadratic in its file count.
+    from archivey.internal.backends.sevenzip_reader import SevenZipReader
+
+    files = {f"f{i}": f"file {i}\n".encode() for i in range(50)}
+    data = _copy_folder(files, folder_crc=_crc(b"".join(files.values())))
+    scans: list[int] = []
+    real = SevenZipReader._scan_folder_last_member
+
+    def counting(self: SevenZipReader, folder_index: int) -> ArchiveMember | None:
+        scans.append(folder_index)
+        return real(self, folder_index)
+
+    monkeypatch.setattr(SevenZipReader, "_scan_folder_last_member", counting)
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        read = {}
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            read[member.name] = stream.read()
+        assert read == files
+        if not streaming:
+            assert reader.verify_all() == ()
+    assert scans == [0]
+
+
 def test_a_lone_read_of_the_last_file_reaches_the_folder_end_and_raises() -> None:
     data = _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C) ^ 1)
     with open_archive(io.BytesIO(data)) as reader:
