@@ -214,6 +214,15 @@ class FormatPolicy:
     too; ``StreamFormat.UNCOMPRESSED`` always passes. The default policy allows every
     format.
 
+    ``only`` and ``exclude`` check the file the call opens, not what is inside it. A
+    stream format there (``S.XZ``) is the compression around the whole file: a ``.xz``
+    file, or the xz around a ``.tar.xz``. It is not the xz codec. An xz-compressed ZIP
+    member, or the xz payload a plugin reader decodes inside its own archive, still
+    decodes under ``exclude={S.XZ}``: a member's compression is part of its archive's
+    format. ``plugins`` and ``exclude_libraries`` turn off the code that decodes,
+    wherever it runs, so they hold for every member too: under ``plugins=False`` no
+    plugin codec decodes anything in the call, and an excluded package decodes nothing.
+
     :func:`~archivey.open_archive` and :func:`~archivey.open_stream` refuse a format
     the policy does not allow with :class:`~archivey.UnsupportedFeatureError`,
     whose message names every entry to change; ``format=`` does not bypass the policy.
@@ -239,15 +248,30 @@ class FormatPolicy:
         frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
         | None
     )
-    """The containers and compressions that may open, or ``None`` for all of them."""
+    """The containers and compressions of the file the call may open, or ``None`` for
+    all of them.
+
+    Only the file the call opens is checked. A member's compression is not: under
+    ``only={C.ZIP}`` an xz-compressed ZIP member still decodes."""
 
     exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
-    """The containers and compressions that may not open."""
+    """The containers and compressions of the file the call may not open.
+
+    Only the file the call opens is checked. ``exclude={S.XZ}`` refuses a ``.xz`` or
+    ``.tar.xz`` file, but an xz-compressed ZIP member, or a plugin's xz payload, still
+    decodes. To turn off the code that decodes, use ``plugins`` or
+    ``exclude_libraries``, which hold for every member."""
 
     plugins: bool
-    """Whether registered plugin formats and plugin codecs may open. Use ``False``
-    with ``exclude``; under ``only`` a plugin opens only when its container (or its
-    :class:`~archivey.PluginStream`, for a codec) is listed.
+    """Whether registered plugin formats and plugin codecs may run in this call. Use
+    ``False`` with ``exclude``; under ``only``, a file in a plugin format opens only
+    when its container (or its :class:`~archivey.PluginStream`, for a codec) is listed.
+
+    ``False`` turns a plugin codec off everywhere in the call: as the compression of
+    the file opened, and inside an archive, when a reader (a ``replace=`` plugin, for
+    example) asks ``ReaderContext.decompress`` for it. Each refusal raises
+    :class:`~archivey.UnsupportedFeatureError` that names this setting, before the
+    codec's code runs. A ``replace=`` reader is not a plugin format, so it still opens.
 
     Stable, unlike the experimental plugin interface it refuses: ``plugins=False``
     keeps working whatever happens to that interface."""
@@ -275,14 +299,15 @@ class FormatPolicy:
 
     Each entry is an :class:`~archivey.OptionalLibrary` member or its value, such as
     ``"pyppmd"``; any other name is refused when the policy is built. An excluded
-    package decodes nothing in the call, and one that archivey imports on first use
-    (``brotli``, ``pyppmd``, ``inflate64``, ``rapidgzip``) is not imported for it. What
-    happens is what happens when the package is missing: an accelerator under ``AUTO``
-    falls back to the standard library, a member that needs it raises
-    :class:`~archivey.PackageNotInstalledError` when opened, and a format that needs
-    it refuses at open. The error's ``missing`` names the package with this setting as
-    its ``reason``. :func:`~archivey.format_availability` answers for it when passed
-    the config. Other calls in the process, on any thread, are unaffected.
+    package decodes nothing in the call, inside an archive as for a whole file, and
+    one that archivey imports on first use (``brotli``, ``pyppmd``, ``inflate64``,
+    ``rapidgzip``) is not imported for it. What happens is what happens when the
+    package is missing: an accelerator under ``AUTO`` falls back to the standard
+    library, a member that needs it raises :class:`~archivey.PackageNotInstalledError`
+    when opened, and a format that needs it refuses at open. The error's ``missing``
+    names the package with this setting as its ``reason``.
+    :func:`~archivey.format_availability` answers for it when passed the config. Other
+    calls in the process, on any thread, are unaffected.
 
     archivey uses one zstd module per process, ``compression.zstd`` where it imports
     and ``backports.zstd`` otherwise; excluding that module turns zstd off, and
@@ -371,6 +396,22 @@ class FormatPolicy:
             f"ArchiveyConfig.formats does not allow {fmt.display_name}: "
             f"{', and '.join(reasons)}."
         )
+
+    def _codec_refusal(self, codec: StreamFormat | PluginStream) -> str | None:
+        """The refusal text for ``codec`` decoding inside an open (a member's data, or
+        the rest of an archive a reader hands on), or ``None``.
+
+        Only ``plugins`` and ``exclude_libraries`` reach that far; ``only`` and
+        ``exclude`` choose the file opened, so they are not asked. An excluded package
+        is refused by the codec layer, which reads it as missing.
+        """
+        if isinstance(codec, PluginStream) and not self.plugins:
+            return (
+                f"ArchiveyConfig.formats does not allow the plugin codec "
+                f"{_entry_name(codec)}: plugins=False turns off every plugin codec, "
+                "inside an archive as for a whole file"
+            )
+        return None
 
     def _reasons(self, fmt: ArchiveFormat) -> list[str]:
         """Why ``fmt`` is refused, one reason per setting to change, so a format that

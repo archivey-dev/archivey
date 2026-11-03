@@ -254,6 +254,16 @@ class _PluginAdapter(BaseArchiveReader):
             )
         )
 
+    def _refuse_codec_off_by_policy(self, method: object) -> None:
+        """Refuse a codec ``config.formats`` turns off, before its code runs."""
+        if not isinstance(method, (StreamFormat, PluginStream)):
+            return
+        refusal = self._config.formats._codec_refusal(method)
+        if refusal is not None:
+            raise UnsupportedFeatureError(
+                refusal, source_format=self._format, archive_name=self._archive_name
+            )
+
     def _decompress(
         self,
         data: BinaryIO,
@@ -262,6 +272,7 @@ class _PluginAdapter(BaseArchiveReader):
         properties: bytes | None,
     ) -> BinaryIO:
         """``ReaderContext.decompress``: ``data`` through archivey's codec layer."""
+        self._refuse_codec_off_by_policy(method)
         is_stream = isinstance(method, (StreamFormat, PluginStream))
         codec: CodecId | None
         if is_stream:
@@ -1225,6 +1236,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     f"got {stream_format!r}"
                 )
             )
+        self._refuse_codec_off_by_policy(stream_format)
         # The member decoder's config (same limits), except that the stream runs to
         # the end of the archive, as a .gz file's does: bytes after its end are
         # reported, as bytes after an archive's end are, not refused. The decoded

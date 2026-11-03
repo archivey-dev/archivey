@@ -867,7 +867,9 @@ unbounded memory or crash on a crafted file; [Reading untrusted bytes](#reading-
 lists what a plugin's author can do about that. A program that reads untrusted archives
 can turn plugin formats and plugin codecs off for a call with
 `ArchiveyConfig(formats=FormatPolicy(plugins=False))`; a format turned off is not detected
-either, so its code does not run. A
+either, so its code does not run. A plugin codec is off inside an archive too: a
+`ReaderContext.decompress` or `ForwardStream.decompress` call that asks for it raises
+`UnsupportedFeatureError`. A
 [replacement](#replacing-a-built-in-reader) is not a plugin format, so `plugins=False` does not
 turn it off: a replacement runs only in a call whose config names it in `replace=`.
 
