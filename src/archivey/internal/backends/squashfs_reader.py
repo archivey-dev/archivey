@@ -244,6 +244,11 @@ class _FileScan(NamedTuple):
     # The metadata block (from the table's start) where an inode's read ended, for the
     # inodes that run past the block they start in.
     ends: dict[tuple[int, int], int]
+    # Inodes whose read went on through more blocks than the metadata cache keeps, so
+    # that reading one again would decode them all again: only a symlink's, whose
+    # target may run to 65 535 one-byte blocks. Kept whole until their member is made,
+    # which then holds the target anyway.
+    long: dict[tuple[int, int], _Inode]
     clean: bool  # every inode read, and of the type its entry gives
 
 
@@ -293,8 +298,10 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         self._ids = self._ids_table()
         # Block-list bytes scanned by the listing so far (``_has_holes``).
         self._block_list_bytes = 0
-        # The inode-table block where the last ``_inode`` read ended.
+        # The inode-table block where the last ``_inode`` read ended, and how many
+        # blocks it went on into past the one it started in.
         self._inode_end = 0
+        self._inode_crossed = 0
         self._inode_capacity: int | None = None
 
     # ── Decoding ─────────────────────────────────────────────────────────────────────
@@ -545,7 +552,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             if length > _SYMLINK_MAX:
                 raise CorruptionError(f"a symlink target of {length} bytes")
             body = cursor.read(length)
-        self._inode_end = cursor.last
+        self._inode_end, self._inode_crossed = cursor.last, cursor.crossed
         return _Inode(
             basic,
             mode & 0o7777,
@@ -657,12 +664,14 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         member it names.
 
         It takes two passes. The first walks the whole tree, then reads the
-        non-directory inodes in their table order (each inode-table block decodes once)
-        and keeps of each only what the order needs (:class:`_FileScan`). The second
-        reads each member's inode again by its reference as it makes the member: holding
-        every inode cost half as much memory again as the listing. A hard link reads
-        nothing: the member it names keeps its inode, without the body, next to its
-        name. When the members' order would decode an inode-table block twice, as it
+        non-directory inodes in their table order (each inode-table block decodes once,
+        unless inodes overlap) and keeps of each only what the order needs
+        (:class:`_FileScan`). The second reads each member's inode again by its
+        reference as it makes the member: holding every inode cost half as much memory
+        again as the listing. A hard link reads nothing: the member it names keeps its
+        inode, without the body, next to its name. Nor does an inode whose read went on
+        through more metadata blocks than the cache keeps (a long symlink target in
+        tiny blocks): the first pass keeps it whole. When the members' order would decode an inode-table block twice, as it
         does when the table strides against that order (the metadata cache replayed
         over where each inode starts and ends), the listing reads the table once more in
         table order and keeps every inode for the second pass instead.
@@ -740,6 +749,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         sparse: set[tuple[int, int]] = set()
         errors: dict[tuple[int, int], ArchiveyError] = {}
         ends: dict[tuple[int, int], int] = {}
+        long: dict[tuple[int, int], _Inode] = {}
         clean = True
         previous: tuple[int, int] | None = None
         inode_type = 0
@@ -754,6 +764,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 inode_type = inode.type
                 if self._inode_end != ref[0]:
                     ends[ref] = self._inode_end
+                if self._inode_crossed >= _METADATA_CACHE:
+                    long[ref] = inode
                 location = inode.body
                 if isinstance(location, FileLocation):
                     try:
@@ -769,7 +781,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                         tails[ref] = location.fragment << 32 | location.fragment_offset
             if inode_type != kind:
                 clean = False
-        return _FileScan(tails, sparse, errors, ends, clean)
+        return _FileScan(tails, sparse, errors, ends, long, clean)
 
     def _reads_an_inode_block_twice(
         self,
@@ -780,15 +792,21 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
     ) -> bool:
         """Whether the second pass, reading the inodes again in ``order``, would decode
         an inode-table block twice: the metadata cache replayed over the block where
-        each inode it reads starts, and where it ends if that is another block. The
-        blocks in between hold only that inode's bytes in an image whose inodes do not
-        overlap, so the order cannot make them decode more often."""
+        each inode it reads starts, and where it ends if that is another block. It
+        does not see the blocks in between. Those hold only that inode's bytes unless
+        inodes overlap, and an inode that runs through more blocks than the cache keeps
+        is not read again (``_FileScan.long``), so an image whose inodes overlap costs
+        at most ``_METADATA_CACHE`` more decodes per member here."""
 
         def blocks() -> Iterator[int]:
             for index in order:
                 entry = entries[index]
-                if first[index] != index or entry.ref in files.errors:
-                    continue  # a directory or a hard link, or raised without a read
+                if (
+                    first[index] != index
+                    or entry.ref in files.errors
+                    or entry.ref in files.long
+                ):
+                    continue  # a directory, a hard link, raised or kept: no read
                 yield entry.ref[0]
                 end = files.ends.get(entry.ref)
                 if end is not None:
@@ -804,7 +822,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         cache. One that does not read is left out: its member reads it and raises."""
         inodes: dict[tuple[int, int], _Inode] = {}
         for ref in sorted({e.ref for e in entries if e.kind != _DIR}):
-            if ref not in files.errors:
+            if ref not in files.errors and ref not in files.long:
                 try:
                     inodes[ref] = self._inode(*ref)
                 except ArchiveyError:
@@ -895,7 +913,9 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             error = files.errors.get(entry.ref)
             if error is not None:
                 raise error
-            kept = inodes.pop(entry.ref, None) if inodes is not None else None
+            kept = files.long.pop(entry.ref, None)
+            if kept is None and inodes is not None:
+                kept = inodes.pop(entry.ref, None)
             inode = kept or self._inode(*entry.ref)
             sparse = entry.ref in files.sparse
             self._check_type(entries, entry, inode)
@@ -989,6 +1009,8 @@ class _MetadataCursor:
         self.consumed = 0
         # The last block read from, as an offset from the start of the table.
         self.last = block
+        # How many times the reads went on into the next block.
+        self.crossed = 0
 
     @property
     def block(self) -> int:
@@ -1011,6 +1033,7 @@ class _MetadataCursor:
             self.consumed += len(chunk)
             if self.offset == len(data):
                 self._pos, self.offset = next_pos, 0
+                self.crossed += 1
         return b"".join(parts)
 
 

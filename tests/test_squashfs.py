@@ -523,6 +523,32 @@ def test_hard_links_do_not_read_their_inode_again(
     assert len(decoded) <= 2 * len(symlink) + 4
 
 
+def test_an_inode_longer_than_the_cache_is_read_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Four distinct symlink inodes that overlap: the table repeats one 24-byte symlink
+    header in 1-byte metadata blocks, each declaring a 200-byte target, so each inode's
+    read runs through 224 blocks, more than the cache keeps, and through the next
+    inodes' bytes. The first pass keeps such an inode whole, so the listing reads
+    each one once, not once per pass."""
+    target_size, count = 200, 4
+    symlink = _inode_header(3, 2) + struct.pack("<II", 1, target_size)
+    stream = symlink * count + b"t" * target_size
+    inodes = b"".join(_metadata(stream[i : i + 1]) for i in range(len(stream)))
+    step = len(_metadata(b"t")) * len(symlink)  # one inode's bytes, in 1-byte blocks
+    names = [f"l{i}".encode() for i in range(count)]
+    entries = [(name, 3, i * step, 0) for i, name in enumerate(names)]
+    path = _image(tmp_path, _flat_image(inodes, entries))
+    decoded = _counting_decodes(monkeypatch)
+    with open_archive(path) as archive:
+        members = archive.members()
+    assert [(m.name, m.type) for m in members] == [
+        (n.decode(), MemberType.SYMLINK) for n in names
+    ]
+    one_read = len(symlink) + target_size
+    assert len(decoded) <= count * one_read + 4
+
+
 # ── Damaged images ─────────────────────────────────────────────────────────────────
 #
 # The uncompressed image keeps its tables as plain bytes, so a test can find a field
