@@ -42,7 +42,13 @@ from archivey.exceptions import (
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs as codecs_module
 from archivey.internal.streams.child_process import is_no_verdict, outside_death
-from archivey.internal.streams.codecs import Codec, open_codec_stream, rapidgzip_child
+from archivey.internal.streams.codecs import (
+    Codec,
+    callers_source,
+    open_codec_stream,
+    rapidgzip_child,
+    resolve_codec,
+)
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildReportedError,
     RapidgzipChildStream,
@@ -550,7 +556,7 @@ def test_a_fault_archivey_raises_about_the_source_is_not_marked_as_the_sources()
     ):
         while stream.read(1 << 16):
             pass
-    assert not rapidgzip_child.from_callers_source(info.value)
+    assert not callers_source.from_callers_source(info.value)
 
 
 class _FailingOnceSource(io.BytesIO):
@@ -579,7 +585,7 @@ def test_after_a_source_fault_every_later_call_raises(codec: Codec) -> None:
         with pytest.raises(OSError, match="transient source fault") as first:
             while stream.read(1 << 16):
                 pass
-        assert rapidgzip_child.from_callers_source(first.value)
+        assert callers_source.from_callers_source(first.value)
         messages = set()
         for call in (
             lambda: stream.read(1 << 16),
@@ -855,15 +861,12 @@ def test_any_runtime_error_rapidgzip_raised_is_translated(message: str) -> None:
 def test_an_eof_error_the_child_reported_is_still_translated() -> None:
     """The mark that keeps the caller's source exception unchanged is on that exception
     only: an ``EOFError`` rapidgzip raised in the child is still a truncation."""
-    for codec in (
-        codecs_module.GzipCodec(),
-        codecs_module.DeflateCodec(),
-        codecs_module.ZlibCodec(),
-    ):
+    for codec in (Codec.GZIP, Codec.DEFLATE, Codec.ZLIB):
         reported = rapidgzip_child._reported_error(
             b"builtins\nEOFError\n\nend of stream"
         )
-        assert isinstance(codec._translate_accelerator(reported), TruncatedError)
+        translate = resolve_codec(codec, _ON).translate
+        assert isinstance(translate(reported), TruncatedError)
 
 
 def test_an_unknown_exception_from_the_child_propagates_unmapped() -> None:

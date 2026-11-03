@@ -26,6 +26,7 @@ from archivey.internal.streams.codecs.base import (
     StreamCodec,
 )
 from archivey.internal.streams.codecs.framed_decoder import (
+    FrameCheck,
     StreamIndex,
     StreamStart,
     stream_magic,
@@ -47,6 +48,20 @@ from archivey.types import (
 _ZSTD_STREAMS = stream_magic(
     tuple(bytes([b]) for b in ZSTD_FRAME_MAGIC), _SKIPPABLE_FRAME
 )
+
+
+def _zstd_frame_has_checksum(head: bytes) -> bool | None:
+    """Whether a frame's header sets Content_Checksum_flag (RFC 8878 §3.1.1.1.1.6).
+
+    Bit 2 of the Frame_Header_Descriptor, the byte after the magic. libzstd checks the
+    checksum whenever the flag is set. A skippable frame holds no content: ``None``.
+    """
+    if head[:4] != ZSTD_FRAME_MAGIC:
+        return None
+    return bool(head[4] & 0x04)
+
+
+_ZSTD_FRAME_CHECK = FrameCheck(head=5, judge=_zstd_frame_has_checksum)
 
 
 # libzstd's text for ZSTD_error_frameParameter_windowTooLarge: the frame header
@@ -151,6 +166,10 @@ class ZstdCodec(StreamCodec):
         return config.natives.zstd_decompressor(options)
 
     @override
+    def frame_check(self) -> FrameCheck:
+        return _ZSTD_FRAME_CHECK
+
+    @override
     def stream_start(self, params: CodecParams) -> StreamStart:
         # Every frame is content, in a .zst file and in a ZIP or 7z coder alike:
         # RFC 8878 defines Zstd data as one or more frames. A skippable frame may
@@ -215,7 +234,7 @@ class ZstdCodec(StreamCodec):
             return CorruptionError(
                 f"Error reading zstd stream: {exception_detail(exc)}"
             )
-        return self._eof_truncation(exc, "zstd")
+        return None
 
     @override
     def magic_behind_prefix(self, prefix: bytes) -> bool:

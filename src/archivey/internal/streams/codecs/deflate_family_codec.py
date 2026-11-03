@@ -16,6 +16,7 @@ from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
+    compose_translators,
 )
 from archivey.internal.streams.codecs.base import (
     CodecParams,
@@ -143,7 +144,7 @@ class _DeflateFamilyCodec(StreamCodec):
             open_stdlib=lambda fallback: self._open_stdlib(fallback, config),
             label=label,
             limit=self._accelerated_limit(params, config),
-            translate=self.translate,
+            translate=compose_translators(self.translate, self.eof_truncation),
             empty_to_stdlib=self._empty_to_stdlib,
         )
         stream: BinaryIO = takeover if end_check is None else end_check(takeover)

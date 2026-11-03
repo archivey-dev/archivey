@@ -612,7 +612,10 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
 
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        # A forward seek decrypts and decodes what it skips.
+        # A seek of a compressed member decodes nothing until the next read, which the
+        # overrides above classify. The seek still raises for a ``SEEK_END`` (finding
+        # the size decodes to the end), a seek of a stored member (decryption), and a
+        # report the collector escalates.
         try:
             return super().seek(offset, whence)
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised

@@ -37,13 +37,13 @@ from archivey.internal.streams.codecs.base import (
     StreamCodec,
 )
 from archivey.internal.streams.codecs.bzip2_resume import Bzip2Resume
+from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.framed_decoder import (
     StreamStart,
     stream_magic,
 )
 from archivey.internal.streams.codecs.rapidgzip_child import (
     crashed_on_data,
-    from_callers_source,
     rapidgzip_child_unavailable_reason,
     reported_by_child,
 )
@@ -875,7 +875,7 @@ class Bzip2Codec(StreamCodec):
             return TruncatedError(
                 f"{truncated_message('bzip2')}: {exception_detail(exc)}"
             )
-        return self._eof_truncation(exc, "bzip2")
+        return None
 
     @override
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
@@ -901,8 +901,9 @@ class Bzip2Codec(StreamCodec):
         """Whether ``exc`` is the bzip2 accelerator's verdict on the data, which the
         standard library takes over from.
 
-        Not an ``EOFError`` or ``OSError``: :meth:`_translate_accelerator` maps those for
-        the standard-library engine behind it, and from the accelerator they would be
+        Not an ``EOFError`` or ``OSError``: they are mapped for the standard-library
+        engine behind the accelerator (``OSError`` by :meth:`_translate_accelerator`,
+        ``EOFError`` by :meth:`eof_truncation`), and from the accelerator they would be
         an I/O fault, not a verdict. Not an error from the caller's own source either.
         A decoder process that crashed on the data (``crashed_on_data``) is a verdict.
         """
@@ -960,10 +961,10 @@ class Bzip2Codec(StreamCodec):
             return CorruptionError(
                 f"Error reading bzip2 stream (rapidgzip bzip2): {exception_detail(exc)}"
             )
-        if isinstance(exc, (EOFError, OSError)):
-            # The stdlib engine that _Bzip2EmptyStreamCheck falls back to raises these.
+        if isinstance(exc, OSError):
+            # The stdlib engine that _Bzip2EmptyStreamCheck falls back to raises it.
             # This does not widen translation: translate maps only an
             # OSError saying "Invalid data stream"; any other OSError comes back None
-            # and propagates.
+            # and propagates. Its EOFError is left to eof_truncation.
             return self.translate(exc)
         return None

@@ -493,7 +493,8 @@ _LIBRARY_ERRORS: list[tuple[str, str, Callable[[], Exception]]] = [
 _TEXTLESS_ERRORS: list[tuple[str, Callable[[], Exception], str]] = [
     ("ppmd", lambda: ValueError(), "Error reading PPMd stream: ValueError"),
     ("gzip", lambda: zlib.error(), "Error reading gzip stream: zlib.error"),
-    # The shared EOF arm every codec inherits.
+    # The EOF arm resolve_codec adds after every codec's translator
+    # (StreamCodec.eof_truncation).
     ("zstd", lambda: EOFError(), "zstd stream is truncated: EOFError"),
 ]
 
@@ -506,10 +507,10 @@ _TEXTLESS_ERRORS: list[tuple[str, Callable[[], Exception], str]] = [
 def test_a_codec_shows_the_librarys_text_not_its_repr(
     codec_name: str, prefix: str, make_error: Callable[[], Exception]
 ) -> None:
-    from archivey.internal.streams.codecs import Codec, stream_codec
+    from archivey.internal.streams.codecs import Codec, resolve_codec
 
     exc = make_error()
-    translated = stream_codec(Codec(codec_name)).translate(exc)
+    translated = resolve_codec(Codec(codec_name)).translate(exc)
     assert isinstance(translated, ArchiveyError)
     expected = str(exc) or type(exc).__name__
     assert translated.raw_message == prefix + expected
@@ -524,9 +525,9 @@ def test_a_codec_shows_the_librarys_text_not_its_repr(
 def test_a_codec_names_an_error_with_no_text_by_its_type(
     codec_name: str, make_error: Callable[[], Exception], expected: str
 ) -> None:
-    from archivey.internal.streams.codecs import Codec, stream_codec
+    from archivey.internal.streams.codecs import Codec, resolve_codec
 
-    translated = stream_codec(Codec(codec_name)).translate(make_error())
+    translated = resolve_codec(Codec(codec_name)).translate(make_error())
     assert isinstance(translated, ArchiveyError)
     assert translated.raw_message == expected
 

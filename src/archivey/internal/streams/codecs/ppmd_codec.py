@@ -150,8 +150,6 @@ class PpmdCodec(StreamCodec):
 
     @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
-        if (eof := self._eof_truncation(exc, "PPMd")) is not None:
-            return eof
         if isinstance(exc, ValueError):
             return CorruptionError(
                 f"Error reading PPMd stream: {exception_detail(exc)}"
