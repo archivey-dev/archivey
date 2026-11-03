@@ -51,7 +51,8 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.streams.verification import (
     VerificationProofs,
     ask_verification_proofs,
-    note_ceiling_provisional,
+    find_frame_watch,
+    note_frame_unchecked,
     raise_member_level,
 )
 from archivey.internal.streams.verify import (
@@ -353,6 +354,13 @@ class ArchiveStreamImpl(ArchiveStream):
     # stream proves raises it (``raise_member_level``). ``None`` for a stream of no
     # listed member (``open_stream()``), which keeps its own level.
     _level_member: ArchiveMember | None = None
+    # Set by ``_sync_member_level`` while a frame read later may still lower the
+    # member's ``verifiable`` (``_frame_verdict``): each read and seek then asks for
+    # one (``_sync_frame_unchecked``), so the member's ceiling falls with this
+    # stream's.
+    _frames_pending = False
+    # The codec layer's frame check ``_sync_frame_unchecked`` asks, found once.
+    _frame_watch: Callable[[], bool] | None = None
 
     def __init__(
         self,
@@ -885,14 +893,14 @@ class ArchiveStreamImpl(ArchiveStream):
             # A read to the end, or one that found it, from the start with no seek
             # between: every length and end-of-data check below it ran on all of it.
             self._ended_from_start = True
-        if (
-            self._level_member is not None
-            and n != 0
-            and (not data or self._reached_end(n, data))
-        ):
-            # The read reached the end (EOF, a short return, or a full count landing at
-            # the declared size), where the end-of-data checks run: tell the member.
-            self._sync_member_level()
+        if self._level_member is not None and n != 0:
+            if not data or self._reached_end(n, data):
+                # The read reached the end (EOF, a short return, or a full count landing
+                # at the declared size), where the end-of-data checks run: tell the
+                # member.
+                self._sync_member_level()
+            elif self._frames_pending:
+                self._sync_frame_unchecked()
         if verdict is not None and n != 0 and self._reached_end(n, data):
             # A rewound stream reached its end: the damage is still there, and the
             # seek may have paused the check that found it (a seek back to its
@@ -1031,6 +1039,9 @@ class ArchiveStreamImpl(ArchiveStream):
         # trailer its decoder never read (a size from an index ends the stream without
         # decoding).
         self._uninterrupted = result == 0
+        if self._frames_pending:
+            # A seek decodes too, and may read a frame header with no check.
+            self._sync_frame_unchecked()
         if not self._rewind_quiet:
             self._maybe_warn_rewind(before, result)
         return result
@@ -1064,25 +1075,49 @@ class ArchiveStreamImpl(ArchiveStream):
         verifier = self._verifier
         return verifier.digest_intact if verifier is not None else None
 
-    def _verification_proofs(self) -> VerificationProofs:
-        """What this stream and the layers below it have proved (``verification``)."""
+    def _verification_proofs(self, *, frames: bool = True) -> VerificationProofs:
+        """What this stream and the layers below it have proved (``verification``).
+
+        ``frames=False`` leaves out a codec's per-frame checks (``_frame_verdict``).
+        """
         below = ask_verification_proofs(self._inner)
-        # A codec that checks every frame it has seen counts as one that checks every
-        # byte (``frames_checked``), but only once a read from the start has ended:
-        # until then a later frame may carry no check, and a ceiling claimed early
-        # would stay on the member (``raise_member_level`` only raises it) above
-        # what any read can reach.
         ended = self._ended_from_start
-        checks = self._checks_content or (below.frames_checked and ended)
+        frames_content, frames_possible = (
+            self._frame_verdict(below) if frames else (False, False)
+        )
         own = VerificationProofs(
             ended=ended,
-            content=checks and ended,
-            content_possible=checks,
+            content=(self._checks_content and ended) or frames_content,
+            content_possible=self._checks_content or frames_possible,
         )
         verifier = self._verifier
         if verifier is not None:
             own = own.combine(verifier.proofs())
         return own.combine(below)
+
+    def _frame_verdict(self, below: VerificationProofs) -> tuple[bool, bool]:
+        """What a codec whose check is optional per frame (``per_frame``) proves: whether
+        its checks covered every byte, and whether a read can still make them do so.
+
+        They cover every byte once a read from the start has ended with every frame
+        checked (``frames_checked``); a read that jumped past frames proves nothing
+        about them. A read from the start can still reach that until a frame without a
+        check is found, by this stream or an earlier stream of the member
+        (``ArchiveMember._frame_unchecked``), or such a read ends with no checked
+        frame. Until a frame's header is read its check is unknown, and ``verifiable``
+        is the most a read can reach, so it counts as checked.
+        """
+        if not below.per_frame:
+            return False, False
+        member = self._level_member
+        unchecked = below.frame_unchecked or (
+            member is not None and member._frame_unchecked
+        )
+        if unchecked:
+            return False, False
+        if self._ended_from_start:
+            return below.frames_checked, below.frames_checked
+        return False, True
 
     @property
     @override
@@ -1106,9 +1141,10 @@ class ArchiveStreamImpl(ArchiveStream):
         self._sync_member_level()
         return member.verifiable
 
-    def _ceiling_now(self) -> Verification:
-        """The most a read to the end can prove, from the layers' proofs."""
-        proofs = self._verification_proofs()
+    def _ceiling_now(self, *, frames: bool = True) -> Verification:
+        """The most a read to the end can prove, from the layers' proofs (without a
+        codec's per-frame checks with ``frames=False``)."""
+        proofs = self._verification_proofs(frames=frames)
         if proofs.content_possible:
             return Verification.CHECKSUM
         if proofs.key_in_doubt:
@@ -1120,44 +1156,40 @@ class ArchiveStreamImpl(ArchiveStream):
 
         Before the stream opens its data it proves nothing, and its ceiling is still
         the listing's, so only an opened stream settles the member's ``verifiable``.
+        A frame found without a check lowers it (``note_frame_unchecked``).
         """
         member = self._level_member
         if member is None:
             return
         if self._inner is None:
             return
+        below = ask_verification_proofs(self._inner)
+        if below.per_frame:
+            possible = self._frame_verdict(below)[1]
+            without = self._ceiling_now(frames=False)
+            if not possible:
+                note_frame_unchecked(member, without)
+            # A frame read later can lower the ceiling only while the frames' checks
+            # are all that may make it CHECKSUM (a stored CRC makes it so anyway).
+            self._frames_pending = (
+                possible
+                and not self._ended_from_start
+                and without is not Verification.CHECKSUM
+            )
+            if self._frames_pending and self._frame_watch is None:
+                self._frame_watch = find_frame_watch(self._inner)
         raise_member_level(member, self._level_now(), self._ceiling_now())
-        if self._ended_from_start:
-            note_ceiling_provisional(member, False)
-        elif self._ceiling_may_rise():
-            note_ceiling_provisional(member, True)
 
-    def _ceiling_may_rise(self) -> bool:
-        """Whether a read from the start may raise the ceiling to ``CHECKSUM``.
+    def _sync_frame_unchecked(self) -> None:
+        """Tell the member when a read or seek found a frame with no check.
 
-        So when every frame this stream has decoded carries a check (``frames_checked``)
-        and no read from the start has ended yet: a read that jumped past frames
-        settles nothing (:meth:`_verification_proofs`). On a member stream the
-        member's ``_ceiling_provisional`` answers first: ``False`` means a read from
-        the start has settled the ceiling for good, so it cannot rise; ``True`` means
-        an earlier stream left it waiting on such a read; ``None`` (no stream has
-        said yet) falls back to this stream's own frames, as a stream with no member
-        does.
+        That is the only change a read short of the end can make to the member's
+        ceiling (``_frames_pending``), so such a read asks only the codec layer
+        (``find_frame_watch``), not every layer three times as a full sync does.
         """
-        if self._ended_from_start or self._ceiling_now() is Verification.CHECKSUM:
-            return False
-        member = self._level_member
-        if member is not None and member._ceiling_provisional is not None:
-            return member._ceiling_provisional
-        return ask_verification_proofs(self._inner).frames_checked
-
-    @override
-    def _verify_done(self, level: Verification) -> bool:
-        # A ceiling that may still rise is not reached: read again from the start
-        # (``verify()`` seeks to 0 when the read on from here does not settle it).
-        if level > self.verifiable and self._ceiling_may_rise():
-            return False
-        return super()._verify_done(level)
+        watch = self._frame_watch
+        if watch is not None and watch():
+            self._sync_member_level()
 
     def _level_now(self) -> Verification:
         """The level the layers' proofs add up to."""

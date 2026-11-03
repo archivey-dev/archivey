@@ -180,11 +180,12 @@ A member with no checksum of its own, such as a TAR, ISO or `.lzma` member, stop
 read from the start with no seek in between. An `.xz`, `.zst` or `.lz4` file carries a check
 per stream or frame only if the program that wrote it added one. It reaches `CHECKSUM` when every
 stream or frame in it carries one, read the same way; one without a check keeps the whole file at
-`LENGTH`. Since only a read to the end has seen every frame, its `verifiable` stays at `LENGTH`
-until such a read, and then becomes `CHECKSUM` if every frame had a check.
+`LENGTH`. Each stream or frame says whether it carries a check only in its own header, so the
+file's `verifiable` is `CHECKSUM` until a read finds one without a check, and then becomes
+`LENGTH`.
 
 An encrypted member whose password was accepted only on a weak check, such as the one-byte check of
-old ZIP encryption, is in the same position. Its `stream.verified` stays `NONE` until its checksum
+old ZIP encryption, also depends on a read to the end. Its `stream.verified` stays `NONE` until its checksum
 matches. If you close its stream before the end, or seek past bytes without reading them, archivey
 logs `ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read may come from a wrong password. WinZip
 AES members are the exception: their check holds across seeks.
@@ -220,10 +221,7 @@ a seek, so seeking back can't hand you the damaged member as if it were complete
 
 After seeks, `stream.verified` shows whether the checksum still ran. If it's below
 `stream.verifiable` once you've read to the end, a seek back to the start and a read to the end
-runs every check. A `.zst`, `.lz4` or `.xz` file whose frames each carry a check is a special
-case: after a jump to the end, `verified` and `verifiable` can both be `LENGTH`, because the
-frames that were skipped may carry no check. `stream.verify()` and `reader.verify_all()` read
-such a file again from the start, which can raise both to `CHECKSUM`.
+runs every check.
 
 A compressed TAR, CPIO or ar archive, such as a `.tar.gz`, `.cpio.xz` or `.a.bz2`, has one
 checksum for the whole compressed stream, checked at its end. A member you read to its end is at

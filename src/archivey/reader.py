@@ -192,11 +192,15 @@ class ArchiveStream(ReadOnlyIOStream):
 
         ``CHECKSUM`` when the data carries a checksum archivey can compute, ``LENGTH``
         when it carries none, and ``NONE`` for an encrypted member with no checksum
-        whose password passed only a weak check. A member stream answers with its
-        member's :attr:`~archivey.ArchiveMember.verifiable`: the listing's estimate
-        until a stream of the member first opens its data, which can settle it lower
-        once. After that it never falls, and it rises when another member's checksum
-        confirms the password. Reading this property reads nothing from the archive.
+        whose password passed only a weak check. Each stream or frame of an ``.xz``,
+        ``.zst`` or ``.lz4`` file says in its own header whether it carries a check,
+        so such a file is ``CHECKSUM`` until a read finds one without a check. A
+        member stream answers with its member's
+        :attr:`~archivey.ArchiveMember.verifiable`: the listing's estimate until a
+        stream of the member first opens its data, which can settle it lower once.
+        After that it falls only when a read finds such a stream or frame without a
+        check, and it rises when another member's checksum confirms the password.
+        Reading this property reads nothing from the archive.
 
         Experimental: any release, a patch included, may change or remove this property,
         its levels or what they mean.

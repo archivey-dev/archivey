@@ -1287,13 +1287,11 @@ class ArchiveMember:
     """The most a read can prove, settled when a stream of this member first opens
     its data; ``None`` until then. Read it through ``verifiable``. Not part of
     the public contract."""
-    _ceiling_provisional: bool | None = field(default=None, repr=False, compare=False)
-    """Whether ``verifiable`` waits on a read from the start, for a codec whose check
-    is optional per frame (zstd, LZ4, xz). ``None`` before a stream of the member has
-    opened its data. ``True`` while every frame a read has seen carries a check and no
-    read from the start has ended: such a read may raise ``verifiable`` to
-    ``CHECKSUM``, so ``verify()`` and ``verify_all()`` read the member again.
-    ``False`` for good once a read from the start has ended. Not part of the public
+    _frame_unchecked: bool = field(default=False, repr=False, compare=False)
+    """Whether a read of this member found a frame with no check, for a codec whose
+    check is optional per frame (zstd, LZ4, xz). Set once, never cleared: no read can
+    then reach ``CHECKSUM`` through those checks, and a later stream that sees only
+    checked frames counts it (``note_frame_unchecked``). Not part of the public
     contract."""
 
     # Mutable members are intentionally unhashable. ``@dataclass`` (``eq=True``, not
@@ -1432,8 +1430,10 @@ class ArchiveMember:
         entry, a directory that declares no data) has nothing to read, so it is
         ``verified`` already. Before a stream of the member has opened its data
         it is the listing's estimate, and it may settle lower once, at that first open
-        (a weak password check is only found then). After that it never falls. It
-        rises when another member's checksum confirms the password.
+        (a weak password check is only found then). After that it falls only when a
+        read finds a stream or frame of an ``.xz``, ``.zst`` or ``.lz4`` file with no
+        check, which each says only in its own header. It rises when another member's
+        checksum confirms the password.
 
         Experimental: any release, a patch included, may change or remove this property,
         its levels or what they mean.

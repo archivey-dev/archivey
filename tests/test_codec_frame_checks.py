@@ -3,7 +3,8 @@
 A file reaches ``CHECKSUM`` when every frame (an xz stream, a zstd or LZ4 frame) carries
 a check its library verifies, and the file was read from the start to the end. One
 frame without a check keeps it at ``LENGTH`` (``verification-level-redesign``,
-tasks group 1).
+tasks group 1). ``verifiable`` is what a read from the start can still reach:
+``CHECKSUM`` until a read finds a frame without a check, whatever reads came before.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import pytest
 from archivey import ArchiveStream, Verification, open_archive, open_stream
 from archivey.exceptions import CorruptionError
 from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.streams_util import seekable_zstd_table
 
 UNLOCKED = Verification.UNLOCKED
 LENGTH = Verification.LENGTH
@@ -78,8 +80,8 @@ def test_open_stream_reaches_what_its_frames_check(
     compress: Callable[[bytes], bytes], expected: Verification
 ) -> None:
     with open_stream(io.BytesIO(compress(_DATA))) as stream:
-        # Before the first frame's header is read, nothing says a check exists.
-        assert (stream.verified, stream.verifiable) == (UNLOCKED, LENGTH)
+        # Before the first frame's header is read, a read may still check every byte.
+        assert (stream.verified, stream.verifiable) == (UNLOCKED, CHECKSUM)
         assert stream.read() == _DATA
         assert (stream.verified, stream.verifiable) == (expected, expected)
 
@@ -96,11 +98,11 @@ def test_single_file_member_reaches_what_its_frames_check(
         assert (member.verified, member.verifiable) == (expected, expected)
 
 
-def test_the_ceiling_waits_for_a_read_to_the_end() -> None:
-    # A later frame may carry no check, so a checked first header claims nothing yet.
+def test_a_checked_first_frame_leaves_the_ceiling_at_checksum() -> None:
+    # Only ``verified`` waits for the read to the end.
     with open_stream(io.BytesIO(lzma.compress(_DATA))) as stream:
         stream.read(100)
-        assert (stream.verified, stream.verifiable) == (UNLOCKED, LENGTH)
+        assert (stream.verified, stream.verifiable) == (UNLOCKED, CHECKSUM)
         stream.read()
         assert (stream.verified, stream.verifiable) == (CHECKSUM, CHECKSUM)
 
@@ -109,15 +111,16 @@ def test_the_ceiling_waits_for_a_read_to_the_end() -> None:
 def test_a_member_synced_mid_read_ends_with_verified_equal_to_verifiable(
     tmp_path: Path,
 ) -> None:
-    # A checked frame, then an unchecked one: a ceiling read between the two headers
-    # must not stay on the member above what the full read reaches.
+    # A checked frame, then an unchecked one: the ceiling read between the two headers
+    # falls once the second header is read, so it does not stay above what the full
+    # read reaches.
     path = tmp_path / "mixed.zst"
     path.write_bytes(_zstd(True)(_DATA) + _zstd(False)(_DATA))
     with open_archive(path) as reader:
         member = next(m for m in reader.members() if m.is_file)
         with reader.open(member) as stream:
             stream.read(100)
-            assert stream.verifiable is LENGTH
+            assert stream.verifiable is CHECKSUM
             stream.read()
             assert (stream.verified, stream.verifiable) == (LENGTH, LENGTH)
         assert reader.verify_all() == ()
@@ -239,8 +242,8 @@ def test_a_read_that_jumped_to_the_end_is_read_again_for_its_frame_checks(
     expected: Verification,
     call: str,
 ) -> None:
-    # The jump skips frames, so it ends at LENGTH with the ceiling still waiting on a
-    # read from the start: verify() and verify_all() read again to settle it.
+    # The jump skips bytes the frame checks cover, so it ends below the ceiling:
+    # verify() and verify_all() read again from the start.
     path = tmp_path / "data.bin.compressed"
     path.write_bytes(compress(_DATA))
     with open_archive(path, seekable_members=True) as reader:
@@ -252,32 +255,152 @@ def test_a_read_that_jumped_to_the_end_is_read_again_for_its_frame_checks(
         if call == "verify_all":
             assert reader.verify_all() == ()
         assert (member.verified, member.verifiable) == (expected, expected)
-        # Settled: a later verify_all() skips it.
-        assert member._ceiling_provisional is not True
 
 
 @requires_zstd()
-def test_a_jump_past_an_unchecked_frame_is_read_again_once(tmp_path: Path) -> None:
-    # A checked frame, then an unchecked one: the jump sees only the second frame's
-    # header, which carries no check, so nothing waits on a read from the start.
+def test_a_jump_to_an_unchecked_frame_reads_nothing_again(tmp_path: Path) -> None:
+    # A checked frame, then an unchecked one: the jump reads the second frame's
+    # header, which carries no check, so a read from the start cannot do better.
     path = tmp_path / "mixed.zst"
     path.write_bytes(_zstd(True)(_DATA) + _zstd(False)(_DATA))
     with open_archive(path, seekable_members=True) as reader:
         member = next(m for m in reader.members() if m.is_file)
         with reader.open(member) as stream:
             _jump_to_the_end(stream)
-            assert stream.verify() is LENGTH
-        assert member._ceiling_provisional is not True
-        assert (member.verified, member.verifiable) == (LENGTH, LENGTH)
-        # A read from the start settles it for good.
-        with reader.open(member) as stream:
-            assert stream.read() == _DATA * 2
-        assert member._ceiling_provisional is False
-        # Settled: a later stream that has seen only the checked frame reads nothing.
-        with reader.open(member) as stream:
-            stream.read(10)
+            assert (stream.verified, stream.verifiable) == (LENGTH, LENGTH)
             reads: list[object] = []
             stream._verify_read_on = reads.append  # type: ignore[method-assign]
             assert stream.verify() is LENGTH
             assert reads == []
+        assert (member.verified, member.verifiable) == (LENGTH, LENGTH)
+        # Kept for good: a later stream that has seen only the checked frame reads
+        # nothing.
+        with reader.open(member) as stream:
+            stream.read(10)
+            reads = []
+            stream._verify_read_on = reads.append  # type: ignore[method-assign]
+            assert stream.verify() is LENGTH
+            assert reads == []
             assert stream.tell() == 10
+
+
+def _zstd_frames(*checked: bool, table: bool = False) -> Callable[[bytes], bytes]:
+    """One zstd frame of ``data`` per entry, each with a content checksum or not, and
+    with ``table`` the Seekable Zstandard seek table, through which a seek skips the
+    frames before its target without reading their headers."""
+
+    def compress(data: bytes) -> bytes:
+        frames = [_zstd(check)(data) for check in checked]
+        index = seekable_zstd_table([(len(f), len(data)) for f in frames])
+        return b"".join(frames) + (index if table else b"")
+
+    return compress
+
+
+# What ``verify()`` reaches on each file, once a read has seen any of its frames.
+_CEILING_CASES = [
+    pytest.param(_xz(lzma.CHECK_CRC64), CHECKSUM, id="xz-crc64"),
+    pytest.param(_xz(lzma.CHECK_NONE), LENGTH, id="xz-none"),
+    pytest.param(_zstd(True), CHECKSUM, id="zstd-checksum", marks=requires_zstd()),
+    pytest.param(_zstd(False), LENGTH, id="zstd-plain", marks=requires_zstd()),
+    pytest.param(
+        _lz4(content_checksum=True), CHECKSUM, id="lz4-content", marks=requires("lz4")
+    ),
+    pytest.param(_lz4(), LENGTH, id="lz4-plain", marks=requires("lz4")),
+    pytest.param(
+        _zstd_frames(True, True, True),
+        CHECKSUM,
+        id="zstd-frames",
+        marks=requires_zstd(),
+    ),
+    pytest.param(
+        _zstd_frames(True, True, True, table=True),
+        CHECKSUM,
+        id="zstd-seekable",
+        marks=requires_zstd(),
+    ),
+    pytest.param(
+        _zstd_frames(False, False, False, table=True),
+        LENGTH,
+        id="zstd-seekable-plain",
+        marks=requires_zstd(),
+    ),
+]
+
+
+def _read_part(stream: ArchiveStream) -> None:
+    stream.read(len(_DATA) // 2)
+
+
+def _seek_into_the_last_frame(stream: ArchiveStream) -> None:
+    # With a seek table, the frames before the target are never decoded.
+    stream.seek(-len(_DATA) // 2, io.SEEK_END)
+    stream.read(100)
+
+
+_READS = [
+    pytest.param(_read_part, id="partial"),
+    pytest.param(_jump_to_the_end, id="jump"),
+    pytest.param(_seek_into_the_last_frame, id="seek"),
+]
+
+
+def _check_ceiling_holds(stream: ArchiveStream, expected: Verification) -> None:
+    # ``verifiable`` already says what ``verify()`` reaches, and ``verified`` claims
+    # no check the read did not run.
+    assert stream.verifiable is expected
+    assert stream.verified < CHECKSUM
+    assert stream.verify() is expected
+    assert (stream.verified, stream.verifiable) == (expected, expected)
+
+
+@pytest.mark.parametrize("read", _READS)
+@pytest.mark.parametrize(("compress", "expected"), _CEILING_CASES)
+def test_open_stream_verifiable_is_what_verify_reaches(
+    compress: Callable[[bytes], bytes],
+    expected: Verification,
+    read: Callable[[ArchiveStream], None],
+) -> None:
+    with open_stream(io.BytesIO(compress(_DATA)), seekable=True) as stream:
+        read(stream)
+        _check_ceiling_holds(stream, expected)
+
+
+@pytest.mark.parametrize("read", _READS)
+@pytest.mark.parametrize(("compress", "expected"), _CEILING_CASES)
+def test_member_verifiable_is_what_verify_reaches(
+    tmp_path: Path,
+    compress: Callable[[bytes], bytes],
+    expected: Verification,
+    read: Callable[[ArchiveStream], None],
+) -> None:
+    path = tmp_path / "data.bin.compressed"
+    path.write_bytes(compress(_DATA))
+    with open_archive(path, seekable_members=True) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as stream:
+            read(stream)
+            assert member.verifiable is expected
+            _check_ceiling_holds(stream, expected)
+        assert (member.verified, member.verifiable) == (expected, expected)
+        assert reader.verify_all() == ()
+
+
+@requires_zstd()
+def test_a_frame_found_without_a_check_lowers_the_ceiling(tmp_path: Path) -> None:
+    # The seek skips the unchecked middle frame: until a read finds it, a read from
+    # the start may still check every byte as far as anything read shows.
+    path = tmp_path / "mixed.zst"
+    path.write_bytes(_zstd_frames(True, False, True, table=True)(_DATA))
+    with open_stream(path, seekable=True) as stream:
+        _seek_into_the_last_frame(stream)
+        assert (stream.verified, stream.verifiable) == (UNLOCKED, CHECKSUM)
+        assert stream.verify() is LENGTH
+        assert stream.verifiable is LENGTH
+    with open_archive(path, seekable_members=True) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as stream:
+            _seek_into_the_last_frame(stream)
+            assert member.verifiable is CHECKSUM
+        assert reader.verify_all() == ()
+        assert (member.verified, member.verifiable) == (LENGTH, LENGTH)

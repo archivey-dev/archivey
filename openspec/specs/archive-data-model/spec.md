@@ -536,7 +536,11 @@ requirement gives them, applied to this entry's data in this archive.
   UNLOCKED`, and an encrypted member whose password is not yet confirmed at `NONE`.
 - `verifiable` is known from the listing. It MAY settle once, at the member's first
   open, which is the first time any stream of that member opens its data (a password
-  watch that only appears then can lower it). After that it SHALL NOT fall.
+  watch that only appears then can lower it). After that it SHALL fall only when a
+  read of the member finds a stream or frame of an `.xz`, `.zst` or `.lz4` file that
+  carries no check, as the `compressed-streams` verification requirement gives it;
+  a later stream of the member that has not read that stream or frame SHALL NOT
+  raise it again.
 - `verified` SHALL only rise. The reader SHALL raise it in place from every read that
   proves more: a stream of the member, a listing pass that decodes the data, and a
   check that spans members once it passes. A raise SHALL be a monotonic maximum taken
