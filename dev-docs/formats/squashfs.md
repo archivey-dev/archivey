@@ -85,10 +85,13 @@ for `is_sparse`. Of each inode it keeps a fixed-size record of 58 bytes (a 96-by
 object in CPython): its type, mode, owner, time, whether the file has holes, and a
 regular file's location (size, first block, block count, where its block list is, and
 its fragment and offset). A symlink's target is kept beside the record, since its
-member holds the target anyway, and an inode that did not read or a block list that
-did not scan is kept as the error to raise in turn. The second makes each member from
-its record, in the order the first chose, and drops the record and the entry's name as
-it goes; a directory's entry stays, for the path in a later member's message. A hard
+member holds the target anyway. Of an inode that did not read, or a block list that
+did not scan, only the reference is kept. An error holds its traceback, which no limit
+charges: keeping one for each took a 2.6 MB image of 260 000 entries that name bad
+inodes to a peak RSS of 505 MiB, against 115 MiB for the references. That member reads
+the inode and its list again and raises, which ends the listing, so this costs one
+more read a listing. The second pass makes each member from its record, in the order
+the first chose, and drops the record and the entry's name as it goes; a directory's entry stays, for the path in a later member's message. A hard
 link takes what it needs from the member it names, which keeps its type, mode, owner
 and time next to its name. On a 120 000-file mksquashfs image this lists in the time
 of a walk that reads each inode as it goes (2.06 s, against 2.77 s for reading the

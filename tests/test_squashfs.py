@@ -847,6 +847,72 @@ def test_a_block_list_of_holes_larger_than_the_table_on_disk() -> None:
         assert not members["data.bin"].is_sparse
 
 
+def _failing_inodes(count: int) -> bytes:
+    """An uncompressed image of ``count`` files named ``a`` under an extended root
+    directory, each naming its own offset in metadata blocks of ``0xFF`` bytes: an
+    inode of unknown type 65 535, so every entry's inode fails to read."""
+    per_block = 31 * 256  # whole directory headers, each naming one inode block
+    blocks = -(-count // per_block)
+    inodes = _metadata(b"\xff" * 8192) * blocks
+    listing = b""
+    for start in range(0, count, 256):
+        group = range(start, min(start + 256, count))
+        listing += struct.pack("<III", len(group) - 1, start // per_block * 8194, 2)
+        for i in group:
+            listing += struct.pack("<HhHH", i % per_block, 0, 2, 0) + b"a"
+    directory = b"".join(
+        _metadata(listing[i : i + 8192]) for i in range(0, len(listing), 8192)
+    )
+    root_ref = len(inodes)
+    inodes += _metadata(
+        _inode_header(8, 1)
+        + struct.pack("<IIIIHHI", 2, len(listing) + 3, 0, 0, 0, 0, 0xFFFFFFFF)
+    )
+    inode_table = 96
+    directory_table = inode_table + len(inodes)
+    ids = _metadata(struct.pack("<I", 0))
+    id_block = directory_table + len(directory)
+    body = inodes + directory + ids + struct.pack("<Q", id_block)
+    superblock = struct.pack(
+        "<IIIIIHHHHHHQQQQQQQQ",
+        0x73717368, 2, 0, 4096, 0, 1, 12, 0, 1, 4, 0,
+        root_ref << 16, 96 + len(body), id_block + len(ids), 0xFFFFFFFFFFFFFFFF,
+        inode_table, directory_table, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF,
+    )  # fmt: skip
+    return superblock + body
+
+
+def test_inodes_that_fail_to_read_are_not_held(tmp_path: Path) -> None:
+    """4 000 entries each name a different inode that does not read. The first pass
+    keeps only which ones failed, not their errors: an error keeps its traceback,
+    and holding 4 000 of them took the peak to 6.9 MB, against 1.1 MB without. The
+    first such member reads its inode again, which raises."""
+    path = _image(tmp_path, _failing_inodes(4000))
+
+    def action() -> None:
+        with (
+            open_archive(path) as archive,
+            pytest.raises(CorruptionError, match="unknown SquashFS inode type 65535"),
+        ):
+            archive.members()
+
+    assert traced_peak(action) < 3 * 2**20
+
+
+def test_a_block_list_that_does_not_read_raises_at_its_member(tmp_path: Path) -> None:
+    """A file whose 16 000-byte block list fits in what the inode table holds but runs
+    past the image's end. The first pass keeps only that it failed; its member scans
+    the list again and raises the error the first pass met."""
+    good = _empty_file(2)
+    bad = _inode_header(2, 3) + struct.pack("<IIII", 0, 0xFFFFFFFF, 0, 4000 * 4096)
+    image = _flat_image(_metadata(good + bad), [(b"a", 2, 0, 0), (b"b", 2, 0, 32)])
+    with (
+        open_archive(_image(tmp_path, image)) as archive,
+        pytest.raises(TruncatedError, match="runs past the image end"),
+    ):
+        archive.members()
+
+
 def test_a_block_list_longer_than_the_inode_table(tmp_path: Path) -> None:
     """A size that needs more blocks than the table holds is refused before the scan."""
     data = _uncompressed()

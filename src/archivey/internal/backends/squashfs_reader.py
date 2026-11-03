@@ -25,7 +25,7 @@ import struct
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import UTC, datetime
-from typing import Any, BinaryIO, NamedTuple, cast
+from typing import Any, BinaryIO, NamedTuple, NoReturn, cast
 
 from archivey.exceptions import (
     ArchiveyError,
@@ -243,6 +243,12 @@ assert _RECORD_TAIL.size == _RECORD_HEAD.size + _RECORD_LOCATION.size == _RECORD
 _NO_LOCATION = (0,) * len(FileLocation._fields)
 
 
+def _lists_over() -> CorruptionError:
+    return CorruptionError(
+        "the files' block lists add up to more than the inode table holds"
+    )
+
+
 # What ``iter_members`` leaves in place of an entry whose member it made.
 _MADE = _Entry(-1, b"", -1, 0, None)
 
@@ -256,9 +262,13 @@ class _FileScan(NamedTuple):
     # A symlink's target, which its member holds anyway: kept beside its record and
     # charged to ``max_metadata_bytes`` as it is kept (``_charge``).
     symlinks: dict[int, bytes]
-    # Inodes that did not read, or files whose block list could not be scanned:
-    # raised when their member comes.
-    errors: dict[int, ArchiveyError]
+    # Inodes that did not read, or files whose block list did not scan: only the
+    # reference, since an error holds its traceback (some 3.5 KiB, uncharged). Its
+    # member reads the inode and the list again and raises (``_raise_again``).
+    failed: set[int]
+    # The first file, in table order, whose block list crossed what the inode table
+    # holds (``_block_list_fits``): it and every file after it were refused there.
+    lists_over: int | None
     clean: bool  # every inode read, and of the type its entry gives
 
 
@@ -310,7 +320,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         self._metadata: OrderedDict[int, tuple[bytes, int]] = OrderedDict()
         self._fragments: OrderedDict[int, bytes] = OrderedDict()
         self._ids = self._ids_table()
-        # Block-list bytes scanned by the listing so far (``_has_holes``).
+        # Block-list bytes counted by the listing so far (``_block_list_fits``).
         self._block_list_bytes = 0
         self._inode_capacity: int | None = None
         # What the listing in progress holds before its members are made, charged
@@ -624,20 +634,21 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             self._inode_capacity = blocks * _METADATA_SIZE
         return self._inode_capacity
 
+    def _block_list_fits(self, location: FileLocation) -> bool:
+        """Count a file's block list before :meth:`_has_holes` scans it, and whether
+        the lists counted so far still fit in the decoded inode table. In a valid
+        image the files' lists lie in separate bytes of it, so together they fit; a
+        damaged image whose lists overlap would otherwise make the scan quadratic.
+        Once the total crosses it, it stays over: the total only grows."""
+        self._block_list_bytes += location.block_count * 4
+        return self._block_list_bytes <= self._inode_table_capacity()
+
     def _has_holes(self, location: FileLocation) -> bool:
         """Whether a file has a block stored with size 0, which reads as zeros.
 
         Only the block list says so: mksquashfs writes a sparse file under a basic
-        inode, which has no "bytes saved" field. In a valid image the files' lists
-        lie in separate bytes of the decoded inode table, so together they fit in it;
-        a damaged image whose lists overlap would otherwise make the scan quadratic.
-        """
+        inode, which has no "bytes saved" field."""
         remaining = location.block_count * 4
-        self._block_list_bytes += remaining
-        if self._block_list_bytes > self._inode_table_capacity():
-            raise CorruptionError(
-                "the files' block lists add up to more than the inode table holds"
-            )
         cursor = self.block_list(location)
         while remaining:
             chunk = cursor.read(min(remaining, _METADATA_SIZE))
@@ -803,28 +814,34 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         """
         records: dict[int, bytes] = {}
         symlinks: dict[int, bytes] = {}
-        errors: dict[int, ArchiveyError] = {}
+        failed: set[int] = set()
+        lists_over: int | None = None
         clean = True
         previous = -1
         inode_type = 0
         pack = _RECORD.pack
-        # Each reference with the types its entries give, in table order.
+        # Each reference with the types its entries give, in table order. A type is
+        # 1..7 (``_entries`` refuses any other), so it fits in the low three bits.
         for key in sorted({e.ref << 3 | e.kind for e in entries if e.kind != _DIR}):
             ref, kind = key >> 3, key & 7
             if ref != previous:
                 previous = ref
                 try:
                     inode = self._inode(ref >> 16, ref & 0xFFFF)
-                except ArchiveyError as exc:
-                    errors[ref] = exc
+                except ArchiveyError:
+                    failed.add(ref)
                     clean = False
                     continue
                 inode_type, mode, uid, gid, mtime, body = inode
                 if isinstance(body, FileLocation):
                     try:
+                        if lists_over is None and not self._block_list_fits(body):
+                            lists_over = ref
+                        if lists_over is not None:
+                            raise _lists_over()
                         sparse = self._has_holes(body)
-                    except ArchiveyError as exc:
-                        errors[ref] = exc
+                    except ArchiveyError:
+                        failed.add(ref)
                         clean = False
                         continue
                     records[ref] = pack(
@@ -839,7 +856,20 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                     )
             if inode_type != kind:
                 clean = False
-        return _FileScan(records, symlinks, errors, clean)
+        return _FileScan(records, symlinks, failed, lists_over, clean)
+
+    def _raise_again(self, ref: int, lists_over: int | None) -> NoReturn:
+        """Raise the error the first pass met at inode ``ref`` (:class:`_FileScan`):
+        read the inode again, then its block list. The listing stops at this raise,
+        so it costs one read a listing."""
+        inode = self._inode(ref >> 16, ref & 0xFFFF)
+        assert isinstance(inode.body, FileLocation), "only a file's list fails"
+        if lists_over is not None and ref >= lists_over:
+            raise _lists_over()
+        # Before ``lists_over`` the lists fit, unless the table's size did not read.
+        self._inode_table_capacity()
+        self._has_holes(inode.body)
+        raise AssertionError("a file that failed the first pass read again")
 
     def _in_fragment_order(
         self,
@@ -924,10 +954,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             assert linked is not None, "a hard link's target is made first"
             kind, mode, uid, gid, mtime, _ = linked
         else:
-            if files.errors:
-                error = files.errors.get(entry.ref)
-                if error is not None:
-                    raise error
+            if entry.ref in files.failed:
+                self._raise_again(entry.ref, files.lists_over)
             record = files.records.pop(entry.ref)
             kind, sparse, mode, uid, gid, mtime = _RECORD_HEAD.unpack_from(record)
         if kind != entry.kind:
