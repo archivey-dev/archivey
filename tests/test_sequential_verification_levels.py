@@ -217,3 +217,21 @@ def test_data_the_reader_decodes_is_left_to_its_own_reads(streaming: bool) -> No
     files = {m.name: m.verified for m in members if m.is_file}
     assert files == dict.fromkeys(files, Verification.UNLOCKED)
     assert len(files) == 4
+
+
+def test_member_reads_during_a_random_access_listing_still_raise_every_file() -> None:
+    # Member reads share the codec with the walk. A read back over bytes the walk
+    # passed seeks the codec, but the walk then decodes on from where it was, so the
+    # decode still runs from the start to the trailer (review round 1, K2).
+    files = _files((300_000, 100_000, 5))
+    data = gzip.compress(_archive("cpio", files), compresslevel=1)
+    with open_archive(io.BytesIO(data), concurrent_operations=True) as reader:
+        members = []
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            members.append(member)
+            if member.name == "m1":
+                assert stream.read() == files["m1"]
+                with reader.open("m0") as earlier:
+                    assert earlier.read(10) == files["m0"][:10]
+    assert _levels(members) == dict.fromkeys(files, _CHECKED)
