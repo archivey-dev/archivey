@@ -246,7 +246,14 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
   reversal, a new subsystem, anything an open decision touches. Size alone is not one
   of them: a large diff an agent may merge like any other.
 - `main` refuses a merge while any review thread is open, so every thread needs its
-  reply and its resolution first (`address-review-findings` §7).
+  reply and its resolution first (`address-review-findings` §7). Standing rule from the
+  maintainer (2026-11-03): an agent resolves each thread whose finding it fixed, right
+  after its "Fixed in" reply, and turns on squash auto-merge for a PR the tier lets an
+  agent merge once its review approves and CI is green. Use the GitHub connector tools
+  (`resolve_review_thread`, `enable_pr_auto_merge`), not raw `gh api` calls. A finding
+  answered as disproven, not reproduced or not worth fixing stays open: list it for the
+  maintainer, who reads those and resolves them (a false finding can hint at another
+  problem).
 - The PR body is the record of a piece of work. Do not commit working plans to the repo.
 - Do not edit `CHANGELOG.md` in a PR; the release writes it.
 
