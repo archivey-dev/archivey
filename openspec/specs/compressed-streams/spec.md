@@ -976,7 +976,10 @@ raise `ValueError`. It SHALL NOT read past its own member.
 On a stream that can seek, it SHALL read on until `verified` reaches the target, and
 SHALL read and decode nothing when `verified` has already reached the target and is
 above `NONE`. A target of `NONE` is never reached this way, so the length and
-end-of-data checks still run to the end. When the reads end below the target and the
+end-of-data checks still run to the end. A `.zst`, `.lz4` or `.xz` member whose
+every frame seen so far carries a check, after a read that reached the end without
+decoding from the start, has not reached its target: its `verifiable` waits on a read
+from the start, which may raise it to `CHECKSUM`. When the reads end below the target and the
 stream did not start at 0, it SHALL seek to 0 and read on once more. It SHALL then seek
 back to the position it started from, also when a read raised, so a later `read()`
 returns the same bytes.
@@ -1001,6 +1004,8 @@ returned level and the errors SHALL stay those a read to the target gives.
 | ZIP member whose CRC fails | raises `CorruptionError`; `verified` stays `UNLOCKED` |
 | TAR member | returns `LENGTH` |
 | Seekable `.gz` member after a forward seek | reads again from 0; returns `CHECKSUM`; position restored |
+| Seekable `.zst` member with a checksum in every frame, after a jump to the end and a read there (`LENGTH`) | reads again from 0; returns `CHECKSUM`; `verify_all()` reads it again too |
+| Same, with the last frame unchecked | reads again from 0 once; returns `LENGTH`; later calls read nothing |
 | `stream_members()` stream, either mode | reads to the end; later `read()` raises `ArchiveyUsageError`; a second `verify()` reads nothing |
 | `stream_members()` stream whose CRC fails | raises `CorruptionError`; later `read()` raises `ArchiveyUsageError`; a second `verify()` raises `CorruptionError` again |
 | Non-seekable stream whose member is already at `CHECKSUM` (proved by `verify_all()`) | reads nothing; returns `CHECKSUM`; later `read()` raises `ArchiveyUsageError` |
