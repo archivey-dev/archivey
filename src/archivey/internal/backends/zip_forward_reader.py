@@ -1258,9 +1258,9 @@ class _PassData:
             # A pass that decoded the data raises its member as a read would (design
             # Decision 4): to CHECKSUM once the CRC (a sized member's local header's,
             # or a bit-3 member's descriptor's) or the WinZip AES code covered every
-            # byte, which
-            # also proves the key; else LENGTH, never past a ceiling a key nothing
-            # proved holds lower. The AES stage answers only once its code matched.
+            # byte, which also proves the key; else LENGTH, never past a ceiling a key
+            # nothing proved holds lower. The AES stage answers only once its code
+            # matched.
             stage = self._aes_stage
             mac_matched = stage is not None and ask_verification_proofs(stage).content
             if mac_matched or self._crc_is_digest(crc, file_size):
