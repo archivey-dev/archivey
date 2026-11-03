@@ -2001,7 +2001,9 @@ class DecompressorStream(ReadOnlyIOStream):
             self._reset_to_seek_point(self._find_best_seek_point(new_pos))
 
         if new_pos == self._pos:
-            # Before the size check, for the trailer: see _move_without_decode.
+            # Kept before the size check only so this path orders the two as
+            # _move_without_decode does; that method already answers every in-place
+            # seek on a stream that has not raised, so no trailer case reaches here.
             return self._pos
 
         if self._size is not None and new_pos >= self._size:

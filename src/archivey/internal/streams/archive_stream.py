@@ -1018,11 +1018,10 @@ class ArchiveStreamImpl(ArchiveStream):
         here is dropped.
         """
         after = note_raised_seek(self._verifier, inner)
-        # Both ``None`` is equal and keeps the flag: ``before`` is ``None`` only when
-        # the ``tell()`` ahead of the seek raised, so the seek never ran.
-        if after != before:
-            # Where the inner was left is unknown, or somewhere the decode may have
-            # jumped to.
+        # ``before`` is ``None`` only when the ``tell()`` ahead of the seek raised, so
+        # the seek never ran and the flag stands. Otherwise the rule of ``_seek``
+        # applies, moved or not: the inner may have taken a shortcut before raising.
+        if before is not None:
             self._uninterrupted = after == 0
         if after is None or self._rewind_quiet:
             return
