@@ -18,7 +18,7 @@ registered as a built-in the way ISO, CPIO and ar are.
 | Core dependencies | None for gzip, xz, LZMA and LZO images. Zstandard images need what a `.zst` file needs; LZ4 images need `lz4` (`[recommended]`). LZO is decoded as a `.lzo` file is: liblzo2 through `python-lzo` in a child process when it is installed, otherwise Python |
 | Encryption | None |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
-| Checksums | None. A damaged block is found only when it does not decode to its length |
+| Checksums | None of its own. A damaged block is found when it does not decode to its length, when its codec's own check fails (zlib's Adler-32, the xz CRC), or when its stored size stops before its stream ends |
 | Refuses | Big-endian images (SquashFS 3 and older, magic `sqsh`), with `UnsupportedFeatureError`; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-squashfs/spec.md` |
 
@@ -138,8 +138,11 @@ offsets the image declares:
 - Every size is checked against what the format allows before it is used: a superblock
   that declares more bytes than the source holds, a metadata block longer than 8 KiB, a
   data block longer than the block size or shorter than the file needs, a fragment past
-  the fragment table, and a symlink target longer than the kernel allows (65535 bytes)
-  are `CorruptionError`. A cut image names the structure the cut falls in.
+  the fragment table, a symlink target longer than the kernel allows (65535 bytes), and
+  an entry name longer than the kernel and unsquashfs allow (256 bytes) are
+  `CorruptionError`. A compressed block is decoded to its stream's end, so a stored size
+  that cuts the stream, even only its check value, is `CorruptionError`: the image holds
+  the whole stored block, so the image is not cut. A cut image names the structure the cut falls in.
 - A name with a `/`, and an entry whose inode has another type, are `CorruptionError`.
 - The directory walk is a loop, not a recursion, and refuses a directory reached twice,
   so a directory listed inside itself does not walk forever.

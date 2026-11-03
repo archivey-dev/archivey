@@ -1468,7 +1468,12 @@ does not count again. Reads and forward seeks, a seek to the end included, reach
 decoder in steps of at most 1 MiB, so the decode stops within a step of the limit. A
 decoder error after a read already returned bytes in the same call is held for the
 next read, so the prefix of a cut stream is kept; a seek, even a refused one, drops
-it. `max_ratio=None` turns it off.
+it. `max_ratio=None` turns it off. An `extract_all` call's own decodes SHALL be held to the
+ratio fields that call applies instead, so `ExtractionLimits.UNLIMITED` or a deprecated
+ratio field passed in `limits=` lifts or tightens it for that call alone, as for a
+ZIP. A read after the call, or from the caller's own code the call runs (`filter`,
+a `members=` predicate, `on_progress`), SHALL still be held to the reader's limits,
+though the call decoded past them.
 
 #### Scenario: compressed container decode matrix
 
@@ -1478,6 +1483,9 @@ it. `max_ratio=None` turns it off.
 | The same archive from a pipe | Refused once 256 MiB are decoded (the live floor) |
 | The same archive with `DecoderLimits(max_ratio=None)` | Lists, as before |
 | A `.tar.gz` under the ratio | Lists, reads and extracts unchanged |
+| A `.tar.gz` of 24 MiB of zeros, `extract_all(limits=ExtractionLimits.UNLIMITED)` | Extracts, from a seekable source and in streaming mode |
+| The same, with a deprecated `ExtractionLimits(max_ratio=1e9)` in `limits=`, then `read()` | Extracts; the read raises `ResourceLimitError` |
+| The same `.tar.gz` or a ZIP of it under `UNLIMITED`, with an `on_progress`, `filter` or `members=` callback that calls `read()` | The callback's read raises `ResourceLimitError` |
 
 ### Requirement: Enforce Maximum Entry Count
 

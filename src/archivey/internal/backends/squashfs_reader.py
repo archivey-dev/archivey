@@ -73,6 +73,8 @@ _NO_FRAGMENT = 0xFFFFFFFF
 _NO_TABLE = 0xFFFFFFFFFFFFFFFF
 # The kernel refuses a symlink target longer than this (``squashfs_read_inode``).
 _SYMLINK_MAX = 65535
+# The kernel (``SQUASHFS_NAME_LEN``) and unsquashfs refuse a longer entry name.
+_NAME_MAX = 256
 
 # When the superblock's compressor-options flag is set, a metadata block of options
 # follows the superblock. It is not read: zlib, xz, LZMA Alone and Zstandard streams
@@ -315,6 +317,15 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 try:
                     with self._context.decompress(raw, method, size=size) as decoded:
                         data = decoded.read(limit + 1)
+                        # A codec reports a cut stream or a bad check value on the
+                        # read after its data ends, so read on until it ends. The
+                        # block itself was read whole, so a stream that stops early
+                        # means a wrong stored size: a TruncatedError becomes a
+                        # CorruptionError below.
+                        while len(data) <= limit and (
+                            more := decoded.read(limit + 1 - len(data))
+                        ):
+                            data += more
                 except CorruptionError as exc:
                     raise CorruptionError(f"the block at {start}: {exc}") from None
                 if len(data) > limit:
@@ -546,6 +557,10 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 inode_offset, _, kind, name_size = _DIR_ENTRY.unpack(
                     cursor.read(_DIR_ENTRY.size)
                 )
+                if name_size + 1 > _NAME_MAX:
+                    raise CorruptionError(
+                        f"a directory entry name of {name_size + 1} bytes"
+                    )
                 name = cursor.read(name_size + 1)
                 if b"/" in name or name in (b".", b".."):
                     raise CorruptionError(f"a directory entry is named {_shown(name)}")

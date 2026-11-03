@@ -1111,8 +1111,8 @@ misread the archive.
   (`OTHER`) read. `member.is_sparse` is true for a file stored with holes. Extended
   attributes are not read.
 - Big-endian images (SquashFS 3 and older) raise `UnsupportedFeatureError`.
-- SquashFS stores no checksums, so a damaged block is found only when it does not decode to
-  its length.
+- SquashFS stores no checksums of its own. A damaged block is found when it does not decode
+  to its length, or when its compressor's own check fails (zlib's Adler-32, the xz CRC).
 
 ## CPIO
 
