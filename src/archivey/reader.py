@@ -698,15 +698,21 @@ class ForwardArchiveReader(ABC):
         streams of those members opened later.
 
         Damage to the archive's structure that stops the listing ends the call without
-        raising: :meth:`members_report` returns it as ``error``. Archive-level findings,
+        raising: :meth:`members_report` returns it as ``error``. A failed checksum over
+        the whole compressed archive (the gzip trailer of a ``.tar.gz``) ends it the
+        same way, and every listed file is returned with that error. The checksum may
+        cover only some of the files (a concatenated ``.tar.gz``, a ``.tar.zst`` of
+        several frames) and nothing says which, so all are returned rather than pass
+        a damaged one. Archive-level findings,
         such as a missing end-of-archive marker, are in ``reader.diagnostics``. To check
         everything about an archive, call ``verify_all()``, then look at
         ``members_report()`` and ``diagnostics``.
 
         On a random-access reader a second call reads again the members that failed
-        (asking the password input again) and the members whose ``verifiable`` is
-        ``NONE``; the others are skipped. It does not touch streams the caller holds.
-        On a streaming reader it is the one pass.
+        (asking the password input again), the members whose ``verifiable`` is
+        ``NONE``, and a ``.zst``, ``.lz4`` or ``.xz`` member read only past a jump whose
+        frames may still prove ``CHECKSUM``; the others are skipped. It does not touch
+        streams the caller holds. On a streaming reader it is the one pass.
 
         Experimental: any release, a patch included, may change or remove this method,
         its arguments or what it returns.

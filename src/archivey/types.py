@@ -1287,6 +1287,14 @@ class ArchiveMember:
     """The most a read can prove, settled when a stream of this member first opens
     its data; ``None`` until then. Read it through ``verifiable``. Not part of
     the public contract."""
+    _ceiling_provisional: bool | None = field(default=None, repr=False, compare=False)
+    """Whether ``verifiable`` waits on a read from the start, for a codec whose check
+    is optional per frame (zstd, LZ4, xz). ``None`` before a stream of the member has
+    opened its data. ``True`` while every frame a read has seen carries a check and no
+    read from the start has ended: such a read may raise ``verifiable`` to
+    ``CHECKSUM``, so ``verify()`` and ``verify_all()`` read the member again.
+    ``False`` for good once a read from the start has ended. Not part of the public
+    contract."""
 
     # Mutable members are intentionally unhashable. ``@dataclass`` (``eq=True``, not
     # frozen) sets ``__hash__ = None``, which is what makes ``isinstance(m, Hashable)``
