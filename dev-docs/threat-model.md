@@ -776,9 +776,9 @@ no trusted size: a compressed container counts what its decoder pulls, and a pla
 TAR counts what its source has taken from the pipe (`ArchiveSource.bytes_pulled`), so the
 live ratio holds there too. A seekable stream whose size archivey does not know (no
 `size`, not a file or a `BytesIO`) counts the furthest offset its source has reached
-(`ArchiveSource.bytes_reached`), which never passes the archive's size. A cross-device copy counts toward
-`max_extracted_bytes` only: it depends on the destination, not the archive.
-From a source of unknown size the archive-wide ratio waits for
+(`ArchiveSource.bytes_reached`), which never passes the archive's size. A cross-device
+copy counts toward `max_extracted_bytes` only: it depends on the destination, not the
+archive. From a source of unknown size the archive-wide ratio waits for
 `live_ratio_activation_threshold` (256 MiB), so a bomb read from a pipe writes about that
 much before the ratio refuses it, where it wrote about 5 MiB before that floor existed.
 `max_extracted_bytes` still bounds the total, and a caller can lower the floor.
