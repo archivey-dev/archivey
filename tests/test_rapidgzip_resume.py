@@ -180,9 +180,9 @@ def test_every_resume_point_reproduces_the_stream(tmp_path: Path, codec: Codec) 
         with _stdlib(codec, str(path)) as stdlib:
             stdlib.add_seek_points([point])
             stdlib.seek(point.decompressed_offset + 1000)
-            assert type(stdlib._decoder) is DeflateResumeDecoder
             at = point.decompressed_offset + 1000
             assert stdlib.read(200_000) == payload[at : at + 200_000]
+            assert type(stdlib._decoder) is DeflateResumeDecoder
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")

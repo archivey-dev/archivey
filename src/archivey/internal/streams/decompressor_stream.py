@@ -948,6 +948,9 @@ class DecompressorStream(ReadOnlyIOStream):
         self._buffer = bytearray()
         self._eof = False
         self._pos = 0
+        # A seek's target that no decode has reached yet (see :meth:`seek`). While it
+        # is set, ``tell()`` returns it and ``_pos`` is where the decoder stands.
+        self._seek_target: int | None = None
         self._size: int | None = None
         # The deferred error this stream raised at its end (see _raise_deferred), or the
         # error the decoder raised (see _decoding), until a seek restarts the decoder.
@@ -1276,7 +1279,7 @@ class DecompressorStream(ReadOnlyIOStream):
         return self._find_best_seek_point(target).decompressed_offset
 
     def _build_index_for_seek(self, target: int) -> None:
-        """Build the index now when a forward seek to ``target`` would (see ``_seek``).
+        """Build the index now when a forward seek to ``target`` would (see ``_seek_to``).
 
         A report the build escalates is held, as the seek holds it, and handed to the
         planning caller (``hold_for_planned_seek``), which raises it once its seek has
@@ -1422,8 +1425,8 @@ class DecompressorStream(ReadOnlyIOStream):
         ``LZMAError("Internal error")``. So the error goes into ``_spent``, as a deferred
         one does (:meth:`_raise_deferred`): a bounded read hands back what is already
         buffered, then raises it again, and ``readall`` raises at once, as it does for a
-        deferred error. A seek restarts the decoder from a seek point, also a seek to the
-        position the stream is already at.
+        deferred error. After a seek, also one to the position the stream is already at,
+        the next read restarts the decoder from a seek point (:meth:`_settle`).
 
         Every exception counts, not only a verdict on the data: an ``OSError`` from the
         caller's source raised inside a decode (xz's resume hand-off seeks the source)
@@ -1552,6 +1555,7 @@ class DecompressorStream(ReadOnlyIOStream):
 
     @override
     def readall(self) -> bytes:
+        self._settle()
         if self._spent is not None:
             # The caller asked for the whole stream, which cannot be had: raise now,
             # even with output buffered, as for a deferred error below.
@@ -1621,6 +1625,7 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _read(self, need: int, n: int) -> bytes:
         """At least ``need`` bytes, or fewer only at the end, and at most ``n``."""
+        self._settle()
         if self._spent is not None and not self._buffer:
             self._raise_spent()
         with self._deferring_raises() as pending:
@@ -1731,8 +1736,8 @@ class DecompressorStream(ReadOnlyIOStream):
         The decoder has reached the end of its input, so a later read would otherwise
         return ``b""`` and a truncated stream would read as a short, clean one. Every
         later read that has no buffered bytes raises it again, and no size is
-        published. A seek restarts the decoder (:meth:`_seek`), which reaches the same
-        error again at the same place.
+        published. A seek restarts the decoder at the read after it (:meth:`_settle`),
+        which reaches the same error again at the same place.
 
         No frame keeps the error in a local as the raise leaves it: the callers ask
         :meth:`_end_error` without keeping the answer, and this frame drops its own,
@@ -1857,14 +1862,83 @@ class DecompressorStream(ReadOnlyIOStream):
 
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        """Move to a position; decode nothing that the next read does not need.
+
+        A seek only records its target when reaching it would decode: a seek back, or
+        forward past the buffered output. The next read (or ``readall``) decodes to it
+        first, so a seek followed by another seek, by ``close()``, or by nothing costs
+        no decode. An error in the bytes between raises from that read. ``tell()``
+        returns the target at once, and ``SEEK_CUR`` counts from it.
+
+        Done at once, because they decode nothing: a seek within the buffered output,
+        to the position the decoder is at, or at or past a size already known.
+        ``SEEK_END`` needs the size, so finding it may decode the rest of the stream
+        here, as before.
+        """
+        if not self._inner.seekable():
+            raise io.UnsupportedOperation("seek")
         with self._deferring_raises() as pending:
-            pos = self._seek(offset, whence)
-            if self._restart_pending:
-                self._restart_at_position()
+            new_pos = resolve_seek(
+                offset, whence, pos=self.tell(), end=self._end_offset
+            )
+            self._seek_target = None
+            if not self._move_without_decode(new_pos):
+                self._seek_target = new_pos
             held = pending()
             if held is not None:
                 raise held
-        return pos
+        return new_pos
+
+    def _move_without_decode(self, new_pos: int) -> bool:
+        """Move to ``new_pos`` if that decodes nothing; return whether it moved.
+
+        A stream whose decoder raised (``_spent``) never moves here: only a restart
+        from a seek point gets it going again, and that waits for the next read.
+        """
+        if self._spent is not None:
+            return False
+        if self._size is not None and new_pos >= self._size:
+            self._buffer.clear()
+            self._eof = True
+            self._pos = new_pos
+            return True
+        if self._pos <= new_pos <= self._pos + len(self._buffer):
+            del self._buffer[: new_pos - self._pos]
+            self._pos = new_pos
+            return True
+        return False
+
+    def _settle(self) -> None:
+        """Decode to the target of the last seek, if no read has reached it yet.
+
+        Raises what the old eager seek raised: a decode error in the gap, or a report
+        the collector escalates. A decode error leaves the stream at the target with
+        the error kept (``_spent``), so the next read raises it again and a seek
+        restarts the decoder. Any other error (the source's own seek failing) keeps
+        the target, and the next read tries again.
+        """
+        target = self._seek_target
+        if target is None:
+            return
+        self._seek_target = None
+        # The error the decoder kept before this settle, if it had raised: only a
+        # different one, kept by a decode below, is a decode error in the gap.
+        kept_before = self._spent
+        with self._deferring_raises() as pending:
+            try:
+                self._seek_to(target)
+                if self._restart_pending:
+                    self._restart_at_position()
+            except BaseException:
+                if self._spent is None or self._spent is kept_before:
+                    self._seek_target = target
+                else:
+                    self._buffer.clear()
+                    self._pos = target
+                raise
+            held = pending()
+            if held is not None:
+                raise held
 
     def _end_offset(self) -> int:
         """Return the decompressed size; finding it may decode the rest of the stream."""
@@ -1875,7 +1949,13 @@ class DecompressorStream(ReadOnlyIOStream):
                 # own): report the same error, not the generic unknown-size one below.
                 self._raise_spent()
             # Building the index didn't reveal the size; scan to EOF to find it
-            # without buffering all remaining data in RAM.
+            # without buffering all remaining data in RAM. From the last seek point
+            # when it lies past the decoder: a seek whose target no read has reached
+            # yet left the decoder where it was, and the bytes before the point are
+            # not needed.
+            last = self._seek_points[-1]
+            if last.decompressed_offset > self._pos + len(self._buffer):
+                self._reset_to_seek_point(last)
             self._pos += len(self._buffer)
             self._buffer.clear()
             while True:
@@ -1898,14 +1978,10 @@ class DecompressorStream(ReadOnlyIOStream):
                 )
         return self._size
 
-    def _seek(self, offset: int, whence: int) -> int:
-        if not self._inner.seekable():
-            raise io.UnsupportedOperation("seek")
-
-        new_pos = resolve_seek(offset, whence, pos=self._pos, end=self._end_offset)
+    def _seek_to(self, new_pos: int) -> int:
+        """Decode to ``new_pos``: the seek :meth:`_settle` runs for :meth:`seek`."""
         if (
-            whence != io.SEEK_END
-            and new_pos > self._pos + len(self._buffer)
+            new_pos > self._pos + len(self._buffer)
             and new_pos > self._seek_points[-1].decompressed_offset
         ):
             self._ensure_index_built()
@@ -1968,7 +2044,8 @@ class DecompressorStream(ReadOnlyIOStream):
 
     @override
     def tell(self, /) -> int:
-        return self._pos
+        target = self._seek_target
+        return self._pos if target is None else target
 
 
 # How far back from the end of the file the xz and lzip index scans look for the end

@@ -363,11 +363,11 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         assert is_seekable(stdlib), "a standard-library fallback must be seekable"
         if points and isinstance(stdlib, DecompressorStream):
             stdlib.add_seek_points(points)
+        # A ``SEEK_SET`` seek of a ``DecompressorStream`` decodes nothing, so a resumed
+        # decode reaches the end of its stream only at a later read, where
+        # ``_restarting`` catches it.
         try:
             stdlib.seek(self._position)
-        except ResumeReachedStreamEnd:
-            stdlib.close()
-            return self._open_stdlib_at()
         except BaseException:
             stdlib.close()
             raise
