@@ -502,7 +502,9 @@ class _FolderChecks(DelegatingStream):
       the one at its end, as a member's own CRC failure raises. That member's own
       verifier probes its end with that same read, before its own CRC verdict, so
       when the member carries a CRC (``tail``: its start and CRC) the hash here
-      checks it too, and ``on_folder_mismatch`` learns whether it matched.
+      checks it too, and ``on_folder_mismatch`` learns whether it matched (``None``:
+      no such CRC). When it did not, the member's own error is the one to raise, so
+      ``on_folder_mismatch`` returns ``None`` and the end read raises nothing here.
     - ``anchors``: ``(start, size, crc)`` of the folder's members that carry a CRC, in
       folder order. The first that matches runs ``on_key_proved``: a wrong key does
       not decrypt to bytes that match a CRC, so the folder's password is confirmed.
@@ -526,7 +528,7 @@ class _FolderChecks(DelegatingStream):
         folder_crc: int | None,
         anchors: tuple[tuple[int, int, int], ...],
         on_folder_match: Callable[[], None],
-        on_folder_mismatch: Callable[[int, bool], SpanningCheckError],
+        on_folder_mismatch: Callable[[int, bool | None], SpanningCheckError | None],
         on_key_proved: Callable[[], None],
         tail: tuple[int, int] | None = None,
     ) -> None:
@@ -577,7 +579,7 @@ class _FolderChecks(DelegatingStream):
                 if self._crc != self._folder_crc:
                     # The last chunk's bytes are returned, not withheld; the folder's
                     # error follows at the reading member's end (``_FolderEndCheck``).
-                    tail_matched = tail is not None and self._tail_crc == tail[1]
+                    tail_matched = None if tail is None else self._tail_crc == tail[1]
                     self.failure = self._on_folder_mismatch(self._crc, tail_matched)
                 else:
                     self.failure = None
@@ -1565,14 +1567,18 @@ class SevenZipReader(BaseArchiveReader):
         return None
 
     def _folder_crc_failed(
-        self, folder_index: int, crc: int, *, tail_matched: bool
-    ) -> SpanningCheckError:
+        self, folder_index: int, crc: int, *, tail_matched: bool | None
+    ) -> SpanningCheckError | None:
         """The error for a folder digest that did not match a whole in-order decode.
 
-        ``tail_matched``: the folder's last member carries a CRC, and the same hash
-        found it matching. The error reaches that member's stream at its end, before
-        its own verifier gives its verdict, so it is raised to ``CHECKSUM`` here: the
-        error is not about it, and ``verify_all()`` leaves it out.
+        ``tail_matched`` is ``None`` when the folder's last member has no CRC of its
+        own. ``True``: it has one, and the same hash found it matching. The error
+        reaches that member's stream at its end, before its own verifier gives its
+        verdict, so it is raised to ``CHECKSUM`` here: the error is not about it, and
+        ``verify_all()`` leaves it out. ``False``: that member is damaged and its own
+        verifier says so, which is the more precise error. Then nothing is returned
+        for its read to raise; the error is kept for ``verify_all()`` instead
+        (``_note_unraised_spanning``), so the members it covers are still returned.
 
         The members with no CRC of their own are the ones only this digest proves,
         so the error covers them (``SpanningCheckError.covers``) and ``verify_all()``
@@ -1588,12 +1594,18 @@ class SevenZipReader(BaseArchiveReader):
         if len(covers) > 5:
             names += f" and {len(covers) - 5} more"
         expected = self._folder_crc_only[folder_index]
-        return SpanningCheckError(
+        error = SpanningCheckError(
             f"7z folder {folder_index} fails its CRC check: the decoded data gives "
             f"CRC32 {crc:08x}, and the folder records {expected:08x}. The CRC is the "
             f"only check of {names}, so the data of each may be damaged.",
             covers=covers,
         )
+        if tail_matched is False:
+            error.archive_name = self._archive_name
+            error.member_name = None if last is None else last.name
+            self._note_unraised_spanning(error)
+            return None
+        return error
 
     def _password_for_folder(
         self, folder_index: int, member: ArchiveMember | None

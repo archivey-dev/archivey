@@ -746,6 +746,9 @@ class BaseArchiveReader(ArchiveReader):
         # check that spans members (``SpanningCheckError``), and of those it covers.
         # They may sit at their ceiling, so the next call reads them again by this.
         self._spanning_retry: set[int] = set()
+        # Failed spanning checks no read raised, because a member's own error took
+        # priority (``_note_unraised_spanning``); ``verify_all()`` takes them.
+        self._unraised_spanning: list[SpanningCheckError] = []
         # Name to the member listed under it, or to a list of them in listing order
         # once a second member has that name: a list here always holds two or more. A
         # list per name would be one more object per member for the collector to walk.
@@ -4225,6 +4228,7 @@ class BaseArchiveReader(ArchiveReader):
         failures: list[tuple[ArchiveMember, ArchiveyError]] = []
         spanning: list[SpanningCheckError] = []
         retry_next: set[int] = set()
+        self._unraised_spanning.clear()
 
         # A member at its ceiling has nothing left to prove; one whose ceiling is NONE
         # (a key nothing can prove) is read again, so its length checks run each time.
@@ -4271,10 +4275,22 @@ class BaseArchiveReader(ArchiveReader):
                         spanning.append(e)
                         retry_next.add(id(m))
                         retry_next.update(id(c) for c in e.covers)
+        for error in self._unraised_spanning:
+            spanning.append(error)
+            retry_next.update(id(c) for c in error.covers)
+        self._unraised_spanning.clear()
         self._spanning_retry = retry_next
         if spanning:
             failures = self._with_spanning_failures(failures, spanning)
         return tuple(failures)
+
+    def _note_unraised_spanning(self, error: SpanningCheckError) -> None:
+        """Keep a failed spanning check that no read raises, for ``verify_all()``.
+
+        A backend calls this when the read that reached the check raised the reading
+        member's own, more precise error instead.
+        """
+        self._unraised_spanning.append(error)
 
     def _with_spanning_failures(
         self,

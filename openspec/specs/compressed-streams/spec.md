@@ -911,8 +911,9 @@ The levels mean:
   count as that file's digest when it has none of its own. A 7z folder CRC over several
   files that does not match SHALL raise `CorruptionError`, naming the folder, from the
   read at the end of the file that ends the folder, after that file's own CRC, if it
-  has one, has run; `verify_all()` SHALL return every file of the folder with no CRC
-  of its own as a failure, and no level SHALL fall. A member stream's
+  has one, has run; when that own CRC fails, its error SHALL be the one the read
+  raises. `verify_all()` SHALL return every file of the folder with no CRC of its own
+  as a failure, and no level SHALL fall. A member stream's
   `verified` and `verifiable` SHALL equal those of the reader's own member with the
   same identity, at every moment, whether or not the stream has opened its data; a
   stream opened from a `replace()` copy mirrors and raises the reader's member, not the
