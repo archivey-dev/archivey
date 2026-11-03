@@ -2,10 +2,10 @@
 # Every fast gate CI runs, in one command.
 #
 # This is the "will CI's non-test jobs pass?" answer: it mirrors the `lint` job in
-# .github/workflows/ci.yml and every job in docs-checks.yml, except the docs job's
-# pytest step (tests/test_github_templates.py), which scripts/test.sh runs. It does not
-# run the test suite — that is scripts/test.sh, which takes minutes rather than seconds,
-# and the two get run at different cadences.
+# .github/workflows/ci.yml (with the script tests, scripts/tests/, a few seconds) and
+# every job in docs-checks.yml. It does not run the library's test suite — that is
+# scripts/test.sh, which takes minutes rather than seconds, and the two get run at
+# different cadences.
 #
 # It exists because the gate is a dozen commands and people were running one of them.
 # Pushing after `ruff` alone, with `pyrefly` or `ty` red, is the most common
@@ -69,6 +69,7 @@ run "ruff check"          uv run --no-sync ruff check "${PATHS[@]}"
 run "ruff format --check" uv run --no-sync ruff format --check "${PATHS[@]}"
 run "pyrefly"             uv run --no-sync pyrefly check
 run "ty"                  uv run --no-sync ty check
+run "script tests"        uv run --no-sync pytest scripts/tests -q -n auto --no-cov
 
 # --- API surface (tests/test_api_surface.py in CI) ------------------------------------
 if [ "$FIX" -eq 1 ]; then
