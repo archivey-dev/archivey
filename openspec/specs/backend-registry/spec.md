@@ -462,6 +462,33 @@ which built-in format detection reports (see `format-detection` for plugin forma
 - **THEN** the open raises `UnsupportedFeatureError` that names `StreamFormat.GZIP`
 - **AND** `detect_format` on the same file still reports `ArchiveFormat.TAR_GZ`
 
+### Requirement: The format policy reaches nested decodes only through plugins and libraries
+
+`FormatPolicy.only` and `FormatPolicy.exclude` SHALL check only the format of the file
+the call opens. A stream format there is the compression around that whole file, not
+a codec: a member's compression, or a compression stream a reader decodes inside its
+archive (`ReaderContext.decompress`, `ForwardStream.decompress`), SHALL NOT be refused
+by them. `FormatPolicy.plugins` and `FormatPolicy.exclude_libraries` SHALL hold for
+every decode in the call. Under `plugins=False`, a `ReaderContext.decompress` or
+`ForwardStream.decompress` call for a `PluginStream` SHALL raise
+`UnsupportedFeatureError` that names `plugins=False`, before the codec's code runs. A
+package `exclude_libraries` names SHALL read as not installed for a nested decode as
+for the outer file (`packaging-and-extras`, *An excluded optional library reads as not
+installed*).
+
+#### Scenario: A plugin codec inside an archive is refused under plugins=False
+
+- **WHEN** a caller opens a ZIP with `FormatPolicy(plugins=False, replace={ContainerFormat.ZIP: P})`
+  and `P` returns a member through `ReaderContext.decompress(data, ToyStream.TOY)`
+- **THEN** reading the member raises `UnsupportedFeatureError` that names `plugins=False`
+- **AND** the TOY codec's decoder is not created
+
+#### Scenario: An excluded stream format still decodes inside an archive
+
+- **WHEN** a caller reads an xz-compressed ZIP member with
+  `FormatPolicy(exclude={StreamFormat.XZ})`
+- **THEN** the member decodes
+
 ### Requirement: A replacement plugin reads a built-in container
 
 A `FormatPolicy(replace={container: plugin})` SHALL open that built-in container with
