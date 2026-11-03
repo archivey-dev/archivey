@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import functools
 import io
 import warnings
 from abc import ABC, abstractmethod
@@ -55,39 +54,46 @@ MemberSelector = MemberSelectorArg
 _T_co = TypeVar("_T_co", covariant=True)
 
 
-@functools.cache
 def _with_implementation(cls: type, implementation: type) -> type:
     """``cls`` on top of archivey's own implementation, as a 0.2 subclass of the then
-    concrete class was: what ``cls`` defines wins, and the rest is archivey's."""
-    return type(cls)(
-        cls.__name__,
-        (cls, implementation),
-        {"__module__": cls.__module__, "__qualname__": cls.__qualname__},
-    )
+    concrete class was: what ``cls`` defines wins, and the rest is archivey's. Kept
+    on ``cls`` itself, so it goes when ``cls`` goes."""
+    built = cls.__dict__.get("_archivey_with_implementation")
+    if built is None:
+        built = type(cls)(
+            cls.__name__,
+            (cls, implementation),
+            {"__module__": cls.__module__, "__qualname__": cls.__qualname__},
+        )
+        type.__setattr__(cls, "_archivey_with_implementation", built)
+    return built
 
 
 def _class_to_build(cls: type, base: type, implementation: type, get: str) -> type:
-    """``cls``, or, for a deprecated construction of ``base`` or of a subclass that
-    leaves an abstract method unimplemented, archivey's own implementation after the
+    """The class to build for ``cls``, which is ``base`` itself or a subclass with an
+    abstract method left: archivey's own implementation, after a deprecation
     warning. Until 0.4.0 both still work, as in 0.2 (DR-12a)."""
-    if cls is not base and (
-        not getattr(cls, "__abstractmethods__", None) or issubclass(cls, implementation)
-    ):
-        return cls
     if cls is base:
-        what = f"constructing {base.__name__} directly"
+        message = (
+            f"constructing {base.__name__} directly is deprecated and stops working "
+            f"in archivey 0.4.0; get one from {get}"
+        )
         built = implementation
+    elif issubclass(cls, implementation):
+        # An abstract subclass of archivey's own class is not a 0.2 subclass: it
+        # gets the usual error for an abstract class, or none, as it would without
+        # this.
+        return cls
     else:
-        what = (
-            f"subclassing {base.__name__} without implementing its abstract methods"
-            f" (as {cls.__qualname__} does)"
+        missing = ", ".join(sorted(cls.__dict__.get("__abstractmethods__", ())))
+        message = (
+            f"{cls.__qualname__} subclasses {base.__name__} without implementing "
+            f"{missing}; this is deprecated and stops working in archivey 0.4.0. "
+            f"Implement them, or wrap the {base.__name__} archivey gives you "
+            "instead of subclassing it"
         )
         built = _with_implementation(cls, implementation)
-    warnings.warn(
-        f"{what} is deprecated and stops working in archivey 0.4.0; get one from {get}",
-        DeprecationWarning,
-        stacklevel=3,
-    )
+    warnings.warn(message, DeprecationWarning, stacklevel=3)
     return built
 
 

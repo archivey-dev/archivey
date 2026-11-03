@@ -6,9 +6,11 @@ the readers hand out."""
 
 from __future__ import annotations
 
+import gc
 import gzip
 import io
 import warnings
+import weakref
 import zipfile
 
 import pytest
@@ -68,7 +70,10 @@ def test_an_archive_stream_subclass_from_0_2_warns_and_still_reads() -> None:
     class Tagged(ArchiveStream):
         tag = "mine"
 
-    with pytest.warns(DeprecationWarning, match=r"subclassing ArchiveStream.*0\.4\.0"):
+    with pytest.warns(
+        DeprecationWarning,
+        match=r"Tagged subclasses ArchiveStream without implementing .*read.*0\.4\.0",
+    ):
         stream = Tagged(lambda: io.BytesIO(b"payload"), translate=lambda _e: None)
     assert isinstance(stream, Tagged)
     assert isinstance(stream, ArchiveStreamImpl)
@@ -88,7 +93,10 @@ def test_a_member_pass_subclass_from_0_2_warns_and_still_iterates() -> None:
         yield 1
         yield 2
 
-    with pytest.warns(DeprecationWarning, match=r"subclassing MemberPass.*Counted"):
+    with pytest.warns(
+        DeprecationWarning,
+        match=r"Counted subclasses MemberPass without implementing close;",
+    ):
         members = Counted(items())
     assert isinstance(members, Counted)
     assert list(members) == [10, 20]
@@ -108,3 +116,34 @@ def test_a_complete_subclass_builds_as_written_without_warning() -> None:
         members = Done()
     assert type(members) is Done
     assert list(members) == []
+
+
+def test_a_slotted_member_pass_subclass_from_0_2_warns_and_still_iterates() -> None:
+    """0.2's ``MemberPass`` had slots, so a subclass could add its own. With slots on
+    archivey's own pass too, the two could not be combined: ``TypeError``, with no
+    deprecation warning."""
+
+    class Slotted(MemberPass[int]):
+        __slots__ = ("seen",)
+
+    def items():
+        yield 1
+
+    with pytest.warns(DeprecationWarning, match="Slotted subclasses MemberPass"):
+        members = Slotted(items())
+    members.seen = 0
+    assert list(members) == [1]
+
+
+def test_the_built_class_goes_with_the_subclass() -> None:
+    def make() -> weakref.ref[type]:
+        class Local(MemberPass[int]):
+            pass
+
+        with pytest.warns(DeprecationWarning):
+            Local(iter(()))  # type: ignore[arg-type]
+        return weakref.ref(Local)
+
+    refs = [make() for _ in range(3)]
+    gc.collect()
+    assert all(ref() is None for ref in refs)
