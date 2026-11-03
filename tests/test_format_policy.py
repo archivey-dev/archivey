@@ -407,13 +407,16 @@ def test_an_off_plugin_runs_no_probe_inside_a_compression_stream(
 ) -> None:
     calls: list[bytes] = []
     library = OptionalLibrary.PYPPMD
-    fmt = _probe_only_sequential(calls, requires=(library.value,))
-    if kwargs.get("exclude_libraries") == "lib":
+    # Only the excluded-package case needs a requirement; the others run on every
+    # config.
+    excluding = kwargs.get("exclude_libraries") == "lib"
+    fmt = _probe_only_sequential(calls, requires=(library.value,) if excluding else ())
+    if excluding:
         kwargs = {"exclude_libraries": {library}}
     data = gzip.compress(build_toys(_TOYS_ENTRIES))
     probing = ArchiveyConfig(always_probe_content=True)
     if detect_format(io.BytesIO(data), config=probing).format.container is C.RAW_STREAM:
-        pytest.skip(f"{library.value} is not installed, so the probe never runs")
+        pytest.skip(f"{library.value}, which the plugin requires, is not installed")
     assert calls
     calls.clear()
     config = ArchiveyConfig(

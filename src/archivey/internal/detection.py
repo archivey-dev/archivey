@@ -40,7 +40,10 @@ also stops the SFX scan.
 The steps run strongest-signal-first: near magic → SFX scan → **far magic** → trailer
 magic → a plugin's near magic → self-checking header → content probes → leading-bytes
 scan → extension. A plugin's magic waits for every built-in signature, so registering a
-plugin never changes the answer for a file a built-in format reads. The
+plugin never changes the answer for a file a built-in format reads. The cost is that a
+plugin format is decided only after the far window (about 32 KiB, which the receipt's
+``far_bytes`` reports) and the trailer are read, where a built-in near magic stops at the
+4 KiB window. The
 signals ahead of the probes are there for the same reason — a probe is the weakest
 evidence archivey has, and one asked to judge arbitrary bytes will sometimes say yes:
 
@@ -80,7 +83,6 @@ evidence archivey has, and one asked to judge arbitrary bytes will sometimes say
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import replace
@@ -481,9 +483,10 @@ def _probe_inner_container(
     ``MemoryError``), records ``inner_tar`` as ``CAPABILITY_UNAVAILABLE``: the answer is
     "can't tell", not "none". The tier keeps its name, ``inner_tar``, which the detection
     receipt reports.
-    Only one reason is recorded, in this order: a budget that turns the tier off
-    (``NOT_ENABLED_BY_POLICY``), an absent backend (``CAPABILITY_UNAVAILABLE``), a budget
-    that cannot cover the probe (``BUDGET_EXHAUSTED``).
+    Of the reasons the probe could not answer, only one is recorded, in this order: a
+    budget that turns the tier off (``NOT_ENABLED_BY_POLICY``), an absent backend
+    (``CAPABILITY_UNAVAILABLE``), a budget that cannot cover the probe
+    (``BUDGET_EXHAUSTED``).
 
     ``formats`` leaves out what it leaves out of an uncompressed source: a plugin
     format it turns off, judged as the pair ``(container, stream_format)``, and a probe
@@ -491,7 +494,9 @@ def _probe_inner_container(
     does not run and its magic cannot claim the decoded bytes. When the probe runs
     with an off plugin left out, ``inner_tar`` is also recorded as
     ``NOT_ENABLED_BY_POLICY``, as the uncompressed tiers record theirs; a probe left
-    out for an excluded package is not, as there.
+    out for an excluded package is not, as there. That record is separate from the one
+    reason above and can sit next to it: the policy left the plugin out, and the
+    budget or the backend also cut the probe short.
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
     from archivey.internal.config import (
@@ -503,6 +508,7 @@ def _probe_inner_container(
         codec_for_stream_format,
         is_codec_available,
         open_codec_stream,
+        single_file_codec,
     )
 
     try:
@@ -619,16 +625,18 @@ def _probe_inner_container(
         # (``format_adapter.prefix_probe``): one plugin must not change how input
         # fails to be detected. A built-in codec's unknown error is archivey's bug
         # and propagates. A read of the stream still raises it.
-        if not isinstance(stream_format, PluginStream):
+        from archivey.internal.codec_adapter import PluginCodec
+
+        plugin_codec = single_file_codec(stream_format)
+        if not isinstance(plugin_codec, PluginCodec):
             raise
         logger.log(
-            logging.DEBUG if stream_format in _WARNED_CODECS else logging.WARNING,
+            plugin_codec.detection_error_level(),
             "plugin codec %s raised while detection decoded its start; taken as no "
             "inner container",
             stream_format.name,
             exc_info=True,
         )
-        _WARNED_CODECS.add(stream_format)
     found = (
         next(
             (
@@ -670,11 +678,6 @@ def _probe_inner_container(
         elif found is None and source.hit_limit:
             workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
     return found
-
-
-# The plugin codecs whose decoder raised in :func:`_probe_inner_container`: WARNING the
-# first time, so the plugin's author sees the bug; DEBUG after that.
-_WARNED_CODECS: set[PluginStream] = set()
 
 
 def _record_tier_limit(
@@ -1556,7 +1559,8 @@ def _detect_format_body(
 
         # 4a. A plugin's exact magic in the default window, now that no built-in
         # signature matched (step 1 says why it waits). Before the header checks and
-        # the probes, which are weaker evidence than an exact magic.
+        # the probes, which are weaker evidence than an exact magic. So a plugin format
+        # is decided only after the far window (about 32 KiB) and the trailer are read.
         magic_fmt = _match_magic(data, plugin_near)
         if magic_fmt is not None:
             return near_magic_hit(magic_fmt)
