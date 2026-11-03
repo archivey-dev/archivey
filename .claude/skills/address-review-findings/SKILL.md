@@ -360,11 +360,12 @@ Once the round is done, the PR should record what happened to every finding.
   An open thread also blocks the merge. The `main-rules` ruleset requires conversation
   resolution (maintainer, 2026-10-27), so every unresolved review thread blocks, whatever
   its tier and whoever wrote it: a 💡, 📚 or 🎉 annotation, a disproven finding, and an
-  outdated thread too. Each one gets its reply. Resolve every thread you fixed, plus the
-  annotations, with the GitHub connector tool, not raw `gh api`. A disproven, not
-  reproduced or won't-fix finding stays open for the maintainer to read and resolve
-  (maintainer, 2026-11-03: a false finding can hint at another problem); name each one
-  in your summary. If a merge is refused with every thread resolved, check that the
+  outdated thread too. Each one gets its reply. With the GitHub connector tool, not raw
+  `gh api`, resolve what you fixed, the annotations, a split-off once its PR or issue is
+  linked, and anything the maintainer settled on the thread. Everything else, a
+  disproven, not reproduced or won't-fix finding included, stays open for the maintainer
+  to read and resolve (maintainer, 2026-11-03: a false finding can hint at another
+  problem); name each one in your summary. If a merge is refused with every thread resolved, check that the
   ruleset still has that requirement.
 - **Say what you did not do, and why.** Split-off and disproven findings get a line each.
 - **Attribute every settled decision to the maintainer** (§6). A bullet decided by a human
