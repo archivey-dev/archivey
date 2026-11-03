@@ -659,8 +659,8 @@ class ForwardArchiveReader(ABC):
         On a random-access reader a second call reads again the members that failed
         (asking the password input again), the members whose ``verifiable`` is
         ``NONE``, and a ``.zst``, ``.lz4`` or ``.xz`` member read only past a jump whose
-        frames may still prove ``CHECKSUM``; the others are skipped. It does not touch streams the caller holds.
-        On a streaming reader it is the one pass.
+        frames may still prove ``CHECKSUM``; the others are skipped. It does not touch
+        streams the caller holds. On a streaming reader it is the one pass.
 
         Experimental: any release, a patch included, may change or remove this method,
         its arguments or what it returns.
