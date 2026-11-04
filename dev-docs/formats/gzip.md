@@ -313,7 +313,10 @@ which issues no read (`_settle_end`). `_GzipTruncationCheckStream` does the rest
    payload, so the rule does not lean on it being unlikely. Not excluded: a copy more than
    56 bytes after the end of the real trailer. `rapidgzip` would have to read past that
    many bytes that are not a further member without an error, and `rapidgzip` 0.16 raises
-   on ten or more, which hands the read to the standard library engine. A real trailer
+   on ten or more, which hands the read to the standard library engine. The one shape it
+   reads past without an error, a gzip header whose extra field runs past the end of the
+   file, is caught before the trailer search: a gzip header in the last 64 KiB that runs
+   past the end hands the read to the standard library engine. A real trailer
    turned down, when its CRC-32 occurs a second time by chance (about one file in 2²⁵) or
    is zero with padding after it, goes to the standard library engine too, which finds
    nothing wrong. Only when a seek short of the end skipped output and a read then met the

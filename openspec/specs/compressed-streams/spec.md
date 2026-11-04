@@ -662,7 +662,9 @@ trailer, overlapping it or reaching back into the compressed data, leaves the re
 as a second occurrence, so it does not stand in for the trailer. Not excluded: a copy more
 than 56 bytes after the end of the real trailer, which needs rapidgzip to read past that
 many bytes that are not a further member without an error; rapidgzip 0.16 raises on ten or
-more. In a file of several members the CRC-32 of the whole output is not the last
+more, except where they start a gzip header whose extra field runs past the end of the file,
+so a gzip header in the file's last 64 KiB that runs past its end SHALL hand the read to the
+stdlib engine before the trailer is looked for. In a file of several members the CRC-32 of the whole output is not the last
 member's, so it finds no trailer there. A further member that zlib confirms says only that
 the file has several members, not that the last one is whole: rapidgzip ends a last member
 cut right after its header with no error, at the end of the file. So the accelerator SHALL
