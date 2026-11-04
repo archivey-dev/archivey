@@ -1,18 +1,20 @@
 # Summary — pre-release bug sweep for 0.3.0
 
-Run 2026-11-04 against `main` @ `f3d1b616`, per [`brief.md`](brief.md). The tests
-land in this pull request. The library code does not change.
+Run 2026-11-04 against `main` @ `f3d1b616`, per [`brief.md`](brief.md). This pull
+request (#1263) holds the record and two coverage tests. The fixes and their
+tests landed in their own pull requests: #1265, #1266, #1267.
 
 ## Headline
 
-Two crafted archives return another member's bytes. Both are pinned with
-`xfail(strict=True)` tests that assert the stored bytes. Two doc sentences do
+Two crafted archives return another member's bytes. Each fix PR carries the
+test that asserts the stored bytes (written here first as a strict xfail). Two doc sentences do
 not match the code. One Windows path shape was not reproduced on this Linux
 host. Diagnostic codes match the `DiagnosticCodeStr` list, and every code is
 referenced from `src/`.
 
 Baseline, `[all]` only: `./scripts/check.sh --fix` passed.
-`./scripts/test.sh` reported 19872 passed, 405 skipped, 2 xfailed.
+`./scripts/test.sh` reported 19872 passed, 405 skipped, 2 xfailed (the sweep
+run's baseline, with F1's and F2's tests still xfail).
 `./scripts/test.sh --all-configs` was not run. The diff does not reach an
 optional library.
 
@@ -20,10 +22,10 @@ optional library.
 
 | # | Severity | Where | What a caller sees | Status |
 |---|---|---|---|---|
-| F1 | high | `squashfs_reader.py` `fragment_tail` | Two fragment-table entries name one block and disagree on compression. The second read returns the first entry's bytes, or raises `CorruptionError` if the cached block is shorter | Open. `test_two_fragment_entries_at_one_offset_keep_their_own_bytes` |
-| F2 | high | `cpio_reader.py` newc/crc link group | Two headers share a device and inode and both store data. A read of the later name returns the earlier bytes. 7-Zip 23.01 extracts both payloads | Open. `test_each_newc_name_in_one_inode_reads_the_bytes_stored_with_it` |
-| F3 | low | `docs/formats.md` zstd detection | The page says detection reserves a 2 GiB window with no cap. The probe caps the window at 128 MiB | Open. Existing `test_tar_zst_probe_caps_the_window` pins the code |
-| F4 | low | `docs/formats.md` device files | The shared paragraph omits SquashFS. The format lists a device, FIFO, or socket as `OTHER`, and extraction blocks it | Open. Existing `test_lists_and_reads_every_member` pins the types |
+| F1 | high | `squashfs_reader.py` `fragment_tail` | Two fragment-table entries name one block and disagree on compression. The second read returns the first entry's bytes, or raises `CorruptionError` if the cached block is shorter | Fixed in #1265. `test_two_fragment_entries_at_one_offset_keep_their_own_bytes` |
+| F2 | high | `cpio_reader.py` newc/crc link group | Two headers share a device and inode and both store data. A read of the later name returns the earlier bytes. 7-Zip 23.01 extracts both payloads | Fixed in #1266. `test_each_newc_name_in_one_inode_reads_the_bytes_stored_with_it` |
+| F3 | low | `docs/formats.md` zstd detection | The page says detection reserves a 2 GiB window with no cap. The probe caps the window at 128 MiB | Fixed in #1267. Existing `test_tar_zst_probe_caps_the_window` pins the code |
+| F4 | low | `docs/formats.md` device files | The shared paragraph omits SquashFS. The format lists a device, FIFO, or socket as `OTHER`, and extraction blocks it | Fixed in #1267. Existing `test_lists_and_reads_every_member` pins the types |
 
 ### F1. SquashFS fragment cache returns the wrong bytes
 
@@ -46,7 +48,7 @@ points every file in a block at one table entry, so this needs a crafted
 image. The image in the test is built in the test.
 
 **Test:** `test_two_fragment_entries_at_one_offset_keep_their_own_bytes` in
-`tests/test_squashfs.py`. It reads `raw` first, then `dec`, and expects the
+`tests/test_squashfs.py`, added by #1265 with the fix. It reads `raw` first, then `dec`, and expects the
 zlib frame and `b"HELLO"`.
 
 **Confidence:** high. Reproduced on this host.
@@ -69,12 +71,13 @@ uses the same branch (`_defers_link_data`).
 
 The test asks for each header's own bytes. A fix that raises
 `CorruptionError`, or that keeps only the last payload, still fails that
-test. Which of those is the right fix is [`QUESTIONS.md`](QUESTIONS.md) Q1.
+test. [`QUESTIONS.md`](QUESTIONS.md) Q1 asked which fix to ship; the standing
+rule to match the format's official tool answers it (#1266).
 
 **Test:** `test_each_newc_name_in_one_inode_reads_the_bytes_stored_with_it` in
-`tests/test_cpio.py`.
+`tests/test_cpio.py`, added by #1266 with the fix.
 
-**Confidence:** high for the wrong bytes. The choice of fix is Q1.
+**Confidence:** high.
 
 ### F3. User docs say zstd detection reserves a 2 GiB window
 
@@ -112,12 +115,13 @@ three types.
 
 ## Coverage tests
 
-These passed. Each guards a behaviour that was checked and had no test.
+These passed. Each guards a behaviour that was checked and had no test, and
+each fails against the mutation named here.
 
 | Test | What it guards |
 |---|---|
-| `test_a_symlink_stays_unlocked_when_the_trailer_raises_the_files` | A symlink in a `.tar.gz` stays at `UNLOCKED` after the gzip trailer raises every file to `CHECKSUM` |
-| `test_a_gzip_fname_with_parent_segments_is_not_the_extract_path` | A gzip FNAME of `../outside.txt` stays in `extra`. Extraction writes the archive's own name inside the destination |
+| `test_a_symlink_stays_unlocked_when_the_trailer_raises_the_files` | A symlink in a `.tar.gz` stays at `UNLOCKED` after the gzip trailer raises every file to `CHECKSUM`. Fails when the trailer pass raises every member, not only files (`tar_reader.py`, the loop that calls `raise_member_level`) |
+| `test_a_gzip_fname_with_parent_segments_is_not_the_extract_path` | A gzip FNAME of `../outside.txt` stays in `extra`. Extraction writes the archive's own name inside the destination. Fails when `gzip_codec.py` sets `member.name` from FNAME |
 
 ## What is actually fine
 

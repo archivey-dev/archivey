@@ -1,9 +1,14 @@
 # QUESTIONS — pre-release bug sweep for 0.3.0
 
 Maintainer decisions from [`SUMMARY.md`](SUMMARY.md). One question per item.
-The library code is unchanged. F1 and F2 have xfail tests on this branch.
+F1 and F2 are fixed in #1265 and #1266, with their tests.
 
-## Q1 — Two newc payloads for one inode (F2)
+## Q1 — Two newc payloads for one inode (F2) — answered
+
+**Answer.** Option 1, by the standing rule to match the format's official
+tool: GNU cpio's copy-in defers only the zero-size newc and crc links and
+writes every header that carries data as its own file. 7-Zip agrees. Shipped
+in #1266. Kept below as asked.
 
 **Context.** Two newc headers share a device and inode and both store data.
 Archivey returns the earlier bytes for both names. 7-Zip 23.01 extracts both
@@ -34,6 +39,13 @@ I would raise. The docs keep the short return on purpose, so this stays a
 question and not a test.
 
 ## Q3 — A TRUSTED name made of dots and spaces (suspected)
+
+**Triage (2026-11-04), not a ruling.** Likely not an escape. Win32 path
+normalization resolves `.` and `..` segments before it trims trailing dots
+and spaces, so `foo/.. /x` trims to `foo//x` and lands in `foo`, the same
+merge `a/.../b` gets. [`docs/extracting.md`](../../docs/extracting.md)
+already says `"trusted"` writes such a name as is. Reasoned from Microsoft's
+documented normalization order, not run on Windows.
 
 **Context.** `STRICT` and `STANDARD` refuse a segment of only dots and spaces.
 `TRUSTED` keeps it. `check_universal` refuses a segment that is exactly `..`.
