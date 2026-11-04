@@ -128,6 +128,7 @@ Three things about this path are worth knowing before you debug it:
 | Seeking inside a compressed stream | `streams/decompressor_stream.py`; spec `seekable-decompressor-streams` |
 | Stream wrapping / slicing / locking | `streams/streamtools/`; handbook [`topics/stream-ownership.md`](topics/stream-ownership.md); archived review `review/archive/2026-07-19-stream-layering/` |
 | Extraction safety, path traversal, symlinks | `internal/filters.py` + `internal/extraction.py`; a later member changing where an earlier link resolves: `internal/link_watch.py`; Windows paths past `MAX_PATH`: `internal/long_paths.py`; `dev-docs/threat-model.md` |
+| Verification levels, `verify()`, `verify_all()` | `internal/streams/verification.py` (proofs, level lock) · `streams/archive_stream.py` (level and ceiling) · `reader.py` (`ArchiveStream.verify`) · `base_reader.py` (`verify_all`); handbook [`topics/verification.md`](topics/verification.md) |
 | Decompression-bomb limits | `internal/bomb_tracker.py`; listing-side caps in `internal/listing_limits.py` |
 | Member names, encoding, bidi, cross-platform safety | `internal/naming.py`; ADRs 0013, 0017 |
 | The error hierarchy or a translation | `exceptions.py` + the backend's translator; spec `error-handling` |
