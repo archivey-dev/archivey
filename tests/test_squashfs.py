@@ -264,6 +264,30 @@ def test_fragment_entries_naming_one_block_decode_it_once(
     assert sorted(decoded) == sorted(set(decoded))
 
 
+def test_the_order_planner_keys_a_block_by_start_and_stored_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The planner keys blocks as the cache does. Here the planner sees all five
+    blocks at one start, each with its own stored size: still five blocks to the
+    cache, so the files with a tail come in fragment order. A planner keyed by start
+    alone would see one block and keep listing order."""
+    plan = SquashfsReader._in_fragment_order
+
+    def one_start(self: SquashfsReader, *args: object) -> list[int] | None:
+        real = self._fragment
+        self._fragment = lambda i: (0, real(i)[0])  # type: ignore[method-assign]
+        try:
+            return plan(self, *args)  # type: ignore[arg-type]
+        finally:
+            del self._fragment
+
+    monkeypatch.setattr(SquashfsReader, "_in_fragment_order", one_start)
+    read = _read_all(DATA / "tar-order.sqfs")
+    assert [m.name for m, _ in read][3:-1] == [
+        "f0", "f5", "f1", "f6", "f2", "f7", "f3", "f8", "f4", "f9", "d/f10",
+    ]  # fmt: skip
+
+
 def test_a_duplicate_name_keeps_listing_order(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1056,6 +1080,92 @@ def test_a_symlink_target_longer_than_the_kernel_allows(tmp_path: Path) -> None:
         pytest.raises(CorruptionError, match="70000"),
     ):
         archive.members()
+
+
+def _two_readings_of_one_fragment_block() -> bytes:
+    """Two files whose fragment entries name one block and disagree.
+
+    The first entry says the block is stored. The second says the same bytes
+    are a zlib stream of ``b"HELLO"``.
+    """
+    uncompressed_bit = 1 << 24
+    payload = zlib.compress(b"HELLO")
+
+    def file_inode(number: int, fragment: int, size: int) -> bytes:
+        return _inode_header(2, number) + struct.pack("<IIII", 0, fragment, 0, size)
+
+    def directory_entry(name: bytes, offset: int) -> bytes:
+        return (
+            struct.pack("<III", 0, 0, 2)
+            + struct.pack("<HhHH", offset, 0, 2, len(name) - 1)
+            + name
+        )
+
+    file_raw = file_inode(2, 0, len(payload))
+    file_dec = file_inode(3, 1, len(b"HELLO"))
+    listing = directory_entry(b"raw", 0) + directory_entry(b"dec", len(file_raw))
+    root = _inode_header(1, 1) + struct.pack("<IIHHI", 0, 2, len(listing) + 3, 0, 4)
+    inodes = _metadata(file_raw + file_dec + root)
+    payload_at = 96
+    inode_table = payload_at + len(payload)
+    directory_table = inode_table + len(inodes)
+    directory = _metadata(listing)
+    ids = _metadata(struct.pack("<I", 0))
+    id_block = directory_table + len(directory)
+    id_table = id_block + len(ids)
+    fragments = struct.pack(
+        "<QII", payload_at, len(payload) | uncompressed_bit, 0
+    ) + struct.pack("<QII", payload_at, len(payload), 0)
+    fragment_block = id_table + 8
+    fragment_table = fragment_block + len(_metadata(fragments))
+    body = (
+        payload
+        + inodes
+        + directory
+        + ids
+        + struct.pack("<Q", id_block)
+        + _metadata(fragments)
+        + struct.pack("<Q", fragment_block)
+    )
+    superblock = struct.pack(
+        "<IIIIIHHHHHHQQQQQQQQ",
+        0x73717368,
+        3,
+        0,
+        4096,
+        2,
+        1,
+        12,
+        0,
+        1,
+        4,
+        0,
+        len(file_raw) + len(file_dec),
+        96 + len(body),
+        id_table,
+        0xFFFFFFFFFFFFFFFF,
+        inode_table,
+        directory_table,
+        fragment_table,
+        0xFFFFFFFFFFFFFFFF,
+    )
+    return superblock + body
+
+
+def test_two_fragment_entries_at_one_offset_keep_their_own_bytes(
+    tmp_path: Path,
+) -> None:
+    """Each file reads the bytes its own fragment entry describes.
+
+    The first entry is stored, so ``raw`` is the zlib frame. The second entry
+    compresses that frame, so ``dec`` is ``b"HELLO"``. The cache keys a block by
+    its start and stored size, so the two readings stay apart.
+    """
+    payload = zlib.compress(b"HELLO")
+    path = _image(tmp_path, _two_readings_of_one_fragment_block())
+    with open_archive(path) as archive:
+        assert archive.read("raw") == payload
+        assert archive.read("dec") == b"HELLO"
 
 
 # ── The package ────────────────────────────────────────────────────────────────────

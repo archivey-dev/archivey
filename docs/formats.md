@@ -232,8 +232,8 @@ Inside a ZIP or 7z member, bytes after the compressed stream are corruption, not
 
 ### Device files, FIFOs and sockets
 
-A ZIP, 7z, RAR, ISO or CPIO entry whose mode is a device, FIFO or socket, or a TAR entry whose
-typeflag is a device or FIFO (TAR has no socket type), is listed as `MemberType.OTHER` when it
+A ZIP, 7z, RAR, ISO, CPIO or SquashFS entry whose mode is a device, FIFO or socket, or a TAR entry
+whose typeflag is a device or FIFO (TAR has no socket type), is listed as `MemberType.OTHER` when it
 stores no data. Extraction does not create it: its result is `BLOCKED`, and the other members
 are extracted. `extra["special_file_type"]` names the kind. In ZIP, 7z, RAR, ISO and CPIO, such
 an entry that does store data is a `FILE`, with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Each
@@ -1329,9 +1329,9 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   `DecoderLimits.max_decoder_memory` (2 GiB by default) caps it, so the 2 GiB window of
   `zstd --long=31` reading standard input reads. A window over the cap raises `ResourceLimitError`.
   The cap is rounded down to a power of two for zstd. A window over 2 GiB is beyond what libzstd
-  decodes at any setting, and raises `UnsupportedFeatureError`. Detection reads a sample of the
-  stream with no cap, so a frame declaring 2 GiB has that much address space reserved while
-  `open_archive` detects it, whatever the cap.
+  decodes at any setting, and raises `UnsupportedFeatureError`. Detection decodes its sample with
+  the window capped at 128 MiB, what `zstd -d` decodes without `--long`. Detection never
+  reserves more than that, whatever the frame declares.
 - With the `[seekable]` rapidgzip accelerator on a seekable `.gz` (by default from 16 MiB, with
   `seekable_members=True`, or on Linux and macOS without it when the file compresses 3:1 or
   less), archivey adds its own checks, because rapidgzip can end a cut file with no error. If

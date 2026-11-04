@@ -89,7 +89,9 @@ archivey's hard links name an earlier member only, so:
   their copy of the data is skipped.
 - newc and crc: the reader holds the empty links back until the link with the data
   arrives, yields that one as the `FILE`, then the held ones as `HARDLINK` members to it.
-  A group whose data never arrives (an empty file) is yielded at the trailer. Each held
+  A group whose data never arrives (an empty file) is yielded at the trailer. A second
+  name in the group that stores data too is a `FILE` of its own with its own bytes, as
+  GNU cpio and 7-Zip extract it; later empty names link to it. Each held
   link counts toward `ListingLimits.max_members` and `ListingLimits.max_metadata_bytes`
   together with the members already listed, so a held link that takes either over
   raises `ResourceLimitError`.
