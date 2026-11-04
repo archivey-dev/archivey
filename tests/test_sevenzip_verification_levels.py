@@ -322,13 +322,180 @@ def test_seekable_member_reads_never_claim_the_folder_crc() -> None:
         for name in "abc":
             assert reader.read(members[name]) == _THREE[name]
         assert {m.verified for m in members.values()} == {Verification.LENGTH}
-        # Each file is at its LENGTH ceiling, so verify_all() reads none of them...
+        # Each file is at its LENGTH ceiling, but the folder CRC has not run: a pass
+        # over the whole folder still raises them, and verify_all() makes it.
         assert reader.verify_all() == ()
-        assert {m.verified for m in members.values()} == {Verification.LENGTH}
-        # ...and a pass over the whole folder still raises them.
-        for _member, stream in reader.stream_members():
-            assert stream is not None
-            stream.read()
+        assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
+        assert reader._awaiting_spanning_checks() == set()  # type: ignore[attr-defined]
+
+
+def _lzma2_folder(files: dict[str, bytes], *, folder_crc: int) -> bytes:
+    """One LZMA2 folder holding ``files``, with ``folder_crc`` and no file CRCs."""
+    payload = b"".join(files.values())
+    packed = _lzma2(payload)
+    header = _header(
+        folders=[_linear([_coder(_LZMA2, props=b"\x10")])],
+        coder_unpack_sizes=[[len(payload)]],
+        pack_sizes=[len(packed)],
+        names=list(files),
+        folder_crcs=[folder_crc],
+        substreams=_substreams([len(data) for data in files.values()], None),
+    )
+    return _archive(packed, header)
+
+
+@pytest.mark.parametrize(
+    ("data", "failed"),
+    [
+        pytest.param(
+            _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C) ^ 1),
+            ["a", "b", "c"],
+            id="copy",
+        ),
+        pytest.param(_folder_with_one_own_crc("c"), ["a", "b"], id="last-own-crc"),
+    ],
+)
+def test_verify_all_after_seekable_reads_still_finds_a_mismatched_folder(
+    data: bytes, failed: list[str]
+) -> None:
+    # The seekable reads leave every file at its ceiling without running the folder
+    # CRC; verify_all() must still run it, as it does when called first.
+    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
+        members = _by_name(reader.members())
+        for name in "abc":
+            assert reader.read(members[name]) == _THREE[name]
+        assert all(m.verified >= m.verifiable for m in members.values())
+        for _ in range(2):
+            failures = reader.verify_all()
+            assert [m.name for m, _e in failures] == failed
+            assert all(isinstance(e, SpanningCheckError) for _m, e in failures)
+
+
+class _CountFolderOpens:
+    """Count the folder decodes ``reader`` starts (``_open_folder_stream``)."""
+
+    def __init__(self, reader: object, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.count = 0
+        original = reader._open_folder_stream  # type: ignore[attr-defined]
+
+        def counting(*args: object, **kwargs: object) -> object:
+            self.count += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(reader, "_open_folder_stream", counting)
+
+
+def test_a_seekable_read_of_the_last_file_checks_a_compressed_folder_crc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Seeking an LZMA2 decode to c decodes a and b anyway: the folder hashes them on
+    # the way (DR-4a), so the read of c to its end runs the folder CRC, and
+    # verify_all() has no folder left to read.
+    data = _lzma2_folder(_THREE, folder_crc=_crc(_A + _B + _C))
+    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
+        members = _by_name(reader.members())
+        assert reader.read(members["c"]) == _C
+        assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
+        assert reader._awaiting_spanning_checks() == set()  # type: ignore[attr-defined]
+        opens = _CountFolderOpens(reader, monkeypatch)
+        assert reader.verify_all() == ()
+        assert opens.count == 0
+
+
+def test_a_seekable_read_of_the_last_file_raises_a_mismatched_folder_crc() -> None:
+    # The same error, from the same read, as an in-order decode of the folder gives.
+    data = _lzma2_folder(_THREE, folder_crc=_crc(_A + _B + _C) ^ 1)
+    errors = []
+    for seekable in (False, True):
+        with open_archive(io.BytesIO(data), seekable_members=seekable) as reader:
+            members = _by_name(reader.members())
+            with pytest.raises(SpanningCheckError, match="folder 0") as caught:
+                reader.read(members["c"])
+            assert caught.value.member_name == "c"
+            assert [m.name for m in caught.value.covers] == ["a", "b", "c"]
+            errors.append(str(caught.value))
+            failures = reader.verify_all()
+            assert [m.name for m, _e in failures] == ["a", "b", "c"]
+    assert errors[0] == errors[1]
+
+
+class _ReadCounter:
+    """Pass every call on to ``inner``, counting the reads."""
+
+    def __init__(self, inner: object) -> None:
+        self._wrapped = inner
+        self.reads = 0
+
+    def read(self, n: int = -1, /) -> bytes:
+        self.reads += 1
+        return self._wrapped.read(n)  # type: ignore[attr-defined]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._wrapped, name)
+
+
+def test_a_folder_seek_with_no_read_after_it_decodes_nothing() -> None:
+    data = _lzma2_folder(_THREE, folder_crc=_crc(_A + _B + _C))
+    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
+        members = _by_name(reader.members())
+        stream = reader._open_folder_stream(  # type: ignore[attr-defined]
+            0, members["c"], seekable=True
+        )
+        counter = _ReadCounter(stream._inner)
+        stream._inner = counter
+        try:
+            assert stream.seek(len(_A) + len(_B)) == len(_A) + len(_B)
+            assert stream.seek(len(_A)) == len(_A)
+            assert stream.tell() == len(_A)
+            assert counter.reads == 0
+            # The read that follows hashes the gap first, then serves the read.
+            assert stream.read(len(_B)) == _B
+            assert counter.reads >= 2
+            assert stream.read() == _C
+        finally:
+            stream.close()
+        assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
+
+
+def test_a_decode_error_in_a_hashed_gap_raises_from_the_read() -> None:
+    # The gap a seek to c defers is decoded by c's first read: a damaged a raises
+    # there, and again from the next read, as the codec's own lazy seek raises it.
+    files = {"a": bytes(range(256)) * 800, "b": _B, "c": _C}
+    payload = b"".join(files.values())
+    packed = bytearray(_lzma2(payload))
+    packed[0] = 0x02  # an LZMA2 control byte no chunk starts with
+    header = _header(
+        folders=[_linear([_coder(_LZMA2, props=b"\x10")])],
+        coder_unpack_sizes=[[len(payload)]],
+        pack_sizes=[len(packed)],
+        names=list(files),
+        folder_crcs=[_crc(payload)],
+        substreams=_substreams([len(data) for data in files.values()], None),
+    )
+    data = _archive(bytes(packed), header)
+    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
+        members = _by_name(reader.members())
+        with reader.open(members["c"]) as stream:
+            for _ in range(2):
+                with pytest.raises(CorruptionError, match="Corrupt input data"):
+                    stream.read(10)
+        assert [m.name for m, _e in reader.verify_all()] == ["a", "b", "c"]
+
+
+def test_a_seekable_read_of_a_stored_folder_leaves_the_crc_to_verify_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A stored folder jumps to c without reading a and b: nothing hashed them, so
+    # verify_all() still reads the folder for its CRC.
+    data = _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C))
+    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
+        members = _by_name(reader.members())
+        assert reader.read(members["c"]) == _C
+        assert members["a"].verified < Verification.CHECKSUM
+        assert reader._awaiting_spanning_checks()  # type: ignore[attr-defined]
+        opens = _CountFolderOpens(reader, monkeypatch)
+        assert reader.verify_all() == ()
+        assert opens.count > 0
         assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
 
 
