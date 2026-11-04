@@ -743,3 +743,52 @@ def test_a_cut_inside_a_long_member_raises_while_listing(sized: bool) -> None:
         pytest.raises(TruncatedError, match="inside the 200000 bytes"),
     ):
         reader.members()
+
+
+def _spanning_levels(data: bytes, *, streaming: bool) -> tuple[list, list]:
+    """Each file's (verified, verifiable) as a pass reaches it, then after it."""
+    during = []
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        for member, stream in reader.stream_members():
+            if stream is not None:
+                during.append(member.verifiable)
+                stream.read()
+        after = [
+            (m.verified, m.verifiable)
+            for m in reader.members_report().members
+            if m.is_file
+        ]
+    return during, after
+
+
+_SPANNED = _newc((b"a", _FILE, 1, 1, b"first " * 400), (b"b", _FILE, 2, 1, b"x" * 9))
+_V = archivey.Verification
+
+
+def test_a_compressed_cpio_file_lists_at_the_codec_checksum_ceiling() -> None:
+    # The outer gzip trailer covers every file: CHECKSUM is its ceiling before the
+    # walk reaches the trailer, and both levels are CHECKSUM after.
+    during, after = _spanning_levels(gzip.compress(_SPANNED), streaming=True)
+    assert during == [_V.CHECKSUM, _V.CHECKSUM]
+    assert after == [(_V.CHECKSUM, _V.CHECKSUM)] * 2
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "compress",
+    [
+        pytest.param(lambda d: gzip.compress(d)[:-6], id="gzip-cut-in-footer"),
+        pytest.param(
+            lambda d: lzma.compress(d, check=lzma.CHECK_NONE), id="xz-no-check"
+        ),
+    ],
+)
+def test_a_compressed_cpio_whose_checksum_cannot_pass_drops_the_ceiling(
+    compress: Callable[[bytes], bytes], streaming: bool
+) -> None:
+    # The format adapter's drop (review of PR 1257, K3): no file stays below a
+    # CHECKSUM ceiling no read can reach.
+    with open_archive(io.BytesIO(compress(_SPANNED)), streaming=streaming) as reader:
+        reader.verify_all()
+        files = [m for m in reader.members_report().members if m.is_file]
+    assert {(m.verified, m.verifiable) for m in files} == {(_V.LENGTH, _V.LENGTH)}

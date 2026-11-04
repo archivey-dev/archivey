@@ -898,12 +898,17 @@ Every public `ArchiveStream` SHALL expose two read-only properties of type
   what the stream knows without opening it. Once the stream is open it MAY rise (a
   password confirmed by another member), and it SHALL fall only when a read finds
   a stream or frame of an `.xz`, `.zst` or `.lz4` file that carries no check (below),
-  or when the walk over a compressed TAR, CPIO or ar archive ends without its
-  stream's checksum passing for a reason other than a mismatch (a stream or frame
-  with no check, damage that ends the walk, data past the archive's end that leaves
-  the checksum unclaimed). Then the members it covers fall once, to `LENGTH`. A
-  checksum that ran and did not match SHALL stay their ceiling: `verify_all()`
-  returns them as failures.
+  or when a check over several members can no longer pass. That is a walk over a
+  compressed TAR, CPIO or ar archive that ends without its stream's checksum passing
+  (a stream or frame with no check, damage that ends the walk, data past the archive's
+  end that leaves the checksum unclaimed), or a decode of a 7z folder that fails or
+  ends before the folder's end. Then the members it covers fall once, to `LENGTH`
+  (`NONE` while a 7z folder's password is unconfirmed). A checksum whose mismatch the
+  codec reports as such (gzip, zlib, lzip, zstd and LZ4 raise a distinct stream
+  checksum error; a 7z folder CRC is computed by archivey) SHALL stay their ceiling:
+  `verify_all()` returns them as failures. An xz or bzip2 check that fails cannot be
+  told apart from damage, since the decoder reports both alike, so it lowers the
+  ceiling as damage does.
   Each says whether it carries a check only in its own header, which a read reaches
   only as it decodes, and a read that jumps reaches some headers only on a later
   read from the start. So until such a stream or frame is found, the file's

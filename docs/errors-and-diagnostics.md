@@ -229,8 +229,9 @@ archive to its end and that checksum matches, every file in it reaches `CHECKSUM
 you read it, except a sparse TAR file, whose holes are not stored bytes: listing the archive does
 that, and so does a `stream_members()` pass that runs to the end. When that read finds the
 checksum can't pass, because the stream carries none (an `.xz` written with no check) or damage
-ends it early, the files' `verifiable` falls to `LENGTH`. A checksum that runs and fails stays
-their ceiling, and `verify_all()` returns them.
+ends it early, the files' `verifiable` falls to `LENGTH`. A gzip, zstd or LZ4 checksum that runs
+and fails stays their ceiling, and `verify_all()` returns them. An xz or bzip2 check that fails
+looks like damage to archivey and lowers it the same way.
 
 To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
 to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the

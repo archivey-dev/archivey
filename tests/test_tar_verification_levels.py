@@ -203,3 +203,22 @@ def test_a_trailer_that_fails_stays_the_ceiling_of_its_failures(
         failures = reader.verify_all()
     assert sorted(m.name for m, _e in failures) == ["a", "b"]
     assert {m.verifiable for m, _e in failures} == {Verification.CHECKSUM}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_an_xz_check_that_fails_reads_as_damage(streaming: bool) -> None:
+    # liblzma reports a failed block check as corrupt data, so it cannot be told
+    # from damage: the ceiling falls as it does for damage (review of PR 1257, K2).
+    import lzma
+
+    data = bytearray(lzma.compress(_tar("w"), check=lzma.CHECK_CRC64))
+    data[-13] ^= 0xFF  # the last byte of the block's CRC-64, before the index
+    with open_archive(io.BytesIO(bytes(data)), streaming=streaming) as reader:
+        failures = reader.verify_all()
+        files = [m for m in reader.members_report().members if m.is_file]
+    # Whether a read raises or the end scan only reports it depends on where the
+    # check sits; either way no file is left below a CHECKSUM it cannot reach.
+    failed = {id(m) for m, _e in failures}
+    for member in files:
+        if id(member) not in failed:
+            assert member.verified == member.verifiable is Verification.LENGTH

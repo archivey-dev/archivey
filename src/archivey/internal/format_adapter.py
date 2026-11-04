@@ -401,8 +401,9 @@ class _PluginAdapter(BaseArchiveReader):
         try:
             yield from self._walk_members()
         except _StreamChecksumError:
-            # The checksum ran and failed: it stays the ceiling of the members it
-            # covers, which verify_all() returns as failures.
+            # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
+            # it stays the ceiling of the members it covers, which verify_all()
+            # returns. An xz or bzip2 check failure reads as damage and lands below.
             raise
         except ArchiveyError:
             # Damage ended the walk before the outer codec's end: its checksum cannot
