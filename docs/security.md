@@ -82,12 +82,13 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   `ExtractionLimits` cover only what `extract_all` writes to disk, but `decoder_limits.max_ratio` holds
   every read too: a member that decodes to more than 800 times its compressed size raises
   `ResourceLimitError` from the read that crosses the limit, and so do the reads of one reader
-  together past 800 times the archive's size. That second check needs the archive's size, or a
-  count of its compressed bytes, so it doesn't apply to a ZIP, TAR or 7z read from a pipe: there each
-  member is still held on its own, but nothing bounds many small members together. A `read()` stops there rather than first holding the
+  together past 800 times the archive's size. When archivey doesn't know the archive's size (a
+  pipe, or a seekable stream that doesn't report one), that second check divides by the bytes
+  read from it so far. A `read()` stops there rather than first holding the
   whole member in memory. A container inside a compression stream (a `.tar.gz`, a format handler's
   `.cpio.xz`) is held to it whenever it's decoded, listing included, since listing one decodes all
-  of it. A RAR archive opened from a
+  of it. So is what a format handler's walk decodes by itself: a compressed payload it opens
+  part-way through the archive, and a member's decoded data. A RAR archive opened from a
   file object rather than a path is copied to a temporary file the first time a member needs
   `unrar` or `unar`. `spool_limits.max_bytes` caps that copy, along with the few other temporary
   files archivey makes for RAR archives, listed in the table below. When the archive records a
@@ -187,7 +188,7 @@ costs only the member being read:
   copying of larger members on top. Each process
   holds about 9 MB while it waits to be reused. Where no child process can start, reading raises
   `ResourceUnavailableError`; nothing is decoded in your process instead.
-  [`scripts/bench_process_isolation.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/bench_process_isolation.py)
+  [`scripts/investigations/bench_process_isolation.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/investigations/bench_process_isolation.py)
   in the repository measures these costs on your machine.
 - **`ProcessIsolation.NONE`** decodes everything in your process. It's for trusted files, tests,
   and places that can't start processes. A damaged or crafted PPMd member can crash your process,
@@ -215,7 +216,7 @@ with its version, which can be several years old. Older versions can have securi
 ones fixed, so an up-to-date version is safer. `unar` receives the password on its command line,
 where other users on the same machine can see it while it runs. If you set
 `rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig`, archivey never runs `unar`. With
-`RarDecompressor.NONE` it runs no external program at all, so stored RAR members still read
+`RarDecompressor.NONE` it runs no external program at all, so stored RAR members can still be read
 (archivey decrypts an encrypted one itself if `cryptography` is installed, and raises
 `PackageNotInstalledError` if it isn't), and the rest raise `UnsupportedFeatureError`.
 
@@ -228,7 +229,7 @@ Every limit has a default that lets large legitimate archives through. A higher 
 malicious archive use more memory, disk space or processing time before it's stopped, so if you know
 what your archives look like, lower the limits to fit them. They're set in `ArchiveyConfig`, and
 `extract_all` also takes `limits=` for one call.
-[`scripts/measure_limit_costs.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/measure_limit_costs.py)
+[`scripts/investigations/measure_limit_costs.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/investigations/measure_limit_costs.py)
 in the repository measures what each limit costs in time and memory on your machine.
 
 - **`extraction_limits.max_extracted_bytes`**, default 2 GiB, caps the bytes one extraction writes.

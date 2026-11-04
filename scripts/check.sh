@@ -2,9 +2,10 @@
 # Every fast gate CI runs, in one command.
 #
 # This is the "will CI's non-test jobs pass?" answer: it mirrors the `lint` job in
-# .github/workflows/ci.yml and the `docs` and `openspec` jobs in docs-checks.yml. It
-# does not run the test suite — that is scripts/test.sh, which takes minutes rather than
-# seconds, and the two get run at different cadences.
+# .github/workflows/ci.yml (with the script tests, scripts/tests/, a few seconds) and
+# every job in docs-checks.yml. It does not run the library's test suite — that is
+# scripts/test.sh, which takes minutes rather than seconds, and the two get run at
+# different cadences.
 #
 # It exists because the gate is a dozen commands and people were running one of them.
 # Pushing after `ruff` alone, with `pyrefly` or `ty` red, is the most common
@@ -29,7 +30,7 @@ for arg in "$@"; do
   esac
 done
 
-PATHS=(src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/ packages/archivey-ar/)
+PATHS=(src/ tests/ scripts/ benchmarks/)
 FAILED=()
 
 # The gates below run with `--no-sync`, which assumes this tree already has an
@@ -68,34 +69,38 @@ run "ruff check"          uv run --no-sync ruff check "${PATHS[@]}"
 run "ruff format --check" uv run --no-sync ruff format --check "${PATHS[@]}"
 run "pyrefly"             uv run --no-sync pyrefly check
 run "ty"                  uv run --no-sync ty check
+run "script tests"        uv run --no-sync pytest scripts/tests -q -n auto --no-cov
 
 # --- API surface (tests/test_api_surface.py in CI) ------------------------------------
 if [ "$FIX" -eq 1 ]; then
-  uv run --no-sync python scripts/api_surface.py --write
+  uv run --no-sync python scripts/checks/api_surface.py --write
 fi
-run "api surface" uv run --no-sync python scripts/api_surface.py --check
+run "api surface" uv run --no-sync python scripts/checks/api_surface.py --check
 
 # --- CI job: openspec --------------------------------------------------------------
 # Stdlib-only, same as CI. `openspec validate` needs the npm CLI, which the setup script
 # installs; skip rather than fail if someone is running on a bare clone.
-run "openspec archived" python3 scripts/check_openspec_archived.py
-run "openspec self-reference" python3 scripts/check_openspec_self_reference.py
+run "openspec archived" python3 scripts/checks/check_openspec_archived.py
+run "openspec self-reference" python3 scripts/checks/check_openspec_self_reference.py
 if command -v openspec >/dev/null 2>&1; then
   run "openspec validate" openspec validate --all
 else
   printf '\n\033[1m=== openspec validate\033[0m\nSKIPPED — `openspec` CLI not on PATH (scripts/setup-dev-env.sh installs it)\n'
 fi
 
+# --- CI job: No tracker URLs (docs-checks.yml) ------------------------------------
+run "tracker URLs" python3 scripts/checks/check_tracker_urls.py
+
 # --- CI job: docs ------------------------------------------------------------------
 # Needs the `docs` group (mkdocs, markdown) rather than the everyday env, so this leg
 # syncs on demand instead of using --no-sync.
-run "docs nav"   uv run --group docs python scripts/check_docs_nav.py
-run "internal md links" uv run --no-sync python scripts/check_internal_md_links.py
+run "docs nav"   uv run --group docs python scripts/checks/check_docs_nav.py
+run "internal md links" uv run --no-sync python scripts/checks/check_internal_md_links.py
 # `docs roles` reads the site `docs build` just wrote, so it runs only when that build
 # succeeded: against a stale or missing `site/` it would report a build that is not this
 # tree's.
 if run "docs build" uv run --group docs mkdocs build --strict --quiet; then
-  run "docs roles" python3 scripts/check_docs_rendered.py site
+  run "docs roles" python3 scripts/checks/check_docs_rendered.py site
 else
   printf '\n\033[1m=== docs roles\033[0m\nSKIPPED — needs the site from `docs build`, which failed\n'
 fi

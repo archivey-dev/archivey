@@ -37,7 +37,7 @@ from archivey.types import (
     ArchiveMember,
     MemberType,
 )
-from tests.conftest import requires, requires_binary
+from tests.conftest import assert_raised_again, requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 
 
@@ -146,7 +146,7 @@ def test_archive_stream_close_failure_still_closes_wrapper() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a_failed_lazy_open_raises_the_same_error_again() -> None:
+def test_a_failed_lazy_open_raises_that_error_again() -> None:
     """A retry after a failed lazy open does not call the opener again (a half-open
     backend must not be re-entered). It raises the error the first open raised. It
     used to raise a usage error that blamed a concurrent caller."""
@@ -169,14 +169,14 @@ def test_a_failed_lazy_open_raises_the_same_error_again() -> None:
         stream.read()
     with pytest.raises(CorruptionError) as second:
         stream.read(1)
-    assert second.value is first.value
+    assert_raised_again(second.value, first.value)
     assert calls == 1
     stream.close()
     with pytest.raises(ValueError, match="closed file"):
         stream.read()
 
 
-def test_a_member_whose_lazy_open_failed_raises_the_same_error_again() -> None:
+def test_a_member_whose_lazy_open_failed_raises_that_error_again() -> None:
     """The same through ``stream_members()``: an unsupported ZIP method raises
     ``UnsupportedFeatureError`` on every read, not a usage error on the second."""
     from archivey.exceptions import UnsupportedFeatureError
@@ -198,7 +198,7 @@ def test_a_member_whose_lazy_open_failed_raises_the_same_error_again() -> None:
                 stream.read()
             with pytest.raises(UnsupportedFeatureError) as second:
                 stream.read()
-            assert second.value is first.value
+            assert_raised_again(second.value, first.value)
     assert seen == 1
 
 
@@ -493,7 +493,8 @@ _LIBRARY_ERRORS: list[tuple[str, str, Callable[[], Exception]]] = [
 _TEXTLESS_ERRORS: list[tuple[str, Callable[[], Exception], str]] = [
     ("ppmd", lambda: ValueError(), "Error reading PPMd stream: ValueError"),
     ("gzip", lambda: zlib.error(), "Error reading gzip stream: zlib.error"),
-    # The shared EOF arm every codec inherits.
+    # The EOF arm resolve_codec adds after every codec's translator
+    # (StreamCodec.eof_truncation).
     ("zstd", lambda: EOFError(), "zstd stream is truncated: EOFError"),
 ]
 
@@ -506,10 +507,10 @@ _TEXTLESS_ERRORS: list[tuple[str, Callable[[], Exception], str]] = [
 def test_a_codec_shows_the_librarys_text_not_its_repr(
     codec_name: str, prefix: str, make_error: Callable[[], Exception]
 ) -> None:
-    from archivey.internal.streams.codecs import Codec, stream_codec
+    from archivey.internal.streams.codecs import Codec, resolve_codec
 
     exc = make_error()
-    translated = stream_codec(Codec(codec_name)).translate(exc)
+    translated = resolve_codec(Codec(codec_name)).translate(exc)
     assert isinstance(translated, ArchiveyError)
     expected = str(exc) or type(exc).__name__
     assert translated.raw_message == prefix + expected
@@ -524,9 +525,9 @@ def test_a_codec_shows_the_librarys_text_not_its_repr(
 def test_a_codec_names_an_error_with_no_text_by_its_type(
     codec_name: str, make_error: Callable[[], Exception], expected: str
 ) -> None:
-    from archivey.internal.streams.codecs import Codec, stream_codec
+    from archivey.internal.streams.codecs import Codec, resolve_codec
 
-    translated = stream_codec(Codec(codec_name)).translate(make_error())
+    translated = resolve_codec(Codec(codec_name)).translate(make_error())
     assert isinstance(translated, ArchiveyError)
     assert translated.raw_message == expected
 

@@ -64,7 +64,8 @@ class DiagnosticCode(StrEnum):
 
     MEMBER_NAME_NORMALIZED = "member_name_normalized"
     """A member's stored name was changed to give ``name``, for example its
-    separators or a ``.`` segment."""
+    separators or a ``.`` segment. Not reported for a leading ``./`` alone, which
+    ``tar czf a.tar.gz .`` writes, or for a directory gaining its trailing ``/``."""
     MEMBER_NAME_ENCODING_INFERRED = "member_name_encoding_inferred"
     """A member's name was decoded with an encoding archivey inferred, not one the
     archive or the caller declared."""
@@ -139,6 +140,11 @@ class DiagnosticCode(StrEnum):
     MEMBER_LINK_DATA_IGNORED = "member_link_data_ignored"
     """A TAR symlink or hard link header declares data, which nothing reads. The link
     is listed and extracted as a link."""
+    MEMBER_HEADER_AMBIGUOUS = "member_header_ambiguous"
+    """A member's TAR headers state a field in a way no known writer produces, and
+    readers disagree on the result: both a GNU long name and a PAX ``path``, a field
+    set twice, a global header naming or sizing members, or a NUL inside a PAX name.
+    archivey reads it as GNU tar does; another tool may list another name or size."""
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     """An encrypted member's stream was closed or seeked before its checksum
     confirmed the password, and nothing stronger had confirmed it, so the bytes read
@@ -178,6 +184,18 @@ class DiagnosticCode(StrEnum):
     one that declares none stays ``OTHER``. A RAR5 redirect of an unknown type is
     ``OTHER`` with or without the directory flag, as ``unrar`` writes nothing for
     it."""
+    MEMBER_NAME_DUPLICATE = "member_name_duplicate"
+    """A member has the name of an earlier one that is not a directory, or is not a
+    directory itself. The later member supersedes the earlier one, as ``tar -x`` and
+    unzip write them, but another reader may keep the first, write through an earlier
+    symlink, or refuse the archive. Real archives have it (``tar -r`` appends, cabal
+    sdists), so it is advisory."""
+    MEMBER_READERS_DISAGREE = "member_readers_disagree"
+    """A member takes a shape that real writers produce but readers make different
+    trees of: a TAR regular file named like a directory, a link name on a TAR regular
+    file, a star or GNU incremental layout in the ustar prefix bytes, or a hard link
+    to a symlink. archivey reads it as the format's own tool does; another reader may
+    write another tree or refuse it. Advisory: the shapes come from real archives."""
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -248,12 +266,18 @@ DiagnosticCodeStr = Literal[
     "member-directory-data-ignored",
     "member_link_data_ignored",
     "member-link-data-ignored",
+    "member_header_ambiguous",
+    "member-header-ambiguous",
     "archive_offset_wrapped",
     "archive-offset-wrapped",
     "member_size_wrapped",
     "member-size-wrapped",
     "member_type_unknown",
     "member-type-unknown",
+    "member_name_duplicate",
+    "member-name-duplicate",
+    "member_readers_disagree",
+    "member-readers-disagree",
 ]
 
 
@@ -448,8 +472,8 @@ class ArchiveEofContext(_JsonSafeContext):
       header and its last packed stream, ``"rar"`` for a RAR volume's end-of-archive
       block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
       its MBR or GPT lists and the GPT backup header, ``"zip"`` for the end of a ZIP's
-      end-of-central-directory record and its declared comment; a format plugin names
-      its own format (``"cpio"`` for the CPIO trailer). ``observed_bytes`` is
+      end-of-central-directory record and its declared comment, ``"cpio"`` for the
+      CPIO trailer; a format plugin names its own format. ``observed_bytes`` is
       that byte's offset past the end. RAR emits one per volume, and its offset counts from that
       volume's end block, unlike member offsets, which count across the whole set; the
       message names the volume.
@@ -623,6 +647,91 @@ class LinkDataContext(_JsonSafeContext):
     member_name: str = ""
     member_id: int | None = None
     size: int = 0
+
+
+@dataclass(frozen=True)
+class HeaderAmbiguityContext(_JsonSafeContext):
+    """A member's TAR headers take a shape no known writer produces, which readers
+    resolve differently. archivey reads it as GNU tar 1.35 does.
+
+    ``ambiguity`` names the shape:
+
+    - ``"both_families"``: a PAX record overrode a GNU long name or link name. The
+      record is the member's own or a global ``path``, its ``GNU.sparse.name``, or a
+      ``linkpath``; the PAX record wins.
+    - ``"repeated"``: one field set twice. That is two GNU long name or long link
+      headers, a PAX keyword twice in one header, or two ``x`` headers for one
+      member, of which only the last applies. The last value wins, the first in a
+      global header.
+    - ``"global_member_field"``: a global PAX header sets ``path``, ``linkpath`` or
+      ``size`` for every member after it.
+    - ``"nul_in_value"``: a PAX ``path``, ``linkpath``, ``uname``, ``gname`` or
+      ``GNU.sparse.name`` holds a NUL byte; the value ends there. Or a PAX keyword
+      holds one; the whole keyword is used.
+    - ``"global_replaced"``: a global header drops a keyword an earlier global header
+      set. GNU tar replaces the global records, ``tarfile`` merges them.
+    - ``"mixed_chain"``: a GNU long name or link name header and an ``x`` header
+      both extend one member, and no PAX record overrode the long name. Both apply
+      to the member; a reader that knows only PAX applies the ``x`` header (its
+      ``size`` too) to the long name header instead.
+    - ``"global_in_chain"``: a global header comes between an ``x`` or long name
+      header and its member. The extended header applies to the member.
+    - ``"empty_value"``: the last ``x`` header record of ``path``, ``mtime``,
+      ``atime``, ``ctime``, ``uid`` or ``gid`` has an empty value, which is skipped:
+      the value in force before it stays.
+    - ``"leading_zero"``: a PAX ``size``, ``GNU.sparse.size`` or
+      ``GNU.sparse.realsize`` with a leading zero, read as decimal (a reader that
+      takes it as octal frames or sizes the member differently).
+    - ``"field_tail"``: the member header's ``size``, ``name``, ``prefix`` or
+      ``linkname`` field, or the size field of an extended header before it
+      (``field`` ``"x size"``, ``"g size"``, ``"L size"`` or ``"K size"``), has bytes
+      after the NUL or blank that ends it, which are ignored. A member field an
+      extended header overrode does not count.
+    - ``"size_on_no_data"``: a directory or link header has a size, and another
+      header follows it at once, so the size names no data.
+    - ``"signed_checksum"``: a header's checksum matches only the signed sum of its
+      bytes, as SunOS 4 and Ultrix tars wrote it; a reader that takes the POSIX
+      unsigned sum refuses the header.
+    - ``"magic_version"``: the POSIX magic with a version other than ``00`` or NULs;
+      a reader that takes the header as v7 drops its name prefix.
+    - ``"newline_in_value"``: a PAX value, other than an extended attribute's or an
+      ACL's, or a PAX keyword holds a newline; a reader that splits records on lines
+      reads another record.
+
+    ``field`` is the PAX keyword (the header field's name for ``"field_tail"``,
+    ``"size"`` for ``"size_on_no_data"``, ``"chksum"`` for ``"signed_checksum"`` and
+    ``"version"`` for ``"magic_version"``), with ``"path"`` and ``"linkpath"`` standing for GNU
+    long name and long link headers, ``"x"`` for a repeated ``x`` header and for
+    ``"mixed_chain"``, and ``"g"`` for ``"global_in_chain"``. A global
+    header's shape is reported on the member after it.
+
+    A shape is reported once per member. When it holds for several fields, ``field``
+    is the first, ``more_fields`` counts the others, and the message names a few of
+    them.
+    """
+
+    kind: Literal["header_ambiguity"] = "header_ambiguity"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    ambiguity: Literal[
+        "both_families",
+        "repeated",
+        "global_member_field",
+        "nul_in_value",
+        "global_replaced",
+        "mixed_chain",
+        "global_in_chain",
+        "empty_value",
+        "leading_zero",
+        "field_tail",
+        "size_on_no_data",
+        "signed_checksum",
+        "magic_version",
+        "newline_in_value",
+    ] = "repeated"
+    field: str = ""
+    more_fields: int = 0
 
 
 @dataclass(frozen=True)
@@ -839,8 +948,8 @@ class UnknownMemberTypeContext(_JsonSafeContext):
     ``stored_type`` is the format's own spelling of the type: for TAR the typeflag byte
     as a one-character string (the byte as Latin-1), the same byte as
     ``extra["tar.type"]``; for a RAR5 redirect the type number in decimal (``"6"``);
-    a plugin chooses its own (CPIO's is the mode's file-type bits in octal,
-    ``"0o130000"``). ``size`` is the member's
+    for CPIO the mode's file-type bits in octal (``"0o130000"``); a plugin chooses its
+    own. ``size`` is the member's
     ``size``, ``None`` for an ``OTHER`` member. Advisory, so it is not in
     :data:`ARCHIVE_INTEGRITY_CODES`: a TAR member's bytes are delivered and nothing is
     hidden, and a RAR5 redirect of an unknown type holds no bytes, while its stored
@@ -853,6 +962,84 @@ class UnknownMemberTypeContext(_JsonSafeContext):
     member_id: int | None = None
     stored_type: str = ""
     size: int | None = None
+
+
+@dataclass(frozen=True)
+class NameDuplicateContext(_JsonSafeContext):
+    """A member has the name of an earlier member, and the two are not both
+    directories. ``earlier_member_id`` is the latest earlier member of that name, and
+    ``earlier_type`` and ``member_type`` are the two members' ``MemberType`` values
+    (``"file"``, ``"symlink"`` ...). A repeated directory is not reported: every reader
+    makes the same tree of it. Members a backend lists as superseded versions (a RAR
+    file version, an older ISO 9660 version) are not compared.
+    """
+
+    kind: Literal["name_duplicate"] = "name_duplicate"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    earlier_member_id: int | None = None
+    earlier_type: str = ""
+    member_type: str = ""
+
+
+@dataclass(frozen=True)
+class ReaderDisagreementContext(_JsonSafeContext):
+    """A member takes a shape that real writers produce and readers read differently.
+    archivey reads it as the format's own tool does.
+
+    ``shape`` names it:
+
+    - ``"file_named_as_directory"``: a TAR regular-file header whose name ends in
+      ``/``. It is a directory, as GNU tar extracts it (v7 tars store directories this
+      way); other readers make an empty file of it or refuse it.
+    - ``"link_name_on_file"``: a TAR regular file that also stores a link name, in
+      its header's field or a PAX ``linkpath``. The link name is not used, as GNU tar
+      ignores it; a reader that goes by the link name makes a link.
+    - ``"star_prefix"``: a ustar header with star's ``tar\\0`` mark whose prefix runs
+      past star's 131 bytes. GNU tar joins the whole field to the name; star reads the
+      bytes after 131 as times.
+    - ``"gnu_prefix_bytes"``: an old GNU header with bytes where ustar keeps the
+      prefix, which GNU tar uses for times in incremental archives. They are not part
+      of the name; a reader that joins the prefix for every magic names the member
+      differently.
+    - ``"hardlink_to_symlink"``: a hard link whose target is a symlink. It links to
+      the symlink, as ``link()`` does on Linux; a reader that follows the symlink
+      links to its target instead.
+    - ``"nul_in_name"``: a name with a NUL in it, which a format that stores a name's
+      length can hold (ZIP, CPIO). It is listed whole, and extraction skips the member
+      under every policy, since no filesystem takes the name (a filter that rewrites
+      the name, such as ``sanitize_names``, writes it); unzip writes the name up to
+      the NUL, and 7-Zip refuses the archive.
+    - ``"directory_attribute_without_slash"``: a ZIP entry whose attributes (a Unix
+      directory mode, or the DOS directory bit) mark it a directory, named without the
+      final ``/``. It is a directory, as 7-Zip and libarchive extract it and as
+      APPNOTE 4.4.15 marks it; unzip and ``zipfile`` go by the name and write a file.
+    - ``"file_only_in_joliet"``, ``"file_only_in_iso9660"`` and ``"file_only_in_udf"``:
+      an ISO image whose Joliet, plain ISO 9660 or UDF tree holds a file the tree
+      archivey lists does not (Rock Ridge, else Joliet). Windows and 7-Zip read Joliet
+      and UDF, a reader without Joliet the plain tree, Linux and xorriso Rock Ridge;
+      each sees the files of its own tree. ``member_name`` is the file's path in that
+      tree and ``member_id`` is ``None``: it is not a member. Files are matched by the
+      data they point at; at most 16 are reported per tree.
+    """
+
+    kind: Literal["reader_disagreement"] = "reader_disagreement"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    shape: Literal[
+        "file_named_as_directory",
+        "link_name_on_file",
+        "star_prefix",
+        "gnu_prefix_bytes",
+        "hardlink_to_symlink",
+        "nul_in_name",
+        "directory_attribute_without_slash",
+        "file_only_in_joliet",
+        "file_only_in_iso9660",
+        "file_only_in_udf",
+    ] = "file_named_as_directory"
 
 
 DiagnosticContext = (
@@ -872,6 +1059,7 @@ DiagnosticContext = (
     | DigestContext
     | DirectoryDataContext
     | LinkDataContext
+    | HeaderAmbiguityContext
     | EncryptedVerificationContext
     | SeekIndexContext
     | StreamRewindContext
@@ -881,6 +1069,8 @@ DiagnosticContext = (
     | OffsetWrapContext
     | SizeWrapContext
     | UnknownMemberTypeContext
+    | NameDuplicateContext
+    | ReaderDisagreementContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -908,6 +1098,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
         DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED: "directory_data",
         DiagnosticCode.MEMBER_LINK_DATA_IGNORED: "link_data",
+        DiagnosticCode.MEMBER_HEADER_AMBIGUOUS: "header_ambiguity",
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED: "encrypted_verification",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
@@ -919,6 +1110,8 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.ARCHIVE_OFFSET_WRAPPED: "offset_wrap",
         DiagnosticCode.MEMBER_SIZE_WRAPPED: "size_wrap",
         DiagnosticCode.MEMBER_TYPE_UNKNOWN: "unknown_member_type",
+        DiagnosticCode.MEMBER_NAME_DUPLICATE: "name_duplicate",
+        DiagnosticCode.MEMBER_READERS_DISAGREE: "reader_disagreement",
     }
 )
 
@@ -941,6 +1134,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.DIGEST_UNVERIFIABLE,
         DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
         DiagnosticCode.MEMBER_LINK_DATA_IGNORED,
+        DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
         DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
@@ -948,7 +1142,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Fifteen codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Seventeen codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -1005,18 +1199,32 @@ and the reasons are part of the contract rather than an oversight:
   ``FILE``, so nothing is hidden. ``STRICT`` would refuse an archive GNU tar extracts.
   The same holds for a RAR5 redirect of an unknown type: it holds no data, and
   ``unrar`` warns, skips it and extracts the rest with exit code 0.
+- ``MEMBER_NAME_DUPLICATE`` and ``MEMBER_READERS_DISAGREE`` — shapes real archives
+  have (``tar -r`` appends, cabal sdists, v7 directories, star and GNU incremental
+  headers), which archivey reads as the format's own tool does. ``STRICT`` would refuse
+  archives that tool extracts. They are for a caller who checks an archive that
+  another tool will extract: ``DiagnosticPolicy(raise_on=...)`` with them, or
+  ``DiagnosticPolicy.PEDANTIC``, refuses what other readers may read otherwise.
 """
 
 
 _INFO_LOG_CODES: frozenset[DiagnosticCode] = frozenset(
-    {DiagnosticCode.STREAM_REWIND_REDECOMPRESSES}
+    {
+        DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
+        DiagnosticCode.MEMBER_NAME_DUPLICATE,
+        DiagnosticCode.MEMBER_READERS_DISAGREE,
+    }
 )
 """Codes whose log record is INFO rather than WARNING (``logging`` spec).
 
-They report the caller's access pattern, not the archive: the reason
+``STREAM_REWIND_REDECOMPRESSES`` reports the caller's access pattern, not the archive:
+the reason
 ``STREAM_REWIND_REDECOMPRESSES`` is out of :data:`ARCHIVE_INTEGRITY_CODES` too, and the
 reason the solid re-decode record on ``archivey.backends`` is INFO (maintainer,
-2026-10-23). The policy still collects, counts and raises them like any other code.
+2026-10-23). ``MEMBER_NAME_DUPLICATE`` and ``MEMBER_READERS_DISAGREE`` report shapes
+of ordinary archives that only matter to a caller comparing readers, who asks for them
+through the policy. The policy still collects, counts and raises them like any other
+code.
 """
 
 
@@ -1409,16 +1617,19 @@ __all__ = [
     "EncryptedVerificationContext",
     "ExtractionReport",
     "FormatConflictContext",
+    "HeaderAmbiguityContext",
     "LinkDataContext",
     "LocalHeaderContext",
     "MemberHeaderRecordContext",
     "MemberListReport",
     "MemberNameControlsContext",
     "MemberTimestampContext",
+    "NameDuplicateContext",
     "NameEncodingContext",
     "NameNormalizationContext",
     "OffsetWrapContext",
     "OnDiagnostic",
+    "ReaderDisagreementContext",
     "ScanRaceContext",
     "SeekIndexContext",
     "SelectorUnmatchedContext",

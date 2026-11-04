@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import warnings
 from abc import ABC, abstractmethod
@@ -14,6 +15,8 @@ from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
 from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
+from archivey.exceptions import ArchiveyError
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.types import (
     AbortOn,
@@ -51,32 +54,86 @@ MemberSelector = MemberSelectorArg
 _T_co = TypeVar("_T_co", covariant=True)
 
 
+def _with_implementation(cls: type, implementation: type) -> type:
+    """``cls`` on top of archivey's own implementation, as a 0.2 subclass of the then
+    concrete class was: what ``cls`` defines wins, and the rest is archivey's. Kept
+    on ``cls`` itself, so it goes when ``cls`` goes."""
+    built = cls.__dict__.get("_archivey_with_implementation")
+    if built is None:
+        built = type(cls)(
+            cls.__name__,
+            (cls, implementation),
+            {"__module__": cls.__module__, "__qualname__": cls.__qualname__},
+        )
+        type.__setattr__(cls, "_archivey_with_implementation", built)
+    return built
+
+
+def _class_to_build(cls: type, base: type, implementation: type, get: str) -> type:
+    """The class to build for ``cls``, which is ``base`` itself or a subclass with an
+    abstract method left: archivey's own implementation, after a deprecation
+    warning. Until 0.4.0 both still work, as in 0.2 (DR-12a)."""
+    if cls is base:
+        message = (
+            f"constructing {base.__name__} directly is deprecated and stops working "
+            f"in archivey 0.4.0; get one from {get}"
+        )
+        built = implementation
+    elif issubclass(cls, implementation):
+        # An abstract subclass of archivey's own class is not a 0.2 subclass: it
+        # gets the usual error for an abstract class, or none, as it would without
+        # this.
+        return cls
+    else:
+        missing = ", ".join(sorted(cls.__dict__.get("__abstractmethods__", ())))
+        message = (
+            f"{cls.__qualname__} subclasses {base.__name__} without implementing "
+            f"{missing}; this is deprecated and stops working in archivey 0.4.0. "
+            f"Implement them, or wrap the {base.__name__} archivey gives you "
+            "instead of subclassing it"
+        )
+        built = _with_implementation(cls, implementation)
+    warnings.warn(message, DeprecationWarning, stacklevel=3)
+    return built
+
+
+# How much ``ArchiveStream.verify()`` asks for per read: large enough that the call
+# overhead is small, small enough that the discarded chunk costs little memory.
+_VERIFY_CHUNK = 1024 * 1024
+# The first read's size: enough to open the member and pass its key check.
+_VERIFY_FIRST_CHUNK = 4096
+
+
 class ArchiveStream(ReadOnlyIOStream):
     """A member's bytes, as a read-only binary file.
 
     :meth:`~archivey.ArchiveReader.open`, :meth:`~archivey.ForwardArchiveReader.stream_members`
     and :func:`~archivey.open_stream` return one; there is no need to build one yourself.
     It is an ``io.RawIOBase``, and ``seekable()`` says whether it can seek.
+
+    Building one directly, or through a subclass that leaves an abstract method
+    unimplemented (as a subclass written for archivey 0.2 does), is deprecated: it
+    builds archivey's own stream, with a ``DeprecationWarning``, until 0.4.0.
     """
 
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
-        if cls is ArchiveStream:
-            # Deprecated direct construction: build archivey's own stream, which then
-            # runs its ``__init__`` with these arguments.
-            warnings.warn(
-                "constructing ArchiveStream directly is deprecated and stops working in "
-                "archivey 0.4.0; get one from ArchiveReader.open(), stream_members() or "
-                "open_stream()",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        if cls is ArchiveStream or getattr(cls, "__abstractmethods__", None):
+            # Deprecated: build archivey's own stream (under the subclass, for a
+            # subclass), which then runs its ``__init__`` with these arguments.
             from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
-            return super().__new__(cast("type[Self]", ArchiveStreamImpl))
+            built = _class_to_build(
+                cls,
+                ArchiveStream,
+                ArchiveStreamImpl,
+                "ArchiveReader.open(), stream_members() or open_stream()",
+            )
+            return super().__new__(cast("type[Self]", built))
         return super().__new__(cls)
 
     @property
     @abstractmethod
+    @override
     def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; a member stream has a name
         """The member's name inside its archive, or raise ``AttributeError``.
 
@@ -110,16 +167,22 @@ class ArchiveStream(ReadOnlyIOStream):
     def verified(self) -> Verification:
         """How much of this stream's data has been checked so far, as a ``Verification``.
 
-        ``KEY`` once the stream has opened its member and nothing doubts its password,
-        ``STRUCTURE`` once a read has reached the end with the length checks passing,
-        and ``CONTENT`` once a checksum stored with the data has matched every byte. It
-        never goes down: a seek back to the start runs the checks again, and what they
-        proved stays proved. A read that raises leaves it where it was. A stream from
-        ``stream_members()`` opens its member at its first read, and is ``NONE`` until
-        then.
+        A member stream answers with its member's :attr:`~archivey.ArchiveMember.verified`,
+        whether or not it has opened its data, and what its reads prove raises the
+        member: a stream of a member that :meth:`~archivey.ForwardArchiveReader.verify_all`
+        already checked reports ``CHECKSUM`` before its first read. A stream from
+        :func:`~archivey.open_stream` has no member and keeps its own level.
 
-        Compare it with ``verifiable``: a TAR member has no checksum, so ``STRUCTURE``
+        ``UNLOCKED`` when nothing doubts the password (an unencrypted member starts
+        there), ``LENGTH`` once a read has reached the end with the length checks
+        passing, and ``CHECKSUM`` once a checksum stored with the data has matched every
+        byte. It never goes down. A read that raises leaves it where it was.
+
+        Compare it with ``verifiable``: a TAR member has no checksum, so ``LENGTH``
         is the most it can reach. Reading this property reads nothing from the archive.
+
+        Experimental: any release, a patch included, may change or remove this property,
+        its levels or what they mean.
         """
 
     @property
@@ -127,18 +190,146 @@ class ArchiveStream(ReadOnlyIOStream):
     def verifiable(self) -> Verification:
         """The most ``verified`` can reach by a read from the start to the end.
 
-        ``CONTENT`` when the member carries a checksum archivey can compute,
-        ``STRUCTURE`` when it carries none, and ``NONE`` for an encrypted member with no
-        checksum whose password passed only a weak check. It rises when another
-        member's checksum confirms that password. A stream from ``stream_members()``
-        learns what its member carries when it opens, at its first read. Until then it
-        answers from what it knows without opening (the member's stored digest), and
-        the answer can settle lower when it opens: a password watch that only appears
-        then takes a member with no checksum from ``STRUCTURE`` to ``NONE``. Once open,
-        it never falls. Reading this property reads nothing from the archive.
+        ``CHECKSUM`` when the data carries a checksum archivey can compute, ``LENGTH``
+        when it carries none, and ``NONE`` for an encrypted member with no checksum
+        whose password passed only a weak check. Each stream or frame of an ``.xz``,
+        ``.zst`` or ``.lz4`` file says in its own header whether it carries a check,
+        so such a file is ``CHECKSUM`` until a read finds one without a check. A
+        member stream answers with its member's
+        :attr:`~archivey.ArchiveMember.verifiable`: the listing's estimate until a
+        stream of the member first opens its data, which can settle it once, lower or
+        higher.
+        After that it falls only when a read finds such a stream or frame without a
+        check, and it rises when another member's checksum confirms the password.
+        Reading this property reads nothing from the archive.
+
+        Experimental: any release, a patch included, may change or remove this property,
+        its levels or what they mean.
         """
 
+    def verify(self, *, password_only: bool = False) -> Verification:
+        """Run the stream's checks, discarding the bytes; return ``verified``.
+
+        The target is ``verifiable``, or ``UNLOCKED`` with ``password_only=True``
+        (``verifiable`` when that is lower). It never reads past this stream's own
+        member, so a check that covers several members (a ``.tar.gz`` trailer) is
+        not reached here; :meth:`~archivey.ForwardArchiveReader.verify_all` reaches it.
+
+        A member stream can seek only when its archive was opened with
+        ``seekable_members=True``, and an ``open_stream()`` stream only with
+        ``seekable=True``; ``stream_members()`` streams never can. By default, then,
+        ``verify()`` consumes the stream (see below).
+
+        On a stream that can seek, ``verify()`` is a probe: it reads as much of the
+        data as the target needs, then leaves the stream as it was, at the same
+        position, so a later ``read()`` returns the bytes it would have returned before.
+        It reads and decodes nothing when ``verified`` has already reached the target
+        and is above ``NONE``. A target of ``NONE`` (a password nothing can prove) is
+        never reached this way, so the read still runs its length checks to the end.
+        When a seek earlier kept a read from checking every byte, it reads the data
+        again from the start. Going back to the middle of a compressed member with no
+        index decodes it again up to that offset, so a call there can cost up to two
+        decodes. Its own seeks report no ``STREAM_REWIND_REDECOMPRESSES``: they are not
+        the caller's.
+
+        On a stream that cannot seek, it cannot go back, so it reads the stream to the
+        end whatever the target, unless ``verified`` already reached it (then it reads
+        nothing), and any later ``read()`` raises ``ArchiveyUsageError``. So
+        ``verify(password_only=True)`` costs a full read there; read the data itself
+        instead when you need it. A later ``verify()`` reads nothing: it raises the
+        first call's error again if that call failed, and otherwise returns
+        ``verified``.
+
+        A password is not always confirmed early either: a member with only a weak
+        password check (ZipCrypto, or an encrypted stored member with no other check)
+        reaches ``UNLOCKED`` only at its checksum, so ``verify(password_only=True)``
+        reads it to the end. A failed check raises what the read raises
+        (``CorruptionError``, ``TruncatedError``, ``EncryptionError``), and a seekable
+        stream is still put back where it was. Otherwise compare the result with
+        ``verifiable``: when they are equal, nothing more can be checked. A closed
+        stream raises ``ValueError``, as every ``io`` method does, also after
+        ``verify()`` consumed it. Which reads a target needs can get cheaper in a later
+        release; the result and the errors stay the same.
+
+        Experimental: any release, a patch included, may change or remove this method,
+        its arguments or what it returns.
+        """
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        level = Verification.UNLOCKED if password_only else Verification.CHECKSUM
+        if not self.seekable():
+            if self._verify_consumed():
+                self._verify_raise_again()
+            elif self._verify_done(level):
+                self._mark_verify_consumed()
+            else:
+                try:
+                    self._verify_read_on(None)
+                finally:
+                    self._mark_verify_consumed()
+            return self.verified
+        if self._verify_done(level):
+            return self.verified
+        start = self.tell()
+        try:
+            self._verify_read_on(level)
+            if not self._verify_done(level) and start > 0:
+                # A seek may have skipped bytes before ``start``: read them too.
+                self._verify_seek(0)
+                self._verify_read_on(level)
+        except Exception:
+            with contextlib.suppress(Exception):
+                self._verify_seek(start)
+            raise
+        self._verify_seek(start)
+        return self.verified
+
+    def _verify_seek(self, pos: int) -> None:
+        """Seek for ``verify()``: a seek the caller did not make, so it reports nothing.
+
+        A stream class that does not override it seeks as ``seek()`` does.
+        """
+        self.seek(pos)
+
+    def _verify_consumed(self) -> bool:
+        """Whether ``verify()`` has read this forward-only stream to its end."""
+        return False
+
+    def _verify_raise_again(self) -> None:
+        """Raise again the check failure the consuming ``verify()`` raised, if any.
+
+        A stream class that does not override it raises nothing here.
+        """
+
+    def _mark_verify_consumed(self) -> None:
+        """Make later reads raise ``ArchiveyUsageError``: ``verify()`` used the bytes.
+
+        A stream class that does not override it keeps answering reads at its end.
+        """
+
+    def _verify_done(self, level: Verification) -> bool:
+        """Whether ``verified`` has reached ``level``, or the stream's ceiling below it.
+
+        A ceiling of ``NONE`` (a weak password with nothing to confirm it) is never
+        reached this way, so the read still runs its length checks to the end.
+        """
+        reached = self.verified
+        return reached >= min(level, self.verifiable) and reached > Verification.NONE
+
+    def _verify_read_on(self, level: Verification | None) -> None:
+        """Read and discard until ``level`` is reached or the stream ends (``None``: end).
+
+        Reads start small, so a level the first bytes reach (``UNLOCKED``) costs little, and
+        grow to ``_VERIFY_CHUNK`` so a read to the end pays little per call.
+        """
+        step = _VERIFY_FIRST_CHUNK
+        while self.read(step):
+            if level is not None and self._verify_done(level):
+                return
+            step = min(step * 2, _VERIFY_CHUNK)
+
     @abstractmethod
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         """Read up to ``n`` bytes of the member; ``-1`` or ``None`` reads to EOF.
 
@@ -165,6 +356,7 @@ class ArchiveStream(ReadOnlyIOStream):
         """
 
     @abstractmethod
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         """Move to ``offset``, as on any ``io`` stream; raises when it can't seek.
 
@@ -174,10 +366,12 @@ class ArchiveStream(ReadOnlyIOStream):
         """
 
     @abstractmethod
+    @override
     def tell(self, /) -> int:
         """The current position in the member's decompressed bytes."""
 
     @abstractmethod
+    @override
     def seekable(self) -> bool:
         """Whether :meth:`seek` works on this stream.
 
@@ -195,6 +389,7 @@ class ArchiveStream(ReadOnlyIOStream):
         releases.
         """
 
+    @override
     def close(self) -> None:
         """Close the stream and release what it holds in the reader. Closing it
         again does nothing."""
@@ -230,30 +425,35 @@ class MemberPass(Iterator[_T_co]):
             for member, stream in members:
                 if member.is_file and stream is not None:
                     process(member, stream.read())
+
+    Building one directly, or through a subclass that leaves an abstract method
+    unimplemented (as a subclass written for archivey 0.2 does), is deprecated: it
+    builds archivey's own pass, with a ``DeprecationWarning``, until 0.4.0.
     """
 
     __slots__ = ()
 
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
-        if cls is MemberPass:
-            # Deprecated direct construction: build archivey's own pass, which then
-            # runs its ``__init__`` with these arguments.
-            warnings.warn(
-                "constructing MemberPass directly is deprecated and stops working in "
-                "archivey 0.4.0; get one from stream_members() or by iterating the "
-                "reader",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        if cls is MemberPass or getattr(cls, "__abstractmethods__", None):
+            # Deprecated: build archivey's own pass (under the subclass, for a
+            # subclass), which then runs its ``__init__`` with these arguments.
             from archivey.internal.member_pass import MemberPassImpl
 
-            return super().__new__(cast("type[Self]", MemberPassImpl))
+            built = _class_to_build(
+                cls,
+                MemberPass,
+                MemberPassImpl,
+                "stream_members() or by iterating the reader",
+            )
+            return super().__new__(cast("type[Self]", built))
         return super().__new__(cls)
 
+    @override
     def __iter__(self) -> Self:
         return self
 
     @abstractmethod
+    @override
     def __next__(self) -> _T_co: ...
 
     @abstractmethod
@@ -486,6 +686,52 @@ class ForwardArchiveReader(ABC):
         and :class:`~archivey.PackageNotInstalledError` for data archivey cannot decode,
         and :class:`~archivey.ResourceLimitError` for a member that asks a decoder for
         more memory than :class:`~archivey.DecoderLimits` allows.
+        """
+        ...
+
+    @abstractmethod
+    def verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
+        """Read every member's data to run its checks; return the members that failed.
+
+        Each member is read as :meth:`ArchiveStream.verify` reads one, with
+        ``verifiable`` as the target, and a member that fails does not stop the call:
+        it is returned with its error, and the next member is read. A failed check
+        that covers several members (a 7z folder CRC) returns each member it covers,
+        each paired with the same error object, whichever member's read reached the
+        check; that error's ``member_name`` is the member whose read reached it, not
+        the member it is paired with. Afterwards every
+        listed member has ``verified == verifiable`` except the ones returned. A member
+        whose password the password input did not supply is returned with its
+        ``EncryptionError``. The levels are raised on the members in place, so
+        :meth:`~ArchiveReader.members` and :meth:`members_report` show them, and so do
+        streams of those members opened later.
+
+        Damage to the archive's structure that stops the listing ends the call without
+        raising: :meth:`members_report` returns it as ``error``. A failed checksum over
+        the whole compressed archive (the gzip trailer of a ``.tar.gz``) ends it the
+        same way, and every listed file is returned with that error. The checksum may
+        cover only some of the files (a concatenated ``.tar.gz``, a ``.tar.zst`` of
+        several frames) and nothing says which, so all are returned rather than pass
+        a damaged one. Archive-level findings,
+        such as a missing end-of-archive marker, are in ``reader.diagnostics``. To check
+        everything about an archive, call ``verify_all()``, then look at
+        ``members_report()`` and ``diagnostics``.
+
+        On a random-access reader a second call reads again the members that failed
+        (asking the password input again), the members whose ``verifiable`` is
+        ``NONE``, and a ``.zst``, ``.lz4`` or ``.xz`` member read only past a jump whose
+        frames may still prove ``CHECKSUM``; the others are skipped. It does not touch
+        streams the caller holds. On a streaming reader it is the one pass.
+
+        Experimental: any release, a patch included, may change or remove this method,
+        its arguments or what it returns.
+
+        Raises:
+            ArchiveyUsageError: The reader is closed; another pass or call is running;
+                or it is a streaming reader whose one pass has already started.
+            ResourceLimitError: The listing exceeds :class:`~archivey.ListingLimits`.
+            DiagnosticRaisedError: A diagnostic that the
+                :class:`~archivey.DiagnosticPolicy` in the config raises on.
         """
         ...
 

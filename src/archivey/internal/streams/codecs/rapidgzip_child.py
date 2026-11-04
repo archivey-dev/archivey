@@ -16,16 +16,16 @@ source stays in this process: the child asks for each read, seek and tell, and t
 process answers from the caller's stream, so an exception from that stream reaches
 the caller unchanged.
 
-Measured cost (``scripts/bench_rapidgzip_child.py``, one Linux machine): about 25 ms to
-start the child and import rapidgzip, and about 70 µs per round trip. A full read took
-1.1 to 1.35 times as long as in-process rapidgzip, and stayed about 1.5 times faster
-than the stdlib engine.
+Measured cost (``scripts/investigations/bench_rapidgzip_child.py``, one Linux machine):
+about 25 ms to start the child and import rapidgzip, and about 70 µs per round trip. A
+full read took 1.1 to 1.35 times as long as in-process rapidgzip, and stayed about 1.5
+times faster than the stdlib engine.
 
-rapidgzip's bzip2 decoder (``IndexedBzip2File``) runs in the same kind of child, one
-per stream (``bzip2=True``), as a precaution: it has not been seen to abort, but it
-comes from the same library as the DEFLATE decoder, which does. Being native code is
-not by itself a reason to isolate a decoder (the standard library's are not);
-an observed crash that cannot always be avoided is. ``scripts/accelerator_crash_search.py``
+rapidgzip's bzip2 decoder (``IndexedBzip2File``) runs in the same kind of child, one per
+stream (``bzip2=True``), as a precaution: it has not been seen to abort, but it comes
+from the same library as the DEFLATE decoder, which does. Being native code is not by
+itself a reason to isolate a decoder (the standard library's are not); an observed crash
+that cannot always be avoided is. ``scripts/investigations/accelerator_crash_search.py``
 keeps looking for crashes in both, by running them on damaged input in a process it
 watches, so whether the isolation is still needed stays known.
 """
@@ -52,6 +52,7 @@ from archivey.exceptions import (
     TruncatedError,
     exception_detail,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.child_process import (
     REAP_TIMEOUT,
     describe_exit,
@@ -64,6 +65,7 @@ from archivey.internal.streams.child_process import (
     unavailable_reason,
 )
 from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.callers_source import mark_callers_source
 from archivey.internal.streams.codecs.decoder_worker import (
     RAPIDGZIP_ARG,
     parse_error_payload,
@@ -230,29 +232,6 @@ def reported_by_child(exc: BaseException) -> bool:
     marked, so a translator can treat every marked ``RuntimeError`` as rapidgzip's.
     """
     return getattr(exc, _FROM_CHILD, False) is True
-
-
-_FROM_SOURCE = "_archivey_raised_by_callers_source"
-
-
-def from_callers_source(exc: BaseException) -> bool:
-    """Whether ``exc`` came from the caller's own source, parked while a decoder read it
-    (the rapidgzip child's reads, or the in-process bzip2 decoder's), or raised by a
-    file region's check before a call to the child (what reading that source would
-    have raised; see ``file_region``).
-
-    Such an exception is raised to the caller as itself, so a translator must leave it
-    alone, including one whose types (``EOFError``) it would map for a decoder.
-    """
-    return getattr(exc, _FROM_SOURCE, False) is True
-
-
-def mark_callers_source(exc: BaseException) -> None:
-    """Mark ``exc`` as raised by the caller's own source (see :func:`from_callers_source`)."""
-    try:
-        setattr(exc, _FROM_SOURCE, True)
-    except AttributeError:  # an exception type that refuses new attributes
-        pass
 
 
 def _reported_error(payload: bytes) -> Exception:
@@ -1096,6 +1075,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             return None
         return SeekPoint(decoded, bit // 8, DeflateResume(bit % 8, bytes(window)))
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         # Before the buffer: a closed or dead stream raises even with read-ahead left.
         self._raise_if_unusable()
@@ -1180,12 +1160,15 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._pos += len(result)
         return result
 
+    @override
     def readall(self) -> bytes:
         return self.read(-1)
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._raise_if_unusable()
         if whence in (io.SEEK_SET, io.SEEK_CUR):
@@ -1230,6 +1213,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._moved_to(position)
         return position
 
+    @override
     def tell(self) -> int:
         self._raise_if_unusable()
         if self._pos is None:
@@ -1312,6 +1296,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._known_offsets = dict(offsets)
         return offsets
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

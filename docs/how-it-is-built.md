@@ -19,8 +19,8 @@ follow, and rules on the trade-offs they can't settle from the code. Two example
 
 - **When formats disagree.** Archivey weighs following each format's official tool, such as `unrar`
   for RAR and GNU tar for TAR, against being the same across formats. Neither wins automatically.
-  Device files that store no data are one case where being the same won: every format lists them as
-  "other".
+  Device files that store no data are one case where being the same won: they are listed as "other"
+  in every format.
 - **What counts as damage.** Some problems refuse the archive, and others, which are only unusual,
   are reported as diagnostics.
 
@@ -149,6 +149,17 @@ A few things you can see aren't part of the API either, and can change in any re
   - `accelerator` in a stream rewind's diagnostic context, and `scan` and `error_type`
     in a seek index's. The diagnostic codes, and the other fields of those contexts, are
     part of the API.
+- The experimental plugin interface: the `archivey.formats` module and the names that exist
+  only for it (`PluginContainer`, `PluginStream`, `FormatPolicy.replace` and
+  `FormatInfo.from_plugin`). Any release may change or remove them, with no deprecation
+  warning first, until the interface is declared stable. See
+  [Adding a format](adding-a-format.md).
+- The experimental verification level: `Verification`, `ArchiveMember.verified`,
+  `ArchiveMember.verifiable`, `ArchiveStream.verified`, `ArchiveStream.verifiable`,
+  `ArchiveStream.verify()` and `verify_all()` on readers. Any release may change or remove
+  them, their names, levels or meaning, with no deprecation warning first. The checks they
+  report on are not experimental: a failed checksum or a cut member raises as before. See
+  [Damaged archives](errors-and-diagnostics.md#damaged-archives).
 - Where a compressed stream can resume after a backward seek, which
   `ArchiveStream.nearest_resume_offset()` reports, and so which seeks report
   `STREAM_REWIND_REDECOMPRESSES`. It depends on the decoder.

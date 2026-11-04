@@ -17,6 +17,7 @@ from archivey.config import (
     ratio_field_is_set,
 )
 from archivey.exceptions import ResourceLimitError
+from archivey.internal.overrides import override
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
@@ -402,14 +403,17 @@ class _RatioGuard(DelegatingStream):
     def _check(self, position: int) -> None:
         if position <= self._decoded or self._max_ratio is None:
             return
-        self._decoded = position
+        # Recorded once judged: an offset refused stays unjudged, so a later read that
+        # reaches it again (a new member stream over the shared decode) raises too.
         self._judge(position)
+        self._decoded = position
 
     def _raise_held(self) -> None:
         if self._held is not None:
             err, self._held = self._held, None
             raise err
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         self._raise_held()
         if n is not None and 0 <= n <= max(_GUARD_STEP, self._room()):
@@ -444,6 +448,7 @@ class _RatioGuard(DelegatingStream):
                 left -= len(data)
         return b"".join(parts)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # A seek drops the held error, as ReadAheadStream's does: it describes the
         # position the caller is leaving, and a rewind re-decodes from a resume point.
@@ -477,6 +482,7 @@ class _RatioGuard(DelegatingStream):
         self._check(self._pos)
         return self._pos
 
+    @override
     def tell(self, /) -> int:
         return self._pos
 
@@ -496,8 +502,14 @@ class DecodeRatioGuard(_RatioGuard):
 
     Listing such an archive decodes all of it, member data included, before
     extraction counts a byte, so a few hundred bytes of bzip2 could keep ``members()``
-    decoding for minutes. Extraction would refuse the same archive at the same ratio;
-    this refuses it while listing, reading or extracting alike.
+    decoding for minutes. This refuses it while listing, reading or extracting, at
+    the reader's ratio, except that an ``extract_all`` call holds its own decodes to
+    the ratio fields it applies (``run_limits``) for the length of the call, on its
+    thread. A read after the call is judged again under the reader's limits.
+
+    With a ``tally``, the guard is one of several whose decoded bytes count toward one
+    total, each under its own ``key`` (as member reads count, :class:`ReadRatioTally`):
+    the rule judges the total, not this stream's bytes alone.
     """
 
     def __init__(
@@ -507,17 +519,44 @@ class DecodeRatioGuard(_RatioGuard):
         limits: DecoderLimits,
         static_size: int | None,
         consumed: Callable[[], int | None] | None,
+        tally: ReadRatioTally | None = None,
+        key: int = 0,
+        run_limits: Callable[[], DecoderLimits | None] = lambda: None,
     ) -> None:
         super().__init__(inner, max_ratio=limits.max_ratio)
         self._limits = limits
         self._static_size = static_size
         self._consumed = consumed
+        self._tally = tally
+        self._key = key
+        # The limits an ``extract_all`` call running on this thread applies to its own
+        # decodes, in place of ``limits`` (``None``: no such call).
+        self._run_limits = run_limits
+        # The limits the furthest offset decoded was judged under.
+        self._judged_under = limits
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
 
+    def _current_limits(self) -> DecoderLimits:
+        run = self._run_limits()
+        return self._limits if run is None else run
+
+    @override
+    def _check(self, position: int) -> None:
+        limits = self._current_limits()
+        if limits is not self._judged_under and limits != self._judged_under:
+            # An extraction that lifted the ratio may have decoded past what these
+            # limits allow: what it decoded is judged again, under these.
+            self._judged_under = limits
+            self._decoded = 0
+        super()._check(position)
+
+    @override
     def _judge(self, position: int) -> None:
-        limits = self._limits
+        limits = self._current_limits()
+        if self._tally is not None:
+            position = self._tally.advance(self._key, position)
         refusal = archive_ratio_refusal(
             position,
             max_ratio=limits.max_ratio,
@@ -536,9 +575,11 @@ class ReadRatioTally:
     """The bytes a reader's member reads have decoded, for the archive-wide ratio.
 
     Each member counts once, at the furthest offset any read of it reached, so reading
-    a member again or seeking back in it adds nothing; the total is then at most what
-    one full pass decodes. Shared by every member stream of one reader, from any
-    thread.
+    a member again or seeking back in it adds nothing. A member that gets no guard
+    because its data is the archive stream's own bytes (``_hold_to_ratio``) counts at
+    its recorded size instead, read or not, so the total can pass what was decoded but
+    never what one full pass decodes. Shared by every member stream of one reader,
+    from any thread.
     """
 
     def __init__(self) -> None:
@@ -552,7 +593,8 @@ class ReadRatioTally:
         return self._total - self._furthest.get(key, 0)
 
     def advance(self, key: int, position: int) -> int:
-        """Record that member ``key`` has decoded ``position`` bytes; the new total."""
+        """Record that member ``key`` has reached ``position`` bytes (decoded, or its
+        recorded size for an unguarded member); the new total."""
         with self._lock:
             before = self._furthest.get(key, 0)
             if position > before:
@@ -628,6 +670,7 @@ class MemberRatioGuard(_RatioGuard):
         size = getattr(inner, "size", None)
         return size if isinstance(size, int) and not isinstance(size, bool) else None
 
+    @override
     def _room(self) -> float:
         # The first position either rule could refuse at, less the current one.
         safe = self._member_safe
@@ -635,6 +678,7 @@ class MemberRatioGuard(_RatioGuard):
             safe = min(safe, self._archive_safe - self._tally.others(self._key))
         return max(_GUARD_STEP, safe - self._pos)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # The decoder answers the seek itself, with its own clamping and end rules;
         # only a forward gap is decoded first, in steps, to the target the seek names.
@@ -689,6 +733,7 @@ class MemberRatioGuard(_RatioGuard):
             self._check(self._pos)
         return self._pos + offset
 
+    @override
     def _judge(self, position: int) -> None:
         limits = self._limits
         max_ratio = limits.max_ratio

@@ -62,6 +62,7 @@ of scope for this harness — see ``benchmarks/tar_iso_lock_baseline.py`` for IS
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import gzip
 import importlib.util
 import json
@@ -75,7 +76,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from archivey import open_archive
+from archivey import ForwardArchiveReader, open_archive as _open_archive
 from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.base_reader import BaseArchiveReader
@@ -187,6 +188,26 @@ def _accel_skipped_case(case: str, fmt: str) -> CaseResult:
         0,
         notes="skipped: rapidgzip not installed ([seekable] extra)",
         skipped=True,
+    )
+
+
+# The fixtures are patterned and compress far past the default ratio limit (800:1),
+# which holds every read. A limit this high keeps the guard's checks in the timings
+# while never tripping on them.
+_BENCH_MAX_RATIO = 1_000_000.0
+
+
+def open_archive(
+    path: Path, *, config: ArchiveyConfig | None = None, **kwargs: Any
+) -> ForwardArchiveReader:
+    """``archivey.open_archive`` with the ratio limit raised past the fixtures' ratios.
+
+    It shadows the library name on purpose, so every case below goes through it.
+    """
+    base = config if config is not None else ArchiveyConfig()
+    limits = dataclasses.replace(base.decoder_limits, max_ratio=_BENCH_MAX_RATIO)
+    return _open_archive(
+        path, config=dataclasses.replace(base, decoder_limits=limits), **kwargs
     )
 
 

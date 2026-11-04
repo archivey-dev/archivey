@@ -26,7 +26,7 @@ nav:
 # Maintainer material (decision log, threat model, codec analysis, known issues,
 # investigations, superseded prose) is in `dev-docs/`, outside the site — not under
 # `docs/` behind an exclusion list, which would need a second list to keep in sync.
-# `scripts/check_docs_nav.py` enforces both halves of that invariant.
+# `scripts/checks/check_docs_nav.py` enforces both halves of that invariant.
 
 plugins:
   - search
@@ -42,18 +42,18 @@ plugins:
             docstring_section_style: list
             extensions:
               - griffe_fieldz
-              - scripts/griffe_extensions.py
+              - scripts/docs/griffe_extensions.py
   - autorefs
   # llms.txt (https://llmstxt.org) at the site root, llms-full.txt with every page
   # below in one file, and a Markdown copy of each listed page next to its HTML
   # (opening/index.md beside opening/index.html), for coding agents. A page missing
   # from `sections` gets no copy, so every page of `nav` is listed here too;
-  # scripts/check_docs_nav.py fails on one that is not.
+  # scripts/checks/check_docs_nav.py fails on one that is not.
   - llmstxt:
       full_output: llms-full.txt
       # Points `page/#anchor` links at the Markdown copy, as the plugin already does
       # for `page/`.
-      preprocess: scripts/llmstxt_preprocess.py
+      preprocess: scripts/docs/llmstxt_preprocess.py
       markdown_description: >-
         Archivey is a Python library (`pip install archivey`, `import archivey`) that
         reads ZIP, TAR, 7z, RAR, ISO and single compressed files through one API:
@@ -75,7 +75,7 @@ plugins:
           - cli.md: The archivey command (list, test, extract, info) and its exit codes
           - recipes.md: Complete scripts for dataset downloads, HTTP streams, and checking uploaded archives
           - formats.md: Per-format behaviour, extras each format needs, and format-specific member fields
-          - adding-a-format.md: Adding a read-only format with the provisional archivey.formats API, the structures built-in readers share too
+          - adding-a-format.md: Adding a read-only format with the experimental archivey.formats API, the structures built-in readers share too
           - migrating.md: Equivalent calls and behaviour differences from zipfile, tarfile, py7zr and rarfile
         Reference:
           - api.md: Every public class, function and exception, generated from the docstrings

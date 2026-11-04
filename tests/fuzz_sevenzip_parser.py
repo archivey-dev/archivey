@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 _HARNESS_VERSION = 1
-_SEED_ENTRY_IDS = {"basic", "encoding", "large", "encrypted-header"}
+_SEED_ENTRY_IDS = {"basic", "encoding", "large", "encrypted-header", "sevenzip-ppmd"}
 # The corpus password, so an encrypted header reaches the folder pipeline.
 _PASSWORDS = ["", "password"]
 

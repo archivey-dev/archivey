@@ -15,6 +15,7 @@ import io
 import threading
 from typing import TYPE_CHECKING, BinaryIO
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
     readinto_via_read,
@@ -37,10 +38,12 @@ class LockedStream(DelegatingStream):
         super().__init__(inner)
         self._lock = lock
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         with self._lock:
             return self._inner.read(n)
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         # Stay under the lock for both the native and fallback path.
         # super().readinto() would call self.read() on fallback, and
@@ -51,16 +54,19 @@ class LockedStream(DelegatingStream):
                 return n
             return readinto_via_read(self._inner, b)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self.seekable():
             raise io.UnsupportedOperation("seek")
         with self._lock:
             return self._inner.seek(offset, whence)
 
+    @override
     def tell(self, /) -> int:
         with self._lock:
             return self._inner.tell()
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

@@ -20,7 +20,7 @@ subclass of `ArchiveyError`. These are the ones you're most likely to handle:
 
 | Exception | Raised when |
 |---|---|
-| `CorruptionError` | The archive's data is damaged. Its subclass `TruncatedError` means the data seems to end early, but that's a guess, so catch `CorruptionError` for both |
+| `CorruptionError` | The archive's data is damaged. Its subclass `TruncatedError` means the data seems to end early, most often because a download stopped, so fetching the file again or resuming the download may help. That's a best guess from the bytes, so catch `CorruptionError` to handle both |
 | `EncryptionError` | A password is needed and none was given, or none of the ones given works |
 | `FormatDetectionError` | The file isn't in a format archivey recognizes |
 | `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle, such as an unknown compression method |
@@ -100,7 +100,7 @@ with archivey.open_archive("damaged.tar") as archive:
     found, so the exception at the end still tells you the rest is missing.
 
 A TAR archive cut between two members, or inside a member's header, has nothing left that looks
-wrong, so it lists as a complete, shorter archive with no error. Only the diagnostic
+wrong, so it is listed as a complete, shorter archive with no error. Only the diagnostic
 `ARCHIVE_EOF_MARKER_MISSING` shows it, and
 [`DiagnosticPolicy.STRICT`](#raising-or-quieting-a-diagnostic) turns it into an exception.
 
@@ -143,15 +143,28 @@ No option makes archivey check a member before handing you its bytes. If you mus
 unchecked data, read the whole member into memory or a temporary file first, and use it only once
 the read has finished without an error.
 
-A member stream tells you what has been checked so far. `stream.verified` is a `Verification`
-level, and `stream.verifiable` is the most a read from the start to the end can reach:
+A member tells you what has been checked so far. `member.verified` is a `Verification` level,
+and `member.verifiable` is the most a read from the start to the end can reach. Above `NONE`,
+`member.verified == member.verifiable` means every check the member carries has passed; at `NONE`
+nothing was proved, not even that the data is complete. A read
+that proves more raises them on the member in place. A member stream reports the same two values
+as its member, whether or not it has started reading, and an `open_stream()` stream, which has no
+member, reports its own.
+
+!!! warning "Experimental"
+    `Verification`, `verified`, `verifiable`, `stream.verify()` and `reader.verify_all()` are
+    experimental and outside the
+    [stability policy](how-it-is-built.md#versioning-and-stability): any release, a patch
+    release included, may change or remove them, their levels, names or meaning. The checks
+    themselves are not experimental: a read that fails one raises as before, whatever level
+    the stream reports.
 
 | Level | What has been checked |
 |---|---|
-| `NONE` | Nothing yet, or the member's password passed only a check that a wrong password can pass by chance |
-| `KEY` | The member isn't encrypted, or its password passed a reliable check |
-| `STRUCTURE` | A read reached the end, and the length and the end of the data were as expected |
-| `CONTENT` | A checksum stored with the data matched every byte |
+| `NONE` | The member is encrypted and its password isn't confirmed: not yet, or only by a check that a wrong password can pass by chance |
+| `UNLOCKED` | The member isn't encrypted, or its password passed a reliable check. A member with no data of its own, such as a link or a directory, stops here |
+| `LENGTH` | A read reached the end, and the length and the end of the data were as expected |
+| `CHECKSUM` | A checksum stored with the data matched every byte |
 
 The levels are ordered, so you can compare them:
 
@@ -163,15 +176,35 @@ with archive.open(member) as stream:
 ```
 
 A member with no checksum of its own, such as a TAR, ISO or `.lzma` member, stops at
-`STRUCTURE`. A gzip, bzip2, lzip or zlib file reaches `CONTENT` from its own checksum when it's
-read from the start with no seek in between. `.xz`, `.zst` and `.lz4` files stop at `STRUCTURE`
-for now, even when they carry a checksum.
+`LENGTH`. A gzip, bzip2, lzip or zlib file reaches `CHECKSUM` from its own checksum when it's
+read from the start with no seek in between. An `.xz`, `.zst` or `.lz4` file carries a check
+per stream or frame only if the program that wrote it added one. It reaches `CHECKSUM` when every
+stream or frame in it carries one, read the same way; one without a check keeps the whole file at
+`LENGTH`. Each stream or frame says whether it carries a check only in its own header, so the
+file's `verifiable` is `CHECKSUM` until a read finds one without a check, and then becomes
+`LENGTH`.
 
 An encrypted member whose password was accepted only on a weak check, such as the one-byte check of
-old ZIP encryption, is in the same position. Its `stream.verified` stays `NONE` until its checksum
+old ZIP encryption, also depends on a read to the end. Its `stream.verified` stays `NONE` until its checksum
 matches. If you close its stream before the end, or seek past bytes without reading them, archivey
 logs `ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read may come from a wrong password. WinZip
 AES members are the exception: their check holds across seeks.
+
+A 7z archive can compress several files together in one folder and store one checksum for the
+whole folder and none for each file. Each of those files stops at `LENGTH` when you read it alone.
+They all reach `CHECKSUM` once a read of the whole folder, in order from its start, matches the
+folder's checksum. A `stream_members()` pass that reaches the end of the folder does that.
+`verify_all()` does too while one of the files is still below `LENGTH`. If you opened the archive
+with `seekable_members=True` and read every file of the folder on its own, each one is already at
+its `LENGTH` ceiling, so `verify_all()` reads none of them; a `stream_members()` pass still raises
+them. If the folder's checksum does not match, a read of the folder's last file raises
+`CorruptionError` once it reaches that file's end, even when that file's own bytes are intact, and
+`verify_all()` returns each file that checksum covers with that error. A file with a checksum of
+its own is left to it: when the last file's own checksum fails, its read raises that error
+instead. The covered files stay at the level their own reads reached. In an encrypted 7z folder, a
+file whose checksum matches also confirms the password for the other files of that folder, though
+not for other folders, which can use another password. A file you read before that confirmation
+keeps the level it had; calling `verify_all()` again reads it once more.
 
 If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
 most seeks keep the checksum check: a seek back, a seek to or past the end, and a seek forward that
@@ -189,6 +222,62 @@ a seek, so seeking back can't hand you the damaged member as if it were complete
 After seeks, `stream.verified` shows whether the checksum still ran. If it's below
 `stream.verifiable` once you've read to the end, a seek back to the start and a read to the end
 runs every check.
+
+A compressed TAR, CPIO or ar archive, such as a `.tar.gz`, `.cpio.xz` or `.a.bz2`, has one
+checksum for the whole compressed stream, checked at its end. A member you read to its end is at
+`LENGTH` until then. Once something reads the archive to its end and that checksum matches, every
+file in it reaches `CHECKSUM`, whether or not you read it, except a sparse TAR file, whose holes
+are not stored bytes: listing the archive does that, and so does a `stream_members()` pass that
+runs to the end.
+
+To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
+to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the
+stream depends on whether the stream can seek. A member stream can seek only when the archive
+was opened with `seekable_members=True` (see
+[Seeking inside a member](reading.md#seeking-inside-a-member)), and an `open_stream()` stream
+only with `seekable=True`. So by default, `verify()` consumes the stream:
+
+- **A stream that can seek** is left as it was. `verify()` reads what the check needs, from the
+  start again if a seek kept an earlier read from covering every byte, then goes back to where
+  the stream was, so the next `read()` returns the same bytes. Going back to the middle of a
+  compressed member decodes it again up to that point, so that call can cost two decodes.
+- **A stream that can't seek**, such as one from `reader.open()` by default, `stream_members()`
+  or a pipe, can't go back. `verify()` reads it to the end, unless the member is already at the
+  level it aims for, and a later `read()` raises `ArchiveyUsageError` either way. If you need the bytes too, read them instead: the
+  read runs the same checks.
+
+`stream.verify()` aims for `verifiable`. When the member has reached it already, for example
+after `verify_all()`, it reads nothing. `stream.verify(password_only=True)` stops as soon as the
+password is confirmed: at once for a member that isn't encrypted or whose password passed a
+reliable check. A member whose password passed only a weak check, such as ZipCrypto's one-byte
+check, is confirmed only by its checksum, so that call reads the whole member. A failed check
+raises what the read would raise:
+
+```python
+with archive.open(member) as stream:  # can't seek by default: verify() consumes it
+    if stream.verify() < stream.verifiable:
+        ...  # a check this member carries didn't run
+```
+
+To check every member, call `reader.verify_all()`. It reads each member as `verify()` does,
+keeps going when one fails, and returns the members that failed, each with its error. Afterwards
+every other member has `verified == verifiable`. A member it had no password for comes back with
+its `EncryptionError`; a second call reads the failed members again and asks the password input
+again. To check everything about an archive:
+
+```python
+failures = reader.verify_all()        # (member, error) for each member that failed
+report = reader.members_report()      # report.error: damage that stopped the listing
+findings = reader.diagnostics         # archive-level findings, such as a missing end marker
+```
+
+Damage that stops archivey finding the next member ends `verify_all()` without raising, and
+`members_report().error` holds it. When a checksum over the whole compressed archive fails, such
+as the gzip trailer of a `.tar.gz`, `verify_all()` returns every file with that error. The
+checksum may cover only some of the files, as in a concatenated `.tar.gz` or a `.tar.zst` of
+several frames, and nothing says which ones, so archivey returns them all rather than pass a
+damaged file. On a streaming reader `verify_all()` is the one pass, and
+`members_report()` returns what it listed without reading again.
 
 [Damaged members](extracting.md#damaged-members) covers what extraction does.
 

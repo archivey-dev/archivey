@@ -23,7 +23,7 @@ RAR *data* tests need the system `unrar` binary, and encrypted-ZIP fixtures need
 (`p7zip-full`). Without them those tests skip cleanly — which is the problem: the suite
 still reports green while running about a hundred fewer tests. Read the setup script's
 last lines. On macOS, Homebrew no longer ships RARLAB `unrar`; the setup script compiles
-the same pin CI uses (`scripts/install-rarlab-unrar.sh`).
+the same pin CI uses (`scripts/ci/install-rarlab-unrar.sh`).
 
 Then two scripts cover the gates, split by how long they take and how often you run them:
 
@@ -32,16 +32,18 @@ Then two scripts cover the gates, split by how long they take and how often you 
 ./scripts/test.sh          # minutes — the everyday [all] test leg
 ```
 
-Before asking for review, also run `uv run python scripts/review_prep.py`. It is not a CI
+Before asking for review, also run `uv run python scripts/review/review_prep.py`. It is not a CI
 gate; it lists docs still naming what your branch removed or moved, fails on lines left
 far wider than their file, and its `red-on-base` subcommand checks a "fails on `main`"
 claim (`.claude/skills/address-review-findings/SKILL.md` §5).
 
-`check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs: ruff, **`pyrefly`**,
-**`ty`**, the OpenSpec checks, the docs-tree and link checks, the strict docs build and
-the check on what that build rendered. The script itself is the list. It runs every gate
-even after one fails and lists what failed at the end, so a single run tells you
-everything that is wrong. Without `--fix` it writes nothing and answers "will CI pass?".
+`check.sh` mirrors CI's `lint` job and every job in `docs-checks.yml`: ruff,
+**`pyrefly`**, **`ty`**, the tests of the scripts (`scripts/tests/`, a few seconds),
+the OpenSpec checks, the docs-tree and link checks, the strict docs build, the check on
+what that build rendered and the tracker-URL check. The script itself is the list. It
+runs every gate even after one fails and lists what failed at the end, so a single run
+tells you everything that is wrong. Without `--fix` it writes nothing and answers "will
+CI pass?".
 
 `test.sh` passes extra arguments through to pytest (`./scripts/test.sh tests/test_zip.py
 -k roundtrip`), and `--all-configs` runs the full before-pushing gate described below.
@@ -58,21 +60,18 @@ uv run ty check                    # type-check (ty)
 uv run pre-commit run --all-files  # optional: framework hooks over the whole tree
 ```
 
-Pyrefly and ty are scoped to `src/`, `packages/archivey-squashfs/src/`,
-`packages/archivey-cpio/src/` and `packages/archivey-ar/src/` (the library and the
-in-repo plugin packages), so every command above runs clean with no extra path
-arguments. **Both type checkers must stay green** — `ruff` passing is not the gate,
-and running it alone is the most common self-inflicted CI failure here.
+Pyrefly and ty are scoped to `src/` (the library), so every command above runs clean
+with no extra path arguments. **Both type checkers must stay green** — `ruff` passing is
+not the gate, and running it alone is the most common self-inflicted CI failure here.
 
 **Format before you commit.** CI runs `ruff format --check` (and `ruff check`) over
-`src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/
-packages/archivey-ar/` and will fail on drift. Installing the git hook
-(`./scripts/install-git-hooks.sh`) makes this automatic: staged `*.py` under those
-paths are `ruff check --fix`'d and `ruff format`'d on commit. If you skip the hook,
-run `uv run ruff format` yourself before committing — `ruff format --check` only
-reports problems; it does not rewrite files. Prefer the script over
-`uv run pre-commit install`: Cursor remaps `core.hooksPath`, and the script installs into
-the chained original hooks directory so the hook still runs.
+`src/ tests/ scripts/ benchmarks/` and will fail on drift. Installing the git hook
+(`./scripts/install-git-hooks.sh`) makes this automatic: staged `*.py` under those paths
+are `ruff check --fix`'d and `ruff format`'d on commit. If you skip the hook, run `uv
+run ruff format` yourself before committing — `ruff format --check` only reports
+problems; it does not rewrite files. Prefer the script over `uv run pre-commit install`:
+Cursor remaps `core.hooksPath`, and the script installs into the chained original hooks
+directory so the hook still runs.
 
 **From a `git worktree`,** both scripts work unchanged. A worktree starts without a
 `.venv`, so they create one for it (about a second; uv hardlinks from its cache), and the
@@ -122,21 +121,27 @@ uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
 ```
 
 These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three must stay
-green. `-n auto` (pytest-xdist) runs the suite on every core; it is not in `addopts`, so
-a plain `uv run pytest tests/test_zip.py` stays one process.
+green. Legs 1 and 2 pass no path, so they also run `scripts/tests/`, which CI runs once
+in the lint job instead; leg 3 passes `tests/`, as CI's core-only leg does. `-n auto`
+(pytest-xdist) runs the suite on every core; it is not in `addopts`, so a plain `uv run
+pytest tests/test_zip.py` stays one process.
 
 CI also matrixes supported **Python versions** (3.11–3.14 on Linux; 3.11/3.14 on
 macOS/Windows). A pull request push runs a reduced set (Linux 3.11 and 3.14, one
 core-only leg, Windows 3.14, free-threaded 3.13t, the benchmark and plugin jobs); the
 merge queue runs every leg plus PyPy, the distribution unar packages and the short
-Atheris fuzz, and a failure there takes the pull request out of the queue. `ci.yml`
-does not run again after the merge; a daily run tests `main` with every job. To run the
-whole set before queueing, dispatch `ci.yml` on your branch. The note at the top of
-`ci.yml` lists which job runs where. Repo `.python-version` pins the default local env to 3.11, so a matrix
-job must pin its Python on every `uv sync` / `uv run`, or newer-version legs silently
-re-test 3.11. Today the `ci.yml` test matrix sets `UV_PYTHON` and passes `--python`; the
-free-threaded job and the stress workflows pin each call with `--python` or `UV_PYTHON`.
-Keep that when you add a step.
+Atheris fuzz, and a failure there takes the pull request out of the queue. A queued
+change that touches no path on `FULL` in `scripts/ci/ci_scope.py` (the library, the
+library tests, the dependencies, the CI, and every script outside the folders its
+`NOT_FULL` lists, [`scripts/README.md`](scripts/README.md)) runs only the pull request
+set plus the free-threaded 3.15t leg there, and skips the short fuzz. `ci.yml` does not
+run again after the merge; a daily run tests `main` with every job. To run the whole set
+before queueing, dispatch `ci.yml` on your branch. The note at the top of `ci.yml` lists
+which job runs where. Repo `.python-version` pins the default local env to 3.11, so a
+matrix job must pin its Python on every `uv sync` / `uv run`, or newer-version legs
+silently re-test 3.11. Today the `ci.yml` test matrix sets `UV_PYTHON` and passes
+`--python`; the free-threaded job and the stress workflows pin each call with `--python`
+or `UV_PYTHON`. Keep that when you add a step.
 
 > **`--resolution lowest-direct` rewrites `uv.lock`**, and every later `uv sync --frozen`
 > / `uv run --no-sync` keeps the downgraded set. `./scripts/test.sh --all-configs`
@@ -150,7 +155,7 @@ jobs: lint, test legs, free-threaded leg, benchmark gate, plugin jobs). The docs
 and the OpenSpec checks live in `docs-checks.yml`, which always runs. The list of
 documentation paths is the `pull_request: paths:` filter in `ci.yml`; if a test starts
 reading a doc file, re-include that file there, as `docs/api.md` is, or a change to it
-will skip the test that reads it. `tests/test_ci_doc_paths.py` checks that the
+will skip the test that reads it. `scripts/tests/test_ci_doc_paths.py` checks that the
 re-includes come after every `!` entry. Branch protection on `main` requires no
 status checks today. If one is added, it must come from a workflow that runs on every
 pull request, because a filtered workflow reports no check at all and the PR would wait
@@ -168,12 +173,12 @@ security fixes one line each, other bug fixes summarized in one line).
 
 Whether a release can be a patch follows
 [`docs/how-it-is-built.md`](docs/how-it-is-built.md) §Versioning and stability, and
-`scripts/release.py notes` answers it from two sources:
+`scripts/release/release.py notes` answers it from two sources:
 
 - **`dev-docs/api-surface.txt`** lists the public API one line per item: the public
   submodules, names, signatures, fields, enum values, `ARCHIVE_INTEGRITY_CODES`, and
   the command's verbs, options and exit codes. A pull request that changes any of them runs
-  `uv run python scripts/api_surface.py --write` and commits the result;
+  `uv run python scripts/checks/api_surface.py --write` and commits the result;
   `tests/test_api_surface.py` fails until it does.
 - **The `needs-minor` label** marks a merged pull request that needs a minor release for
   a reason the file cannot show, such as a call that now gives a different result.
@@ -207,6 +212,14 @@ maintainer.
 
 - **Keep it simple and well typed.** Prefer straightforward code over cleverness; type
   everything that's part of, or feeds, the public API.
+- **Mark every override with `@override`** from `archivey.internal.overrides`, and only
+  overrides (`__init__`, `__new__`, `__init_subclass__` and `__post_init__` need none).
+  `ty check` enforces both over the library sources, so a renamed base method cannot
+  strand an override there. It does not check `tests/`, the CLI or the plugin packages;
+  `pyproject.toml` names the plugin hook that leaves unprotected.
+  The exception is the decoder worker scripts a child loads by path (`decoder_worker.py`,
+  `rapidgzip_worker.py`): they may not import `archivey` or `typing`, so they keep
+  their own stand-in (`tests/test_worker_scripts.py`).
 - **Share code that must agree; copy code that agrees by coincidence** (DR-23a). Before
   factoring out duplicated code, ask whether a change to one copy must reach the other.
 - **Don't accumulate debt — clean as you go** (DR-23). When you touch something, leave it
@@ -244,8 +257,8 @@ maintainer.
 - **Cross-references in docstrings use Sphinx roles**, such as
   ``:class:`~archivey.ArchiveMember` ``. The roles accepted are `:class:`, `:meth:`,
   `:func:`, `:attr:`, `:data:`, `:const:`, `:exc:`, `:mod:`, `:obj:` and `:any:`, each
-  with an optional `py:` domain. `SphinxRolesToAutorefs` in `scripts/griffe_extensions.py`
-  turns them into links on the API page, and `scripts/check_docs_rendered.py` fails the
+  with an optional `py:` domain. `SphinxRolesToAutorefs` in `scripts/docs/griffe_extensions.py`
+  turns them into links on the API page, and `scripts/checks/check_docs_rendered.py` fails the
   docs build when one leaks as text, or when its target does not resolve and is not on
   the check's list of targets known to have no anchor. Pages under `docs/` are Markdown
   that nothing rewrites, so there use mkdocstrings syntax:
@@ -375,6 +388,13 @@ maintainer.
 
 ## Testing standards
 
+- **Library tests go in `tests/`; tests of the repository's own tooling go in
+  `scripts/tests/`.** A test belongs in `scripts/tests/` when it checks a script, a
+  workflow file or another repository file and never imports `archivey`. The `test`
+  legs run `tests/` on every platform and Python; `scripts/tests/` runs once, in the
+  lint job. A library test that reads a script, such as a fixture generator, stays in
+  `tests/`. [`scripts/README.md`](scripts/README.md) says which script folders make the
+  merge queue run every leg. A bare `uv run pytest` runs both test folders.
 - **Test behaviour, not internal implementation.** Assert on what a public API returns
   and does, so refactors don't break tests gratuitously. *Narrow exception:* the
   low-level building blocks — stream primitives/helpers, format parsers, the codec
@@ -411,12 +431,12 @@ maintainer.
   exist — this repo has shipped a property test that passed a `return block_start`
   mutant, an inventory test that passed vacuously, and a test whose fixture could not
   reach the path it named. For a test the PR says fails on `main`,
-  `uv run python scripts/review_prep.py red-on-base <test ids>` runs it against the
+  `uv run python scripts/review/review_prep.py red-on-base <test ids>` runs it against the
   merge base's `src/` and prints a table for the PR body.
 - **A test you move or refactor still tests what it did.** When a change moves tests
   between files or swaps their setup for a shared helper, run the suite before it (twice,
   for the coverage baseline) and after it, and compare the runs with
-  `scripts/compare_test_runs.py` (its docstring has the commands). It fails when a test
+  `scripts/ci/compare_test_runs.py` (its docstring has the commands). It fails when a test
   is missing, new or has a different outcome, and when a test lost a large share of the
   `src/` lines it ran: a test whose body no longer reaches the library still passes, so
   only this catches it. Per-test coverage varies a little between runs, so smaller
@@ -507,7 +527,7 @@ only when someone runs `openspec archive <change> --yes` and commits the resulti
 implemented, and finished in one PR, and that PR is where the archive belongs — the
 deltas are what make `openspec/specs/` describe what actually ships. Deferring it left
 `main` with the wrong authority three times running. CI enforces this on pull requests
-and on `main` (`scripts/check_openspec_archived.py`).
+and on `main` (`scripts/checks/check_openspec_archived.py`).
 
 Practically, make the archive the change's **last task**, so checking the final box and
 applying the deltas are the same act. Most of the archived corpus is already written this
@@ -548,7 +568,7 @@ behaviour and the pre-change tree, had gone too.
 State the contract as it stands. The reasoning behind it goes in the change's
 `design.md`, which `openspec/config.yaml` rules.specs already asks for. Naming the change
 id is the last resort, for a cross-reference a reader of the archived spec would follow.
-`scripts/check_openspec_self_reference.py` enforces this over `openspec/specs/` and over
+`scripts/checks/check_openspec_self_reference.py` enforces this over `openspec/specs/` and over
 in-flight deltas; the two changes that predate it are grandfathered in its `PENDING` set,
 and it fails if an entry there goes stale, so the list can only shrink.
 
@@ -635,7 +655,7 @@ than under `docs/` behind an exclusion list — an exclusion list needs a second
 to keep in sync with the first, and drift between the two is what left six pages
 published, URL-reachable and absent from every menu.
 
-`scripts/check_docs_nav.py` enforces it, along with the rule that a published page
+`scripts/checks/check_docs_nav.py` enforces it, along with the rule that a published page
 must not link into unpublished material: prefer inlining the fact, and where the
 depth is genuinely worth keeping, link the file on GitHub with an absolute
 `https://github.com/archivey-dev/archivey/blob/main/…` URL.

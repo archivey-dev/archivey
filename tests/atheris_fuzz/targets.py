@@ -55,8 +55,10 @@ from tests.atheris_fuzz.seeds import (
     accel_deflate_seeds,
     accel_gzip_seeds,
     accel_zlib_seeds,
+    ar_seeds,
     brotli_seeds,
     bzip2_seeds,
+    cpio_seeds,
     deflate64_seeds,
     detect_format_seeds,
     filter_seeds,
@@ -68,6 +70,7 @@ from tests.atheris_fuzz.seeds import (
     open_detected_seeds,
     rar_seeds,
     sevenzip_seeds,
+    squashfs_seeds,
     tar_seeds,
     unix_compress_seeds,
     xz_seeds,
@@ -86,6 +89,14 @@ _FUZZ_CONFIG = ArchiveyConfig(
     use_rapidgzip=AcceleratorMode.OFF,
     use_indexed_bzip2=AcceleratorMode.OFF,
     decoder_limits=_FUZZ_DECODER_LIMITS,
+)
+# The sequential targets run every content probe: a binary CPIO has no reliable magic,
+# and a fuzzed input has no name to let its probe run.
+_PROBING_FUZZ_CONFIG = ArchiveyConfig(
+    use_rapidgzip=AcceleratorMode.OFF,
+    use_indexed_bzip2=AcceleratorMode.OFF,
+    decoder_limits=_FUZZ_DECODER_LIMITS,
+    always_probe_content=True,
 )
 
 # Seekable indexing on (interesting crash class); accelerators forced off.
@@ -245,6 +256,50 @@ def iso_open_one(data: bytes) -> None:
             _sample_seekable(
                 arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
             )
+    except ArchiveyError:
+        return
+
+
+def squashfs_open_one(data: bytes) -> None:
+    """List a SquashFS image and read the first files: the superblock, the tables and
+    the directory walk, then data and fragment blocks."""
+    try:
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.SQUASHFS, config=_FUZZ_CONFIG
+        ) as arc:
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
+    except ArchiveyError:
+        return
+
+
+def ar_open_one(data: bytes) -> None:
+    """Walk an ar archive, plain or inside a compression stream, and read the first
+    members' data."""
+    _sequential_open_one(data, ContainerFormat.AR)
+
+
+def cpio_open_one(data: bytes) -> None:
+    """Walk a CPIO archive of any variant, plain or inside a compression stream, and
+    read the first members' data, held hard links included."""
+    _sequential_open_one(data, ContainerFormat.CPIO)
+
+
+def _sequential_open_one(data: bytes, container: ContainerFormat) -> None:
+    try:
+        with open_archive(io.BytesIO(data), config=_PROBING_FUZZ_CONFIG) as arc:
+            if arc.format.container is not container:
+                return
+            for i, (member, stream) in enumerate(arc.stream_members()):
+                if i >= _MAX_MEMBERS:
+                    break
+                _ = member.name
+                if stream is not None and i < _MAX_TAR_READ_MEMBERS:
+                    try:
+                        stream.read(_MAX_TAR_READ_BYTES)
+                    except ArchiveyError:
+                        continue
     except ArchiveyError:
         return
 
@@ -826,6 +881,27 @@ def iter_target_specs() -> list[dict]:
             "seeds": iso_seeds,
             "fixup": None,
             "per_input_timeout": iso_per_input_timeout(),
+        },
+        {
+            "name": "squashfs",
+            "fn": squashfs_open_one,
+            "seeds": squashfs_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "ar",
+            "fn": ar_open_one,
+            "seeds": ar_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "cpio",
+            "fn": cpio_open_one,
+            "seeds": cpio_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
         },
         {
             "name": "rar_header",

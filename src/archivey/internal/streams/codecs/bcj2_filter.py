@@ -48,6 +48,7 @@ from collections.abc import Sequence
 from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
@@ -202,6 +203,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         # A position at or past the end that seek() reached without decoding to it.
         self._past_end: int | None = None
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -342,9 +344,11 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
                     f"BCJ2 {targets.label} stream has bytes past the end of the output"
                 )
 
+    @override
     def seekable(self) -> bool:
         return self._seekable
 
+    @override
     def tell(self, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -352,6 +356,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
             return self._past_end
         return self._produced - len(self._pending)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         """Move to ``offset``. Backward re-decodes from the start; forward decodes on.
 
@@ -382,6 +387,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         """Decoding can only start at offset 0: BCJ2 keeps no seek points."""
         return 0
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

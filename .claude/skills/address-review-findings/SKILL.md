@@ -233,14 +233,14 @@ most common self-inflicted CI failure. The gate is `AGENTS.md` §Every task and
 change, archive it here (`CONTRIBUTING.md` §"Archiving an OpenSpec change"), or leave the
 trailing task unchecked while the design is still moving and say so in your reply.
 
-### Before the `review` label: `scripts/review_prep.py`
+### Before the `review` label: `scripts/review/review_prep.py`
 
 Run it before you add the label, and again before every re-label:
 
 ```bash
-uv run python scripts/review_prep.py                        # sweep + width vs origin/main
-uv run python scripts/review_prep.py --base <reviewed-sha>  # a round's fixes only
-uv run python scripts/review_prep.py red-on-base tests/test_x.py::test_new ...
+uv run python scripts/review/review_prep.py                        # sweep + width vs origin/main
+uv run python scripts/review/review_prep.py --base <reviewed-sha>  # a round's fixes only
+uv run python scripts/review/review_prep.py red-on-base tests/test_x.py::test_new ...
 ```
 
 `red-on-base` needs the project environment for pytest and stops if it cannot import it;
@@ -299,6 +299,10 @@ onto the person you are asking.
 - Two authoritative sources **conflict** (spec vs docs vs code), which is the standing
   pause-and-ask rule.
 - The fix is **out of proportion** to the PR and you want a scope ruling.
+- The fix makes an operation **significantly more expensive** at run time to cover a
+  corner case: for example, re-decoding a whole member, an extra pass over the archive,
+  or holding much more in memory (maintainer, 2026-11-03). Measure the cost, and ask
+  before you push it.
 
 **Do not escalate** routine implementation choices, anything the specs or the design rules
 already settle, or questions manufactured to look thorough.
@@ -360,8 +364,13 @@ Once the round is done, the PR should record what happened to every finding.
   An open thread also blocks the merge. The `main-rules` ruleset requires conversation
   resolution (maintainer, 2026-10-27), so every unresolved review thread blocks, whatever
   its tier and whoever wrote it: a 💡, 📚 or 🎉 annotation, a disproven finding, and an
-  outdated thread too. Each one gets its reply and its resolution. If a merge is refused
-  with every thread resolved, check that the ruleset still has that requirement.
+  outdated thread too. Each one gets its reply. With the GitHub connector tool, not raw
+  `gh api`, resolve what you fixed, the annotations, a split-off once its PR or issue is
+  linked, and anything the maintainer settled on the thread. Everything else, a
+  disproven, not reproduced or won't-fix finding included, stays open for the maintainer
+  to read and resolve (maintainer, 2026-11-03: a false finding can hint at another
+  problem); name each one in your summary. If a merge is refused with every thread resolved, check that the
+  ruleset still has that requirement.
 - **Say what you did not do, and why.** Split-off and disproven findings get a line each.
 - **Attribute every settled decision to the maintainer** (§6). A bullet decided by a human
   is tagged `maintainer decision` where the others carry `important` or `nit`, so the
@@ -384,13 +393,15 @@ Once the round is done, the PR should record what happened to every finding.
   A reply on one finding's thread is headed by that finding instead —
   `### K6 · fixed in \`5afdbb5\``.
 
-- **End every comment, reply and review body with the attribution footer**, written by
-  you; the current posting paths append nothing (`AGENTS.md` §Review workflow).
+- **End every comment, reply and review body with the attribution footer** of the tool
+  you run in, written by you; the current posting paths append nothing (`AGENTS.md`
+  §Review workflow). The header's attribution line names the same tool, and the model
+  when your session tells you which one it is (`code-review-skill` §6).
 
 Reply once per round, not once per fix.
 
 **Then ask for the next round, if the review asked to see the fixes.** The round's
-closing comment says which: when it asks for them, run `scripts/review_prep.py` over the
+closing comment says which: when it asks for them, run `scripts/review/review_prep.py` over the
 fixes (§5), then add the `review` label after your final push, which starts the next
 round of the [review loop](../../../dev-docs/review-loop.md). It is the last thing you
 do — a commit pushed after it may not be in what gets reviewed. If the branch conflicts
@@ -410,10 +421,27 @@ or a decision that turned into a new code path or a redesign, and say so in your
 disposition comment. The workflow lets that label through and trusts your judgement, so
 do not spend a round on fixes the review already described.
 
-**After an approving verdict with CI green**, you may merge a straightforward PR; a tricky
-one goes to the maintainer. What counts as tricky: `AGENTS.md` §Working with the
+**After an approving verdict with CI green**, turn on squash auto-merge
+(`enable_pr_auto_merge`, the connector tool, not `gh pr merge` or raw `gh api`) for a
+straightforward PR (on
+standard and deep, after the Opus pass approves; on deep, Cursor too); a tricky one goes
+to the maintainer. Decide with the tier script as the pull request's base branch has it
+(the same ref `risk-label.yml` uses), never the pull request's copy, and never from the
+labels alone (a label can be removed, and a fork's pull request gets none):
+
+```bash
+base=main  # the pull request's base branch
+git fetch origin "$base"
+git show "origin/$base:scripts/review/review_prep.py" > scripts/review/.review_prep_base.py
+python3 scripts/review/.review_prep_base.py --base "origin/$base" tier
+rm scripts/review/.review_prep_base.py
+```
+
+It is tricky when that prints "merge: the maintainer merges this one", when the review's
+maintainer decisions block names a decision, or by `AGENTS.md` §Working with the
 maintainer. Any verdict leaves threads open, a conditional approval most of all: fix the
-conditioned findings, reply on every thread the review opened, and resolve each one, or
-the merge queue will not take the PR (the rule is in the list above). A thread you cannot
-resolve yet, such as an escalated question, keeps the PR out of the queue until it is
-answered, which is the intent.
+conditioned findings, reply on every thread the review opened, and resolve each one you
+fixed, or the merge queue will not take the PR (the rule is in the list above). A thread
+you cannot resolve yet, such as an escalated question or a finding you disproved, did not
+reproduce or will not fix (the maintainer reads and resolves those), keeps the PR out of
+the queue until it is answered, which is the intent: auto-merge stays pending until then.

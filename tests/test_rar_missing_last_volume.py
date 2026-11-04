@@ -6,7 +6,7 @@ inside them read normally, the member that runs into the missing volume raises
 channel a cut single RAR already uses. ``unrar t`` on such a set tests every
 complete member OK and fails only the one that needs the missing volume.
 
-The sets are committed (``tinyvol_cut*``, ``scripts/gen_rar_fixtures.py``) because
+The sets are committed (``tinyvol_cut*``, ``scripts/fixtures/gen_rar_fixtures.py``) because
 CI installs no ``rar`` writer: four members over several volumes, with the last
 volume deleted so the fourth member runs into it. One set is stored, the other
 solid and compressed.
@@ -39,7 +39,7 @@ _SETS = {
 
 
 def _payload(index: int, size: int) -> bytes:
-    """The bytes ``scripts/gen_rar_fixtures.py`` (``_cut_set_payload``) wrote."""
+    """The bytes ``scripts/fixtures/gen_rar_fixtures.py`` (``_cut_set_payload``) wrote."""
     digest = b"".join(
         hashlib.sha256(f"{index}:{block}".encode()).digest()
         for block in range(size // 32 + 1)

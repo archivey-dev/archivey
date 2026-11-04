@@ -14,13 +14,13 @@ the workflow prompt or the model can be measured instead of guessed.
   so a run needs no GitHub access.
 - [`results.md`](results.md): the baseline and every later run worth keeping.
 
-The runner is [`scripts/review_eval.py`](../../scripts/review_eval.py).
+The runner is [`scripts/review/review_eval.py`](../../scripts/review/review_eval.py).
 
 ## How a run works
 
 For each case the runner builds a fresh repository holding only the history up to
 `head`, with `main` at `base`, so neither the fix nor the later review rounds can be
-found. It copies today's `code-review-skill` and `scripts/review_prep.py` over the
+found. It copies today's `code-review-skill` and `scripts/review/review_prep.py` over the
 old ones, puts a stub `gh` first on the PATH, and runs `claude -p` with the reviewer
 model and a prompt adapted from the workflow's: review round 1, post nothing, edit
 nothing, and give the full review as the answer. A second, cheaper model reads the
@@ -49,15 +49,17 @@ run, so scores stay comparable with each other but not with the loop:
   are no earlier review comments to read.
 
 ```text
-python3 scripts/review_eval.py list
-python3 scripts/review_eval.py run --out /tmp/eval --case zstd-seek-point-in-frame
-python3 scripts/review_eval.py run --out /tmp/eval --jobs 5
-python3 scripts/review_eval.py judge --out /tmp/eval    # rescore saved reviews
-python3 scripts/review_eval.py run --out /tmp/eval --model claude-sonnet-5-5 --effort xhigh
-python3 scripts/review_eval.py run --out /tmp/eval --install   # PR's dependencies first
+python3 scripts/review/review_eval.py list
+python3 scripts/review/review_eval.py run --out /tmp/eval --case zstd-seek-point-in-frame
+python3 scripts/review/review_eval.py run --out /tmp/eval --jobs 5
+python3 scripts/review/review_eval.py judge --out /tmp/eval    # rescore saved reviews
+python3 scripts/review/review_eval.py run --out /tmp/eval --model claude-sonnet-5-5 --effort xhigh
+python3 scripts/review/review_eval.py run --out /tmp/eval --install   # PR's dependencies first
 ```
 
-Each case is a full review, one to two dollars of quota with Sonnet (see the costs in
+Each case is a full review. The default model is Opus, which the loop runs for a
+standard or deep pull request's first look: about eight dollars of quota a case, against
+one to two with `--model claude-sonnet-5-5` (see the costs in
 [`results.md`](results.md)). Try a change on one case first; run the whole set once
 the change is final, and add the line to `results.md` in the same PR.
 
@@ -67,7 +69,11 @@ Five cases is a small set and one review is one sample: a model can catch a bug 
 one run and miss it on the next. Treat a change of one case as noise, a change of
 two or more, or a `yes` turning into a `no` on the same case across two runs, as
 signal. The judge reads only for the named bug; it does not count false positives,
-so read the saved `review.md` files when the number of findings changes a lot.
+so read the saved `review.md` files when the number of findings changes a lot. Each case
+also keeps its `transcript.jsonl` and a `reads.json` with what the reviewer read (the
+characters each file and each tool returned) and the run's token totals, to see where
+a change to the reading moves the cost. `summary.md` totals the turns and the guide
+reads (the paths `GUIDES` lists) across the cases.
 
 The isolation is by prompt as well as by construction. The reviewer runs with Bash,
 so if it ignored the prompt it could reach another checkout, or GitHub through a

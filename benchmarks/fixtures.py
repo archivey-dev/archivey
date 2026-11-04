@@ -348,7 +348,7 @@ def unpacked_bcj(scale: Scale) -> int:
 
 
 # Payload size for the tiny-member listing corpora. Public because
-# ``scripts/gen_rar_fixtures.py`` builds the committed RAR listing fixtures from the
+# ``scripts/fixtures/gen_rar_fixtures.py`` builds the committed RAR listing fixtures from the
 # same recipe — ``SCALES`` and this constant are the single source of truth.
 LIST_MEMBER_SIZE = 16
 

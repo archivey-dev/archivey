@@ -1,9 +1,9 @@
 """How close one reader came to each reader-lifetime limit: a private record.
 
-Internal on purpose. ``scripts/scan_archives.py`` and ``archivey extract --dry-run``
-read it to tune the defaults from a real corpus; it becomes public, if at all, once
-such a scan shows which numbers are useful (a public name would be kept under the
-deprecate-first policy).
+Internal on purpose. ``scripts/investigations/scan_archives.py`` and ``archivey extract
+--dry-run`` read it to tune the defaults from a real corpus; it becomes public, if at
+all, once such a scan shows which numbers are useful (a public name would be kept under
+the deprecate-first policy).
 
 What it holds, and where each number comes from:
 
@@ -45,7 +45,10 @@ class ResourceUsage:
 
     The decoder memory and spool numbers are peaks and the key-derivation rounds a
     total. The listing numbers are the tracker's current totals: a failed walk that is
-    retried resets them, so they count the last walk.
+    retried resets them, so they count the last walk. They include the members a
+    plugin reader holds back (``ReaderContext.hold()``) while it holds them; a hold
+    not yielded is released when the walk ends, however it ends, so a stopped walk
+    counts the members it listed.
     """
 
     decoder_memory: int = 0

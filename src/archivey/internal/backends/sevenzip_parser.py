@@ -51,7 +51,13 @@ from archivey.internal.backends.sevenzip_methods import (
     is_aes,
     lookup,
 )
-from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
+from archivey.internal.sfx import (
+    SFX_MAX,
+    cut_signature_error,
+    describe_scan_miss,
+    is_cut_signature,
+    scan_for_magic,
+)
 from archivey.internal.streams.streamtools import read_exact
 from archivey.types import CompressionAlgorithm, CompressionMethod
 
@@ -569,15 +575,20 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
     identified candidate is used so a damaged or empty payload still reaches the
     parser.
 
-    Raises :class:`CorruptionError` on a miss (no needle, or the rejected-candidate
-    cap). A source with no 7z magic in the window fails loudly rather than opening
-    as an empty archive; a source that has one opens or names its damage.
-    ``fp`` is restored to its starting position.
+    Raises :class:`TruncatedError` when the source ends before a whole signature, every
+    byte of it matching (:func:`~archivey.internal.sfx.is_cut_signature`), and
+    :class:`CorruptionError` on a miss (no needle, or the rejected-candidate cap).
+    A source with no 7z magic in the window fails loudly rather than opening as an empty
+    archive; a source that has one opens or names its damage. ``fp`` is restored to its
+    starting position.
     """
     start = fp.tell()
     try:
-        if fp.read(len(MAGIC_7Z)) == MAGIC_7Z:
+        head = read_exact(fp, len(MAGIC_7Z))
+        if head == MAGIC_7Z:
             return 0
+        if is_cut_signature(head, (MAGIC_7Z,)):
+            raise cut_signature_error("7z", len(head))
         fp.seek(start)
         # Imported here: sevenzip_detect imports this module for the signature-header
         # constants and unpack_signature_header.

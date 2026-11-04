@@ -411,4 +411,4 @@ Suggested sequence: **W3** (deadline) → **W1** → **W2** → **W4** → **W5*
 
 **When each `openspec` change is implemented**, archive it in a small follow-up PR
 (`openspec archive <id> --yes`, commit the resulting `openspec/specs/` updates) —
-`scripts/check_openspec_archived.py` enforces this.
+`scripts/checks/check_openspec_archived.py` enforces this.

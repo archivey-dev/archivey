@@ -21,9 +21,9 @@ on:
     # globs with `!`, then the two doc paths that tests read, re-included (later
     # patterns win): docs/api.md (test_public_api) and review/problem-catalogue/
     # (test_review_problem_catalogue). Add a path there when a test starts reading
-    # another doc file. tests/test_ci_doc_paths.py checks that the re-includes come
-    # after every `!` entry, and that atheris-fuzz.yml (called in the merge queue) has
-    # no pull_request trigger of its own.
+    # another doc file. scripts/tests/test_ci_doc_paths.py checks that the re-includes
+    # come after every `!` entry, and that atheris-fuzz.yml (called in the merge queue)
+    # has no pull_request trigger of its own.
     # Two cases skip this workflow although code changed, both from GitHub's filter: a
     # rename is seen under its new name only, so moving code into docs/ alone skips it;
     # and a diff over 3,000 files whose matches fall past the first 3,000 skips it too.
@@ -52,18 +52,21 @@ on:
   workflow_dispatch:
 
 # A pull request push runs a reduced set of jobs; the merge queue, the daily run and a
-# dispatched run get all of them. Every job below runs on pull requests unless it says
-# otherwise. On a pull request: lint, the `test` legs (Linux 3.11 and 3.14 [all], Linux
-# 3.11 core-only, Windows 3.14 [all]), free-threaded 3.13t, the structural benchmark and
-# the three plugin jobs. Only past it: the `test-queue` legs (the other Pythons, 3.14
-# core-only, the minimum versions, macOS, Windows 3.11), 3.15t, the distribution unar
-# packages, PyPy and the short Atheris fuzz. A failure there takes the pull request out
-# of the queue. The split exists because the organization's runners are shared (20 jobs
-# at once, 5 of them macOS): full runs on every push kept the queue's runs waiting for a
-# runner until they timed out (2026-10-29). Dispatch this workflow on a branch to run
-# everything before queueing. Pull request runs read the Actions caches saved on main,
-# which only the daily run saves now, so after a `uv.lock` change they may install cold
-# until the next daily run (or a dispatch on main).
+# dispatched run get all of them, except that a merge group changing no library, library
+# test, dependency or CI path runs only the pull request set plus the free-threaded
+# 3.15t leg (the `scope` job). Every job below runs on pull requests unless it says
+# otherwise. On a pull request: lint (with the script tests), the `test` legs (Linux
+# 3.11 and 3.14 [all], Linux 3.11 core-only, Windows 3.14 [all]), free-threaded 3.13t,
+# the structural benchmark and the LZO check against liblzo2. Only past it: the
+# `test-queue` legs (the other Pythons, 3.14 core-only, the minimum versions, macOS,
+# Windows 3.11), 3.15t, the distribution unar packages, PyPy and the short Atheris fuzz.
+# A failure there takes the pull request out of the queue. The split exists because the
+# organization's runners are shared (20 jobs at once, 5 of them macOS): full runs on
+# every push kept the queue's runs waiting for a runner until they timed out
+# (2026-10-29). Dispatch this workflow on a branch to run everything before queueing.
+# Pull request runs read the Actions caches saved on main, which only the daily run
+# saves now, so after a `uv.lock` change they may install cold until the next daily run
+# (or a dispatch on main).
 #
 # Cancel an in-progress run when a newer commit arrives for the same PR/branch, so
 # rapid pushes don't pile up redundant full-matrix runs. Outside pull requests the event
@@ -73,10 +76,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Lint + type-check once (these are environment-independent). No continue-on-error:
-  # a failure here fails CI — the "clean on Pyrefly AND ty" gate is enforced.
+  # Lint + type-check once (these are environment-independent), then the tests of the
+  # scripts (scripts/tests/), which read the repository's own files and never the
+  # library, so one leg is enough. The `test` legs run tests/ only. No
+  # continue-on-error: a failure here fails CI — the "clean on Pyrefly AND ty" gate is
+  # enforced.
   lint:
-    name: Lint & type-check
+    name: Lint, type-check & script tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -94,13 +100,15 @@ jobs:
         # the everyday recommended install; core-only is covered by the test matrix.
         run: uv sync --group dev --extra all
       - name: Ruff lint
-        run: uv run ruff check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/ packages/archivey-ar/
+        run: uv run ruff check src/ tests/ scripts/ benchmarks/
       - name: Ruff format
-        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/ packages/archivey-squashfs/ packages/archivey-cpio/ packages/archivey-ar/
+        run: uv run ruff format --check src/ tests/ scripts/ benchmarks/
       - name: Pyrefly
         run: uv run pyrefly check
       - name: ty
         run: uv run ty check
+      - name: Script tests
+        run: uv run --no-sync pytest scripts/tests -q -n auto --no-cov
 
   test:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
@@ -111,7 +119,7 @@ jobs:
     # The full-suite pytest steps below run on all cores (`-n auto`, pytest-xdist): 4 vCPUs
     # on Linux and Windows, 3 on macOS. Measured 2026-10-02 on 4 cores, 3.11: 13m15s serial
     # with coverage, 1m52s with -n 4 and --no-cov, same results. The distro-unar probe and
-    # the scripts/ci_run_native_modules.py steps are one process by design.
+    # the scripts/ci/ci_run_native_modules.py steps are one process by design.
     # Force every uv sync/run in this job onto the matrix interpreter. Without this,
     # `.python-version` (3.11) wins and "py3.12/3.13/3.14" legs silently re-test 3.11.
     # The legs split into two jobs, `test` here (every run) and `test-queue` (not on pull
@@ -219,7 +227,7 @@ jobs:
       # Install *unrar only* — never the RARLAB `rar` writer, on any leg. The corpus's
       # declarative RAR cases used to need it and so ran nowhere; their archives are now
       # committed under tests/fixtures/corpus/rar/ and pinned to the entry definitions
-      # by a manifest (scripts/gen_corpus_rar_fixtures.py). That exercises the RAR
+      # by a manifest (scripts/fixtures/gen_corpus_rar_fixtures.py). That exercises the RAR
       # column on *every* platform rather than only where a trialware writer happens to
       # be installed, and keeps CI free of a licensing decision. See ADR 0016.
       #
@@ -263,7 +271,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/unar-1.10.8
-          key: unar-xadmaster-v1.10.8-ud1.1-${{ hashFiles('scripts/install-unar-from-source.sh') }}-${{ steps.unar-image.outputs.image }}-${{ runner.arch }}
+          key: unar-xadmaster-v1.10.8-ud1.1-${{ hashFiles('scripts/ci/install-unar-from-source.sh') }}-${{ steps.unar-image.outputs.image }}-${{ runner.arch }}
       # Installed on a cache hit too: the script rebuilds over a cached binary that does
       # not print its banner (a cache saved after a failed step), and that needs these.
       - name: Install unar build dependencies (Linux)
@@ -275,7 +283,7 @@ jobs:
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: |
           DEST="${RUNNER_TEMP}/unar-1.10.8"
-          ./scripts/install-unar-from-source.sh --dest "$DEST"
+          ./scripts/ci/install-unar-from-source.sh --dest "$DEST"
           echo "$DEST" >> "$GITHUB_PATH"
       # 7-Zip 26.05: the runner's 7z predates the RISC-V filter (7-Zip 24), which
       # tests/test_sevenzip_riscv.py writes with a live 7-Zip as its oracle; without one
@@ -287,12 +295,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/7zip-26.05
-          key: 7zip-26.05-${{ hashFiles('scripts/install-7zip-from-source.sh') }}-${{ steps.unar-image.outputs.image }}-${{ runner.arch }}
+          key: 7zip-26.05-${{ hashFiles('scripts/ci/install-7zip-from-source.sh') }}-${{ steps.unar-image.outputs.image }}-${{ runner.arch }}
       - name: Build 7-Zip 26.05 and put 7zz on PATH (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: |
           DEST="${RUNNER_TEMP}/7zip-26.05"
-          ./scripts/install-7zip-from-source.sh --dest "$DEST"
+          ./scripts/ci/install-7zip-from-source.sh --dest "$DEST"
           echo "$DEST" >> "$GITHUB_PATH"
       # Homebrew disabled the `rar` cask on 2026-09-01 (official binaries fail
       # Gatekeeper notarization). Compile RARLAB UnRAR from a pinned git commit
@@ -306,13 +314,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/rarlab-unrar
-          key: rarlab-unrar-${{ hashFiles('scripts/install-rarlab-unrar.sh') }}-${{ runner.os }}-${{ runner.arch }}
+          key: rarlab-unrar-${{ hashFiles('scripts/ci/install-rarlab-unrar.sh') }}-${{ runner.os }}-${{ runner.arch }}
           save-always: true
       - name: Install unrar (macOS)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
         run: |
           DEST="${RUNNER_TEMP}/rarlab-unrar"
-          ./scripts/install-rarlab-unrar.sh --dest "$DEST"
+          ./scripts/ci/install-rarlab-unrar.sh --dest "$DEST"
           echo "$DEST" >> "$GITHUB_PATH"
           test -x "$DEST/unrar"
           command -v rar && exit 1 || true
@@ -339,7 +347,7 @@ jobs:
           # previous pin's binary on the run that moves the pin, the installer
           # would find a valid UnRAR.exe and accept it, and CI would go on
           # testing the old version.
-          key: rarlab-unrar-${{ hashFiles('scripts/install-rarlab-unrar.ps1') }}-${{ runner.os }}-${{ runner.arch }}
+          key: rarlab-unrar-${{ hashFiles('scripts/ci/install-rarlab-unrar.ps1') }}-${{ runner.os }}-${{ runner.arch }}
           save-always: true
       - name: Install unrar (Windows)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Windows'
@@ -350,7 +358,7 @@ jobs:
           # have broken solid ``unrar p`` pipes on this matrix). The script no-ops
           # when the cache already restored UnRAR.exe.
           $dest = Join-Path $env:RUNNER_TEMP 'rarlab-unrar'
-          ./scripts/install-rarlab-unrar.ps1 -Dest $dest
+          ./scripts/ci/install-rarlab-unrar.ps1 -Dest $dest
           # Same belt-and-suspenders as the macOS leg's `test -x`: assert the
           # binary before putting the directory on PATH, so a script that
           # somehow returns 0 without one fails here and not a step later.
@@ -432,7 +440,7 @@ jobs:
         # PPMd raw streams are intentionally not in this batch — see next step.
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/ci_run_native_modules.py
+          python scripts/ci/ci_run_native_modules.py
 
       - name: Run PPMd raw stream tests
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
@@ -442,7 +450,7 @@ jobs:
         # still trip the parent at exit (see known-issues.md).
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/ci_run_native_modules.py
+          python scripts/ci/ci_run_native_modules.py
           --modules tests/test_ppmd_raw_streams.py
           --allow-exit-after-green
 
@@ -455,11 +463,57 @@ jobs:
           pytest tests/test_property_safety.py -q -n auto
           ${{ matrix.coverage && '--cov-report=term-missing' || '--no-cov' }}
 
+  # Whether a merge-queue run needs every job. A group that changes none of the paths in
+  # `scripts/ci/ci_scope.py` (the library, the plugin packages, the library tests, the
+  # dependencies, this CI, and every script outside the folders its NOT_FULL lists) runs
+  # what a pull request push runs, on the merged tree, and skips the four queue-only
+  # jobs that wait on this one: `test-queue`, `unar-distro-packages`, `pypy` and
+  # `atheris`. The daily run still runs them all. Only a merge_group runs it; a skipped
+  # or failed scope, and a diff the compare API cut off, mean the full run. The four jobs
+  # start after it in every group, a few seconds plus a runner wait.
+  scope:
+    name: Queue scope
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci/ci_scope.py
+          sparse-checkout-cone-mode: false
+      - name: Changed paths
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" > /tmp/compare.json
+          # The compare API lists at most 300 files.
+          truncated=$(jq '(.files | length) >= 300' /tmp/compare.json)
+          jq -r '.files[] | .filename, (.previous_filename // empty)' /tmp/compare.json \
+            > /tmp/paths.txt
+          args=()
+          [ "$truncated" = true ] && args+=(--truncated)
+          decision=$(python3 scripts/ci/ci_scope.py "${args[@]}" < /tmp/paths.txt)
+          echo "$decision" >> "$GITHUB_OUTPUT"
+          # Renames list both names, so count each path once.
+          echo "Paths considered: $(sort -u /tmp/paths.txt | wc -l); $decision" \
+            >> "$GITHUB_STEP_SUMMARY"
+
   # The test legs that run only past a pull request: in the merge queue, the daily run
-  # and a dispatched run (see the note at the top). Same steps as `test`.
+  # and a dispatched run (see the note at the top). Same steps as `test`. In the merge
+  # queue, only when `scope` says the group needs them.
   test-queue:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
-    if: github.event_name != 'pull_request'
+    needs: scope
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
@@ -530,7 +584,8 @@ jobs:
   # Not on pull requests: the packages change on the distributions' schedule, not ours.
   unar-distro-packages:
     name: unar package / ${{ matrix.image }}
-    if: github.event_name != 'pull_request'
+    needs: scope
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ubuntu-latest
     container: mirror.gcr.io/library/${{ matrix.image }}
     timeout-minutes: 15
@@ -669,11 +724,12 @@ jobs:
   # the "Install what installs" step writes the outcome per package to the job summary.
   # The test steps print no tracebacks (--tb=no) and write a JUnit report (xunit1, which
   # keeps each test's file for its node id); the step after each prints one line per
-  # failure from it (scripts/junit_failure_lines.py), so the whole result fits in the
+  # failure from it (scripts/ci/junit_failure_lines.py), so the whole result fits in the
   # part of the log the GitHub API returns. Not on pull requests.
   pypy:
     name: ${{ matrix.python }}
-    if: github.event_name != 'pull_request'
+    needs: scope
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -701,7 +757,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
       # Core-only on PyPy runs on the daily run and on a dispatched run (a release gate,
-      # scripts/release.py), not in the merge queue: it is about five of this job's fifteen
+      # scripts/release/release.py), not in the merge queue: it is about five of this job's fifteen
       # minutes, and the CPython core-only legs already cover the fallback paths.
       - name: Run full suite (core-only)
         if: ${{ !cancelled() && github.event_name != 'merge_group' }}
@@ -714,7 +770,7 @@ jobs:
           -m 'not ppmd_native_stress' --junitxml=pypy-core.xml -o junit_family=xunit1
       - name: Failures (core-only), one line each
         if: ${{ !cancelled() && github.event_name != 'merge_group' }}
-        run: python3 scripts/junit_failure_lines.py pypy-core.xml
+        run: python3 scripts/ci/junit_failure_lines.py pypy-core.xml
       - name: Install what installs (runtime extras, then test-only packages)
         if: ${{ !cancelled() }}
         run: |
@@ -746,7 +802,7 @@ jobs:
           -m 'not ppmd_native_stress' --junitxml=pypy-extras.xml -o junit_family=xunit1
       - name: Failures (with what installed), one line each
         if: ${{ !cancelled() }}
-        run: python3 scripts/junit_failure_lines.py pypy-extras.xml
+        run: python3 scripts/ci/junit_failure_lines.py pypy-extras.xml
 
   # Blocking gate = **structural only** (seek baselines + solid decode-once).
   # Wall-time ratios are noisy on shared runners; they run separately, non-blocking,
@@ -784,12 +840,10 @@ jobs:
       - name: Pytest structural gate + measurement unit tests
         run: uv run --no-sync pytest tests/test_benchmark_gate.py tests/test_measurement.py -q
 
-  # The SquashFS reader in packages/archivey-squashfs: a format added from outside the
-  # library, through the public plugin API only. Its own tests, against images
-  # mksquashfs wrote (tests/data/make-images.sh), with lz4 for the LZ4 image and
-  # python-lzo for the second LZO decoder.
-  squashfs-plugin:
-    name: archivey-squashfs plugin
+  # archivey's LZO decoder against liblzo2 through python-lzo, which archivey uses in a
+  # child process when it is installed but never depends on (GPL, no Linux wheels).
+  lzo-oracle:
+    name: LZO against liblzo2
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -803,67 +857,24 @@ jobs:
         run: uv python install 3.11
       - name: Install liblzo2, which python-lzo builds against
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends liblzo2-dev
-      - name: Sync, then install the package over it
-        # python-lzo too, so the tests check the package's LZO decoder against liblzo2.
+      - name: Sync, then install python-lzo over it
+        # The import check fails the job here, rather than letting the comparison skip.
         run: |
           uv sync --group dev --extra all
-          uv pip install -e packages/archivey-squashfs --no-deps
           uv pip install python-lzo
+          uv run --no-sync python -c "import lzo"
       - name: Pytest
-        run: uv run --no-sync pytest packages/archivey-squashfs/tests -q --no-cov -rs
-
-  # The CPIO reader in packages/archivey-cpio: a format read in one forward pass, added
-  # from outside the library through the public plugin API only. Its own tests, against
-  # archives GNU cpio and bsdcpio wrote (tests/data/make-archives.sh), from a file and
-  # from a pipe.
-  cpio-plugin:
-    name: archivey-cpio plugin
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Set up Python
-        run: uv python install 3.11
-      - name: Sync, then install the package over it
-        run: |
-          uv sync --group dev
-          uv pip install -e packages/archivey-cpio --no-deps
-      - name: Pytest
-        run: uv run --no-sync pytest packages/archivey-cpio/tests -q --no-cov -rs
-
-  # The ar reader in packages/archivey-ar: a second format read in one forward pass, to
-  # test the same API from a different shape (a long-name table carried across the walk,
-  # names stored in the data area). Its own tests, against archives GNU ar, bsdtar and
-  # llvm-ar wrote (tests/data/make-archives.sh), from a file and from a pipe.
-  ar-plugin:
-    name: archivey-ar plugin
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Set up Python
-        run: uv python install 3.11
-      - name: Sync, then install the package over it
-        run: |
-          uv sync --group dev
-          uv pip install -e packages/archivey-ar --no-deps
-      - name: Pytest
-        run: uv run --no-sync pytest packages/archivey-ar/tests -q --no-cov -rs
+        # This is the job with python-lzo, so the comparison with liblzo2 and the
+        # decode in a child process run nowhere else.
+        run: >-
+          uv run --no-sync pytest tests/test_squashfs.py tests/test_lzo.py
+          tests/test_lzop.py -q --no-cov -rs
 
   # The short Atheris fuzz (atheris-fuzz.yml in its short mode, three shards), in the
   # merge queue only. The nightly and dispatched full runs stay in that workflow.
   atheris:
-    if: github.event_name == 'merge_group'
+    needs: scope
+    if: ${{ !cancelled() && github.event_name == 'merge_group' && needs.scope.outputs.full != 'false' }}
     uses: ./.github/workflows/atheris-fuzz.yml
     with:
       short: true
@@ -876,7 +887,7 @@ jobs:
   gate:
     name: CI gate
     if: ${{ always() && github.event_name == 'merge_group' }}
-    needs: [lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, squashfs-plugin, cpio-plugin, ar-plugin, atheris]
+    needs: [scope, lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, lzo-oracle, atheris]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

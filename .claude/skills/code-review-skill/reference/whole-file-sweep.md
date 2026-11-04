@@ -22,7 +22,7 @@ anything**:
   therefore gets its findings *and* a marker comment, which is the point: the marker says
   the file was read end to end, and the findings say what was in it. Keeping markers in one
   comment type is what makes the whole set fetchable in one call — the counting command in
-  [`scripts/sweep_coverage.py`](../../../../scripts/sweep_coverage.py) reads the issue
+  [`scripts/review/sweep_coverage.py`](../../../../scripts/review/sweep_coverage.py) reads the issue
   comments and nothing else.
 - Its **first line** is the marker, in exactly this shape:
 
@@ -101,7 +101,7 @@ the "Open every comment with a header" opener (`SKILL.md` §6) rather than sitti
 the reviewer and the head. Attribution and footer rules are unchanged.
 
 Coverage is counted from these markers, never from thread counts, by
-`scripts/sweep_coverage.py` (its docstring has the recipe).
+`scripts/review/sweep_coverage.py` (its docstring has the recipe).
 
 ## Sweeping a doc rather than code
 

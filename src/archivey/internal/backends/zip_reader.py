@@ -73,6 +73,7 @@ from archivey.diagnostics import (
     LocalHeaderContext,
     MemberHeaderRecordContext,
     OffsetWrapContext,
+    ReaderDisagreementContext,
     SizeWrapContext,
     raw_name_to_base64,
 )
@@ -146,12 +147,13 @@ from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
-from archivey.internal.logs import backends as logger
+from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
     normalize_member_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
@@ -593,12 +595,14 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
         self._payload_complete = payload_complete
         super().__init__(inner)
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         try:
             return super().read(n)
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         # Overridden too, so the zero-copy passthrough stays on and still translates.
         try:
@@ -606,8 +610,12 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        # A forward seek decrypts and decodes what it skips.
+        # A seek of a compressed member decodes nothing until the next read, which the
+        # overrides above classify. The seek still raises for a ``SEEK_END`` (finding
+        # the size decodes to the end), a seek of a stored member (decryption), and a
+        # report the collector escalates.
         try:
             return super().seek(offset, whence)
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised
@@ -1250,6 +1258,32 @@ def _stored_as_directory(name: str, create_system: CreateSystem) -> bool:
     )
 
 
+# The MS-DOS directory attribute, in the low byte of a DOS/Windows creator's
+# ``external_attr`` (APPNOTE 4.4.15).
+_DOS_DIRECTORY_ATTRIBUTE = 0x10
+
+
+def _marked_directory(
+    external_attr: int, full_mode: int, create_system: CreateSystem
+) -> bool:
+    """Whether the entry's attributes mark it a directory: a Unix creator's directory
+    mode, or a DOS/Windows creator's directory attribute bit.
+
+    APPNOTE never says a directory's name ends in ``/``; that is Info-ZIP's
+    convention, and unzip, ``zipfile`` and Java's ``ZipEntry`` go by the name alone.
+    The spec marks the type in the attributes (4.4.15), and 7-Zip and libarchive
+    read it there, so an entry these mark is a directory with or without the slash.
+    An entry that also carries the reparse-point bit is a link instead, and one whose
+    data turns out not to be a link buffer falls back by its name alone
+    (``_reparse_fallback_type``); only a crafted archive reaches that.
+    """
+    if create_system is CreateSystem.UNIX:
+        return stat.S_ISDIR(full_mode)
+    return create_system in _DOS_ATTRIBUTE_SYSTEMS and bool(
+        external_attr & _DOS_DIRECTORY_ATTRIBUTE
+    )
+
+
 def _is_flagged_reparse_point(external_attr: int, create_system: CreateSystem) -> bool:
     """Whether a DOS/Windows creator set ``FILE_ATTRIBUTE_REPARSE_POINT`` on the entry."""
     return create_system in _DOS_ATTRIBUTE_SYSTEMS and bool(
@@ -1752,6 +1786,7 @@ class ZipReader(BaseArchiveReader):
             logger=logger,
         )
 
+    @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, io.UnsupportedOperation):
             if "seek" in str(exc):
@@ -1785,6 +1820,7 @@ class ZipReader(BaseArchiveReader):
             return TruncatedError(f"Truncated ZIP member data: {exception_detail(exc)}")
         return None
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         """Walk the central directory, yielding each member as its entry is parsed.
 
@@ -2066,6 +2102,7 @@ class ZipReader(BaseArchiveReader):
             logger=logger,
         )
 
+    @override
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
@@ -2466,6 +2503,14 @@ class ZipReader(BaseArchiveReader):
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
+        # A directory by its attributes whose name lacks the final "/": a directory,
+        # as 7-Zip and libarchive extract it, even over data (APPNOTE 4.3.8 gives a
+        # directory none; the bytes are reported below, as for a "d/" entry's).
+        directory_by_attribute = member_type is MemberType.FILE and _marked_directory(
+            external_attr, full_mode, create_system
+        )
+        if directory_by_attribute:
+            member_type = MemberType.DIRECTORY
         # Convert "\\" to "/" only for DOS/Windows-origin entries (where it is a separator);
         # a Unix (or other) entry keeps a backslash as a literal filename character.
         backslash_is_separator = host in _BACKSLASH_SEPARATOR_HOSTS
@@ -2758,6 +2803,25 @@ class ZipReader(BaseArchiveReader):
             self._emit_offset_wrapped(member, entry, index)
         if size_wrapped:
             self._emit_size_wrapped(member, entry, index)
+        if directory_by_attribute:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_READERS_DISAGREE,
+                message=(
+                    f"ZIP entry {quoted(name_source)} is a directory by its "
+                    "attributes but its name has no final '/': it is listed as the "
+                    f"directory {quoted(member.name)}, as 7-Zip and bsdtar extract "
+                    "it; unzip and zipfile go by the name and write a file."
+                ),
+                context=ReaderDisagreementContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    shape="directory_attribute_without_slash",
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=integrity_logger,
+            )
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; a read delivers them.
@@ -4192,6 +4256,7 @@ class ZipReader(BaseArchiveReader):
             self._stamp_error_context(exc, member.name)
             raise
 
+    @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
@@ -4230,6 +4295,7 @@ class ZipReader(BaseArchiveReader):
         bytes the pass kept in a forward walk."""
         return lambda: self._open_member_handle(member)
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         # The member carries its own locator (`_raw`), so data access needs no name/id
         # map, and a duplicate member name can't resolve to the wrong entry.
@@ -4270,14 +4336,17 @@ class ZipReader(BaseArchiveReader):
             return self._open_encrypted_member(loc, member)
         return self._open_codec_member(loc, member)
 
+    @override
     def _archive_comment(self) -> str | None:
         comment = self._end.comment
         # The archive comment has no UTF-8 flag of its own.
         return self._decode_unflagged_comment(comment) if comment else None
 
+    @override
     def _cost_receipt(self) -> CostReceipt:
         return _ZIP_COST
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         info_extra = ArchiveInfoExtra({"zip.volume_count": self._volume_count})
         return ArchiveInfo(
@@ -4295,6 +4364,7 @@ class ZipReader(BaseArchiveReader):
             extra=info_extra,
         )
 
+    @override
     def _close_archive(self) -> None:
         # Wait out an in-flight read before the handle goes; a later read then fails
         # its SharedView check_open with the closed-archive error. The base closes the
@@ -4500,6 +4570,7 @@ class ZipReadBackend(ReadBackend):
     SUPPORTS_PASSWORD = True  # per-member ZipCrypto/AES encryption
     USES_ENCODING = True  # decodes unflagged names that are not valid UTF-8
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

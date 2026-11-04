@@ -13,6 +13,7 @@ site: everything under `docs/` is for users, and everything here is not.
 | [Design rules](design-rules.md) | The maintainer's recurring rulings as rules: principles, how to weigh consistency against the official tool, and what still needs a decision. Read before asking a design question |
 | [Threat model](threat-model.md) | Attackers, trust boundaries, defended properties, accepted non-guarantees, open design gaps |
 | [Compression-library analysis](library-analysis.md) | Per-codec backend choice and rationale |
+| [tar-minefield results](tar-minefield-results.md) | Archivey's TAR reader on the 81 tar-minefield cases next to GNU tar and tar-codec, per policy, with the reason for each difference. Generated and kept current by `tests/test_tar_minefield_corpus.py` |
 | [Known issues](known-issues.md) | Live archivey defects and live upstream bugs archivey works around: symptom, what archivey does, what remains, and a link to the evidence |
 | [Writing English](writing-english.md) | Plain-English guidance for repo prose, PR text and comments. Advice, not a gate |
 | [Fuzzing](fuzzing.md) | The Atheris coverage-guided fuzz: CI cadence, local smoke, deepening one target |
@@ -37,7 +38,7 @@ human UI.
 | `VISION.md` | The product vision and the tie-breaker when trade-offs conflict. User distill: `docs/philosophy.md` |
 | `CONTRIBUTING.md` | Coding and testing standards, the gates, OpenSpec mechanics, and where a new doc goes |
 | `AGENTS.md` | What every agent session needs; `CLAUDE.md` adds Claude Code specifics |
-| `docs/` | The **published** user guide, and nothing else. Every page has a nav entry in `mkdocs.yml` (`scripts/check_docs_nav.py`) |
+| `docs/` | The **published** user guide, and nothing else. Every page has a nav entry in `mkdocs.yml` (`scripts/checks/check_docs_nav.py`) |
 | `openspec/specs/<capability>/spec.md` | The authoritative machine-checkable contract. When it disagrees with the handbook or prose docs, pause and ask (`CONTRIBUTING.md` §Working with the specs) |
 | `openspec/changes/<change>/` | Committed work in flight: proposal, design, tasks. `openspec/project.md` has the capability map |
 | `review/` | Commissioned deep reviews: the lifecycle and brief conventions in `review/README.md`, finished rounds under `review/archive/` |

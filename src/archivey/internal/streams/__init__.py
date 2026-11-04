@@ -15,6 +15,8 @@ Package map:
 - :mod:`.decompressor_stream` — seekable decode *engine* (``DecompressorStream`` +
   ``Decoder`` protocol) that the codec decoders plug into.
 - :mod:`.child_process` — spawning and reaping the codec child processes.
+- :mod:`.kept_errors` — keeping an error a stream raises again without its frames
+  (shared by ``codecs`` and the streams above them).
 - :mod:`.native_memory` — what PyPy's GC is told about in-process decoders' native
   buffers, and the liblzma end a decoder's close calls (shared by ``codecs`` and the
   engine, so it sits below both).

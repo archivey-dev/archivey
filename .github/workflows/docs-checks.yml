@@ -35,22 +35,22 @@ jobs:
       # published-but-unlisted pages at INFO level and exits 0, which is how six pages
       # stayed URL-reachable and search-indexed while absent from every menu.
       - name: Check docs tree completeness
-        run: uv run --python 3.12 --group docs python scripts/check_docs_nav.py
+        run: uv run --python 3.12 --group docs python scripts/checks/check_docs_nav.py
       - name: Check internal markdown links
         # Relative links under dev-docs/ and .claude/skills/ (pair-workflow + skills).
         # Stdlib-only; does not need the docs group.
-        run: uv run --python 3.12 --no-sync python scripts/check_internal_md_links.py
+        run: uv run --python 3.12 --no-sync python scripts/checks/check_internal_md_links.py
       - name: Check the issue forms and pull request template
         # Most files the test reads are .md, which ci.yml's path filter excludes, so ci.yml
         # would skip it on the pull requests that break them. PyYAML is named here so the
         # parse check cannot skip; `-o addopts=` drops coverage and xdist flags.
-        run: uv run --python 3.12 --no-sync --with pytest --with pyyaml pytest -o addopts= -p no:cacheprovider tests/test_github_templates.py
+        run: uv run --python 3.12 --no-sync --with pytest --with pyyaml pytest -o addopts= -p no:cacheprovider scripts/tests/test_github_templates.py
       - name: Build docs (strict)
         # --python overrides repo `.python-version` (3.11) so docs actually run on 3.12.
         run: uv run --python 3.12 --group docs mkdocs build --strict
       - name: Check no Sphinx roles leaked into the site
         # --strict cannot see these: to Markdown a Sphinx role is plain text.
-        run: python3 scripts/check_docs_rendered.py site
+        run: python3 scripts/checks/check_docs_rendered.py site
 
   # The specs under `openspec/specs/` are the authority, but a change only reaches them
   # when someone runs `openspec archive` — a step that was missed three times in a row
@@ -83,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
       # Stdlib-only script, so no uv sync — the runner's python3 is enough.
       - name: Assert no finished change is left unarchived
-        run: python3 scripts/check_openspec_archived.py
+        run: python3 scripts/checks/check_openspec_archived.py
 
   # A separate job rather than a second step in `openspec`, so each check keeps meaning
   # exactly what its name says, which matters if branch protection ever requires one.
@@ -95,4 +95,16 @@ jobs:
       - uses: actions/checkout@v4
       # Stdlib-only script, so no uv sync — the runner's python3 is enough.
       - name: Assert no spec prose refers to "this change"
-        run: python3 scripts/check_openspec_self_reference.py
+        run: python3 scripts/checks/check_openspec_self_reference.py
+
+  # AGENTS.md: no internal-tracker URL in the repository. Here rather than in ci.yml,
+  # whose path filter skips the docs-only pull requests most such URLs would arrive in.
+  tracker-urls:
+    name: No tracker URLs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # Stdlib-only script, so no uv sync — the runner's python3 is enough.
+      - name: Assert no tracked file holds an internal-tracker URL
+        run: python3 scripts/checks/check_tracker_urls.py

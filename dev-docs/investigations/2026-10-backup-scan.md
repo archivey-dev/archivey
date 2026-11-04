@@ -8,7 +8,7 @@ files (§5). The scan script's decoder-memory column is fixed (§2).
 
 ## 1. The scan
 
-`scripts/scan_archives.py` dry-ran every file that `detect_format` placed on a personal
+`scripts/investigations/scan_archives.py` dry-ran every file that `detect_format` placed on a personal
 backup drive: years of unsorted copies of home directories, music and downloads. It
 produced **57 390 archive rows**. File paths and names are left out of this record; only
 counts and file types are kept.

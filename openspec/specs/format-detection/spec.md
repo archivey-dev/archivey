@@ -97,7 +97,9 @@ The system SHALL execute format detection with this algorithm:
 
 1. Read up to `DETECTION_LIMIT` bytes (default 4096) from the source.
 2. **Near magic** — the magic-byte table at exact offsets within that window. Match →
-   `CERTAIN` / `detected_by="magic"`.
+   `CERTAIN` / `detected_by="magic"`. A plugin format's near magic SHALL be tried only
+   after step 5 matched nothing, and before step 6: it counts only when no built-in
+   signal matched, including the prefixed payload, far magic and trailer magic.
 3. **Prefixed payload** — the tiers owned by *Self-extracting (SFX) archives are detected
    behind an executable stub*.
 4. **Far magic** — signatures whose end offset lies outside the default window, today ISO
@@ -125,8 +127,22 @@ The system SHALL execute format detection with this algorithm:
    Unless `ArchiveyConfig.always_probe_content` is set, only the probe of a stream format
    the source's extension names SHALL run (see *Magic-less formats are detected by a
    content probe*); `open_stream` SHALL run every probe.
-8. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
-9. `FormatDetectionError` when nothing matched. When step 7 ran only the probes the
+8. **Leading-bytes scan** — the scan of step 3's requirement, run with no executable cue:
+   only when steps 1-7 matched nothing, the leading bytes raise no executable cue and carry
+   no known non-archive signature, and the name has no known extension (the ZIP, 7z and
+   RAR readers find a prefixed archive themselves under a name that names them). Every
+   needle SHALL need its format's hit validator. Match → `PROBABLE` /
+   `detected_by="sfx_scan"` with `payload_offset`. Last, so a source an earlier step
+   identifies pays nothing for the window. When the step does not run because of the
+   name or a non-archive signature, it SHALL be recorded in `unavailable_tiers` as
+   `sfx_scan` / `NOT_ENABLED_BY_POLICY`. On a forward-only source whose length is not yet
+   known, the step SHALL scan only the bytes detection already holds and SHALL NOT wait
+   for more, recording `sfx_scan` / `CAPABILITY_UNAVAILABLE` when that cut the window;
+   an unrecognised stream whose writer keeps it open still fails at once. When the step
+   ran its whole window and missed, the `FormatDetectionError` message SHALL say that no
+   ZIP, 7z or RAR archive starts in that window and that `format=` reads one further in.
+9. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
+10. `FormatDetectionError` when nothing matched. When step 7 ran only the probes the
    extension allows, the message SHALL name the three ways to read a nameless
    probe-only stream: `format=`, `open_stream()` and `always_probe_content=True`. When
    the policy left a plugin out at any step, the message SHALL also name the policy
@@ -136,7 +152,12 @@ The system SHALL execute format detection with this algorithm:
 A plugin format that `ArchiveyConfig.formats` does not allow SHALL NOT be a candidate
 at any step: its magic SHALL NOT match at steps 2 and 4, its probe SHALL NOT run at step
 6, and its extensions SHALL NOT match at step 7, so that an off plugin neither runs code
-nor claims a file an allowed plugin matches. Each step that leaves one out SHALL be
+nor claims a file an allowed plugin matches. The same holds for the bytes a compression
+stream decodes to (*Compressed streams are probed for an inner TAR*): a plugin pair
+`(container, stream)` the policy does not allow SHALL NOT match there, and the step
+SHALL be recorded as `inner_tar`. A plugin codec's magic and probe SHALL stay a
+candidate while the policy allows the bare stream or any pair with that stream, since
+they also find the containers read inside it. Each step that leaves one out SHALL be
 recorded in `unavailable_tiers` with `NOT_ENABLED_BY_POLICY`. Built-in formats SHALL be
 candidates under every policy.
 
@@ -228,9 +249,12 @@ Exact matches only (no fuzzy/weak magic). Recognised:
 | 7-Zip | `37 7A BC AF 27 1C` |
 | RAR 4.x / 5.x | `52 61 72 21 1A 07 00` / `… 01 00` |
 | ISO 9660 | `CD001` at 32769 |
+| SquashFS | `hsqs` at 0 (little-endian SquashFS 4); `sqsh` at 0 (big-endian SquashFS 3 and older, claimed so `format-squashfs` can refuse it by name) |
 | ISO 9660, raw CD sector image | `00 FF×10 00` sector sync at 0 (claimed so `format-iso` can refuse it by name) |
 | UDIF | `6B 6F 6C 79 00 00 00 04 00 00 02 00` (`koly`, version 4, header size 512) at offset 0, or at the start of the last 512 bytes |
 | TAR | `ustar` at 257 |
+| ar | `!<arch>\n` at 0; `!<thin>\n` at 0 (claimed so `format-ar` can refuse it by name) |
+| CPIO | `070707`, `070701`, `070702` or `070727` at 0 (odc, newc, crc, afio's large header). The binary variant's 2-byte magic `C7 71` / `71 C7` is too weak: a content probe that also checks the name, run only when the extension names CPIO |
 | LZ4 | `04 22 4D 18` (frame); `02 21 4C 18` (legacy stream, `lz4 -l`) |
 | lzip | `LZIP` |
 | unix-compress | `1F 9D` |
@@ -255,6 +279,7 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | No `ustar`; first 512 bytes a TAR header with a matching checksum and a name, from a path, a `BytesIO` or a pipe, named or not | TAR, `PROBABLE`, `content_probe` |
 | The same block one byte off its checksum, or with an empty name, no extension | `FormatDetectionError` |
 | gzip of such a v7 tar | `TAR_GZ`, `PROBABLE`, `content_probe` |
+| gzip of a binary CPIO archive, named `.cpio.gz` or with `always_probe_content`; the same with no name | `(CPIO, GZIP)`, `PROBABLE`, `content_probe`: a container's content probe runs on the first 512 decoded bytes under the rule it follows on an uncompressed source; with no name, `GZ` |
 | Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
 | `koly` block at offset 0 | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
 | `koly` trailer, and no earlier step matched | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
@@ -426,6 +451,13 @@ here still opens through a `.lzma` name.
 - **AND** `unavailable_tiers` records `content_probe` as `NOT_ENABLED_BY_POLICY`
 - **AND** the `FormatDetectionError` message names the format policy
 
+#### Scenario: A plugin that is off is not found inside a compression stream
+
+- **WHEN** a sequential plugin is registered and a caller runs `detect_format` with
+  `FormatPolicy(plugins=False)` on a gzip of an archive in that plugin's format
+- **THEN** detection reports `GZ`, and the plugin's magic and probe are not used
+- **AND** `unavailable_tiers` records `inner_tar` as `NOT_ENABLED_BY_POLICY`
+
 #### Scenario: A plugin that is off does not shadow an allowed one
 
 - **WHEN** plugins `A` and `B` are registered in that order, both with magic that
@@ -527,6 +559,11 @@ requirement, which is graded by cue strength: a strong cue suppresses the conten
 probes, a weak one does not. "No silent fabricated member" is therefore guaranteed for
 a **strong** cue only — see that requirement for the measured reason.
 
+Leading bytes with **no** cue get the same scan, with every needle validated, as the last
+content step (the leading-bytes scan of *Magic-first detection*), so an archive behind an
+image, zeros or text is found as 7-Zip, `unrar` and `unzip` find it, and only a source that
+every earlier step declined pays for the window.
+
 Which magic the scan hunts for SHALL be **backend-declared data**, like every other
 detection signal, rather than a table maintained inside the detector. A backend declares
 only the magic that can legitimately begin an appended payload: ZIP declares its
@@ -590,6 +627,13 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | Whole valid 7z in the stub, then a real ZIP payload | `SEVEN_Z` at the stub's 7z: a `VALID` hit of another format does not displace a held short hit |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
+| Random bytes, zeros or text, then a ZIP, 7z or RAR inside the window | Found by the leading-bytes scan (step 8): that format, `payload_offset` at its start |
+| JPEG + appended ZIP | `ZIP` at the ZIP's local header, from the leading-bytes scan |
+| Leading bytes + ZIP, named `.lzma` | The extension's guess: the scan does not run for a name with a known extension, and `sfx_scan` is recorded as not enabled by policy |
+| Leading bytes + ZIP on a non-seekable source, inside the bytes detection already holds | Found, as on a seekable source |
+| Unrecognised text on a pipe whose writer keeps it open | `FormatDetectionError` at once; `sfx_scan` recorded as capability unavailable |
+| Leading bytes + ZIP past 256 KiB under `FAST` | Not found; `sfx_scan` recorded as budget exhausted |
+| Leading bytes + ZIP, named `.zip` | `ZIP` from the extension; the reader finds the archive from its end |
 | Strong cue, no archive in the stub, exactly one of `vol.exe.001` / `vol.7z.001` / `vol.zip.001` beside it | `detect_format` reports that volume's format; `open_archive` (including with `format=` matching that container) opens the set |
 | Same stub, but it *does* contain archive magic | The embedded archive; sibling volumes are ignored |
 | Two of those first-volume names beside the stub | `UnsupportedFeatureError` naming both |

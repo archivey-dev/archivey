@@ -1,3 +1,10 @@
+**Stability (maintainer, 2026-10-31).** The interface is now *experimental*, not
+provisional: any release, a patch included, may change or remove `archivey.formats`,
+`PluginContainer`, `PluginStream`, `FormatPolicy.replace` and `FormatInfo.from_plugin`
+with no deprecation release (DR-12a in `dev-docs/design-rules.md`). This reverses the
+2026-10-25 "provisional" call that `brief.md`, `proposal.md` and `design.md` still
+record. `FormatPolicy.plugins` stays stable.
+
 No task starts until the maintainer approves the 2026-10-25 revision of `design.md`. Each numbered group is one PR, except group 1, which lands in stages, in this order: **1a**, the indexed shape with tests and the user page; **#1052**, asked for while 1a was in review: `ReaderContext.decompress`, seekable members over a plugin stream that reads forward only, and plugin-supplied digests (1.2d to 1.2f); the ISO port (group 2); then **1b**, the sequential shape: 1.2a, 1.2b, the rest of 1.2c, 1.3, 1.4 and 1.6. Only 1b waits for the ISO port. `ForwardStream.decompress` (1.2c) is the sequential shape's decoder, not `ReaderContext.decompress`. No spec delta lands before group 4 (4.2).
 
 ## 1. Format identity, registry, detection and the adapter
@@ -122,6 +129,9 @@ The test of the sequential shape, as the ISO port is of the indexed one (maintai
       in the tests.*
 - [x] 3.3 A test that fails if the package imports `archivey.internal`.
 - [x] 3.4 CI job that installs the package and runs its tests.
+- [x] 3.5 Moved into the library as a built-in format (the maintainer's choice,
+      2026-10-28): `src/archivey/internal/backends/cpio_reader.py`, registered with
+      `register_builtin_format`. The package and its CI job are gone.
 
 ## 3a. ar package
 
@@ -136,6 +146,9 @@ one more one-pass format to test the interface, 2026-10-28).
       (`--format=darwin`); Windows long names, blank fields and damaged headers are
       built in the tests.
 - [x] 3a.3 The same import check, and a CI job.
+- [x] 3a.4 Moved into the library as a built-in format (the maintainer's choice,
+      2026-10-28): `src/archivey/internal/backends/ar_reader.py`, registered with
+      `register_builtin_format`. The package and its CI job are gone.
 
 ## 3b. SquashFS package
 
@@ -168,6 +181,12 @@ more indexed plugin, 2026-10-27).
       `lz4.block` itself) and LZO, each capped at the block size by the package rather
       than by archivey's decoder limits. Extended attributes and the export table are
       not read.
+- [x] 3b.7 Moved into the library as a built-in format (the maintainer's choice,
+      2026-10-28): `src/archivey/internal/backends/squashfs_reader.py`, registered
+      with `register_builtin_format`. LZ4 blocks now go through archivey's own `lz4`
+      handling (process isolation, `exclude_libraries`, the PyPy rule), and LZO blocks
+      through archivey's LZO codec (`ReaderContext.decompress`). The package and its CI
+      job are gone.
 
 ## 4. Docs and specs
 
@@ -188,14 +207,13 @@ more indexed plugin, 2026-10-27).
 
 ## 5. Later: decoders that compound (maintainer, 2026-10-28)
 
-- [ ] 5.1 A public `register_codec()`, the decoder twin of `register_format()`: a codec
+- [x] 5.1 A public `register_codec()`, the decoder twin of `register_format()`: a codec
       registered once is read by `open_stream`, as a single-file archive, inside TAR and
       sequential plugin pairs, by the inner-container probe and by
       `ReaderContext.decompress`. The pair, extension and codec tables become
       computed on demand instead of at import.
-- [ ] 5.2 LZO as a built-in codec (the lzop stream and raw LZO1X as a member method),
-      python-lzo optional with the pure-Python decoder as the fallback, when SquashFS
-      becomes built-in.
+- [x] 5.2 LZO as a built-in codec (the lzop stream and raw LZO1X as a member method),
+      python-lzo optional with the pure-Python decoder as the fallback.
 
 ## 6. Names
 

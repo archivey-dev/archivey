@@ -119,13 +119,13 @@ Each idea carries a status:
 ## Reading and verification
 
 - **Raise a stream's verification level on demand.** *Open idea.* A member stream
-  reports `verified` and `verifiable` (`Verification`: `NONE`, `KEY`, `STRUCTURE`,
-  `CONTENT`). A `verify(at_least=…)` method could read what is left to reach a level,
+  reports `verified` and `verifiable` (`Verification`: `NONE`, `UNLOCKED`, `LENGTH`,
+  `CHECKSUM`). A `verify(at_least=…)` method could read what is left to reach a level,
   and a `reader.verify(member)` could check a member without handing out its bytes.
   Retiring `ENCRYPTED_MEMBER_UNVERIFIED` in favour of the level is a separate call.
 - **Count the xz, zstd and LZ4 checksums in the level.** *Open idea.* These formats
   carry a checksum per stream or frame only when the writer added one, so their
-  streams stop at `STRUCTURE` today. Each decoder would report, per frame, that a check
+  streams stop at `LENGTH` today. Each decoder would report, per frame, that a check
   was present and passed.
 - **Say when a WinZip AES seek re-reads the ciphertext.** *Open idea.* **Good first
   contribution.** To keep the HMAC across seeks, the read that returns an AES member's last
@@ -140,6 +140,16 @@ Each idea carries a status:
   dictionary, which surfaces as a resource limit. Real encoders write only a few sizes, so
   an off-grid size could be reported as a wrong password. Measure what real writers emit
   first.
+- **Investigate whether a source's `EOFError` should stay untranslated.** *Open idea.*
+  Every codec maps an `EOFError` to `TruncatedError` (`StreamCodec.eof_truncation`).
+  Python file objects, pipes and sockets return `b""` at the end, so an `EOFError` is
+  normally the decoder's. A few source libraries raise it for a dropped connection
+  (paramiko does for SSH/SFTP), and that I/O failure then reads as a truncated archive
+  (DR-15a). Only the accelerator paths mark an exception from the caller's source
+  (`from_callers_source`), so that it passes through unchanged. Marking source reads on
+  every path would do the same everywhere. It is not clear cut: for a member cut short
+  inside a truncated archive, `TruncatedError` is the right answer, so first find out
+  which sources raise it, and when.
 - **Salvage mode.** *Needs design.* Backups are full of truncated and corrupt archives.
   Reads already return the readable prefix and then raise, and a member's data error
   already leaves `stream_members()` running wherever the next member is reachable (ZIP,
@@ -193,7 +203,7 @@ Each idea carries a status:
   2026-10-26).
 - **Resource usage against the limits, as data.** *Open idea.* A caller cannot ask how
   close an archive came to each limit. A usage record on the reader and on the extraction
-  report would help tune limits against a real corpus. `scripts/scan_archives.py` shows
+  report would help tune limits against a real corpus. `scripts/investigations/scan_archives.py` shows
   what can be read from public results today.
 - **Opt-in free-space check before extraction.** *Open idea.* **Good first contribution.**
   Sum the declared sizes of the selected members and compare against
@@ -225,8 +235,13 @@ Each idea carries a status:
   contribution.** A helper that returns the strongest digest an archive already stores
   for a member, and says whether it was stored or computed. The recipe is in
   `docs/formats.md`.
-- **A library `verify()` primitive.** *Open idea.* `archivey test` writes its own loop
-  today. Decide whether callers verify without extracting often enough for a public API.
+- **A cheaper `ArchiveStream.verify()`.** *Open idea.* `verify()` (0.3.0) reads and
+  discards until the target is reached (`verifiable`, or `UNLOCKED` with
+  `password_only=True`). Some levels could cost less: `UNLOCKED` from the 7z AES
+  tail padding (`openspec/changes/sevenzip-aes-tail-key-check`) or from decoding only the
+  start of a self-checking stream, and `CHECKSUM` without a full decode where a format allows
+  it (`reports/partial-crc-candidates-2026-10-22.md`). The result and the errors must stay
+  the same, so each can land in a patch release.
 - **Public backend API.** *Needs design.* Export the backend base class and registry so
   rare formats (CAB, CPIO, SquashFS, WIM, XAR) can be third-party plugins. It constrains
   how freely the backend contract can change, so decide before 1.0.

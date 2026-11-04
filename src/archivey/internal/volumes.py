@@ -13,10 +13,11 @@ from collections import Counter, OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, TypeGuard
+from typing import TYPE_CHECKING, BinaryIO, NoReturn, TypeGuard
 
 from archivey.exceptions import (
     OpenError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -27,6 +28,7 @@ from archivey.internal.arg_checks import (
     raise_if_text_stream,
     reject_source,
 )
+from archivey.internal.overrides import override
 from archivey.internal.source import ArchiveSource, seek_is_expensive
 from archivey.internal.streams.streamtools import (
     is_stream,
@@ -637,16 +639,17 @@ def _fd_limit_text() -> str:
     return f"the process file-descriptor limit is {soft}"
 
 
-def _volume_open_error(path: Path, exc: OSError) -> OpenError:
+def _raise_volume_open_error(path: Path, exc: OSError) -> NoReturn:
+    """Raise for a failed ``stat`` or ``open`` of the volume at ``path``: the
+    ``OSError`` itself, as a missing or unreadable first path does, except when the
+    process is out of file descriptors. That is the system running short, not the
+    file, so it is :class:`ResourceUnavailableError`, with ``exc`` as its cause."""
     if exc.errno in (errno.EMFILE, errno.ENFILE):
-        return OpenError(
+        raise ResourceUnavailableError(
             f"Too many open files to open volume; {_fd_limit_text()}",
             archive_name=path.as_posix(),
-        )
-    return OpenError(
-        "Cannot open volume",
-        archive_name=path.as_posix(),
-    )
+        ) from exc
+    raise exc
 
 
 @dataclass
@@ -702,11 +705,12 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 try:
                     st = os.stat(source)
                 except OSError as exc:
-                    # A path the caller listed is an open failure. A numbering
-                    # gap among paths that exist is TruncatedError in
+                    # A volume path that is missing or unreadable, listed by the
+                    # caller or discovered, raises its OSError, as the first does. A numbering gap among
+                    # paths that exist is TruncatedError in
                     # _validate_numbered_volume_completeness — discovery expected a
                     # part that is not in the set.
-                    raise _volume_open_error(source, exc) from exc
+                    _raise_volume_open_error(source, exc)
                 if not stat.S_ISREG(st.st_mode):
                     raise OpenError(
                         "volume is not a regular file",
@@ -774,15 +778,19 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     def size(self) -> int:
         return self._size
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def writable(self) -> bool:
         return False
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def tell(self) -> int:
         self._checkClosed()
         return self._pos
@@ -797,7 +805,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         try:
             return open(path, "rb")
         except OSError as exc:
-            raise _volume_open_error(path, exc) from exc
+            _raise_volume_open_error(path, exc)
 
     def _recompute_cursor(self) -> None:
         """Set volume index/offset from ``_pos``. Sequential ``read`` advances instead."""
@@ -859,17 +867,20 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         # because that invariant is not enforceable on a stream we do not own.
         stream.seek(self._vol_offset)
 
+    @override
     def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
         self._checkClosed()
         self._pos = resolve_seek(offset, whence, pos=self._pos, end=lambda: self._size)
         self._recompute_cursor()
         return self._pos
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         # RawIOBase's own readinto raises NotImplementedError; this class overrides
         # read() instead, so buffering it (io.BufferedReader) needs this bridge.
         return readinto_via_read(self, b)
 
+    @override
     def read(self, n: int = -1) -> bytes:
         self._checkClosed()
         if self._pos >= self._size:
@@ -914,6 +925,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             raise
         return bytes(out)
 
+    @override
     def close(self) -> None:
         if self.closed:
             return
@@ -937,6 +949,7 @@ class JoinedViews(ConcatenatedFile):
         self._views = views
         super().__init__(views)
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

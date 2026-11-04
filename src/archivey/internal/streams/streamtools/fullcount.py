@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import read_blocking, read_exact
 
@@ -21,6 +22,7 @@ class FullCountStream(DelegatingStream):
     # ``readinto`` goes through ``read``, which is where the re-asking happens.
     readinto_passthrough = False
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if n is None or n < 0:
             return read_blocking(self._inner)

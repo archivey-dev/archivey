@@ -34,6 +34,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_reported
+from archivey.internal.overrides import override
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -234,9 +235,11 @@ class _CryptographyCtrStage:
 class _CryptographyBackend(CryptoBackend):
     name = CRYPTO_PACKAGE
 
+    @override
     def aes_cbc_decrypt_stage(self, params: AesParams) -> DecryptStage:
         return _CryptographyDecryptStage(params)
 
+    @override
     def aes_ctr_keystream_stage(self, params: AesCtrParams) -> KeystreamStage:
         return _CryptographyCtrStage(params)
 
@@ -373,6 +376,7 @@ class AesDecryptStream(ReadOnlyIOStream):
         if self.closed:
             raise ValueError("I/O operation on closed file.")
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         self._raise_if_closed()
         if n == 0:
@@ -404,10 +408,12 @@ class AesDecryptStream(ReadOnlyIOStream):
         self._pos += len(out)
         return out
 
+    @override
     def tell(self, /) -> int:
         self._raise_if_closed()
         return self._pos
 
+    @override
     def seekable(self) -> bool:
         return self._seekable
 
@@ -455,6 +461,7 @@ class AesDecryptStream(ReadOnlyIOStream):
         """
         return self._plaintext_size()
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._raise_if_closed()
         if not self._seekable:
@@ -557,6 +564,7 @@ class AesDecryptStream(ReadOnlyIOStream):
         self._eof = False
         return True
 
+    @override
     def close(self) -> None:
         if not self.closed:
             try:

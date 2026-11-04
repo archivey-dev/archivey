@@ -21,6 +21,7 @@ from __future__ import annotations
 import bz2
 import hashlib
 import io
+import os
 import struct
 import subprocess
 import zipfile
@@ -605,3 +606,17 @@ def test_7z_delta_without_properties_over_lzma1_reads(
     coders = [_coder(_LZMA, props=lzma_props), _coder(_DELTA)]
     sizes = [len(payload)] * 2
     assert _outcome(_codec_archive(coders, sizes, packed, payload)) == _ok(payload)
+
+
+@pytest.mark.parametrize("read", ["bounded", "whole"])
+def test_zip_deflate_surplus_names_the_whole_output_offset(read: str) -> None:
+    """The refusal says where the stream ended, counting every byte decoded before
+    that end, however many reads the bytes took and wherever they wait to be read."""
+    payload = os.urandom(4_800_000)
+    blob = _zip_member(_raw_deflate(payload) + b"\x55", payload, method=8, flags=0)
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = [m for m in ar.members() if m.is_file]
+        with ar.open(member) as stream, pytest.raises(CorruptionError) as caught:
+            while stream.read(8_000_000 if read == "bounded" else -1):
+                pass
+    assert f"after {len(payload)} bytes of output" in str(caught.value)

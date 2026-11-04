@@ -18,7 +18,6 @@ children are ended at interpreter exit, and a forked process forgets its parent'
 from __future__ import annotations
 
 import atexit
-import copy
 import marshal
 import os
 import subprocess
@@ -54,6 +53,7 @@ from archivey.internal.streams.codecs.decoder_worker import (
     parse_error_payload,
     read_exact_or_none,
 )
+from archivey.internal.streams.kept_errors import unraised
 
 WORKER = Path(__file__).with_name("decoder_worker.py")
 
@@ -77,6 +77,11 @@ class DecoderChildStartError(RuntimeError):
     could not import the codec's library. The caller turns it into the error its
     setting calls for.
     """
+
+
+class DecoderChildImportError(DecoderChildStartError):
+    """The child started but could not import the codec's library: a package that is
+    found but does not import (a broken wheel, a missing shared library)."""
 
 
 class DecoderChildReportedError(RuntimeError):
@@ -247,25 +252,18 @@ def _release(holder: list[_Lease]) -> None:
 
 
 def _unraised(exc: Exception) -> Exception:
-    """A copy of ``exc`` that has never been raised, or ``exc`` itself when its type
-    cannot be rebuilt from its arguments.
+    """A copy of ``exc`` that has never been raised (:func:`unraised`).
 
     A decoder keeps the error its child died with and raises it again on every later
-    call (:class:`DecoderChild`). The kept instance must never be the one raised: a
-    raise attaches a traceback, whose frames hold the decoder, and the decoder holds the
-    instance, a cycle that only the garbage collector breaks. When the raise comes from
-    a decoder that the collector is finalizing (``PpmdDecoder.__del__`` sends its
-    one-symbol decode at close), the new frames also reach, through ``f_back``, the
-    code the collection interrupted, and the cycle keeps that code's locals alive past
-    its return: a decoder there keeps its child process leased.
-
-    The copy is shallow: a mutable attribute (``__notes__``, say) is shared with
-    ``exc``. A recorded death is built fresh and carries none.
+    call (:class:`DecoderChild`), and the kept instance must never be the one raised
+    (see :mod:`kept_errors`). When the raise comes from a decoder that the collector
+    is finalizing (``PpmdDecoder.__del__`` sends its one-symbol decode at close), the
+    new frames also reach, through ``f_back``, the code the collection interrupted,
+    and the cycle keeps that code's locals alive past its return: a decoder there
+    keeps its child process leased. A recorded death is built fresh and carries no
+    notes.
     """
-    try:
-        return copy.copy(exc)
-    except Exception:  # noqa: BLE001 - a type that copy cannot rebuild: keep the cycle
-        return exc
+    return unraised(exc)
 
 
 class _Died(Exception):
@@ -420,9 +418,16 @@ class DecoderChild:
         tag, state, output = self._exchange(OPEN, 0, (self._open_message,))
         if tag != OK:
             exc = rebuild_error(output, self._known)
-            if isinstance(exc, ImportError):
-                raise start_error(f"cannot import the {self._codec} library: {exc}")
-            raise start_error(str(exc))
+            if isinstance(exc, KeyError):
+                # No loader for this codec name: a bug in this process.
+                raise start_error(str(exc))
+            # Before its first reply the child runs only the library's import, so
+            # any other error there is the import failing, whatever its type, as
+            # ``deps.LazyOptional.load`` counts any exception here.
+            raise DecoderChildImportError(
+                "cannot start the decoder process: cannot import the "
+                f"{self._codec} library: {exc}"
+            )
         self._building = True
         tag, state, output = self._receive_raw()
         if tag != OK:

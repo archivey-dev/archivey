@@ -132,8 +132,11 @@ The extension is the last resort (`GUESS`): `.gz`, `.zz`, `.bz2`, `.xz`, `.lz`, 
 **`SingleFileReader` serves every codec.** It is codec-agnostic: the codec is picked by the
 format, and everything format-specific is a method on that codec's `StreamCodec` subclass.
 Adding a codec is one subclass in its own `codecs/<name>_codec.py`, listed in
-`codecs/registry.py`'s `STREAM_CODECS`, with no edit to the detector, the reader or the
-backend registry.
+`codecs/registry.py`'s codec list, with no edit to the detector, the reader or the
+backend registry. Each of those reads the list when asked (`stream_codecs()`,
+`single_file_codecs()`), so a codec registered later with `archivey.formats.register_codec`
+reaches them too, and the backend registry makes the `RAW_STREAM` and TAR pairs from it
+(`ReadBackend.RAW_STREAMS`, `STREAM_PAIRS`).
 
 **The source decides how members are opened.** A path is handed to the codec on every
 open, so concurrent opens get independent handles. A seekable stream is wrapped once in a
@@ -372,7 +375,7 @@ codecs' own tools disagree; archivey treats every codec with an end marker the s
 | --- | --- | --- |
 | gzip, zlib, bzip2, xz, lzip, LZMA Alone, zstd, LZ4, Brotli | The whole payload, then `ARCHIVE_TRAILING_DATA` at the junk's offset; `DiagnosticRaisedError` under `STRICT`. xz and lzip keep `size` and seeks | — |
 | gzip | as above | `gzip -t`: "trailing garbage ignored", exit 2 |
-| bzip2 | as above; the accelerator also prints a warning to standard error | `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
+| bzip2 | as above; the accelerator's own warning goes to its process's temporary standard error file, not the caller's | `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
 | xz | as above | `xz -t`: "Unexpected end of input", exit 1 |
 | lzip | as above | `plzip -t`: exit 0; the lzip manual allows trailing data |
 | zstd | as above | `zstd -t`: "unsupported format", exit 1 |

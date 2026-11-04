@@ -31,6 +31,8 @@ from typing import (
     runtime_checkable,
 )
 
+from archivey.internal.overrides import override
+
 # The ``streamtools`` subpackage is deliberately free of any archivey dependency — pure
 # stdlib binary-stream plumbing — so it could one day be lifted out as a standalone library.
 # Hence a plain stdlib logger rather than importing archivey's logging module; the name still
@@ -896,20 +898,24 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         super().__init__()
         self._raw = raw
 
+    @override
     def read(self, size: int = -1, /) -> bytes:
         return read_blocking(self._raw, size)
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         n = try_readinto(self._raw, b)
         if n is not None:
             return n
         return readinto_via_read(self, b)
 
+    @override
     def write(self, data: object, /) -> int:
         # Must exist and raise UnsupportedOperation: io.RawIOBase.write raises
         # NotImplementedError, which is the wrong exception for a read-only stream.
         raise io.UnsupportedOperation("write")
 
+    @override
     def readable(self) -> bool:
         # Prefer the stream's own answer; fall back to "does it expose a reader?" for
         # partial file-likes that don't implement readable().
@@ -918,10 +924,12 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
             return bool(raw_readable())
         return hasattr(self._raw, "read") or hasattr(self._raw, "readinto")
 
+    @override
     def writable(self) -> bool:
         return False
 
     @property
+    @override
     def mode(self) -> str:
         """Always ``"rb"``.
 
@@ -939,6 +947,7 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         return "rb"
 
     @property
+    @override
     def name(self) -> str:
         """Path of the wrapped stream, or raise :exc:`AttributeError` if it has none.
 
@@ -952,6 +961,7 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
             return resolved
         raise AttributeError("name")
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         seek = getattr(self._raw, "seek", None)
         if seek is None:
@@ -978,15 +988,18 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
             f"This is unexpected — please report it (with the stream type) to archivey."
         )
 
+    @override
     def tell(self, /) -> int:
         tell = getattr(self._raw, "tell", None)
         if tell is None:
             raise io.UnsupportedOperation("tell")
         return tell()
 
+    @override
     def seekable(self) -> bool:
         return is_seekable(self._raw)
 
+    @override
     def close(self) -> None:
         # Do NOT close the wrapped stream. Like _NonClosingBufferedReader below, this
         # wrapper adapts a stream the *caller* owns; archivey must never close a stream the
@@ -996,6 +1009,7 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         # super().close() only marks this wrapper closed.
         super().close()
 
+    @override
     def __repr__(self) -> str:
         return f"BinaryIOWrapper({self._raw!r})"
 
@@ -1030,6 +1044,7 @@ class _NonClosingBufferedReader(io.BufferedReader):
     contrast for the behaviour this guards against.)
     """
 
+    @override
     def close(self) -> None:
         # detach() makes IOBase.closed raise, so a second close cannot consult
         # it. .raw returns None after a *direct* detach() without raising —
@@ -1048,6 +1063,7 @@ class _NonClosingBufferedReader(io.BufferedReader):
         self._detached = True
 
     @property
+    @override
     def closed(self) -> bool:
         return getattr(self, "_detached", False) or self.raw is None or super().closed
 
@@ -1126,24 +1142,30 @@ class OneReadEachStream(io.BufferedIOBase, BinaryIO):
         self._source = source
 
     @property
+    @override
     def mode(self) -> str:
         return "rb"
 
     @property
+    @override
     def name(self) -> str:
         resolved = source_name(self._source)
         if resolved is not None:
             return resolved
         raise AttributeError("name")
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         return self._source.read(-1 if n is None else n)
 
+    @override
     def read1(self, n: int = -1, /) -> bytes:
         return self.read(n)
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         return readinto_via_read(self, b)

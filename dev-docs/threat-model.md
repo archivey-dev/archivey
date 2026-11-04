@@ -262,11 +262,16 @@ bytes. The outcome is the same on every platform. ADR
   `STANDARD` and `TRUSTED` otherwise keep the name. Under `STRICT` and `STANDARD` the collision key
   drops a trailing dot or space too, so `notes.` and `notes` collide on every platform, as
   Win32 would merge them.
+- `STRICT` refuses a name holding a `\`, a control character 0x01 to 0x1F, a non-UTF-8
+  byte or a lone surrogate (`_reject_unportable_name`): each reads as another name on
+  another OS or in another reader (ADR 0013 amendment, 2026-10-31).
 - Two classes of character are percent-escaped (`_sanitize_portable_name`: `%XX`,
   literal `%` as `%25`), a deterministic and reversible spelling: non-UTF-8 bytes, and
-  the characters Win32 refuses in a name, `<>"|?*` and the controls 0x01 to 0x1F.
-- A `\` in a name, which TAR keeps as a literal character, is written as `/`, as
-  Windows writes it, and a symlink or hard link target gets the same rewrite. A hard
+  the characters Win32 refuses in a name, `<>"|?*` and the controls 0x01 to 0x1F. Under
+  `STRICT` only `<>"|?*` reach it; the rest were refused above.
+- Under `STANDARD` a `\` in a name, which TAR keeps as a literal character, is written
+  as `/`, as Windows writes it. Under both a symlink or hard link target gets the same
+  rewrite. A hard
   link still resolves to the member the reader matched to its stored target.
 - The coordinator (`ExtractionCoordinator._transform`) runs `check_universal` again on
   a member `apply_name_policy` rewrote. A rewrite can change which directories a path
@@ -358,7 +363,8 @@ data its pass keeps for link targets beside it.
 **Mechanism.**
 - `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
   `internal/listing_limits.py` `ListingLimitTracker` as members are registered into the
-  reader's member walk, by every call that lists: `members()`, `members_report()`,
+  reader's member walk (and as a plugin reader holds one back to yield later, through
+  `ReaderContext.hold()`: CPIO's newc hard links waiting for their data), by every call that lists: `members()`, `members_report()`,
   `stream_members()`, `for member in reader` and `extract_all()`, in both access modes.
   Crossing a cap raises `ResourceLimitError` at the member that crosses it, before it
   is listed; a TAR walk parses no header after it. `None` (`ListingLimits.UNLIMITED`)
@@ -766,11 +772,14 @@ link-count limit is written as a copy, so a declared link count drives real writ
 copy of the source per limit's worth of links (1024 names on NTFS, 65000 on ext4).
 `BombTracker.count_copy` counts those copies toward `max_extracted_bytes` and the
 archive-wide `max_ratio` (maintainer ruling, 2026-10-07), so a small archive declaring
-many links to one member trips the ratio when the archive has a denominator. A plain tar
-read from a non-seekable stream has none (no trusted size, and the live counter is
-installed only for a compressed container), so there only `max_extracted_bytes` applies. A cross-device copy counts toward
-`max_extracted_bytes` only: it depends on the destination, not the archive.
-From a source of unknown size the archive-wide ratio waits for
+many links to one member trips the ratio. An archive read from a non-seekable stream has
+no trusted size: a compressed container counts what its decoder pulls, and a plain ZIP or
+TAR counts what its source has taken from the pipe (`ArchiveSource.bytes_pulled`), so the
+live ratio holds there too. A seekable stream whose size archivey does not know (no
+`size`, not a file or a `BytesIO`) counts the furthest offset its source has reached
+(`ArchiveSource.bytes_reached`), which never passes the archive's size. A cross-device
+copy counts toward `max_extracted_bytes` only: it depends on the destination, not the
+archive. From a source of unknown size the archive-wide ratio waits for
 `live_ratio_activation_threshold` (256 MiB), so a bomb read from a pipe writes about that
 much before the ratio refuses it, where it wrote about 5 MiB before that floor existed.
 `max_extracted_bytes` still bounds the total, and a caller can lower the floor.
@@ -782,7 +791,12 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 `::test_pipe_size_claim_does_not_switch_off_live_ratio`,
 `::test_live_ratio_waits_for_its_own_floor`,
 `::test_live_ratio_default_floor`, `::test_piped_blank_start_passes_like_a_file`,
-`::test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator`,
+`::test_plain_tar_from_sized_pipe_counts_what_the_pipe_gave`,
+`tests/test_member_read_ratio.py::test_a_piped_zip_pass_is_held_to_the_live_ratio`,
+`::test_a_piped_zip_extraction_is_held_to_the_live_ratio`,
+`::test_a_piped_sparse_tar_is_held_to_the_live_ratio`,
+`::test_a_seekable_zip_of_unknown_size_is_held_to_the_live_ratio`,
+`::test_a_seekable_source_counts_the_furthest_offset_once`,
 `::test_forged_member_declaration_is_refused_only_after_the_decode`,
 `::test_link_limit_copies_count_toward_the_archive_wide_ratio`,
 `::test_recorded_size_refuses_a_member_before_its_data`,
@@ -801,8 +815,9 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 
 **Property.** Reading one RAR member never quietly decodes other members first.
 
-**Mechanism.** `unrar` selects members by mask, and a member whose name is a glob that
-matches earlier entries would make `unrar -n` decompress every earlier match first. The
+**Mechanism.** `unrar` selects members by mask, and a member whose mask selects earlier
+entries (a glob, a duplicate name, two names `unrar` reads alike) would make `unrar -n`
+decompress every earlier match first. The
 read is refused by default when that skip is nonzero (`internal/backends/rar_reader.py`,
 `rar_allow_glob_member_concatenation` as the escape hatch). The refusal is narrower
 than it looks: on a solid archive an out-of-order `open()` decodes everything ahead of
@@ -811,9 +826,10 @@ there. Whether the refusal earns its keep is parked with the general unbounded-r
 question ([`formats/rar.md`](formats/rar.md) §5 to §7).
 
 **Residual.** A mask with no glob that still selects earlier members (a duplicate name,
-or two names `unrar` reads the same way) is not refused, so `unrar` decodes those
-members first. Their dictionaries count against `DecoderLimits.max_decoder_memory`
-([Decoder memory](#decoder-memory)); the bytes they decode count against no limit.
+or two names `unrar` reads the same way) is refused the same way since 2026-10-29. With
+the flag set, `unrar` decodes those members first: their dictionaries count against
+`DecoderLimits.max_decoder_memory` ([Decoder memory](#decoder-memory)); the bytes they
+decode count against no limit.
 
 **Tests.** `tests/test_rar_reader.py::test_glob_member_with_earlier_matches_is_refused`,
 `::test_solid_glob_refusal_does_not_claim_an_avoidable_decode`,
@@ -926,7 +942,9 @@ writes itself) is exercised against mutated and coverage-guided input.
    ZIP member or 7z coder does, since `AUTO` engages rapidgzip on them only with one.
    libFuzzer's own `-timeout` and `-rss_limit_mb` bound those targets: unlike a Python
    alarm, they fire while the main thread is inside native code. A
-   short partition runs on every merge-queue group; the full one on a change-guarded nightly
+   short partition runs on every merge-queue group that changes a library, test, dependency
+   or CI path (`scripts/ci/ci_scope.py`; the fuzz targets live under `tests/`, so a change to
+   one always counts); the full one on a change-guarded nightly
    and on `workflow_dispatch` (`.github/workflows/atheris-fuzz.yml`,
    `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
    group only.
@@ -1038,8 +1056,8 @@ the ANSI/CR spoof tests extract under `TRUSTED`, which writes the raw bytes, so 
 are Unix-only, since NTFS refuses control bytes in names.
 `tests/test_cve_regressions_7z_rar.py::test_unrar_cve_2024_33899_escape_sequences_in_names`
 replays the unrar advisory over a RAR's member names through `list`, `test -v` and
-`extract`. It runs on every platform, because the default policy writes each control
-byte as `%XX` before the write.
+`extract`. It runs on every platform: the default policy refuses each name with a control
+byte, and `STANDARD` writes each one as `%XX` before the write.
 
 ### Detection is bounded and says when it guessed
 
@@ -1174,7 +1192,11 @@ consumes the stream once, and the entries its directory places in the bytes kept
 its members consume those at most twice more, however many it names there
 ([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit
 for BCJ2 was considered and not added: no other codec has one, and `ExtractionLimits`
-still bounds the amount, only the rate is lower. Callers who need a time bound run
+still bounds the amount, only the rate is lower. Detection of an unrecognised file with
+no known extension scans up to 2 MiB for an archive behind leading bytes, and 2 MiB of
+back-to-back ZIP local-header signatures costs about 2.4 s to reject, one validation each
+([prefixed archives §3](topics/prefixed-archives.md#3-cost-is-what-tiers-this-not-false-positives)).
+Callers who need a time bound run
 archivey in a worker they can kill. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
@@ -1185,8 +1207,8 @@ brotli and inflate64 run in-process (`NATIVE_DECODERS` isolates them too; under 
 pyppmd decodes in-process as well and rapidgzip is not used). A crash nobody has found yet
 would abort the process. pyppmd runs in a child by default because of a known pyppmd issue
 ([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data). Both rapidgzip decoders run in a child process;
-`scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
-running out of memory is never mistaken for a damaged archive; the limits above exist to
+`scripts/investigations/accelerator_crash_search.py` tells whether they still need to.
+`MemoryError` is not translated, so running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
@@ -1302,13 +1324,36 @@ budget one level at a time. The caller bounds depth and total size. Public:
 `extract` only, and a `read()` of an honest 1 GiB member holds 1 GiB. `max_ratio` does
 hold reads: each member stream is held to the per-member and archive-wide ratios
 (`bomb_tracker.MemberRatioGuard`, one `ReadRatioTally` per reader), so a scan or hash of a
-bzip2 or xz bomb stops within a step past 5 MiB. The archive-wide rule needs a
-denominator, so a ZIP, TAR or 7z read from a non-seekable stream (no trusted size, no live
-counter) has only the per-member rule for reads: many members each under 5 MiB are not
-bounded together, where extraction still has `max_extracted_bytes`. A container inside a
+bzip2 or xz bomb stops within a step past 5 MiB. A member whose data is the archive
+stream's own bytes (every TAR member but a sparse one) gets no guard: it cannot pass 1:1
+and a compressed stream is held as a whole. It counts toward the archive-wide total at its
+recorded size when its stream is handed out. The archive-wide rule divides by the
+archive's size when it is known, and otherwise by a live count (see
+[Extraction bombs](#extraction-bombs)): the bytes taken from a pipe, or the
+furthest offset a seekable stream of unknown size has reached. The live rule waits for
+`live_ratio_activation_threshold` (256 MiB), so before that only the per-member rule
+holds reads from such a source. A container inside a
 compression stream (a `.tar.gz`) holds its whole decode, listing included, to the
 archive-wide ratio (`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything.
-Chunk untrusted payloads. Public:
+A sequential format handler's walk is held the same way to what it decodes by itself
+(`format_adapter.SequentialReaderAdapter._ratio_guarded`): the layers that
+`ForwardStream.decompress()` opens share one total, each layer counted at the furthest
+offset it decoded, so nesting a payload in another does not multiply the bound; a
+member's decoded data (`MemberSpan.data`), drained by listing too, counts toward a second
+total keyed by the member's place in the walk, so a walk started over adds nothing.
+**Residual:** each level is judged on its own, against the same denominator: the outer
+compression stream, the `decompress()` layers, the decoded member data, and member reads
+(`ReadRatioTally`). Their totals add up, so one archive can decode about one `max_ratio`
+of its size per level, not one in all. Chunk untrusted payloads. Tests:
+`tests/test_compressed_container_ratio.py`,
+`tests/test_format_api_sequential.py::test_decompress_part_way_listing_is_held_to_the_ratio`,
+`::test_decompress_part_way_layers_share_one_ratio_count`,
+`::test_decoded_data_drained_by_listing_is_held_to_the_ratio`,
+`::test_decoded_data_read_is_held_to_the_ratio`,
+`::test_decoded_data_of_all_members_shares_one_total`,
+`::test_decoded_data_listed_again_counts_once`,
+`tests/test_member_read_ratio.py::test_a_seekable_zip_of_unknown_size_is_held_to_the_live_ratio`.
+Public:
 [security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### Volume discovery trusts the folder

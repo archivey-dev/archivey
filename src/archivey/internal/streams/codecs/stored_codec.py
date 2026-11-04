@@ -6,6 +6,7 @@ import os
 from typing import BinaryIO
 
 from archivey.internal.config import StreamConfig
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import RewindWarning
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -21,6 +22,7 @@ class StoredCodec(StreamCodec):
     codec = Codec.STORED
     stream_format = StreamFormat.UNCOMPRESSED
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -30,6 +32,7 @@ class StoredCodec(StreamCodec):
             return open(os.fspath(source), "rb")
         return ensure_binaryio(source)
 
+    @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         # Nothing is decoded, so a backward seek re-decodes nothing. The only codec for
         # which "never report a rewind" is the truthful answer.

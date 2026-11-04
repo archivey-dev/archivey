@@ -164,8 +164,10 @@ def test_gzip_maps_a_corrupt_resumed_decode_like_its_own() -> None:
     # BTYPE 11 is reserved: zlib refuses the block.
     stream = GzipDecompressorStream(io.BytesIO(header + b"\x07" * 64))
     stream.add_seek_points([SeekPoint(10, len(header), DeflateResume(0, b""))])
+    # The seek decodes nothing; the read after it meets the bad block.
+    assert stream.seek(20) == 20
     with pytest.raises(CorruptionError):
-        stream.seek(20)
+        stream.read(1)
 
 
 @pytest.mark.parametrize("bit", [0, 3, 6])

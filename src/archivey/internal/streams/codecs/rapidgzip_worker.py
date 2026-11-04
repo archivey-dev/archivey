@@ -83,8 +83,26 @@ import struct
 import sys
 import threading
 import time
-from collections.abc import Callable
-from typing import Any
+
+# Not ``typing.TYPE_CHECKING``, and not archivey.internal.overrides: in the child this
+# file is loaded by path, where importing ``typing`` costs a few ms per child start and
+# an ``archivey`` import loads the whole library (about 0.3 s, which doubled an
+# accelerated .tar.gz read). tests/test_worker_scripts.py holds both. ``override`` is a
+# copy of archivey.internal.overrides' stand-in: change how one is obtained, change both.
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import Any, TypeVar
+
+    from typing_extensions import override
+
+    _F = TypeVar("_F", bound=Callable[..., object])
+else:
+
+    def override(method: _F, /) -> _F:
+        """Return ``method`` unchanged (``typing.override`` only sets an attribute)."""
+        return method
+
 
 if __package__:
     from archivey.internal.streams.codecs import decoder_worker as shared
@@ -196,12 +214,15 @@ class _ParentSource(io.RawIOBase):
                 return SRC_FAIL, 0, b""
             return answer
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def readinto(self, buf: Any) -> int:
         # Views released on return (the rule in binaryio.try_readinto): the caller
         # may resize or free ``buf`` next.
@@ -212,10 +233,12 @@ class _ParentSource(io.RawIOBase):
             view[: len(data)] = data
             return len(data)
 
+    @override
     def seek(self, offset: int, whence: int = 0) -> int:
         answer, value, _ = self._ask(SRC_SEEK, offset, bytes([whence]))
         return value if answer == SRC_VALUE else 0
 
+    @override
     def tell(self) -> int:
         answer, value, _ = self._ask(SRC_TELL)
         return value if answer == SRC_VALUE else 0
@@ -243,12 +266,15 @@ class _FileRange(io.RawIOBase):
         # rapidgzip's threads share one position.
         self._lock = threading.Lock()
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def readinto(self, buf: Any) -> int:
         with memoryview(buf) as outer, outer.cast("B") as view, self._lock:
             want = min(len(view), self._length - self._pos)
@@ -262,12 +288,14 @@ class _FileRange(io.RawIOBase):
             self._pos += len(data)
             return len(data)
 
+    @override
     def seek(self, offset: int, whence: int = 0) -> int:
         with self._lock:
             base = self._pos if whence == 1 else self._length if whence == 2 else 0
             self._pos = max(base + offset, 0)
             return self._pos
 
+    @override
     def tell(self) -> int:
         return self._pos
 

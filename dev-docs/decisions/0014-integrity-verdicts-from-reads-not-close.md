@@ -30,7 +30,9 @@ asked for a verdict at all.
   raises it again until the caller seeks. A seek restarts the decode, so the prefix
   reads again, and the read that reaches the end raises the verdict again, even after a
   seek that forfeited the digest check. (Since 2026-10-01 a seek to 0 re-arms the
-  digest instead of forfeiting it; the same error object is still the one raised.) Reaching the end is a position, not a short return:
+  digest instead of forfeiting it. Since 2026-10-29 the verdict is raised again as an
+  equal copy, not the same object, so no raise keeps the stream alive: see
+  `internal/streams/kept_errors.py`.) Reaching the end is a position, not a short return:
   a full `read(member.size)` reaches it too. Without this, a caller who caught the
   verdict and seeked back re-read the damaged member with no error, because a verifier
   checks a member once. The maintainer chose to keep raising on 2026-09-26 (sweep

@@ -28,8 +28,9 @@ import io
 import re
 import stat
 import threading
+import zlib
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import AbstractContextManager, ExitStack
+from contextlib import AbstractContextManager, ExitStack, suppress
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -106,6 +107,7 @@ from archivey.internal.naming import (
     normalize_member_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.overrides import override
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
@@ -113,6 +115,7 @@ from archivey.internal.password import (
 )
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_MAX_INPUT_BYTES,
+    PASSWORD_CONFIRM_MIN_VERIFIED_BYTES,
     PASSWORD_CONFIRM_PREFIX_BYTES,
     REJECTING_CODECS,
     PasswordConfirmPlan,
@@ -128,14 +131,22 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.crypto import _AesCbcTruncatedError
+from archivey.internal.streams.resume import ask_resume_offset, ask_seek_resume_offset
 from archivey.internal.streams.streamtools import (
+    DelegatingStream,
     ReadableStream,
     ReadOnlyIOStream,
     SharedSource,
     SlicingStream,
     SolidBlockReader,
+    check_seek_args,
     is_seekable,
     skip_forward,
+)
+from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.verification import (
+    SpanningCheckError,
+    raise_member_level,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.trailing_scan import first_nonzero_offset
@@ -145,6 +156,7 @@ from archivey.internal.unix_mode import (
     special_file_type,
 )
 from archivey.internal.windows_reparse import parse_reparse_data
+from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     EXTRA_SPECIAL_FILE_TYPE,
@@ -160,6 +172,7 @@ from archivey.types import (
     MemberStreams,
     MemberType,
     SpecialFileType,
+    Verification,
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
@@ -467,6 +480,273 @@ def _member_stream_size(member: ArchiveMember) -> int:
     return member.size if member.size is not None else 0
 
 
+def _member_crc(member: ArchiveMember) -> int | None:
+    """``member``'s stored CRC-32 as an integer, or ``None`` when it has none."""
+    raw = member.hashes.get(HashAlgorithm.CRC32) if member.hashes else None
+    if not isinstance(raw, bytes):
+        return None
+    return int.from_bytes(raw, "big") & 0xFFFFFFFF
+
+
+# Read size for the gap a deferred folder seek hashes (``_FolderChecks._settle_gap``).
+_FOLDER_GAP_CHUNK = 1 << 20
+
+
+class _FolderChecks(DelegatingStream):
+    """Hash a 7z folder's decode from its first byte, for the checks no member owns.
+
+    Two checks, each run only when it can prove something a member stream cannot:
+
+    - ``folder_crc``: the folder's unpack digest. When the decode reaches the folder's
+      end with every byte hashed in order and the digest matches, ``on_folder_match``
+      runs. It is how a member with no CRC of its own, in a folder of several,
+      reaches ``CHECKSUM`` (``verification-level-redesign``, the spanning checks).
+      When it does not match, ``on_folder_mismatch`` builds the error and it is
+      kept as ``failure``: the read that hashed the folder's last byte still returns
+      its bytes, and :class:`_FolderEndCheck` raises it from that member's next read,
+      the one at its end, as a member's own CRC failure raises. That member's own
+      verifier probes its end with that same read, before its own CRC verdict, so
+      when the member carries a CRC (``tail``: its start and CRC) the hash here
+      checks it too, and ``on_folder_mismatch`` learns whether it matched (``None``:
+      no such CRC). When it did not, the member's own error is the one to raise, so
+      ``on_folder_mismatch`` returns ``None`` and the end read raises nothing here.
+    - ``anchors``: ``(start, size, crc)`` of the folder's members that carry a CRC, in
+      folder order. The first that matches runs ``on_key_proved``: a wrong key does
+      not decrypt to bytes that match a CRC, so the folder's password is confirmed.
+      Only a folder whose password was accepted without such a proof passes any.
+
+    The hash runs only over a decode from offset 0 with no gap. A forward seek from the
+    position already hashed keeps it when the inner would decode the skipped bytes
+    anyway (its resume point for the target is at or before that position, the rule
+    ``MemberVerifier.seek`` follows, DR-4a): the seek only records the target, and the
+    next read reads the gap through the hash first (``_settle_gap``). This is how a
+    ``seekable_members=True`` read of a compressed folder's last member, which seeks
+    its decoder to the member's start, still checks the folder CRC. Any other seek
+    (one the inner can jump, as in a stored folder, or one back) stops the hash, and a
+    seek to 0 starts it again. A match found twice runs its callback twice, which the
+    callbacks allow. Changes no byte, so the verification level looks through it.
+    """
+
+    forwards_verification = True
+    # Hashing is a side effect of ``read``: ``readinto`` must not bypass it.
+    readinto_passthrough = False
+
+    def __init__(
+        self,
+        inner: BinaryIO,
+        *,
+        size: int,
+        folder_crc: int | None,
+        anchors: tuple[tuple[int, int, int], ...],
+        on_folder_match: Callable[[], None],
+        on_folder_mismatch: Callable[[int, bool | None], SpanningCheckError | None],
+        on_key_proved: Callable[[], None],
+        tail: tuple[int, int] | None = None,
+    ) -> None:
+        super().__init__(inner)
+        self._size = size
+        self._folder_crc = folder_crc
+        self._tail = tail
+        self._anchors = anchors
+        self._on_folder_match = on_folder_match
+        self._on_folder_mismatch = on_folder_mismatch
+        # The error of a whole in-order decode whose CRC did not match; a later
+        # decode from 0 that matches clears it.
+        self.failure: SpanningCheckError | None = None
+        self._on_key_proved = on_key_proved
+        # A forward seek whose gap the next read hashes first: its target. The inner
+        # stays at ``_pos`` until then. ``None`` when no gap is due.
+        self._gap_target: int | None = None
+        self._restart()
+
+    def _restart(self) -> None:
+        # ``_pos``: bytes hashed in order from offset 0, ``None`` once a seek broke
+        # the run. ``_next_anchor`` is the anchor being hashed, past the last once
+        # one matched: one proof is enough.
+        self._pos: int | None = 0
+        self._crc = 0
+        self._tail_crc = 0
+        self._next_anchor = 0
+        self._anchor_crc = 0
+
+    @override
+    def read(self, n: int = -1, /) -> bytes:
+        if self._gap_target is not None and n != 0:
+            self._settle_gap()
+        data = read_blocking(self._inner, n)
+        if data and self._pos is not None:
+            self._hash(data)
+        return data
+
+    def _settle_gap(self) -> None:
+        """Read and hash from ``_pos`` up to the deferred seek's target.
+
+        The inner would decode these bytes anyway to reach the target, so this costs
+        only the hash. A decode error in the gap raises from this read, as the inner's
+        own lazy seek would raise it; the inner is then sent to the target, a seek that
+        decodes nothing, so a caller that reads on gets what the plain seek would give.
+        A gap cut short by the decode's end leaves the inner there, as the plain seek
+        would.
+        """
+        target = self._gap_target
+        assert target is not None and self._pos is not None
+        self._gap_target = None
+        try:
+            while self._pos < target:
+                piece = read_blocking(
+                    self._inner, min(_FOLDER_GAP_CHUNK, target - self._pos)
+                )
+                if not piece:
+                    return
+                self._hash(piece)
+        except BaseException:
+            self._pos = None
+            with suppress(Exception):
+                self._inner.seek(target)
+            raise
+
+    def _hash(self, data: bytes) -> None:
+        start = self._pos
+        assert start is not None
+        end = start + len(data)
+        self._pos = end
+        if self._folder_crc is not None and start < self._size:
+            self._crc = zlib.crc32(data, self._crc)
+            tail = self._tail
+            if tail is not None and end > tail[0]:
+                lo = max(start, tail[0])
+                self._tail_crc = zlib.crc32(
+                    memoryview(data)[lo - start :], self._tail_crc
+                )
+            if end == self._size:
+                if self._crc != self._folder_crc:
+                    # The last chunk's bytes are returned, not withheld; the folder's
+                    # error follows at the reading member's end (``_FolderEndCheck``).
+                    tail_matched = None if tail is None else self._tail_crc == tail[1]
+                    self.failure = self._on_folder_mismatch(self._crc, tail_matched)
+                else:
+                    self.failure = None
+                    self._on_folder_match()
+        anchors = self._anchors
+        if self._next_anchor >= len(anchors):
+            return
+        view = memoryview(data)
+        while self._next_anchor < len(anchors):
+            a_start, a_size, a_crc = anchors[self._next_anchor]
+            a_end = a_start + a_size
+            lo, hi = max(start, a_start), min(end, a_end)
+            if lo < hi:
+                self._anchor_crc = zlib.crc32(
+                    view[lo - start : hi - start], self._anchor_crc
+                )
+            if end < a_end:
+                return
+            if self._anchor_crc == a_crc:
+                self._next_anchor = len(anchors)
+                self._on_key_proved()
+                return
+            self._next_anchor += 1
+            self._anchor_crc = 0
+
+    @override
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        offset, whence = check_seek_args(offset, whence)
+        due = self._gap_target
+        here = due if due is not None else self._pos
+        target: int | None = None
+        planned: Exception | None = None
+        if whence == io.SEEK_SET:
+            target = offset
+        elif whence == io.SEEK_CUR and here is not None:
+            target = max(0, here + offset)
+        if (
+            target is not None
+            and self._pos is not None
+            and self._pos < target < self._size
+            and self._checks_pending()
+        ):
+            # A report the planning escalated (an index build) is this seek's: it
+            # raises once the seek has moved, as the inner's own seek raises it.
+            resume, planned = ask_seek_resume_offset(self._inner, target)
+            if resume is not None and resume <= self._pos:
+                self._gap_target = target
+                if planned is not None:
+                    raise planned
+                return target
+        if due is not None:
+            # The inner is still at ``_pos``, not at the deferred target: a relative
+            # seek must count from the target.
+            self._gap_target = None
+            if whence == io.SEEK_CUR:
+                offset, whence = max(0, due + offset), io.SEEK_SET
+        pos = self._inner.seek(offset, whence)
+        if pos == 0:
+            self._restart()
+        elif pos != self._pos:
+            self._pos = None
+        if planned is not None:
+            raise planned
+        return pos
+
+    @override
+    def tell(self, /) -> int:
+        target = self._gap_target
+        return self._inner.tell() if target is None else target
+
+    def _checks_pending(self) -> bool:
+        """Whether a hash over the rest of the folder could still prove anything."""
+        return self._folder_crc is not None or self._next_anchor < len(self._anchors)
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        # A pass-through over the decoded folder: the inner's offset space is ours.
+        return ask_resume_offset(self._inner, target)
+
+
+def _folder_checks_under(stream: object) -> _FolderChecks | None:
+    """The :class:`_FolderChecks` a member's stream reads through, if any.
+
+    Follows the slice (``_stream``) and pass-through layers (``_inner``) down to the
+    folder decode; a handful of layers, so the bound only stops a cycle.
+    """
+    for _ in range(8):
+        if isinstance(stream, _FolderChecks):
+            return stream
+        nxt = getattr(stream, "_stream", None)
+        if nxt is None:
+            nxt = getattr(stream, "_inner", None)
+        if nxt is None:
+            return None
+        stream = nxt
+    return None
+
+
+class _FolderEndCheck(DelegatingStream):
+    """Raise a failed folder CRC from the member's read at its end.
+
+    :class:`_FolderChecks` returns the bytes of the read that reaches the folder's
+    end, so the member's own CRC checks them first; the folder's error is raised here,
+    from the next read, which finds the member's end. Only a read that returns
+    nothing asks, so a member that ends before the folder's end never raises it.
+    """
+
+    # Changes no byte, so the verification level looks through it.
+    forwards_verification = True
+    readinto_passthrough = False
+
+    @override
+    def read(self, n: int = -1, /) -> bytes:
+        data = self._inner.read(n)
+        if not data and n != 0:
+            checks = _folder_checks_under(self._inner)
+            if checks is not None and checks.failure is not None:
+                raise checks.failure
+        return data
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        # A pass-through over the member's bytes: the inner's offset space is ours.
+        return ask_resume_offset(self._inner, target)
+
+
 class _LazyFolder:
     """A folder's ``SolidBlockReader``, opened on the first read into it.
 
@@ -510,6 +790,7 @@ class _ReadAheadStream(ReadOnlyIOStream):
         self._rest = rest
         self._head = head
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -524,6 +805,7 @@ class _ReadAheadStream(ReadOnlyIOStream):
             data += self._rest.read(n - len(data))
         return data
 
+    @override
     def close(self) -> None:
         if self.closed:
             return
@@ -625,6 +907,26 @@ class SevenZipReader(BaseArchiveReader):
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
+        # Folders whose unpack digest proves bytes no member's own CRC covers: several
+        # members, and one with no CRC. A one-file folder's digest is already its
+        # member's (the parser hands it over).
+        self._folder_crc_only: dict[int, int] = {}
+        # The folders of ``_folder_crc_only`` whose latest whole in-order decode
+        # matched the digest. ``verify_all()`` reads the members of every other one again
+        # (``_awaiting_spanning_checks``).
+        self._folder_crc_passed: set[int] = set()
+        self._key_anchor_cache: dict[int, tuple[tuple[int, int, int], ...]] = {}
+        # ``_folder_last_member`` per folder, filled on first use: each member's open
+        # asks, and a scan per open makes a folder's read quadratic in its size.
+        self._folder_last: dict[int, ArchiveMember | None] = {}
+        for index, members in self._folder_members.items():
+            folder = self._archive.folders[index]
+            if (
+                folder.digest_defined
+                and folder.crc is not None
+                and any(_member_crc(m) is None for m in members)
+            ):
+                self._folder_crc_only[index] = folder.crc & 0xFFFFFFFF
         self._report_trailing_data()
 
     def _view(self, start: int, length: int | None = None) -> BinaryIO:
@@ -772,9 +1074,11 @@ class SevenZipReader(BaseArchiveReader):
                 grouped.setdefault(raw.folder_index, []).append(member)
         return grouped
 
+    @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
 
+    @override
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
@@ -948,6 +1252,7 @@ class SevenZipReader(BaseArchiveReader):
             owned.pop_all()
             return content
 
+    @override
     def _prepare_link_target_reads(self, members: list[ArchiveMember]) -> None:
         """Sweep each folder holding one of ``members`` once, up to its last link.
 
@@ -1249,11 +1554,180 @@ class SevenZipReader(BaseArchiveReader):
             collector=self._diagnostics_collector,
             seekable=seekable,
         )
+        stream = self._watch_folder_checks(folder_index, stream)
         # Random ``open()`` passes track_output=True so each from-start folder decode
         # counts; sequential ``_iter_with_data`` already wraps once around SolidBlockReader.
         if track_output:
             return self._track_decompressed(stream)
         return stream
+
+    def _watch_folder_checks(self, folder_index: int, stream: BinaryIO) -> BinaryIO:
+        """Wrap a folder decode in the checks that span its members (``_FolderChecks``).
+
+        ``stream`` is returned as it is when neither check can prove anything: the
+        common case, a folder whose members all carry a CRC and whose password, if
+        any, was confirmed at open.
+        """
+        folder_crc = self._folder_crc_only.get(folder_index)
+        anchors: tuple[tuple[int, int, int], ...] = ()
+        if folder_index in self._folders_unconfirmed:
+            anchors = self._key_anchors(folder_index)
+        if folder_crc is None and not anchors:
+            return stream
+        return _FolderChecks(
+            stream,
+            size=folder_unpack_size(self._archive.folders[folder_index]),
+            folder_crc=folder_crc,
+            anchors=anchors,
+            on_folder_match=lambda: self._folder_crc_matched(folder_index),
+            on_folder_mismatch=lambda crc, tail_matched: self._folder_crc_failed(
+                folder_index, crc, tail_matched=tail_matched
+            ),
+            tail=self._folder_tail(folder_index) if folder_crc is not None else None,
+            on_key_proved=lambda: self._folder_key_proved(folder_index),
+        )
+
+    def _key_anchors(self, folder_index: int) -> tuple[tuple[int, int, int], ...]:
+        """``(start, size, crc)`` of the members whose CRC can prove the folder's key.
+
+        A CRC over fewer than ``PASSWORD_CONFIRM_MIN_VERIFIED_BYTES`` is skipped, as
+        the confirm ladder skips it: an empty member's CRC matches under any key.
+        Built once per folder: an open of each member of a folder that stays
+        unconfirmed would otherwise walk the folder's member list each time.
+        """
+        cached = self._key_anchor_cache.get(folder_index)
+        if cached is not None:
+            return cached
+        anchors = []
+        for member in self._folder_members.get(folder_index, ()):
+            crc = _member_crc(member)
+            size = _member_stream_size(member)
+            if crc is not None and size >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES:
+                anchors.append((self._member_prefix(member), size, crc))
+        result = self._key_anchor_cache[folder_index] = tuple(anchors)
+        return result
+
+    def _folder_key_proved(self, folder_index: int) -> None:
+        """A CRC matched over this folder's decode: its password is confirmed.
+
+        Its members' streams stop doubting the key (``_watch_unverified`` asks at each
+        sync), and each member's ``verifiable`` rises to what a read of it can now
+        prove. Only this folder: another folder may use another password.
+        """
+        if folder_index not in self._folders_unconfirmed:
+            return
+        self._folders_unconfirmed.discard(folder_index)
+        for member in self._folder_members.get(folder_index, ()):
+            ceiling = (
+                Verification.CHECKSUM
+                if _member_crc(member) is not None
+                else Verification.LENGTH
+            )
+            raise_member_level(member, Verification.NONE, ceiling)
+
+    def _folder_crc_matched(self, folder_index: int) -> None:
+        """The folder's digest matched over a whole in-order decode.
+
+        Every byte of every member is proved, so the members with no CRC of their own
+        reach ``CHECKSUM``. Those with one reach it through their own reads.
+        """
+        self._folder_key_proved(folder_index)
+        self._folder_crc_passed.add(folder_index)
+        for member in self._folder_members.get(folder_index, ()):
+            if _member_crc(member) is None:
+                raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+
+    @override
+    def _awaiting_spanning_checks(self) -> set[int]:
+        """The members of each folder whose digest has not matched a whole decode.
+
+        A read of one member does not run a folder's digest unless it decodes the
+        folder in order from its start to its end, which a ``seekable_members=True``
+        read that seeks does not. Such reads still leave each member at its ceiling,
+        so without this ``verify_all()`` would select none of them and return no
+        failure for a folder whose digest does not match. The folder's last member is
+        among them, with or without a CRC of its own: its read is the one that ends
+        the folder and runs the digest.
+        """
+        pending: set[int] = set()
+        for index in self._folder_crc_only:
+            if index not in self._folder_crc_passed:
+                pending.update(id(m) for m in self._folder_members.get(index, ()))
+        return pending
+
+    def _folder_tail(self, folder_index: int) -> tuple[int, int] | None:
+        """``(start, crc)`` of the folder's last member when it carries a CRC.
+
+        Its read is the one that reaches the folder's end (``_FolderChecks``).
+        """
+        last = self._folder_last_member(folder_index)
+        crc = None if last is None else _member_crc(last)
+        if last is None or crc is None:
+            return None
+        return self._member_prefix(last), crc
+
+    def _folder_last_member(self, folder_index: int) -> ArchiveMember | None:
+        """The member whose bytes end at the folder's end, if one does."""
+        try:
+            return self._folder_last[folder_index]
+        except KeyError:
+            last = self._folder_last[folder_index] = self._scan_folder_last_member(
+                folder_index
+            )
+            return last
+
+    def _scan_folder_last_member(self, folder_index: int) -> ArchiveMember | None:
+        """``_folder_last_member`` without the cache: one pass over the folder."""
+        size = folder_unpack_size(self._archive.folders[folder_index])
+        for member in self._folder_members.get(folder_index, ()):
+            length = _member_stream_size(member)
+            if length and self._member_prefix(member) + length == size:
+                return member
+        return None
+
+    def _folder_crc_failed(
+        self, folder_index: int, crc: int, *, tail_matched: bool | None
+    ) -> SpanningCheckError | None:
+        """The error for a folder digest that did not match a whole in-order decode.
+
+        ``tail_matched`` is ``None`` when the folder's last member has no CRC of its
+        own. ``True``: it has one, and the same hash found it matching. The error
+        reaches that member's stream at its end, before its own verifier gives its
+        verdict, so it is raised to ``CHECKSUM`` here: the error is not about it, and
+        ``verify_all()`` leaves it out. ``False``: that member is damaged and its own
+        verifier says so, which is the more precise error. Then nothing is returned
+        for its read to raise; the error is kept for ``verify_all()`` instead
+        (``_note_unraised_spanning``), so the members it covers are still returned.
+
+        The members with no CRC of their own are the ones only this digest proves,
+        so the error covers them (``SpanningCheckError.covers``) and ``verify_all()``
+        returns each. Their levels stay where their reads left them: below
+        ``CHECKSUM``, which they can no longer reach.
+        """
+        # A folder that matched once can only fail a later decode if the source
+        # changed under the reader; take it out again so ``verify_all()`` reads it.
+        self._folder_crc_passed.discard(folder_index)
+        members = self._folder_members.get(folder_index, ())
+        last = self._folder_last_member(folder_index)
+        if tail_matched and last is not None:
+            raise_member_level(last, Verification.CHECKSUM, Verification.CHECKSUM)
+        covers = tuple(member for member in members if _member_crc(member) is None)
+        names = ", ".join(quoted(member.name) for member in covers[:5])
+        if len(covers) > 5:
+            names += f" and {len(covers) - 5} more"
+        expected = self._folder_crc_only[folder_index]
+        error = SpanningCheckError(
+            f"7z folder {folder_index} fails its CRC check: the decoded data gives "
+            f"CRC32 {crc:08x}, and the folder records {expected:08x}. The CRC is the "
+            f"only check of {names}, so the data of each may be damaged.",
+            covers=covers,
+        )
+        if tail_matched is False:
+            error.archive_name = self._archive_name
+            error.member_name = None if last is None else last.name
+            self._note_unraised_spanning(folder_index, error)
+            return None
+        return error
 
     def _password_for_folder(
         self, folder_index: int, member: ArchiveMember | None
@@ -1418,6 +1892,21 @@ class SevenZipReader(BaseArchiveReader):
             raise wrong_password_error("Wrong password or corrupt 7z folder")
         return verdict
 
+    def _watch_folder_end(self, stream: BinaryIO, member: ArchiveMember) -> BinaryIO:
+        """Wrap the member that ends its folder in :class:`_FolderEndCheck`.
+
+        Only a folder with a folder CRC to check (``_folder_crc_only``), and only its
+        member whose bytes end at the folder's end: no other member's read finds it.
+        """
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        folder_index = raw.folder_index
+        if folder_index is None or folder_index not in self._folder_crc_only:
+            return stream
+        if self._folder_last_member(folder_index) is not member:
+            return stream
+        return _FolderEndCheck(stream)
+
     def _watch_unverified(self, stream: BinaryIO, member: ArchiveMember) -> BinaryIO:
         """Wrap ``stream`` to report an abandoned read of an unconfirmed folder's member.
 
@@ -1427,18 +1916,26 @@ class SevenZipReader(BaseArchiveReader):
         """
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
-        if raw.folder_index not in self._folders_unconfirmed:
+        folder_index = raw.folder_index
+        if folder_index not in self._folders_unconfirmed:
             return stream
         return self._watch_unverified_read(
             stream,
             member,
             size=_member_stream_size(member),
-            check="confirm_budget_exhausted",
+            # Asked at each sync and at close: another member's CRC can confirm the
+            # folder's key while this stream is open (``_folder_key_proved``).
+            check=lambda: (
+                "confirm_budget_exhausted"
+                if folder_index in self._folders_unconfirmed
+                else None
+            ),
             format_label="7z",
             digest="checksum",
             why="no checksum confirmed the password",
         )
 
+    @override
     def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
         # Every open() builds its folder's decoder afresh and decodes up to the member.
         # A member alone in its folder decodes no other member's bytes.
@@ -1506,7 +2003,10 @@ class SevenZipReader(BaseArchiveReader):
         return self._wrap_member_stream(
             member.name,
             lambda: self._watch_unverified(
-                open_solid().open_member(prefix, size, lazy=True), member
+                self._watch_folder_end(
+                    open_solid().open_member(prefix, size, lazy=True), member
+                ),
+                member,
             ),
             size=member.size,
             track_output=False,
@@ -1516,11 +2016,13 @@ class SevenZipReader(BaseArchiveReader):
             verify_member=verify_member,
         )
 
+    @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):
             return TruncatedError("7z folder ended before the requested member")
         return None
 
+    @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
@@ -1534,6 +2036,7 @@ class SevenZipReader(BaseArchiveReader):
             reparse_fallback=self._reparse_fallback_type(raw.record),
         )
 
+    @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
@@ -1573,12 +2076,15 @@ class SevenZipReader(BaseArchiveReader):
             folder_stream.close()
             raise
         try:
-            inner = self._watch_unverified(inner, member)
+            inner = self._watch_unverified(
+                self._watch_folder_end(inner, member), member
+            )
             return self._folder_member_parts(inner, member)
         except BaseException:
             inner.close()
             raise
 
+    @override
     def _get_archive_info(self) -> ArchiveInfo:
         solid_blocks = sum(
             1 for members in self._folder_members.values() if len(members) > 1
@@ -1605,6 +2111,7 @@ class SevenZipReader(BaseArchiveReader):
             extra=info_extra,
         )
 
+    @override
     def _close_archive(self) -> None:
         self._shared.close()
 
@@ -1628,6 +2135,7 @@ class SevenZipReadBackend(ReadBackend):
     NON_SEEKABLE_REASON = "its index is at the end of the file"
     OPTIONAL_DEPENDENCY = None
 
+    @override
     def open_read(
         self,
         source: ArchiveSource,

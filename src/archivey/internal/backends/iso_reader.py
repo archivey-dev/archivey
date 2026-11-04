@@ -48,17 +48,21 @@ import re
 import stat
 import struct
 import zlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta, timezone
 from types import ModuleType
 from typing import (
     TYPE_CHECKING,
     BinaryIO,
+    Literal,
     NamedTuple,
     TypeGuard,
+    TypeVar,
     cast,
 )
+
+from archivey.internal.overrides import override
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -76,6 +80,7 @@ from archivey.diagnostics import (
     MemberHeaderRecordContext,
     MemberTimestampContext,
     NameEncodingContext,
+    ReaderDisagreementContext,
     raw_name_to_base64,
 )
 from archivey.exceptions import (
@@ -498,6 +503,27 @@ class _ParseBudget:
         )
 
 
+# How many files only another tree holds are reported per tree
+# (``IsoReader._report_files_in_other_trees``).
+_OTHER_TREE_REPORTS = 16
+# A UDF File Entry's ICB flags (ECMA-167 4/14.6.8, low three bits) for data held inside
+# the entry itself, with no extent of its own.
+_UDF_INLINE_DATA = 3
+# What ``IsoReader._report_unlisted`` decodes a reported file's name from: a directory
+# record, or a UDF File Identifier.
+_NameSource = TypeVar("_NameSource")
+
+
+def _udf_text(ident: UDFFileIdentifierDescriptor) -> str:
+    """A UDF File Identifier's name as text; never raises. pycdlib keeps the stored
+    bytes and the encoding their compression ID names: UTF-16BE (16), decoded as a
+    Joliet name is, or Latin-1 (8)."""
+    raw = bytes(ident.fi)
+    return (
+        _decode_joliet(raw) if ident.encoding == "utf-16_be" else raw.decode("latin-1")
+    )
+
+
 # The key the UDF tree is counted under in ``_ParseBudget``: pycdlib walks one UDF file
 # set per image, and no ``id()`` is negative.
 _UDF_TREE = -1
@@ -867,8 +893,8 @@ def _cut_short(fp: BinaryIO, exc: Exception) -> TruncatedError | None:
     not before where that read started: the descriptor set, or the volume space of the
     primary descriptor, goes on past the file. A read that stopped inside the file
     parsed bytes that are present, and a read from past the volume space followed a
-    wrong pointer; both stay ``CorruptionError``. Called with pycdlib's handle, inside
-    the handle guard.
+    wrong pointer; both stay ``CorruptionError``. Called with pycdlib's handle, from
+    the reader's constructor, which the adapter calls under its handle lock.
     """
     position = fp.tell()
     image_length = fp.seek(0, io.SEEK_END)
@@ -1326,15 +1352,19 @@ class _ZisofsStream(io.RawIOBase):
         self._cached_index = -1
         self._cached = b""
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def tell(self) -> int:
         return self._position
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # A relative seek to before the start clamps to 0, as io.BytesIO and the other
         # member streams do. ArchiveStream.seek rejects a negative SEEK_SET and a bad
@@ -1345,6 +1375,7 @@ class _ZisofsStream(io.RawIOBase):
         )
         return self._position
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         # Views released on return: see try_readinto.
         with memoryview(b) as outer, outer.cast("B") as view:
@@ -1407,6 +1438,7 @@ class _ZisofsStream(io.RawIOBase):
         self._cached_index, self._cached = index, data
         return data
 
+    @override
     def close(self) -> None:
         if not self.closed:
             # ``getattr``: ``IOBase.__del__`` closes an instance whose ``__init__``
@@ -1513,9 +1545,9 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             self._image_length = self._iso_fp.seek(0, 2)
 
             # Auto-select the richest namespace: Rock Ridge > Joliet > plain
-            # ISO 9660. Inside the guard, not after it: these are pycdlib calls
+            # ISO 9660. Inside this ``try``, not after it: these are pycdlib calls
             # on the image just opened, so a failure here is an image failure
-            # and belongs to the same translation and the same release.
+            # and releases pycdlib's state as a failure in ``open_fp`` does.
             if self._iso.has_rock_ridge():
                 self._namespace = "rock_ridge"
                 self._path_kw = "rr_path"
@@ -1530,7 +1562,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # No reader is returned for anyone to close, and the exception's traceback
             # keeps this frame alive for as long as the caller holds it (inventory/fuzz
             # catch-and-continue loops), so release pycdlib's state now. The source is
-            # ``open_archive``'s to close on this path. The guard covers the whole
+            # ``open_archive``'s to close on this path. This ``try`` covers the whole
             # constructor body so this stays true of every failure point, not only of
             # ``open_fp``.
             self._release_archive_handles()
@@ -1545,7 +1577,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         the partitions its MBR or GPT lists (:func:`_image_end`): a hybrid ISO, the
         layout Linux installer images use, appends an EFI partition and a GPT backup
         after the volume space, and those bytes belong to the disk image. 7-Zip warns
-        on them; archivey does not. Called inside the handle guard.
+        on them; archivey does not. Called from the constructor, which the adapter
+        calls under its handle lock.
         """
         end = _image_end(
             self._iso_fp,
@@ -1945,30 +1978,188 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         """The records that hold one file's data, as the walk joined them."""
         return self._file_records_of.get(id(record), (record,))
 
+    @override
     def iter_members(self) -> Iterator[MemberRecord[DirectoryRecord]]:
         # Pinned-pycdlib audit (tar-concurrent-open 2.7 / concurrent-member-streams 5.4):
         # the record walk traverses in-memory parsed catalog records and reads nothing
         # from the image, except in two cases. For a repeated identifier
         # (``_entries_sharing_identifier``) or a file whose data ends at the end of
         # the image (``_make_member``), ``_raw_directory`` re-reads the directory's
-        # extent through ``_cdfp`` and takes the handle guard itself. The
+        # extent with ``self._source.read_at``, which takes the ``SharedSource`` lock,
+        # not through pycdlib's handle. The
         # Joliet name fallback reads nothing either: ``has_joliet()`` tests a parsed
         # descriptor, ``get_record(joliet_path="/")`` looks among parsed records, and
-        # ``_yield_children`` on the Joliet tree walks them. Following a link target
+        # ``_yield_children`` on the Joliet tree walks them. The comparison after the walk
+        # (``_report_files_in_other_trees``) reads nothing either: it walks the Joliet
+        # and plain ISO 9660 trees with ``get_record`` and ``_yield_children``, and the
+        # UDF tree through the parsed File Entries' ``fi_descs`` and ``alloc_descs``,
+        # all built inside ``open_fp``. Following a link target
         # (``_rock_ridge_child``) is the walk's own ``_yield_children`` over Rock Ridge
         # records already parsed, and ``_nm_name`` reads the parsed ``NM`` records
-        # (``dr_entries``/``ce_entries``). Any other image read added to listing needs
-        # the same guard. If a future pycdlib version gains handle access in the walk,
-        # lock the complete call.
+        # (``dr_entries``/``ce_entries``). Any other image read added to listing must
+        # also go through ``self._source`` (``read_at`` or a view), whose reads take
+        # the ``SharedSource`` lock. If a future pycdlib version gains handle access
+        # in the walk, lock the complete call.
         # ``index`` is each member's position in the walk, the id registration
         # stamps, so a diagnostic raised while typing can name it.
+        listed_extents: set[int] = set()
         for index, (ns_path, raw_path, record, superseded) in enumerate(
             self._walk_records()
         ):
+            if not record.is_dir() and record.data_length:
+                listed_extents.add(record.extent_location())
             member, stored_name = self._make_member(
                 ns_path, raw_path, record, index, superseded=superseded
             )
             yield MemberRecord(member, record, stored_name=stored_name)
+        self._report_files_in_other_trees(listed_extents)
+
+    # --- the image's other trees ---------------------------------------------------
+
+    def _report_files_in_other_trees(self, listed_extents: set[int]) -> None:
+        """Report a file that a tree this reader does not list holds and the listed
+        tree does not: ``MEMBER_READERS_DISAGREE``, ``file_only_in_joliet``,
+        ``file_only_in_iso9660`` or ``file_only_in_udf``.
+
+        An image carries up to three name trees over one set of file data. Linux and
+        xorriso read Rock Ridge, Windows and 7-Zip read Joliet (and Windows UDF first,
+        on an image that has it), and a reader without Joliet support reads the plain
+        ISO 9660 tree, so a file put in one tree only is seen by some readers and
+        hidden from the others. archivey lists one tree (Rock Ridge, else Joliet, else
+        plain ISO 9660) and compares every other one: Joliet unless it is listed, the
+        plain tree when Joliet is listed (Rock Ridge names ride the plain records, so
+        listing Rock Ridge covers them), and UDF. Files are matched by the data each
+        points at, not by name, since a Joliet name is cut at 64 characters and a plain
+        one is 8.3. Empty files are left out: they share one extent, so they cannot be
+        told apart.
+
+        pycdlib parsed every tree in ``open_fp``, within the listing budget, so this
+        walks records already in memory and reads nothing from the image. At most
+        ``_OTHER_TREE_REPORTS`` files are reported per tree.
+        """
+        if self._namespace != "joliet" and self._iso.has_joliet():
+            self._report_unlisted(
+                "Joliet",
+                "file_only_in_joliet",
+                self._record_tree_files("joliet_path"),
+                self._joliet_text,
+                listed_extents,
+            )
+        if self._namespace == "joliet":
+            self._report_unlisted(
+                "ISO 9660",
+                "file_only_in_iso9660",
+                self._record_tree_files("iso_path"),
+                self._plain_text,
+                listed_extents,
+            )
+        if self._iso.has_udf():
+            self._report_unlisted(
+                "UDF",
+                "file_only_in_udf",
+                self._udf_tree_files(),
+                _udf_text,
+                listed_extents,
+            )
+
+    def _report_unlisted(
+        self,
+        tree: str,
+        shape: Literal[
+            "file_only_in_joliet", "file_only_in_iso9660", "file_only_in_udf"
+        ],
+        files: Iterator[tuple[int | None, str, _NameSource]],
+        name_of: Callable[[_NameSource], str],
+        listed_extents: set[int],
+    ) -> None:
+        """Report the files of ``files``, ``(extent, directory path, name source)``,
+        whose extent no listed file has. A name is decoded only for a file reported."""
+        reported = 0
+        for extent, dirpath, name_source in files:
+            if extent is not None and extent in listed_extents:
+                continue
+            path = dirpath + name_of(name_source)
+            reported += 1
+            cap = (
+                f" No more than {_OTHER_TREE_REPORTS} such files are reported per tree."
+                if reported == _OTHER_TREE_REPORTS
+                else ""
+            )
+            self._context.report(
+                DiagnosticCode.MEMBER_READERS_DISAGREE,
+                (
+                    f"The image's {tree} tree holds the file {quoted(path)}, which the "
+                    f"{self._namespace.replace('_', ' ')} tree archivey lists does not: "
+                    f"a reader of the {tree} tree sees it, and it is not a member "
+                    f"here.{cap}"
+                ),
+                ReaderDisagreementContext(
+                    archive_name=self._archive_name,
+                    member_name=path,
+                    member_id=None,
+                    shape=shape,
+                ),
+            )
+            if reported == _OTHER_TREE_REPORTS:
+                return
+
+    def _record_tree_files(
+        self, path_kw: Literal["joliet_path", "iso_path"]
+    ) -> Iterator[tuple[int | None, str, DirectoryRecord]]:
+        """``(extent, directory path, record)`` of every non-empty file in the Joliet
+        or plain ISO 9660 tree."""
+        root = self._iso.get_record(**{path_kw: "/"})
+        name_of = self._joliet_text if path_kw == "joliet_path" else self._plain_text
+        seen = {root.extent_location()}
+        stack: list[tuple[str, DirectoryRecord]] = [("", root)]
+        while stack:
+            dirpath, directory = stack.pop()
+            for child in _yield_children(directory, False):
+                extent = child.extent_location()
+                if child.is_dir():
+                    if extent not in seen:
+                        seen.add(extent)
+                        stack.append((f"{dirpath}{name_of(child)}/", child))
+                elif child.data_length:
+                    yield extent, dirpath, child
+
+    @staticmethod
+    def _plain_text(record: DirectoryRecord) -> str:
+        """A plain ISO 9660 identifier as text, without its version; never raises."""
+        name = bytes(record.file_identifier()).decode("latin-1")
+        return name if record.is_dir() else _strip_version(name, iso9660=True)[0]
+
+    def _udf_tree_files(
+        self,
+    ) -> Iterator[tuple[int | None, str, UDFFileIdentifierDescriptor]]:
+        """``(extent, directory path, File Identifier)`` of every non-empty file in the
+        UDF tree. The extent is made absolute, like an ISO 9660 one; it is ``None``
+        for data held inside the File Entry (ICB flags 3), which no ISO 9660 record can
+        point at."""
+        root = self._iso.get_record(udf_path="/")
+        part_start = self._iso.udf_main_descs.partitions[0].part_start_location
+        seen = {id(root)}
+        stack: list[tuple[str, UDFFileEntry]] = [("", root)]
+        while stack:
+            dirpath, directory = stack.pop()
+            for ident in directory.fi_descs.values():
+                entry = ident.file_entry
+                if ident.is_parent() or entry is None:
+                    continue
+                if ident.is_dir():
+                    if id(entry) not in seen:
+                        seen.add(id(entry))
+                        stack.append((f"{dirpath}{_udf_text(ident)}/", entry))
+                elif entry.is_file() and entry.get_data_length():
+                    # pycdlib reads alloc_descs[0] itself for every such entry inside
+                    # open_fp, so the list is not empty here.
+                    inline = entry.icb_tag.flags & 0x7 == _UDF_INLINE_DATA
+                    extent = (
+                        None
+                        if inline
+                        else part_start + entry.alloc_descs[0].log_block_num
+                    )
+                    yield extent, dirpath, ident
 
     def _make_member(
         self,
@@ -2435,9 +2626,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         """Where a file's data is in the image: each extent's byte offset and length.
 
         pycdlib's own inode gives it when it describes the file as written. The layout
-        worked out while listing is used otherwise, never worked out again here:
-        reading the directory needs the handle, which the adapter holds around this
-        call already. Three cases need the layout: a file of 4 GiB or more, whose
+        worked out while listing is used otherwise, never worked out again here, so
+        opening a member reads no directory. Three cases need the layout: a file of 4 GiB or more, whose
         inode covers only its first extent; the El Torito boot catalog, which pycdlib
         keeps in memory and gives no inode at all, though its extent still holds its
         bytes on disc, which is what a mounted image shows; and a file pycdlib
@@ -2447,8 +2637,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         sit: ECMA-119 does not require them to be back to back. Extents that overlap
         each other are refused as corrupt, since no writer makes them and they would
         let a small image list a file many times its size. A span past the end of
-        the image is read as far as the image goes, and the adapter's size check
-        makes the short read a ``TruncatedError``.
+        the image is read as far as the image goes, and the spans after it are
+        dropped: the joined stream would otherwise move their bytes down into the
+        gap, to the wrong offsets. The stream then ends where the data stops being
+        in place, and the adapter's size check makes the short read a
+        ``TruncatedError`` from that offset on.
         """
         block_size = self._iso.logical_block_size
         try:
@@ -2482,8 +2675,16 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                     archive_name=self._archive_name,
                 )
             end = start + length
-        return spans
+        kept: list[tuple[int, int]] = []
+        for start, length in spans:
+            present = max(0, min(length, self._image_length - start))
+            if present:
+                kept.append((start, present))
+            if present < length:
+                break
+        return kept
 
+    @override
     def open_member(
         self, member: ArchiveMember, locator: DirectoryRecord
     ) -> MemberData:
@@ -2549,6 +2750,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             stream.close()
             raise
 
+    @override
     def archive_info(self) -> ReaderArchiveInfo:
         pvd = self._iso.pvd
         # The standard allows d-characters only, but writers store the -V text as it
@@ -2588,6 +2790,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         finally:
             self._iso_fp.close()
 
+    @override
     def close(self) -> None:
         self._release_archive_handles()
 
@@ -2686,9 +2889,11 @@ class IsoHandler(FormatHandler):
     )
     uses_encoding = True  # for Rock Ridge and plain names that are not valid UTF-8
 
+    @override
     def open(self, source: ReaderSource, context: ReaderContext) -> IsoReader:
         return IsoReader(source, context)
 
+    @override
     def translate_exception(self, exc: Exception) -> ArchiveyError | None:
         # pycdlib choked on corrupt structure; ``_PYCDLIB_ERRORS`` says why the set is
         # this broad. A genuine OSError is not in it and propagates unchanged.

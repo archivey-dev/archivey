@@ -30,7 +30,7 @@ def test_pass_stream_diagnostics_leave_out_another_threads_walk(
     """The names another thread's ``members()`` normalizes are not the stream's."""
     path = tmp_path / "names.tar"
     with tarfile.open(path, "w") as tf:
-        for name in ("a.txt", "./b.txt", "./c.txt"):
+        for name in ("a.txt", ".//b.txt", ".//c.txt"):
             info = tarfile.TarInfo(name)
             info.size = 3
             tf.addfile(info, io.BytesIO(b"abc"))
@@ -51,12 +51,12 @@ def test_random_stream_diagnostics_are_its_own(tmp_path: Path) -> None:
     """A stream opened on one thread keeps the emits its own reads make, only."""
     path = tmp_path / "names.tar"
     with tarfile.open(path, "w") as tf:
-        for name in ("a.txt", "./b.txt"):
+        for name in ("a.txt", ".//b.txt"):
             info = tarfile.TarInfo(name)
             info.size = 3
             tf.addfile(info, io.BytesIO(b"abc"))
     with open_archive(path, concurrent_operations=True) as reader:
-        # Opening a.txt walks only as far as a.txt; the walk to ./b.txt, which
+        # Opening a.txt walks only as far as a.txt; the walk to .//b.txt, which
         # emits, then happens on another thread while the stream is open.
         with reader.open("a.txt") as stream:
             _in_thread(lambda: reader.read("b.txt"))

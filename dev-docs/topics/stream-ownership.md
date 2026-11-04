@@ -148,12 +148,13 @@ the fd budget, not a working-set size: a fourth live Path volume evicts on
 every miss, so those reads pay `open()`+`close()` again. A 100-part set still
 reads; growing the cache to the volume count would hold one descriptor per
 part. `close()` releases every cached Path handle and is safe when none are
-open. A missing or unstatable file fails at construction as `OpenError`
-chaining the `OSError` from `stat()`. That is a path the caller named; a
-numbering gap among paths that exist is `TruncatedError` from the numbered
-sequence check. A permission error on `open()`
-surfaces on the first read of that part as `OpenError` chaining that
-`OSError`. Opening every Path at construction just to fail-fast would put
+open. A missing or unstatable file fails at construction with the
+`OSError` from `stat()` itself (`FileNotFoundError`, `PermissionError`), as a
+single path does; a numbering gap among paths that exist is `TruncatedError`
+from the numbered sequence check. A permission error on `open()` surfaces on
+the first read of that part as that `OSError`. Running out of descriptors
+(`EMFILE` / `ENFILE`) at either point raises `ResourceUnavailableError` with
+the `OSError` as its cause. Opening every Path at construction just to fail-fast would put
 the descriptors back. Volume bytes are sampled at read time, not pinned by a
 construction-time fd: replacing a part after construction is visible on the
 next open of that part. A borrowed `BinaryIO` volume is re-seeked before every

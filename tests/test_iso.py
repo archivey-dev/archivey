@@ -32,6 +32,7 @@ from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
     StreamNotSeekableError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.iso_reader import IsoHandler, _strip_version
@@ -1518,12 +1519,47 @@ def test_a_multi_extent_file_with_a_gap_reads_each_extent_where_it_is() -> None:
             assert stream.read(4) == b"aaaa"
 
 
+def test_a_cut_multi_extent_file_never_moves_a_later_extent_into_the_gap() -> None:
+    """Extents may sit in any order. The first one here is the image's last block,
+    cut 1000 bytes in; the second sits earlier and is whole. Joined as they were, the
+    second extent's bytes filled the cut first extent's place: a full read delivered
+    them at the wrong offsets before it raised, and a read at offset 1000 returned
+    them with no error."""
+    buf = bytearray(_split_into_extents(_image_with_two_block_file(), b"BIG.BIN;1"))
+    root = struct.unpack_from("<I", buf, 16 * 2048 + 156 + 2)[0] * 2048
+    first = buf.index(b"BIG.BIN;1", root) - 33
+    second = first + buf[first]
+    a_block = struct.unpack_from("<I", buf, first + 2)[0]  # 2048 bytes of "a"
+    last_block = len(buf) // 2048
+    for at, extent, size in ((first, last_block, 2048), (second, a_block, 1000)):
+        struct.pack_into("<I", buf, at + 2, extent)
+        struct.pack_into(">I", buf, at + 6, extent)
+        struct.pack_into("<I", buf, at + 10, size)
+        struct.pack_into(">I", buf, at + 14, size)
+    # The volume space takes in the last block, of which only 1000 bytes are present.
+    struct.pack_into("<I", buf, 16 * 2048 + 80, last_block + 1)
+    struct.pack_into(">I", buf, 16 * 2048 + 84, last_block + 1)
+    buf += b"c" * 1000
+    with open_archive(io.BytesIO(bytes(buf)), seekable_members=True) as ar:
+        assert ar.get("BIG.BIN").size == 3048
+        with ar.open("BIG.BIN") as stream:
+            assert stream.read(1000) == b"c" * 1000
+            with pytest.raises(TruncatedError):
+                stream.read(10)
+        with ar.open("BIG.BIN") as stream:
+            stream.seek(1000)
+            with pytest.raises(TruncatedError):
+                stream.read(10)
+        assert ar.read("Z.TXT") == b"hi"
+
+
 def test_a_repeated_identifier_without_the_flag_lists_each_file(tmp_path: Path) -> None:
     """pycdlib links any record whose identifier repeats the previous one, sets the
     multi-extent flag on the first in memory, and its walk skips the second record.
     Only the flag as written in the image makes the two records one file. Without
     it they are two files with one name, and both list, as ZIP and TAR list two
-    members with one name and as 7-Zip lists this image. The later one is current.
+    members with one name and as 7-Zip lists this image. The later one is current,
+    and it is reported with ``MEMBER_NAME_DUPLICATE``.
     """
     image = _split_into_extents(
         _image_with_two_block_file(), b"BIG.BIN;1", flags=(False,)
@@ -1539,7 +1575,9 @@ def test_a_repeated_identifier_without_the_flag_lists_each_file(tmp_path: Path) 
         assert ar.read(first) == b"a" * 2048
         assert ar.read(second) == b"b" * 1000
         assert ar.read("BIG.BIN") == b"b" * 1000
-        assert ar.diagnostics.total_count == 0
+        # The second record is reported: a reader that keeps the first lists another
+        # file under that name.
+        assert dict(ar.diagnostics.counts) == {DiagnosticCode.MEMBER_NAME_DUPLICATE: 1}
         ar.extract_all(tmp_path)
     assert (tmp_path / "BIG.BIN").read_bytes() == b"b" * 1000
 

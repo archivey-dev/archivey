@@ -8,9 +8,9 @@ proxy forwards each call with its arguments unchanged, so a codec's per-library 
 (zlib's ``max_length=0`` meaning "no limit", the others' ``-1``) stay where they are.
 
 The libraries that re-enable the GIL on a free-threaded build (brotli, inflate64,
-pyppmd) are never imported here when isolated: their exception types have stand-ins
-(:class:`BrotliChildError`, :class:`PpmdChildError`) that the codecs catch and
-translate alongside the real ones.
+pyppmd, python-lzo) are never imported here when isolated: their exception types have
+stand-ins (:class:`BrotliChildError`, :class:`PpmdChildError`, :class:`LzoChildError`)
+that the codecs catch and translate alongside the real ones.
 """
 
 from __future__ import annotations
@@ -18,9 +18,10 @@ from __future__ import annotations
 import lzma
 import zlib
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from archivey.config import ProcessIsolation
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChild,
@@ -30,21 +31,8 @@ from archivey.internal.streams.codecs.decoder_child import (
 )
 from archivey.internal.streams.native_memory import note_native_memory
 
-
-class Decompressor(Protocol):
-    """The one-stream decompressor surface of ``bz2``, ``lzma``, zstd and
-    ``lz4.frame``, in-process or in a child."""
-
-    def decompress(self, data: bytes, max_length: int = ...) -> bytes: ...
-
-    @property
-    def eof(self) -> bool: ...
-
-    @property
-    def needs_input(self) -> bool: ...
-
-    @property
-    def unused_data(self) -> bytes: ...
+if TYPE_CHECKING:
+    from archivey.formats import Decompressor
 
 
 class ZlibDecompressor(Protocol):
@@ -75,6 +63,10 @@ class PpmdChildError(ValueError):
     """
 
 
+class LzoChildError(ValueError):
+    """Stand-in for ``lzo.error`` raised by liblzo2 in a child process."""
+
+
 def _known(*classes: type[Exception] | None) -> dict[tuple[str, str], type[Exception]]:
     return {
         (cls.__module__, cls.__qualname__): cls for cls in classes if cls is not None
@@ -83,7 +75,10 @@ def _known(*classes: type[Exception] | None) -> dict[tuple[str, str], type[Excep
 
 _ZLIB_ERRORS = _known(zlib.error)
 _LZMA_ERRORS = _known(lzma.LZMAError)
+
+
 # Matched by type name alone ("*"): the modules that raise them differ by build.
+_LZO_ERRORS: dict[tuple[str, str], type[Exception]] = {("*", "error"): LzoChildError}
 _BROTLI_ERRORS: dict[tuple[str, str], type[Exception]] = {
     ("*", "error"): BrotliChildError
 }
@@ -165,15 +160,17 @@ class _ChildProxy:
 
 
 class ChildDecompressor(_ChildProxy):
-    """A ``bz2``, ``lzma``, zstd, ``lz4.frame`` or zlib decompressor in a child."""
+    """A ``bz2``, ``lzma``, zstd or ``lz4.frame`` decompressor in a child.
+
+    No ``flush``: those libraries' decompressors have none, so a proxy ``flush`` would
+    fail in the child, and ``FramedDecoder`` calls ``flush`` on any decompressor that
+    has one. Only :class:`ChildZlibDecompressor` defines it.
+    """
 
     def decompress(
         self, data: bytes | bytearray | memoryview, *args: Any, **kwargs: Any
     ) -> bytes:
         return self._child.call("decompress", data, args, kwargs)
-
-    def flush(self, *args: Any) -> bytes:
-        return self._child.call("flush", None, args)
 
     @property
     def eof(self) -> bool:
@@ -186,6 +183,13 @@ class ChildDecompressor(_ChildProxy):
     @property
     def unused_data(self) -> bytes:
         return self._child.unused_data()
+
+
+class ChildZlibDecompressor(ChildDecompressor):
+    """A zlib decompressor in a child."""
+
+    def flush(self, *args: Any) -> bytes:
+        return self._child.call("flush", None, args)
 
     @property
     def unconsumed_tail(self) -> bytes:
@@ -251,6 +255,7 @@ class Natives:
     def __init__(self, *, isolated: bool) -> None:
         self.isolated = isolated
 
+    @override
     def __repr__(self) -> str:
         return f"Natives(isolated={self.isolated})"
 
@@ -285,7 +290,7 @@ class Natives:
                 return zlib.decompressobj(wbits)
             return zlib.decompressobj(wbits, zdict=zdict)
         kwargs: dict[str, object] = {} if zdict is None else {"zdict": bytes(zdict)}
-        return ChildDecompressor(
+        return ChildZlibDecompressor(
             self._child("zlib", (wbits,), kwargs, known=_ZLIB_ERRORS)
         )
 
@@ -353,6 +358,28 @@ class Natives:
             return child.call("decompress", block, (), kwargs)
         finally:
             child.close()
+
+    def lzo_decompress(self, block: bytes, limit: int) -> bytes:
+        """``lzo.decompress(block, False, limit)``: one raw LZO1X block. Needs
+        python-lzo; not imported here when isolated, where it raises
+        :class:`LzoChildError` for ``lzo.error``."""
+        if not self.isolated:
+            lzo = deps.lzo.load()
+            assert lzo is not None
+            return lzo.decompress(block, False, limit)
+        child = self._child("lzo", known=_LZO_ERRORS)
+        try:
+            return child.call("decompress", block, (False, limit))
+        finally:
+            child.close()
+
+    def lzo_errors(self) -> tuple[type[Exception], ...]:
+        """The exception types :meth:`lzo_decompress` raises on bad data."""
+        if self.isolated:
+            return (LzoChildError,)
+        lzo = deps.lzo.load()
+        assert lzo is not None
+        return (lzo.error,)
 
     def brotli_decompressor(self) -> Any:
         """A ``brotli.Decompressor``; needs brotli installed. Not imported here when

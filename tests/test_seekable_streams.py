@@ -1724,6 +1724,10 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
     position and drop the digest on the read that skips the gap, or reading on
     reports a false truncation or mismatch. The target lies past an index point, so
     the seek jumps rather than decoding the gap through the verifier.
+
+    The decoder's own seek is lazy: the read after it decodes the gap, and the seek
+    table thins on the way, which STRICT raises from that read. It raises before
+    returning anything, and the read after it goes on from the same position.
     """
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.hashing import crc32_digest
@@ -1754,6 +1758,9 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
     with stream:
         with pytest.raises(DiagnosticRaisedError):
             stream.seek(4000)
+        assert stream.tell() == 4000
+        with pytest.raises(DiagnosticRaisedError, match="seek table"):
+            stream.read()
         assert stream.tell() == 4000
         assert stream.read() == full[4000:]
 
@@ -1960,13 +1967,13 @@ def test_brotli_reports_a_rewind(caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
-    assert (
-        sum(
-            "restarts from the start of the stream" in r.getMessage()
-            for r in caplog.records
-        )
-        == 1
-    )
+    rewinds = [
+        r.getMessage()
+        for r in caplog.records
+        if "restarts from the start of the stream" in r.getMessage()
+    ]
+    assert len(rewinds) == 1
+    assert "brotli stream" in rewinds[0]
 
 
 @requires("lz4")

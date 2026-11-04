@@ -25,12 +25,13 @@ so the machinery below reports what it found and does not classify intent.
 
 ## 2. Ways to find one
 
-Only the cued forward scan is shipped today.
+The cued forward scan and the uncued scan that runs last are shipped today.
 
 | Tier | How it works | Bound | Status |
 | --- | --- | --- | --- |
 | **Tail probe** | Some formats locate themselves from the end, so no search is needed — only the willingness to look. | Set by the format (ZIP: 65 557 bytes) | **Designed, not shipped.** Held out of the default budget pending a seek-cost measurement |
 | **Cued forward scan** | Leading bytes look like a prefix → search forward for each backend's declared needle. | `min(size, SFX_MAX)`, `SFX_MAX` = 2 MiB | **Shipped** |
+| **Uncued scan, last** | Every other detection step declined, the leading bytes raise no cue and carry no known non-archive signature, and the name has no known extension → the same scan, every needle held to its validator. | Same window; on a forward-only source, only the bytes detection already holds | **Shipped** (2026-10-29) |
 | **Exhaustive scan** | Search the whole source, for a caller who knows they are holding a firmware image. | Caller's `max_scan_bytes` | Designed, not shipped |
 | **Prefix analysis** | Do not search at all: read the stub, which for some families states where the payload begins and what made it. | None — one seek to the stated offset | An idea in [`IDEAS.md`](../IDEAS.md) |
 
@@ -44,9 +45,10 @@ The cost of promoting it is a corpus of current and old installers and a definit
 like makeself" that does not turn into a second shell parser ([`IDEAS.md`](../IDEAS.md)
 §Detection).
 
-The scan runs second in the detector's order — near magic → **SFX scan** → far magic →
-content probes → extension — and reports `PROBABLE` with `detected_by="sfx_scan"` and a
-`payload_offset`.
+The cued scan runs second in the detector's order — near magic → **SFX scan** → far
+magic → trailer → self-checking header → content probes → **leading-bytes scan** →
+extension — and the uncued one runs last but for the extension. Both report `PROBABLE`
+with `detected_by="sfx_scan"` and a `payload_offset`.
 
 `SFX_MAX` is shared by four call sites on purpose: the detector, `rar_parser`'s own scan,
 `sevenzip_parser`'s, and the forward ZIP walk's (`zip_local_walk`, for a ZIP read from a
@@ -107,6 +109,17 @@ The numbers behind the current gate, measured on a `/usr` tree:
   are mostly small scripts — median 2 959 bytes, one file in 734 large enough to reach the
   window at all — so the whole tree cost **10.3 MiB** more, not the 2 MiB per script the
   bound alone suggests.
+
+**The uncued scan is gated by order, not by a cue.** It runs only on a source that every
+other step declined and whose name names no format, so files that are archives, and files
+whose name says what they are, pay nothing. An unrecognised extension-less file pays the
+window: 7 ms for 2 MiB of random bytes, 285 ms for 2 MiB of sparse invalid ZIP local
+headers, and about 2.4 s for 2 MiB of back-to-back `PK\x03\x04` decoys, the uncapped-ZIP
+cost §7 accepted for cued sources, now reachable with no cue. `max_scan_bytes=0` turns
+off both scans; there is no setting that keeps the cued scan and drops this one. On a
+forward-only source it scans only the bytes detection already holds, so an unrecognised
+stream whose writer keeps it open fails at once instead of waiting for 2 MiB.
+
 **The tail probe is gated the other way round.** Nothing can cue it: the front of a
 prefixed ZIP looks like whatever the stub is, and a ZIP whose front *does* say `PK\x03\x04`
 was already found by near magic. So it would cost one tail read on every source — free when
@@ -181,9 +194,10 @@ compressed stream is a real shape for script launchers and not for executable on
 
 | What you see | Where | More |
 | --- | --- | --- |
-| A prefixed ZIP behind bytes that fire no cue (a JPEG polyglot, a plain concatenation) is not detected, though `open_archive(..., format=ZIP)` reads it | **archivey** | The tail probe is the tier that would find it (§2) |
+| A prefixed archive behind bytes that fire no cue (a JPEG polyglot, a plain concatenation) is detected only when it starts within the window, and only when the name has no known extension; `open_archive(..., format=ZIP)` reads one further in | **archivey** | The uncued scan (§2, §3); the tail probe is the tier that would find a ZIP at any distance |
+| An unrecognised extension-less file of 2 MiB of `PK\x03\x04` decoys takes about 2.4 s to reject | **archivey** | The uncued scan with ZIP uncapped (§3, §7) |
 | `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped. Resolved 2026-09-25: kept, not renamed; `detected_by` is documented as an open set and `sfx_scan` as covering every prefixed hit |
-| A prefixed archive on a non-seekable source may be missed entirely | **format** | The tail probe needs a seek; the forward scan needs a cue in the first bytes |
+| A prefixed archive on a non-seekable source may be missed entirely | **format** | The tail probe needs a seek; the cued scan needs a cue in the first bytes, and the uncued one sees only the bytes detection already read |
 
 A defect worth remembering because it shows what the cue gate is really protecting: before
 Mach-O was added, a macOS SFX stub matched no cue, and `cf fa ed fe` is *structurally
@@ -207,6 +221,7 @@ produced a confidently wrong one.
 | Report what was found, do not classify the stub | The same tier finds an installer, a program and a polyglot; intent is not in the bytes | Deciding whether a file "is" self-extracting |
 | Stub-only `vol.exe` follows every 7-Zip first-volume name (`exe.001`, `7z.001`, `zip.001`) | Opening the stub is what a caller does; supporting only the Linux name would make the same producer flag work on one OS and fail on the other | Following `exe.001` only; leaving the stub as `FormatDetectionError` |
 | Old-scheme SFX `name.exe` + `name.r00` is volume 1 of that `.rNN` set | Same discovery as `name.rar` + `.r00`; a 7-Zip numbered stub has no `.r00` and still follows `.001` | Treating every `.exe` as maybe-volume (would `iterdir` on random executables) |
+| The scan also runs with no cue, last, over the same window, on a source every other step declined and whose name names no format; on a forward-only source it scans only the bytes already held | 7-Zip, unrar and unzip find an archive behind any leading bytes, and an upload scanner must see a nested archive. Running it last means archives and named files pay nothing. Holding a pipe to its buffered bytes keeps an unrecognised held-open stream from blocking. It widens the uncapped-ZIP cost in the row above to cue-less files: about 2.4 s for 2 MiB of decoys | Gating it on `THOROUGH` only; running it on named files too (the readers already find their own prefixed archives); waiting for 2 MiB on a pipe |
 
 ## 8. Verify
 

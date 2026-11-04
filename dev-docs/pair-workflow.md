@@ -24,7 +24,7 @@ Product tie-breaker remains [`VISION.md`](../VISION.md). Coding gates remain
 4. Implement                same pair agent; update handbook/user docs when claims move
 5. Review (fresh session)   full findings → PR; YOU get decision packets only
 6. Address                  pair agent; one packet at a time until happy
-7. User docs if needed      `write-user-docs` voice (published `docs/` only)
+7. User docs if needed      `write-user-docs` voice (scope: see the skill)
 ```
 
 Steps 4–6 run through one label: the implementer adds `review` to the pull request, a

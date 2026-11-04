@@ -30,7 +30,7 @@
 
 ## 5. Measurement and compatibility
 
-- [ ] 5.1 Run `scripts/exploration/rar_synthetic_probe.py` on each pinned `unrar` (Linux 7.00, Windows WinRAR 7.23, the 6.x floor)
+- [ ] 5.1 Run `scripts/investigations/exploration/rar_synthetic_probe.py` on each pinned `unrar` (Linux 7.00, Windows WinRAR 7.23, the 6.x floor)
 - [ ] 5.2 RAR 1.5 and 2.x fixtures and the RAR corpus: synthetic read equals the original read
 - [ ] 5.3 A solid archive with NTFS streams (`rar -os -s`) on Windows: service headers inside a chain
 - [ ] 5.4 Benchmarks: rerun the `open()`, `extract_all()` and stream-source rows of `design.md` and record them in the PR

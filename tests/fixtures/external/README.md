@@ -139,3 +139,16 @@ and streams them before its CRC fails (exit 3): the shape
 `tests/test_encrypted_member_unverified.py` needs for the solid pass. About one wrong
 password in four does that on this member; the rest emit nothing. See
 [`dev-docs/formats/rar.md`](../../../dev-docs/formats/rar.md) §2.2.
+
+## `lzop/`
+
+`.lzo` files written by `lzop` 1.04 with LZO library 2.10 (Ubuntu 24.04 package),
+committed 2026-10-30, since no tool on the test image writes the format. The inputs are
+rebuilt in `tests/test_lzop.py`, each with mtime 2024-03-01 12:00 UTC and mode 0644:
+
+- `text.txt.lzo`: `lzop` (LZO1X-1, Adler-32), 12 000 numbered lines in two blocks.
+- `text-9-crc32.txt.lzo`: the same input with `lzop -9 --crc32` (LZO1X-999, CRC-32).
+- `random.bin.lzo`: 20 000 random bytes, which lzop stores uncompressed.
+- `empty.lzo`: an empty file: a header and the end block.
+- `two-files.lzo`: `lzop -c a.txt b.txt`, two lzop files back to back.
+- `files.tar.lzo`: a USTAR archive of `dir/one.txt` and `dir/two.txt`.

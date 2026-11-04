@@ -11,6 +11,7 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.internal.config import StreamConfig
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -21,7 +22,6 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.deflate64_decoder import (
     Deflate64DecompressorStream,
 )
-from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.types import MissingComponent, OptionalLibrary
 
 
@@ -34,14 +34,16 @@ class Deflate64Codec(StreamCodec):
         reason=deps.unused_reason(OptionalLibrary.INFLATE64),
     )
 
+    @override
     def _backend_present(self) -> bool:
         return deps.inflate64.available()
 
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         excluded = config.excluded_libraries
-        natives = natives_for(config.process_isolation)
+        natives = config.natives
         if self.excluded_by(excluded) or not natives.package_available(deps.inflate64):
             raise self._missing("Deflate64 streams", excluded=excluded)
         return Deflate64DecompressorStream(
@@ -51,9 +53,10 @@ class Deflate64Codec(StreamCodec):
             natives=natives,
         )
 
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, (ValueError, zlib.error)):
             return CorruptionError(
                 f"Error reading deflate64 stream: {exception_detail(exc)}"
             )
-        return self._eof_truncation(exc, "deflate64")
+        return None

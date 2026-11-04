@@ -89,9 +89,8 @@ when the entry has no data stream, even where the format's own tool writes it as
 empty regular file (unzip, 7-Zip): an empty file in its place would hide what the
 archive said it was. An entry whose mode names a special file but that owns a data
 stream (ZIP, 7z, RAR, ISO) SHALL be `MemberType.FILE` with
-`MEMBER_SPECIAL_FILE_HAS_DATA` reported: the stream is the structure and the mode an
-attribute, and `OTHER` would hide bytes every official tool writes out (design rule
-DR-25). In TAR the typeflag is the structure and GNU tar ignores the size field of a
+`MEMBER_SPECIAL_FILE_HAS_DATA` reported: the data contradicts the mode, and
+`OTHER` would hide bytes every official tool writes out (design rule DR-25). In TAR the typeflag is the structure and GNU tar ignores the size field of a
 device or FIFO header, so a header of typeflag `3`, `4` or `6` with a non-zero size
 SHALL be refused as `CorruptionError`. A TAR typeflag the reader does not know is not a
 special file: with a non-zero size it SHALL be `MemberType.FILE`, as GNU tar extracts it,
@@ -307,6 +306,9 @@ class ArchiveMember:
     def member_state_final(self) -> bool: ...
 
     def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None: ...
+    def accessed_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None: ...
+    def created_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None: ...
+    def ctime_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None: ...
     def replace(self, **kwargs: object) -> "ArchiveMember": ...
 ```
 
@@ -358,7 +360,7 @@ point-in-time snapshots.
 | Streaming later learns `size` / `link_target` | Same yielded object is updated in place |
 | Caller needs a renamed member | Uses `member.replace(name=...)`; original unchanged |
 | `ArchiveMember` used as set item/dict key | Fails because the type is unhashable |
-| Naive and aware `modified` values pass through `modified_utc()` | Returned values are aware UTC; original `modified` fields unchanged |
+| Naive and aware `modified` / `accessed` / `created` / `ctime` through their `*_utc()` helpers | Returned values are aware UTC; the stored fields are unchanged; each helper reads only its own field |
 | ZIP CRC32 and RAR5 Blake2sp hashes | Stored under `HashAlgorithm.CRC32` / `BLAKE2SP` with `bytes` values |
 | Extraction report holds a member later completed in place | Report's result tuple is immutable; member object reflects late field update |
 | `type == MemberType.ANTI` | `is_anti` true; `is_file` false |
@@ -456,7 +458,12 @@ rules and SHALL preserve verbatim stored bytes in `raw_name`. It MUST NOT strip 
 leading `/` or collapse `..` components, because those rewrites hide unsafe
 stored names. Such names are rejected by `safe-extraction`, not re-rooted at read
 time. When normalization changes the presented path, Archivey SHALL emit the
-documented normalization diagnostic/log event.
+documented normalization diagnostic/log event, except when the only changes are
+dropping a leading `./`, appending a directory's `/`, dropping the `/` a ZIP
+directory reparse point is stored with, or a leading `./` with either of the other
+two. `tar czf a.tar.gz .` writes the `./` on every member, every reader strips it,
+and reporting it would make `DiagnosticPolicy.STRICT` refuse ordinary archives
+(maintainer ruling 2026-10-31).
 
 Normalization SHALL apply in order:
 
@@ -476,7 +483,9 @@ Normalization SHALL apply in order:
 | `"foo/../bar"` | `..` retained; not collapsed |
 | `"/etc/passwd"` | Leading `/` retained; extraction rejects later |
 | `"../../etc/passwd"` | Traversal retained; extraction rejects later |
-| `"a//b/./c"` | `name == "a/b/c"` |
+| `"a//b/./c"` | `name == "a/b/c"`; `MEMBER_NAME_NORMALIZED` |
+| `"./a.txt"`, directory `"./d"`, or the bare root `"./"` | `name` is `"a.txt"`, `"d/"`, `"."`; nothing reported |
+| `".//a.txt"` | `name == "a.txt"`; `MEMBER_NAME_NORMALIZED` (the `//` is reported) |
 | Directory stored as `"mydir"` | `name == "mydir/"` |
 
 ### Requirement: ArchiveInfo carries open-time archive metadata
@@ -516,3 +525,47 @@ walked the directory runs the walk.
 | TAR archive opens without central directory | `ar.info.member_count is None` |
 | ZIP whose central directory is damaged at its third entry, or holds more entries than `max_members` | `ar.info.member_count is None`; `members()` raises |
 | ISO 9660 image richest namespace is Joliet | `ar.info.extra["iso.namespace"] == "joliet"` |
+
+### Requirement: ArchiveMember carries its verification level
+
+`ArchiveMember` SHALL expose `verified` and `verifiable`, of type
+`archivey.Verification`, with the meanings the `compressed-streams` verification
+requirement gives them, applied to this entry's data in this archive.
+
+- From the listing, a member that is not encrypted SHALL start at `verified ==
+  UNLOCKED`, and an encrypted member whose password is not yet confirmed at `NONE`.
+- `verifiable` is known from the listing. It MAY settle once, at the member's first
+  open, which is the first time any stream of that member opens its data, lower or
+  higher (a password watch that only appears then can lower it, and a checksum that
+  only the open shows can raise it). A single-file member whose codec checks its data
+  (gzip, bzip2, lzip, zlib) or whose check is optional per frame (`.xz`, `.zst`,
+  `.lz4`) SHALL be listed at `CHECKSUM`, and its first open SHALL NOT change that: no
+  read has found a frame without a check yet. After that it SHALL fall only when a
+  read of the member finds a stream or frame of an `.xz`, `.zst` or `.lz4` file that
+  carries no check, as the `compressed-streams` verification requirement gives it;
+  a later stream of the member that has not read that stream or frame SHALL NOT
+  raise it again.
+- `verified` SHALL only rise. The reader SHALL raise it in place from every read that
+  proves more: a stream of the member, a listing pass that decodes the data, and a
+  check that spans members once it passes. A raise SHALL be a monotonic maximum taken
+  under a per-reader leaf lock held only for the compare-and-store (never across I/O
+  or a callback), so concurrent raises cannot lower it.
+- `verified` and `verifiable` SHALL be excluded from equality, like `hashes`,
+  `diagnostics` and `extra`. `member_state_final` SHALL NOT cover them, as it does not
+  cover `diagnostics`: they MAY still rise after it is `True`.
+- A `replace()` copy keeps the values it was copied with and SHALL NOT follow later
+  raises.
+
+#### Scenario: member level matrix
+
+| Case | Expected |
+| --- | --- |
+| ZIP member with a CRC, before any read | `verified` is `UNLOCKED`; `verifiable` is `CHECKSUM` |
+| Same member after a stream read it to the end | `verified` is `CHECKSUM` |
+| Same member compared with a copy taken before the read | equal |
+| `member_state_final` is `True`, then a stream reads the member to the end | `verified` rises to `CHECKSUM` |
+| Two threads read two members of one 7z folder (folder CRC only) under `concurrent_operations=True` | both members end at `CHECKSUM`; neither level is ever seen to fall |
+| 7z AES member in a folder with no CRC, before and after its first open | `verifiable` may settle to `NONE` at the first open and stays there |
+| Single-file `.gz`, `.xz`, `.zst` or `.lz4` member, before and after its first open | `verifiable` is `CHECKSUM` |
+| Single-file `.zst` member whose frames carry no check, read to the end | `verifiable` is `CHECKSUM` until the read finds the first frame's header, then `LENGTH` |
+| `.zst` member of a checked frame and an unchecked one, under `concurrent_operations=True`: one stream finds the unchecked frame while another, which has read only the first frame, stores its own ceiling | `verifiable` stays `LENGTH` |

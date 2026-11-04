@@ -420,6 +420,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         sevenzip_pipeline,
         sevenzip_reader,
         tar_parser,
+        tar_reader,
         zip_aes,
         zip_forward_reader,
         zip_local_walk,
@@ -466,6 +467,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
         sevenzip_pipeline._DecodedPastSizeCheck,  # same offsets as the codec it wraps
+        sevenzip_reader._FolderChecks,  # the folder decode's offsets
+        sevenzip_reader._FolderEndCheck,  # the member slice's offsets
+        tar_reader._DecodeThroughSkips,  # the codec stream's offsets
         slice_mod.SlicingStream,  # translates remapped offset space; clamp at 0
         verify.VerifyingStream,
     }
@@ -684,6 +688,7 @@ def test_delegating_stream_close_inventory() -> None:
         rar_copy_sources,
         rar_reader,
         sevenzip_pipeline,
+        sevenzip_reader,
         zip_reader,
     )
     from archivey.internal.external import cli, unar
@@ -711,6 +716,8 @@ def test_delegating_stream_close_inventory() -> None:
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
         sevenzip_pipeline._DecodedPastSizeCheck,
+        sevenzip_reader._FolderChecks,
+        sevenzip_reader._FolderEndCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
         rar_copy_sources._TeeBlock,

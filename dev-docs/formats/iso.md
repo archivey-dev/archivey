@@ -155,7 +155,22 @@ to recover its declared length.
 `pycdlib` saw Rock Ridge entries in the PVD tree and an `ER` record naming RRIP; entries
 without the `ER` are treated as a false positive. From then on every name comes from that namespace and that tree
 (§1). 7-Zip prefers Joliet over Rock Ridge, so the two tools can list different names —
-and, on an image built with `-hide` or `-hide-joliet`, different files.
+and, on an image built with `-hide` or `-hide-joliet`, different files. After the walk,
+`_report_files_in_other_trees` compares the trees not listed (Joliet, unless it is the
+listed one; the plain ISO 9660 tree when Joliet is listed, since Rock Ridge rides the
+plain records; and UDF, which Windows reads first) with the listed one by the extent each
+non-empty file points at, not by name (Joliet cuts names at 64 characters, plain ISO
+9660 names are 8.3), and reports a file only another tree holds as
+`MEMBER_READERS_DISAGREE` (`file_only_in_joliet`, `file_only_in_iso9660`,
+`file_only_in_udf`), named by its path in that tree (a UDF name decoded by its own
+compression ID, UTF-16BE or Latin-1), with no member id, at most 16 per tree. A UDF
+extent is made absolute with the partition start; a file whose data sits inside its UDF
+File Entry (ICB flags 3) has no extent and always counts as unlisted. Empty files share
+one extent and are not compared. The reverse shape, a listed file another tree lacks, is
+not reported: everything archivey lists is in view. pycdlib parsed every tree in
+`open_fp`, so the comparison reads nothing; on a 20 100-file Rock Ridge + Joliet image
+(xorriso) it costs about 0.5% of open and list, and 1.1% with a UDF tree as well
+(2026-10-31).
 
 **The walk follows records, not names** (`_walk_records`). `PyCdlib.walk()` yields names,
 and turning a name back into a record fails when a Rock Ridge name holds `/` or two
@@ -304,7 +319,10 @@ Three kinds of record need a layout, worked out while listing and used by `_data
   fixture both do), but the ISO 9660 standard does not require it, and the Linux kernel
   reads each section where it is, so a gap between extents is read, not refused.
   Extents that overlap each other are refused with `CorruptionError`: no writer makes
-  them, and they would let a small image list a file many times its size.
+  them, and they would let a small image list a file many times its size. In a cut
+  image, the read stops at the first extent the cut reaches, with `TruncatedError` from
+  that offset on: a later extent that sits earlier on disc and survives is not read in
+  its place.
 
   `pycdlib` builds that chain for a file record whose identifier repeats the record just
   before it on disc, and sets the multi-extent flag on the earlier record in memory while
@@ -575,7 +593,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Device node is `OTHER`; plain versions keep the newest current; a directory keeps a `;N` suffix |
 | `TF` long-form dates; `TF` wins over the record date |
 | Boot catalog reads and extracts, and one declared past the image end reads short |
-| Multi-extent size and data; a gap read around, overlapping extents refused; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list, and so do an associated file and a file in either order; the raw directory walk crosses sector padding |
+| Multi-extent size and data; a gap read around, overlapping extents refused, a cut extent never filled by a later one; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list, and so do an associated file and a file in either order; the raw directory walk crosses sector padding |
 | No interchange-level guess |
 | A loop in `pycdlib`'s own walk refused at open, in all three trees and in UDF |
 | UDF tree counted against `max_members` and `max_metadata_bytes` at open |

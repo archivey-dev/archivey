@@ -13,10 +13,10 @@ The system SHALL let a package outside archivey add a read-only format by subcla
 
 | Case | Expected |
 | --- | --- |
-| A CPIO plugin is registered; `open_archive("a.cpio")` | Reader with `format.container` the plugin's `PluginContainer` member; `members()`, `open()`, `stream_members()`, `extract_all()` work |
-| Same, `detect_format("a.cpio")` | The plugin format |
-| Same, `format_availability("cpio")` | `FULL` |
-| No plugin registered, `open_archive("a.cpio")` | `FormatDetectionError`, as today |
+| An LHA plugin is registered; `open_archive("a.lha")` | Reader with `format.container` the plugin's `PluginContainer` member; `members()`, `open()`, `stream_members()`, `extract_all()` work |
+| Same, `detect_format("a.lha")` | The plugin format |
+| Same, `format_availability("lha")` | `FULL` |
+| No plugin registered, `open_archive("a.lha")` | `FormatDetectionError`, as today |
 
 ### Requirement: Plugin containers subclass PluginContainer
 
@@ -38,18 +38,26 @@ A plugin magic or probe match SHALL count only when no built-in format matched a
 same or a higher confidence. A plugin probe SHALL receive only the prefix detection
 already read. A probe that raises SHALL count as no match, so one plugin cannot change
 how unrelated input fails to be detected; `MemoryError` and `OSError` still propagate.
+In the same way, a plugin codec's decoder that raises an exception its
+`translate_exception` does not map, while detection decodes the start of the stream to
+look for a container inside it, SHALL count as no container there; the open still
+raises it.
 
 #### Scenario: plugin magic does not change built-in detection
 
 | Case | Expected |
 | --- | --- |
 | A plugin declares magic `PK\x03\x04`; a ZIP is detected | `ArchiveFormat.ZIP` |
+| A plugin declares magic `55 AA` at 510; an isohybrid ISO is detected | `ArchiveFormat.ISO` (far magic is a built-in signal) |
+| A plugin declares magic `MZ` at 0; a ZIP behind a PE stub is detected | `ArchiveFormat.ZIP` (the SFX scan is a built-in signal) |
 
 ### Requirement: Plugin member data is checked like built-in member data
 
 The adapter SHALL verify every plugin member stream against the listed size and the
 digests the plugin returns, and SHALL apply the built-in name normalization, name checks,
-listing limits and extraction limits to plugin members.
+listing limits and extraction limits to plugin members. A member a plugin keeps back
+to yield later and passes to `ReaderContext.hold()` SHALL count toward the listing limits
+with the members already listed while it is held, and once in all after it is yielded.
 
 #### Scenario: plugin data checks
 
@@ -58,6 +66,7 @@ listing limits and extraction limits to plugin members.
 | Plugin stream shorter than the listed size, read to the end | `TruncatedError` |
 | Plugin returns a CRC-32 that does not match | `CorruptionError` |
 | Plugin lists a member named `../x`; `extract_all` | Refused as for a built-in format |
+| Three members listed, then two held with `hold()`, under `max_members=4` | `ResourceLimitError` at the second `hold()` |
 
 ### Requirement: Sequential plugins read forward-only sources
 
@@ -71,8 +80,8 @@ without an `open_member` from the plugin.
 
 | Case | Expected |
 | --- | --- |
-| A CPIO archive piped to `open_archive(stream, streaming=True)`; `stream_members()` | Every member with its data, in one pass |
-| `x.cpio.gz` from a file; `open(member)` on the third member | Its data |
+| An archive of a sequential plugin format piped to `open_archive(stream, streaming=True)`; `stream_members()` | Every member with its data, in one pass |
+| `x.lha.gz` from a file; `open(member)` on the third member | Its data |
 | A caller reads half of a member's stream and advances | The next member's header and data are read correctly |
 
 ### Requirement: Sequential plugins may hand over decoded member data
@@ -101,14 +110,19 @@ members in the same order.
 Detection SHALL check registered sequential plugins' magic inside any single-file
 compression stream archivey decodes (gzip, bzip2, xz, zstd and the rest, the set a
 compressed TAR has) after TAR, within the prefix and budget the inner-TAR probe uses
-today.
+today. A plugin with no magic SHALL be found there by its probe, run on the same decoded
+prefix under the rule its probe follows on an uncompressed source: where the extension
+names the plugin's format inside the compressor (`x.lha.gz`), or `always_probe_content`
+is set.
 
 #### Scenario: compressed plugin format
 
 | Case | Expected |
 | --- | --- |
-| `x.cpio.gz` from a file; `detect_format` | `ArchiveFormat(CpioContainer.CPIO, StreamFormat.GZIP)` |
-| No plugin registered; `x.cpio.gz` | Detects as `GZ`, as today |
+| `x.lha.gz` from a file, a sequential plugin for LHA registered; `detect_format` | `ArchiveFormat(LhaContainer.LHA, StreamFormat.GZIP)` |
+| No plugin registered; `x.lha.gz` | Detects as `GZ`, as today |
+| A sequential LHA plugin with a probe and no magic; gzip of an archive it matches, named `x.lha.gz` | `ArchiveFormat(LhaContainer.LHA, StreamFormat.GZIP)` |
+| The same bytes named `x.gz`, default config | `GZ`: the name does not let the probe run |
 
 ### Requirement: FormatInfo marks plugin formats
 
@@ -119,5 +133,37 @@ and false for every built-in format.
 
 | Case | Expected |
 | --- | --- |
-| `format_availability` / `FormatInfo` for the registered CPIO plugin | `from_plugin` is `True` |
+| `format_availability` / `FormatInfo` for a registered plugin | `from_plugin` is `True` |
 | The same for `ArchiveFormat.ZIP` | `from_plugin` is `False` |
+
+### Requirement: A package adds a compression format through register_codec
+
+`archivey.formats` SHALL provide `CodecHandler`, `PluginStream` and `register_codec()`.
+A handler declares a `PluginStream` member as its `stream_format`, and its
+`decompressor(call)` returns a decoder with the interface of `bz2.BZ2Decompressor`.
+The `CodecCall` it is given SHALL carry the `size` and `properties` a format reader
+passed to `ReaderContext.decompress()`, the caller's `DecoderLimits`, and, during a
+detection probe only, the probe's output bound.
+After `register_codec()`, archivey SHALL read the format as a single compressed file,
+around a TAR, around each sequential plugin format registered before or after it, in
+`open_stream()` and in `ReaderContext.decompress()`, and `detect_format`,
+`format_availability`, the format lists and `format=` SHALL know it. The decoder's
+output SHALL be held to the decoder limits and the ratio guard, and its end of data
+SHALL follow the rules of the built-in one-stream codecs (truncation, zero padding,
+further streams by magic, trailing data). `FormatPolicy(plugins=False)` SHALL turn the
+codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
+
+#### Scenario: a registered codec
+
+| Case | Expected |
+| --- | --- |
+| `x.toy` with the codec's magic; `open_archive` | `ArchiveFormat(RAW_STREAM, ToyStream.TOY)`, one member, decoded bytes |
+| A TAR inside the codec, no name | `ArchiveFormat(TAR, ToyStream.TOY)` by the inner probe |
+| The same, `FormatPolicy(only={TAR, ToyStream.TOY})` | `ArchiveFormat(TAR, ToyStream.TOY)`: the policy allows a pair with the codec, so its magic stays |
+| A sequential plugin registered after the codec; `x.lha.toy` | `ArchiveFormat(LhaContainer.LHA, ToyStream.TOY)` |
+| The stream cut short | `TruncatedError` |
+| `ReaderContext.decompress(data, ToyStream.TOY, size=n, properties=p)` | the decoder's `CodecCall` has `size=n`, `properties=p` and the caller's limits |
+| The inner-TAR probe decodes the codec | `CodecCall.probe_bound` set; `None` on a read |
+| A module in `requires` missing | `FormatSupport.NONE` with the handler's install hint |
+| `open_stream(format=ToyStream.TOY)` before `register_codec()` | `UnsupportedFeatureError` naming `register_codec`, as `open_archive` refuses an unregistered format |
+| `stream_format = StreamFormat.GZIP`, or a value a built-in uses | `ArchiveyUsageError` at registration |

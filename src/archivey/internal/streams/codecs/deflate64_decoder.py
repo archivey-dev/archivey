@@ -7,6 +7,7 @@ from typing import BinaryIO, Protocol
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -131,6 +132,7 @@ class Deflate64Decoder(BaseDecoder):
         return bool(self._decomp.eof) and not self._pending_out
 
     @property
+    @override
     def needs_input(self) -> bool:
         return not self._pending and not self._pending_out
 

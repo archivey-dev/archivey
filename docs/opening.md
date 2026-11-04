@@ -23,7 +23,7 @@ pipe or an HTTP response, needs `streaming=True` and works only for some formats
 once](reading.md#reading-once) lists.
 
 ??? note "Why not refuse bytes after the archive?"
-    They aren't part of any member, so every member still reads correctly. GNU gzip and bzip2 also
+    They aren't part of any member, so every member is still read correctly. GNU gzip and bzip2 also
     decompress such a file and only warn, though `xz` refuses it.
 
 ## Format
@@ -37,7 +37,8 @@ the file isn't in the specified format, it fails like a damaged one.
 `FormatInfo` with the format and how sure archivey is about it: `CERTAIN` when the format's
 signature matched where the format puts it, `PROBABLE` when a test of its contents matched, and
 `GUESS` when the evidence is weak, such as only the file name. `payload_offset` is more than 0 for a
-self-extracting archive, where the archive starts after a program. A file in no format archivey
+self-extracting archive, where the archive starts after a program, and for any other archive found
+behind leading bytes. A file in no format archivey
 knows raises `FormatDetectionError`. The confidence grade is for a person reading it and may change
 between releases, so decide what to do from the format, not the grade.
 
@@ -119,10 +120,10 @@ escape, the way Python's `surrogateescape` does. An escape is a placeholder char
 and U+DCFF.
 
 If you know the encoding, pass it as `encoding=`, and archivey uses it in place of that default for
-names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR lists as `'caf\udce9.txt'` without it
-and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO and RAR read `encoding=`. The other
-formats decode names their own way, and a value passed to them is ignored and noted in the
-diagnostics.
+names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR is listed as `'caf\udce9.txt'` without it
+and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar and SquashFS read
+`encoding=`. The other formats decode names their own way, and a value passed to them is ignored and
+noted in the diagnostics.
 
 ??? note "Why does valid UTF-8 win over `encoding=`?"
     Text in another encoding almost never happens to be valid UTF-8. `café`, `Müller` and `Größe`,
@@ -188,7 +189,7 @@ NO_PPMD = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={L.PYPPMD, "infl
 ```
 
 archivey then reads as if those packages weren't there. A PPMd member raises
-`PackageNotInstalledError` when you open it, while the other members read; an ISO image with
+`PackageNotInstalledError` when you open it, while the other members can still be read; an ISO image with
 `pycdlib` excluded doesn't open; and an accelerator such as rapidgzip under `AUTO` falls back to
 the standard library. The error's `missing` names the package, and its `reason` says the policy
 turned it off. Each entry is an [`OptionalLibrary`][archivey.OptionalLibrary] member or its value,
@@ -196,4 +197,11 @@ and any other name is refused, so a typo can't leave a package on. The setting o
 made with that config: other calls in the same program, on any thread, still use the package.
 `format_availability(fmt, config=...)` and `list_supported_formats(config=...)` answer with the
 excluded packages counted as missing. A plugin reader that imports a package itself honours the setting
-only if it checks `config.formats.exclude_libraries`, as `archivey-squashfs` does for `lz4`.
+only if it checks `config.formats.exclude_libraries` itself.
+
+`only=` and `exclude=` check the file you open, not what's inside it. `S.XZ` there means a file
+compressed with xz as a whole, such as a `.xz` or `.tar.xz` file, not the xz codec: a ZIP member
+compressed with xz can still be read under `exclude={S.XZ}`, because the file is a ZIP.
+`plugins=False` and `exclude_libraries=` are different, since they turn off the code that
+decodes, wherever it runs. Under `plugins=False`, no plugin codec runs in the call, even for a
+member inside an archive: reading a member that needs one raises `UnsupportedFeatureError`.

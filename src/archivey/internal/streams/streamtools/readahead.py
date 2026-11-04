@@ -24,6 +24,7 @@ import io
 from collections.abc import Callable
 from typing import BinaryIO, Protocol, cast
 
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
     ask_resume_offset,
@@ -84,6 +85,7 @@ class ReadAheadStream(DelegatingStream):
         )
         super().__init__(inner)
 
+    @override
     def read(self, n: int | None = -1, /) -> bytes:
         n = check_read_size(n)
         if self.closed:
@@ -153,6 +155,7 @@ class ReadAheadStream(DelegatingStream):
             return self.read(min(n, buffered) if buffered else n)
         return self._read_ahead(1, n)
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         offset, whence = check_seek_args(offset, whence)
         if self._buffer and whence != io.SEEK_END:
@@ -173,6 +176,7 @@ class ReadAheadStream(DelegatingStream):
         self._held = None
         return position
 
+    @override
     def tell(self, /) -> int:
         return self._inner.tell() - (len(self._buffer) - self._offset)
 

@@ -9,7 +9,7 @@ length is not a complete valid stream.
 The **chain walk** follows byte-aligned self-describing meta-blocks past the
 first, stopping at the first compressed block. It reports where that block starts, so
 the probe can decode up to it when it lies past the window (``BrotliCodec``). Reference
-behaviour lives in ``scripts/exploration/brotli_probe_field_survey.py``.
+behaviour lives in ``scripts/investigations/exploration/brotli_probe_field_survey.py``.
 """
 
 from __future__ import annotations

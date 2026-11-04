@@ -115,6 +115,9 @@ is reject/raise, with one rewrite:
   `archive-reading`, "Link targets stored as member data are read only when
   configured") gets the same rewrite, because `extract_all` calls the filter again once
   the target is read. It returns the member unchanged when nothing needs rewriting.
+  It does not rewrite a `\`, a control character 0x01–0x1F, a non-UTF-8 byte or a lone
+  surrogate, so it does not rescue a name `STRICT` refuses for one ("Names other readers
+  take differently"); `STANDARD`, or a caller filter, writes those.
 
 The implementation SHALL enforce defense in depth: first a string check rejects
 absolute paths, Windows drive/UNC roots, any `..` component split on `/` or `\`,
@@ -218,7 +221,7 @@ read back.
 | `"../evil"` with `filter=sanitize_names` | Extracted at `dest/evil`, all policies |
 | `"a/../b"` with `filter=sanitize_names` | Extracted at `dest/b`, all policies |
 | Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `FilterRejectionError` |
-| Name with a lone surrogate outside U+DC80–U+DCFF (`hi\ud800`) | Extracts: `hi%ED%A0%80` under `STRICT`/`STANDARD`; under `TRUSTED` POSIX writes `hi` + `ed a0 80`, Windows the exact name; never raw `UnicodeEncodeError` |
+| Name with a lone surrogate outside U+DC80–U+DCFF (`hi\ud800`) | `STRICT`: `FilterRejectionError`, `BLOCKED`; `STANDARD`: `hi%ED%A0%80`; under `TRUSTED` POSIX writes `hi` + `ed a0 80`, Windows the exact name; never raw `UnicodeEncodeError` |
 | SYMLINK `link_target` with `\x00` | `FilterRejectionError`; never raw `ValueError` |
 | SYMLINK `link_target` `C:/Windows`, `C:/abs/y`, `t:stream` or `//srv/share`, any policy, any OS | `FilterRejectionError` ("Symlink target is a Windows drive or UNC path"); no link written |
 | SYMLINK `link_target` `\foo`, any policy, POSIX | Extracted: a link to the file `\foo` beside it |
@@ -286,7 +289,7 @@ of this requirement — it belongs to the future opt-in `SANITIZE` extraction po
 #### Scenario: UTF-8-enforcing filesystem refuses a surrogateescape name
 
 - **WHEN** a member whose name carries undecodable bytes (`surrogateescape`) is extracted
-  to a filesystem that enforces valid UTF-8 names
+  under `TRUSTED` to a filesystem that enforces valid UTF-8 names
 - **THEN** extraction raises a typed `ExtractionError` whose cause is the filesystem's
   `OSError` with `EILSEQ` (never a raw `OSError`), or records a failure result under
   `OnError.CONTINUE`
@@ -303,30 +306,32 @@ A member name or link target can hold a surrogate without its partner (U+D800–
 any unit in a name. Listing and reading keep the unit in the name under every policy, and
 the rule below is the same for every format.
 
-Under `STRICT` and `STANDARD` such a name is not portable, and the portable-name rule
-(O7) SHALL escape it as it escapes undecodable bytes: each lone surrogate outside
+Such a name is not portable. Under `STRICT` it SHALL be refused with
+`FilterRejectionError` ("Names other readers take differently"). Under `STANDARD` the
+portable-name rule (O7) SHALL escape it as it escapes undecodable bytes: each lone surrogate outside
 U+DC80–U+DCFF is taken as its three UTF-8 bytes (`surrogatepass`) and each byte is
 written `%XX`, so `hi\ud800` is written `hi%ED%A0%80` on every OS and
 `presented_name` records the stored name. Under `TRUSTED` extraction SHALL write the
 name as 7-Zip 23.01 does: on POSIX each such surrogate as its three-byte UTF-8 form
 (U+D800 becomes the bytes `ed a0 80`), on Windows the exact name. That on-disk spelling
 is not a rename, so `presented_name` stays unset for it. A link target is written the
-`TRUSTED` way under every policy, as O7 does not rewrite link targets. Under `STRICT`
-and `STANDARD` a link to a member whose name was escaped therefore points at the
+`TRUSTED` way under every policy, as O7 does not rewrite link targets. Under
+`STANDARD` a link to a member whose name was escaped therefore points at the
 unescaped spelling and dangles, as it already does for undecodable bytes; on a
 filesystem that accepts only UTF-8, such as APFS, creating that link fails.
 
 U+DC80–U+DCFF SHALL keep its `surrogateescape` meaning, one undecodable byte, for every
-format: it is written as that byte, or percent-escaped by the portable-name rule. The
+format: it is written as that byte, refused under `STRICT`, or percent-escaped by the
+portable-name rule. The
 path checks run on the name the disk spelling gives, before the portable-name rule, and
 a rejection by them names the stored member name. An error raised while writing the
 member, a deferred hardlink included, names the name from before the disk spelling:
-the stored name under `TRUSTED`, the escaped one under `STRICT` and `STANDARD`. Every
+the stored name under `TRUSTED`, the escaped one under `STANDARD`. Every
 error names a link target as stored, never in its disk spelling. The collision key and
 the overwrite policy see the spelling that reaches disk. Under every policy a lone
 U+D800 and a name whose undecodable bytes are `ed a0 80` are therefore one file: both
-are `hi%ED%A0%80` under `STRICT` and `STANDARD`, and both are the bytes under
-`TRUSTED`. A name that cannot be encoded even so is a `FilterRejectionError`, never a
+are `hi%ED%A0%80` under `STANDARD` (both refused under `STRICT`), and both are the
+bytes under `TRUSTED`. A name that cannot be encoded even so is a `FilterRejectionError`, never a
 raw `UnicodeEncodeError`.
 
 #### Scenario: lone surrogate matrix
@@ -337,11 +342,12 @@ the same tree.
 
 | Case | Expected |
 | --- | --- |
-| `hi\ud800.txt` under `STRICT` / `STANDARD`, any OS | Written `hi%ED%A0%80.txt`; `EXTRACTED`; `presented_name == "hi\ud800.txt"` |
+| `hi\ud800.txt` under `STRICT`, any OS | `FilterRejectionError`; `BLOCKED`; nothing written |
+| `hi\ud800.txt` under `STANDARD`, any OS | Written `hi%ED%A0%80.txt`; `EXTRACTED`; `presented_name == "hi\ud800.txt"` |
 | `hi\ud800.txt` under `TRUSTED` on POSIX | Written as `hi` + `ed a0 80` + `.txt`, as 7-Zip writes it; `presented_name` unset |
 | `hi\ud800.txt` under `TRUSTED` on Windows | Written under the exact name |
-| `hi\ud800` and `hi\udced\udca0\udc80` in one archive, any policy | One file; the second goes through the `OverwritePolicy` |
-| `lo\udc80.txt` | `lo%80.txt` under `STRICT` / `STANDARD`; the byte `0x80` under `TRUSTED`, where 7-Zip writes `ed b2 80` |
+| `hi\ud800` and `hi\udced\udca0\udc80` in one archive, `STANDARD` or `TRUSTED` | One file; the second goes through the `OverwritePolicy` |
+| `lo\udc80.txt` | Refused under `STRICT`; `lo%80.txt` under `STANDARD`; the byte `0x80` under `TRUSTED`, where 7-Zip writes `ed b2 80` |
 | `\ud800/../x` | `FilterRejectionError` whose `member_name` is `\ud800/../x` |
 
 ### Requirement: Skip non-current members by default
@@ -652,6 +658,20 @@ applied to it, and `os.replace()` moves it onto the destination. A failure part-
 through preserves the existing entry and discards only the temp. `os.replace()`
 moves the entry itself, so a destination symlink is replaced rather than followed.
 
+Under `ERROR`, `SKIP` and `RENAME`, a FILE or HARDLINK whose name the existence check
+found free SHALL land only while the name is still free, so an entry another writer
+creates there after the check (a second extraction into the same folder) is never
+replaced: on POSIX by `link()` then removing the temp name, on Windows by `os.rename()`,
+both of which refuse a taken name. `ERROR` then raises its clash and `SKIP` records
+`NOT_OVERWRITTEN`, as if the entry had been there at the check. `RENAME` lands on the
+next free derived name instead, without decoding the member again, and the result
+reports that name as `path`; after 100 names taken in a row the member fails. A SYMLINK
+or DIRECTORY whose name is taken after the check gets the same outcome under `ERROR` and
+`SKIP`, and under `RENAME` fails with `ExtractionError` "Destination already exists": it
+is created at its final name, and the entry there SHALL NOT be removed. Where `link()`
+fails for another reason (a filesystem without hard links, the link-count limit), the
+landing SHALL fall back to `os.replace()`, which does not see such a writer.
+
 SYMLINK and DIRECTORY replacement SHALL remove the existing entry and create fresh,
 because neither can be staged: a symlink MUST be created at its final name for the
 escape re-validation's cycle check to resolve, and a directory cannot be renamed
@@ -753,6 +773,11 @@ name-safety requirement.
 | Existing path under `ERROR` | `ExtractionError`; existing entry unmodified |
 | Existing path under `SKIP` | `ExtractionResult.status == NOT_OVERWRITTEN`, `path=None`, no exception |
 | Symlink for which the archive records no target | `ExtractionResult.status == LINK_TARGET_UNAVAILABLE`, `path=None`, no exception, under either `OnError` |
+| Under `ERROR`, another writer creates the member's free name after the existence check (FILE or HARDLINK) | `ExtractionError` "Destination already exists"; the other writer's file stays |
+| The same under `SKIP` | `NOT_OVERWRITTEN`, `path=None`; the other writer's file stays |
+| The same under `RENAME` | `EXTRACTED` at the next free `name (N)`, reported as `path`; the other writer's file stays |
+| A SYMLINK or DIRECTORY whose free name another writer takes after collision resolution, under `RENAME` | `ExtractionError` "Destination already exists"; the other writer's file stays |
+| Same, POSIX filesystem whose `link()` fails with `EPERM` | Lands with `os.replace()`; the member is written |
 | Existing file under `REPLACE` | Fresh file is written via temp file + `os.replace()` |
 | Existing entry replaced by a HARDLINK under `REPLACE` | Link is built at a temp sibling and `os.replace()`d in; a failure leaves the existing entry intact |
 | Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
@@ -919,6 +944,13 @@ rules extraction applies to what it writes:
   non-seekable stream that is not inside a compression stream: no trusted size, and no
   counter installed), this rule does not apply to reads, as it does not to extraction;
   extraction keeps `max_extracted_bytes` there, and a read keeps only the per-member rule.
+
+A member whose data is a run of the archive stream's own bytes, as every TAR member's is
+except a sparse one's (a TAR is compressed as a whole, if at all), SHALL NOT be held:
+it cannot pass 1:1, and where the stream is compressed its decode is already held to the
+archive-wide ratio. It SHALL be counted toward the archive-wide total at its recorded
+size when its stream is handed out, read or not, so a member that is held (a sparse
+one) is judged with it. Counting more than was read can only refuse sooner.
 
 A RAR file copy is held, and counted, as the member whose data it repeats. The read
 that crosses a limit SHALL NOT return the bytes it decoded. Reads and forward seeks
@@ -1415,7 +1447,7 @@ SHALL raise `ResourceLimitError`.
 | Small `.tar.gz` file with known source size expands past `max_ratio` after threshold | `ResourceLimitError` during extraction |
 | Compressed tar from non-seekable pipe, with or without a `size` attribute | Static archive-wide ratio skipped; live ratio and cumulative byte limit still apply |
 | Plain `.tar` from a path or a seekable stream with a cheap size | No meaningful compressed denominator; archive-wide ratio does not trip, except on copies of a hard-link source written past the filesystem's link-count limit |
-| Plain tar from a non-seekable stream, with or without a `size` attribute | No archive-wide denominator; the cumulative byte limit applies |
+| Uncompressed container (plain tar, ZIP, CPIO, ar) from a non-seekable stream, with or without a `size` attribute | Static archive-wide ratio skipped; the live ratio counts the bytes taken from the stream, and the cumulative byte limit still applies |
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
 | Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator; it is the container's unchecked declaration, so `max_extracted_bytes` is the bound that holds |
 
@@ -1436,7 +1468,12 @@ does not count again. Reads and forward seeks, a seek to the end included, reach
 decoder in steps of at most 1 MiB, so the decode stops within a step of the limit. A
 decoder error after a read already returned bytes in the same call is held for the
 next read, so the prefix of a cut stream is kept; a seek, even a refused one, drops
-it. `max_ratio=None` turns it off.
+it. `max_ratio=None` turns it off. An `extract_all` call's own decodes SHALL be held to the
+ratio fields that call applies instead, so `ExtractionLimits.UNLIMITED` or a deprecated
+ratio field passed in `limits=` lifts or tightens it for that call alone, as for a
+ZIP. A read after the call, or from the caller's own code the call runs (`filter`,
+a `members=` predicate, `on_progress`), SHALL still be held to the reader's limits,
+though the call decoded past them.
 
 #### Scenario: compressed container decode matrix
 
@@ -1446,6 +1483,9 @@ it. `max_ratio=None` turns it off.
 | The same archive from a pipe | Refused once 256 MiB are decoded (the live floor) |
 | The same archive with `DecoderLimits(max_ratio=None)` | Lists, as before |
 | A `.tar.gz` under the ratio | Lists, reads and extracts unchanged |
+| A `.tar.gz` of 24 MiB of zeros, `extract_all(limits=ExtractionLimits.UNLIMITED)` | Extracts, from a seekable source and in streaming mode |
+| The same, with a deprecated `ExtractionLimits(max_ratio=1e9)` in `limits=`, then `read()` | Extracts; the read raises `ResourceLimitError` |
+| The same `.tar.gz` or a ZIP of it under `UNLIMITED`, with an `on_progress`, `filter` or `members=` callback that calls `read()` | The callback's read raises `ResourceLimitError` |
 
 ### Requirement: Enforce Maximum Entry Count
 
@@ -1502,11 +1542,14 @@ data as Python `tarfile` may do on symlink-unsupported platforms.
 
 The system SHALL evaluate a live archive-wide ratio during extraction when no
 per-member `compressed_size` and no cheap static `compressed_source_size` is
-available, but the compressed backend can expose `compressed_bytes_consumed`.
-This covers compressed archives from non-seekable pipes, a pipe that carries a
-`size` attribute included, and seekable opaque streams whose size is not cheaply
-knowable. Backends wrap the stream source in
-the counting reader exactly when the static denominator is absent.
+available, but the reader can expose `compressed_bytes_consumed`.
+This covers archives from non-seekable pipes, a pipe that carries a
+`size` attribute included, and seekable opaque compressed streams whose size is not
+cheaply knowable. A backend that decompresses a stream source wraps it in
+the counting reader exactly when the static denominator is absent; an archive read
+straight from a pipe with no such counter (an uncompressed container: a plain TAR, a
+ZIP, a sequential format such as CPIO or ar) counts the bytes its source has taken
+from the pipe instead. A 7z cannot be read from a pipe, so it has no such case.
 
 The ratio SHALL be `archive_output / compressed_bytes_consumed`, with
 `archive_output` as in the static archive-wide requirement (decoded output plus
@@ -1537,7 +1580,7 @@ weakening the guard, but never causing a false positive.
 | `.tar.gz` from a pipe whose member is 64 MiB of zeros then 8 MiB of data, default limits | Extracts, as it does from a file; the blank start is under `live_ratio_activation_threshold` |
 | Same shape with a blank start longer than `live_ratio_activation_threshold` | Live ratio may raise `ResourceLimitError` from a pipe though the file passes; the documented trade-off |
 | Live ratio exceeded under `OnError.CONTINUE` | `ResourceLimitError` propagates and extraction halts |
-| Plain uncompressed `.tar` from a pipe | No counter is installed, so no live ratio applies; byte limit still applies |
+| Uncompressed container (plain `.tar`, ZIP, CPIO, ar) from a pipe | The bytes the source has taken from the pipe are the live denominator, so a sparse member or many small compressed ZIP members past `max_ratio` raise `ResourceLimitError` after both floors |
 | `.tar.gz` has cheap `compressed_source_size` | Static archive-wide ratio is used; live path is not engaged/double-counted |
 | Seekable opaque compressed stream has no cheap size/`size`/`try_get_size()`/O(1) end seek | Source is counted live; archive is not left with only the byte cap |
 
@@ -1611,9 +1654,21 @@ rejected under `STRICT` and `STANDARD` (Win32 would merge `a/.../b` into `a/b`).
 `STANDARD` and `TRUSTED` SHALL otherwise keep the trailing dot/space faithful (written if
 the OS allows).
 
-**Separators.** Under `STRICT` and `STANDARD`, a `\` that a member name keeps as a
+**Names other readers take differently (STRICT).** Under `STRICT`, a member name holding
+a `\`, a control character 0x01–0x1F, a byte that is not UTF-8 (a surrogateescape char
+U+DC80–U+DCFF) or a lone surrogate SHALL be refused with `FilterRejectionError`
+(`BLOCKED`), in every format and on every platform. Each names a different file on
+another OS or in another reader: `\` is a separator on Windows and a character on POSIX,
+a newline splits a listing line, and undecodable bytes have no spelling every OS shares.
+The message names the character and says `STANDARD` writes a portable spelling. A link
+target is not refused for these; it is rewritten as below. This reverses, for `STRICT`
+only, ADR 0013's choice to rewrite these names (maintainer ruling 2026-10-31, from the
+tar-minefield corpus, which rejects them).
+
+**Separators.** Under `STANDARD`, a `\` that a member name keeps as a
 literal character (TAR) SHALL be written as `/` on every platform, as Windows writes it, and
-recorded as `ExtractionResult.presented_name`. A link target gets the same rewrite, so a
+recorded as `ExtractionResult.presented_name`. Under `STRICT` and `STANDARD`, a link target
+with a `\` gets the same rewrite, so a
 symlink to another member names the path that member was written at, and a target such as
 `..\x` is checked as the `../x` it becomes. A hard link still resolves to the member the
 reader matched to its stored target; the rewrite does not change which member that is. The
@@ -1638,7 +1693,10 @@ and a literal `%` escaped as `%25` — applied on **every** platform, collision-
 above, and recorded as `ExtractionResult.presented_name`. The characters Win32 refuses in a
 name, `<`, `>`, `"`, `|`, `?`, `*` and the controls 0x01–0x1F, SHALL be escaped the same
 way, as `%XX` of their code point (`a?b` → `a%3Fb`), so a name POSIX could store gives the
-tree Windows gives. A `%` is escaped only in a name the scheme rewrites. The scheme SHALL
+tree Windows gives. Under `STRICT` only `<>"|?*` reach this rule; a `\`, a control
+character 0x01–0x1F, a non-UTF-8 byte and a lone surrogate are refused instead ("Names
+other readers take differently"). Everything else in this paragraph, the `%25` escape,
+`presented_name` and the NFC/NFD exclusion, applies under both. A `%` is escaped only in a name the scheme rewrites. The scheme SHALL
 touch nothing else; valid-but-non-portable Unicode (NFC/NFD forms) SHALL NOT be rewritten
 (its cross-platform folding is the O2 collision concern). `TRUSTED` SHALL attempt the
 faithful bytes and let the OS decide. The reversibility SHALL be a documented property; a
@@ -1665,10 +1723,11 @@ rewritten name then collides and is renamed).
 | Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`, `rewrites == {PORTABLE_NAME}`; `STANDARD` keeps faithful; either way `foo.` beside `foo` is a collision event on all platforms | Written if the OS allows |
 | Segment of only dots/spaces (`.../x`) | Rejected on all platforms (no portable spelling) | Written if the OS allows |
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
-| TAR name `a\b` | Written as directory `a` and file `b`; `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |
+| TAR name `a\b` | `STRICT`: `FilterRejectionError`, `BLOCKED`; `STANDARD`: written as directory `a` and file `b`, `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |
 | SYMLINK whose `link_target` has a segment with `:` (`file:stream`) or a reserved name (`sub/NUL`) | Rejected on all platforms | Local OS behavior |
-| Surrogateescape `caf\udce9.txt` | Sanitized to `caf%E9.txt`; `presented_name` keeps the pre-rewrite spelling; collision-tracked | Faithful bytes attempted; OS decides |
-| `what?.txt`, `a*b`, a name with a control byte | Written as `what%3F.txt`, `a%2Ab`, `%XX` per control; `presented_name` keeps the stored name | Written if the OS allows (refused on Windows) |
+| Surrogateescape `caf\udce9.txt` | `STRICT`: `FilterRejectionError`, `BLOCKED`; `STANDARD`: sanitized to `caf%E9.txt`, `presented_name` keeps the pre-rewrite spelling, collision-tracked | Faithful bytes attempted; OS decides |
+| `what?.txt`, `a*b` | Written as `what%3F.txt`, `a%2Ab`; `presented_name` keeps the stored name | Written if the OS allows (refused on Windows) |
+| A name with a control byte (`line\nbreak`) | `STRICT`: `FilterRejectionError`, `BLOCKED`; `STANDARD`: `%XX` per control (`line%0Abreak`), `presented_name` keeps the stored name | Written if the OS allows (refused on Windows) |
 | Symlink `l -> sub/file` (on Windows) | Created with target `sub\file`; resolves as on POSIX | Same |
 | A member stored `0o444`, then a later member of the same name under `REPLACE` | Replaced on every OS | Same |
 | `REPLACE` with a casefold collision | Not a silent merge; earlier member revised to `OVERWRITTEN` | Local OS behavior |
@@ -1815,3 +1874,28 @@ its files read-only.
 | `dest` does not exist | Not created |
 | Archive stores a directory with mode `0o555` or `0o000` under `TRUSTED` | Scratch directory still removed |
 | `abort_on` fires | The error names paths under `dest`; scratch directory removed |
+
+### Requirement: Extraction restores member times where the system allows it
+
+When extraction sets a file's or a folder's modification time from
+`ArchiveMember.modified` (for a file once it is written, for a folder in the deferred
+pass of "Policy-Specific Metadata Transforms"), it SHALL also set its birth time from
+`ArchiveMember.created` on systems that let a program set one: Windows (`SetFileTime`)
+and macOS (`setattrlist`). The birth time SHALL be set after the modification time,
+because macOS moves a birth time later than a new modification time back to it. A file's
+birth time SHALL be set on the temporary file before the rename that lands it, which
+keeps it (measured on Windows, where tunnelling does not apply to a rename).
+`ArchiveMember.ctime` SHALL NOT be used for either.
+Both SHALL be best effort, under every extraction policy: a member with no stored time
+keeps the time it was written, and a time the system refuses or cannot represent SHALL
+NOT fail the member.
+
+#### Scenario: member time matrix
+
+| Case | Expected |
+| --- | --- |
+| A file and a folder with `created` and `modified`, on Windows or macOS | Both times on disk |
+| The same on Linux | The modification time; the birth time is when it was written |
+| A member with `created = None` | No birth time call |
+| On Windows, a file with `created` extracted over an existing file | The member's birth time, not the replaced file's |
+| The system refuses the birth time | The member is extracted; no error |

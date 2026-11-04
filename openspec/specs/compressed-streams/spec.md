@@ -366,13 +366,18 @@ MAY delegate to `inner.read(-1)` and then run the EOF verdict.
 
 Once the public `ArchiveStream` has raised a content verdict (`CorruptionError` or
 `TruncatedError`, or an error raised from one, such as ZipCrypto's password-or-damage
-`EncryptionError`), every later `read` / `readinto` SHALL raise the same error object
-again until the caller seeks, with the traceback it was first raised with rather than
-one that grows per call. A seek SHALL succeed and restart the decode, so the prefix
-reads again, as a truncated `DecompressorStream` does; the read that then reaches the
+`EncryptionError`), every later `read` / `readinto` SHALL raise that verdict again until
+the caller seeks: an error of the same type and arguments, whose `__cause__` shows where
+it was first raised as text, rather than a traceback that grows per call. The raise
+SHALL NOT be the instance the stream keeps, and the stream SHALL NOT keep a traceback:
+a kept traceback holds the stream's frames, a cycle that keeps the stream and its
+decoder (a leased decoder process among them) alive until the garbage collector runs.
+The one exception is an error whose type the stream cannot copy: it is raised again as
+itself, and that stream waits for the collector. A seek SHALL succeed and restart the
+decode, so the prefix reads again, as a truncated `DecompressorStream` does; the read that then reaches the
 end SHALL raise the verdict again and return no bytes, whether or not a seek forfeited
-the digest check (a seek to 0 re-arms it, and the damage found again raises the same
-error object). A read reaches the end when it returns short or empty, is `read(-1)`, or
+the digest check (a seek to 0 re-arms it, and the damage found again raises the first
+verdict again). A read reaches the end when it returns short or empty, is `read(-1)`, or
 leaves the stream at or past the member's declared size; a full-length
 `read(member.size)` after `seek(0)` is one. A caller who catches the verdict and seeks
 back SHALL NOT read the damaged member as complete, clean data. `tell()`, `seekable()`
@@ -423,14 +428,15 @@ fresh stream.
 | Declared size met; the compressed bytes after it are damaged (a ZIP DEFLATE member declared empty, body not DEFLATE) | `CorruptionError` from the probe past the declared size, not a silent end |
 | Partial read then `close` before clean EOF (verify) | No digest/length verdict |
 | Inner teardown fails on `close` | Teardown error may propagate |
-| `ArchiveStream` raised a content verdict; caller catches it, then `read()` | Raises the same error object again; no bytes returned |
+| `ArchiveStream` raised a content verdict; caller catches it, then `read()` | Raises the verdict again (same type and arguments, first raise as its cause); no bytes returned |
 | Same, then `seek(0)` and a bounded `read(n)` inside the member | Seek succeeds; the prefix bytes are returned |
-| Same, then `seek(0)` and a read that reaches the end | Raises the same error object again; that call returns no bytes |
-| Same, retried many times | Traceback stays the first one; it does not grow per call |
+| Same, then `seek(0)` and a read that reaches the end | Raises the verdict again; that call returns no bytes |
+| Same, retried many times | Traceback does not grow per call |
 | Same, `tell()` or `close()` | Not gated; `close()` does not raise the verdict |
 | Accelerated decoder; a read raises and the decoder moves back | `tell()` equals the bytes delivered; the stream stays usable |
 | Accelerated decoder; a read raises and the decoder cannot be moved back | That read raises its own error; every later `read` / `readinto` / `seek` / `tell()` raises `ReadError` naming the cause; `close()` succeeds |
 | Accelerated decoder; the caller's source raises during a read or a seek | That call raises the source's error; then as the row above, even if the source recovers |
+| Same, then the caller drops the stream, with the garbage collector off | The stream is freed at once (unless the verdict's type cannot be copied) |
 
 ### Requirement: Decompressed output digests are verified at clean EOF
 
@@ -571,16 +577,20 @@ compressed bytes consumed from the underlying source, such as
 pipes, and MUST NOT perturb bytes read or decompressed.
 
 Archive readers SHALL surface the running total for a single outer compressed
-source as `compressed_bytes_consumed`, returning `None` when no single compressed
-source exists (uncompressed container, directory). When solid/streamed member
-streams share that outer source, the count is cumulative across the archive.
+source as `compressed_bytes_consumed`. An uncompressed container read from a
+non-seekable source with no trusted size reports the bytes its source has taken from
+that stream instead, the live ratio denominator (`safe-extraction`). It is `None` when
+the source size is trusted (the static ratio applies) and for a directory. When
+solid/streamed member streams share that outer source, the count is cumulative across
+the archive.
 
 #### Scenario: compressed-byte counter matrix
 
 | Case | Expected |
 | --- | --- |
 | `.gz` read incrementally from non-seekable source | Count increases monotonically and is readable mid-stream |
-| Uncompressed container or directory | `compressed_bytes_consumed is None` |
+| Uncompressed container from a path or a seekable stream with a cheap size, or a directory | `compressed_bytes_consumed is None` |
+| Uncompressed container from a non-seekable source | `compressed_bytes_consumed` is the bytes taken from the source so far |
 | Count is observed repeatedly during extraction | Decompressed output is byte-for-byte unchanged |
 
 ### Requirement: An accelerator preserves the error contract of the path it replaces
@@ -839,3 +849,178 @@ The system SHALL NOT bound the time a decoder takes under any value.
 | A decoder needs a fresh child part-way through a member, and none can start / the fresh child cannot allocate the PPMd model | `ResourceUnavailableError` naming `process_isolation` / `ResourceUnavailableError` saying the decoder process could not allocate the model |
 | 7z PPMd member of 200 KB compressed, `max_ppmd_held_input=1024`, `NONE` | Decoded in-process |
 | gzip stream opened seekable, `use_rapidgzip=AUTO`, `NONE` | Standard library decoder; no warning |
+
+### Requirement: A decoder seek decodes at the next read
+
+A `DecompressorStream` seek that would decode to reach its target (a seek back, or
+forward past the buffered output) SHALL record the target and decode nothing. The next
+`read`, `read_ahead`, `readinto` or `readall` SHALL decode to the target first, from
+the nearest seek point, and then read on. A seek that a later seek replaces, or that no
+read follows, SHALL decode nothing. `tell()` SHALL return the target at once, and
+`SEEK_CUR` SHALL count from it. A seek within the buffered output, to the decoder's
+position, or at or past a size already known SHALL move at once, since it decodes
+nothing. `SEEK_END` needs the size: a seek to it SHALL find the size as before, and an
+error it meets SHALL raise from that seek.
+
+An error in the bytes before the target (a truncation, damage, a report the collector
+escalates) SHALL raise from the read that decodes them, before it returns any byte,
+and leave `tell()` at the target. After a decode error the stream keeps it, as after
+any read that raised: later reads raise it again, and a seek restarts the decoder at
+the next read. Any other error (the source's own seek failing) SHALL keep the target,
+so the next read tries again.
+
+#### Scenario: lazy decoder seeks
+
+| Case | Expected |
+| --- | --- |
+| Seek back to 100 after a full read, no read after | No decoder restart, no decode; `tell()` is 100 |
+| Seek, a `SEEK_CUR` seek, another seek, then a read | One restart at most, for the last target; the read returns its bytes |
+| Seek past a truncation | `seek` returns the target; the next read raises `TruncatedError`, and so does the read after it; `seek(0)` and a read return the start |
+| Seek past damage in the gap | `seek` returns the target; the next read raises `CorruptionError`; `tell()` is still the target |
+| Forward seek past the last seek point on an index the decoder builds (BGZF walk) | The seek walks nothing; the read after it walks to the target |
+| `seek(0, SEEK_END)` with no known size | Decodes to the end at the seek, from the last seek point past the decoder; a cut stream raises there |
+
+### Requirement: A stream reports the verification it has reached and can reach
+
+Every public `ArchiveStream` SHALL expose two read-only properties of type
+`archivey.Verification`, an `IntEnum` ordered `NONE < UNLOCKED < LENGTH < CHECKSUM`:
+
+- `verified`: the highest level the stream has proved. It SHALL NOT decrease, and a
+  read that raises SHALL NOT raise it.
+- `verifiable`: the highest level a read from the start to the end can reach.
+  `verified` SHALL NOT exceed it. Before a lazy stream opens its member it describes
+  what the stream knows without opening it. Once the stream is open it MAY rise (a
+  password confirmed by another member), and it SHALL fall only when a read finds
+  a stream or frame of an `.xz`, `.zst` or `.lz4` file that carries no check (below).
+  Each says whether it carries a check only in its own header, which a read reaches
+  only as it decodes, and a read that jumps reaches some headers only on a later
+  read from the start. So until such a stream or frame is found, the file's
+  `verifiable` SHALL be `CHECKSUM`: a read from the start can still reach it, and a
+  lower ceiling would let `verified == verifiable` claim that nothing more can be
+  checked.
+
+The levels mean:
+
+- `NONE`: nothing is proved yet about the data, or a check that can pass by chance
+  accepted its password and nothing has confirmed it since.
+- `UNLOCKED`: the member is not encrypted, or its password passed a check that cannot pass
+  by chance.
+- `LENGTH`: `UNLOCKED`, and a read reached the end with every length and end-of-data
+  check passing.
+- `CHECKSUM`: `LENGTH`, and every output byte passed a stored check that a wrong byte
+  fails, at any layer: a member digest the verifier computes, the WinZip AES HMAC, a
+  codec's whole-stream checksum, or per-frame or per-block checks that cover every frame
+  of an `.xz`, `.zst` or `.lz4` file. A codec check counts only over a decode from the
+  start with no seek between, other than seeks to 0 and seeks by `SEEK_SET` or
+  `SEEK_CUR` to the current position, which change nothing. The check's value need not
+  be exposed. A check that spans several members (a `.tar.gz` trailer, a 7z folder CRC
+  over several files) SHALL raise the level of every member it covers only once it
+  passes, at the end of the folder or stream; a 7z folder CRC over a single file SHALL
+  count as that file's digest when it has none of its own. A 7z folder CRC over several
+  files that does not match SHALL raise `CorruptionError`, naming the folder, from the
+  read at the end of the file that ends the folder, after that file's own CRC, if it
+  has one, has run; when that own CRC fails, its error SHALL be the one the read
+  raises. `verify_all()` SHALL return every file of the folder with no CRC of its own
+  as a failure, and no level SHALL fall. A member stream's
+  `verified` and `verifiable` SHALL equal those of the reader's own member with the
+  same identity, at every moment, whether or not the stream has opened its data; a
+  stream opened from a `replace()` copy mirrors and raises the reader's member, not the
+  copy.
+
+The level SHALL NOT claim a check that did not run. Where a check cannot be traced to
+the stream, the level SHALL report less. Reading the properties SHALL NOT read,
+decode or seek.
+
+A stream that reaches the end raises any content verdict from that read, as today. The
+level adds no new error and no new way to read.
+
+#### Scenario: verification level matrix
+
+| Case | Expected |
+| --- | --- |
+| ZIP deflate member with CRC-32, read to the end | `verified` is `CHECKSUM`; `verifiable` is `CHECKSUM` |
+| Same member, half read | `verified` is `UNLOCKED` |
+| Same member, `seek(0)` after a full read, then half read | `verified` stays `CHECKSUM` |
+| TAR member read to the end | `verified` and `verifiable` are `LENGTH` |
+| `.gz` file through `open_stream`, read to the end | `CHECKSUM` |
+| `.gz` file, seek forward through an index, then read to the end | `LENGTH`; a `seek(0)` and a read to the end then gives `CHECKSUM` |
+| `.xz` file, every block checked, read to the end | `CHECKSUM` |
+| `.xz`, `.zst` or `.lz4` file, every frame checked, half read, or read after a jump to the end | `verified` is below `CHECKSUM`; `verifiable` is `CHECKSUM` |
+| `.xz`, `.zst` or `.lz4` file with no check, half read, or read after a jump to the end | `verifiable` is `LENGTH` |
+| `.zst` file of three frames with a seek table, the middle one unchecked: a seek into the last frame, then a read | `verifiable` is `CHECKSUM`; `verify()` reaches `LENGTH`, and `verifiable` falls to `LENGTH` |
+| `.xz` file with one stream of check type None, read to the end | `LENGTH` |
+| `.zst` file, every frame with a content checksum, read to the end | `CHECKSUM` |
+| `.lz4` frame with a content checksum, read to the end | `CHECKSUM` |
+| `.zst` file with one frame lacking Content_Checksum_flag, read to the end | `LENGTH` |
+| `.zst` file with a skippable frame between checked frames, read to the end | `CHECKSUM` |
+| `.lz4` frame with block checksums only, read to the end | `CHECKSUM` |
+| Legacy-format `.lz4` stream, alone or followed by a checked frame, read to the end | `LENGTH` |
+| TAR member of a `.tar.gz`, read to the end | `LENGTH`; `CHECKSUM` once the archive is read to its end and the trailer matches |
+| `.tar.gz` listed to its end, trailer matches | every member's `verified` is `CHECKSUM` |
+| 7z one-file folder with a folder CRC and no file CRC, read to the end | `CHECKSUM` |
+| 7z folder of several files with only a folder CRC, a file read to the end | `LENGTH`; `CHECKSUM` for all once the folder is read and its CRC matches |
+| Same, the folder CRC does not match | the read at the last file's end raises `CorruptionError`; `verify_all()` returns every file of the folder; the files read before stay at `LENGTH` |
+| Same, the last file carries a CRC of its own that matches | the last file reaches `CHECKSUM` and is not returned; `verify_all()` returns the other files, on a second call too |
+| 7z AES folder with no CRC, read to the end | `verified` and `verifiable` are `NONE` |
+| 7z: a file's CRC matches in AES folder A; AES folder B has no CRC, read to the end | B stays `NONE`: A's match does not prove B's key |
+| ZipCrypto member, password on its check byte, half read | `verified` is `NONE`; `verifiable` is `CHECKSUM` |
+| Same member read to the end, CRC matches | `CHECKSUM` |
+| Encrypted member with no stored digest, password accepted only on a weak check | `verifiable` is `NONE`; it rises once the password is confirmed |
+| WinZip AES AE-2 member read to the end | `CHECKSUM` (the HMAC) |
+| Lazy stream from `stream_members()` of a ZipCrypto member, before its first read | `verified` is `NONE` |
+| Lazy stream from `stream_members()` of an unencrypted member, before its first read | `verified` is `UNLOCKED` (changed: `verification-level` reported `NONE`) |
+| Random-access reader after `verify_all()`; a lazy `stream_members()` stream before its first read | `verified` is the member's level (`CHECKSUM` for a ZIP member with a CRC) |
+| Stream opened from a `replace()` copy of a member, read to the end | the reader's own member rises to `CHECKSUM`; the copy keeps the level it was copied with |
+| Member whose read raises `CorruptionError` | `verified` stays at the level it had before that read |
+| Reading `verified` on a stream that has not opened | Opens nothing; returns the member's level (`NONE` when nothing is proved) |
+
+### Requirement: A stream verifies itself on request
+
+Every public `ArchiveStream` SHALL have a `verify(*, password_only=False)` method that
+runs the stream's checks, discarding the bytes, and returns `verified`. Its target is
+`verifiable`, or `UNLOCKED` when `password_only` is true (`verifiable` when that is
+lower). It SHALL raise what its reads raise and nothing else. It SHALL NOT raise when
+`verified` ends below the target: it returns `verified`, and the caller compares. Its
+own seeks SHALL NOT report `STREAM_REWIND_REDECOMPRESSES`. On a closed stream it SHALL
+raise `ValueError`. It SHALL NOT read past its own member.
+
+On a stream that can seek, it SHALL read on until `verified` reaches the target, and
+SHALL read and decode nothing when `verified` has already reached the target and is
+above `NONE`. A target of `NONE` is never reached this way, so the length and
+end-of-data checks still run to the end. When the reads end below the target and the
+stream did not start at 0, it SHALL seek to 0 and read on once more. It SHALL then seek
+back to the position it started from, also when a read raised, so a later `read()`
+returns the same bytes.
+
+On a stream that cannot seek, it SHALL read to the end whatever the target, and every
+later `read()`, `readinto()` or `read_ahead()` SHALL raise `ArchiveyUsageError`, also
+when a check failed. When `verified` has already reached the target and is above
+`NONE`, it SHALL mark the stream consumed without reading. A later `verify()` SHALL
+read nothing: it SHALL raise the first call's check failure again if that call failed,
+and otherwise return `verified`.
+
+A later release MAY reach a target with less reading (a cheaper password check); the
+returned level and the errors SHALL stay those a read to the target gives.
+
+#### Scenario: verify matrix
+
+| Case | Expected |
+| --- | --- |
+| Fresh ZIP deflate member | returns `CHECKSUM` |
+| Same member, 100 bytes read first | returns `CHECKSUM`; position 100 |
+| Member already at `CHECKSUM`, positioned mid-way | reads nothing; returns `CHECKSUM`; position unchanged |
+| ZIP member whose CRC fails | raises `CorruptionError`; `verified` stays `UNLOCKED` |
+| TAR member | returns `LENGTH` |
+| Seekable `.gz` member after a forward seek | reads again from 0; returns `CHECKSUM`; position restored |
+| Seekable `.zst` member with a checksum in every frame, after a jump to the end and a read there (`verified` is `LENGTH`, `verifiable` is `CHECKSUM`) | reads again from 0; returns `CHECKSUM`; `verify_all()` reads it again too |
+| Same, with the last frame unchecked | the jump read that frame's header, so `verifiable` is `LENGTH`: reads nothing; returns `LENGTH` |
+| `stream_members()` stream, either mode | reads to the end; later `read()` raises `ArchiveyUsageError`; a second `verify()` reads nothing |
+| `stream_members()` stream whose CRC fails | raises `CorruptionError`; later `read()` raises `ArchiveyUsageError`; a second `verify()` raises `CorruptionError` again |
+| Non-seekable stream whose member is already at `CHECKSUM` (proved by `verify_all()`) | reads nothing; returns `CHECKSUM`; later `read()` raises `ArchiveyUsageError` |
+| Forward-only `open_stream()` `.gz` | returns `CHECKSUM` |
+| Closed stream | raises `ValueError` |
+| `password_only=True` on a seekable unencrypted member | reads nothing; returns `UNLOCKED` |
+| `password_only=True` on a ZipCrypto member (one-byte check only) | reads to the CRC; returns `CHECKSUM` |
+| `password_only=True` under a colliding wrong ZipCrypto password | raises `EncryptionError` |
+| 7z AES member with no CRC, truncated | raises `TruncatedError`, on a first and on a second call |
+| 7z AES member with no CRC, intact | reads to the end; returns `NONE` |

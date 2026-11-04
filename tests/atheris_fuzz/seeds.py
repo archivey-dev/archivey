@@ -19,8 +19,12 @@ from tests.conftest import run_7z, sevenzip_lists_arm64
 from tests.sample_archives import CORPUS, corpus_archive_path
 
 # Small corpus entry ids that build quickly and cover common layouts.
+# ``sevenzip-ppmd`` is 7z only: the format filter keeps it out of the other targets.
+# PPMd decodes in a child process (process_isolation), so the seed covers the 7z
+# header, solid demux and child protocol, not the native decoder: Atheris gets no
+# coverage from inside pyppmd, and a pyppmd crash comes back as an ArchiveyError.
 _SEED_ENTRY_IDS = frozenset(
-    {"basic", "encoding", "large", "adversarial", "adversarial-tar"}
+    {"basic", "encoding", "large", "adversarial", "adversarial-tar", "sevenzip-ppmd"}
 )
 # Encrypted ZIP when the 7z CLI is available (AES / ZipCrypto fixtures).
 _ENC_SEED_ENTRY_IDS = frozenset({"encrypted", "encrypted-mixed", "encrypted-multi"})
@@ -152,6 +156,35 @@ def iso_seeds() -> list[bytes]:
     tiny = [b"", b"\x00" * 32768, b"not an iso"]
     with tempfile.TemporaryDirectory(prefix="atheris-seed-iso-") as tmp:
         return tiny + _corpus_seeds("iso", Path(tmp)) + _adversarial_seeds(".iso")
+
+
+def ar_seeds() -> list[bytes]:
+    """Tiny magics, the GNU, BSD and macOS archives in tests/fixtures/ar, and each
+    of them gzip-compressed, so the walk also runs inside a decoded stream."""
+    tiny = [b"", b"!<arch>\n", b"!<thin>\n", b"!<arch>\n//" + b" " * 46 + b"`\n"]
+    return tiny + _fixture_seeds("ar", "*.a")
+
+
+def cpio_seeds() -> list[bytes]:
+    """Tiny magics, one archive of each variant in tests/fixtures/cpio (GNU cpio and
+    bsdcpio), and each of them gzip-compressed."""
+    tiny = [b"", b"070707", b"070701", b"070702", b"070727", b"\xc7\x71" + bytes(24)]
+    return tiny + _fixture_seeds("cpio", "*.cpio")
+
+
+def squashfs_seeds() -> list[bytes]:
+    """Tiny blobs and the images in tests/fixtures/squashfs, one per compressor and
+    layout (no fragments, tail ends), each a few KiB."""
+    tiny = [b"", b"hsqs", b"hsqs" + bytes(92), b"sqsh" + bytes(92)]
+    paths = sorted((_REPO_ROOT / "tests" / "fixtures" / "squashfs").glob("*.sqfs"))
+    return tiny + [path.read_bytes() for path in paths]
+
+
+def _fixture_seeds(folder: str, pattern: str) -> list[bytes]:
+    """The fixtures in tests/fixtures/<folder>, plain and gzip-compressed."""
+    paths = sorted((_REPO_ROOT / "tests" / "fixtures" / folder).glob(pattern))
+    fixtures = [path.read_bytes() for path in paths]
+    return fixtures + [gzip.compress(data, mtime=0) for data in fixtures]
 
 
 def rar_seeds() -> list[bytes]:

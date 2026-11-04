@@ -26,7 +26,7 @@ import pytest
 import archivey
 from archivey.config import ArchiveyConfig, RarDecompressor
 from archivey.exceptions import UnsupportedFeatureError
-from archivey.types import ExtractionPolicy, ExtractionStatus
+from archivey.types import ExtractionPolicy, ExtractionStatus, OnError
 from tests.conftest import requires, requires_binary
 from tests.extract_util import open_and_extract
 from tests.test_audit_rar_iso_dir import _fixture, _rar3_build, _rar3_parse
@@ -284,15 +284,32 @@ def archive(request: pytest.FixtureRequest, tmp_path: Path) -> Path:
 def test_extraction_writes_what_the_7z_gives(
     archive: Path, tmp_path: Path, policy: ExtractionPolicy
 ) -> None:
-    """The same names extract to the same tree from RAR or Joliet as from a 7z."""
+    """The same names extract to the same tree from RAR or Joliet as from a 7z.
+
+    STRICT refuses the lone surrogates in every format, so only ``ok.txt`` and the pair
+    are written.
+    """
     seven = tmp_path / "same.7z"
     seven.write_bytes(_surrogate_7z(_FILES))
     expected_dest = tmp_path / "from7z"
-    expected = open_and_extract(seven, expected_dest, policy=policy)
+    expected = open_and_extract(
+        seven, expected_dest, policy=policy, on_error=OnError.CONTINUE
+    )
     dest = tmp_path / "out"
-    results = open_and_extract(archive, dest, policy=policy)
+    results = open_and_extract(archive, dest, policy=policy, on_error=OnError.CONTINUE)
     files = [r for r in results if r.member.is_file]
-    assert [r.status for r in files] == [ExtractionStatus.EXTRACTED] * len(_FILES)
+    written = (
+        {"ok.txt", "pair\U0001f600.txt"}
+        if policy is ExtractionPolicy.STRICT
+        else _NAMES
+    )
+    assert [r.status for r in files] == [
+        ExtractionStatus.EXTRACTED
+        if r.member.name in written
+        else ExtractionStatus.BLOCKED
+        for r in files
+    ]
+    assert len(files) == len(_FILES)
     assert _tree(dest) == _tree(expected_dest)
     presented = {r.member.name: r.presented_name for r in files}
     assert presented == {r.member.name: r.presented_name for r in expected}

@@ -1,7 +1,10 @@
 """The shared structures archivey reads formats with, open to formats from outside.
 
-**Provisional.** This interface may change in a minor release until a plugin outside
-this repository has used it. Pin the archivey version a plugin is tested with.
+**Experimental.** This interface, and the names that exist only for it
+(:class:`~archivey.PluginContainer`, :class:`~archivey.PluginStream`,
+``FormatPolicy.replace`` and ``FormatInfo.from_plugin``), is outside the stability
+policy: any release may change or remove it, a patch release included, with no
+deprecation warning first. Pin the exact archivey version a plugin is tested with.
 
 A format that fits the model is two classes, whether it is built in (ISO 9660) or added
 by a program or a separate package (a plugin). A :class:`FormatHandler` subclass
@@ -19,6 +22,12 @@ A program registers a format with :func:`register_format`. Nothing is loaded
 automatically. Plugin code runs in the caller's process as trusted code: archivey's
 limits cover what the reader hands over, not the reader's own parser.
 
+A compression format, such as one a library outside archivey decodes, is one
+:class:`CodecHandler` subclass, registered with :func:`register_codec`. archivey then
+reads it as a single compressed file, around a TAR (``.tar.<ext>``) and around each
+sequential format, and :meth:`ReaderContext.decompress` and :func:`~archivey.open_stream`
+decode it.
+
 A sequential format is also read inside each single-file compression stream archivey
 decodes (``.cpio.gz``), and its walk can hand the rest of the archive to one of
 archivey's codecs part-way (:meth:`ForwardStream.decompress`). What the first version
@@ -34,13 +43,15 @@ import struct
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
 
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, DecoderLimits
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.naming import normalize_member_name
+from archivey.internal.overrides import override
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
 from archivey.types import (
@@ -49,10 +60,14 @@ from archivey.types import (
     CompressionAlgorithm,
     MemberType,
     PluginContainer,
+    PluginStream,
     StreamFormat,
 )
 
 __all__ = [
+    "CodecCall",
+    "CodecHandler",
+    "Decompressor",
     "FormatHandler",
     "FormatReader",
     "ForwardStream",
@@ -64,6 +79,7 @@ __all__ = [
     "MemberRecord",
     "MemberSpan",
     "PluginContainer",
+    "PluginStream",
     "ReaderArchiveInfo",
     "ReaderContext",
     "ReaderSource",
@@ -71,6 +87,7 @@ __all__ = [
     "SequentialReader",
     "block_stream",
     "buffered_stream",
+    "register_codec",
     "register_format",
 ]
 
@@ -119,7 +136,7 @@ class MemberDigest(NamedTuple):
     against as they are read.
 
     A mismatch raises ``CorruptionError`` when a read reaches the end, and a match
-    counts as ``Verification.CONTENT``, as for a CRC-32 in ``ArchiveMember.hashes``.
+    counts as ``Verification.CHECKSUM``, as for a CRC-32 in ``ArchiveMember.hashes``.
     Bytes read again after a backward seek are not fed twice.
 
     A checksum the index stores, known when listing, goes in ``ArchiveMember.hashes``
@@ -241,7 +258,7 @@ class ReaderArchiveInfo(NamedTuple):
     comment: str | None = None
     extra: Mapping[str, object] = {}
     """Format-specific values, under keys that start with the format's name
-    (``"cpio.variant"``)."""
+    (``"lha.method"``)."""
 
 
 class ReaderSource:
@@ -318,7 +335,8 @@ class ForwardStream:
         self,
         read: Callable[[int], bytes],
         skip: Callable[[int, int], None],
-        decompress: Callable[[int, StreamFormat], ForwardStream] | None = None,
+        decompress: Callable[[int, StreamFormat | PluginStream], ForwardStream]
+        | None = None,
     ) -> None:
         self._read_fn = read
         self._skip_fn = skip
@@ -369,10 +387,11 @@ class ForwardStream:
         self._skip_fn(self._offset, n)
         self._offset += n
 
-    def decompress(self, stream_format: StreamFormat) -> ForwardStream:
+    def decompress(self, stream_format: StreamFormat | PluginStream) -> ForwardStream:
         """The rest of the archive, from :attr:`offset` on, decoded as a
         ``stream_format`` compression stream (``StreamFormat.GZIP``, ``XZ``, ``ZSTD``,
-        …): the payload of an RPM after its headers, say.
+        …, or the :class:`~archivey.PluginStream` of a codec added with
+        :func:`register_codec`): the payload of an RPM after its headers, say.
 
         Read the archive from the returned stream after this call: this one refuses
         further reads. Its :attr:`offset` counts decoded bytes from 0, and the members
@@ -386,6 +405,11 @@ class ForwardStream:
         format that decompresses part-way says so from :meth:`FormatReader.archive_info`
         with ``ReaderArchiveInfo(is_solid=True)``, and the cost receipt (solid access,
         listing that needs decompression) is right from the open.
+
+        The caller's ``FormatPolicy`` holds here as for a member: under
+        ``plugins=False`` a ``PluginStream`` raises ``UnsupportedFeatureError``, and a
+        package ``exclude_libraries`` turns off reads as missing. ``only`` and
+        ``exclude`` do not apply, since they check only the file the call opens.
 
         Raises ``ValueError`` for a format that is not a compression stream
         (``UNCOMPRESSED``), and ``ArchiveyUsageError`` when this stream has already
@@ -418,13 +442,19 @@ class ReaderContext:
         archive_name: str | None,
         config: ArchiveyConfig,
         decompress: Callable[
-            [BinaryIO, CompressionAlgorithm | StreamFormat, int | None, bytes | None],
+            [
+                BinaryIO,
+                CompressionAlgorithm | StreamFormat | PluginStream,
+                int | None,
+                bytes | None,
+            ],
             BinaryIO,
         ],
         report: Callable[
             [DiagnosticCode, str, DiagnosticContext, ArchiveMember | None], None
         ],
         link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None],
+        hold: Callable[[ArchiveMember, str | None, str | None], None],
     ) -> None:
         self._encoding = encoding
         self._archive_name = archive_name
@@ -432,6 +462,7 @@ class ReaderContext:
         self._decompress = decompress
         self._report = report
         self._link_target_unavailable = link_target_unavailable
+        self._hold = hold
 
     @property
     def encoding(self) -> str | None:
@@ -489,6 +520,36 @@ class ReaderContext:
         """
         self._link_target_unavailable(member, reason, message, target_in_archive)
 
+    def hold(
+        self,
+        member: ArchiveMember,
+        *,
+        stored_name: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Count a member the reader holds back to yield later, as if it were listed.
+
+        A reader that must see more of the archive before it can yield a member
+        (a CPIO hard link whose data comes with a later link) keeps it in memory
+        meanwhile, where the listing's limits do not see it. ``hold()`` counts it
+        now, against the same ``max_members`` and ``max_metadata_bytes`` as the
+        members already listed, and raises ``ResourceLimitError`` when it would cross
+        either. ``stored_name`` is the name the member will be yielded with as
+        ``stored_name``, weighed too when it differs from ``member.name``.
+        ``reason`` names what the held members are, for that error ("CPIO hard links
+        waiting for their data").
+
+        Call it from ``walk()`` or ``iter_members()``, as the members are listed.
+        The charge is on that member object: yielding the same object takes it off
+        before archivey counts it as listed, so it is counted once. Yield a copy
+        instead and both count until the walk ends. A member never yielded stays
+        counted until the walk ends. In a walk archivey starts over to reach a member's data again,
+        every member was counted when listed, and ``hold()`` does nothing. A call
+        from anywhere else (at open, in ``open_member``), or for a member held
+        already, raises ``ArchiveyUsageError``.
+        """
+        self._hold(member, stored_name, reason)
+
     def normalize_name(self, name: str, member_type: MemberType) -> str:
         """The name archivey gives a member: ``./a//b`` becomes ``a/b``, and a
         directory's name ends in ``/``.
@@ -520,7 +581,7 @@ class ReaderContext:
     def decompress(
         self,
         data: BinaryIO,
-        method: CompressionAlgorithm | StreamFormat,
+        method: CompressionAlgorithm | StreamFormat | PluginStream,
         *,
         size: int | None = None,
         properties: bytes | None = None,
@@ -538,12 +599,22 @@ class ReaderContext:
         ``BZIP2``, ``ZSTD``, ``LZ4`` (frames), ``BROTLI``, ``LZMA`` (raw LZMA1;
         ``properties`` is its 5-byte properties: the ``lc``, ``lp``, ``pb`` byte and the
         dictionary size), ``LZMA2`` (raw; ``properties`` is its 1-byte dictionary
-        size) and ``XZ`` (``.xz`` data kept inside a member, as ZIP method 95 keeps
-        it). As a stream format, the data is a whole stream with its own framing,
-        decoded as a file of that format is: ``ZLIB`` (deflate with the zlib header and
-        Adler-32), ``GZIP``, ``XZ``, ``LZMA_ALONE``, ``LZIP`` and the others
-        ``StreamFormat`` names. Any other method raises ``UnsupportedFeatureError``,
-        and one whose optional package is missing raises ``PackageNotInstalledError``.
+        size), ``XZ`` (``.xz`` data kept inside a member, as ZIP method 95 keeps
+        it) and ``LZO`` (raw LZO1X, as SquashFS stores a block; it needs ``size``, the
+        most the data may decode to). As a stream format, the data is a whole stream
+        with its own framing, decoded as a file of that format is: ``ZLIB`` (deflate
+        with the zlib header and Adler-32), ``GZIP``, ``XZ``, ``LZMA_ALONE``, ``LZIP``
+        and the others ``StreamFormat`` names, or a registered codec's
+        :class:`~archivey.PluginStream` member. Any other method raises
+        ``UnsupportedFeatureError``, and one whose optional package is missing raises
+        ``PackageNotInstalledError``.
+
+        The caller's ``FormatPolicy`` holds for each member: under ``plugins=False`` a
+        ``PluginStream`` raises ``UnsupportedFeatureError`` before the codec runs, and
+        a package ``exclude_libraries`` turns off raises ``PackageNotInstalledError``.
+        ``only`` and ``exclude`` do not apply: they check only the file the call opens,
+        so a member stored with ``StreamFormat.XZ`` decodes under
+        ``exclude={StreamFormat.XZ}``.
 
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
         is one or more frames, decoded together, and ``XZ`` data is one or more xz
@@ -654,8 +725,8 @@ class FormatHandler(ABC):
     ``ArchiveFormat.ZIP``, and is not registered."""
 
     extensions: ClassVar[tuple[str, ...]] = ()
-    """File extensions with the dot (``".cpio"``). An extension a built-in format
-    uses is refused at registration. A replacement plugin declares none: the
+    """File extensions with the dot (``".lha"``). An extension a built-in format uses
+    (``".cpio"``) is refused at registration. A replacement plugin declares none: the
     built-in detection finds its files."""
 
     magic: ClassVar[tuple[Magic, ...]] = ()
@@ -706,7 +777,10 @@ class SequentialFormatHandler(FormatHandler):
     so on, with each extension followed by the compressor's (``.cpio.gz``). The walk
     reads the decoded bytes. Detection finds the format inside a compressor by its
     :attr:`~FormatHandler.magic` in the first 512 decoded bytes, so each magic must end
-    within them."""
+    within them. A format with no reliable magic is found there by its
+    :attr:`~FormatHandler.probe` on those same 512 bytes, where the extension names it
+    inside the compressor (``.lha.gz``) or ``always_probe_content`` is set, as on an
+    uncompressed source."""
 
     @abstractmethod
     def open_sequential(self, context: ReaderContext) -> SequentialReader:
@@ -714,6 +788,7 @@ class SequentialFormatHandler(FormatHandler):
         raises from the first step of :meth:`SequentialReader.walk`, which archivey
         takes when it opens the archive."""
 
+    @override
     def open(self, source: ReaderSource, context: ReaderContext) -> FormatReader:
         """Not called for a sequential format: archivey calls
         :meth:`open_sequential`."""
@@ -747,6 +822,163 @@ def register_format(handler: type[FormatHandler]) -> None:
 
     with _register_lock:
         register_plugin(handler)
+
+
+class Decompressor(Protocol):
+    """One stream's decoder, as :meth:`CodecHandler.decompressor` returns it.
+
+    The interface of the standard library's ``bz2.BZ2Decompressor`` and
+    ``lzma.LZMADecompressor``, which ``lz4.frame.LZ4FrameDecompressor`` and Python
+    3.14's ``compression.zstd.ZstdDecompressor`` share, so a decoder from such a
+    library is returned as it is.
+
+    A decompressor for a format with no end mark may also have an ``end_input()`` method.
+    archivey calls it once, when the input has ended and :attr:`needs_input` is true.
+    It returns nothing, and raises when the stream cannot end at that point. Output
+    the decompressor held back until it knew the input ended is then read with
+    ``decompress(b"", max_length)``, called again until :attr:`eof` is set. When a
+    call returns nothing, or :attr:`needs_input` turns true, before :attr:`eof` is
+    set, or there is no ``end_input()``, the stream is truncated.
+
+    An ``EOFError`` raised from :meth:`decompress` or ``end_input()`` means the input
+    ended inside the stream: unless :meth:`CodecHandler.translate_exception` maps it,
+    archivey reports it as ``TruncatedError``.
+    """
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        """Decode ``data`` and return at most ``max_length`` bytes (all of them when
+        it is negative). Input that the limit leaves undecoded is kept for the next
+        call, which archivey makes with ``b""`` while :attr:`needs_input` is false.
+        Raise on data that is not this format."""
+        ...
+
+    @property
+    def eof(self) -> bool:
+        """Whether the end of the stream was reached and every byte of its output
+        returned. While a ``max_length`` holds output back, it stays false."""
+        ...
+
+    @property
+    def unused_data(self) -> bytes:
+        """The bytes fed after the end of the stream, once :attr:`eof` is true."""
+        ...
+
+    @property
+    def needs_input(self) -> bool:
+        """False while more output can come without more input."""
+        ...
+
+
+@dataclass(frozen=True)
+class CodecCall:
+    """What archivey knows about the data one :meth:`CodecHandler.decompressor` call
+    decodes, beyond its bytes. Built by archivey; a handler only reads it."""
+
+    size: int | None = None
+    """The decoded size a format reader passed to :meth:`ReaderContext.decompress`:
+    the most the data may decode to. ``None`` for a file of the format, and when the
+    reader passed none."""
+
+    properties: bytes | None = None
+    """The coder properties a format reader passed to
+    :meth:`ReaderContext.decompress`, as the container stores them, for the codec to
+    parse. ``None`` for a file of the format, and when the reader passed none."""
+
+    limits: DecoderLimits = field(default_factory=DecoderLimits)
+    """The caller's decoder limits. A decoder whose data declares a working set (a
+    window, a dictionary, a block size) refuses one over
+    :attr:`DecoderLimits.max_decoder_memory` with ``ResourceLimitError`` before it
+    allocates it. archivey applies the ratio limits to the output itself."""
+
+    probe_bound: int | None = None
+    """Set while detection decodes the start of the data to look inside it: the most
+    output it reads. A decoder that would reserve much more than this for a size the
+    data declares may raise ``ResourceLimitError`` instead, which detection reads as
+    "can't tell". ``None`` for every other read."""
+
+
+class CodecHandler(ABC):
+    """One compression stream format: what identifies it, and its decoder. Never
+    instantiated by a caller; archivey makes one instance at registration.
+
+    archivey reads the decoder's output the way it reads its own codecs': under the
+    caller's ratio and size limits, with a backward seek decoding again from the start,
+    and with the same rules for the end of the data. Input that ends inside a stream
+    raises ``TruncatedError``. After a stream's end, zeros are padding. With
+    :attr:`concatenated`, bytes that start with the :attr:`magic` at offset 0 begin
+    another stream, whose output follows. Any other byte there ends the data, and a
+    file of the format reports it as ``ARCHIVE_TRAILING_DATA``.
+    """
+
+    stream_format: ClassVar[PluginStream]
+    """The format, a member of a :class:`~archivey.PluginStream` subclass. Its value
+    is the file extension, without the dot."""
+
+    extension_aliases: ClassVar[tuple[str, ...]] = ()
+    """Other file extensions, with the dot, besides ``"." + stream_format.value``.
+    An extension a built-in format uses is refused at registration."""
+
+    magic: ClassVar[tuple[Magic, ...]] = ()
+    """Exact signatures. One counts only when no built-in signature matched."""
+
+    probe: ClassVar[Callable[[bytes], bool] | None] = None
+    """A content check for a format with no exact signature. It gets only the bytes
+    detection already read from the start of the source, and runs after every
+    built-in probe."""
+
+    concatenated: ClassVar[bool] = True
+    """Whether a stream may follow the first, its output after the first's, as
+    ``cat a.gz b.gz`` makes for gzip. archivey tells a further stream by the magic at
+    offset 0, so a codec with no such magic reads one stream only."""
+
+    checks_content: ClassVar[bool] = False
+    """Whether the decoder checks every byte it decodes against a checksum the format
+    requires, and raises on a mismatch before :attr:`Decompressor.eof` is true. A
+    stream's verification level reads it."""
+
+    requires: ClassVar[tuple[str, ...]] = ()
+    """Modules the decoder imports. The codec's formats report
+    ``FormatSupport.NONE`` while one is missing."""
+
+    install_hint: ClassVar[str | None] = None
+    """What to install when a module in ``requires`` is missing."""
+
+    @abstractmethod
+    def decompressor(self, call: CodecCall) -> Decompressor:
+        """A new decoder for one stream of the data ``call`` describes. archivey calls
+        it for each stream, and again when a backward seek starts the decode over."""
+
+    def translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        """Map an exception the decoder raises to an archivey exception, usually
+        ``CorruptionError``. Return ``None`` to let ``exc`` propagate as it is, with one
+        exception: an ``EOFError`` left untranslated becomes ``TruncatedError``, as it
+        does for the built-in codecs."""
+        return None
+
+
+def register_codec(handler: type[CodecHandler]) -> None:
+    """Make archivey decode the compression format ``handler`` declares, in this
+    process.
+
+    Register before other threads open archives: detection reads the registry
+    without the registration lock.
+
+    After the call, the format is read as a single compressed file
+    (``ArchiveFormat(ContainerFormat.RAW_STREAM, <stream_format>)``), around a TAR
+    (``.tar.<ext>``) and around each sequential format, registered before the call or
+    after it. :func:`~archivey.open_stream`, :meth:`ReaderContext.decompress`,
+    ``detect_format``, ``format_availability``, the format lists and
+    ``format="<extension>"`` all know it. There is no way to remove a registration.
+
+    Raises ``ArchiveyUsageError`` when the stream format is registered already, when
+    its value is a built-in's or another codec's, or when one of its extensions is
+    already claimed.
+    """
+    # Imported here for the reason given in register_format.
+    from archivey.internal.codec_adapter import register_plugin_codec
+
+    with _register_lock:
+        register_plugin_codec(handler)
 
 
 def block_stream(

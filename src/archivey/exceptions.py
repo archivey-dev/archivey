@@ -34,6 +34,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from archivey.internal.overrides import override
 from archivey.terminal import escape_control_chars
 
 if TYPE_CHECKING:
@@ -131,10 +132,12 @@ class ArchiveyError(Exception):
         self.link_target = link_target
         self.format_unconfirmed = format_unconfirmed
 
+    @override
     def __reduce__(self) -> tuple[object, ...]:
         # Pickle and copy without re-running __init__; see _restore_exception.
         return (_restore_exception, (type(self), self.args, self.__dict__))
 
+    @override
     def __str__(self) -> str:
         parts = [self.message]
         if self.archive_name:
@@ -155,7 +158,8 @@ class ArchiveyError(Exception):
 
 class OpenError(ArchiveyError):
     """Reading could not start: the source is not a recognized archive, is not seekable
-    where the format needs it, or a volume file cannot be opened.
+    where the format needs it, or a volume is not a regular file. A volume path that is
+    missing or unreadable raises its ``OSError``, as a single path does.
 
     A recognized archive whose header is damaged, cut short or encrypted raises a
     :class:`ReadError` subclass instead, from ``open_archive()`` as from any later call.
@@ -191,10 +195,16 @@ class CorruptionError(ReadError):
 
 
 class TruncatedError(CorruptionError):
-    """Damage that looks like the data ending early.
+    """The data seems to end early: the file, or a stream inside it, stops before its
+    structure says it should.
 
-    A best-effort label, not a diagnosis: damage that decodes short can raise it, and some
-    cut-short headers raise a plain :class:`CorruptionError`. Do not branch on it.
+    Most often the file was cut short, as by a download that stopped, so fetching it
+    again or resuming the download may give a whole archive. The label is best effort,
+    not a diagnosis: damage that decodes short can raise it too, and a cut that falls
+    between two members, or inside a trailer no member needs, may raise nothing (the
+    reader then usually reports the :class:`~archivey.DiagnosticCode`
+    ``ARCHIVE_EOF_MARKER_MISSING`` or ``DIGEST_UNVERIFIABLE``).
+    Catch :class:`CorruptionError` to handle damage of either kind.
     """
 
 
@@ -314,10 +324,11 @@ class ResourceUnavailableError(ResourceLimitError):
     Raised when a decoder or helper program is ended by SIGKILL (most often the
     out-of-memory killer), when a decoder that
     :class:`~archivey.config.ProcessIsolation` runs only in a child process cannot
-    have one (a frozen application, a refused spawn), and when a PPMd decoder process
-    cannot allocate the member's model (a container memory limit). The data may be
-    valid: read it again with more memory, or where child processes can start. Raising
-    a limit in the config does not help.
+    have one (a frozen application, a refused spawn), when a PPMd decoder process
+    cannot allocate the member's model (a container memory limit), and when a volume
+    file cannot be opened because the process is out of file descriptors. The data may
+    be valid: read it again with more memory, more descriptors, or where child
+    processes can start. Raising a limit in the config does not help.
 
     A subclass of :class:`ResourceLimitError`, so code that catches that type catches
     this one too.
@@ -436,10 +447,12 @@ class ArchiveyUsageError(Exception):
         self.message = message
         self.refused_member_type = refused_member_type
 
+    @override
     def __reduce__(self) -> tuple[object, ...]:
         # Pickle and copy without re-running __init__; see _restore_exception.
         return (_restore_exception, (type(self), self.args, self.__dict__))
 
+    @override
     def __str__(self) -> str:
         return self.message
 

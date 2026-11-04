@@ -1,4 +1,4 @@
-"""`scripts/find_unar_probe_member.py`: its model of the patched ``unar``, on fixtures.
+"""`scripts/investigations/find_unar_probe_member.py`: its model of the patched ``unar``, on fixtures.
 
 The model says which members Debian's patched ``unar`` drops without running ``unar``.
 These tests hold it to what that ``unar`` does with the ``unar_drop*`` and
@@ -17,7 +17,7 @@ import pytest
 from archivey.internal.external import unar
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "find_unar_probe_member.py"
+SCRIPT = ROOT / "scripts" / "investigations" / "find_unar_probe_member.py"
 _RAR = ROOT / "tests" / "fixtures" / "rar"
 
 _spec = importlib.util.spec_from_file_location("find_unar_probe_member", SCRIPT)

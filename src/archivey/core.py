@@ -79,7 +79,11 @@ from archivey.internal.registry import (
     list_supported_formats,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
+from archivey.internal.streams.codecs import (
+    codec_for_stream_format,
+    open_codec_stream,
+    single_file_codec,
+)
 from archivey.internal.streams.streamtools import (
     OneReadEachStream,
     is_stream,
@@ -102,6 +106,7 @@ from archivey.types import (
     FormatSupport,
     MemberStreams,
     MissingComponent,
+    PluginStream,
     StreamFormat,
 )
 
@@ -353,17 +358,17 @@ def open_archive(
     without manual slicing).
 
     ``encoding`` names the codec for member names whose encoding the archive does not
-    declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO and RAR 1.5-4). A name
-    whose bytes are valid UTF-8 is decoded as UTF-8 in every format, with or without
-    ``encoding``, and ``encoding`` replaces only the format's fallback (cp437 or
-    ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code page for
-    RAR 1.5-4, surrogate escapes for TAR and ISO). ``member.raw_name`` keeps the stored
-    bytes. A ZIP comment without the UTF-8 flag (the archive comment always) and an
-    8-bit RAR 1.5-4 comment decode the same way as a name without a declared encoding,
-    and a byte the codec does not define survives as a lone surrogate. The one
-    difference is that a RAR comment's last fallback is always windows-1252. 7z,
-    directory and single-file sources decode names another way, ignore it, and record
-    ``ENCODING_ARGUMENT_UNUSED``.
+    declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO, RAR 1.5-4, CPIO, ar and
+    SquashFS). A name whose bytes are valid UTF-8 is decoded as UTF-8 in every format,
+    with or without ``encoding``, and ``encoding`` replaces only the format's fallback
+    (cp437 or ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code
+    page for RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar and SquashFS).
+    ``member.raw_name`` keeps the stored bytes. A ZIP comment without the UTF-8 flag
+    (the archive comment always) and an 8-bit RAR 1.5-4 comment decode the same way as
+    a name without a declared encoding, and a byte the codec does not define survives
+    as a lone surrogate. The one difference is that a RAR comment's last fallback is
+    always windows-1252. 7z, directory and single-file sources decode names another way,
+    ignore it, and record ``ENCODING_ARGUMENT_UNUSED``.
 
     ``source`` may be an ordered sequence of paths or binary streams that together form
     a multi-volume archive (7z concatenates volumes; RAR opens volume 1 and lets
@@ -745,7 +750,8 @@ def _open_resolved(
         if detected is not None and detected.payload_offset > 0:
             _refuse_for_replacement(
                 replacement,
-                "an archive behind a self-extracting stub",
+                "an archive behind a prefix (a self-extracting stub or other leading "
+                "bytes)",
                 resolved_format,
                 archive_name,
             )
@@ -907,7 +913,7 @@ def _open_resolved(
 def open_stream(
     source: str | Path | BinaryIO,
     *,
-    format: StreamFormat | ArchiveFormat | str | None = None,
+    format: StreamFormat | PluginStream | ArchiveFormat | str | None = None,
     seekable: bool = False,
     config: ArchiveyConfig | None = None,
 ) -> ArchiveStream:
@@ -1035,7 +1041,7 @@ def open_stream(
 
 def _open_stream_from_source(
     codec_input: ArchiveSource,
-    format: StreamFormat | ArchiveFormat | None,
+    format: StreamFormat | PluginStream | ArchiveFormat | None,
     seekable: bool,
     effective_config: ArchiveyConfig,
     collector: DiagnosticCollector,
@@ -1066,6 +1072,14 @@ def _open_stream_from_source(
         effective_config, opened_format, source_name(codec_input)
     )
 
+    if single_file_codec(stream_format) is None:
+        # Only a PluginStream member can get here: every StreamFormat but UNCOMPRESSED
+        # has a built-in codec. Refused as open_archive refuses it.
+        raise UnsupportedFeatureError(
+            f"No codec registered for {stream_format!r}: call "
+            "archivey.formats.register_codec() with its CodecHandler first.",
+            source_format=opened_format,
+        )
     codec = codec_for_stream_format(stream_format)
     # The codec stream is the whole source, so bytes after its end are reported.
     stream_config = replace(
@@ -1098,11 +1112,11 @@ def _open_stream_from_source(
 
 
 def _resolve_stream_format(
-    format: StreamFormat | ArchiveFormat | None,
+    format: StreamFormat | PluginStream | ArchiveFormat | None,
     open_source: ArchiveSource,
     collector: DiagnosticCollector,
     config: ArchiveyConfig,
-) -> tuple[ArchiveFormat, StreamFormat]:
+) -> tuple[ArchiveFormat, StreamFormat | PluginStream]:
     """Map open_stream's ``format=`` argument (or auto-detect) to the format the source
     is and the StreamFormat to decode.
 
@@ -1111,7 +1125,7 @@ def _resolve_stream_format(
     (``coerce_stream_or_archive_format``), so falling through here means the caller
     asked for auto-detection.
     """
-    if isinstance(format, StreamFormat):
+    if isinstance(format, (StreamFormat, PluginStream)):
         return ArchiveFormat(ContainerFormat.RAW_STREAM, format), format
     if isinstance(format, ArchiveFormat):
         # An UNKNOWN container never reaches here: open_stream refuses it before any I/O.

@@ -461,8 +461,8 @@ def _retry_zip(tmp_path: Path) -> Path:
         tmp_path,
         [
             ("re\u202evil.txt", b"1", False),
-            ("./b.txt", b"2", False),
-            ("./c.txt", b"3", False),
+            (".//b.txt", b"2", False),
+            (".//c.txt", b"3", False),
         ],
     )
 
@@ -491,7 +491,7 @@ def test_a_walk_walked_again_emits_each_member_diagnostic_once(
 
 
 def _normalized_names_zip(tmp_path: Path, count: int) -> Path:
-    return _zip(tmp_path, [(f"./f{i}.txt", b"x", False) for i in range(count)])
+    return _zip(tmp_path, [(f".//f{i}.txt", b"x", False) for i in range(count)])
 
 
 def test_a_walk_keeps_a_diagnostic_only_for_the_member_being_typed(

@@ -207,7 +207,7 @@ Agent tooling, not documentation. Consumed by tools at fixed paths.
 | File | Lines | Audience | Proposed home | Rationale |
 |---|---:|---|---|---|
 | `benchmarks/RESULTS.md` | 140 | Contrib | **KEEP** | Lives beside the harness that regenerates it. |
-| `scripts/exploration/README.md` | 19 | Contrib | **KEEP** | Explains the scripts next to it. |
+| `scripts/investigations/exploration/README.md` | 19 | Contrib | **KEEP** | Explains the scripts next to it. |
 | `tests/fixtures/rar/README.md` | 44 | Contrib | **KEEP** | Fixture provenance + licensing for the two `rarfile` legacy samples. Must stay with the fixtures. |
 | `tests/fixtures/sevenzip/README.md` | 5 | Contrib | **KEEP** | Same. |
 
@@ -231,7 +231,7 @@ the follow-up change.
 | 2 | `git mv` the maintainer tree: `docs/internal → dev-docs` (investigations to `dev-docs/investigations/`), `docs/grab-bag → dev-docs/history`, **`docs/decisions → dev-docs/decisions`** (D2), `PLAN`/`IDEAS` → `dev-docs/` (D7) | Pure rename (35 files) + `mkdocs.yml` nav deletions (27 entries) | `git status` shows renames; `git log --follow`; `mkdocs build --strict` |
 | 3 | Repoint inbound references | ~90 edits: `src/**` (incl. **2 runtime error strings**), `tests/`, `scripts/`, CI workflows, `pyproject.toml`, root docs, `openspec/project.md`, `.claude/`, and the relative links inside the moved tree | `grep -r 'docs/internal\|docs/grab-bag\|docs/decisions'` returns only `review/**` and archives |
 | 4 | Resolve published-page links | D3's nine (4 dropped, 5 → absolute repo URLs, `index.md` block rewritten) + D2's ten ADR links (inlined and dropped) | `grep '](internal/\|](grab-bag/\|](decisions/' docs/*.md` is empty |
-| 5 | Guardrails + `documentation` / `packaging-and-extras` deltas | `scripts/check_docs_nav.py`, CI wiring, `CONTRIBUTING.md` placement rule | CI red on a planted violation; `openspec validate --strict` |
+| 5 | Guardrails + `documentation` / `packaging-and-extras` deltas | `scripts/checks/check_docs_nav.py`, CI wiring, `CONTRIBUTING.md` placement rule | CI red on a planted violation; `openspec validate --strict` |
 | 6 | Split `usage.md` → 4 pages | Content move, no rewrite; **also needs a `documentation` delta** (below) | Diff shows moved blocks only; `openspec validate --strict` |
 | 7 | Split ADR 0014 | Content move | Same |
 | 8 | Split `threat-model.md` | Content move | Same |

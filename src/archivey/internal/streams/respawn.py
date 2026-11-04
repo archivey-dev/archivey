@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     resolve_seek,
@@ -86,9 +87,11 @@ class RespawnStream(ReadOnlyIOStream):
         self._pos = 0
         self._inner_pos = 0
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def tell(self) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -123,6 +126,7 @@ class RespawnStream(ReadOnlyIOStream):
             self._size = self._inner_pos
         return self._size
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -164,6 +168,7 @@ class RespawnStream(ReadOnlyIOStream):
             self._inner_pos = want
         return inner
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -197,6 +202,7 @@ class RespawnStream(ReadOnlyIOStream):
         self._inner_pos = min(self._inner_pos + len(data), self._size)
         return data
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

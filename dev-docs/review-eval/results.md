@@ -5,6 +5,100 @@ One section per run worth keeping, newest first. `skill` is the tree hash of
 Score: `yes` = 1, `partial` = 0.5. The reviews themselves are kept outside the
 repository.
 
+## 2026-10-30: batching tool calls and Sonnet subagents, stated in the prompt
+
+Opus (`claude-opus-5`), judge `claude-sonnet-5-5`. The baseline is skill
+`2cc77b24651e` with the tools `Read,Grep,Glob,Bash`; it made one tool call per turn,
+and re-reading the cached context each turn was about half its cost. The new arm adds
+`Task` and a "How to work" paragraph to the prompt (batch independent calls, send
+reading outside the diff to Sonnet subagents), with the skill's §How to spend turns
+and `code-pr.md` §Reading outside the diff (an edited tree recorded as
+`28a624c388b2-dirty`; the text is this PR's).
+
+| Case | PR | Baseline | Batch + subagents |
+|---|---|---|---|
+| zstd-seek-point-in-frame | #934 | no | no |
+| decoder-death-reraise-cycle | #904 | yes | yes |
+| rapidgzip-cut-raw-deflate | #545 | no | no |
+| rapidgzip-cut-gzip-member-then-complete | #613 | no | no |
+| pax-sparse-version-by-records | #738 | partial | partial |
+| **Score** | | **1.5 of 5** | **1.5 of 5** |
+| Cost (USD, subagents included) | | 39.24 | 25.66 |
+| API turns, all cases | | 258 | 224 |
+| Tool calls per turn | | 1.00 | 1.36 |
+| Cached context re-read (tokens) | | 36.6 M | 10.9 M |
+| Subagent calls (Sonnet cost) | | 0 | 23 ($3.00) |
+
+The same two arms replayed round 1 of five merged pull requests (#1144, #1143, #1139,
+#1130, #1128) and were scored against the findings the loop raised on that code and
+the author fixed (a one-off harness, not in this directory): 13.5 of 20 important
+findings and 8 of 11 nits for the baseline at $27.13, 14 of 20 and 4.5 of 11 at
+$16.74. The important catches held; fewer nits came back, in one run each. (The
+judge also scored a finding the loop never raised, which is left out.)
+
+Two variants of the new arm, on the five pull requests only (the cases above were
+rerun once more for the first and scored 1 of 5):
+
+| Arm | Important | Nits | Cost (USD) |
+|---|---|---|---|
+| Baseline | 13.5 of 20 | 8 of 11 | 27.13 |
+| Subagents read all code outside the diff | 14 | 4.5 | 16.74 |
+| Same, the reviewer reading the guides and contracts itself | 13.5 | 3.5 | 17.81 |
+| Same, the reviewer also reading the immediate surroundings (kept) | 17 | 4.5 | 21.68 |
+
+"Immediate surroundings" is the rest of each changed function and its docstring, the
+helpers in the same file it calls, the code next to it that a new helper may
+duplicate, and the tests of a touched function; subagents get the wider searches
+(callers across the tree, sibling formats and codecs, other modules, history). The
+nits the cheaper arms dropped were of that near kind: a docstring narrower than its
+function, a test helper copying one in `scripts/`, a shadowed local. The kept arm
+brought back two of those and still missed the docstring and the shadowed local. One
+run each; earlier reruns of a single arm moved by a whole case, so the 17 is a good
+sign, not a measured gain.
+
+Stated only in the skill (skill `28a624c388b2-dirty`, the prompt unchanged), the two
+habits half-took: 1.04 calls per turn, 7 and 12 subagent calls in the two sets. On
+these cases it scored 2 of 5 at $33.56 (14 percent less); on the five pull requests
+15 of 20 important findings and 8 of 11 nits at $27.82, no saving.
+
+## 2026-10-30: what the reviewer reads, and a narrower `CONTRIBUTING.md` read (not kept)
+
+The runner now keeps each review's transcript and writes `reads.json`: the characters
+every file the Read tool (or a lone `sed`, `cat`, `head`, `tail` or `nl` command)
+returned, other tools' output by tool, and the token totals. Two Opus runs, judge
+`claude-sonnet-5-5`. The whole-file arm ran skill `2cc77b24651e`. The three-section arm
+ran from an edited tree (recorded as `2cc77b24651e-dirty`) whose §1 asked for
+§Tooling decisions, §Coding standards and §Testing standards of `CONTRIBUTING.md`
+instead of the whole file; that text is skill `748b61d70ac4` (commit `2439fb32`).
+
+| Case | PR | Whole file | Three sections |
+|---|---|---|---|
+| zstd-seek-point-in-frame | #934 | no | yes |
+| decoder-death-reraise-cycle | #904 | yes | yes |
+| rapidgzip-cut-raw-deflate | #545 | no | no |
+| rapidgzip-cut-gzip-member-then-complete | #613 | no | no |
+| pax-sparse-version-by-records | #738 | partial | partial |
+| **Score** | | **1.5 of 5** | **2.5 of 5** |
+| Cost (USD) | | 39.24 | 40.74 |
+| Turns, all cases | | 262 | 278 |
+| Guide characters read | | 472 724 | 433 138 |
+| `CONTRIBUTING.md` characters read | | 138 888 | 108 107 |
+
+The guides (the paths `GUIDES` in `scripts/review/review_eval.py` lists: the skill, its
+references, `CONTRIBUTING.md`, the agent guides, `dev-docs/` and `openspec/`) were 18
+to 40 percent of what a review's tools returned; the rest is Bash output (the largest
+single item in every case), source and grep. A file read inside a longer shell command
+counts under Bash, so the guide figures are lower bounds. Reading three sections cut
+the guide reading by under a tenth and `CONTRIBUTING.md` by about a fifth. The score
+changed by one case and the cost by 4 percent, both inside the run-to-run noise, so
+one run each shows no saving and no loss; it does not show that the trim leaves the
+review as good. Review then showed that most of the file carries review rules (gate,
+CI, release and spec-discrepancy ones outside the three sections); the part that
+holds them is 30 KB of the 43 KB, so a read that keeps them saves about 3 000 tokens,
+some 2 percent of a review's input once cached over its turns. The skill kept the
+whole-file read. The input a review pays for is mostly what it runs and reads in the
+code, at about 150 000 tokens of context per turn over 45 to 60 turns.
+
 ## 2026-10-29: Sonnet with the project installed, and at xhigh effort
 
 Two separate changes to the Sonnet review, two runs each: `--install` (the PR's own

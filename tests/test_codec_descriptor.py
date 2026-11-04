@@ -7,20 +7,17 @@ the single-file reader, or the registry's availability logic (see ``compressed-s
 
 from __future__ import annotations
 
-import enum
 import io
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
 
-import pytest
-
 from archivey import open_archive
-from archivey.internal import registry as registry_module
-from archivey.internal.backends.single_file_reader import SingleFileBackend
 from archivey.internal.detection import DetectionConfidence, detect_format
+from archivey.internal.format_adapter import registration_scope
 from archivey.internal.registry import format_availability, get_registry
 from archivey.internal.streams import codecs
+from archivey.internal.streams.codecs.registry import add_stream_codec
 from archivey.internal.streams.streamtools import ensure_binaryio
 from archivey.types import (
     ArchiveFormat,
@@ -28,6 +25,7 @@ from archivey.types import (
     FormatSupport,
     MagicSignature,
     MissingComponent,
+    PluginStream,
 )
 
 # The synthetic codec stores its payload verbatim behind a unique 6-byte magic, so detection
@@ -35,11 +33,7 @@ from archivey.types import (
 _MAGIC = b"SYNTH\x00"
 
 
-class _SyntheticCodecId(enum.Enum):
-    SYNTHETIC = "synthetic"
-
-
-class _SyntheticStream(enum.Enum):
+class _SyntheticStream(PluginStream):
     SYNTHETIC = "syn"
 
 
@@ -49,16 +43,15 @@ _FORMAT = ArchiveFormat(ContainerFormat.RAW_STREAM, _SyntheticStream.SYNTHETIC)
 
 @contextmanager
 def _install_synthetic(
-    monkeypatch: pytest.MonkeyPatch,
     *,
     requirement: MissingComponent | None,
     available: bool = True,
 ) -> Generator[ArchiveFormat, None, None]:
-    """Register one synthetic StreamCodec subclass, then restore on exit."""
+    """Add one synthetic StreamCodec subclass to the codec list, then restore on exit."""
 
     class SyntheticCodec(codecs.StreamCodec):
-        codec = _SyntheticCodecId.SYNTHETIC  # type: ignore[assignment]
-        stream_format = _SyntheticStream.SYNTHETIC  # type: ignore[assignment]
+        codec = _SyntheticStream.SYNTHETIC
+        stream_format = _SyntheticStream.SYNTHETIC
         # single_file_format (== _FORMAT) and extensions (".syn") are derived from
         # stream_format by the base class — no need to declare them.
         magic = (MagicSignature(0, _MAGIC, _FORMAT),)
@@ -76,35 +69,18 @@ def _install_synthetic(
             return available
 
     SyntheticCodec.requirement = requirement
-    obj = SyntheticCodec()
-
-    reg = get_registry()
-    # The codec registry tuples are imported by reference into the registry module, so patch
-    # both namespaces; the by-codec/by-format dicts are read live, so setitem suffices. The
-    # registry's _readers/_reader_classes are copied so register_reader's mutation is undone.
-    new_stream = codecs.STREAM_CODECS + (obj,)
-    new_single = codecs.SINGLE_FILE_CODECS + (obj,)
-    monkeypatch.setattr(codecs.registry, "STREAM_CODECS", new_stream)
-    monkeypatch.setattr(codecs.registry, "SINGLE_FILE_CODECS", new_single)
-    monkeypatch.setattr(registry_module, "STREAM_CODECS", new_stream)
-    monkeypatch.setattr(registry_module, "SINGLE_FILE_CODECS", new_single)
-    monkeypatch.setitem(codecs.registry._BY_CODEC, obj.codec, obj)
-    monkeypatch.setitem(codecs.registry._BY_STREAM_FORMAT, obj.stream_format, obj)
-    monkeypatch.setattr(reg, "_readers", dict(reg._readers))
-    monkeypatch.setattr(reg, "_reader_classes", list(reg._reader_classes))
-    monkeypatch.setattr(
-        SingleFileBackend, "FORMATS", SingleFileBackend.FORMATS + (_FORMAT,)
-    )
-    reg.register_reader(SingleFileBackend)  # map the new format -> backend
-    yield _FORMAT
+    # The one call a codec takes: the detector, the single-file reader, the TAR pairs
+    # and the registry read the codec list when asked.
+    with registration_scope():
+        add_stream_codec(SyntheticCodec())
+        get_registry().codecs_changed()
+        yield _FORMAT
 
 
-def test_synthetic_descriptor_is_detectable_and_readable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_synthetic_descriptor_is_detectable_and_readable() -> None:
     payload = b"hello from a one-descriptor codec"
     data = _MAGIC + payload
-    with _install_synthetic(monkeypatch, requirement=None) as fmt:
+    with _install_synthetic(requirement=None) as fmt:
         # 1. Detected by its codec's magic, no detector edits.
         info = detect_format(io.BytesIO(data))
         assert info.format == fmt
@@ -125,15 +101,11 @@ def test_synthetic_descriptor_is_detectable_and_readable(
         assert format_availability(fmt).support is FormatSupport.FULL
 
 
-def test_synthetic_descriptor_availability_comes_from_requirement(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_synthetic_descriptor_availability_comes_from_requirement() -> None:
     requirement = MissingComponent(
         "synthlib", "pip install archivey[synth]", ("synthetic",)
     )
-    with _install_synthetic(
-        monkeypatch, requirement=requirement, available=False
-    ) as fmt:
+    with _install_synthetic(requirement=requirement, available=False) as fmt:
         # The (simulated) missing backend makes the single-codec format unreadable -> NONE,
         # with the install hint taken from the codec's requirement (no registry table).
         availability = format_availability(fmt)

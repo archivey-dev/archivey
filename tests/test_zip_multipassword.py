@@ -37,7 +37,7 @@ from archivey.internal import password as password_module, password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
-from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.conftest import assert_raised_again, requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_aes_fixture import build_aes_zip
@@ -161,7 +161,7 @@ def test_single_colliding_password_is_reported_as_a_password_failure(
     "compression", [p for p in COMPRESSION_METHODS if p.id != "stored"]
 )
 def test_single_colliding_password_fails_a_forward_seek(compression: int) -> None:
-    """A forward seek decodes what it skips, so the seek itself names both causes."""
+    """A forward seek decodes what it skips at the next read, which names both causes."""
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=compression)
     collider = find_check_byte_collision(blob, NAME, RIGHT)
 
@@ -171,6 +171,7 @@ def test_single_colliding_password_fails_a_forward_seek(compression: int) -> Non
         _open_decoding_header(ar, compression) as stream,
     ):
         stream.seek(len(DATA))
+        stream.read(1)
 
 
 def test_single_colliding_password_stored_seek_reports_unverified() -> None:
@@ -441,7 +442,7 @@ def test_unverified_zipcrypto_error_keeps_raising_after_a_seek_back() -> None:
         stream.seek(0)
         with pytest.raises(EncryptionError) as again:
             stream.read()
-        assert again.value is first.value
+        assert_raised_again(again.value, first.value)
 
 
 def test_stored_crc_floor_counts_the_body_not_the_declared_size(

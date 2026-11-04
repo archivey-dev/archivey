@@ -5,11 +5,11 @@ name: PPMd native stress
 #
 # Runs weekly, on demand, and on a pull request that changes the PPMd code, the child
 # process around it, its tests, the scripts below, this file, or the dependency pins (a
-# pyppmd upgrade); tests/test_ppmd_stress_paths.py keeps that list matching the tree and
-# the `run:` steps. There is no post-merge run: the stress marker, the hard raw-streams
-# soak and the valgrind gate run nowhere else, so a regression that arrives through a
-# pull request outside the list (the 7z reader, streamtools, the decompressor stream)
-# waits for the weekly run.
+# pyppmd upgrade); scripts/tests/test_ppmd_stress_paths.py keeps that list matching the
+# tree and the `run:` steps. There is no post-merge run: the stress marker, the hard
+# raw-streams soak and the valgrind gate run nowhere else, so a regression that arrives
+# through a pull request outside the list (the 7z reader, streamtools, the decompressor
+# stream) waits for the weekly run.
 # It lives in its *own* workflow on purpose: do **not** add this check as a required
 # status check — a red run here must not block merge. The main CI Windows matrix runs
 # the 7z PPMd codec param but skips test_encrypted_ppmd_chunked_reads_roundtrip;
@@ -26,8 +26,8 @@ on:
       - "src/archivey/internal/streams/codecs/isolated.py"
       - "src/archivey/internal/streams/child_process.py"
       - "tests/test_ppmd_*.py"
-      - "scripts/ppmd_*.py"
-      - "scripts/ci_run_native_modules.py"
+      - "scripts/investigations/ppmd_*.py"
+      - "scripts/ci/ci_run_native_modules.py"
       - ".github/workflows/ppmd-native-stress.yml"
       - "pyproject.toml"
       - "uv.lock"
@@ -91,7 +91,7 @@ jobs:
         # This workflow must stay non-required so a red run does not block merge.
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/ppmd_native_stress.py
+          python scripts/investigations/ppmd_native_stress.py
           --summary ppmd-stress-summary-${{ matrix.os }}-py${{ matrix.python-version }}.md
 
       - name: Soak test_ppmd_raw_streams (pytest module exit abort)
@@ -103,7 +103,7 @@ jobs:
           ARCHIVEY_PPMD_RAW_STREAMS_ITERS: ${{ github.event.inputs.iterations || '20' }}
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/ci_run_native_modules.py
+          python scripts/ci/ci_run_native_modules.py
           --modules tests/test_ppmd_raw_streams.py
           --repeat ${{ env.ARCHIVEY_PPMD_RAW_STREAMS_ITERS }}
           --summary ppmd-raw-streams-soak-${{ matrix.os }}-py${{ matrix.python-version }}.md
@@ -118,7 +118,7 @@ jobs:
         if: runner.os == 'Linux' && steps.sync.outcome == 'success'
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/ppmd_valgrind.py --scenario all
+          python scripts/investigations/ppmd_valgrind.py --scenario all
 
       - name: Stress PPMd (pytest marker entry points)
         # Run even when the script step failed (crash signal), but not when setup/sync

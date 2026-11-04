@@ -31,6 +31,7 @@ from archivey.internal.excluded_libraries import (
     NO_EXCLUSIONS,
     as_reported,
 )
+from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import RewindWarning
 from archivey.internal.streams.child_process import mark_no_verdict
 from archivey.internal.streams.codecs import deps
@@ -38,10 +39,10 @@ from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
 )
+from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildStartError,
     RapidgzipChildStream,
-    from_callers_source,
     rapidgzip_child_unavailable_reason,
     reported_by_child,
 )
@@ -292,6 +293,7 @@ class _StdlibSeekContract(DelegatingStream):
         # The position when a seek went past the end, which the stream below cannot hold.
         self._past_end: int | None = None
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # tell() can be a round trip to the child: ask only when the seek is relative.
         pos = self.tell() if whence == io.SEEK_CUR else 0
@@ -305,6 +307,7 @@ class _StdlibSeekContract(DelegatingStream):
         """Return the size, by seeking the stream below to its end."""
         return self._inner.seek(0, io.SEEK_END)
 
+    @override
     def tell(self, /) -> int:
         if self._past_end is not None:
             return self._past_end
@@ -340,9 +343,10 @@ def _bound_rapidgzip_source(
     """Clip a stream source to the known compressed length before rapidgzip.
 
     rapidgzip over-reads past EOS looking for a concatenated member (raw
-    deflate) or prints trailing-garbage to stderr (bzip2). A 7z AES stage
-    decrypts a padded block, so the next coder's ``pack_size`` (AES
-    unpack_size) is the bound that drops those pad bytes. Only
+    deflate); for bzip2, input past the coder's data would meet the end check
+    under ``refuse_input_after_end``. A 7z AES stage decrypts a padded block,
+    so the next coder's ``pack_size`` (AES unpack_size) is the bound that drops
+    those pad bytes. Only
     ``pack_size`` is pad-free; the two fallbacks assume a non-AES source
     (an AES stream's ``.size`` is the padded plaintext length). Paths stay
     paths: rapidgzip opens its own fd.

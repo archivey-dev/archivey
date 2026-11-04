@@ -70,7 +70,7 @@ def _extra_records(data: bytes) -> list[_Record]:
     """Every FHEXTRA record in every RAR5 FILE header, in file order.
 
     Offsets are found rather than hard-coded because the fixtures are regenerated
-    by ``scripts/gen_rar_fixtures.py`` and their layout is not pinned.
+    by ``scripts/fixtures/gen_rar_fixtures.py`` and their layout is not pinned.
     """
     found: list[_Record] = []
     pos = 8  # past the RAR5 signature
@@ -293,10 +293,18 @@ def test_a_short_version_record_does_not_promote_a_stale_revision(
         members = archive.members()
         current = [m for m in members if m.is_current]
         assert [m.name for m in current] == ["file.txt"]
-        assert not current[0].diagnostics, (
-            "the live revision must be the untouched one, not the damaged member"
+        # The live revision is reported only as the later copy of the name.
+        assert [d.code for d in current[0].diagnostics] == [
+            DiagnosticCode.MEMBER_NAME_DUPLICATE
+        ], "the live revision must be the untouched one, not the damaged member"
+        damaged = next(
+            m
+            for m in members
+            if any(
+                d.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+                for d in m.diagnostics
+            )
         )
-        damaged = next(m for m in members if m.diagnostics)
         assert damaged.name == "file.txt" and not damaged.is_current
 
 

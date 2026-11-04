@@ -47,7 +47,7 @@ its entry definition with a manifest.**
   content hash the on-demand cache keys on — for each fixture.
 - A mismatch is **detected, never absorbed**: rebuilt in place on a machine with `rar`,
   and a hard `StaleCorpusFixtureError` naming the regeneration command anywhere else.
-- `scripts/gen_corpus_rar_fixtures.py` regenerates the set and the manifest.
+- `scripts/fixtures/gen_corpus_rar_fixtures.py` regenerates the set and the manifest.
 - CI installs `unrar` only, on every platform. `scripts/setup-dev-env.sh` likewise.
 
 ### Why the manifest, and not a hash of the bytes

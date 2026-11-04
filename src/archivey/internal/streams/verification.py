@@ -18,7 +18,16 @@ to pass on everything.
 from __future__ import annotations
 
 import io
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from archivey.exceptions import CorruptionError
+from archivey.types import Verification
+
+if TYPE_CHECKING:
+    from archivey.types import ArchiveMember
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,13 +38,22 @@ class VerificationProofs:
     and nothing has confirmed it since. ``ended``: a read reached the end with every
     length and end-of-data check passing. ``content``: a check over every byte
     matched. ``content_possible``: such a check exists, so a read to the end can match
-    it. The last three hold for the member's own bytes only.
+    it. The last three come from a codec whose check is optional per frame (xz,
+    zstd, LZ4), and the stream above turns them into the other proofs.
+    ``per_frame``: the codec is one of these. ``frames_checked``: it has seen at least
+    one frame and every frame it has seen carries a check its library verifies, which
+    a read from the start to the end turns into a check of every byte.
+    ``frame_unchecked``: a frame it has seen carries no such check, so no read can
+    check every byte. All but ``key_in_doubt`` hold for the member's own bytes only.
     """
 
     key_in_doubt: bool = False
     ended: bool = False
     content: bool = False
     content_possible: bool = False
+    per_frame: bool = False
+    frames_checked: bool = False
+    frame_unchecked: bool = False
 
     def combine(self, below: VerificationProofs) -> VerificationProofs:
         """This layer's proofs together with the ones of the layer below it."""
@@ -44,6 +62,9 @@ class VerificationProofs:
             ended=self.ended or below.ended,
             content=self.content or below.content,
             content_possible=self.content_possible or below.content_possible,
+            per_frame=self.per_frame or below.per_frame,
+            frames_checked=self.frames_checked or below.frames_checked,
+            frame_unchecked=self.frame_unchecked or below.frame_unchecked,
         )
 
     def doubt_only(self) -> VerificationProofs:
@@ -81,3 +102,94 @@ def ask_verification_proofs(stream: object, *, _depth: int = 0) -> VerificationP
     if getattr(stream, "forwards_verification", False) is True:
         return below
     return below.doubt_only()
+
+
+def find_frame_watch(stream: object, *, _depth: int = 0) -> Callable[[], bool] | None:
+    """The check of the codec layer whose per-frame proofs reach ``stream``.
+
+    It answers whether that layer has seen a frame with no check
+    (``VerificationProofs.frame_unchecked``), without the walk
+    :func:`ask_verification_proofs` takes, so a stream can ask after each read. It
+    follows the same layers that walk passes ``per_frame`` through, so it finds the
+    layer whenever that proof reaches ``stream``; ``None`` when there is none.
+    """
+    if stream is None or _depth > _MAX_DEPTH:
+        return None
+    watch = getattr(stream, "_frames_unchecked_now", None)
+    if watch is not None:
+        return watch
+    if isinstance(stream, io.BufferedReader):
+        return find_frame_watch(stream.raw, _depth=_depth + 1)
+    inner = getattr(stream, "_inner", None)
+    if inner is None:
+        return None
+    if (
+        getattr(stream, "_verification_proofs", None) is not None
+        or getattr(stream, "forwards_verification", False) is True
+    ):
+        return find_frame_watch(inner, _depth=_depth + 1)
+    return None
+
+
+# The level lock (``verification-level-redesign`` design Decision 4): a leaf lock held
+# only for the compare-and-store below, never across I/O or a callback, and no other
+# lock is taken while it is held. One for the process: the critical section is a few
+# attribute reads and writes, so sharing it costs nothing measurable.
+_LEVEL_LOCK = threading.Lock()
+
+
+def raise_member_level(
+    member: ArchiveMember,
+    verified: Verification,
+    verifiable: Verification | None,
+    *,
+    without_frames: Verification | None = None,
+) -> None:
+    """Raise ``member``'s level to what a stream of it has proved.
+
+    ``verified`` only rises. ``verifiable`` is the stream's ceiling once it has opened
+    its data (``None`` before): the first one settles the member's, which can lower
+    the listing's estimate, and later ones only raise it.
+
+    ``without_frames`` is that ceiling without a codec's per-frame checks, for a stream
+    whose ceiling counts them. It replaces ``verifiable`` once any read of the member
+    has found a frame with no check (``ArchiveMember._frame_unchecked``). The flag is
+    read here, under the lock, so a stream that computed its ceiling before another
+    stream found such a frame does not raise the member back.
+    """
+    with _LEVEL_LOCK:
+        member._verified = max(member._verified, verified)
+        if without_frames is not None and member._frame_unchecked:
+            verifiable = without_frames
+        if verifiable is not None:
+            settled = member._verifiable
+            if settled is None or verifiable > settled:
+                member._verifiable = verifiable
+
+
+class SpanningCheckError(CorruptionError):
+    """A check over the data of several members failed (a 7z folder CRC).
+
+    Raised by the read that reaches the end of the data the check covers. ``covers``
+    holds the reader's own members whose bytes only that check proves; ``verify_all()``
+    returns each of them as a failure with this error, whichever member's read raised
+    it. Internal: callers see a :class:`CorruptionError`.
+    """
+
+    def __init__(self, message: str, *, covers: tuple[ArchiveMember, ...]) -> None:
+        super().__init__(message)
+        self.covers = covers
+
+
+def note_frame_unchecked(member: ArchiveMember, ceiling: Verification) -> None:
+    """Record that a read of ``member`` found a frame with no check, and lower its
+    ``verifiable`` from ``CHECKSUM`` to ``ceiling``.
+
+    The codec's per-frame checks cannot check every byte then, and ``ceiling`` is what
+    the other layers can still reach. ``ArchiveMember._frame_unchecked`` keeps it for
+    every later stream of the member, which may see only checked frames.
+    """
+    with _LEVEL_LOCK:
+        member._frame_unchecked = True
+        if member._verifiable is Verification.CHECKSUM:
+            member._verifiable = ceiling

@@ -17,11 +17,13 @@ from archivey.exceptions import _UsageTypeError, _UsageValueError
 from archivey.internal.arg_checks import check_instance
 from archivey.internal.enum_args import coerce_enum_collection
 from archivey.internal.excluded_libraries import is_excluded_module
+from archivey.internal.overrides import override
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
     OptionalLibrary,
     PluginContainer,
+    PluginStream,
     StreamFormat,
 )
 
@@ -33,7 +35,7 @@ __all__ = ["FormatPolicy"]
 
 # One entry of ``only`` or ``exclude``: a container or a compression, each half of an
 # ArchiveFormat.
-_FormatEntry = ContainerFormat | PluginContainer | StreamFormat
+_FormatEntry = ContainerFormat | PluginContainer | StreamFormat | PluginStream
 
 _CALL = "FormatPolicy()"
 
@@ -50,8 +52,8 @@ def _coerce_entries(values: object, *, param: str) -> frozenset[_FormatEntry]:
     """
     if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
         raise _UsageTypeError(
-            f"{_CALL} takes a collection of ContainerFormat, PluginContainer and "
-            f"StreamFormat members for {param}, got {values!r}."
+            f"{_CALL} takes a collection of ContainerFormat, PluginContainer, "
+            f"StreamFormat and PluginStream members for {param}, got {values!r}."
         )
     entries: set[_FormatEntry] = set()
     for value in values:
@@ -61,10 +63,13 @@ def _coerce_entries(values: object, *, param: str) -> frozenset[_FormatEntry]:
                 f"format {value!r}: pass {_entry_name(value.container)}, and "
                 f"{_entry_name(value.stream)} for its compression."
             )
-        if not isinstance(value, (ContainerFormat, PluginContainer, StreamFormat)):
+        if not isinstance(
+            value, (ContainerFormat, PluginContainer, StreamFormat, PluginStream)
+        ):
             raise _UsageTypeError(
-                f"{_CALL} takes ContainerFormat, PluginContainer and StreamFormat "
-                f"members for {param}, got {value!r} ({type(value).__name__})."
+                f"{_CALL} takes ContainerFormat, PluginContainer, StreamFormat and "
+                f"PluginStream members for {param}, got {value!r} "
+                f"({type(value).__name__})."
             )
         if value is ContainerFormat.UNKNOWN:
             raise _UsageValueError(
@@ -154,18 +159,23 @@ class _Replacements(Mapping[ContainerFormat, "type[FormatHandler]"]):
     def __init__(self, items: Mapping[ContainerFormat, type[FormatHandler]]) -> None:
         self._items = dict(items)
 
+    @override
     def __getitem__(self, key: ContainerFormat) -> type[FormatHandler]:
         return self._items[key]
 
+    @override
     def __iter__(self) -> Iterator[ContainerFormat]:
         return iter(self._items)
 
+    @override
     def __len__(self) -> int:
         return len(self._items)
 
+    @override
     def __hash__(self) -> int:
         return hash(frozenset(self._items.items()))
 
+    @override
     def __repr__(self) -> str:
         return repr(self._items)
 
@@ -204,12 +214,21 @@ class FormatPolicy:
     too; ``StreamFormat.UNCOMPRESSED`` always passes. The default policy allows every
     format.
 
+    ``only`` and ``exclude`` check the file the call opens, not what is inside it. A
+    stream format there (``S.XZ``) is the compression around the whole file: a ``.xz``
+    file, or the xz around a ``.tar.xz``. It is not the xz codec. An xz-compressed ZIP
+    member, or the xz payload a plugin reader decodes inside its own archive, still
+    decodes under ``exclude={S.XZ}``: a member's compression is part of its archive's
+    format. ``plugins`` and ``exclude_libraries`` turn off the code that decodes,
+    wherever it runs, so they hold for every member too: under ``plugins=False`` no
+    plugin codec decodes anything in the call, and an excluded package decodes nothing.
+
     :func:`~archivey.open_archive` and :func:`~archivey.open_stream` refuse a format
     the policy does not allow with :class:`~archivey.UnsupportedFeatureError`,
     whose message names every entry to change; ``format=`` does not bypass the policy.
     :func:`~archivey.detect_format` reports the true format of a built-in file whatever
     the policy says, so a caller can check :meth:`allows` before opening. A plugin
-    format the policy turns off is not detected at all: its magic, extensions and
+    format or codec the policy turns off is not detected at all: its magic, extensions and
     content probe are left out of that call, and the detection receipt records each
     tier that left one out as ``NOT_ENABLED_BY_POLICY``.
 
@@ -225,24 +244,48 @@ class FormatPolicy:
         MY_ZIP = ArchiveyConfig(formats=FormatPolicy(replace={C.ZIP: MyZipPlugin}))
     """
 
-    only: frozenset[ContainerFormat | PluginContainer | StreamFormat] | None
-    """The containers and compressions that may open, or ``None`` for all of them."""
+    only: (
+        frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
+        | None
+    )
+    """The containers and compressions of the file the call may open, or ``None`` for
+    all of them.
 
-    exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat]
-    """The containers and compressions that may not open."""
+    Only the file the call opens is checked. A member's compression is not: under
+    ``only={C.ZIP}`` an xz-compressed ZIP member still decodes."""
+
+    exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
+    """The containers and compressions of the file the call may not open.
+
+    Only the file the call opens is checked. ``exclude={S.XZ}`` refuses a ``.xz`` or
+    ``.tar.xz`` file, but an xz-compressed ZIP member, or a plugin's xz payload, still
+    decodes. To turn off the code that decodes, use ``plugins`` or
+    ``exclude_libraries``, which hold for every member."""
 
     plugins: bool
-    """Whether registered plugin formats may open. Use ``False`` with ``exclude``;
-    under ``only`` a plugin opens only when its container is listed."""
+    """Whether registered plugin formats and plugin codecs may run in this call. Use
+    ``False`` with ``exclude``; under ``only``, a file in a plugin format opens only
+    when its container (or its :class:`~archivey.PluginStream`, for a codec) is listed.
+
+    ``False`` turns a plugin codec off everywhere in the call: as the compression of
+    the file opened, and inside an archive, when a reader (a ``replace=`` plugin, for
+    example) asks ``ReaderContext.decompress`` for it. Each refusal raises
+    :class:`~archivey.UnsupportedFeatureError` that names this setting, before the
+    codec's code runs. A ``replace=`` reader is not a plugin format, so it still opens.
+
+    Stable, unlike the experimental plugin interface it refuses: ``plugins=False``
+    keeps working whatever happens to that interface."""
 
     replace: Mapping[ContainerFormat, type[FormatHandler]]
     """Built-in containers read by a plugin instead of the built-in reader.
 
-    A key is ``ContainerFormat.ZIP``, ``SEVEN_Z``, ``RAR`` or ``ISO``. Its plugin is a
-    ``archivey.formats.FormatHandler`` that is not registered: its ``format`` is
-    the built-in one (``ArchiveFormat.ZIP``), and it declares no ``extensions``,
-    ``magic`` or ``probe``, because the file is found by the built-in detection. The
-    reader's ``format`` is the built-in format and ``format_info.from_plugin`` is
+    Experimental, with ``archivey.formats``: any release may change it.
+
+    A key is ``ContainerFormat.ZIP``, ``SEVEN_Z``, ``RAR``, ``ISO`` or ``SQUASHFS``.
+    Its plugin is a ``archivey.formats.FormatHandler`` that is not registered: its
+    ``format`` is the built-in one (``ArchiveFormat.ZIP``), and it declares no
+    ``extensions``, ``magic`` or ``probe``, because the file is found by the built-in
+    detection. The reader's ``format`` is the built-in format and ``format_info.from_plugin`` is
     false. The plugin gets what any indexed plugin gets, a seekable source from the
     start of the archive, so a multi-volume set and an archive behind a
     self-extracting stub are refused with :class:`~archivey.UnsupportedFeatureError`,
@@ -256,14 +299,15 @@ class FormatPolicy:
 
     Each entry is an :class:`~archivey.OptionalLibrary` member or its value, such as
     ``"pyppmd"``; any other name is refused when the policy is built. An excluded
-    package decodes nothing in the call, and one that archivey imports on first use
-    (``brotli``, ``pyppmd``, ``inflate64``, ``rapidgzip``) is not imported for it. What
-    happens is what happens when the package is missing: an accelerator under ``AUTO``
-    falls back to the standard library, a member that needs it raises
-    :class:`~archivey.PackageNotInstalledError` when opened, and a format that needs
-    it refuses at open. The error's ``missing`` names the package with this setting as
-    its ``reason``. :func:`~archivey.format_availability` answers for it when passed
-    the config. Other calls in the process, on any thread, are unaffected.
+    package decodes nothing in the call, inside an archive as for a whole file, and
+    one that archivey imports on first use (``brotli``, ``pyppmd``, ``inflate64``,
+    ``rapidgzip``) is not imported for it. What happens is what happens when the
+    package is missing: an accelerator under ``AUTO`` falls back to the standard
+    library, a member that needs it raises :class:`~archivey.PackageNotInstalledError`
+    when opened, and a format that needs it refuses at open. The error's ``missing``
+    names the package with this setting as its ``reason``.
+    :func:`~archivey.format_availability` answers for it when passed the config. Other
+    calls in the process, on any thread, are unaffected.
 
     archivey uses one zstd module per process, ``compression.zstd`` where it imports
     and ``backports.zstd`` otherwise; excluding that module turns zstd off, and
@@ -276,8 +320,11 @@ class FormatPolicy:
     def __init__(
         self,
         *,
-        only: Iterable[ContainerFormat | PluginContainer | StreamFormat] | None = None,
-        exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat] = (),
+        only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
+        | None = None,
+        exclude: Iterable[
+            ContainerFormat | PluginContainer | StreamFormat | PluginStream
+        ] = (),
         plugins: bool = True,
         replace: Mapping[ContainerFormat, type[FormatHandler]] | None = None,
         exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = (),
@@ -288,8 +335,8 @@ class FormatPolicy:
         if StreamFormat.UNCOMPRESSED in exclude_parsed:
             raise _UsageValueError(
                 f"{_CALL} got StreamFormat.UNCOMPRESSED in exclude=, which would turn "
-                "off ZIP, TAR, 7z, RAR, ISO and directories alike. List the containers "
-                "to refuse instead."
+                "off every container (ZIP, TAR, 7z and the rest) and directories alike. "
+                "List the containers to refuse instead."
             )
         if only_parsed is not None:
             both = only_parsed & exclude_parsed
@@ -298,11 +345,13 @@ class FormatPolicy:
                 raise _UsageValueError(
                     f"{_CALL} got entries in both only= and exclude=: {names}."
                 )
-            listed_plugins = [e for e in only_parsed if isinstance(e, PluginContainer)]
+            listed_plugins = [
+                e for e in only_parsed if isinstance(e, (PluginContainer, PluginStream))
+            ]
             if listed_plugins and not plugins:
                 names = ", ".join(sorted(_entry_name(e) for e in listed_plugins))
                 raise _UsageValueError(
-                    f"{_CALL} lists the plugin containers {names} in only= but sets "
+                    f"{_CALL} lists the plugin formats {names} in only= but sets "
                     "plugins=False. Drop one of the two."
                 )
         replace_parsed = _coerce_replacements({} if replace is None else replace)
@@ -348,6 +397,22 @@ class FormatPolicy:
             f"{', and '.join(reasons)}."
         )
 
+    def _codec_refusal(self, codec: StreamFormat | PluginStream) -> str | None:
+        """The refusal text for ``codec`` decoding inside an open (a member's data, or
+        the rest of an archive a reader hands on), or ``None``.
+
+        Only ``plugins`` and ``exclude_libraries`` reach that far; ``only`` and
+        ``exclude`` choose the file opened, so they are not asked. An excluded package
+        is refused by the codec layer, which reads it as missing.
+        """
+        if isinstance(codec, PluginStream) and not self.plugins:
+            return (
+                f"ArchiveyConfig.formats does not allow the plugin codec "
+                f"{_entry_name(codec)}: plugins=False turns off every plugin codec, "
+                "inside an archive as for a whole file"
+            )
+        return None
+
     def _reasons(self, fmt: ArchiveFormat) -> list[str]:
         """Why ``fmt`` is refused, one reason per setting to change, so a format that
         fails on both halves names both in one refusal."""
@@ -361,7 +426,9 @@ class FormatPolicy:
         elif self.only is not None and container not in self.only:
             unlisted.append(container)
         stream = fmt.stream
-        if stream is not StreamFormat.UNCOMPRESSED:
+        if isinstance(stream, PluginStream) and not self.plugins:
+            reasons.append("plugins=False turns off every plugin codec")
+        elif stream is not StreamFormat.UNCOMPRESSED:
             if stream in self.exclude:
                 reasons.append(f"exclude= lists {_entry_name(stream)}")
             elif self.only is not None and stream not in self.only:

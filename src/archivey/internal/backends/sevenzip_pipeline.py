@@ -76,6 +76,7 @@ from archivey.internal.config import (
     check_decoder_memory,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import (
     LZMA_DICTIONARY_FILTERS,
     Codec,
@@ -86,7 +87,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
 from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, natives_for
+from archivey.internal.streams.codecs.isolated import IN_PROCESS
 from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
 from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.internal.streams.codecs.zstd_framing import (
@@ -728,6 +729,7 @@ class _DecodedPastSizeCheck(DelegatingStream):
         self._position = 0
         self._checked = False
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         if n == 0:
             return b""
@@ -735,6 +737,7 @@ class _DecodedPastSizeCheck(DelegatingStream):
         self._count(len(data))
         return data
 
+    @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         n = try_readinto(self._inner, b)
         if n is None:
@@ -765,6 +768,7 @@ class _DecodedPastSizeCheck(DelegatingStream):
             f"{self._size} bytes"
         )
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._position = self._inner.seek(offset, whence)
         self._checked = False
@@ -865,7 +869,7 @@ def _execute_stage(
         unpack_size=stage.unpack_size,
         seekable=seekable,
         owns_inner=owns_input,
-        natives=natives_for(stream_config.process_isolation),
+        natives=stream_config.natives,
     )
 
 

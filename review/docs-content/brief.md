@@ -152,7 +152,7 @@ Denominators, not targets.
 | Content observations recorded, not acted on | 26 | [`../archive/2026-10-06-docs/observations.md`](../archive/2026-10-06-docs/observations.md) O-1…O-26 (many now closed — §Provenance) |
 | Maintainer registers left stale by the IA move | 2 | `dev-docs/known-issues.md` (709 lines, untriaged), `dev-docs/open-issues.md` (310; moved out of the repo 2026-10-09) |
 
-Baseline is green at commission: `uv run --group docs python scripts/check_docs_nav.py`
+Baseline is green at commission: `uv run --group docs python scripts/checks/check_docs_nav.py`
 reports *15 pages, all in nav; repo, site and anchor links all resolve*.
 
 ## The passes, ranked
@@ -296,7 +296,7 @@ sessions and workers, and which splits are unsafe.
    model, or a docstring. Commit it as `scope.md`.
    Doing this after the claim table would verify claims on blocks that are about to move;
    doing it after the writing would cut prose just written.
-2. **Baseline.** `scripts/check.sh` plus `uv run --group docs python scripts/check_docs_nav.py`,
+2. **Baseline.** `scripts/check.sh` plus `uv run --group docs python scripts/checks/check_docs_nav.py`,
    recorded. **Check the environment before trusting green:** missing `unrar` / `7z`
    makes ~109 tests skip quietly (`CLAUDE.md`); run `scripts/setup-dev-env.sh` and read
    its closing verification block. Record `format_availability()` output — a page claiming

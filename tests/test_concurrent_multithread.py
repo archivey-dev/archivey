@@ -767,7 +767,7 @@ def test_callbacks_run_on_the_calling_thread(tmp_path: Path) -> None:
     needs them (reading.md §"Several members at once"), not on a thread of archivey's."""
     path = tmp_path / "names.zip"
     with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("./a.txt", b"payload")  # normalized to "a.txt": one diagnostic
+        zf.writestr(".//a.txt", b"payload")  # normalized to "a.txt": one diagnostic
     seen: dict[str, set[int]] = {
         "diagnostic": set(),
         "filter": set(),
@@ -807,7 +807,7 @@ def test_shared_listing_runs_its_callbacks_on_the_building_thread(
     count = 200
     with zipfile.ZipFile(path, "w") as zf:
         for i in range(count):
-            zf.writestr(f"./m{i}.txt", b"x")  # each name normalized: one diagnostic
+            zf.writestr(f".//m{i}.txt", b"x")  # each name normalized: one diagnostic
     callers: list[int] = []
     callers_lock = threading.Lock()
 

@@ -87,8 +87,8 @@ extended time. A patch changes only:
   the sum of the parts (below);
 - the header size and header CRC that follow from those.
 
-**Measured facts that fixed the layout** (`unrar` 7.00, `scripts/exploration/
-rar_synthetic_probe.py`):
+**Measured facts that fixed the layout** (`unrar` 7.00,
+`scripts/investigations/exploration/rar_synthetic_probe.py`):
 
 - **ENDARC is required.** Without it, `unrar` exits 10 and prints nothing.
 - **`-ver` is required.** A RAR5 FILE header with a version record (a history row of
@@ -188,8 +188,8 @@ written. On a path source, D1 decides what happens instead.
 ## Measurements
 
 All with RARLAB `unrar` 7.00 on Linux x86-64. Archives written with `rar` 7.00 (RAR5)
-and the pinned `rar` 6.23 that `scripts/gen_rar_fixtures.py` fetches (RAR4, `-ma4`).
-Script: `scripts/exploration/rar_synthetic_probe.py`.
+and the pinned `rar` 6.23 that `scripts/fixtures/gen_rar_fixtures.py` fetches (RAR4, `-ma4`).
+Script: `scripts/investigations/exploration/rar_synthetic_probe.py`.
 
 ### Does `unrar` accept it?
 

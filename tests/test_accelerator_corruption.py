@@ -38,6 +38,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
     _StdlibOnAcceleratorError,
 )
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
+from tests.conftest import assert_raised_again
 from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
@@ -127,7 +128,8 @@ def test_rapidgzip_catch_all_translates_the_same_for_deflate_and_bzip2(
     # The test builds an unmarked RuntimeError by hand because the child cannot produce
     # one: a RuntimeError it reports is marked, and the reported_by_child arm gives it
     # the same verdict. Unmarked, only the catch-all arm can map it.
-    from archivey.internal.streams.codecs import Bzip2Codec, GzipCodec
+    from archivey.internal.streams.codecs import GzipCodec
+    from archivey.internal.streams.codecs.bzip2_codec import Bzip2Codec
 
     exc = RuntimeError(message)
     assert is_corruption_not_truncation(GzipCodec()._translate_accelerator(exc))
@@ -731,7 +733,7 @@ def test_gzip_backstop_keeps_raising_after_its_own_truncation(read_all: bool) ->
         _drain(stream, read_all, got)
     with pytest.raises(TruncatedError) as again:
         stream.read(4096)
-    assert again.value is first.value
+    assert_raised_again(again.value, first.value)
     assert stream.seek(0) == 0
     reread = bytearray()
     with pytest.raises(TruncatedError) as second:
@@ -890,8 +892,10 @@ def test_bzip2_accelerator_reads_stream_gaps_as_the_standard_library_does(
 
 def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> None:
     # A seek into the stream after the skipped one lands where the decoder's output
-    # already went on past the damage; the seek raises, as with the accelerator off,
-    # instead of handing out a position past it.
+    # already went on past the damage; the read after it raises, as with the
+    # accelerator off, instead of handing out bytes from past it. (A decoder seek
+    # decodes nothing until that read; ``SEEK_END`` finds the size, so it raises at
+    # the seek.)
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     data = _BZ2_LAYOUT_CASES["stream-without-markers-between"]
     # 1500 lands inside the stream after the damage; 2000 is the end of the output the
@@ -902,6 +906,7 @@ def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> N
             pytest.raises(CorruptionError),
         ):
             s.seek(target, whence)
+            s.read(1)
 
 
 @pytest.mark.parametrize(
@@ -1060,13 +1065,21 @@ def test_bzip2_read_as_empty_fallback_keeps_the_single_stream_rule(
     # The standard library that an empty first accelerator read hands over to decodes
     # as the accelerator-off path does: after a container coder's single stream (7z),
     # a second stream is trailing data, not content.
-    from archivey.internal.streams.codecs.bzip2_codec import _Bzip2EmptyStreamCheck
+    from archivey.internal.streams.codecs.base import CodecParams
+    from archivey.internal.streams.codecs.bzip2_codec import (
+        Bzip2Codec,
+        _Bzip2EmptyStreamCheck,
+    )
 
     data = bz2.compress(b"first") + bz2.compress(b"second")
+    params = CodecParams(single_stream=single_stream)
     stream = _Bzip2EmptyStreamCheck(
         io.BytesIO(b""),  # an accelerator that read the stream as empty
         views=_SourceViews(lambda: io.BytesIO(data)),
         config=DEFAULT_STREAM_CONFIG,
         single_stream=single_stream,
+        open_stdlib=lambda source: Bzip2Codec().open_framed(
+            source, params, DEFAULT_STREAM_CONFIG
+        ),
     )
     assert stream.read() == (b"first" if single_stream else b"firstsecond")

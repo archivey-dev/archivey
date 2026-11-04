@@ -89,7 +89,9 @@ Some code needs to seek inside a member: a library that reads a ZIP stored insid
 Parquet reader, an image decoder. By default a member stream only moves forward, and `seek` raises.
 With `seekable_members=True`, streams from `open` can seek, and an archive stored inside another one
 opens from such a stream like from a file. Moving backwards in compressed data can
-mean decompressing the member again from its start. If you install the `seekable` extra, archivey
+mean decompressing the member again from its start. Without the accelerator below, that work waits
+for the next read: a seek that no read follows costs nothing, and damage in the bytes a seek skips
+raises from the read after it, not from the seek. If you install the `seekable` extra, archivey
 reads bzip2 data, and large DEFLATE data, through an
 [accelerator](security.md#where-the-guarantees-stop) that marks places it can restart from as it
 reads, and every seek resumes from the nearest marked place before its target. DEFLATE is the
@@ -169,7 +171,7 @@ with archivey.open_archive("data.zip", config=config) as archive:
 ```
 
 The standard library then decodes everything. A backward seek in gzip or bzip2 data decompresses
-again from the start of the member, and a large gzip file reads on one core.
+again from the start of the member, and a large gzip file is read on one core.
 
 ## Why these aren't on by default
 

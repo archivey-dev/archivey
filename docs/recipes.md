@@ -232,7 +232,7 @@ Each setting in `CONFIG` does one job:
   may use on your server.
 - `ProcessIsolation.NATIVE_DECODERS` runs every native decoder, such as zlib, bz2 and lzma, in a
   child process, so a crash in one raises `CorruptionError` for that member instead of ending your
-  server. AES decryption and checksums still run in your process. A large stream reads about
+  server. AES decryption and checksums still run in your process. Reading a large stream is about
   1.05 to 6 times slower depending on the compression, and each member with its own decoder adds
   about 1 ms (2 ms for PPMd), which is most of the cost for an archive of many small members
   ([Decoders in a child process](security.md#decoders-in-a-child-process)).
@@ -483,9 +483,9 @@ print(contains_archive("upload.zip"))
 ```
 
 The member is copied to a temporary file because its first bytes aren't always enough. An ISO keeps
-its signature 32 KiB into the file, and a self-extracting archive starts with a program, so the
-archive may start far into the member. A check of the first few KiB alone is only a fast first
-filter, and a member it lets through still needs the full check.
+its signature 32 KiB into the file, and a ZIP, 7z or RAR can sit behind a program or any other
+leading bytes, so the archive may start far into the member. A check of the first few KiB alone
+is only a fast first filter, and a member it lets through still needs the full check.
 
 zlib, Brotli and `.lzma` data start with nothing that identifies them, and the copy has no file name
 to go by. Without `always_probe_content=True`, `detect_format` misses them, though `open_archive`
@@ -493,8 +493,10 @@ reads the same bytes saved under a name ending in `.zz`, `.br` or `.lzma`. With 
 file that only happens to decode as one of them also counts as an archive, which errs on the side
 of refusing.
 
-Even so, the check finds only what archivey recognizes. Other tools can find more: `unzip` and
-7-Zip also find a ZIP behind arbitrary leading bytes, which archivey doesn't.
+Even so, the check finds only what archivey recognizes. A ZIP, 7z or RAR behind leading bytes is
+found only within the first 2 MiB (from a pipe read directly, only within the bytes detection has
+already read; this recipe copies the member to a file first); `unzip` finds a ZIP from its end,
+however far in it starts.
 
 A compressed file such as `notes.txt.gz` or `data.zz` counts as an archive here, since it can expand
 as much as one. So do Office documents, JAR files and wheels, which are ZIP archives.

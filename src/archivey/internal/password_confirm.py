@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import BinaryIO, TypeVar
 
+from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.codecs import Codec
 from archivey.internal.streams.resume import ask_resume_offset
@@ -418,6 +419,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         if self._watch_pos >= self._watch_size and not self._digest_lost():
             self._reached = True
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         start = self._watch_pos
         try:
@@ -447,6 +449,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             self._reached = True
         return data
 
+    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         try:
             position = super().seek(offset, whence)
@@ -489,6 +492,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             return
         self._note_moved(position)
 
+    @override
     def close(self) -> None:
         if self.closed:
             return

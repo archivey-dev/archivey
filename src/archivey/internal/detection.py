@@ -38,18 +38,26 @@ today OLE compound files), and the error then names that evidence. A non-archive
 also stops the SFX scan.
 
 The steps run strongest-signal-first: near magic → SFX scan → **far magic** → trailer
-magic → self-checking header → content probes → extension. The signals ahead of the
-probes are there for the same reason — a probe is the weakest evidence archivey has, and
-one asked to judge arbitrary bytes will sometimes say yes:
+magic → a plugin's near magic → self-checking header → content probes → leading-bytes
+scan → extension. A plugin's magic waits for every built-in signature, so registering a
+plugin never changes the answer for a file a built-in format reads. The cost is that a
+plugin format is decided only after the far window (about 32 KiB, which the receipt's
+``far_bytes`` reports) and the trailer are read, where a built-in near magic stops at the
+4 KiB window. The
+signals ahead of the probes are there for the same reason — a probe is the weakest
+evidence archivey has, and one asked to judge arbitrary bytes will sometimes say yes:
 
 - A **self-extracting** archive has no archive magic at offset 0 at all: a prefix
   (executable stub or ``#!`` launcher) comes first. When the leading bytes look
   prefix-shaped the detector searches forward for the backends' ``SFX_MAGIC`` within
   the shared ``SFX_MAX`` window and reports the payload start as ``payload_offset``
   (``PROBABLE`` / ``sfx_scan``). The cue is a cost gate — avoid reading 2 MiB from
-  every file — not a false-positive defence; a format-owned validator rejects a
-  decoy. See ``executable_cue`` and ``format-detection``'s "Executable-looking
-  prefixes must not silently become a wrong stream format".
+  every file before the cheaper steps — not a false-positive defence; a format-owned
+  validator rejects a decoy. With no cue the same scan runs last, as the
+  **leading-bytes scan**, so only a source every other step declined pays for it: an
+  archive behind an image, zeros or text, as 7-Zip, unrar and unzip find one. See
+  ``executable_cue`` and ``format-detection``'s "Executable-looking prefixes must not
+  silently become a wrong stream format".
 - **Far magic** is exact magic whose end offset lies outside the default window (today
   ISO 9660's ``CD001`` at 32 769), so it needs an extended peek taken on demand. It runs
   before the probes because a bootable or hybrid ISO reserves its first 32 KiB for
@@ -117,6 +125,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.logs import detection as logger
+from archivey.internal.overrides import override
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.sfx import (
     MAX_VALIDATED_CANDIDATES,
@@ -146,6 +155,7 @@ from archivey.types import (
     ContainerFormat,
     MagicSignature,
     PluginContainer,
+    PluginStream,
     StreamFormat,
     TrailerSignature,
 )
@@ -247,15 +257,19 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         # bound (not the end of the source) cut the read short.
         self.hit_limit = False
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def seekable(self) -> bool:
         return True
 
+    @override
     def tell(self, /) -> int:
         return self._offset
 
+    @override
     def seek(self, offset: int, whence: int = 0, /) -> int:
         if whence == 0:  # SEEK_SET
             new_pos = offset
@@ -271,6 +285,7 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         self._offset = min(new_pos, self._limit)
         return self._offset
 
+    @override
     def read(self, n: int = -1, /) -> bytes:
         past_limit = n < 0 or self._offset + n > self._limit
         end = self._limit if n < 0 else min(self._offset + n, self._limit)
@@ -319,6 +334,33 @@ def _match_trailer(
             if tail.startswith(entry.magic):
                 return entry.format
     return None
+
+
+def _is_plugin_format(fmt: ArchiveFormat) -> bool:
+    """Whether a plugin reads or decodes ``fmt``: its container or its stream is one."""
+    return isinstance(fmt.container, PluginContainer) or isinstance(
+        fmt.stream, PluginStream
+    )
+
+
+def _plugin_name(fmt: ArchiveFormat) -> str:
+    """The plugin half of ``fmt``: its container, else its stream (``TOYS`` for
+    ``TOYS_GZIP``, ``TOY`` for ``TAR_TOY``)."""
+    if isinstance(fmt.container, PluginContainer):
+        return fmt.container.name
+    return fmt.stream.name
+
+
+def _plugin_off(formats: FormatPolicy | None, fmt: ArchiveFormat) -> bool:
+    """Whether ``fmt`` is a plugin format ``formats`` turns off. Built-in formats are
+    detected under every policy and refused after detection, so this is never true
+    for one."""
+    return (
+        formats is not None
+        and formats._turns_off_plugins
+        and _is_plugin_format(fmt)
+        and not formats.allows(fmt)
+    )
 
 
 def _match_magic(
@@ -388,11 +430,14 @@ def _match_extension(
 
 
 def _probe_inner_container(
-    stream_format: StreamFormat,
+    stream_format: StreamFormat | PluginStream,
     peek_more: CandidateView,
     workspace: PrefixWorkspace | None = None,
     *,
     view_arrived: bool = False,
+    named: ArchiveFormat | None = None,
+    always_probe: bool = False,
+    formats: FormatPolicy | None = None,
 ) -> ArchiveFormat | None:
     """The container decompressing the source yields, as its uncompressed format, or
     ``None``.
@@ -402,12 +447,15 @@ def _probe_inner_container(
     TAR's ``ustar`` at offset 257 first, then the magic of each registered sequential
     plugin, which registration keeps within those 512 bytes. A v7 tar has no magic, so
     when none matches, a first TAR header that checks itself
-    (``ReadBackend.HEADER_CHECKS``) still finds it. So a tarball, or a plugin's
-    sequential archive, wrapped in the compressor is found the same way, and a plugin
-    cannot make the probe decode more. The decoder reads from a bounded, non-consuming
-    view of the source (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls
-    exactly as much compressed input as it needs to decode those 512 bytes and no
-    more.
+    (``ReadBackend.HEADER_CHECKS``) still finds it. A container with no reliable magic
+    (binary CPIO) is found by its content probe on those bytes, run only when ``named``,
+    the uncompressed format the extension names inside the compressor (``.cpio.gz``), is
+    that container, or when ``always_probe`` is set: the same rule :func:`_probe_named`
+    keeps for an uncompressed source. So a tarball, or a plugin's sequential archive,
+    wrapped in the compressor is found the same way, and a plugin cannot make the probe
+    decode more. The decoder reads from a bounded, non-consuming view of the source
+    (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls exactly as much
+    compressed input as it needs to decode those 512 bytes and no more.
 
     Accelerators are forced ``OFF`` on both paths: a declared seek demand must not flip
     AUTO rapidgzip / IndexedBzip2File on for a short detection peek. Decoder limits are
@@ -435,9 +483,20 @@ def _probe_inner_container(
     ``MemoryError``), records ``inner_tar`` as ``CAPABILITY_UNAVAILABLE``: the answer is
     "can't tell", not "none". The tier keeps its name, ``inner_tar``, which the detection
     receipt reports.
-    Only one reason is recorded, in this order: a budget that turns the tier off
-    (``NOT_ENABLED_BY_POLICY``), an absent backend (``CAPABILITY_UNAVAILABLE``), a budget
-    that cannot cover the probe (``BUDGET_EXHAUSTED``).
+    Of the reasons the probe could not answer, only one is recorded, in this order: a
+    budget that turns the tier off (``NOT_ENABLED_BY_POLICY``), an absent backend
+    (``CAPABILITY_UNAVAILABLE``), a budget that cannot cover the probe
+    (``BUDGET_EXHAUSTED``).
+
+    ``formats`` leaves out what it leaves out of an uncompressed source: a plugin
+    format it turns off, judged as the pair ``(container, stream_format)``, and a probe
+    whose backend needs a package ``exclude_libraries`` lists. The off plugin's code
+    does not run and its magic cannot claim the decoded bytes. When the probe runs
+    with an off plugin left out, ``inner_tar`` is also recorded as
+    ``NOT_ENABLED_BY_POLICY``, as the uncompressed tiers record theirs; a probe left
+    out for an excluded package is not, as there. That record is separate from the one
+    reason above and can sit next to it: the policy left the plugin out, and the
+    budget or the backend also cut the probe short.
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
     from archivey.internal.config import (
@@ -449,6 +508,7 @@ def _probe_inner_container(
         codec_for_stream_format,
         is_codec_available,
         open_codec_stream,
+        single_file_codec,
     )
 
     try:
@@ -500,6 +560,34 @@ def _probe_inner_container(
     # end of the source and wait on a held-open pipe, so this path also relies on
     # every codec reading sized chunks.
     codec_input: BinaryIO = OneReadEachStream(source) if view_arrived else source
+    registry = get_registry()
+
+    def kept(container: ContainerFormat | PluginContainer) -> bool:
+        return not _plugin_off(formats, ArchiveFormat(container, stream_format))
+
+    inner_magic = registry.inner_magic_entries()
+    header_checks = registry.header_checks()
+    # A container's probes only: a codec's probe names no container to find here.
+    probes = [
+        (f, p)
+        for f, p in registry.content_probes()
+        if f.container is not ContainerFormat.RAW_STREAM
+    ]
+    kept_magic = [sig for sig in inner_magic if kept(sig.format.container)]
+    kept_checks = [(f, c) for f, c in header_checks if kept(f.container)]
+    kept_probes = [(f, p) for f, p in probes if kept(f.container)]
+    if workspace is not None and (
+        len(kept_magic) < len(inner_magic)
+        or len(kept_checks) < len(header_checks)
+        or len(kept_probes) < len(probes)
+    ):
+        workspace.record_skip("inner_tar", TierSkipReason.NOT_ENABLED_BY_POLICY)
+    # Not recorded, as on an uncompressed source: an excluded package reads as absent.
+    kept_probes = [
+        (f, p)
+        for f, p in kept_probes
+        if not registry.needs_excluded_package(f, excluded)
+    ]
     head = b""
     unavailable = False
     try:
@@ -531,21 +619,53 @@ def _probe_inner_container(
         # Not decodable as this codec, or truncated before a full block: no inner
         # container.
         pass
-    found = next(
-        (
-            sig.format
-            for sig in get_registry().inner_magic_entries()
-            if head[sig.offset : sig.offset + len(sig.magic)] == sig.magic
-        ),
-        None,
-    ) or next(
-        # A first header that checks itself: a v7 tar has no magic.
-        (
-            fmt
-            for fmt, check in get_registry().header_checks()
-            if fmt.container is ContainerFormat.TAR and check(head)
-        ),
-        None,
+    except Exception:
+        # A plugin decoder that raises what its translate_exception does not map is no
+        # inner container, as a plugin probe that raises is no match
+        # (``format_adapter.prefix_probe``): one plugin must not change how input
+        # fails to be detected. A built-in codec's unknown error is archivey's bug
+        # and propagates. A read of the stream still raises it.
+        from archivey.internal.codec_adapter import PluginCodec
+
+        plugin_codec = single_file_codec(stream_format)
+        if not isinstance(plugin_codec, PluginCodec):
+            raise
+        logger.log(
+            plugin_codec.detection_error_level(),
+            "plugin codec %s raised while detection decoded its start; taken as no "
+            "inner container",
+            stream_format.name,
+            exc_info=True,
+        )
+    found = (
+        next(
+            (
+                sig.format
+                for sig in kept_magic
+                if head[sig.offset : sig.offset + len(sig.magic)] == sig.magic
+            ),
+            None,
+        )
+        or next(
+            # A first header that checks itself: a v7 tar has no magic.
+            (
+                fmt
+                for fmt, check in kept_checks
+                if fmt.container is ContainerFormat.TAR and check(head)
+            ),
+            None,
+        )
+        or next(
+            # A container with no reliable magic, found by its own probe where the name
+            # says it is that container (the rule and its scope are on _probe_named).
+            # Prefix only: the decoded head is all there is.
+            (
+                fmt
+                for fmt, probe in kept_probes
+                if (always_probe or fmt == named) and head and probe(head)
+            ),
+            None,
+        )
     )
     if workspace is not None:
         # Charged on every path: a decode that ran and then failed did the work too.
@@ -657,7 +777,7 @@ _ALSO_NAMES_STREAM: dict[str, StreamFormat] = {".tlz": StreamFormat.LZMA_ALONE}
 
 def _streams_named_by(
     ext_match: tuple[ArchiveFormat, str] | None,
-) -> frozenset[StreamFormat]:
+) -> frozenset[StreamFormat | PluginStream]:
     """The stream formats whose content probe the source's extension allows."""
     if ext_match is None:
         return frozenset()
@@ -671,11 +791,14 @@ def _probe_named(
 ) -> bool:
     """Whether the source's extension allows ``fmt``'s content probe to run.
 
-    A built-in probe is keyed by its stream, so ``.tlz`` can name two. Every plugin
-    format shares the ``UNCOMPRESSED`` stream with ZIP, TAR and the rest, so its probe
-    runs only when the extension names that format itself.
+    A single-file codec's probe is keyed by its stream, so ``.tlz`` can name two. A
+    container's probe (binary CPIO, or a plugin's) shares the ``UNCOMPRESSED`` stream
+    with ZIP, TAR and the rest, so it runs only when the extension names that format
+    itself. Only a format with no reliable magic declares a container probe (today
+    binary CPIO and any plugin); ZIP, TAR, 7z, RAR and ISO declare exact magic and no
+    probe, so a built-in container that adds one later takes this rule on purpose.
     """
-    if isinstance(fmt.container, PluginContainer):
+    if fmt.container is not ContainerFormat.RAW_STREAM:
         return ext_match is not None and ext_match[0] == fmt
     return fmt.stream in _streams_named_by(ext_match)
 
@@ -707,6 +830,8 @@ def _resolve_single_file_or_tar(
     ext_match: tuple[ArchiveFormat, str] | None = None,
     workspace: PrefixWorkspace | None = None,
     view_arrived: bool = False,
+    always_probe: bool = False,
+    formats: FormatPolicy | None = None,
 ) -> FormatInfo:
     """Upgrade a single-file-compressor match to its container combo when the payload
     is a tarball or a sequential plugin's archive.
@@ -721,9 +846,18 @@ def _resolve_single_file_or_tar(
     non-consuming view of the source to decode from; ``view_arrived`` says it is a
     view that returns what has arrived (:class:`_BoundedPeekReader`).
     """
+    named = None
+    if ext_match is not None and ext_match[0].stream is fmt.stream:
+        named = ArchiveFormat(ext_match[0].container, StreamFormat.UNCOMPRESSED)
     inner = (
         _probe_inner_container(
-            fmt.stream, peek_more, workspace, view_arrived=view_arrived
+            fmt.stream,
+            peek_more,
+            workspace,
+            view_arrived=view_arrived,
+            named=named,
+            always_probe=always_probe,
+            formats=formats,
         )
         if fmt.container == ContainerFormat.RAW_STREAM
         and fmt.stream != StreamFormat.UNCOMPRESSED
@@ -752,7 +886,7 @@ def _is_deferred_inner_container(
     deferred case: the inner-container probe could not run (codec backend absent) or
     found no magic, so the bare compressor is reported and the inner determination is
     left to open time. That is not a real conflict, so it must not emit a warning. A
-    sequential plugin's ``foo.cpio.gz`` is the same case.
+    ``foo.cpio.gz``, or a sequential plugin's ``foo.lha.gz``, is the same case.
     """
     return (
         resolved.container == ContainerFormat.RAW_STREAM
@@ -835,6 +969,7 @@ def _scan_for_sfx_payload(
     validators: dict[ArchiveFormat, HitValidator],
     capped_formats: frozenset[ArchiveFormat],
     restrict_to_validated: bool,
+    cut_reason: TierSkipReason = TierSkipReason.BUDGET_EXHAUSTED,
 ) -> FormatInfo | None:
     """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
 
@@ -876,6 +1011,10 @@ def _scan_for_sfx_payload(
     ``validators``, so 7z/RAR join automatically when they register theirs. Do not
     key this off :attr:`ExecutableCue.WEAK` alone: an unconfirmed ``MZ`` / ELF stub
     is the live 7z/RAR SFX path and keeps the full needle set.
+
+    ``cut_reason`` is what a window shorter than ``SFX_MAX`` is recorded as: the budget
+    by default, ``CAPABILITY_UNAVAILABLE`` when the caller cut the window to the bytes a
+    forward-only source already holds.
     """
     # A zero ``max_scan_bytes`` turns the tier off, as a zero field does for the others.
     if _record_tier_limit(workspace, "sfx_scan", enabled=scan_limit > 0):
@@ -948,7 +1087,12 @@ def _scan_for_sfx_payload(
     clamped = workspace.take_clamped_view_read()
     # A capped scan skipped candidates it never judged, so it is cut short even when it
     # answers: a held short hit is only the fallback the skipped ones could have beaten.
-    if clamped or selector.capped or (result is None and cut_short):
+    # One reason per tier: a window cut to the bytes a stream has delivered names that
+    # cut, ahead of the candidate cap, since more budget would not help it (as the
+    # inner-TAR probe records an absent backend ahead of an exhausted budget).
+    if clamped or (result is None and cut_short):
+        workspace.record_skip("sfx_scan", cut_reason)
+    elif selector.capped:
         workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
     return result
 
@@ -1195,16 +1339,25 @@ def _detect_format_body(
     off_near = off_far = off_extension = off_probe = False
     off_formats: set[ArchiveFormat] = set()
     if formats._turns_off_plugins:
+        pair_bases = [base.container for base in registry.stream_pair_bases()]
 
-        def is_off(fmt: ArchiveFormat) -> bool:
-            if isinstance(fmt.container, PluginContainer) and not formats.allows(fmt):
+        def is_off(fmt: ArchiveFormat, *, signal: bool = False) -> bool:
+            # A plugin codec's magic or probe (a ``signal``) also finds each container
+            # read inside it, as gzip's finds a tarball: it stays while the policy
+            # allows the bare stream or one of those pairs, and the open refuses a bare
+            # stream the policy does not allow, as for a built-in codec. An extension
+            # names one pair, so it is judged as that pair.
+            candidates = [fmt]
+            if signal and fmt.container is ContainerFormat.RAW_STREAM:
+                candidates += [ArchiveFormat(c, fmt.stream) for c in pair_bases]
+            if all(_plugin_off(formats, c) for c in candidates):
                 off_formats.add(fmt)
                 return True
             return False
 
         kept_magic: list[MagicSignature] = []
         for e in magic_entries:
-            if not is_off(e.format):
+            if not is_off(e.format, signal=True):
                 kept_magic.append(e)
             elif e.offset + len(e.magic) <= DETECTION_LIMIT:
                 off_near = True
@@ -1216,7 +1369,7 @@ def _detect_format_body(
         }
         off_extension = len(kept_extensions) < len(extension_map)
         extension_map = kept_extensions
-        kept_probes = [(f, p) for f, p in probes if not is_off(f)]
+        kept_probes = [(f, p) for f, p in probes if not is_off(f, signal=True)]
         off_probe = len(kept_probes) < len(probes)
         probes = kept_probes
     excluded = formats.exclude_libraries
@@ -1261,10 +1414,17 @@ def _detect_format_body(
 
         # Magic signals split by where they live: "near" ones fit in the default window;
         # "far" ones (ISO's CD001 at 32 769) need an extended peek taken on demand.
-        near = [e for e in magic_entries if e.offset + len(e.magic) <= DETECTION_LIMIT]
+        all_near = [
+            e for e in magic_entries if e.offset + len(e.magic) <= DETECTION_LIMIT
+        ]
         far = [e for e in magic_entries if e.offset + len(e.magic) > DETECTION_LIMIT]
-        near_span = max((e.offset + len(e.magic) for e in near), default=0)
-        if near:
+        near_span = max((e.offset + len(e.magic) for e in all_near), default=0)
+        # A plugin's near magic counts only when no built-in signal matched, including
+        # the ones further in (the SFX scan, far magic, trailer magic): it is tried in
+        # its own tier after them (step 4a).
+        near = [e for e in all_near if not _is_plugin_format(e.format)]
+        plugin_near = [e for e in all_near if _is_plugin_format(e.format)]
+        if all_near:
             # A "near" magic past the budgeted prefix is unsearchable — record it rather
             # than silently incomplete-searching (DETECTION_LIMIT and max_prefix_bytes
             # are independent constants that happen both to be 4 096 today). A zero
@@ -1299,11 +1459,7 @@ def _detect_format_body(
         # short with the source not ended, and ``remaining_known()`` is ``None`` then.
         length = workspace.remaining_known()
 
-        # 1. Exact magic in the default window.
-        magic_fmt = _match_magic(data, near)
-        if magic_fmt is None:
-            magic_fmt = _match_magic_behind_prefix(data, registry.magic_prefix_walks())
-        if magic_fmt is not None:
+        def near_magic_hit(magic_fmt: ArchiveFormat) -> FormatInfo:
             # A bzip2 or xz header can be the first block of a UDIF image. The
             # trailer outranks that hit; the block codec is a member of the image.
             if any(magic_fmt in entry.preempts for entry in trailers):
@@ -1323,8 +1479,17 @@ def _detect_format_body(
                 ext_match=ext_match,
                 workspace=workspace,
                 view_arrived=arrived,
+                always_probe=always_probe,
+                formats=formats,
             )
             return conclude(info, _ConflictEvidence.MAGIC)
+
+        # 1. Exact built-in magic in the default window.
+        magic_fmt = _match_magic(data, near)
+        if magic_fmt is None:
+            magic_fmt = _match_magic_behind_prefix(data, registry.magic_prefix_walks())
+        if magic_fmt is not None:
+            return near_magic_hit(magic_fmt)
 
         # 2. Self-extracting archives. A known non-archive signature is not a stub.
         non_archive = _non_archive_signature(data)
@@ -1391,6 +1556,14 @@ def _detect_format_body(
                 FormatInfo(trailer_fmt, DetectionConfidence.CERTAIN, "magic"),
                 _ConflictEvidence.MAGIC,
             )
+
+        # 4a. A plugin's exact magic in the default window, now that no built-in
+        # signature matched (step 1 says why it waits). Before the header checks and
+        # the probes, which are weaker evidence than an exact magic. So a plugin format
+        # is decided only after the far window (about 32 KiB) and the trailer are read.
+        magic_fmt = _match_magic(data, plugin_near)
+        if magic_fmt is not None:
+            return near_magic_hit(magic_fmt)
 
         # 5. Self-checking headers: a format with no magic whose first block proves
         # itself (a v7 TAR header, by its checksum). Before the content probes, and not
@@ -1488,10 +1661,61 @@ def _detect_format_body(
                         peek_more,
                         ext_match=ext_match,
                         workspace=workspace,
+                        always_probe=always_probe,
+                        formats=formats,
                     )
                     return conclude(info, _ConflictEvidence.CONTENT_PROBE)
 
-        # 7. Extension-only guess.
+        # 7. An archive behind leading bytes that look like nothing: the SFX scan's
+        # window and validators without its executable cue, as 7-Zip, unrar and unzip
+        # find one. Last, so only a source every other step declined pays for the
+        # window. An executable cue already ran the scan. A known non-archive
+        # signature is not a prefix, and a name that names a format keeps its guess:
+        # the ZIP, 7z and RAR readers find a prefixed archive themselves, and the ZIP
+        # reader from the end, where the first local header the scan meets may belong
+        # to a later member (a ZIP missing its first bytes). An unnamed ZIP missing its
+        # first bytes is knowingly left to that: the scan opens it at a later member's
+        # header, and the reader's missing-bytes message counts from there.
+        leading_scan_window = 0
+        if cue is ExecutableCue.NONE and (
+            non_archive is not None or ext_fmt is not None
+        ):
+            workspace.record_skip("sfx_scan", TierSkipReason.NOT_ENABLED_BY_POLICY)
+        elif cue is ExecutableCue.NONE:
+            scan_limit = min(SFX_MAX, budget.max_scan_bytes)
+            allowance = validator_allowance(budget)
+            cut_reason = TierSkipReason.BUDGET_EXHAUSTED
+            held = workspace.buffered_length
+            if (
+                workspace.forward_only
+                and workspace.remaining_known() is None
+                and held < scan_limit + allowance
+            ):
+                # A forward-only source is scanned over the bytes detection already
+                # holds and never waits for more: an unrecognised stream whose writer
+                # keeps it open fails as fast as it did before this step.
+                scan_limit, allowance = held, 0
+                cut_reason = TierSkipReason.CAPABILITY_UNAVAILABLE
+            sfx_info = _scan_for_sfx_payload(
+                registry.sfx_magic_entries(),
+                peek_more,
+                workspace,
+                scan_limit=scan_limit,
+                peek_allowance=allowance,
+                validators=registry.sfx_hit_validators(),
+                capped_formats=registry.sfx_parser_scanned_formats(),
+                # With no cue, a bare needle is too weak: every needle needs its
+                # format's validator.
+                restrict_to_validated=True,
+                cut_reason=cut_reason,
+            )
+            if sfx_info is not None:
+                # No name, so no extension to conflict with: the evidence is unused.
+                return conclude(sfx_info, _ConflictEvidence.SFX_SCAN)
+            if cut_reason is TierSkipReason.BUDGET_EXHAUSTED:
+                leading_scan_window = scan_limit
+
+        # 8. Extension-only guess.
         if ext_fmt is not None:
             return _attach_receipt(
                 FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension"),
@@ -1527,10 +1751,16 @@ def _detect_format_body(
                 ".br), pass format=, use open_stream(), or set "
                 "ArchiveyConfig(always_probe_content=True)."
             )
+        if leading_scan_window:
+            message += (
+                f" No ZIP, 7z or RAR archive starts in the first {leading_scan_window} "
+                "bytes behind other data either; for one further in, pass format=."
+            )
         if off_formats:
             # Added to the advice above, not in its place: the file may be one of the
             # formats that advice reaches, and only the policy reaches an off plugin.
-            names = ", ".join(sorted(f.display_name for f in off_formats))
+            # Each plugin once, not each compressed pair it reads.
+            names = ", ".join(sorted({_plugin_name(f) for f in off_formats}))
             message += (
                 f" ArchiveyConfig.formats turns off the plugin formats {names}, so "
                 "they were not tried."
