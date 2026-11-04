@@ -396,7 +396,8 @@ data its pass keeps for link targets beside it.
   before the members are made stay within the limit, even where directories share one
   listing or symlink inodes overlap (`SquashfsReader._charge`,
   [formats/squashfs.md](formats/squashfs.md) §2.2). For valid UTF-8 names or a
-  one-byte `encoding=`, the charge is at most the members' weight; a multibyte `encoding=` that decodes to fewer characters
+  one-byte `encoding=`, the charge is at most the members' weight; a multibyte
+  `encoding=` that decodes to fewer characters
   than the stored bytes (UTF-16) can refuse a listing up to about twice early. The
   fixed cost per entry is bounded by `max_members` only (the residual below).
   The TAR walker keeps nothing behind the member list, so nothing else is
