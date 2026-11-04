@@ -418,7 +418,12 @@ stream has neither, which is why `AUTO` never gives one to `rapidgzip`.
 **The zlib Adler-32 check.** `rapidgzip` does not check a zlib stream's Adler-32: a damaged
 body or trailer decodes with no error, sometimes short. `_ZlibAdlerCheckStream` keeps an
 Adler-32 of the output from offset 0 up to a frontier and compares it with the source's last
-four bytes when the frontier reaches the end. A seek back stays behind the frontier, and a
+four bytes when the frontier reaches the end. Two shapes skip that comparison, because the
+Adler-32 of no output is 1: a stream `rapidgzip` ends before any output goes to the standard
+library first (a cut stream's last four bytes can read `00 00 00 01`), and a trailer match
+counts only when the source's first stream produces output (after empty streams, the
+Adler-32 of all the output is the last stream's); otherwise the standard library confirms.
+A seek back stays behind the frontier, and a
 seek forward past it reads the bytes in between, so the check survives the TAR reader, which
 skips member data by seeking. The child decodes those bytes to seek past them anyway; the
 read-through adds their transfer out of it. For a reader that only skips, that transfer is
@@ -710,6 +715,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Under `rapidgzip`: the gzip check survives seeks; a chance `1f 8b 08` does not silence it; a seek that fails on data is handed over; a second zlib stream is trailing data |
 | A raw DEFLATE source that looks like gzip, zlib or bzip2, a zlib source whose header `rapidgzip` does not take for zlib (none at all, or one with a preset dictionary), a raw DEFLATE stream cut before any output, and a declared-empty stream that does not decode give the bytes and error of `OFF` under `ON` |
 | A cut bare zlib stream under `ON` without a size raises |
+| Under `ON`, a zlib stream cut before any output whose last four bytes read `00 00 00 01` raises, and a zlib stream after empty ones is trailing data |
 | Close guard on shutdown; one accelerator library |
 
 **Building fixtures.** The standard library writes gzip and zlib (`gzip.compress`,
