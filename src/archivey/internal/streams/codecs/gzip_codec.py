@@ -215,7 +215,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
 
     1. On EOF with **zero** bytes delivered, the ``_StdlibOnAcceleratorError`` inside
        hands the read to the stdlib gzip-window :func:`GzipDecompressorStream`
-       (``empty_to_stdlib``, set by ``GzipCodec._empty_to_stdlib``), so truncation is
+       (``empty_to_stdlib``, which ``_DeflateFamilyCodec.open`` sets), so truncation is
        loud and any recoverable prefix is streamed (valid empty gzip still succeeds with
        zero bytes). This wrapper sees only that decoder's reads, and its checks stand
        down after the switch. A seek that meets the end of an empty output reads
@@ -908,9 +908,6 @@ class GzipCodec(_DeflateFamilyCodec):
     # gzip is only a standalone stream format, never a 7z or ZIP coder, so no container
     # declares a pack size to clip it to and no AES pad follows its data.
     _bounds_source = False
-    # rapidgzip ends some cut members before any output, with no error; the standard
-    # library gives the verdict there (``_GzipTruncationCheckStream``, item 1).
-    _empty_to_stdlib = True
 
     @override
     def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:
@@ -959,7 +956,7 @@ class GzipCodec(_DeflateFamilyCodec):
         # depending on that staying true.
         # Truncation backstop for **any** seekable source (path or caller-owned stream):
         # single-member ISIZE (the empty→stdlib fallback is the takeover's,
-        # ``_empty_to_stdlib``), with the multi-member scan on an
+        # ``empty_to_stdlib``), with the multi-member scan on an
         # independent view: the check stands down only for a further member zlib's gzip
         # decoder confirms and a last member's trailer that matches the end of the
         # output, and a scan that spends its budget hands the read to the standard
