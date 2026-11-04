@@ -63,6 +63,28 @@ def test_a_listing_that_reaches_the_checksum_raises_every_file(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
+def test_a_symlink_stays_unlocked_when_the_trailer_raises_the_files(
+    streaming: bool,
+) -> None:
+    """A link has no data of its own, so it stays at UNLOCKED after the gzip
+    trailer has raised every file to CHECKSUM."""
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tar:
+        link = tarfile.TarInfo("link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "a"
+        tar.addfile(link)
+        info = tarfile.TarInfo("a")
+        info.size = len(_FILES["a"])
+        tar.addfile(info, io.BytesIO(_FILES["a"]))
+    members = _listing(out.getvalue(), streaming=streaming)
+    assert _levels(members) == {
+        "link": (Verification.UNLOCKED, Verification.UNLOCKED),
+        "a": _CHECKED,
+    }
+
+
+@pytest.mark.parametrize("streaming", [False, True])
 def test_a_plain_tar_has_no_checksum_to_raise_with(streaming: bool) -> None:
     members = _listing(_tar("w"), streaming=streaming)
     assert _levels(members) == {"a": _UNREAD, "b": _UNREAD, "d/": _DIR}
