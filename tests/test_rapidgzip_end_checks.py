@@ -1199,6 +1199,23 @@ def test_a_zlib_stream_cut_before_any_output_is_not_taken_for_an_empty_one(
 
 
 @requires("rapidgzip")
+@pytest.mark.parametrize(
+    "steps", [_no_seek, _seek_to_the_end], ids=["read", "seek-end"]
+)
+@pytest.mark.parametrize("empties", [1, 2])
+def test_a_zlib_stream_after_empty_ones_is_not_content(
+    steps: Callable[[BinaryIO], None], empties: int
+) -> None:
+    """After empty zlib streams, the Adler-32 of all rapidgzip delivered is the last
+    stream's, so its trailer matches; the standard library still ends the read at the
+    end of the first stream."""
+    _require_the_accelerator_in_use()
+    blob = zlib.compress(b"") * empties + zlib.compress(b"hello")
+    off = _outcome(Codec.ZLIB, blob, _OFF, steps)
+    _assert_same(_outcome(Codec.ZLIB, blob, _ON, steps), off)
+
+
+@requires("rapidgzip")
 def test_a_second_zlib_stream_is_reported_as_trailing_data(tmp_path) -> None:
     path = tmp_path / "two.zz"
     path.write_bytes(_two_zlib_streams())

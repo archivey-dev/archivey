@@ -109,6 +109,13 @@ def _zlib_adler_trailer(source: CodecSource) -> int | None:
     return int.from_bytes(trailer, "big")
 
 
+# How much compressed data ``_ZlibAdlerCheckStream._first_stream_is_empty`` decodes
+# looking for the first stream's first output byte. A real stream produces one within
+# a few bytes; only a run of empty blocks reaches this, and then the full confirmation
+# decode runs instead.
+_EMPTY_STREAM_PROBE = 1 << 16
+
+
 class _ZlibStoppedShort(Exception):
     """rapidgzip's output of a zlib stream ended where the standard library's goes on:
     it has more output, or meets the end of the source inside the stream (a cut
@@ -292,7 +299,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         if self._checked or self._pos < self._sum.frontier:
             return b""
         self._checked = True
-        if self._trailer == self._sum.value:
+        if self._trailer == self._sum.value and not self._first_stream_is_empty():
             return b""
         try:
             self._confirm_with_stdlib()
@@ -307,6 +314,37 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             self._verdict = KeptError.of(exc)
             raise
         return b""
+
+    def _first_stream_is_empty(self) -> bool:
+        """Whether the source's first zlib stream may end with no output, so that a
+        trailer match proves nothing: the Adler-32 of no output is 1, so after an empty
+        first stream the Adler-32 of everything rapidgzip delivered is the last
+        stream's, and its trailer matches, where the standard library ends the read at
+        the end of the first stream.
+
+        Decodes from the start until the first output byte (``False``), the end of the
+        first stream with none (``True``), or ``_EMPTY_STREAM_PROBE`` compressed bytes
+        (``True``: :meth:`_confirm_with_stdlib` gives the answer then, at the cost of a
+        second decode). ``True`` too when the source cannot be read or zlib raises.
+        """
+        decoder = self._natives.zlib_decompressobj()
+        try:
+            with self._views.view() as f:
+                read = 0
+                while read < _EMPTY_STREAM_PROBE and not decoder.eof:
+                    chunk = f.read(min(1 << 12, _EMPTY_STREAM_PROBE - read))
+                    if not chunk:
+                        return True
+                    read += len(chunk)
+                    if decoder.decompress(chunk, 1):
+                        return False
+                    # A one-byte output bound leaves input unconsumed only when that
+                    # byte was produced, which returned above.
+                return True
+        except (OSError, zlib.error):
+            return True
+        finally:
+            release_decoder(decoder)
 
     def _hand_to_stdlib(self, size: int, at: int | None = None) -> bytes:
         self._takeover.switch_to_stdlib(at)
