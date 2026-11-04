@@ -726,17 +726,19 @@ class _GzipTruncationCheckStream(DelegatingStream):
         return False
 
     def _header_runs_past_the_end(self) -> bool:
-        """Whether a gzip header in the file's last ``_HEADER_REACH`` bytes runs past
-        the end of the file: fewer than its 10 fixed bytes are left, or it has an extra
-        field (``FEXTRA``) whose length, or the field itself, is cut off.
+        """Whether a gzip header in the file's last ``_HEADER_REACH`` bytes has an extra
+        field (``FEXTRA``) whose length, or the field itself, runs past the end of the file.
 
-        rapidgzip 0.16 reads such a header as the end of the data, with no error, so the
-        bytes after the last whole member are skipped, and a copy of that member's
-        trailer placed in them passes the trailer checks (found by the ``gzip_accel``
-        fuzz target). zlib reports the cut. An extra field is at most 65535 bytes, so
-        such a header starts within ``_HEADER_REACH`` bytes of the end. A header the
-        file's first member starts with is not looked at. A chance ``1f 8b 08`` in the
-        compressed data that passes this costs a second decode by the standard library,
+        rapidgzip 0.16 reads such a header as the end of the data, with no error, whatever
+        its reserved flag bits, so the bytes after the last whole member are skipped, and a
+        copy of that member's trailer placed in them passes the trailer checks (found by
+        the ``gzip_accel`` fuzz target). The standard library reports the cut, or the
+        reserved bits. An extra field is at most 65535 bytes, so such a header starts
+        within ``_HEADER_REACH`` bytes of the end. A header the file's first member starts
+        with is not looked at: rapidgzip delivers nothing from it, and an empty output is
+        handed over by ``_settle_end``. A chance ``1f 8b 08`` with ``FEXTRA`` in the
+        compressed data whose length runs past the end (about one file in a thousand with
+        64 KiB or more of compressed data) costs a second decode by the standard library,
         never a wrong result. ``False`` when the source cannot be read.
         """
         length = self._source_len
@@ -750,11 +752,8 @@ class _GzipTruncationCheckStream(DelegatingStream):
             return False
         magic = GZIP_MAGIC + b"\x08"
         at = tail.find(magic)
-        while at >= 0:
-            if at + 10 > len(tail):
-                return True
-            flags = tail[at + 3]
-            if not flags & 0xE0 and flags & 0x04:  # FEXTRA, no reserved bits
+        while 0 <= at <= len(tail) - 4:
+            if tail[at + 3] & 0x04:  # FEXTRA
                 if at + 12 > len(tail):
                     return True
                 extra = int.from_bytes(tail[at + 10 : at + 12], "little")

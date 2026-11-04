@@ -504,6 +504,7 @@ def test_gzip_forged_trailer_reaching_back_into_the_compressed_data_is_not_one()
     [
         pytest.param(b"\x1f\x8b\x08\x04" + bytes(6) + b"\x04\x10", id="long-extra"),
         pytest.param(b"\x1f\x8b\x08\x04" + bytes(7), id="cut-length"),
+        pytest.param(b"\x1f\x8b\x08\x24" + bytes(6) + b"\x04\x10", id="reserved-bit"),
     ],
 )
 def test_gzip_header_running_past_the_end_hides_no_forged_trailer(
