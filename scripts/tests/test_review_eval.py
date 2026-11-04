@@ -1,4 +1,4 @@
-"""The review eval's cases load and point at real commits (scripts/review_eval.py)."""
+"""The review eval's cases load and point at real commits (scripts/review/review_eval.py)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 _spec = importlib.util.spec_from_file_location(
-    "review_eval", ROOT / "scripts" / "review_eval.py"
+    "review_eval", ROOT / "scripts" / "review" / "review_eval.py"
 )
 assert _spec is not None and _spec.loader is not None
 review_eval = importlib.util.module_from_spec(_spec)
@@ -77,8 +77,11 @@ def test_prepare_holds_history_up_to_head_only(tmp_path):
     assert git("rev-parse", "main", cwd=repo) == base
     assert git("rev-parse", "origin/main", cwd=repo) == base
     assert not _have_in(repo, later)
-    copied = repo / "scripts" / "review_prep.py"
-    assert copied.read_bytes() == (ROOT / "scripts" / "review_prep.py").read_bytes()
+    copied = repo / "scripts" / "review" / "review_prep.py"
+    assert (
+        copied.read_bytes()
+        == (ROOT / "scripts" / "review" / "review_prep.py").read_bytes()
+    )
 
 
 def _have_in(repo: Path, sha: str) -> bool:

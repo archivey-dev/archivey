@@ -2,7 +2,7 @@ name: Risk label
 
 # Labels each pull request with its review tier, `risk: light`, `risk: standard` or
 # `risk: deep`, so the pull request list shows how deep a review it gets. The tier comes
-# from the changed paths alone (`python3 scripts/review_prep.py tier`); the review skill's
+# from the changed paths alone (`python3 scripts/review/review_prep.py tier`); the review skill's
 # §1 says what each tier asks of a reviewer. It also adds `merge: maintainer` when the
 # script names a decision of the maintainer's. Like the outcome labels the review loop
 # leaves, both only report: the agent that merges runs the base branch's script itself
@@ -54,8 +54,17 @@ jobs:
           if ! [[ "$BASE" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "Unexpected base branch name: refusing it" >&2; exit 1
           fi
-          git show "origin/$BASE:scripts/review_prep.py" > scripts/review_prep.py
-          report="$(python3 scripts/review_prep.py --base "origin/$BASE" tier)"
+          # Each copy runs at the depth it came from, since it finds the repository
+          # from its own path. A base from before scripts/ was sorted into folders has
+          # the script at the old path.
+          if git cat-file -e "origin/$BASE:scripts/review/review_prep.py" 2>/dev/null; then
+            base_prep=scripts/review/review_prep.py
+            git show "origin/$BASE:scripts/review/review_prep.py" > "$base_prep"
+          else
+            base_prep=scripts/.review_prep_base.py
+            git show "origin/$BASE:scripts/review_prep.py" > "$base_prep"
+          fi
+          report="$(python3 "$base_prep" --base "origin/$BASE" tier)"
           tier="$(sed -n 's/^tier: //p' <<< "$report")"
           case "$tier" in
             light|standard|deep) ;;

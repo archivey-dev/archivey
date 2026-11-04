@@ -927,7 +927,7 @@ def committed_fixture(entry: CorpusEntry, key: str) -> Path | None:
         raise StaleCorpusFixtureError(
             f"committed fixture {path.name!r} was built from a different definition of "
             f"corpus entry {entry.id!r} (manifest {recorded}, current {expected}). "
-            f"Re-run `uv run python scripts/gen_corpus_rar_fixtures.py` on a machine "
+            f"Re-run `uv run python scripts/fixtures/gen_corpus_rar_fixtures.py` on a machine "
             f"with the RARLAB `rar` binary and commit the result."
         )
     return path

@@ -397,6 +397,11 @@ class StreamCodec:
     # one was present (``frame_check``, ``FrameChecks``). Read by a stream's
     # verification level.
     checks_content: ClassVar[bool] = False
+    # Whether the format's check is optional per frame (xz, zstd, LZ4): its decoder
+    # reports, per frame, whether one was present. A read can check every byte until it
+    # finds a frame without one, so a single-file member of the codec is listed at
+    # ``CHECKSUM`` (``ArchiveMember._listing_checksum``).
+    checks_frames: ClassVar[bool] = False
     # The name diagnostics and messages give the stream (:attr:`stream_name`), when not
     # ``codec.value``.
     codec_name: ClassVar[str | None] = None

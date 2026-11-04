@@ -958,7 +958,7 @@ writes itself) is exercised against mutated and coverage-guided input.
    libFuzzer's own `-timeout` and `-rss_limit_mb` bound those targets: unlike a Python
    alarm, they fire while the main thread is inside native code. A
    short partition runs on every merge-queue group that changes a library, test, dependency
-   or CI path (`scripts/ci_scope.py`; the fuzz targets live under `tests/`, so a change to
+   or CI path (`scripts/ci/ci_scope.py`; the fuzz targets live under `tests/`, so a change to
    one always counts); the full one on a change-guarded nightly
    and on `workflow_dispatch` (`.github/workflows/atheris-fuzz.yml`,
    `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
@@ -1222,8 +1222,8 @@ brotli and inflate64 run in-process (`NATIVE_DECODERS` isolates them too; under 
 pyppmd decodes in-process as well and rapidgzip is not used). A crash nobody has found yet
 would abort the process. pyppmd runs in a child by default because of a known pyppmd issue
 ([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data). Both rapidgzip decoders run in a child process;
-`scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
-running out of memory is never mistaken for a damaged archive; the limits above exist to
+`scripts/investigations/accelerator_crash_search.py` tells whether they still need to.
+`MemoryError` is not translated, so running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 

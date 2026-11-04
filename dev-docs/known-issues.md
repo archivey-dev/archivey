@@ -67,7 +67,7 @@ exactly or not at all. Pinned by `tests/test_unar_probe.py`, and by
 `tests/test_rar_unar.py` on the `unar_drop*` and `unar_stale*` fixtures.
 
 **CI.** The Linux test legs install Ubuntu's `unar`, build upstream XADMaster 1.10.8
-from source (`scripts/install-unar-from-source.sh`) and put it first on `PATH`, so the
+from source (`scripts/ci/install-unar-from-source.sh`) and put it first on `PATH`, so the
 `unar` tests run against a build archivey uses. A separate step *expects* Ubuntu's
 `/usr/bin/unar` to fail the check
 (`test_distro_unar_matches_the_ci_expectation`, with `ARCHIVEY_DISTRO_UNAR_EXPECT=patched`).
@@ -86,7 +86,7 @@ unless a 1.10.8 build comes first on `PATH`; `scripts/setup-dev-env.sh` reports
 Debian added in 1.10.1-2 and deleted in 1.10.8+ds1-10 (June 2026, for breaking imploded
 ZIP members, Debian bug #1134346). With it, the bit reader raises end of file when fewer
 bits remain than a Huffman lookup *peeks*, even when the code it uses is shorter; the
-error is swallowed and the member comes out empty. `scripts/find_unar_probe_member.py`
+error is swallowed and the member comes out empty. `scripts/investigations/find_unar_probe_member.py`
 models those reads and found the probe member; its `--validate 300 --check-unar
 /usr/bin/unar` agreed with Ubuntu 24.04's package on all 563 compressed cases, 42 of
 them solid pairs decided by the first member (2026-10-02). Measured on builds from source
@@ -183,7 +183,7 @@ everything it had decoded past the reader: up to the whole stream for a cut file
 of MB with every core decoding.
 
 **What remains.** Nothing runs rapidgzip in the caller's process. To know whether the
-isolation is still needed, `scripts/accelerator_crash_search.py` runs both decoders
+isolation is still needed, `scripts/investigations/accelerator_crash_search.py` runs both decoders
 in-process on damaged input, in a process it watches, and reports each crash by its
 signature; `.github/workflows/accelerator-crash-search.yml` runs it monthly and on a
 lockfile change, on Linux, macOS and Windows. A new signature (any bzip2 crash) turns the

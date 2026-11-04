@@ -20,7 +20,7 @@ which writers do that, and how to recognise their archives.
 ## Re-run
 
 ```bash
-uv run python scripts/exploration/probe_writer_timestamps.py
+uv run python scripts/investigations/exploration/probe_writer_timestamps.py
 ```
 
 The script runs on one OS. The matrix runs in CI with the `Writer timestamp probe`

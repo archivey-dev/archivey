@@ -11,7 +11,7 @@ Run the counter first and take the scope from what it says is left:
 for p in 1 2 3; do \
   curl -s "https://api.github.com/repos/archivey-dev/archivey/issues/315/comments?per_page=100&page=$p" \
   | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]'; \
-done | python3 scripts/sweep_coverage.py --unswept
+done | python3 scripts/review/sweep_coverage.py --unswept
 ```
 
 That loop pages deliberately: the endpoint serves 100 comments at a time, #315 gains a marker per file swept, and a single-page fetch drops the rest **silently** — the files on the missing page come back as unswept. Raise the range until the last page prints nothing. With the `gh` CLI, `gh api --paginate repos/archivey-dev/archivey/issues/315/comments --jq '.[].body'` does the same in one call.

@@ -1,7 +1,7 @@
 {% extends "_base/docstring/parameters.html.jinja" %}
 
 {#- A dataclass's fields are listed here and nowhere else (FieldDocsAndDefaults in
-    scripts/griffe_extensions.py drops their separate attribute sections), so each one
+    scripts/docs/griffe_extensions.py drops their separate attribute sections), so each one
     gets the anchor such a section had, `archivey.ArchiveMember.size`: references in
     docstrings and the table of contents point at the list item. Unlike the base
     template, the heading follows from the section being a field list, not from the

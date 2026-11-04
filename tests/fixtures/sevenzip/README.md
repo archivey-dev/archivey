@@ -43,7 +43,7 @@ with `GOOS=linux GOARCH=riscv64 CGO_ENABLED=0`; SHA-256 `f400e521...2554d1`), wr
 decode. Used by `tests/test_sevenzip_riscv.py`.
 
 ```sh
-# 7zz from scripts/install-7zip-from-source.sh
+# 7zz from scripts/ci/install-7zip-from-source.sh
 7zz a -mhc=off -mtm=off -mtc=off -mta=off -m0=RISCV -m1=LZMA2 riscv_lzma2.7z code.bin
 7zz a -mhc=off -mtm=off -mtc=off -mta=off -m0=RISCV:4098 -m1=LZMA2 riscv_offset_lzma2.7z code.bin
 ```

@@ -25,7 +25,7 @@ LINKED = [
     GITHUB / "ISSUE_TEMPLATE" / "feature_request.yml",
     GITHUB / "pull_request_template.md",
 ]
-# The same pattern as scripts/check_docs_nav.py: `tree/` for directories, and a path
+# The same pattern as scripts/checks/check_docs_nav.py: `tree/` for directories, and a path
 # quoted in YAML does not keep its closing quote.
 _REPO_LINK = re.compile(
     r"https://github\.com/archivey-dev/archivey/(?:blob|tree)/main/([^)\s\"'#]+)"

@@ -8,8 +8,8 @@ Every figure on this page comes from two committed scripts, run on main at `9fc5
 2026-10-27. To refresh the page, run them again and replace the tables:
 
 ```bash
-uv run --no-sync python scripts/bench_process_isolation.py   # §1
-uv run --no-sync python scripts/bench_accelerator_reads.py   # §2 to §4
+uv run --no-sync python scripts/investigations/bench_process_isolation.py   # §1
+uv run --no-sync python scripts/investigations/bench_accelerator_reads.py   # §2 to §4
 ```
 
 **What the numbers are.** Wall times for the cases named in each table, on one host: a
@@ -49,9 +49,9 @@ on the larger rows, by up to about 15%. Treat a smaller difference as noise.
 
 ## 1. Isolation, accelerators off
 
-`scripts/bench_process_isolation.py`: each archive read in full with `stream_members()`,
-`use_rapidgzip` and `use_indexed_bzip2` set to `OFF`. Times in ms, and the ratio to
-`NONE`.
+`scripts/investigations/bench_process_isolation.py`: each archive read in full with
+`stream_members()`, `use_rapidgzip` and `use_indexed_bzip2` set to `OFF`. Times in ms,
+and the ratio to `NONE`.
 
 | archive | `NONE` | `KNOWN_CRASHES` (default) | `NATIVE_DECODERS` |
 |---|---:|---:|---:|
@@ -98,7 +98,7 @@ How to read it:
 
 ## 2. The accelerators, full reads
 
-`scripts/bench_accelerator_reads.py`, part 1: each archive read to the end of every
+`scripts/investigations/bench_accelerator_reads.py`, part 1: each archive read to the end of every
 member under `KNOWN_CRASHES`. `stdlib` is the standard-library module alone; `OFF` sets
 both accelerators `OFF`; `AUTO` is the default config. `OFF` and `AUTO` read with
 `stream_members()`. `AUTO seek` and `ON seek` open the archive with
@@ -149,7 +149,7 @@ How to read it:
 
 ## 3. One large ZIP DEFLATE member, full read
 
-`scripts/bench_accelerator_reads.py`, part 2: one 40 MiB DEFLATE member, opened with
+`scripts/investigations/bench_accelerator_reads.py`, part 2: one 40 MiB DEFLATE member, opened with
 `seekable_members=True`, so `AUTO` reads it through the rapidgzip child.
 
 | measurement | ms |
@@ -168,7 +168,7 @@ what a decode of the whole member would cost; the full `AUTO` read takes less th
 
 ## 4. Reads after seeks
 
-`scripts/bench_accelerator_reads.py`, part 3: one DEFLATE member in a ZIP, opened with
+`scripts/investigations/bench_accelerator_reads.py`, part 3: one DEFLATE member in a ZIP, opened with
 `seekable_members=True`, then 20 reads of 64 KiB, each after a seek. The 20 offsets are
 spread evenly over the member and visited in three orders: ascending (every seek goes
 forward), descending (after the first, every seek goes back), and shuffled. The time

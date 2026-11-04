@@ -1,6 +1,6 @@
 """The conflict notice's decisions, exercised without GitHub.
 
-`scripts/conflict_notice.py` decides, for one open pull request, whether to post a
+`scripts/review/conflict_notice.py` decides, for one open pull request, whether to post a
 conflict notice and whether to take the `review` label off. A mistake there is either
 silence (the stall it exists to end) or a comment every hour, so the cases are pinned
 here rather than found on a live pull request.
@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "conflict_notice.py"
+SCRIPT = ROOT / "scripts" / "review" / "conflict_notice.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "conflict-notice.yml"
 
 _spec = importlib.util.spec_from_file_location("conflict_notice", SCRIPT)
@@ -131,5 +131,5 @@ def test_the_workflow_posts_as_the_author_the_script_looks_for() -> None:
     # post as someone else and every run would announce the conflict again.
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in text
-    assert "scripts/conflict_notice.py" in text
+    assert "scripts/review/conflict_notice.py" in text
     assert notice.COMMENT_AUTHOR == "github-actions[bot]"

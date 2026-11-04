@@ -62,7 +62,7 @@ install_linux_packages() {
   # unar: the second RAR data program (tests/test_rar_unar.py skips without it). The
   #   Ubuntu 22.04-26.04 package fails archivey's RAR5 check and is refused, so those
   #   tests skip with it too; the verification below says so and names
-  #   scripts/install-unar-from-source.sh, which builds one that passes.
+  #   scripts/ci/install-unar-from-source.sh, which builds one that passes.
   # xorriso: builds hybrid ISOs with an appended partition for
   #   tests/test_iso_trailing_data.py.
   # zip, unzip: `zip -A` and the `unzipsfx` stub build the real self-extractor in
@@ -76,7 +76,7 @@ install_linux_packages() {
   # checks against. Built from source (about half a minute); a no-op once installed.
   # Non-fatal: without it only those live checks skip.
   local log7z="${TMPDIR:-/tmp}/archivey-7zip-build.log"
-  if ! "${REPO_ROOT}/scripts/install-7zip-from-source.sh" --dest "${HOME}/.local/bin" \
+  if ! "${REPO_ROOT}/scripts/ci/install-7zip-from-source.sh" --dest "${HOME}/.local/bin" \
     >"$log7z" 2>&1; then
     tail -n 20 "$log7z" >&2
     echo "! 7-Zip build failed (log: $log7z); RISC-V 7-Zip tests will skip" >&2
@@ -105,7 +105,7 @@ install_macos_packages() {
       echo "! unrar will be installed to ${dest}; add that directory to your login PATH or RAR data tests will skip" >&2
     fi
     mkdir -p "$dest"
-    "${REPO_ROOT}/scripts/install-rarlab-unrar.sh" --dest "$dest"
+    "${REPO_ROOT}/scripts/ci/install-rarlab-unrar.sh" --dest "$dest"
   fi
   if ! command -v brew >/dev/null 2>&1; then
     echo "! Homebrew not found; install p7zip manually" >&2
@@ -204,7 +204,7 @@ for tool in ("unrar", "7z", "unar", "xorriso", "zip", "unzip", "unzipsfx", "bgzi
             # (dev-docs/known-issues.md); archivey refuses them, so unar tests skip.
             print(
                 f"REFUSED {tool}: {found} fails archivey's RAR5 check, so unar tests "
-                "skip. Build 1.10.8: scripts/install-unar-from-source.sh --dest "
+                "skip. Build 1.10.8: scripts/ci/install-unar-from-source.sh --dest "
                 "~/.local/bin (build deps: gnustep-make libgnustep-base-dev gobjc "
                 "libbz2-dev zlib1g-dev libicu-dev libwavpack-dev)"
             )
@@ -226,7 +226,7 @@ if riscv_7z:
 else:
     print(
         "MISSING 7-Zip with RISC-V: tests/test_sevenzip_riscv.py skips its live 7-Zip "
-        "checks. Build: scripts/install-7zip-from-source.sh --dest ~/.local/bin"
+        "checks. Build: scripts/ci/install-7zip-from-source.sh --dest ~/.local/bin"
     )
 
 try:

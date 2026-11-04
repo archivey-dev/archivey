@@ -2106,7 +2106,7 @@ using either library alone, even with both imported, never fails. The crash site
 unrelated to either library.
 
 **Evidence.** `dev-docs/known-issues.md:98-129` (Bug 2). Isolated by
-`scripts/dual_accelerator_repro.py` with no archivey and no pytest: ~100 % crash rate on
+`scripts/investigations/dual_accelerator_repro.py` with no archivey and no pytest: ~100 % crash rate on
 macOS with both, never with one. The upstream author's guidance is quoted verbatim from
 `mxmlnkn/librapidarchive` ("if you need to use both, depend on rapidgzip for now").
 

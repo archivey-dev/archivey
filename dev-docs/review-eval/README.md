@@ -14,13 +14,13 @@ the workflow prompt or the model can be measured instead of guessed.
   so a run needs no GitHub access.
 - [`results.md`](results.md): the baseline and every later run worth keeping.
 
-The runner is [`scripts/review_eval.py`](../../scripts/review_eval.py).
+The runner is [`scripts/review/review_eval.py`](../../scripts/review/review_eval.py).
 
 ## How a run works
 
 For each case the runner builds a fresh repository holding only the history up to
 `head`, with `main` at `base`, so neither the fix nor the later review rounds can be
-found. It copies today's `code-review-skill` and `scripts/review_prep.py` over the
+found. It copies today's `code-review-skill` and `scripts/review/review_prep.py` over the
 old ones, puts a stub `gh` first on the PATH, and runs `claude -p` with the reviewer
 model and a prompt adapted from the workflow's: review round 1, post nothing, edit
 nothing, and give the full review as the answer. A second, cheaper model reads the
@@ -49,12 +49,12 @@ run, so scores stay comparable with each other but not with the loop:
   are no earlier review comments to read.
 
 ```text
-python3 scripts/review_eval.py list
-python3 scripts/review_eval.py run --out /tmp/eval --case zstd-seek-point-in-frame
-python3 scripts/review_eval.py run --out /tmp/eval --jobs 5
-python3 scripts/review_eval.py judge --out /tmp/eval    # rescore saved reviews
-python3 scripts/review_eval.py run --out /tmp/eval --model claude-sonnet-5-5 --effort xhigh
-python3 scripts/review_eval.py run --out /tmp/eval --install   # PR's dependencies first
+python3 scripts/review/review_eval.py list
+python3 scripts/review/review_eval.py run --out /tmp/eval --case zstd-seek-point-in-frame
+python3 scripts/review/review_eval.py run --out /tmp/eval --jobs 5
+python3 scripts/review/review_eval.py judge --out /tmp/eval    # rescore saved reviews
+python3 scripts/review/review_eval.py run --out /tmp/eval --model claude-sonnet-5-5 --effort xhigh
+python3 scripts/review/review_eval.py run --out /tmp/eval --install   # PR's dependencies first
 ```
 
 Each case is a full review. The default model is Opus, which the loop runs for a

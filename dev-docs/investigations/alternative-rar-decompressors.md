@@ -19,7 +19,7 @@ binary reporting **v1.10.7**. `7z` **23.01** from Ubuntu `7zip` (DFSG) **without
 and **with** the `7zip-rar` plugin. `bsdtar` 3.7.2 (libarchive). `unrar-free` 0.1.3.
 Fixtures under `tests/fixtures/rar/` plus `rar a -s` probes.
 
-Re-run: `python3 scripts/exploration/rar_decompressor_matrix.py`
+Re-run: `python3 scripts/investigations/exploration/rar_decompressor_matrix.py`
 
 Related policy: ADR
 [`0002-native-rar-metadata-unrar-data`](../decisions/0002-native-rar-metadata-unrar-data.md),
@@ -91,7 +91,7 @@ apt 1.10.1 writes nothing for a compressed RAR5 member when a Huffman lookup nea
 end peeks past the last packed byte, solid or not, and exits 0 with empty stderr under
 `-o -`. About 1–6% of `-m3` members of small random text did this. The 14-byte repro,
 with RAR 7.00, is the shortest over `ab` that `rar` compresses and `unar` drops;
-`scripts/find_unar_probe_member.py` finds it and explains the condition:
+`scripts/investigations/find_unar_probe_member.py` finds it and explains the condition:
 
 ```sh
 printf 'aaaaabababbabb' > f.txt
@@ -264,7 +264,7 @@ fallback.
 5. **macOS install friction:** published `docs/install.md` is for pip users.
    Unofficial Homebrew tap first (trust the tap; bottles or formula source),
    copy-paste rarlab `make` second. CI keeps the pinned source build
-   (`scripts/install-rarlab-unrar.sh`).
+   (`scripts/ci/install-rarlab-unrar.sh`).
 
 ---
 
@@ -333,7 +333,7 @@ it for CI: personal tap, bottles stop before `macos-latest` (Tahoe).
 ### Trust
 
 - **Source build path:** official RARLAB tarball, checksummed. Functionally the
-  same class as `scripts/install-rarlab-unrar.sh` (different pin: 7.1.10 vs
+  same class as `scripts/ci/install-rarlab-unrar.sh` (different pin: 7.1.10 vs
   7.2.7 / banner 7.23). A user who lets brew compile on a bottle-less OS is
   compiling rarlab.com source locally — that is the more trustworthy of the two
   brew paths.
@@ -348,7 +348,7 @@ it for CI: personal tap, bottles stop before `macos-latest` (Tahoe).
 ### CI decision: do not switch
 
 Keep compiling the pinned `pmachapman/unrar@d861246` commit via
-`scripts/install-rarlab-unrar.sh` on macOS. Reasons, same neighbourhood as #276:
+`scripts/ci/install-rarlab-unrar.sh` on macOS. Reasons, same neighbourhood as #276:
 
 1. Bottles lag current GitHub `macos-latest` (Tahoe). A tap job would compile
    from an unpinned-to-us tarball, or fail if the tap/formula disappears.

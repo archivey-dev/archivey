@@ -137,6 +137,7 @@ def _zstd_window_refusal(exc: Exception, limits: DecoderLimits) -> ArchiveyError
 
 class ZstdCodec(StreamCodec):
     codec = Codec.ZSTD
+    checks_frames = True
     stream_format = StreamFormat.ZSTD
     magic = (MagicSignature(0, ZSTD_FRAME_MAGIC, ArchiveFormat.ZST),)
     requirement = MissingComponent(

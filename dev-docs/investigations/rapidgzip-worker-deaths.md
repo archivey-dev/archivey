@@ -147,7 +147,7 @@ main `-n auto` step (davitf, PR #570 review, decision D2).
 
 ## 6. The harness
 
-`scripts/rapidgzip_resume_stress.py` runs the module, or the whole main step, in a fresh
+`scripts/investigations/rapidgzip_resume_stress.py` runs the module, or the whole main step, in a fresh
 process group per iteration, under named scenarios (`serial`, `xdist`, `xdist_2x`,
 `contended`, `suite_neighbours`, `file_mode_only`, `main_step`). A plugin logs each test's
 start and finish and each child's spawn, death and return code. When a test runs past

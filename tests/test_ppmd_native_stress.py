@@ -1,6 +1,6 @@
 """Subprocess stress for PPMd native flakes (non-required CI / local investigation).
 
-These tests deliberately re-run scenarios from ``scripts/ppmd_native_stress.py`` so they
+These tests deliberately re-run scenarios from ``scripts/investigations/ppmd_native_stress.py`` so they
 have a pytest entry point. They are **excluded from the default suite** via the
 ``ppmd_native_stress`` marker (selected only by the non-blocking stress workflow).
 
@@ -24,7 +24,7 @@ pytestmark = [
 ]
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_SCRIPT = _REPO_ROOT / "scripts" / "ppmd_native_stress.py"
+_SCRIPT = _REPO_ROOT / "scripts" / "investigations" / "ppmd_native_stress.py"
 
 
 def _iters() -> int:

@@ -9,7 +9,7 @@ name: Conflict notice
 # eleven hours that way.
 #
 # This runs when `main` moves, which is what usually causes a conflict, and hourly as a
-# backstop. `scripts/conflict_notice.py` makes the decisions and is unit tested: one
+# backstop. `scripts/review/conflict_notice.py` makes the decisions and is unit tested: one
 # comment per head commit on each conflicted pull request (the comment is a pull
 # request event, so it wakes the watching session), and the `review` label taken off
 # so that adding it again after the merge raises an event. Its docstring says when the
@@ -49,4 +49,4 @@ jobs:
         run: |
           # GitHub recomputes mergeability in the background after the base moves.
           if [ "${{ github.event_name }}" = push ]; then sleep 30; fi
-          python3 scripts/conflict_notice.py
+          python3 scripts/review/conflict_notice.py

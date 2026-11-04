@@ -7,13 +7,13 @@ in a clone of https://github.com/apache/commons-compress::
       uv run --no-sync pytest tests/test_commons_compress_corpus.py -q
 
 Commons Compress (CC) is Java, so it is not run here. Its listing of every file was
-recorded once with ``scripts/commons_compress/CcList.java`` and is pinned, with
+recorded once with ``scripts/fixtures/commons_compress/CcList.java`` and is pinned, with
 Archivey's own result, in ``tests/fixtures/commons_compress/expected.json``. Each file
 is read twice, from its path and as a non-seekable pipe with ``streaming=True``, and the
 result must match the pin: the format, and every member's name, type, bytes read, CRC-32
 and whether reading it raised, or the error class when the open fails. A pin records
 only a count and a digest of the listing; a mismatch prints Archivey's full listing.
-``scripts/gen_commons_compress_expected.py`` rewrites the pins, from a CC listing and a
+``scripts/fixtures/gen_commons_compress_expected.py`` rewrites the pins, from a CC listing and a
 run of this module's lister.
 
 ``test_every_divergence_from_commons_compress_is_triaged`` needs no clone and runs in the

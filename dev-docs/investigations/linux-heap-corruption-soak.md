@@ -20,11 +20,11 @@ pytest tests/ \
   --ignore=tests/test_ppmd_raw_streams.py -q -n auto --no-cov
 
 # 2) Accelerator stream modules, one fresh subprocess each (coverage off, breadcrumbs)
-python scripts/ci_run_native_modules.py
+python scripts/ci/ci_run_native_modules.py
 
 # 3) PPMd raw streams in their own subprocess (coverage off); soft-passes an
 #    exit-after-green abort of the parent (see the pyppmd entry in `known-issues.md`)
-python scripts/ci_run_native_modules.py \
+python scripts/ci/ci_run_native_modules.py \
   --modules tests/test_ppmd_raw_streams.py \
   --allow-exit-after-green
 
@@ -69,9 +69,9 @@ for i in $(seq 1 20); do
     --ignore=tests/test_accelerator_corruption.py \
     --ignore=tests/test_ppmd_raw_streams.py -q -n auto --no-cov \
     || { echo "main FAILED pass $i rc=$?"; break; }
-  uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
+  uv run --python 3.11 --no-sync python scripts/ci/ci_run_native_modules.py \
     || { echo "accelerators FAILED pass $i rc=$?"; break; }
-  uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
+  uv run --python 3.11 --no-sync python scripts/ci/ci_run_native_modules.py \
     --modules tests/test_ppmd_raw_streams.py \
     || { echo "ppmd-raw FAILED pass $i rc=$?"; break; }
   uv run --python 3.11 --no-sync pytest tests/test_property_safety.py -q -n auto \
@@ -79,7 +79,7 @@ for i in $(seq 1 20); do
 done
 
 # 2b) Hard soak of the PPMd raw-streams exit abort (the stress workflow's step)
-uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
+uv run --python 3.11 --no-sync python scripts/ci/ci_run_native_modules.py \
   --modules tests/test_ppmd_raw_streams.py --repeat 20
 
 # 3) A/B without rapidgzip; if crashes vanish, rapidgzip is implicated
@@ -113,7 +113,7 @@ All during the gzip/zlib truncation-recovery work in 2026-07:
 Get a soak rate under recipe (1), then A/B without rapidgzip (3). If
 rapidgzip is implicated, shrink to a subprocess loop that uses it the way the suite does
 (path or `BytesIO`, truncated members, close or GC), starting from
-`scripts/dual_accelerator_repro.py` and `tests/test_accelerator_shutdown.py`. If only the
+`scripts/investigations/dual_accelerator_repro.py` and `tests/test_accelerator_shutdown.py`. If only the
 long mixed suite flakes, treat it as CI hygiene (more process isolation, or a coverage or
 accelerator policy on Linux). Do not fold this into the PPMd stress workflow without a
 rapidgzip and long-suite axis; that job would stay green while this stays open.

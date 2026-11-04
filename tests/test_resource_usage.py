@@ -1,6 +1,6 @@
 """The reader's private resource-usage record.
 
-``scripts/scan_archives.py`` reads it to tune the limits from a real corpus, so each
+``scripts/investigations/scan_archives.py`` reads it to tune the limits from a real corpus, so each
 number has to come from the reader it describes: the largest decoder allocation the
 archive declared (a refused one included), the key-derivation rounds, the spool peak
 and the listing totals.

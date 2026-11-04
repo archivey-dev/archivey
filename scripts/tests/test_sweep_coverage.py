@@ -1,6 +1,6 @@
 """The sweep coverage counter, exercised without GitHub.
 
-`scripts/sweep_coverage.py` turns the `SWEPT` marker comments on #315 into a coverage
+`scripts/review/sweep_coverage.py` turns the `SWEPT` marker comments on #315 into a coverage
 figure. It exists because the figure used to be read off thread counts and was wrong
 twice running — 24% and then 35% against a truth of 12% and 23% — which left the
 repository's largest and most exposed file in the swept column having never been read.
@@ -19,7 +19,9 @@ import importlib.util
 import sys
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "sweep_coverage.py"
+SCRIPT = (
+    Path(__file__).resolve().parents[2] / "scripts" / "review" / "sweep_coverage.py"
+)
 
 _spec = importlib.util.spec_from_file_location("sweep_coverage", SCRIPT)
 assert _spec is not None and _spec.loader is not None

@@ -37,7 +37,7 @@ _UNRAR = ArchiveyConfig(rar_decompressor=RarDecompressor.UNRAR)
 
 
 def _payload(size: int) -> bytes:
-    """The bytes ``scripts/gen_rar_fixtures.py`` (``_hex_lines``) wrote."""
+    """The bytes ``scripts/fixtures/gen_rar_fixtures.py`` (``_hex_lines``) wrote."""
     lines = (
         hashlib.sha256(b"stored_sizes" + i.to_bytes(4, "big")).hexdigest().encode()
         + b"\n"

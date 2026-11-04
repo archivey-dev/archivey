@@ -1370,7 +1370,7 @@ def test_rar_damaged_main_header_stays_corruption_at_open(
     """Nothing precedes MAIN, and its flags (solid, volume, header encryption) are
     needed to read anything after it, so damage there still fails the open. The
     error is the public ``CorruptionError`` itself, not the walk's private CRC
-    subclass: ``scripts/scan_archives.py`` reports ``type(exc).__name__``."""
+    subclass: ``scripts/investigations/scan_archives.py`` reports ``type(exc).__name__``."""
     data = bytearray((_RAR_FIXTURES / fixture).read_bytes())
     blocks = _rar4_blocks(bytes(data)) if version == 4 else _rar5_blocks(bytes(data))
     main_type = 0x73 if version == 4 else 1

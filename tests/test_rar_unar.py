@@ -81,7 +81,7 @@ _REFUSED: dict[tuple[str, str], str] = {
     ("redirect_unknown_solid__.rar", "b.txt"): "RAR5 solid",
 }
 # Members unar 1.10.1 drops, and the members after them in a solid run, whose bytes
-# then go missing or are stale: ``scripts/gen_rar_fixtures.py`` ``_build_unar_drop``.
+# then go missing or are stale: ``scripts/fixtures/gen_rar_fixtures.py`` ``_build_unar_drop``.
 # Each must read back exactly or fail as truncated or corrupt, never as wrong bytes.
 _UNAR_DROPS: frozenset[tuple[str, str]] = frozenset(
     {

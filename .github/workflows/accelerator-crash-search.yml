@@ -2,7 +2,7 @@
 #
 # archivey runs rapidgzip (gzip, zlib, raw DEFLATE and bzip2) in a child process, so a
 # crash in its C++ code costs one stream and not the caller. This job runs the decoders
-# in-process on damaged input (scripts/accelerator_crash_search.py) and reports every
+# in-process on damaged input (scripts/investigations/accelerator_crash_search.py) and reports every
 # crash by its signature, so we know whether that isolation is still needed:
 #
 # - a new signature (any bzip2 crash, or a new DEFLATE one) turns the run red;
@@ -17,7 +17,7 @@ on:
     - cron: "23 5 1 * *"
   pull_request:
     paths:
-      - "scripts/accelerator_crash_search.py"
+      - "scripts/investigations/accelerator_crash_search.py"
       - ".github/workflows/accelerator-crash-search.yml"
       - "uv.lock"
   workflow_dispatch:
@@ -66,7 +66,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p crash-search
-          uv run --python 3.11 --no-sync python scripts/accelerator_crash_search.py \
+          uv run --python 3.11 --no-sync python scripts/investigations/accelerator_crash_search.py \
             --seconds "$SECONDS_PER_CODEC" \
             --seed "${{ github.run_id }}" \
             --out crash-search/inputs \
