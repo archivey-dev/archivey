@@ -173,8 +173,9 @@ class Sum32:
 
 @dataclass
 class _LinkGroup:
-    """The links of one newc file seen so far: the member that carries the data, once
-    it has arrived, and the empty links held back until it does."""
+    """The links of one newc file seen so far: the latest member that carried data,
+    once one has arrived (a later empty link names it), and the empty links held back
+    until one does."""
 
     name: str | None = None
     # Each held member with the name it was stored under, for the adapter's report of
@@ -245,7 +246,11 @@ class CpioReader(SequentialReader):
             key = (header.dev, header.ino)
             if member.type is MemberType.FILE and header.nlink > 1:
                 group = groups.setdefault(key, _LinkGroup())
-                if group.name is not None:
+                # A conforming newc or crc writer stores the data with one link only.
+                # A later name that carries data of its own anyway is read as a file
+                # of its own, as GNU cpio's copy-in and 7-Zip extract it.
+                own_data = size > 0 and self._defers_link_data()
+                if group.name is not None and not own_data:
                     member.type = MemberType.HARDLINK
                     member.link_target = group.name
                     member.size = None
