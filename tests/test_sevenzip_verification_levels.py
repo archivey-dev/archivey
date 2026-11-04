@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import io
 import random
+import threading
+import zlib
 
 import pytest
 
 from archivey import Verification, open_archive
 from archivey.exceptions import CorruptionError
+from archivey.internal.backends.sevenzip_folder_ranges import FolderRanges
 from archivey.internal.streams.verification import SpanningCheckError
 from archivey.types import ArchiveMember
 from tests.conftest import requires
@@ -313,22 +316,6 @@ def test_a_folder_crc_leaves_files_with_their_own_crc_to_it() -> None:
         assert {m.verified for m in members} == {Verification.CHECKSUM}
 
 
-def test_seekable_member_reads_never_claim_the_folder_crc() -> None:
-    # Random-access opens with seekable members position by seeking: the folder is not
-    # decoded in order from its start, so its CRC proves nothing.
-    data = _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C))
-    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
-        members = _by_name(reader.members())
-        for name in "abc":
-            assert reader.read(members[name]) == _THREE[name]
-        assert {m.verified for m in members.values()} == {Verification.LENGTH}
-        # Each file is at its LENGTH ceiling, but the folder CRC has not run: a pass
-        # over the whole folder still raises them, and verify_all() makes it.
-        assert reader.verify_all() == ()
-        assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
-        assert reader._awaiting_spanning_checks() == set()  # type: ignore[attr-defined]
-
-
 def _lzma2_folder(files: dict[str, bytes], *, folder_crc: int) -> bytes:
     """One LZMA2 folder holding ``files``, with ``folder_crc`` and no file CRCs."""
     payload = b"".join(files.values())
@@ -344,22 +331,11 @@ def _lzma2_folder(files: dict[str, bytes], *, folder_crc: int) -> bytes:
     return _archive(packed, header)
 
 
-@pytest.mark.parametrize(
-    ("data", "failed"),
-    [
-        pytest.param(
-            _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C) ^ 1),
-            ["a", "b", "c"],
-            id="copy",
-        ),
-        pytest.param(_folder_with_one_own_crc("c"), ["a", "b"], id="last-own-crc"),
-    ],
-)
-def test_verify_all_after_seekable_reads_still_finds_a_mismatched_folder(
-    data: bytes, failed: list[str]
-) -> None:
-    # The seekable reads leave every file at its ceiling without running the folder
-    # CRC; verify_all() must still run it, as it does when called first.
+def test_verify_all_after_seekable_reads_still_finds_a_mismatched_folder() -> None:
+    # The seekable reads cover the folder and find the mismatch, but c carries a CRC
+    # of its own and its read raises nothing: verify_all() must still report the
+    # folder, as it does when called first.
+    data = _folder_with_one_own_crc("c")
     with open_archive(io.BytesIO(data), seekable_members=True) as reader:
         members = _by_name(reader.members())
         for name in "abc":
@@ -367,7 +343,7 @@ def test_verify_all_after_seekable_reads_still_finds_a_mismatched_folder(
         assert all(m.verified >= m.verifiable for m in members.values())
         for _ in range(2):
             failures = reader.verify_all()
-            assert [m.name for m, _e in failures] == failed
+            assert [m.name for m, _e in failures] == ["a", "b"]
             assert all(isinstance(e, SpanningCheckError) for _m, e in failures)
 
 
@@ -631,3 +607,204 @@ def test_an_unconfirmed_folder_builds_its_key_anchors_once(
         assert first > 0
         assert r.read(members["a2"]) == _SMALL
         assert calls == first
+
+
+# Seekable reads that cover a folder between them (``FolderRanges``). Each
+# ``seekable_members=True`` open decodes its own member only, and on a stored folder
+# the seek to it decodes nothing; the reader joins the CRCs of what each read hashed.
+
+
+@pytest.mark.parametrize("order", ["abc", "cba"])
+def test_seekable_reads_of_every_stored_file_check_the_folder_crc(
+    order: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C))
+    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
+        members = _by_name(reader.members())
+        for name in order:
+            assert reader.read(members[name]) == _THREE[name]
+        assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
+        assert reader._awaiting_spanning_checks() == set()  # type: ignore[attr-defined]
+        opens = _CountFolderOpens(reader, monkeypatch)
+        assert reader.verify_all() == ()
+        assert opens.count == 0
+
+
+@pytest.mark.parametrize(
+    ("order", "raiser"), [("abc", "c"), ("cba", "a"), ("acb", "b")]
+)
+def test_seekable_reads_that_cover_a_mismatched_folder_raise_from_the_last(
+    order: str, raiser: str
+) -> None:
+    # The read that completes the folder raises at its end, with the same text and
+    # covers as an in-order decode; the reads before it raise nothing. A read to the
+    # end probes the end in the same call, as the in-order read of c does.
+    data = _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C) ^ 1)
+    with (
+        open_archive(io.BytesIO(data)) as reader,
+        pytest.raises(SpanningCheckError) as in_order,
+    ):
+        reader.read(reader.members()[-1])
+    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
+        members = _by_name(reader.members())
+        for name in order[:-1]:
+            assert reader.read(members[name]) == _THREE[name]
+        with pytest.raises(SpanningCheckError, match="folder 0") as caught:
+            reader.read(members[raiser])
+        assert caught.value.args == in_order.value.args
+        assert caught.value.member_name == raiser
+        assert [m.name for m in caught.value.covers] == ["a", "b", "c"]
+        assert members[raiser].verified < Verification.CHECKSUM
+        for _ in range(2):
+            failures = reader.verify_all()
+            assert [m.name for m, _e in failures] == ["a", "b", "c"]
+            assert all(isinstance(e, SpanningCheckError) for _m, e in failures)
+
+
+_SMALL_FILE = b"small file " * 90
+_LARGE_FILE = random.Random(5).randbytes(100_000)
+_FIVE = {
+    "a": _SMALL_FILE,
+    "b": _LARGE_FILE,
+    "c": _SMALL_FILE,
+    "d": _SMALL_FILE,
+    "e": _SMALL_FILE,
+}
+
+
+def test_a_small_range_with_nothing_next_to_it_falls_back_to_verify_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # d is small and in the middle with nothing read beside it: its range is not
+    # kept. b is as small a gap from either end, but past the minimum: it is kept.
+    data = _copy_folder(_FIVE, folder_crc=_crc(b"".join(_FIVE.values())))
+    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
+        ranges = reader._folder_ranges  # type: ignore[attr-defined]
+        members = _by_name(reader.members())
+        reader.read(members["d"])
+        assert ranges.ranges(0) == []
+        reader.read(members["b"])
+        assert len(ranges.ranges(0)) == 1
+        for name in "ace":
+            reader.read(members[name])
+        # a, b and c joined; e, at the folder's end, is kept alone. d is the gap.
+        d_start = members["d"]._raw.folder_prefix  # type: ignore[attr-defined]
+        d_end = d_start + len(_SMALL_FILE)
+        assert [(s, e) for s, e, _crc in ranges.ranges(0)] == [
+            (0, d_start),
+            (d_end, d_end + len(_SMALL_FILE)),
+        ]
+        assert members["d"].verified is Verification.LENGTH
+        opens = _CountFolderOpens(reader, monkeypatch)
+        assert reader.verify_all() == ()
+        assert opens.count > 0
+        assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
+
+
+def test_a_small_range_that_fills_the_last_gap_completes_the_folder() -> None:
+    data = _copy_folder(_FIVE, folder_crc=_crc(b"".join(_FIVE.values())))
+    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
+        members = _by_name(reader.members())
+        for name in "dbaec":
+            reader.read(members[name])
+        assert members["c"].verified is Verification.LENGTH
+        reader.read(members["d"])
+        assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
+
+
+def test_the_range_cap_drops_ranges_past_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Alternating files leave a gap between each two ranges, so each read adds one;
+    # past the cap, a read adds nothing, and verify_all() reads the folder instead.
+    files = {f"f{i}": bytes([i]) * 100 for i in range(20)}
+    data = _copy_folder(files, folder_crc=_crc(b"".join(files.values())))
+    with open_archive(io.BytesIO(data), seekable_members=True) as reader:
+        ranges = FolderRanges(min_bytes=1, cap=4)
+        reader._folder_ranges = ranges  # type: ignore[attr-defined]
+        members = reader.members()
+        for member in members[1::2]:
+            reader.read(member)
+            assert ranges.count() <= 4
+        assert ranges.count() == 4
+        # A read next to a kept range still joins it: it adds no range.
+        reader.read(members[0])
+        assert ranges.count() == 4
+        assert ranges.ranges(0)[0][:2] == (0, 200)
+        for member in members[::2]:
+            reader.read(member)
+        assert members[-1].verified is Verification.LENGTH
+        opens = _CountFolderOpens(reader, monkeypatch)
+        assert reader.verify_all() == ()
+        assert opens.count > 0
+        assert {m.verified for m in members} == {Verification.CHECKSUM}
+
+
+def test_concurrent_seekable_reads_cover_the_folder() -> None:
+    files = {
+        f"f{i:03}": random.Random(i).randbytes(random.Random(-i).randrange(1, 3000))
+        for i in range(200)
+    }
+    data = _copy_folder(files, folder_crc=_crc(b"".join(files.values())))
+    with open_archive(
+        io.BytesIO(data), seekable_members=True, concurrent_operations=True
+    ) as reader:
+        # Small files in a random order: keep every range, so they all must join.
+        reader._folder_ranges = FolderRanges(min_bytes=1)  # type: ignore[attr-defined]
+        members = reader.members()
+        order = list(members)
+        random.Random(3).shuffle(order)
+        barrier = threading.Barrier(4)
+        errors: list[BaseException] = []
+
+        def work(part: list[ArchiveMember]) -> None:
+            barrier.wait()
+            try:
+                for member in part:
+                    assert reader.read(member) == files[member.name]
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=work, args=(order[k::4],)) for k in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert errors == []
+        # Every byte was read once and recorded: the ranges join, whatever the
+        # order the threads recorded them in.
+        assert [(s, e) for s, e, _c in reader._folder_ranges.ranges(0)] == [  # type: ignore[attr-defined]
+            (0, sum(map(len, files.values())))
+        ]
+        assert {m.verified for m in members} == {Verification.CHECKSUM}
+
+
+def _ranges_crc(data: bytes, start: int, end: int) -> int:
+    return zlib.crc32(data[start:end])
+
+
+def test_folder_ranges_join_replace_and_drop() -> None:
+    data = random.Random(11).randbytes(1000)
+    ranges = FolderRanges(min_bytes=100, cap=10)
+
+    def record(start: int, end: int) -> bool:
+        return ranges.record(0, start, end, _ranges_crc(data, start, end), 1000).kept
+
+    assert not record(400, 450)  # small, in the middle, alone
+    assert record(0, 10)  # small, but at the start
+    assert record(990, 1000)  # small, but at the end
+    assert record(400, 600)
+    assert record(600, 620)  # joins on its left
+    assert record(380, 400)  # joins on its right
+    assert record(450, 500)  # inside a kept range
+    assert not record(300, 390)  # overlaps a kept range in part
+    assert record(300, 700)  # holds a kept range whole: replaces it
+    assert [(s, e) for s, e, _c in ranges.ranges(0)] == [
+        (0, 10),
+        (300, 700),
+        (990, 1000),
+    ]
+    for start, end, crc in ranges.ranges(0):
+        assert crc == _ranges_crc(data, start, end)
+    assert record(10, 300)
+    result = ranges.record(0, 700, 990, _ranges_crc(data, 700, 990), 1000)
+    assert result.complete == zlib.crc32(data)
+    assert ranges.count() == 1

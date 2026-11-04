@@ -48,13 +48,48 @@ def _x2nmodp(n: int, k: int) -> int:
     return p
 
 
+# ``_BYTE_SHIFTS[i][b]`` is x^(8 * b * 256^i) mod P: the shift by ``b * 256^i`` zero
+# bytes. Each row is built on first use (255 multiplies), so a shift by ``n`` bytes
+# takes one multiply per nonzero byte of ``n`` instead of one per set bit.
+_BYTE_SHIFTS: list[tuple[int, ...] | None] = [None] * 8
+
+
+def _byte_shift_row(i: int) -> tuple[int, ...]:
+    row = _BYTE_SHIFTS[i]
+    if row is None:
+        step = _x2nmodp(1 << (8 * i), 3)
+        entries = [1 << 31, step]
+        for _ in range(2, 256):
+            entries.append(_multmodp(entries[-1], step))
+        # A race builds the same row twice; either copy is right.
+        row = _BYTE_SHIFTS[i] = tuple(entries)
+    return row
+
+
+def _shift_operator(len2: int) -> int:
+    """x^(8 * len2) mod P, as ``_x2nmodp(len2, 3)`` gives it."""
+    if len2 >> 64:
+        return _x2nmodp(len2, 3)
+    p = 1 << 31  # x^0
+    i = 0
+    while len2:
+        b = len2 & 0xFF
+        if b:
+            p = _multmodp(_byte_shift_row(i)[b], p)
+        len2 >>= 8
+        i += 1
+    return p
+
+
 def crc32_combine(crc1: int, crc2: int, len2: int) -> int:
     """Return ``zlib.crc32(a + b)`` given ``crc32(a)``, ``crc32(b)``, and ``len(b)``.
 
-    zlib 1.2.12+'s method: shift ``crc1`` by ``8 * len2`` zero bits with a
-    precomputed x^(2^k) table, so the cost is O(log len2) small multiplies.
+    zlib 1.2.12+'s method: shift ``crc1`` by ``8 * len2`` zero bits. The shift is a
+    product of precomputed powers of x, one per nonzero byte of ``len2``.
     """
     if len2 <= 0:
         return crc1 & 0xFFFFFFFF
-    shifted = _multmodp(_x2nmodp(len2, 3), crc1 & 0xFFFFFFFF)
+    if crc1 & 0xFFFFFFFF == 0:
+        return crc2 & 0xFFFFFFFF
+    shifted = _multmodp(_shift_operator(len2), crc1 & 0xFFFFFFFF)
     return (shifted ^ (crc2 & 0xFFFFFFFF)) & 0xFFFFFFFF

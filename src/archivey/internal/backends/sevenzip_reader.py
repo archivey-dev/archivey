@@ -56,6 +56,7 @@ from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
 from archivey.internal.backends.sevenzip_detect import (
     validate_sevenzip_signature_header,
 )
+from archivey.internal.backends.sevenzip_folder_ranges import FolderRanges
 from archivey.internal.backends.sevenzip_methods import is_aes, lookup
 from archivey.internal.backends.sevenzip_parser import (
     EncodedHeader,
@@ -95,7 +96,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
-from archivey.internal.hashing import crc32_digest
+from archivey.internal.hashing import crc32_combine, crc32_digest
 from archivey.internal.listing_limits import check_metadata_bytes, text_bytes
 from archivey.internal.logs import (
     backends as backends_logger,
@@ -493,7 +494,7 @@ _FOLDER_GAP_CHUNK = 1 << 20
 
 
 class _FolderChecks(DelegatingStream):
-    """Hash a 7z folder's decode from its first byte, for the checks no member owns.
+    """Hash a 7z folder's decode as it is read, for the checks no member owns.
 
     Two checks, each run only when it can prove something a member stream cannot:
 
@@ -515,16 +516,27 @@ class _FolderChecks(DelegatingStream):
       not decrypt to bytes that match a CRC, so the folder's password is confirmed.
       Only a folder whose password was accepted without such a proof passes any.
 
-    The hash runs only over a decode from offset 0 with no gap. A forward seek from the
-    position already hashed keeps it when the inner would decode the skipped bytes
-    anyway (its resume point for the target is at or before that position, the rule
-    ``MemberVerifier.seek`` follows, DR-4a): the seek only records the target, and the
-    next read reads the gap through the hash first (``_settle_gap``). This is how a
-    ``seekable_members=True`` read of a compressed folder's last member, which seeks
-    its decoder to the member's start, still checks the folder CRC. Any other seek
-    (one the inner can jump, as in a stored folder, or one back) stops the hash, and a
-    seek to 0 starts it again. A match found twice runs its callback twice, which the
-    callbacks allow. Changes no byte, so the verification level looks through it.
+    Both checks hash only a decode from offset 0 with no gap (``_in_order``). A
+    forward seek from the position already hashed keeps it when the inner would
+    decode the skipped bytes anyway (its resume point for the target is at or before
+    that position, the rule ``MemberVerifier.seek`` follows, DR-4a): the seek only
+    records the target, and the next read reads the gap through the hash first
+    (``_settle_gap``). This is how a ``seekable_members=True`` read of a compressed
+    folder's last member, which seeks its decoder to the member's start, still checks
+    the folder CRC. Any other seek (one the inner can jump, as in a stored folder, or
+    one back) ends the in-order run, and a seek to 0 starts it again. A match found
+    twice runs its callback twice, which the callbacks allow.
+
+    With a folder CRC, the hash also runs from wherever a seek lands: each run of
+    bytes read in order from there is recorded in ``ranges``, the reader's
+    :class:`FolderRanges`, shared by every decode of the folder (``record_reads``:
+    at the end of a member's read, at a seek away, and at close). A run that starts
+    where a recorded range ends continues that range's CRC. When the recorded ranges
+    join into one over the whole folder, its CRC is the folder's: a match runs
+    ``on_folder_match``, and a mismatch builds its error with ``on_range_mismatch``
+    and keeps it for :class:`_FolderEndCheck` to raise from the read that completed
+    the folder (``take_range_failure``). Changes no byte, so the verification level
+    looks through it.
     """
 
     forwards_verification = True
@@ -542,6 +554,8 @@ class _FolderChecks(DelegatingStream):
         on_folder_mismatch: Callable[[int, bool | None], SpanningCheckError | None],
         on_key_proved: Callable[[], None],
         tail: tuple[int, int] | None = None,
+        ranges: tuple[FolderRanges, int] | None = None,
+        on_range_mismatch: Callable[[int], SpanningCheckError | None] | None = None,
     ) -> None:
         super().__init__(inner)
         self._size = size
@@ -554,20 +568,45 @@ class _FolderChecks(DelegatingStream):
         # decode from 0 that matches clears it.
         self.failure: SpanningCheckError | None = None
         self._on_key_proved = on_key_proved
+        # The reader's recorded ranges and this folder's index; ``None`` when there
+        # is no folder CRC for them to complete.
+        self._ranges = ranges if folder_crc is not None else None
+        self._on_range_mismatch = on_range_mismatch
+        # The error of a range record that completed the folder and did not match,
+        # until the member's end read takes it (``take_range_failure``).
+        self._range_failure: SpanningCheckError | None = None
         # A forward seek whose gap the next read hashes first: its target. The inner
         # stays at ``_pos`` until then. ``None`` when no gap is due.
         self._gap_target: int | None = None
-        self._restart()
+        self._restart(0)
 
-    def _restart(self) -> None:
-        # ``_pos``: bytes hashed in order from offset 0, ``None`` once a seek broke
-        # the run. ``_next_anchor`` is the anchor being hashed, past the last once
-        # one matched: one proof is enough.
-        self._pos: int | None = 0
-        self._crc = 0
+    def _restart(self, at: int) -> None:
+        # ``_pos``: the end of the run hashed in order, ``None`` when nothing is being
+        # hashed. ``_crc`` is the CRC of ``[_run_start, _pos)``. ``[_run_start,
+        # _recorded)`` is already in ``ranges``, and ``_recorded_crc`` is its CRC.
+        # ``_in_order``: the run is this
+        # decode's own from offset 0, which the anchors and the in-order verdict
+        # need. ``_next_anchor`` is the anchor being hashed, past the last once one
+        # matched: one proof is enough.
+        self._in_order = at == 0
+        self._run_start = self._recorded = at
+        self._crc = self._recorded_crc = 0
         self._tail_crc = 0
         self._next_anchor = 0
         self._anchor_crc = 0
+        if at == 0:
+            self._pos: int | None = 0
+            return
+        if self._ranges is None or at >= self._size:
+            self._pos = None
+            return
+        self._pos = at
+        ranges, folder = self._ranges
+        left = ranges.ending_at(folder, at)
+        if left is not None:
+            # Continue the range that ends here: its record then replaces it whole.
+            self._run_start, self._crc = left
+            self._recorded_crc = self._crc
 
     @override
     def read(self, n: int = -1, /) -> bytes:
@@ -612,21 +651,10 @@ class _FolderChecks(DelegatingStream):
         self._pos = end
         if self._folder_crc is not None and start < self._size:
             self._crc = zlib.crc32(data, self._crc)
-            tail = self._tail
-            if tail is not None and end > tail[0]:
-                lo = max(start, tail[0])
-                self._tail_crc = zlib.crc32(
-                    memoryview(data)[lo - start :], self._tail_crc
-                )
-            if end == self._size:
-                if self._crc != self._folder_crc:
-                    # The last chunk's bytes are returned, not withheld; the folder's
-                    # error follows at the reading member's end (``_FolderEndCheck``).
-                    tail_matched = None if tail is None else self._tail_crc == tail[1]
-                    self.failure = self._on_folder_mismatch(self._crc, tail_matched)
-                else:
-                    self.failure = None
-                    self._on_folder_match()
+            if self._in_order:
+                self._hash_in_order(data, start, end)
+        if not self._in_order:
+            return
         anchors = self._anchors
         if self._next_anchor >= len(anchors):
             return
@@ -647,6 +675,77 @@ class _FolderChecks(DelegatingStream):
                 return
             self._next_anchor += 1
             self._anchor_crc = 0
+
+    def _hash_in_order(self, data: bytes, start: int, end: int) -> None:
+        """The last member's CRC, and the verdict once the folder's end is reached."""
+        tail = self._tail
+        if tail is not None and end > tail[0]:
+            lo = max(start, tail[0])
+            self._tail_crc = zlib.crc32(memoryview(data)[lo - start :], self._tail_crc)
+        if end != self._size:
+            return
+        # The verdict is this decode's own: nothing is left to record.
+        self._recorded = end
+        matched = self._crc == self._folder_crc
+        if self._ranges is not None:
+            ranges, folder = self._ranges
+            ranges.settle(folder, self._size, self._crc if matched else None)
+        if not matched:
+            # The last chunk's bytes are returned, not withheld; the folder's
+            # error follows at the reading member's end (``_FolderEndCheck``).
+            tail_matched = None if tail is None else self._tail_crc == tail[1]
+            self.failure = self._on_folder_mismatch(self._crc, tail_matched)
+        else:
+            self.failure = None
+            self._on_folder_match()
+
+    def record_reads(self, *, at_member_end: bool = False) -> None:
+        """Record the bytes hashed since the last record in the reader's ranges.
+
+        When that joins the folder's ranges into one over the whole folder, its CRC
+        is checked here. ``at_member_end``: a member's read has reached its end. An
+        in-order run then records only when a range starts where it stopped, the one
+        case where its record can complete the folder: otherwise it ends in the
+        in-order verdict, or records at a seek or at close, and a pass over a folder
+        of many small members would record once per member.
+        """
+        if self._ranges is None:
+            return
+        pos = self._pos
+        if pos is None or pos <= self._recorded or pos > self._size:
+            return
+        ranges, folder = self._ranges
+        if at_member_end and self._in_order and not ranges.starts_at(folder, pos):
+            return
+        result = ranges.record(folder, self._run_start, pos, self._crc, self._size)
+        if not result.kept and self._run_start < self._recorded:
+            # The recorded part has joined a range to its left since (another
+            # decode's record), so the whole run overlaps that range in part: record
+            # only the bytes past it. CRC is linear, so their CRC is the run's with
+            # the recorded part's, shifted past them, taken out.
+            piece_crc = self._crc ^ crc32_combine(
+                self._recorded_crc, 0, pos - self._recorded
+            )
+            result = ranges.record(folder, self._recorded, pos, piece_crc, self._size)
+        if not result.kept:
+            return
+        self._recorded = pos
+        self._run_start, self._crc = result.start, result.crc
+        self._recorded_crc = self._crc
+        if result.complete is None:
+            return
+        if result.complete == self._folder_crc:
+            self._on_folder_match()
+            return
+        # Forget the ranges: reads that cover the folder again find it again.
+        ranges.settle(folder, self._size, None)
+        if self._on_range_mismatch is not None:
+            self._range_failure = self._on_range_mismatch(result.complete)
+
+    def take_range_failure(self) -> SpanningCheckError | None:
+        """The error of a range record that completed the folder, once."""
+        failure, self._range_failure = self._range_failure, None
+        return failure
 
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
@@ -680,10 +779,12 @@ class _FolderChecks(DelegatingStream):
             if whence == io.SEEK_CUR:
                 offset, whence = max(0, due + offset), io.SEEK_SET
         pos = self._inner.seek(offset, whence)
-        if pos == 0:
-            self._restart()
-        elif pos != self._pos:
-            self._pos = None
+        if pos == 0 or pos != self._pos:
+            self.record_reads()
+            if pos == 0 or self._ranges is not None:
+                self._restart(pos)
+            else:
+                self._pos = None
         if planned is not None:
             raise planned
         return pos
@@ -693,9 +794,21 @@ class _FolderChecks(DelegatingStream):
         target = self._gap_target
         return self._inner.tell() if target is None else target
 
+    @override
+    def close(self) -> None:
+        if not self.closed:
+            try:
+                self.record_reads()
+            finally:
+                super().close()
+            return
+        super().close()
+
     def _checks_pending(self) -> bool:
         """Whether a hash over the rest of the folder could still prove anything."""
-        return self._folder_crc is not None or self._next_anchor < len(self._anchors)
+        return self._folder_crc is not None or (
+            self._in_order and self._next_anchor < len(self._anchors)
+        )
 
     def nearest_resume_offset(self, target: int) -> int | None:
         # A pass-through over the decoded folder: the inner's offset space is ours.
@@ -726,20 +839,43 @@ class _FolderEndCheck(DelegatingStream):
     :class:`_FolderChecks` returns the bytes of the read that reaches the folder's
     end, so the member's own CRC checks them first; the folder's error is raised here,
     from the next read, which finds the member's end. Only a read that returns
-    nothing asks, so a member that ends before the folder's end never raises it.
+    nothing asks, so a member that ends before the folder's end never raises the
+    in-order error (``ends_folder``).
+
+    That read also records the member's bytes in the reader's folder ranges
+    (``_FolderChecks.record_reads``). When the record completes the folder and its
+    CRC does not match, this member's read raises the error, whichever member it
+    is, unless it carries a CRC of its own (``raises_ranges`` false): its own verdict
+    then stands, and ``verify_all()`` finds the folder's error with its read again.
     """
 
     # Changes no byte, so the verification level looks through it.
     forwards_verification = True
     readinto_passthrough = False
 
+    def __init__(
+        self, inner: BinaryIO, *, ends_folder: bool, raises_ranges: bool
+    ) -> None:
+        super().__init__(inner)
+        self._ends_folder = ends_folder
+        self._raises_ranges = raises_ranges
+        # The range error this member's read found, raised again by each end read.
+        self._range_failure: SpanningCheckError | None = None
+
     @override
     def read(self, n: int = -1, /) -> bytes:
         data = self._inner.read(n)
         if not data and n != 0:
             checks = _folder_checks_under(self._inner)
-            if checks is not None and checks.failure is not None:
-                raise checks.failure
+            if checks is not None:
+                checks.record_reads(at_member_end=True)
+                found = checks.take_range_failure()
+                if found is not None and self._raises_ranges:
+                    self._range_failure = found
+                if self._range_failure is not None:
+                    raise self._range_failure
+                if self._ends_folder and checks.failure is not None:
+                    raise checks.failure
         return data
 
     def nearest_resume_offset(self, target: int) -> int | None:
@@ -916,6 +1052,10 @@ class SevenZipReader(BaseArchiveReader):
         # (``_awaiting_spanning_checks``).
         self._folder_crc_passed: set[int] = set()
         self._key_anchor_cache: dict[int, tuple[tuple[int, int, int], ...]] = {}
+        # The ranges of each folder's output that reads hashed in order, from any
+        # offset (``_FolderChecks``): when they join into the whole folder, its CRC
+        # runs with no decode from the start. Shared by every decode of the reader.
+        self._folder_ranges = FolderRanges()
         # ``_folder_last_member`` per folder, filled on first use: each member's open
         # asks, and a scan per open makes a folder's read quadratic in its size.
         self._folder_last: dict[int, ArchiveMember | None] = {}
@@ -1585,6 +1725,10 @@ class SevenZipReader(BaseArchiveReader):
             ),
             tail=self._folder_tail(folder_index) if folder_crc is not None else None,
             on_key_proved=lambda: self._folder_key_proved(folder_index),
+            ranges=(self._folder_ranges, folder_index),
+            on_range_mismatch=lambda crc: self._folder_crc_failed(
+                folder_index, crc, tail_matched=None
+            ),
         )
 
     def _key_anchors(self, folder_index: int) -> tuple[tuple[int, int, int], ...]:
@@ -1626,7 +1770,8 @@ class SevenZipReader(BaseArchiveReader):
             raise_member_level(member, Verification.NONE, ceiling)
 
     def _folder_crc_matched(self, folder_index: int) -> None:
-        """The folder's digest matched over a whole in-order decode.
+        """The folder's digest matched over a whole in-order decode, or over the
+        recorded ranges of several reads once they cover the folder (``FolderRanges``).
 
         Every byte of every member is proved, so the members with no CRC of their own
         reach ``CHECKSUM``. Those with one reach it through their own reads.
@@ -1642,8 +1787,9 @@ class SevenZipReader(BaseArchiveReader):
         """The members of each folder whose digest has not matched a whole decode.
 
         A read of one member does not run a folder's digest unless it decodes the
-        folder in order from its start to its end, which a ``seekable_members=True``
-        read that seeks does not. Such reads still leave each member at its ceiling,
+        folder in order from its start to its end, or its bytes complete the ranges
+        that earlier reads recorded (``FolderRanges``). ``seekable_members=True``
+        reads whose ranges were too small to keep, or past the cap, do neither. Such reads still leave each member at its ceiling,
         so without this ``verify_all()`` would select none of them and return no
         failure for a folder whose digest does not match. The folder's last member is
         among them, with or without a CRC of its own: its read is the one that ends
@@ -1893,19 +2039,22 @@ class SevenZipReader(BaseArchiveReader):
         return verdict
 
     def _watch_folder_end(self, stream: BinaryIO, member: ArchiveMember) -> BinaryIO:
-        """Wrap the member that ends its folder in :class:`_FolderEndCheck`.
+        """Wrap a member of a folder with a folder CRC in :class:`_FolderEndCheck`.
 
-        Only a folder with a folder CRC to check (``_folder_crc_only``), and only its
-        member whose bytes end at the folder's end: no other member's read finds it.
+        Only a folder with a folder CRC to check (``_folder_crc_only``). Its member
+        whose bytes end at the folder's end raises the in-order error; any member's
+        read can complete the folder's recorded ranges (``_FolderChecks``).
         """
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
         folder_index = raw.folder_index
         if folder_index is None or folder_index not in self._folder_crc_only:
             return stream
-        if self._folder_last_member(folder_index) is not member:
-            return stream
-        return _FolderEndCheck(stream)
+        return _FolderEndCheck(
+            stream,
+            ends_folder=self._folder_last_member(folder_index) is member,
+            raises_ranges=_member_crc(member) is None,
+        )
 
     def _watch_unverified(self, stream: BinaryIO, member: ArchiveMember) -> BinaryIO:
         """Wrap ``stream`` to report an abandoned read of an unconfirmed folder's member.
