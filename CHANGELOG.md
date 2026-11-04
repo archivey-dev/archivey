@@ -12,6 +12,8 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-04
+
 A minor release: new formats built in, a per-call format policy, the ratio limit on
 every read, and stricter defaults for names and for archive shapes no writer produces.
 
@@ -56,7 +58,8 @@ remove them.
   `ArchiveStream.verify()` runs the checks without keeping the bytes, and
   `password_only=True` stops once the password is confirmed. A stream that can seek is
   left where it was; one that cannot is read to the end. `reader.verify_all()` checks
-  every member and returns the ones that failed, each with its error.
+  every member, checks that cover several members included (a 7z folder CRC, the
+  checksum of a `.tar.gz`), and returns each member it could not prove, with its error.
 
 ### Changed
 
@@ -260,7 +263,8 @@ What goes in this file, from 0.2.0 on:
 `scripts/release.py start` writes the compare links below this comment.
 -->
 
-[Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/archivey-dev/archivey/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/archivey-dev/archivey/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/archivey-dev/archivey/releases/tag/v0.2.0
 [0.2.0rc1]: https://github.com/archivey-dev/archivey/releases/tag/v0.2.0rc1
