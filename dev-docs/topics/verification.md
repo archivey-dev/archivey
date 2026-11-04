@@ -114,7 +114,7 @@ members directly.
   password check is found only then, and some members show only then that they carry a
   checksum. A WinZip AES AE-2 member, for example, lists at `LENGTH` (no CRC) and settles
   at `CHECKSUM` when its stream finds the authentication code.
-- **After that it falls in two cases only, once each:**
+- **After that it falls in three cases only, once each:**
   - A read finds a stream or frame of an `.xz`, `.zst` or `.lz4` file with no check
     (§2.4). It drops to what the other layers can still reach, usually `LENGTH`.
     `ArchiveMember._frame_unchecked` remembers it, so a later stream that sees only
@@ -123,6 +123,9 @@ members directly.
     passing, for a reason other than a mismatch (§2.5). The covered files drop to
     `LENGTH` (`drop_spanning_ceiling`). A checksum that ran and failed stays their
     ceiling, and `verify_all()` returns them.
+  - A 7z folder decode fails or ends before the folder's last byte, so the folder CRC
+    can never run (§2.5). Its files with no CRC of their own drop to `LENGTH`, or to
+    `NONE` while the folder's key is still unproved.
 - **It rises when another member's checksum confirms the password** (§2.1), and when a
   spanning check passes.
 - **`verified <= verifiable` always.** The public `verifiable` returns
@@ -228,7 +231,9 @@ Until it passes, each member's `verified` stays where its own reads left it, usu
   marks nothing. A walk that ends at the archive's end without the checksum passing (a
   later frame with no check, a jump that broke the decode, trailing data that leaves the
   checksum unclaimed), or that damage ends early, drops the marked files to `LENGTH`.
-  A failed checksum (`_StreamChecksumError`) does not drop them. A walk the caller cut
+  A failed checksum (`_StreamChecksumError`) does not drop them. Only gzip, zlib, lzip,
+  zstd and LZ4 raise that error; an xz or bzip2 check failure looks like damage, so it
+  drops them like a cut stream. A walk the caller cut
   short changes nothing. Listing such an archive on a random-access reader reads it to
   the end, so its members are often at `CHECKSUM` before any read.
 - **7z folders.** A folder can store one CRC for its whole unpacked stream and none per
@@ -250,7 +255,10 @@ Until it passes, each member's `verified` stays where its own reads left it, usu
     raises that more precise error, and the folder error is kept for `verify_all()`
     (`_note_unraised_spanning`). When the last file's own CRC matched, that file reaches
     `CHECKSUM` and is not a failure. No level falls, and the covered files keep their
-    `CHECKSUM` ceiling. A folder CRC never drops: an in-order decode always runs it.
+    `CHECKSUM` ceiling.
+  - A decode that fails, or ends before the folder's last byte, means the folder CRC
+    can never run. The reader then drops the covered files (`_folder_crc_unreachable`):
+    to `NONE` while the folder's key is unproved, else to `LENGTH`.
 - **ZIP streaming passes.** A pass that decodes a member to find the next header (a
   bit-3 member with a data descriptor) raises it as a read would: `CHECKSUM` when the CRC
   or the AES code covered every byte, else `LENGTH`, and never past a ceiling that an
@@ -384,11 +392,11 @@ get there. "Weak" is a password check a wrong password can pass by chance.
 | Format | Checks on member data | `verifiable` | Notes |
 | --- | --- | --- | --- |
 | ZIP | CRC-32 per member; WinZip AES code | `CHECKSUM` | ZipCrypto and WinZip AES accept a password on a weak check: `NONE` until the CRC or the code matches. AE-2 has no CRC and lists at `LENGTH`, then settles at `CHECKSUM` at open. A CRC of 0 on a directory entry is no digest |
-| 7z | CRC per file, or one per folder | `CHECKSUM` (a file's own CRC, or its folder's CRC) | No password check value: an AES member is `NONE` until a CRC in its folder matches. AES with no CRC anywhere in the folder stays `NONE` (§2.1). Folder CRC: §2.5 |
+| 7z | CRC per file, or one per folder | `CHECKSUM` (a file's own CRC, or its folder's CRC; lower once a damaged folder stops its decode early) | No password check value: an AES member is `NONE` until a CRC in its folder matches. AES with no CRC anywhere in the folder stays `NONE` (§2.1). Folder CRC: §2.5 |
 | RAR 5 | CRC-32 or BLAKE2sp per member | `CHECKSUM` | The password check value is reliable, so an encrypted member is `UNLOCKED` before its digest. Tweaked digests are checked through the key (§2.3) |
 | RAR 3-4 | CRC-32 per member | `CHECKSUM` | An encrypted member has no password check: `NONE` until its CRC matches. An archive with encrypted headers has checked the password already |
 | TAR, CPIO, ar | None per member | `LENGTH` | Header checksums do not count |
-| Compressed TAR, CPIO, ar | The codec's check over the whole stream | `CHECKSUM` when the codec has one; `LENGTH` once a walk finds it cannot pass | A file's own read stops at `LENGTH`; all files rise together at the codec's end (§2.5). A sparse TAR member is left to its own reads |
+| Compressed TAR, CPIO, ar | The codec's check over the whole stream | `CHECKSUM` when the codec has one; `LENGTH` once a walk finds it cannot pass (an xz or bzip2 check failure counts as damage here) | A file's own read stops at `LENGTH`; all files rise together at the codec's end (§2.5). A sparse TAR member is left to its own reads |
 | ISO, SquashFS, directory | None | `LENGTH` | |
 | gzip, bzip2, lzip, zlib file | The stream's checksum | `CHECKSUM` | Counts only for a read from 0 with no seek between (§2.4) |
 | xz, zstd, LZ4 file | Per stream or frame, if the writer added one | `CHECKSUM` until a frame without a check is found, then `LENGTH` | §2.4 |
@@ -404,6 +412,7 @@ get there. "Weak" is a password check a wrong password can pass by chance.
 | A clean full read of a 7z AES member with no CRC stays `NONE` | **format** | Nothing in the archive can prove the key. `DIGEST_UNVERIFIABLE` (`no_integrity_anchor`) says so too |
 | A file of a `.tar.gz`, or a 7z file covered only by its folder CRC, read to its end is `LENGTH` while its `verifiable` is `CHECKSUM` | **format** | The checksum covers several members. `stream.verify()` never reads past its member; `verify_all()` or a pass to the end raises it (§2.5) |
 | `verify_all()` on a `.tar.gz` with a bad trailer returns every file | **archivey** | Nothing says which files the failed checksum covers (§3.2, DR-1) |
+| A `.tar.xz` or `.tar.bz2` whose check fails drops its files to `LENGTH` instead of returning them as failures | **archivey** | Those codecs report a failed check as damage, not as a mismatch (§2.5) |
 | A `.zst` file's `verifiable` drops from `CHECKSUM` to `LENGTH` partway through a read | **format** | Each frame says in its own header whether it carries a check (§1.1) |
 | After a jump with `seekable_members=True`, a member read to the end is below its `verifiable` | **archivey** | The jump skipped bytes the check needs (§2.6). `verify()` reads from 0 again |
 | `verify()` on a non-seekable stream makes later reads raise `ArchiveyUsageError` | **archivey** | It cannot go back. Read the data instead: the read runs the same checks |
