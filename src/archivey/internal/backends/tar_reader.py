@@ -749,6 +749,7 @@ class TarReader(BaseArchiveReader):
             # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
             # it stays the ceiling of the members it covers, which verify_all()
             # returns. An xz or bzip2 check failure reads as damage, handled below.
+            self._spanning_check_ran("codec")
             raise
         except ArchiveyError as e:
             # Damage ended the walk before the codec's end, so its checksum cannot
@@ -793,12 +794,13 @@ class TarReader(BaseArchiveReader):
         bzip2 stream CRC) is checked. When the codec stream proves it matched over a
         decode from its start with no gap, every member's bytes passed it, read or not
         (``verification-level-redesign``, the spanning checks). A sparse member's holes
-        are not stored bytes, so it is left to its own reads. A codec with no check, a
-        seek that broke the decode, or a walk cut short raises nothing. When the walk
-        ended without that proof because a frame has no check, the members marked as
-        covered fall to what their own reads reach (``drop_spanning_ceiling``). When
-        the check exists but did not run, that is damage: they keep the ceiling and
-        are failures of ``verify_all()`` (``_note_spanning_unreachable``).
+        are not stored bytes, so it is left to its own reads. A walk cut short raises
+        nothing. When the walk ended without that proof because a frame has no
+        check, the members marked as covered fall to what their own reads reach
+        (``drop_spanning_ceiling``). When the check exists and the walk did not reach
+        it, most likely because the archive ends early, that is treated as damage:
+        they keep the ceiling and are failures of every later ``verify_all()``
+        (``_note_spanning_unreachable``).
         """
         codec = self._owned_codec_stream
         if codec is None:
@@ -812,10 +814,12 @@ class TarReader(BaseArchiveReader):
                 for member in self._listed:
                     drop_spanning_ceiling(member, Verification.LENGTH)
             else:
-                # The check exists but this walk did not run it (the data ends
-                # early): damage, which keeps the ceiling and makes failures.
+                # The check exists but this walk did not reach it, most likely
+                # because the archive ends early. Treated as damage: the ceiling
+                # stays and the covered members are failures of verify_all().
                 self._note_spanning_unreachable("codec", self._listed, None)
             return
+        self._spanning_check_ran("codec")
         for member in self._listed:
             if member.is_file and self._member_data_is_stream_bytes(member):
                 raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)

@@ -191,10 +191,23 @@ def test_damage_that_ends_the_walk_keeps_the_ceiling_and_fails_the_files(
         failures = reader.verify_all()
         report = reader.members_report()
     assert sorted(m.name for m, _e in failures) == ["a", "b"]
+    assert "did not run" in str(failures[0][1])
     files = [m for m in report.members if m.is_file]
     assert {(m.verified, m.verifiable) for m in files} == {
         (Verification.LENGTH, Verification.CHECKSUM)
     }
+
+
+@pytest.mark.parametrize("cut", [8, 20])
+def test_damage_found_while_listing_still_fails_the_files_later(cut: int) -> None:
+    # A random-access reader walks its listing once: the files whose check the
+    # damage kept from running are failures of every later verify_all() too.
+    data = gzip.compress(_tar("w"), mtime=0)[:-cut]
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.members_report()
+        for _ in range(2):
+            failures = reader.verify_all()
+            assert sorted(m.name for m, _e in failures) == ["a", "b"]
 
 
 @pytest.mark.parametrize("streaming", [False, True])

@@ -796,3 +796,14 @@ def test_a_compressed_cpio_cut_in_its_footer_keeps_the_ceiling(
         files = [m for m in reader.members_report().members if m.is_file]
     assert sorted(m.name for m, _e in failures) == ["a", "b"]
     assert {(m.verified, m.verifiable) for m in files} == {(_V.LENGTH, _V.CHECKSUM)}
+
+
+def test_a_compressed_cpio_cut_in_its_footer_fails_after_listing_and_again() -> None:
+    # Random access walks the listing once; the damage it found still fails the
+    # files on every later verify_all().
+    data = gzip.compress(_SPANNED)[:-6]
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.members_report()
+        for _ in range(2):
+            failures = reader.verify_all()
+            assert sorted(m.name for m, _e in failures) == ["a", "b"]

@@ -1657,6 +1657,7 @@ class SevenZipReader(BaseArchiveReader):
         """
         self._folder_key_proved(folder_index)
         self._folder_crc_passed.add(folder_index)
+        self._spanning_check_ran(folder_index)
         for member in self._folder_members.get(folder_index, ()):
             if _member_crc(member) is None:
                 raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
@@ -1748,6 +1749,7 @@ class SevenZipReader(BaseArchiveReader):
         # A folder that matched once can only fail a later decode if the source
         # changed under the reader; take it out again so ``verify_all()`` reads it.
         self._folder_crc_passed.discard(folder_index)
+        self._spanning_check_ran(folder_index)  # it ran: this error replaces the note
         members = self._folder_members.get(folder_index, ())
         last = self._folder_last_member(folder_index)
         if tail_matched and last is not None:

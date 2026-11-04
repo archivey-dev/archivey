@@ -404,6 +404,7 @@ class _PluginAdapter(BaseArchiveReader):
             # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
             # it stays the ceiling of the members it covers, which verify_all()
             # returns. An xz or bzip2 check failure reads as damage, handled below.
+            self._spanning_check_ran("codec")
             raise
         except ArchiveyError as e:
             # Damage ended the walk before the outer codec's end, so its checksum
@@ -1477,9 +1478,13 @@ class SequentialReaderAdapter(_PluginAdapter):
         That checksum covers every decoded byte, so a member whose data is a slice of
         those bytes is checked, read or not. Data a reader decodes itself
         (``MemberSpan.data``) or a layer it starts with ``ForwardStream.decompress``
-        is decoded again from those bytes, so it is left to its own reads. A codec
-        with no check, a seek that broke the decode (a jump, not a decode-through),
-        or a walk cut short raises nothing.
+        is decoded again from those bytes, so it is left to its own reads. A walk
+        cut short raises nothing. When the walk ended without that proof because a
+        frame has no check, the members marked as covered fall to what their own
+        reads reach (``drop_spanning_ceiling``). When the codec has a check and the
+        walk did not reach it, most likely because the archive ends early, that is
+        treated as damage: they keep the ceiling and are failures of every later
+        ``verify_all()`` (``_note_spanning_unreachable``).
         """
         codec = self._codec_stream
         if codec is None:
@@ -1493,10 +1498,12 @@ class SequentialReaderAdapter(_PluginAdapter):
                 for member in self._listed:
                     drop_spanning_ceiling(member, Verification.LENGTH)
             else:
-                # The check exists but this walk did not run it (the data ends
-                # early): damage, which keeps the ceiling and makes failures.
+                # The check exists but this walk did not reach it, most likely
+                # because the archive ends early. Treated as damage: the ceiling
+                # stays and the covered members are failures of verify_all().
                 self._note_spanning_unreachable("codec", self._listed, None)
             return
+        self._spanning_check_ran("codec")
         for member in self._listed:
             if self._codec_covers(member):
                 raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)

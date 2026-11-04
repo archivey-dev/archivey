@@ -761,6 +761,12 @@ class BaseArchiveReader(ArchiveReader):
         # check, keyed by the backend's name for it, so repeated reads of the same
         # damaged member keep one error, not one per read.
         self._unraised_spanning: dict[object, SpanningCheckError] = {}
+        # Spanning checks that damage keeps from running (``_note_spanning_unreachable``),
+        # by the backend's name for the check. Unlike ``_unraised_spanning`` these
+        # last as long as the reader: a random-access listing is walked once, so a
+        # later ``verify_all()`` must still return the members they cover. A check
+        # that passes later takes its entry out (``_spanning_check_ran``).
+        self._spanning_unreachable: dict[object, SpanningCheckError] = {}
         # Name to the member listed under it, or to a list of them in listing order
         # once a second member has that name: a list here always holds two or more. A
         # list per name would be one more object per member for the collector to walk.
@@ -4341,6 +4347,16 @@ class BaseArchiveReader(ArchiveReader):
             spanning.append(error)
             retry_next.update(id(c) for c in error.covers)
         self._unraised_spanning.clear()
+        for error in self._spanning_unreachable.values():
+            # Only the members still short of what the check would prove: one that
+            # reached CHECKSUM another way since has nothing left to fail.
+            pending = tuple(
+                c for c in error.covers if c.verified is not Verification.CHECKSUM
+            )
+            if pending:
+                spanning.append(SpanningCheckError(str(error), covers=pending))
+                spanning[-1].__cause__ = error.__cause__
+                spanning[-1].archive_name = error.archive_name
         self._spanning_retry = retry_next
         if spanning:
             failures = self._with_spanning_failures(failures, spanning)
@@ -4371,15 +4387,17 @@ class BaseArchiveReader(ArchiveReader):
         members: Iterable[ArchiveMember],
         cause: BaseException | None,
     ) -> None:
-        """Keep, for ``verify_all()``, the members a check over several of them covers
-        when damage keeps that check from running.
+        """Keep, for every later ``verify_all()``, the members a check over several of
+        them covers when that check did not run.
 
         ``verifiable`` is what a read could reach if nothing were damaged, so damage
         does not lower it. The members the check alone would have proved
         (``ArchiveMember._spanning_checksum``) and that have not reached ``CHECKSUM``
-        another way are returned as failures instead, so ``verify_all()`` still leaves
-        no member below its ceiling unexplained. ``cause`` is the damage, or ``None``
-        when the data simply ended early.
+        another way are returned as failures instead, so ``verify_all()`` leaves no
+        member below its ceiling unexplained. ``cause`` is the error that stopped the
+        read, or ``None`` when the read ended without reaching the check, which
+        damage is the likely reason for. ``key`` names the check; a later note for
+        the same check replaces this one.
         """
         covers = tuple(
             m
@@ -4391,15 +4409,25 @@ class BaseArchiveReader(ArchiveReader):
         names = ", ".join(quoted(member.name) for member in covers[:5])
         if len(covers) > 5:
             names += f" and {len(covers) - 5} more"
-        why = "the data ends early" if cause is None else str(cause)
+        why = (
+            "the read did not reach that check, most likely because the archive "
+            "ends early"
+            if cause is None
+            else str(cause)
+        )
         error = SpanningCheckError(
-            f"The check that covers {names} could not run, so their data could not be "
-            f"confirmed: {why}",
+            f"A check over several members did not run, so nothing confirms the data "
+            f"of {names}: {why}",
             covers=covers,
         )
         error.__cause__ = cause
         error.archive_name = self._archive_name
-        self._note_unraised_spanning(key, error)
+        self._spanning_unreachable[key] = error
+
+    def _spanning_check_ran(self, key: object) -> None:
+        """The check ``key`` names has run to its end: whatever damage kept it from
+        running before (``_note_spanning_unreachable``) no longer applies."""
+        self._spanning_unreachable.pop(key, None)
 
     def _with_spanning_failures(
         self,
