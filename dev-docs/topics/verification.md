@@ -37,6 +37,12 @@ read that fails one raises, whatever level the stream reports.
   checksum, and the per-frame or per-block checks of `.xz`, `.zst` and `.lz4` all count.
   A file of frames counts only when every frame carries a check. Archive headers (7z
   header CRC, RAR header CRCs, TAR header checksums) never count.
+- **The level reports checks a caller cannot run.** `hashes` holds only the member
+  digests (CRC-32, BLAKE2sp). A codec's checksum, the per-frame checks, the WinZip AES
+  code and a 7z folder CRC are not exposed, and some members have no digest of their
+  own at all (an AE-2 ZIP member, a `.tar.gz` member, a 7z file covered only by its
+  folder CRC). So reading a member and comparing its bytes with `hashes` cannot
+  replace `verified`.
 - **The level lives on the member.** `verified` is the best any read has proved so far.
   `verifiable` is the most a read from the start to the end can prove. Both are filled
   in place by the reader, like digests. A member stream mirrors its member. An
