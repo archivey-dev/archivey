@@ -26,19 +26,6 @@ every read, and stricter defaults for names and for archive shapes no writer pro
   (`only=`, `exclude=`, `plugins=`) and which optional libraries it may load
   (`exclude_libraries=`, with the new `OptionalLibrary` enum).
   `PackageNotInstalledError.missing` names what is missing.
-- An experimental interface for formats and codecs from outside archivey:
-  `archivey.formats` with `register_format()` and `register_codec()`, and
-  `FormatPolicy(replace=)` to read a built-in container with your own reader. It is
-  outside the stability policy: any release may change it.
-- Experimental: verification levels. `verified` and `verifiable`, on `ArchiveMember` and
-  on `ArchiveStream`, say how far a member's data has been checked: `Verification.NONE`,
-  `UNLOCKED` (the password is confirmed), `LENGTH` (all the data is there) or `CHECKSUM`
-  (every byte passed a stored checksum, at whatever layer it sits).
-  `ArchiveStream.verify()` runs the checks without keeping the bytes, and
-  `password_only=True` stops once the password is confirmed. A stream that can seek is
-  left where it was; one that cannot is read to the end. `reader.verify_all()` checks
-  every member and returns the ones that failed, each with its error. Any release may
-  change these or the levels.
 - `ArchiveMember.accessed_utc()`, `created_utc()` and `ctime_utc()`, beside
   `modified_utc()`. Extraction restores a member's birth time (`created`) on Windows and
   macOS.
@@ -53,6 +40,23 @@ every read, and stricter defaults for names and for archive shapes no writer pro
   differently; reported at INFO, raised only by `PEDANTIC` or `raise_on=`).
   `MEMBER_READERS_DISAGREE` also names a file that only one of an ISO image's trees
   (ISO 9660, Joliet, UDF) holds, and a member name with a NUL byte.
+
+### Experimental
+
+These are outside the stability policy: any release, a patch included, may change or
+remove them.
+
+- An interface for formats and codecs from outside archivey: `archivey.formats` with
+  `register_format()` and `register_codec()`, and `FormatPolicy(replace=)` to read a
+  built-in container with your own reader.
+- Verification levels. `verified` and `verifiable`, on `ArchiveMember` and on
+  `ArchiveStream`, say how far a member's data has been checked: `Verification.NONE`,
+  `UNLOCKED` (the password is confirmed), `LENGTH` (all the data is there) or `CHECKSUM`
+  (every byte passed a stored checksum, at whatever layer it sits).
+  `ArchiveStream.verify()` runs the checks without keeping the bytes, and
+  `password_only=True` stops once the password is confirmed. A stream that can seek is
+  left where it was; one that cannot is read to the end. `reader.verify_all()` checks
+  every member and returns the ones that failed, each with its error.
 
 ### Changed
 

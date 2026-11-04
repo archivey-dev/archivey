@@ -41,6 +41,9 @@ goes in it:
   removal that skipped the warning release under DR-12a's reopen clause;
 - in a minor release only, a name deprecated in the previous minor release is removed
   now, with a **Removed** line. A patch release removes nothing (DR-12a);
+- one line per new or changed name that is experimental (`EXPERIMENTAL` in
+  `scripts/api_surface.py`), under **Experimental**, after **Added**: they are outside
+  the stability policy, so they stay apart from the lines it covers;
 - one line per security fix (**Security**);
 - one line summarizing all other bug fixes (**Fixed**), unless a fix changes behavior
   users rely on, which then gets its own line.
