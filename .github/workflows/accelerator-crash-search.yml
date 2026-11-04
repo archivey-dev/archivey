@@ -1,3 +1,5 @@
+name: Accelerator crash search
+
 # Accelerator crash search (cross-platform)
 #
 # archivey runs rapidgzip (gzip, zlib, raw DEFLATE and bzip2) in a child process, so a

@@ -1,3 +1,5 @@
+name: Accelerator fuzz soak
+
 # Accelerator fuzz soak (weekly)
 #
 # The four accelerator targets in tests/atheris_fuzz (gzip_accel, zlib_accel,
