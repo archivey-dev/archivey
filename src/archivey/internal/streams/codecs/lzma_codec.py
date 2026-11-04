@@ -108,6 +108,7 @@ class _SizedLzmaCodec(_LzmaErrorCodec):
 
 class XzCodec(_SizedLzmaCodec):
     codec = Codec.XZ
+    checks_frames = True
     stream_format = StreamFormat.XZ
     magic = (MagicSignature(0, b"\xfd7zXZ\x00", ArchiveFormat.XZ),)
 

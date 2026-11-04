@@ -351,10 +351,15 @@ class ArchiveSource(ReadOnlyIOStream):
         # clamp needs it, and it is only ever moved through this object. A caller's
         # seekable stream starts wherever the caller left it.
         self._pos = position
-        # The furthest position a seekable source left before its last seek
-        # (``bytes_reached``). Reads only move forward, so that and ``_pos`` hold the
-        # furthest position reached, and a read does not pay to keep it.
+        # The furthest position a read of a seekable source has ended at, as of its last
+        # seek (``bytes_reached``). Reads only move forward, so that and ``_pos`` hold
+        # the furthest position reached, and a read does not pay to keep it. A seek
+        # target is not counted until a read moves past it: a seek may land past the
+        # end, and only a read proves the bytes exist.
         self._reached = position
+        # Where the last seek landed; ``_pos`` still equal to it means no read has
+        # returned bytes since.
+        self._seek_target = position
         # Only a non-seekable source replays a prefix; a seekable one is rewound instead.
         self._replay = None if seekable else bytearray()
         # Set for a non-seekable raw source, whose full-count reads all go through it.
@@ -583,17 +588,21 @@ class ArchiveSource(ReadOnlyIOStream):
 
     @property
     def bytes_reached(self) -> int | None:
-        """The furthest offset a seekable source has been read or moved to, or
-        ``None`` for a non-seekable source and for a directory.
+        """The furthest offset a read of a seekable source has ended at, or ``None``
+        for a non-seekable source and for a directory.
 
         The live ratio denominator of an archive read from a seekable stream whose
         size archivey does not know (``BaseArchiveReader.compressed_bytes_consumed``),
         as :attr:`bytes_pulled` is for a pipe. It never passes the bytes the archive
-        has, since a read stops at the end; reading again what was read adds nothing.
+        has, since a read stops at the end and a seek counts only once a read returns
+        bytes after it; reading again what was read adds nothing.
         """
         if self._replay is not None or self._is_directory:
             return None
-        return max(self._reached, self._pos)
+        pos = self._pos
+        if pos == self._seek_target:
+            return self._reached
+        return max(self._reached, pos)
 
     @property
     def seek_is_expensive(self) -> bool:
@@ -883,8 +892,10 @@ class ArchiveSource(ReadOnlyIOStream):
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable:
             raise io.UnsupportedOperation("seek")
-        self._reached = max(self._reached, self._pos)
-        self._pos = self._stream().seek(offset, whence)
+        pos = self._pos
+        if pos != self._seek_target:
+            self._reached = max(self._reached, pos)
+        self._pos = self._seek_target = self._stream().seek(offset, whence)
         return self._pos
 
     @override
@@ -949,6 +960,10 @@ class ArchiveSource(ReadOnlyIOStream):
         if self._length is not None:
             self._length = max(self._length - start, 0)
         self._reached = max(self._reached - start, 0)
+        # Reads move ``_pos`` forward from the last seek, so the target is at or before
+        # ``start``: it stays equal to ``_pos`` exactly when no read has
+        # returned bytes since.
+        self._seek_target -= start
         self._pos = 0
 
     def on_close(self, callback: Callable[[], None]) -> None:

@@ -1242,20 +1242,29 @@ class DecompressorStream(ReadOnlyIOStream):
 
         The source is compressed, so its end and length say nothing about the
         decoded bytes. A check over all of it does: the WinZip AES HMAC covers every
-        ciphertext byte, and so every byte decoded from them. ``frames_checked`` says
-        every frame seen so far carries a check: the stream above turns it into a
-        content proof only for a read from the start to the end, which decodes, and
-        so checks, every frame.
+        ciphertext byte, and so every byte decoded from them. For a codec whose check
+        is optional per frame, ``frames_checked`` says every frame seen so far carries
+        a check and ``frame_unchecked`` that one does not: the stream above turns the
+        first into a content proof only for a read from the start to the end, which
+        decodes, and so checks, every frame.
         """
         below = ask_verification_proofs(self._inner)
+        current = getattr(self._decoder, "frame_checks", None)
         return VerificationProofs(
             key_in_doubt=below.key_in_doubt,
             content=below.content,
             content_possible=below.content_possible,
-            frames_checked=self._frame_checks.all_checked(
-                getattr(self._decoder, "frame_checks", None)
-            ),
+            per_frame=current is not None,
+            frames_checked=self._frame_checks.all_checked(current),
+            frame_unchecked=self._frames_unchecked_now(),
         )
+
+    def _frames_unchecked_now(self) -> bool:
+        """Whether a frame seen so far carries no check (``find_frame_watch``)."""
+        if self._frame_checks.unchecked:
+            return True
+        current = getattr(self._decoder, "frame_checks", None)
+        return current is not None and current.unchecked
 
     def nearest_resume_offset(self, target: int) -> int:
         """Decompressed offset the decoder must restart from to reach ``target``.

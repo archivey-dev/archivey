@@ -4274,8 +4274,6 @@ class BaseArchiveReader(ArchiveReader):
 
         # A member at its ceiling has nothing left to prove; one whose ceiling is NONE
         # (a key nothing can prove) is read again, so its length checks run each time.
-        # So is one whose per-frame checks wait on a read from the start
-        # (``ArchiveMember._ceiling_provisional``), as it may still reach CHECKSUM.
         # So is one the last call found in a failed spanning check, at its ceiling or
         # not: the check is read again, to fail it again or (a password supplied
         # since) to pass. So is each member of a spanning check that has not passed
@@ -4287,10 +4285,7 @@ class BaseArchiveReader(ArchiveReader):
         def selector(m: ArchiveMember) -> bool:
             ceiling = m.verifiable
             return (
-                ceiling is Verification.NONE
-                or m.verified < ceiling
-                or m._ceiling_provisional is True
-                or id(m) in retry
+                ceiling is Verification.NONE or m.verified < ceiling or id(m) in retry
             )
 
         with self.stream_members(selector) as members:

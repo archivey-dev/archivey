@@ -1833,10 +1833,8 @@ error, whether or not the listing ran before the call.
 After `verify_all()` returns, every listed member that is not among its failures SHALL
 have `verified == verifiable`, checks that span members included. On a random-access
 reader it SHALL NOT touch streams the caller holds. A second call SHALL re-read the
-members whose `verified` is below their `verifiable`, the earlier failures, the
-members whose `verifiable` is `NONE`, and the members whose per-frame checks wait on a
-read from the start (a `.zst`, `.lz4` or `.xz` member read only past a jump); it MAY
-skip any other member. On a
+members whose `verified` is below their `verifiable`, the earlier failures, and the
+members whose `verifiable` is `NONE`; it MAY skip any other member. On a
 streaming-only reader, `members_report()` after `verify_all()` SHALL return the report
 of that same pass without reading again.
 

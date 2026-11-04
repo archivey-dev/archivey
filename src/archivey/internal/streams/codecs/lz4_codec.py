@@ -71,6 +71,7 @@ _LZ4_FRAME_CHECK = FrameCheck(head=5, judge=_lz4_frame_has_checksum)
 
 class Lz4Codec(StreamCodec):
     codec = Codec.LZ4
+    checks_frames = True
     stream_format = StreamFormat.LZ4
     magic = (
         MagicSignature(0, b"\x04\x22\x4d\x18", ArchiveFormat.LZ4),
