@@ -64,8 +64,8 @@ and later fixed.
 Review catches mistakes in the reasoning. These checks catch the rest, and each one finds things the
 others miss.
 
-- **Thousands of tests on every pull request.** They run on Linux with Python 3.11 to 3.14, on macOS
-  and Windows with 3.11 and 3.14, on a free-threaded build, with no optional packages installed,
+- **Thousands of tests on every pull request.** They run on Linux with Python 3.11 to 3.15, on macOS
+  and Windows with 3.11 and 3.15, on a free-threaded build, with no optional packages installed,
   with the oldest dependency versions archivey allows, and on PyPy.
 - **A test for every fix.** Every bug that has been fixed has a test, and so do many corner cases
   that were only worried about, so a fixed problem can't quietly come back.

@@ -30,7 +30,7 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
 - **Zero-dependency core** for ZIP, TAR, 7z with the common codecs, RAR listing,
   directories and the standard-library codecs,
   plus an `archivey` command for listing, testing and extracting from the shell.
-- Tested on Python 3.11 to 3.14 on Linux, and on 3.11 and 3.14 on macOS and Windows.
+- Tested on Python 3.11 to 3.15 on Linux, and on 3.11 and 3.15 on macOS and Windows.
 
 The API is not frozen until 1.0, but no large changes are expected. Until then, a removed or
 renamed name warns for one minor release before it goes ([versioning and

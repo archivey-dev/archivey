@@ -1,0 +1,77 @@
+name: Scheduled failure alert
+
+# GitHub emails a scheduled run's failure only to the account that last changed its cron
+# line. When a merge-queue merge made that change, the email goes to the merge-queue bot
+# and nobody sees it. This workflow turns each watched workflow's scheduled run on `main`
+# into an issue instead: a failure opens one issue per workflow (or comments on the open
+# one), and the next green scheduled run comments and closes it. Cancelled and skipped
+# runs change nothing. Dispatched and pull request runs are ignored; the person who
+# started them is already looking.
+#
+# `workflows` matches each workflow's `name:`. A new scheduled workflow goes in this list
+# or in the exclusions of `test_every_scheduled_workflow_is_alerted` in
+# scripts/tests/test_release_script.py, which fails until it is in one of them.
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - Atheris fuzz
+      - Accelerator fuzz soak
+      - Accelerator crash search
+      - rapidgzip resume stress
+      - PPMd native stress
+      - Benchmark wall-time
+      - Review tally
+    types: [completed]
+
+permissions:
+  issues: write
+
+concurrency:
+  group: scheduled-failure-alert-${{ github.event.workflow_run.workflow_id }}
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    if: >-
+      github.event.workflow_run.event == 'schedule'
+      && github.event.workflow_run.head_branch == github.event.repository.default_branch
+      && contains(fromJSON('["success","failure","timed_out","startup_failure"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Open, update or close the workflow's issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          # Assigned so the alert reaches a person even with repository watching off.
+          ASSIGNEE: davitf
+        run: |
+          set -euo pipefail
+          title="Scheduled run failing: $WORKFLOW"
+          number=$(gh issue list --state open --limit 500 \
+            --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          line="\`$CONCLUSION\` on ${SHA:0:12}: $RUN_URL"
+          if [ "$CONCLUSION" = "success" ]; then
+            if [ -n "$number" ]; then
+              gh issue close "$number" --reason completed \
+                --comment "Green again, $line"
+            fi
+          elif [ -n "$number" ]; then
+            gh issue comment "$number" --body "Still failing, $line"
+          else
+            gh issue create --title "$title" --assignee "$ASSIGNEE" --body "$(cat <<BODY
+          The scheduled \`$WORKFLOW\` run on \`main\` failed, $line
+
+          This issue gets a comment on each further failed scheduled run and closes on
+          the next green one. See dev-docs/maintenance.md for what a red run of each
+          workflow means.
+
+          Opened by \`.github/workflows/scheduled-failure-alert.yml\`.
+          BODY
+          )"
+          fi

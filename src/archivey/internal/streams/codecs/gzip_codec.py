@@ -152,6 +152,10 @@ _TRAILER_LOOKBACK = 64
 # ``dev-docs/formats/gzip.md`` §2.3 and the ``compressed-streams`` and
 # ``seekable-decompressor-streams`` specs state it; change them together.
 _EMPTY_MEMBER_REACH = 1 << 10
+# How far before the end of the file the backstop looks for a gzip header that runs past
+# it (``_GzipTruncationCheckStream._header_runs_past_the_end``): the 10 fixed bytes, the
+# extra field's 2-byte length and the longest extra field.
+_HEADER_REACH = 12 + 0xFFFF
 # How far apart the backstop saves the running CRC-32 of the output
 # (``_CheckpointedCrc``), and so the most output it reads back from rapidgzip to check one
 # candidate for the last member's trailer in a file of several members
@@ -442,7 +446,11 @@ class _GzipTruncationCheckStream(DelegatingStream):
         # and a last member's trailer that matches the end of the output => do not
         # raise. The further member alone is not enough: rapidgzip ends a last member
         # cut right after its header with no error, at the end of the source.
-        if self._source_len >= 18 and self._decoded_to_the_end():
+        if (
+            self._source_len >= 18
+            and self._decoded_to_the_end()
+            and not self._header_runs_past_the_end()
+        ):
             if self._isize is None:
                 return False  # length known but ISIZE unread (should not happen here)
             whole_crc = self._crc.frontier == self._pos
@@ -489,8 +497,10 @@ class _GzipTruncationCheckStream(DelegatingStream):
         occurrence. A forger sets the CRC-32 at will with four chosen payload bytes, so
         nothing here leans on it being unlikely to repeat. Not excluded: a copy more than
         56 bytes after the end of the real trailer. That needs rapidgzip to read past
-        those bytes, which are not a further member, without an error, and rapidgzip
-        0.16 raises on ten or more, which hands the read to the standard library.
+        those bytes, which are not a further member, without an error. rapidgzip 0.16
+        raises on ten or more, which hands the read to the standard library, except
+        when they start a gzip header whose extra field runs past the end of the file;
+        :meth:`_header_runs_past_the_end` hands that shape over before this runs.
 
         A real trailer turned down goes to the standard library, which finds nothing
         wrong. That takes the CRC-32 occurring a second time by chance, about one file
@@ -713,6 +723,43 @@ class _GzipTruncationCheckStream(DelegatingStream):
             finally:
                 release_decoder(decoder)
             at = data.rfind(magic, 0, at)
+        return False
+
+    def _header_runs_past_the_end(self) -> bool:
+        """Whether a gzip header in the file's last ``_HEADER_REACH`` bytes has an extra
+        field (``FEXTRA``) whose length, or the field itself, runs past the end of the file.
+
+        rapidgzip 0.16 reads such a header as the end of the data, with no error, whatever
+        its reserved flag bits, so the bytes after the last whole member are skipped, and a
+        copy of that member's trailer placed in them passes the trailer checks (found by
+        the ``gzip_accel`` fuzz target). The standard library reports the cut, or the
+        reserved bits. An extra field is at most 65535 bytes, so such a header starts
+        within ``_HEADER_REACH`` bytes of the end. A header the file's first member starts
+        with is not looked at: rapidgzip delivers nothing from it, and an empty output is
+        handed over by ``_settle_end``. A chance ``1f 8b 08`` with ``FEXTRA`` in the
+        compressed data whose length runs past the end (about one file in a thousand with
+        64 KiB or more of compressed data) costs a second decode by the standard library,
+        never a wrong result. ``False`` when the source cannot be read.
+        """
+        length = self._source_len
+        assert length is not None
+        start = max(1, length - _HEADER_REACH)
+        try:
+            with self._views.view() as f:
+                f.seek(start)
+                tail = f.read(length - start)
+        except OSError:
+            return False
+        magic = GZIP_MAGIC + b"\x08"
+        at = tail.find(magic)
+        while 0 <= at <= len(tail) - 4:
+            if tail[at + 3] & 0x04:  # FEXTRA
+                if at + 12 > len(tail):
+                    return True
+                extra = int.from_bytes(tail[at + 10 : at + 12], "little")
+                if at + 12 + extra > len(tail):
+                    return True
+            at = tail.find(magic, at + 1)
         return False
 
     def _decoded_to_the_end(self) -> bool:

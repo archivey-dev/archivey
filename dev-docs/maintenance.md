@@ -32,6 +32,7 @@ those use the AI plan's quota.
 | `accelerator-crash-search.yml` | monthly (the 1st) | no | a new rapidgzip crash signature; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `accelerator-fuzz-soak.yml` | weekly (Tuesday) | no | accelerated and plain decode disagree; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `rapidgzip-resume-stress.yml` | monthly (the 1st) | no | the rapidgzip child process stalled or lost a worker; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
+| `scheduled-failure-alert.yml` | each time a watched scheduled workflow finishes on `main` | no | its own script failed. A failed scheduled run opens one issue per workflow, assigned to the maintainer; each later failure comments on it and the next green scheduled run closes it. GitHub's own failure email goes only to whoever last edited the cron line, which is often the merge-queue bot |
 | `conflict-notice.yml` | each push to `main`, and hourly | no | its own script failed; it only comments on PRs |
 | `rapidgzip-truncation-sweep.yml`, `writer-timestamps.yml` | only when their own files change, or on demand | no | investigation probes; ignore unless you are working on them |
 | `publish.yml` | a `v*` tag, or on demand | no | see [Release checklist](release-checklist.md) §6 |
@@ -53,8 +54,8 @@ whoever asks. Then read the diff yourself.
      build). Check whether `main` fails the same way: read the latest daily `ci.yml` run on
      `main`, or dispatch one (`gh workflow run ci.yml --ref main`). If it does, see
      [A dependency broke](#a-dependency-broke-or-stopped-shipping-wheels).
-   - **The `3.15` prerelease leg or `3.15t`** (allowed to fail). Read it, but it blocks
-     nothing; see [A new CPython](#a-new-cpython-release).
+   - **The `3.16` prerelease leg** (allowed to fail). Read it, but it blocks nothing; see
+     [A new CPython](#a-new-cpython-release).
 3. For an agent: "CI failed on PR N in archivey-dev/archivey. Read the failed job log, decide
    whether the PR caused it, and fix it or say why not. Follow `.claude/skills/steward`."
 
@@ -133,8 +134,10 @@ When a new major version of one of these breaks a test, pin below it with a comm
   offers it, change the prerelease leg in `ci.yml` to the new version.
 - **A release candidate**: the prerelease leg should be on it already. Read the leg once.
   Failures there are usually a dependency without a wheel yet; see above.
-- **A final release**: in one small PR, drop `prerelease: true` from both prerelease rows
-  in `ci.yml` (the test matrix leg and the `free-threaded-concurrency` `3.Xt` leg), add
+- **A final release**: in one small PR, drop `prerelease: true` from the prerelease rows
+  in `ci.yml` (the test matrix leg, and a `free-threaded-concurrency` `3.Xt` leg if there
+  is one; that job needs `continue-on-error: ${{ matrix.prerelease == true }}` back while
+  it has a prerelease row, as it had for 3.15t), add
   the `Programming Language :: Python :: 3.X` classifier to the root `pyproject.toml`
   (the `archivey-cli` package has no per-version classifiers), and move the "max Python"
   legs (macOS, Windows, core-only, coverage) to the new version.
