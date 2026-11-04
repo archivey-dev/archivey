@@ -424,29 +424,36 @@ Adler-32 of the output from offset 0 up to a frontier and compares it with the s
 four bytes when the frontier reaches the end. Two shapes skip that comparison, because the
 Adler-32 of no output is 1: a stream `rapidgzip` ends before any output goes to the standard
 library first (a cut stream's last four bytes can read `00 00 00 01`), and a trailer match
-counts only when the source's first stream produces output (after empty streams, the
-Adler-32 of all the output is the last stream's); otherwise the standard library confirms. A
-seek back stays behind the frontier, and a seek forward past it reads the bytes in between,
-so the check survives the TAR reader, which skips member data by seeking. The child decodes
-those bytes to seek past them anyway; the read-through adds their transfer out of it. For a
-reader that only skips, that transfer is the whole cost: listing a `.tar.zz` under `ON`
-moves the full decompressed archive out of the child once, where the seeks alone moved
-nothing. A mismatch is either damage or several zlib streams one after another (`rapidgzip`
-reads all of them; the trailer is the last one's), so the standard library then decodes the
-source again. It reads the first stream only, as it does with the accelerator off, where the
-rest is trailing data. When that stream ends before the output `rapidgzip` delivered, and
-the caller has none of the bytes past its end, the read goes to the standard library at the
-end of the first stream: a completing `read()` returns the first stream's bytes, a seek to
-the end lands there, and the rest is reported as `ARCHIVE_TRAILING_DATA`, as with
-`use_rapidgzip=OFF`. A caller that read on in bounded reads already has bytes of the second
-stream when the end shows up, and they cannot be taken back; there the decode goes on stream
-by stream up to the delivered length, and that output is accepted (§5). Whichever decode
-runs must reproduce the delivered bytes; failing that, the read or seek that reached the end
-raises `_StreamChecksumError`, a `CorruptionError`. The TAR end-of-archive scan, which
-otherwise ignores a tail that fails to decode, re-raises it, because the checksum covers
-members it already handed out. A stream never read to its end is not checked, and the
-standard library does not check one either: it verifies the trailer only when it consumes
-the end.
+counts only when no second zlib stream may follow the first. `rapidgzip` delivers every
+stream, so the last one's trailer can be forged to the Adler-32 of all of them, and after
+empty streams it needs no forging. `zlib_stream_may_follow` scans the source for 2-byte zlib
+headers (about one offset in 2000 of compressed data matches by chance; a byte map through
+`bytes.translate` finds them without a Python loop) and probes each with a raw DEFLATE
+decode: a candidate counts when its DEFLATE data ends four bytes before the end of the
+source, or the probe runs out of its bounds. The probes share a budget, as gzip's member
+probes do, and a scan that spends it counts as a candidate. On a candidate the standard
+library confirms. Measured on 17 MiB of compressed text, the scan costs about 45% of a
+standard-library decode. A seek back stays behind the frontier, and a seek forward past it
+reads the bytes in between, so the check survives the TAR reader, which skips member data by
+seeking. The child decodes those bytes to seek past them anyway; the read-through adds their
+transfer out of it. For a reader that only skips, that transfer is the whole cost: listing a
+`.tar.zz` under `ON` moves the full decompressed archive out of the child once, where the
+seeks alone moved nothing. A mismatch is either damage or several zlib streams one after
+another (`rapidgzip` reads all of them; the trailer is the last one's), so the standard
+library then decodes the source again. It reads the first stream only, as it does with the
+accelerator off, where the rest is trailing data. When that stream ends before the output
+`rapidgzip` delivered, and the caller has none of the bytes past its end, the read goes to
+the standard library at the end of the first stream: a completing `read()` returns the first
+stream's bytes, a seek to the end lands there, and the rest is reported as
+`ARCHIVE_TRAILING_DATA`, as with `use_rapidgzip=OFF`. A caller that read on in bounded reads
+already has bytes of the second stream when the end shows up, and they cannot be taken back;
+there the decode goes on stream by stream up to the delivered length, and that output is
+accepted (§5). Whichever decode runs must reproduce the delivered bytes; failing that, the
+read or seek that reached the end raises `_StreamChecksumError`, a `CorruptionError`. The
+TAR end-of-archive scan, which otherwise ignores a tail that fails to decode, re-raises it,
+because the checksum covers members it already handed out. A stream never read to its end is
+not checked, and the standard library does not check one either: it verifies the trailer
+only when it consumes the end.
 
 A cut zlib stream is the third cause of a mismatch: `rapidgzip` reads a stream cut inside
 its body as a shorter whole one, with no error, and sometimes stops before output the
@@ -718,7 +725,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Under `rapidgzip`: the gzip check survives seeks; a chance `1f 8b 08` does not silence it; a seek that fails on data is handed over; a second zlib stream is trailing data |
 | A raw DEFLATE source that looks like gzip, zlib or bzip2, a zlib source whose header `rapidgzip` does not take for zlib (none at all, or one with a preset dictionary), a raw DEFLATE stream cut before any output, and a declared-empty stream that does not decode give the bytes and error of `OFF` under `ON` |
 | A cut bare zlib stream under `ON` without a size raises |
-| Under `ON`, a zlib stream cut before any output whose last four bytes read `00 00 00 01` raises, and a zlib stream after empty ones is trailing data |
+| Under `ON`, a zlib stream cut before any output whose last four bytes read `00 00 00 01` raises, and a zlib stream after empty ones, or after a stream whose trailer is forged, is trailing data; the header scan finds no stream in a single one |
 | Close guard on shutdown; one accelerator library |
 
 **Building fixtures.** The standard library writes gzip and zlib (`gzip.compress`,

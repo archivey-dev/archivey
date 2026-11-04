@@ -304,10 +304,12 @@ then has more output, or meets the end of the source inside the stream (a cut st
 read SHALL be handed to the standard library at the delivered position, so the bytes and the
 `TruncatedError` match `use_rapidgzip=OFF`. A stream rapidgzip ends before any output SHALL
 go to the standard library without the Adler-32 check, since the Adler-32 of no output is 1
-and a cut stream's last four bytes can read `00 00 00 01`. For the same reason a trailer match
-SHALL NOT end the check when the source's first zlib stream is empty: the Adler-32 of all the
-output is then the last stream's, and the standard library ends the read at the end of the
-first stream. Where the standard library's decode ends the first
+and a cut stream's last four bytes can read `00 00 00 01`. A trailer match SHALL NOT end the
+check while a second zlib stream may follow the first, since rapidgzip delivers every stream
+and the last one's trailer can be forged to the Adler-32 of all of them (after empty streams
+it needs no forging): the system SHALL scan the source for further zlib headers whose DEFLATE
+data reaches the trailer, with bounded probes, and on a candidate SHALL confirm with the
+standard library, which ends the read at the end of the first stream. Where the standard library's decode ends the first
 zlib stream before the bytes rapidgzip delivered (rapidgzip decodes on into a second stream)
 and the caller has no byte past that end yet, the read or seek SHALL be handed to the
 standard library at that end, so a completing read returns the first stream and the rest is

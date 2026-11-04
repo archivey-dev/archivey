@@ -109,11 +109,126 @@ def _zlib_adler_trailer(source: CodecSource) -> int | None:
     return int.from_bytes(trailer, "big")
 
 
-# How much compressed data ``_ZlibAdlerCheckStream._first_stream_is_empty`` decodes
-# looking for the first stream's first output byte. A real stream produces one within
-# a few bytes; only a run of empty blocks reaches this, and then the full confirmation
-# decode runs instead.
-_EMPTY_STREAM_PROBE = 1 << 16
+# The bounds of ``zlib_stream_may_follow``'s probe. Like gzip's member probe
+# (``_MEMBER_PROBE_*`` in ``gzip_codec.py``) they are structural, not policy: running out
+# of one only sends the read to the standard library's confirmation, a second decode.
+#
+# How much of a candidate stream the probe decodes before it takes the candidate for a
+# real one: compressed bytes read, and output produced.
+_STREAM_PROBE_INPUT = 1 << 16
+_STREAM_PROBE_OUTPUT = 1 << 20
+# The compressed bytes all candidates together may decode: this much, plus one byte per
+# sixteen scanned. A scan that spends it answers that a stream may follow.
+_STREAM_PROBE_BUDGET = 1 << 20
+# The compressed bytes a probe's first read takes; each later read takes twice the one
+# before, up to ``_STREAM_PROBE_PIECE``. A chance header is about one offset in 2000,
+# and DEFLATE decoded from one meets an error within ten bytes nine times in ten, so a
+# small first read keeps the scan's charge well under the budget it earns.
+_STREAM_PROBE_FIRST_PIECE = 16
+_STREAM_PROBE_PIECE = 1 << 12
+# The bytes the scan reads at a time.
+_STREAM_SCAN_BLOCK = 1 << 20
+# The smallest zlib stream: a 2-byte header, an empty final block (``03 00``) and the
+# 4-byte Adler-32.
+_ZLIB_MIN_STREAM = 8
+# For a byte, the residue mod 31 a zlib header's FLG must have after it, plus one, when
+# the byte is a CMF the standard library accepts (method 8, window up to 32 KiB);
+# otherwise 0.
+_CMF_CODE = bytes(
+    (-(b << 8)) % 31 + 1 if b & 0x0F == 8 and b >> 4 <= 7 else 0 for b in range(256)
+)
+# For a byte, its residue mod 31 plus one when it is an FLG without a preset dictionary
+# (FDICT, 0x20), so ``_CMF_CODE`` of the byte before equals it exactly at a header whose
+# FCHECK holds; otherwise 0xFF, which no ``_CMF_CODE`` value equals.
+_FLG_CODE = bytes(f % 31 + 1 if not f & 0x20 else 0xFF for f in range(256))
+
+
+def zlib_stream_may_follow(stream: BinaryIO, natives: Natives = IN_PROCESS) -> bool:
+    """Whether ``stream``, a zlib stream that rapidgzip read to its end, may hold a
+    second zlib stream after the one at offset 0.
+
+    A further stream starts with a 2-byte header the standard library accepts: a CMF of
+    method 8 with a window up to 32 KiB, and an FLG that makes the pair a multiple of 31
+    and asks for no preset dictionary. About one offset in 2000 of compressed data
+    matches by chance, so a match is only a candidate. The candidates are found without
+    a Python loop over the bytes: each block is mapped through ``_CMF_CODE`` and,
+    shifted by one, through ``_FLG_CODE``, and the two maps agree exactly at the
+    candidates.
+
+    A candidate counts when its DEFLATE data (decoded raw, so that a forged Adler-32
+    after it cannot reject it) ends exactly four bytes before the end of the source:
+    rapidgzip delivers a stream as content only when the stream after it reaches the
+    trailer that matched. It counts too when the probe runs out of its bounds
+    (``_STREAM_PROBE_*``) without an error, or the source ends inside it. A real
+    stream that ends earlier is followed by another, which the scan finds in turn.
+
+    The probes share a budget, as gzip's do (:func:`gzip_has_additional_member`); a
+    scan that spends it answers ``True``, and the read goes to the standard library's
+    confirmation. **Side effect:** seeks the stream.
+    """
+    length = stream.seek(0, io.SEEK_END)
+    last = length - _ZLIB_MIN_STREAM  # the last offset a further stream can start at
+    budget = _STREAM_PROBE_BUDGET
+    offset = _ZLIB_MIN_STREAM  # the first: after the smallest first stream
+    while offset <= last:
+        stream.seek(offset)
+        # One byte more than the block, for the FLG of a header at its last offset.
+        buf = stream.read(min(_STREAM_SCAN_BLOCK, last + 1 - offset) + 1)
+        if len(buf) < 2:
+            return False
+        budget += len(buf) // 16
+        cmf = buf[:-1].translate(_CMF_CODE)
+        flg = buf[1:].translate(_FLG_CODE)
+        same = (int.from_bytes(cmf, "big") ^ int.from_bytes(flg, "big")).to_bytes(
+            len(cmf), "big"
+        )
+        found = same.find(0)
+        while found >= 0:
+            if budget <= 0:
+                return True
+            follows, fed = _zlib_stream_at(
+                stream, offset + found, length, budget, natives
+            )
+            budget -= fed
+            if follows:
+                return True
+            found = same.find(0, found + 1)
+        offset += len(cmf)
+    return False
+
+
+def _zlib_stream_at(
+    stream: BinaryIO, offset: int, length: int, budget: int, natives: Natives
+) -> tuple[bool, int]:
+    """Whether the candidate zlib header at ``offset`` may start a stream rapidgzip
+    reads to the trailer at the end of the source (:func:`zlib_stream_may_follow`),
+    and the compressed bytes read. Seeks the stream."""
+    stream.seek(offset + 2)
+    decoder = natives.zlib_decompressobj(-zlib.MAX_WBITS)
+    fed = produced = 0
+    piece = _STREAM_PROBE_FIRST_PIECE
+    try:
+        while fed < _STREAM_PROBE_INPUT and fed < budget:
+            pending = stream.read(min(piece, _STREAM_PROBE_INPUT - fed))
+            piece = min(2 * piece, _STREAM_PROBE_PIECE)
+            if not pending:
+                return True, fed  # the source ends inside it: a cut stream
+            fed += len(pending)
+            while pending:
+                produced += len(
+                    decoder.decompress(pending, _STREAM_PROBE_OUTPUT - produced)
+                )
+                if decoder.eof:
+                    end = offset + 2 + fed - len(decoder.unused_data)
+                    return end == length - 4, fed
+                if produced >= _STREAM_PROBE_OUTPUT:
+                    return True, fed
+                pending = decoder.unconsumed_tail
+    except zlib.error:
+        return False, fed
+    finally:
+        release_decoder(decoder)
+    return True, fed
 
 
 class _ZlibStoppedShort(Exception):
@@ -299,7 +414,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         if self._checked or self._pos < self._sum.frontier:
             return b""
         self._checked = True
-        if self._trailer == self._sum.value and not self._first_stream_is_empty():
+        if self._trailer == self._sum.value and not self._another_stream_may_follow():
             return b""
         try:
             self._confirm_with_stdlib()
@@ -315,36 +430,23 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             raise
         return b""
 
-    def _first_stream_is_empty(self) -> bool:
-        """Whether the source's first zlib stream may end with no output, so that a
-        trailer match proves nothing: the Adler-32 of no output is 1, so after an empty
-        first stream the Adler-32 of everything rapidgzip delivered is the last
-        stream's, and its trailer matches, where the standard library ends the read at
-        the end of the first stream.
+    def _another_stream_may_follow(self) -> bool:
+        """Whether a second zlib stream may follow the first, so that a trailer match
+        proves nothing; ``True`` when the source cannot be read.
 
-        Decodes from the start until the first output byte (``False``), the end of the
-        first stream with none (``True``), or ``_EMPTY_STREAM_PROBE`` compressed bytes
-        (``True``: :meth:`_confirm_with_stdlib` gives the answer then, at the cost of a
-        second decode). ``True`` too when the source cannot be read or zlib raises.
+        rapidgzip decodes zlib streams one after another, and checks no Adler-32, so
+        the source's last four bytes are the last stream's trailer and can be forged to
+        the Adler-32 of everything rapidgzip delivered (an empty first stream needs no
+        forging: the Adler-32 of no output is 1). The standard library ends the read at
+        the end of the first stream. :meth:`_confirm_with_stdlib` tells the two apart,
+        at the cost of a second decode, so it runs only when this scan finds a
+        candidate (:func:`zlib_stream_may_follow`).
         """
-        decoder = self._natives.zlib_decompressobj()
         try:
             with self._views.view() as f:
-                read = 0
-                while read < _EMPTY_STREAM_PROBE and not decoder.eof:
-                    chunk = f.read(min(1 << 12, _EMPTY_STREAM_PROBE - read))
-                    if not chunk:
-                        return True
-                    read += len(chunk)
-                    if decoder.decompress(chunk, 1):
-                        return False
-                    # A one-byte output bound leaves input unconsumed only when that
-                    # byte was produced, which returned above.
-                return True
-        except (OSError, zlib.error):
+                return zlib_stream_may_follow(f, self._natives)
+        except OSError:
             return True
-        finally:
-            release_decoder(decoder)
 
     def _hand_to_stdlib(self, size: int, at: int | None = None) -> bytes:
         self._takeover.switch_to_stdlib(at)
