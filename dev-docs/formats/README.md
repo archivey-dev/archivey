@@ -44,6 +44,8 @@ Topics:
   `except Exception` is right in `src/`, and which shape it takes.
 - [`process-isolation.md`](../topics/process-isolation.md) — which native decoders run
   in a child process, how the children are reused, and what a caller sees when one dies.
+- [`verification.md`](../topics/verification.md) — what `verified` and `verifiable` mean,
+  which check raises them in each format, and how `verify()` and `verify_all()` behave.
 
 ## Format page structure
 
