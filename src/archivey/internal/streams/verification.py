@@ -156,11 +156,19 @@ def raise_member_level(
     has found a frame with no check (``ArchiveMember._frame_unchecked``). The flag is
     read here, under the lock, so a stream that computed its ceiling before another
     stream found such a frame does not raise the member back.
+
+    A member a check over several members covers (``ArchiveMember._spanning_checksum``)
+    keeps ``CHECKSUM`` as its ceiling whatever its own stream can reach: that check
+    proves every byte, and the key with them, once it passes. The flag is read here,
+    under the lock, so a stream does not raise the ceiling back after
+    :func:`drop_spanning_ceiling` cleared it.
     """
     with _LEVEL_LOCK:
         member._verified = max(member._verified, verified)
         if without_frames is not None and member._frame_unchecked:
             verifiable = without_frames
+        if verifiable is not None and member._spanning_checksum:
+            verifiable = Verification.CHECKSUM
         if verifiable is not None:
             settled = member._verifiable
             if settled is None or verifiable > settled:
@@ -193,3 +201,32 @@ def note_frame_unchecked(member: ArchiveMember, ceiling: Verification) -> None:
         member._frame_unchecked = True
         if member._verifiable is Verification.CHECKSUM:
             member._verifiable = ceiling
+
+
+def mark_spanning_checksum(member: ArchiveMember) -> None:
+    """Record that a check over several members covers ``member``'s bytes.
+
+    Its ``verifiable`` is ``CHECKSUM`` from then on, until the check passes (which
+    raises ``verified`` there too) or :func:`drop_spanning_ceiling` finds it cannot.
+    """
+    with _LEVEL_LOCK:
+        member._spanning_checksum = True
+        if member._verifiable is not None:
+            member._verifiable = Verification.CHECKSUM
+
+
+def drop_spanning_ceiling(member: ArchiveMember, ceiling: Verification) -> None:
+    """Record that the check over several members covering ``member`` cannot pass.
+
+    That happens when a whole walk ended without proving it: a frame with no check,
+    a decode a seek broke, data past the end that keeps the check unclaimed. The
+    member's ``verifiable`` falls once, to ``ceiling``, what its own read can reach,
+    and no stream raises it back. A member the check already raised keeps its level.
+    """
+    with _LEVEL_LOCK:
+        if not member._spanning_checksum:
+            return
+        member._spanning_checksum = False
+        if member._verified is Verification.CHECKSUM:
+            return
+        member._verifiable = ceiling

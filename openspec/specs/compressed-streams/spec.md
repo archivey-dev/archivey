@@ -887,11 +887,23 @@ Every public `ArchiveStream` SHALL expose two read-only properties of type
 
 - `verified`: the highest level the stream has proved. It SHALL NOT decrease, and a
   read that raises SHALL NOT raise it.
-- `verifiable`: the highest level a read from the start to the end can reach.
+- `verifiable`: the highest level a read from the start to the end can reach. For a
+  member that a check over several members covers (a 7z folder CRC, for a file with
+  no CRC of its own; the checksum of the compressed stream a TAR, CPIO or ar archive
+  is read from, for a file whose data is a slice of it), it is the level that check
+  proves once it passes: `CHECKSUM`. Such a check runs only when all the members it
+  covers are read, so a read of one member alone, `verify()` included, can end at
+  `LENGTH` below it, and `verify_all()` reaches it.
   `verified` SHALL NOT exceed it. Before a lazy stream opens its member it describes
   what the stream knows without opening it. Once the stream is open it MAY rise (a
   password confirmed by another member), and it SHALL fall only when a read finds
-  a stream or frame of an `.xz`, `.zst` or `.lz4` file that carries no check (below).
+  a stream or frame of an `.xz`, `.zst` or `.lz4` file that carries no check (below),
+  or when the walk over a compressed TAR, CPIO or ar archive ends without its
+  stream's checksum passing for a reason other than a mismatch (a stream or frame
+  with no check, damage that ends the walk, data past the archive's end that leaves
+  the checksum unclaimed). Then the members it covers fall once, to `LENGTH`. A
+  checksum that ran and did not match SHALL stay their ceiling: `verify_all()`
+  returns them as failures.
   Each says whether it carries a check only in its own header, which a read reaches
   only as it decodes, and a read that jumps reaches some headers only on a later
   read from the start. So until such a stream or frame is found, the file's
@@ -955,11 +967,14 @@ level adds no new error and no new way to read.
 | `.zst` file with a skippable frame between checked frames, read to the end | `CHECKSUM` |
 | `.lz4` frame with block checksums only, read to the end | `CHECKSUM` |
 | Legacy-format `.lz4` stream, alone or followed by a checked frame, read to the end | `LENGTH` |
-| TAR member of a `.tar.gz`, read to the end | `LENGTH`; `CHECKSUM` once the archive is read to its end and the trailer matches |
+| TAR member of a `.tar.gz`, read to the end | `verified` is `LENGTH` and `verifiable` is `CHECKSUM`; both `CHECKSUM` once the archive is read to its end and the trailer matches |
+| Same, through `stream.verify()` in a streaming pass | returns `LENGTH`; `verifiable` stays `CHECKSUM` |
+| `.tar.xz` whose stream has check type None | every file's `verifiable` is `LENGTH` once the walk finds it |
+| `.tar.gz` cut inside its footer, the files whole, walked to the end | every file's `verified` and `verifiable` are `LENGTH` |
 | `.tar.gz` listed to its end, trailer matches | every member's `verified` is `CHECKSUM` |
 | 7z one-file folder with a folder CRC and no file CRC, read to the end | `CHECKSUM` |
-| 7z folder of several files with only a folder CRC, a file read to the end | `LENGTH`; `CHECKSUM` for all once the folder is read and its CRC matches |
-| Same, the folder CRC does not match | the read at the last file's end raises `CorruptionError`; `verify_all()` returns every file of the folder; the files read before stay at `LENGTH` |
+| 7z folder of several files with only a folder CRC, a file read to the end | `verified` is `LENGTH` and `verifiable` is `CHECKSUM`; both `CHECKSUM` for all once the folder is read and its CRC matches |
+| Same, the folder CRC does not match | the read at the last file's end raises `CorruptionError`; `verify_all()` returns every file of the folder; the files read before stay at `LENGTH`, below their `CHECKSUM` ceiling |
 | Same, the last file carries a CRC of its own that matches | the last file reaches `CHECKSUM` and is not returned; `verify_all()` returns the other files, on a second call too |
 | 7z AES folder with no CRC, read to the end | `verified` and `verifiable` are `NONE` |
 | 7z: a file's CRC matches in AES folder A; AES folder B has no CRC, read to the end | B stays `NONE`: A's match does not prove B's key |

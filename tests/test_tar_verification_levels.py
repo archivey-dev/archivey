@@ -83,9 +83,12 @@ def test_a_file_read_in_a_pass_reaches_checksum_at_the_archive_end() -> None:
         seen = []
         for member, stream in reader.stream_members():
             if stream is not None:
+                # The trailer covers it: CHECKSUM is its ceiling before any read.
+                assert member.verifiable is Verification.CHECKSUM
                 assert stream.read() == _FILES[member.name]
                 # The trailer is not reached yet: only the length is proved.
                 assert member.verified is Verification.LENGTH
+                assert member.verifiable is Verification.CHECKSUM
             seen.append(member)
     assert _levels(seen) == {"a": _CHECKED, "b": _CHECKED, "d/": _DIR}
 
@@ -124,3 +127,79 @@ def test_a_sparse_file_is_left_to_its_own_reads(streaming: bool) -> None:
     levels = _levels(members)
     assert levels["a"] == _CHECKED
     assert levels["s"] == _UNREAD
+
+
+def test_verify_stops_at_length_below_the_trailer_ceiling() -> None:
+    # stream.verify() never reads past its own member, so the trailer stays ahead.
+    with open_archive(io.BytesIO(_tar("w:gz")), streaming=True) as reader:
+        for member, stream in reader.stream_members():
+            if stream is not None:
+                assert stream.verify() is Verification.LENGTH
+                assert stream.verifiable is Verification.CHECKSUM
+        assert {
+            (m.verified, m.verifiable)
+            for m in reader.members_report().members
+            if m.is_file
+        } == {_CHECKED}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_codec_with_no_check_never_sets_a_checksum_ceiling(streaming: bool) -> None:
+    import lzma
+
+    plain = _tar("w")
+    data = lzma.compress(plain, format=lzma.FORMAT_XZ, check=lzma.CHECK_NONE)
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        assert reader.verify_all() == ()
+        members = [m for m in reader.members_report().members if m.is_file]
+    assert {(m.verified, m.verifiable) for m in members} == {
+        (Verification.LENGTH, Verification.LENGTH)
+    }
+
+
+def test_a_frame_without_a_check_found_later_drops_the_ceiling() -> None:
+    # The first xz stream carries a check, the second does not: CHECKSUM is the
+    # ceiling until the walk finds the second, then every file falls to LENGTH.
+    import lzma
+
+    big = random.Random(7).randbytes(1 << 20)
+    head = _member("big", big)
+    tail = _member("a", _FILES["a"]) + _TRAILER
+    data = lzma.compress(head, check=lzma.CHECK_CRC64) + lzma.compress(
+        tail, check=lzma.CHECK_NONE
+    )
+    with open_archive(io.BytesIO(data), streaming=True) as reader:
+        first = True
+        for member, stream in reader.stream_members():
+            if stream is not None and first:
+                assert member.verifiable is Verification.CHECKSUM
+                first = False
+        members = [m for m in reader.members_report().members if m.is_file]
+    assert {m.verifiable for m in members} == {Verification.LENGTH}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_damage_that_ends_the_walk_drops_the_ceiling(streaming: bool) -> None:
+    # Cut inside the end-of-archive blocks: the files are whole, the gzip trailer
+    # is gone, so no read can reach CHECKSUM, and after verify_all() no file is
+    # left below its ceiling.
+    data = gzip.compress(_tar("w"), mtime=0)[:-20]
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        assert reader.verify_all() == ()
+        report = reader.members_report()
+    files = [m for m in report.members if m.is_file]
+    assert {(m.verified, m.verifiable) for m in files} == {
+        (Verification.LENGTH, Verification.LENGTH)
+    }
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_trailer_that_fails_stays_the_ceiling_of_its_failures(
+    streaming: bool,
+) -> None:
+    data = bytearray(gzip.compress(_tar("w"), mtime=0))
+    data[-8] ^= 0xFF  # the gzip trailer's CRC-32
+    with open_archive(io.BytesIO(bytes(data)), streaming=streaming) as reader:
+        failures = reader.verify_all()
+    assert sorted(m.name for m, _e in failures) == ["a", "b"]
+    assert {m.verifiable for m, _e in failures} == {Verification.CHECKSUM}

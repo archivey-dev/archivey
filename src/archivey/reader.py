@@ -195,7 +195,9 @@ class ArchiveStream(ReadOnlyIOStream):
         whose password passed only a weak check. Each stream or frame of an ``.xz``,
         ``.zst`` or ``.lz4`` file says in its own header whether it carries a check,
         so such a file is ``CHECKSUM`` until a read finds one without a check. A
-        member stream answers with its member's
+        member covered by a checksum over several members (a 7z folder CRC, a
+        ``.tar.gz`` trailer) is ``CHECKSUM`` too, which this stream's read alone does
+        not reach. A member stream answers with its member's
         :attr:`~archivey.ArchiveMember.verifiable`: the listing's estimate until a
         stream of the member first opens its data, which can settle it once, lower or
         higher.
@@ -212,8 +214,10 @@ class ArchiveStream(ReadOnlyIOStream):
 
         The target is ``verifiable``, or ``UNLOCKED`` with ``password_only=True``
         (``verifiable`` when that is lower). It never reads past this stream's own
-        member, so a check that covers several members (a ``.tar.gz`` trailer) is
-        not reached here; :meth:`~archivey.ForwardArchiveReader.verify_all` reaches it.
+        member, so a check that covers several members (a ``.tar.gz`` trailer, a 7z
+        folder CRC) is not reached here, and the result can stay ``LENGTH`` below a
+        ``CHECKSUM`` target; :meth:`~archivey.ForwardArchiveReader.verify_all`
+        reaches it.
 
         A member stream can seek only when its archive was opened with
         ``seekable_members=True``, and an ``open_stream()`` stream only with

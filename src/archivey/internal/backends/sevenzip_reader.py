@@ -146,6 +146,7 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.internal.streams.verification import (
     SpanningCheckError,
+    mark_spanning_checksum,
     raise_member_level,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
@@ -927,6 +928,11 @@ class SevenZipReader(BaseArchiveReader):
                 and any(_member_crc(m) is None for m in members)
             ):
                 self._folder_crc_only[index] = folder.crc & 0xFFFFFFFF
+                # A read of the whole folder in order runs that digest, so it is
+                # what these members can reach (``verifiable``).
+                for member in members:
+                    if _member_crc(member) is None:
+                        mark_spanning_checksum(member)
         self._report_trailing_data()
 
     def _view(self, start: int, length: int | None = None) -> BinaryIO:

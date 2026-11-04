@@ -544,7 +544,12 @@ requirement gives them, applied to this entry's data in this archive.
   read of the member finds a stream or frame of an `.xz`, `.zst` or `.lz4` file that
   carries no check, as the `compressed-streams` verification requirement gives it;
   a later stream of the member that has not read that stream or frame SHALL NOT
-  raise it again.
+  raise it again. A member that a check over several members covers (a 7z folder
+  CRC, the checksum of a compressed TAR, CPIO or ar stream) SHALL be listed at
+  `CHECKSUM`, and no stream of it SHALL lower that; it SHALL fall once, to `LENGTH`,
+  when the walk over the archive ends without that checksum passing for a reason
+  other than a mismatch, as the `compressed-streams` verification requirement gives
+  it.
 - `verified` SHALL only rise. The reader SHALL raise it in place from every read that
   proves more: a stream of the member, a listing pass that decodes the data, and a
   check that spans members once it passes. A raise SHALL be a monotonic maximum taken
@@ -565,6 +570,7 @@ requirement gives them, applied to this entry's data in this archive.
 | Same member compared with a copy taken before the read | equal |
 | `member_state_final` is `True`, then a stream reads the member to the end | `verified` rises to `CHECKSUM` |
 | Two threads read two members of one 7z folder (folder CRC only) under `concurrent_operations=True` | both members end at `CHECKSUM`; neither level is ever seen to fall |
+| File of a 7z folder with only a folder CRC, or of a `.tar.gz`, before any read | `verified` is `UNLOCKED`; `verifiable` is `CHECKSUM` |
 | 7z AES member in a folder with no CRC, before and after its first open | `verifiable` may settle to `NONE` at the first open and stays there |
 | Single-file `.gz`, `.xz`, `.zst` or `.lz4` member, before and after its first open | `verifiable` is `CHECKSUM` |
 | Single-file `.zst` member whose frames carry no check, read to the end | `verifiable` is `CHECKSUM` until the read finds the first frame's header, then `LENGTH` |

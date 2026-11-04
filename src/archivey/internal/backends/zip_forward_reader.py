@@ -208,6 +208,7 @@ _KEPT_ON_UPDATE = frozenset(
         "_verified",
         "_verifiable",
         "_frame_unchecked",
+        "_spanning_checksum",
     }
 )
 

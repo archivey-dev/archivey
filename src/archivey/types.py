@@ -1293,6 +1293,12 @@ class ArchiveMember:
     then reach ``CHECKSUM`` through those checks, and a later stream that sees only
     checked frames counts it (``note_frame_unchecked``). Not part of the public
     contract."""
+    _spanning_checksum: bool = field(default=False, repr=False, compare=False)
+    """Whether a check over several members covers this member's bytes and can still
+    pass: a 7z folder CRC for a member with no CRC of its own, or the checksum of the
+    compressed stream a TAR, CPIO or ar archive is read from. Its ``verifiable`` is
+    ``CHECKSUM`` while this holds (``mark_spanning_checksum``,
+    ``drop_spanning_ceiling``). Not part of the public contract."""
     _listing_checksum: bool = field(default=False, repr=False, compare=False)
     """Whether the listing expects a read to the end to check every byte, though
     ``hashes`` holds no checksum: a single-file member whose codec checks its data
@@ -1440,10 +1446,18 @@ class ArchiveMember:
         members only the open shows that the data carries a checksum. A single-file
         member whose codec checks its data, or may check each stream or frame (an
         ``.xz``, ``.zst`` or ``.lz4`` file), is ``CHECKSUM`` from the listing, and
-        its first open does not change it. After that it falls only when a read finds
-        a stream or frame of an ``.xz``, ``.zst`` or ``.lz4`` file with no check, which
-        each says only in its own header. It rises when another member's checksum
-        confirms the password.
+        its first open does not change it. So is a member covered by a checksum over
+        several members (a 7z folder CRC, for a file with no CRC of its own; the
+        checksum of a compressed TAR, CPIO or ar archive's stream): that checksum
+        runs only when all of them are read, so a read of this member alone can end
+        at ``LENGTH`` below it, and
+        :meth:`~archivey.ForwardArchiveReader.verify_all` reaches it. After that it
+        falls only when a read finds a stream or frame of an ``.xz``, ``.zst`` or
+        ``.lz4`` file with no check, which each says only in its own header, or when
+        a walk to the end of a compressed TAR, CPIO or ar archive finds its stream's
+        checksum cannot pass (no check, or damage that ends the walk; a checksum that
+        fails stays the ceiling). It rises when another member's checksum confirms
+        the password.
 
         Experimental: any release, a patch included, may change or remove this property,
         its levels or what they mean.
@@ -1454,7 +1468,9 @@ class ArchiveMember:
                 self.is_file or (self.type is MemberType.DIRECTORY and bool(self.size))
             ):
                 return self.verified
-            checksum = bool(self.hashes) or self._listing_checksum
+            checksum = (
+                bool(self.hashes) or self._listing_checksum or self._spanning_checksum
+            )
             settled = Verification.CHECKSUM if checksum else Verification.LENGTH
         return max(settled, self.verified)
 

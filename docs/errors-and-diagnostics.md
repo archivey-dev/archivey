@@ -191,13 +191,12 @@ logs `ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read may come from a wro
 AES members are the exception: their check holds across seeks.
 
 A 7z archive can compress several files together in one folder and store one checksum for the
-whole folder and none for each file. Each of those files stops at `LENGTH` when you read it alone.
-They all reach `CHECKSUM` once a read of the whole folder, in order from its start, matches the
-folder's checksum. A `stream_members()` pass that reaches the end of the folder does that.
-`verify_all()` does too while one of the files is still below `LENGTH`. If you opened the archive
-with `seekable_members=True` and read every file of the folder on its own, each one is already at
-its `LENGTH` ceiling, so `verify_all()` reads none of them; a `stream_members()` pass still raises
-them. If the folder's checksum does not match, a read of the folder's last file raises
+whole folder and none for each file. Each of those files has `verifiable` at `CHECKSUM`, but
+stops at `LENGTH` when you read it alone, `stream.verify()` included. They all reach `CHECKSUM`
+once a read of the whole folder, in order from its start, matches the folder's checksum. A
+`stream_members()` pass that reaches the end of the folder does that, and so does `verify_all()`,
+which reads such a folder again until its checksum has matched, also after
+`seekable_members=True` reads of each file. If the folder's checksum does not match, a read of the folder's last file raises
 `CorruptionError` once it reaches that file's end, even when that file's own bytes are intact, and
 `verify_all()` returns each file that checksum covers with that error. A file with a checksum of
 its own is left to it: when the last file's own checksum fails, its read raises that error
@@ -224,11 +223,14 @@ After seeks, `stream.verified` shows whether the checksum still ran. If it's bel
 runs every check.
 
 A compressed TAR, CPIO or ar archive, such as a `.tar.gz`, `.cpio.xz` or `.a.bz2`, has one
-checksum for the whole compressed stream, checked at its end. A member you read to its end is at
-`LENGTH` until then. Once something reads the archive to its end and that checksum matches, every
-file in it reaches `CHECKSUM`, whether or not you read it, except a sparse TAR file, whose holes
-are not stored bytes: listing the archive does that, and so does a `stream_members()` pass that
-runs to the end.
+checksum for the whole compressed stream, checked at its end. Its files have `verifiable` at
+`CHECKSUM`, and a file you read to its end is at `LENGTH` until then. Once something reads the
+archive to its end and that checksum matches, every file in it reaches `CHECKSUM`, whether or not
+you read it, except a sparse TAR file, whose holes are not stored bytes: listing the archive does
+that, and so does a `stream_members()` pass that runs to the end. When that read finds the
+checksum can't pass, because the stream carries none (an `.xz` written with no check) or damage
+ends it early, the files' `verifiable` falls to `LENGTH`. A checksum that runs and fails stays
+their ceiling, and `verify_all()` returns them.
 
 To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
 to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the
