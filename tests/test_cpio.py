@@ -774,21 +774,36 @@ def test_a_compressed_cpio_file_lists_at_the_codec_checksum_ceiling() -> None:
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize(
-    "compress",
-    [
-        pytest.param(lambda d: gzip.compress(d)[:-6], id="gzip-cut-in-footer"),
-        pytest.param(
-            lambda d: lzma.compress(d, check=lzma.CHECK_NONE), id="xz-no-check"
-        ),
-    ],
-)
-def test_a_compressed_cpio_whose_checksum_cannot_pass_drops_the_ceiling(
-    compress: Callable[[bytes], bytes], streaming: bool
-) -> None:
-    # The format adapter's drop (review of PR 1257, K3): no file stays below a
-    # CHECKSUM ceiling no read can reach.
-    with open_archive(io.BytesIO(compress(_SPANNED)), streaming=streaming) as reader:
-        reader.verify_all()
+def test_a_compressed_cpio_with_no_check_drops_the_ceiling(streaming: bool) -> None:
+    # An xz stream with no check: no read can reach CHECKSUM, which is the format,
+    # so the format adapter drops the ceiling to LENGTH.
+    data = lzma.compress(_SPANNED, check=lzma.CHECK_NONE)
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        assert reader.verify_all() == ()
         files = [m for m in reader.members_report().members if m.is_file]
     assert {(m.verified, m.verifiable) for m in files} == {(_V.LENGTH, _V.LENGTH)}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_compressed_cpio_cut_in_its_footer_keeps_the_ceiling(
+    streaming: bool,
+) -> None:
+    # Damage does not lower verifiable: the files stay below their CHECKSUM ceiling
+    # and verify_all() returns them as failures.
+    data = gzip.compress(_SPANNED)[:-6]
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        failures = reader.verify_all()
+        files = [m for m in reader.members_report().members if m.is_file]
+    assert sorted(m.name for m, _e in failures) == ["a", "b"]
+    assert {(m.verified, m.verifiable) for m in files} == {(_V.LENGTH, _V.CHECKSUM)}
+
+
+def test_a_compressed_cpio_cut_in_its_footer_fails_after_listing_and_again() -> None:
+    # Random access walks the listing once; the damage it found still fails the
+    # files on every later verify_all().
+    data = gzip.compress(_SPANNED)[:-6]
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.members_report()
+        for _ in range(2):
+            failures = reader.verify_all()
+            assert sorted(m.name for m, _e in failures) == ["a", "b"]

@@ -887,7 +887,8 @@ Every public `ArchiveStream` SHALL expose two read-only properties of type
 
 - `verified`: the highest level the stream has proved. It SHALL NOT decrease, and a
   read that raises SHALL NOT raise it.
-- `verifiable`: the highest level a read from the start to the end can reach. For a
+- `verifiable`: the highest level a read from the start to the end can reach if the
+  archive is not damaged. For a
   member that a check over several members covers (a 7z folder CRC, for a file with
   no CRC of its own; the checksum of the compressed stream a TAR, CPIO or ar archive
   is read from, for a file whose data is a slice of it), it is the level that check
@@ -896,19 +897,17 @@ Every public `ArchiveStream` SHALL expose two read-only properties of type
   `LENGTH` below it, and `verify_all()` reaches it.
   `verified` SHALL NOT exceed it. Before a lazy stream opens its member it describes
   what the stream knows without opening it. Once the stream is open it MAY rise (a
-  password confirmed by another member), and it SHALL fall only when a read finds
-  a stream or frame of an `.xz`, `.zst` or `.lz4` file that carries no check (below),
-  or when a check over several members can no longer pass. That is a walk over a
-  compressed TAR, CPIO or ar archive that ends without its stream's checksum passing
-  (a stream or frame with no check, damage that ends the walk, data past the archive's
-  end that leaves the checksum unclaimed), or a decode of a 7z folder that fails or
-  ends before the folder's end. Then the members it covers fall once, to `LENGTH`
-  (`NONE` while a 7z folder's password is unconfirmed). A checksum whose mismatch the
-  codec reports as such (gzip, zlib, lzip, zstd and LZ4 raise a distinct stream
-  checksum error; a 7z folder CRC is computed by archivey) SHALL stay their ceiling:
-  `verify_all()` returns them as failures. An xz or bzip2 check that fails cannot be
-  told apart from damage, since the decoder reports both alike, so it lowers the
-  ceiling as damage does.
+  password confirmed by another member), and it SHALL fall only when the format
+  shows, late, that no read can check every byte: a read finds a stream or frame of
+  an `.xz`, `.zst` or `.lz4` file that carries no check (below), or a walk over a
+  compressed TAR, CPIO or ar archive finds a stream or frame of the stream it is read
+  from that carries none. Then the members that stream's checksum covers fall once,
+  to `LENGTH`. Damage SHALL NOT lower it. A checksum that fails, or that damage keeps
+  from running (a 7z folder decode that fails or ends before the folder's end, a
+  compressed TAR, CPIO or ar walk that damage ends before the codec's end, an xz or
+  bzip2 check failure, which the decoder reports as damage), leaves the members only
+  it covers below `CHECKSUM`, and `verify_all()` SHALL return each of them as a
+  failure.
   Each says whether it carries a check only in its own header, which a read reaches
   only as it decodes, and a read that jumps reaches some headers only on a later
   read from the start. So until such a stream or frame is found, the file's
@@ -975,12 +974,13 @@ level adds no new error and no new way to read.
 | TAR member of a `.tar.gz`, read to the end | `verified` is `LENGTH` and `verifiable` is `CHECKSUM`; both `CHECKSUM` once the archive is read to its end and the trailer matches |
 | Same, through `stream.verify()` in a streaming pass | returns `LENGTH`; `verifiable` stays `CHECKSUM` |
 | `.tar.xz` whose stream has check type None | every file's `verifiable` is `LENGTH` once the walk finds it |
-| `.tar.gz` cut inside its footer, the files whole, walked to the end | every file's `verified` and `verifiable` are `LENGTH` |
+| `.tar.gz` cut inside its footer, the files whole, walked to the end | every file's `verified` is `LENGTH` and `verifiable` stays `CHECKSUM`; `verify_all()` returns every file |
 | `.tar.gz` listed to its end, trailer matches | every member's `verified` is `CHECKSUM` |
 | 7z one-file folder with a folder CRC and no file CRC, read to the end | `CHECKSUM` |
 | 7z folder of several files with only a folder CRC, a file read to the end | `verified` is `LENGTH` and `verifiable` is `CHECKSUM`; both `CHECKSUM` for all once the folder is read and its CRC matches |
 | Same, the folder CRC does not match | the read at the last file's end raises `CorruptionError`; `verify_all()` returns every file of the folder; the files read before stay at `LENGTH`, below their `CHECKSUM` ceiling |
-| Same, the last file carries a CRC of its own that matches | the last file reaches `CHECKSUM` and is not returned; `verify_all()` returns the other files, on a second call too |
+| Same, the folder's data damaged inside the last file, so the decode stops there | `verify_all()` returns every file of the folder; the files before stay at `LENGTH`, below their `CHECKSUM` ceiling |
+| Same as the CRC mismatch, the last file carries a CRC of its own that matches | the last file reaches `CHECKSUM` and is not returned; `verify_all()` returns the other files, on a second call too |
 | 7z AES folder with no CRC, read to the end | `verified` and `verifiable` are `NONE` |
 | 7z: a file's CRC matches in AES folder A; AES folder B has no CRC, read to the end | B stays `NONE`: A's match does not prove B's key |
 | ZipCrypto member, password on its check byte, half read | `verified` is `NONE`; `verifiable` is `CHECKSUM` |

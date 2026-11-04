@@ -547,9 +547,11 @@ requirement gives them, applied to this entry's data in this archive.
   raise it again. A member that a check over several members covers (a 7z folder
   CRC, the checksum of a compressed TAR, CPIO or ar stream) SHALL be listed at
   `CHECKSUM`, and no stream of it SHALL lower that; it SHALL fall once, to `LENGTH`,
-  when that check can no longer pass (a walk over the archive that ends without it,
-  a 7z folder decode that fails before the folder's end), as the `compressed-streams`
-  verification requirement gives it.
+  only when a walk finds a stream or frame of that check with no check of its own,
+  as the `compressed-streams` verification requirement gives it. Damage SHALL NOT
+  lower it.
+- Every member's `verifiable` from the listing is provisional, and documented so:
+  every backend SHALL give one for every member, never leave it unset until open.
 - `verified` SHALL only rise. The reader SHALL raise it in place from every read that
   proves more: a stream of the member, a listing pass that decodes the data, and a
   check that spans members once it passes. A raise SHALL be a monotonic maximum taken

@@ -179,18 +179,35 @@ def test_a_frame_without_a_check_found_later_drops_the_ceiling() -> None:
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_damage_that_ends_the_walk_drops_the_ceiling(streaming: bool) -> None:
+def test_damage_that_ends_the_walk_keeps_the_ceiling_and_fails_the_files(
+    streaming: bool,
+) -> None:
     # Cut inside the end-of-archive blocks: the files are whole, the gzip trailer
-    # is gone, so no read can reach CHECKSUM, and after verify_all() no file is
-    # left below its ceiling.
+    # is gone. Damage does not lower verifiable (what an undamaged archive would
+    # reach), so the files stay below their CHECKSUM ceiling and verify_all()
+    # returns them as failures.
     data = gzip.compress(_tar("w"), mtime=0)[:-20]
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        assert reader.verify_all() == ()
+        failures = reader.verify_all()
         report = reader.members_report()
+    assert sorted(m.name for m, _e in failures) == ["a", "b"]
+    assert "did not run" in str(failures[0][1])
     files = [m for m in report.members if m.is_file]
     assert {(m.verified, m.verifiable) for m in files} == {
-        (Verification.LENGTH, Verification.LENGTH)
+        (Verification.LENGTH, Verification.CHECKSUM)
     }
+
+
+@pytest.mark.parametrize("cut", [8, 20])
+def test_damage_found_while_listing_still_fails_the_files_later(cut: int) -> None:
+    # A random-access reader walks its listing once: the files whose check the
+    # damage kept from running are failures of every later verify_all() too.
+    data = gzip.compress(_tar("w"), mtime=0)[:-cut]
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.members_report()
+        for _ in range(2):
+            failures = reader.verify_all()
+            assert sorted(m.name for m, _e in failures) == ["a", "b"]
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -206,9 +223,10 @@ def test_a_trailer_that_fails_stays_the_ceiling_of_its_failures(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_an_xz_check_that_fails_reads_as_damage(streaming: bool) -> None:
-    # liblzma reports a failed block check as corrupt data, so it cannot be told
-    # from damage: the ceiling falls as it does for damage (review of PR 1257, K2).
+def test_an_xz_check_that_fails_keeps_the_ceiling(streaming: bool) -> None:
+    # liblzma reports a failed block check as corrupt data, so it reads as damage,
+    # and damage keeps the CHECKSUM ceiling: every file verify_all() could not bring
+    # to it is a failure.
     import lzma
 
     data = bytearray(lzma.compress(_tar("w"), check=lzma.CHECK_CRC64))
@@ -216,9 +234,7 @@ def test_an_xz_check_that_fails_reads_as_damage(streaming: bool) -> None:
     with open_archive(io.BytesIO(bytes(data)), streaming=streaming) as reader:
         failures = reader.verify_all()
         files = [m for m in reader.members_report().members if m.is_file]
-    # Whether a read raises or the end scan only reports it depends on where the
-    # check sits; either way no file is left below a CHECKSUM it cannot reach.
+    assert {m.verifiable for m in files} == {Verification.CHECKSUM}
     failed = {id(m) for m, _e in failures}
     for member in files:
-        if id(member) not in failed:
-            assert member.verified == member.verifiable is Verification.LENGTH
+        assert id(member) in failed or member.verified is Verification.CHECKSUM

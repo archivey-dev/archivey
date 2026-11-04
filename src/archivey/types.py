@@ -1294,11 +1294,12 @@ class ArchiveMember:
     checked frames counts it (``note_frame_unchecked``). Not part of the public
     contract."""
     _spanning_checksum: bool = field(default=False, repr=False, compare=False)
-    """Whether a check over several members covers this member's bytes and can still
-    pass: a 7z folder CRC for a member with no CRC of its own, or the checksum of the
-    compressed stream a TAR, CPIO or ar archive is read from. Its ``verifiable`` is
-    ``CHECKSUM`` while this holds (``mark_spanning_checksum``,
-    ``drop_spanning_ceiling``). Not part of the public contract."""
+    """Whether a check over several members covers this member's bytes: a 7z folder
+    CRC for a member with no CRC of its own, or the checksum of the compressed stream
+    a TAR, CPIO or ar archive is read from. Its ``verifiable`` is ``CHECKSUM`` while
+    this holds (``mark_spanning_checksum``). Cleared only when a frame with no check
+    shows that the check cannot cover every byte (``drop_spanning_ceiling``), never
+    for damage. Not part of the public contract."""
     _listing_checksum: bool = field(default=False, repr=False, compare=False)
     """Whether the listing expects a read to the end to check every byte, though
     ``hashes`` holds no checksum: a single-file member whose codec checks its data
@@ -1434,31 +1435,34 @@ class ArchiveMember:
 
     @property
     def verifiable(self) -> Verification:
-        """The most :attr:`~archivey.ArchiveMember.verified` can reach by reading this member's data to the end.
+        """The most :attr:`~archivey.ArchiveMember.verified` can reach if the archive is not damaged.
 
-        ``CHECKSUM`` when the member carries a checksum archivey can compute,
-        ``LENGTH`` when it carries none, and ``NONE`` for an encrypted member whose
-        password nothing can prove. A member with no data of its own (a link, a special
-        entry, a directory that declares no data) has nothing to read, so it is
-        ``verified`` already. Before a stream of the member has opened its data
-        it is the listing's estimate, and it may settle once, at that first open,
-        lower or higher: a weak password check is found only then, and for some
-        members only the open shows that the data carries a checksum. A single-file
-        member whose codec checks its data, or may check each stream or frame (an
-        ``.xz``, ``.zst`` or ``.lz4`` file), is ``CHECKSUM`` from the listing, and
-        its first open does not change it. So is a member covered by a checksum over
-        several members (a 7z folder CRC, for a file with no CRC of its own; the
-        checksum of a compressed TAR, CPIO or ar archive's stream): that checksum
-        runs only when all of them are read, so a read of this member alone can end
-        at ``LENGTH`` below it, and
-        :meth:`~archivey.ForwardArchiveReader.verify_all` reaches it. After that it
-        falls only when a read finds a stream or frame of an ``.xz``, ``.zst`` or
-        ``.lz4`` file with no check, which each says only in its own header, or when
-        a walk to the end of a compressed TAR, CPIO or ar archive finds its stream's
-        checksum cannot pass (no check, or damage that ends the walk), or when a
-        decode of a 7z folder fails before the folder's end. A gzip, zlib, lzip, zstd
-        or LZ4 checksum that fails, or a 7z folder CRC that fails, stays the ceiling;
-        an xz or bzip2 check that fails reads as damage and lowers it. It rises when
+        ``CHECKSUM`` when a checksum archivey can compute covers the member's data,
+        ``LENGTH`` when none does, and ``NONE`` for an encrypted member whose password
+        nothing can prove. A member with no data of its own (a link, a special entry,
+        a directory that declares no data) has nothing to read, so it is ``verified``
+        already. When ``verified`` is below it,
+        :meth:`~archivey.ForwardArchiveReader.verify_all` either brings it up or
+        returns the member as a failure.
+
+        Every member has a value from the listing, and that value is provisional. It
+        may settle once, at the first open of the member's data, lower or higher: a
+        weak password check is found only then, and for some members only the open
+        shows that the data carries a checksum. A single-file member whose codec
+        checks its data, or may check each stream or frame (an ``.xz``, ``.zst`` or
+        ``.lz4`` file), is ``CHECKSUM`` from the listing, and its first open does not
+        change it. So is a member covered by a checksum over several members (a 7z
+        folder CRC, for a file with no CRC of its own; the checksum of a compressed
+        TAR, CPIO or ar archive's stream): that checksum runs only when all of them
+        are read, so a read of this member alone can end at ``LENGTH`` below it, and
+        ``verify_all()`` reaches it.
+
+        After that it falls only when the format shows, late, that no read can check
+        every byte: a stream or frame of an ``.xz``, ``.zst`` or ``.lz4`` file, or of
+        the stream a compressed TAR, CPIO or ar archive is read from, that carries no
+        check, which each says only in its own header. Damage never lowers it: a
+        checksum that fails, or one that damage keeps from running, leaves the member
+        below it, and ``verify_all()`` returns the member as a failure. It rises when
         another member's checksum confirms the password.
 
         Experimental: any release, a patch included, may change or remove this property,

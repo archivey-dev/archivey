@@ -716,7 +716,10 @@ class ForwardArchiveReader(ABC):
         same way, and every listed file is returned with that error. The checksum may
         cover only some of the files (a concatenated ``.tar.gz``, a ``.tar.zst`` of
         several frames) and nothing says which, so all are returned rather than pass
-        a damaged one. Archive-level findings,
+        a damaged one. When damage keeps such a check from running at all (a 7z
+        folder whose decode stops early, a ``.tar.gz`` cut before its trailer), each
+        member only that check would prove is returned too, with an error that says
+        so: damage does not lower ``verifiable``. Archive-level findings,
         such as a missing end-of-archive marker, are in ``reader.diagnostics``. To check
         everything about an archive, call ``verify_all()``, then look at
         ``members_report()`` and ``diagnostics``.

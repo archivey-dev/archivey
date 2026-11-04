@@ -212,7 +212,8 @@ def mark_spanning_checksum(member: ArchiveMember) -> None:
     """Record that a check over several members covers ``member``'s bytes.
 
     Its ``verifiable`` is ``CHECKSUM`` from then on, until the check passes (which
-    raises ``verified`` there too) or :func:`drop_spanning_ceiling` finds it cannot.
+    raises ``verified`` there too) or :func:`drop_spanning_ceiling` finds a frame
+    with no check.
     """
     with _LEVEL_LOCK:
         member._spanning_checksum = True
@@ -224,12 +225,14 @@ def mark_spanning_checksum(member: ArchiveMember) -> None:
 
 
 def drop_spanning_ceiling(member: ArchiveMember, ceiling: Verification) -> None:
-    """Record that the check over several members covering ``member`` cannot pass.
+    """Record that the check over several members covering ``member`` cannot cover
+    every byte, because a walk found a frame of it with no check.
 
-    That happens when a whole walk ended without proving it: a frame with no check,
-    a decode a seek broke, data past the end that keeps the check unclaimed. The
-    member's ``verifiable`` falls once, to ``ceiling``, what its own read can reach,
-    and no stream raises it back. A member the check already raised keeps its level.
+    That is the format, not damage: damage leaves the ceiling where it is and makes
+    the member a failure of ``verify_all()`` instead
+    (``BaseArchiveReader._note_spanning_unreachable``). The member's ``verifiable``
+    falls once, to ``ceiling``, what its own read can reach, and no stream raises it
+    back. A member the check already raised keeps its level.
     """
     with _LEVEL_LOCK:
         if not member._spanning_checksum:
