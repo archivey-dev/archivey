@@ -272,12 +272,12 @@ class _FileScan(NamedTuple):
     clean: bool  # every inode read, and of the type its entry gives
 
 
-def _decodes_twice(keys: Iterable[int], capacity: int) -> bool:
+def _decodes_twice(keys: Iterable[tuple[int, int]], capacity: int) -> bool:
     """Whether a reader cache of ``capacity`` blocks, asked for the blocks with these
     keys in order, would decode one of them a second time. It replays the policy of
     ``fragment_tail``'s cache: least recently used first."""
-    cache: OrderedDict[int, None] = OrderedDict()
-    decoded: set[int] = set()
+    cache: OrderedDict[tuple[int, int], None] = OrderedDict()
+    decoded: set[tuple[int, int]] = set()
     last = None
     for key in keys:
         if key == last:
@@ -318,7 +318,9 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         self._compressor = compressor
         self._decode = self._block_decoder(compressor)
         self._metadata: OrderedDict[int, tuple[bytes, int]] = OrderedDict()
-        self._fragments: OrderedDict[int, bytes] = OrderedDict()
+        # Keyed by (start, stored size): two table entries can name one start and
+        # disagree on whether the bytes there are compressed.
+        self._fragments: OrderedDict[tuple[int, int], bytes] = OrderedDict()
         self._ids = self._ids_table()
         # Block-list bytes counted by the listing so far (``_block_list_fits``).
         self._block_list_bytes = 0
@@ -491,7 +493,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
     def fragment_tail(self, location: FileLocation, length: int) -> bytes:
         start, stored = self._fragment(location.fragment)
         # ``_decodes_twice`` replays this cache's policy; change both together.
-        block = self._fragments.get(start)
+        key = (start, stored)
+        block = self._fragments.get(key)
         if block is None:
             length_on_disk = stored & ~_BLOCK_UNCOMPRESSED
             if length_on_disk > self._sb.block_size:
@@ -502,11 +505,11 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 block = self._read_exact(start, length_on_disk, "a fragment block")
             else:
                 block = self._decode(start, length_on_disk, self._sb.block_size)
-            self._fragments[start] = block
+            self._fragments[key] = block
             if len(self._fragments) > _FRAGMENT_CACHE:
                 self._fragments.popitem(last=False)
         else:
-            self._fragments.move_to_end(start)
+            self._fragments.move_to_end(key)
         end = location.fragment_offset + length
         if end > len(block):
             raise CorruptionError(
@@ -668,8 +671,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         A file whose tail is in a fragment block reads that block whole, and the reader
         keeps the last ``_FRAGMENT_CACHE`` of them. When reading the files in listing
         order would decode a fragment block a second time (the cache replayed over
-        where their blocks start, read from the fragment table, which needs no block
-        decoded), the files with a tail come sorted by block and offset instead, so
+        their blocks' starts and stored sizes, read from the fragment table, which
+        needs no block decoded), the files with a tail come sorted by block and offset instead, so
         each block decodes once. Writers that fill fragments in name order never reach
         this: mksquashfs and gensquashfs keep one fragment in progress and mksquashfs
         ``-tailends`` two. sqfstar and tar2sqfs fill fragments in the tar's order, so
@@ -890,27 +893,29 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 size, fragment, offset = tail_of(records[entry.ref])
                 if fragment != _NO_FRAGMENT and size % block_size:
                     tails.append((fragment, offset, index))
-        # By the block's start, as the cache keys it: two table entries can name one
-        # block. Looked up in table order; a bad entry is reported by the member's read.
-        starts: dict[int, int] = {}
+        # By the block's (start, stored size), as the cache keys it, not by table entry:
+        # two entries can name one block, and two can name one start and disagree on
+        # whether the bytes there are compressed. Looked up in table order; a bad entry
+        # is reported by the member's read.
+        keys: dict[int, tuple[int, int]] = {}
         try:
             for fragment in sorted({fragment for fragment, _, _ in tails}):
-                starts[fragment] = self._fragment(fragment)[0]
+                keys[fragment] = self._fragment(fragment)
         except ArchiveyError:
             return None
-        tails = [(starts[fragment], offset, index) for fragment, offset, index in tails]
-        if not _decodes_twice((start for start, _, _ in tails), _FRAGMENT_CACHE):
+        keyed = [(keys[fragment], offset, index) for fragment, offset, index in tails]
+        if not _decodes_twice((key for key, _, _ in keyed), _FRAGMENT_CACHE):
             return None
         # The last entry listed under a name is the current one: an image that lists a
         # name twice keeps the order that says which.
         if len({(entry.parent, entry.name) for entry in entries}) < len(entries):
             return None
-        tailed = {index for _, _, index in tails}
+        tailed = {index for _, _, index in keyed}
         links = [i for i in range(len(entries)) if first[i] not in (-1, i)]
         rest = [
             i for i in range(len(entries)) if i not in tailed and first[i] in (-1, i)
         ]
-        return rest + [index for _, _, index in sorted(tails)] + links
+        return rest + [index for _, _, index in sorted(keyed)] + links
 
     def _raw_name(self, entries: list[_Entry], entry: _Entry) -> bytes:
         """An entry's path, from its directories' names (for a message)."""
