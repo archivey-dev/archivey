@@ -1455,11 +1455,11 @@ class ArchiveMember:
         falls only when a read finds a stream or frame of an ``.xz``, ``.zst`` or
         ``.lz4`` file with no check, which each says only in its own header, or when
         a walk to the end of a compressed TAR, CPIO or ar archive finds its stream's
-        checksum cannot pass (no check, or damage that ends the walk), or when a decode of
-        a 7z folder fails before the folder's end. A gzip, zlib, lzip, zstd or LZ4
-        checksum that fails, or a 7z folder CRC that fails, stays the ceiling; an xz
-        or bzip2 check that fails reads as damage and lowers it. It rises when another
-        member's checksum confirms the password.
+        checksum cannot pass (no check, or damage that ends the walk), or when a
+        decode of a 7z folder fails before the folder's end. A gzip, zlib, lzip, zstd
+        or LZ4 checksum that fails, or a 7z folder CRC that fails, stays the ceiling;
+        an xz or bzip2 check that fails reads as damage and lowers it. It rises when
+        another member's checksum confirms the password.
 
         Experimental: any release, a patch included, may change or remove this property,
         its levels or what they mean.

@@ -546,9 +546,10 @@ requirement gives them, applied to this entry's data in this archive.
   a later stream of the member that has not read that stream or frame SHALL NOT
   raise it again. A member that a check over several members covers (a 7z folder
   CRC, the checksum of a compressed TAR, CPIO or ar stream) SHALL be listed at
-  `CHECKSUM`, and no stream of it SHALL lower that; it SHALL fall once, to `LENGTH`, when that check can no longer pass (a walk
-  over the archive that ends without it, a 7z folder decode that fails before the
-  folder's end), as the `compressed-streams` verification requirement gives it.
+  `CHECKSUM`, and no stream of it SHALL lower that; it SHALL fall once, to `LENGTH`,
+  when that check can no longer pass (a walk over the archive that ends without it,
+  a 7z folder decode that fails before the folder's end), as the `compressed-streams`
+  verification requirement gives it.
 - `verified` SHALL only rise. The reader SHALL raise it in place from every read that
   proves more: a stream of the member, a listing pass that decodes the data, and a
   check that spans members once it passes. A raise SHALL be a monotonic maximum taken
