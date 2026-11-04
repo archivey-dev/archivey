@@ -97,9 +97,11 @@ def test_a_folder_crc_raises_every_file_once_the_folder_is_read() -> None:
     with open_archive(io.BytesIO(data)) as reader:
         members = _by_name(reader.members())
         assert not members["a"].hashes
-        # One file read alone proves its length, not the folder's CRC.
+        # The folder CRC covers every file, so CHECKSUM is each one's ceiling from
+        # the listing. One file read alone proves its length, not the folder's CRC.
+        assert _levels(members["a"]) == (Verification.UNLOCKED, Verification.CHECKSUM)
         assert reader.read(members["a"]) == _A
-        assert _levels(members["a"]) == (Verification.LENGTH, Verification.LENGTH)
+        assert _levels(members["a"]) == (Verification.LENGTH, Verification.CHECKSUM)
         assert members["c"].verified is Verification.UNLOCKED
         assert reader.verify_all() == ()
         for member in members.values():
@@ -167,11 +169,12 @@ def test_a_folder_crc_that_does_not_match_fails_every_file_it_covers() -> None:
         assert all(isinstance(e, CorruptionError) for _m, e in failures)
         assert "folder 0" in str(failures[0][1])
         # Levels never fall: a and b passed their length checks before the folder's
-        # end; c's read raised there, as a file's own CRC failure does.
+        # end; c's read raised there, as a file's own CRC failure does. The folder
+        # CRC stays their ceiling: they are failures, below it.
         assert {n: _levels(m) for n, m in members.items()} == {
-            "a": (Verification.LENGTH, Verification.LENGTH),
-            "b": (Verification.LENGTH, Verification.LENGTH),
-            "c": (Verification.UNLOCKED, Verification.LENGTH),
+            "a": (Verification.LENGTH, Verification.CHECKSUM),
+            "b": (Verification.LENGTH, Verification.CHECKSUM),
+            "c": (Verification.UNLOCKED, Verification.CHECKSUM),
         }
         # A second call reads c again, which reaches the folder's end again.
         assert [m.name for m, _e in reader.verify_all()] == ["a", "b", "c"]
@@ -358,13 +361,17 @@ def _lzma2_folder(files: dict[str, bytes], *, folder_crc: int) -> bytes:
 def test_verify_all_after_seekable_reads_still_finds_a_mismatched_folder(
     data: bytes, failed: list[str]
 ) -> None:
-    # The seekable reads leave every file at its ceiling without running the folder
-    # CRC; verify_all() must still run it, as it does when called first.
+    # The seekable reads never run the folder CRC, so the files it covers stay below
+    # its CHECKSUM ceiling; verify_all() must run it, as it does when called first.
     with open_archive(io.BytesIO(data), seekable_members=True) as reader:
         members = _by_name(reader.members())
         for name in "abc":
             assert reader.read(members[name]) == _THREE[name]
-        assert all(m.verified >= m.verifiable for m in members.values())
+        assert all(
+            m.verified is Verification.LENGTH and m.verifiable is Verification.CHECKSUM
+            for name, m in members.items()
+            if name in failed
+        )
         for _ in range(2):
             failures = reader.verify_all()
             assert [m.name for m, _e in failures] == failed
@@ -631,3 +638,27 @@ def test_an_unconfirmed_folder_builds_its_key_anchors_once(
         assert first > 0
         assert r.read(members["a2"]) == _SMALL
         assert calls == first
+
+
+@pytest.mark.parametrize("seekable", [False, True])
+def test_damage_before_the_folder_end_drops_the_folder_crc_ceiling(
+    seekable: bool,
+) -> None:
+    # The decode stops at the damage inside c's data, so the folder CRC never runs:
+    # a and b, read whole, fall to LENGTH and verify_all() leaves none below its
+    # ceiling (review of PR 1257, K1).
+    data = bytearray(_lzma2_folder(_THREE, folder_crc=_crc(_A + _B + _C)))
+    data[32 + 40] ^= 0xFF
+    with open_archive(io.BytesIO(bytes(data)), seekable_members=seekable) as reader:
+        members = _by_name(reader.members())
+        assert members["a"].verifiable is Verification.CHECKSUM
+        failures = reader.verify_all()
+        failed = {m.name for m, _e in failures}
+        assert "c" in failed
+        for name, member in members.items():
+            if name not in failed:
+                assert member.verified == member.verifiable, name
+        reader.verify_all()  # a second call agrees
+        for name, member in members.items():
+            if name not in failed:
+                assert member.verified == member.verifiable, name

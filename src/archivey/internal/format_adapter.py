@@ -96,6 +96,7 @@ from archivey.internal.streams.codecs import (
     single_file_codecs,
 )
 from archivey.internal.streams.codecs.registry import save_codec_state
+from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
@@ -114,6 +115,8 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.internal.streams.verification import (
     ask_verification_proofs,
+    drop_spanning_ceiling,
+    mark_spanning_checksum,
     raise_member_level,
 )
 from archivey.internal.streams.verify import CustomDigests, hasher_factory
@@ -397,6 +400,17 @@ class _PluginAdapter(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         try:
             yield from self._walk_members()
+        except _StreamChecksumError:
+            # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
+            # it stays the ceiling of the members it covers, which verify_all()
+            # returns. An xz or bzip2 check failure reads as damage and lands below.
+            raise
+        except ArchiveyError:
+            # Damage ended the walk before the outer codec's end: its checksum cannot
+            # pass, so the members it would cover fall to what their own reads reach.
+            for member in self._listed:
+                drop_spanning_ceiling(member, Verification.LENGTH)
+            raise
         finally:
             # Members held and never yielded stop counting with the walk that held
             # them, however it ends: at its end, on damage, or closed part-way.
@@ -1472,30 +1486,50 @@ class SequentialReaderAdapter(_PluginAdapter):
             return
         proofs = ask_verification_proofs(codec)
         if not (proofs.ended and proofs.content):
+            # The walk ended without that proof (a frame with no check, a broken
+            # decode): the members marked as covered fall to what their own reads
+            # reach.
+            for member in self._listed:
+                drop_spanning_ceiling(member, Verification.LENGTH)
             return
-        outer = self._owned_stream if self._streaming else self._shared
         for member in self._listed:
-            record = member._raw
-            if (
-                member.is_file
-                and isinstance(record, _Span)
-                and record.decoded is None
-                and (record.layer.stream if self._streaming else record.layer.shared)
-                is outer
-            ):
+            if self._codec_covers(member):
                 raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+
+    def _codec_covers(self, member: ArchiveMember) -> bool:
+        """Whether ``member``'s data is a slice of the outer codec's decoded bytes,
+        which that codec's whole-stream checksum covers."""
+        record = member._raw
+        outer = self._owned_stream if self._streaming else self._shared
+        return (
+            member.is_file
+            and isinstance(record, _Span)
+            and record.decoded is None
+            and (record.layer.stream if self._streaming else record.layer.shared)
+            is outer
+        )
 
     def _take_span(self, span: object, layer: _Layer, index: int) -> ArchiveMember:
         """The member a span describes, checked, named and placed."""
         data = span.data if isinstance(span, MemberSpan) else None
         try:
-            return self._take_span_checked(span, layer, index)
+            member = self._take_span_checked(span, layer, index)
         except BaseException:
             # Archivey owns the decoded data once yielded: a refused span closes it.
             if data is not None:
                 with suppress(Exception), self._handle_guard():
                     data.close()
             raise
+        codec = self._codec_stream
+        if (
+            codec is not None
+            and self._codec_covers(member)
+            and ask_verification_proofs(codec).content_possible
+        ):
+            # A walk to the end runs the codec's checksum over this member's bytes
+            # (``_raise_members_the_codec_checked``).
+            mark_spanning_checksum(member)
+        return member
 
     def _take_span_checked(
         self, span: object, layer: _Layer, index: int

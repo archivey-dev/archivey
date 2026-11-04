@@ -141,6 +141,8 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.internal.streams.verification import (
     ask_verification_proofs,
+    drop_spanning_ceiling,
+    mark_spanning_checksum,
     raise_member_level,
 )
 from archivey.internal.timestamps import TimestampIssue, unix_to_datetime
@@ -719,6 +721,16 @@ class TarReader(BaseArchiveReader):
         archive, and it stays on the member's span for the life of the listing.
         """
         super()._register_member(idx, member)
+        codec = self._owned_codec_stream
+        if (
+            codec is not None
+            and member.is_file
+            and self._member_data_is_stream_bytes(member)
+            and ask_verification_proofs(codec).content_possible
+        ):
+            # The codec's checksum covers this member's bytes, and a walk to the end
+            # runs it (``_raise_members_the_codec_checked``).
+            mark_spanning_checksum(member)
         span = member._raw
         if isinstance(span, TarSpan) and span.sparse is not None:
             self._listing_tracker.account_retained_bytes(
@@ -727,6 +739,22 @@ class TarReader(BaseArchiveReader):
 
     @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
+        """The member walk (``_walk_members``). Damage that ends it before the codec's
+        end leaves the codec's checksum unreachable, so the members it would cover
+        fall to what their own reads reach (``drop_spanning_ceiling``)."""
+        try:
+            yield from self._walk_members()
+        except _StreamChecksumError:
+            # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
+            # it stays the ceiling of the members it covers, which verify_all()
+            # returns. An xz or bzip2 check failure reads as damage and lands below.
+            raise
+        except ArchiveyError:
+            for member in self._listed:
+                drop_spanning_ceiling(member, Verification.LENGTH)
+            raise
+
+    def _walk_members(self) -> Iterator[ArchiveMember]:
         """The member walk, one header per pull.
 
         Each member is registered (and counted against the listing limits) before the
@@ -763,13 +791,17 @@ class TarReader(BaseArchiveReader):
         decode from its start with no gap, every member's bytes passed it, read or not
         (``verification-level-redesign``, the spanning checks). A sparse member's holes
         are not stored bytes, so it is left to its own reads. A codec with no check, a
-        seek that broke the decode, or a walk cut short raises nothing.
+        seek that broke the decode, or a walk cut short raises nothing. When the walk
+        ended without that proof (a frame with no check, a broken decode), the members
+        marked as covered fall to what their own reads reach (``drop_spanning_ceiling``).
         """
         codec = self._owned_codec_stream
         if codec is None:
             return
         proofs = ask_verification_proofs(codec)
         if not (proofs.ended and proofs.content):
+            for member in self._listed:
+                drop_spanning_ceiling(member, Verification.LENGTH)
             return
         for member in self._listed:
             if member.is_file and self._member_data_is_stream_bytes(member):
