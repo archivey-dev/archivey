@@ -671,8 +671,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         A file whose tail is in a fragment block reads that block whole, and the reader
         keeps the last ``_FRAGMENT_CACHE`` of them. When reading the files in listing
         order would decode a fragment block a second time (the cache replayed over
-        where their blocks start, read from the fragment table, which needs no block
-        decoded), the files with a tail come sorted by block and offset instead, so
+        their blocks' starts and stored sizes, read from the fragment table, which
+        needs no block decoded), the files with a tail come sorted by block and offset instead, so
         each block decodes once. Writers that fill fragments in name order never reach
         this: mksquashfs and gensquashfs keep one fragment in progress and mksquashfs
         ``-tailends`` two. sqfstar and tar2sqfs fill fragments in the tar's order, so
@@ -893,16 +893,17 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 size, fragment, offset = tail_of(records[entry.ref])
                 if fragment != _NO_FRAGMENT and size % block_size:
                     tails.append((fragment, offset, index))
-        # By the block's (start, stored size), as the cache keys it: two table entries
-        # can name one block. Looked up in table order; a bad entry is reported by the
-        # member's read.
-        starts: dict[int, tuple[int, int]] = {}
+        # By the block's (start, stored size), as the cache keys it, not by table entry:
+        # two entries can name one block, and two can name one start and disagree on
+        # whether the bytes there are compressed. Looked up in table order; a bad entry
+        # is reported by the member's read.
+        keys: dict[int, tuple[int, int]] = {}
         try:
             for fragment in sorted({fragment for fragment, _, _ in tails}):
-                starts[fragment] = self._fragment(fragment)
+                keys[fragment] = self._fragment(fragment)
         except ArchiveyError:
             return None
-        keyed = [(starts[fragment], offset, index) for fragment, offset, index in tails]
+        keyed = [(keys[fragment], offset, index) for fragment, offset, index in tails]
         if not _decodes_twice((key for key, _, _ in keyed), _FRAGMENT_CACHE):
             return None
         # The last entry listed under a name is the current one: an image that lists a

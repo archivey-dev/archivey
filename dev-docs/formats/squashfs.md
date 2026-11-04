@@ -67,7 +67,7 @@ is fragments. A file's tail is read from its fragment block, which is decoded wh
 the reader keeps four. When reading the files in listing order would decode a fragment
 block a second time, the files with a tail come sorted by where their block starts and
 by offset, so each block decodes once. The check replays the four-block cache over the
-blocks' starts (from the fragment table), with nothing decoded. Then the order is:
+blocks' starts and stored sizes (from the fragment table), with nothing decoded. Then the order is:
 directories, files with no tail and other members, in listing order (so a directory
 still comes before its contents); the files with a tail; the hard links, in listing
 order (each after the member it names). mksquashfs and gensquashfs fill one fragment at
@@ -236,6 +236,7 @@ offsets the image declares:
 | An LZ4 image raises `PackageNotInstalledError` | **library** | Its blocks need `lz4` (`[recommended]`) |
 | A firmware image does not open | **format** | Vendor forks change the magic or the compressors (§3) |
 | A damaged block is found only when it does not decode | **format** | SquashFS stores no checksums |
+| Two fragment entries at one start read its bytes differently (one stored, one compressed), each file reading its own entry's | **format** | Nothing is cached by offset alone: the fragment cache and the order planner key a block by start and stored size (§6) |
 
 ## 6. Decisions
 
@@ -264,8 +265,10 @@ offsets the image declares:
   small file. Listing order is kept whenever the four-block cache covers it, which is
   every image mksquashfs or gensquashfs writes from a directory; files with a
   tail are sorted only when the replayed cache would decode a block twice. The replay
-  and the sort use the block's start, not the fragment-table entry, since two entries
-  can name one block. Rejected: charging decoded block bytes to a per-reader budget
+  and the sort key a block by its start and stored size, as the cache does, not by the
+  fragment-table entry, since two entries can name one block. The stored size is in the
+  key because it carries the compressed bit: two entries can name one start and read
+  its bytes differently (pre-0.3.0 sweep, 2026-11-04). Rejected: charging decoded block bytes to a per-reader budget
   (refuses an image instead of reading it), a larger cache (a crafted image cycles
   through one more block), and only recording the case in the threat model. File inodes
   are read once, in table order, for the same reason (next decision); the order of
