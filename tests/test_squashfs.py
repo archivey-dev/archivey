@@ -1058,6 +1058,92 @@ def test_a_symlink_target_longer_than_the_kernel_allows(tmp_path: Path) -> None:
         archive.members()
 
 
+def _two_readings_of_one_fragment_block() -> bytes:
+    """Two files whose fragment entries name one block and disagree.
+
+    The first entry says the block is stored. The second says the same bytes
+    are a zlib stream of ``b"HELLO"``.
+    """
+    uncompressed_bit = 1 << 24
+    payload = zlib.compress(b"HELLO")
+
+    def file_inode(number: int, fragment: int, size: int) -> bytes:
+        return _inode_header(2, number) + struct.pack("<IIII", 0, fragment, 0, size)
+
+    def directory_entry(name: bytes, offset: int) -> bytes:
+        return (
+            struct.pack("<III", 0, 0, 2)
+            + struct.pack("<HhHH", offset, 0, 2, len(name) - 1)
+            + name
+        )
+
+    file_raw = file_inode(2, 0, len(payload))
+    file_dec = file_inode(3, 1, len(b"HELLO"))
+    listing = directory_entry(b"raw", 0) + directory_entry(b"dec", len(file_raw))
+    root = _inode_header(1, 1) + struct.pack("<IIHHI", 0, 2, len(listing) + 3, 0, 4)
+    inodes = _metadata(file_raw + file_dec + root)
+    payload_at = 96
+    inode_table = payload_at + len(payload)
+    directory_table = inode_table + len(inodes)
+    directory = _metadata(listing)
+    ids = _metadata(struct.pack("<I", 0))
+    id_block = directory_table + len(directory)
+    id_table = id_block + len(ids)
+    fragments = struct.pack(
+        "<QII", payload_at, len(payload) | uncompressed_bit, 0
+    ) + struct.pack("<QII", payload_at, len(payload), 0)
+    fragment_block = id_table + 8
+    fragment_table = fragment_block + len(_metadata(fragments))
+    body = (
+        payload
+        + inodes
+        + directory
+        + ids
+        + struct.pack("<Q", id_block)
+        + _metadata(fragments)
+        + struct.pack("<Q", fragment_block)
+    )
+    superblock = struct.pack(
+        "<IIIIIHHHHHHQQQQQQQQ",
+        0x73717368,
+        3,
+        0,
+        4096,
+        2,
+        1,
+        12,
+        0,
+        1,
+        4,
+        0,
+        len(file_raw) + len(file_dec),
+        96 + len(body),
+        id_table,
+        0xFFFFFFFFFFFFFFFF,
+        inode_table,
+        directory_table,
+        fragment_table,
+        0xFFFFFFFFFFFFFFFF,
+    )
+    return superblock + body
+
+
+def test_two_fragment_entries_at_one_offset_keep_their_own_bytes(
+    tmp_path: Path,
+) -> None:
+    """Each file reads the bytes its own fragment entry describes.
+
+    The first entry is stored, so ``raw`` is the zlib frame. The second entry
+    compresses that frame, so ``dec`` is ``b"HELLO"``. The cache keys a block by
+    its start and stored size, so the two readings stay apart.
+    """
+    payload = zlib.compress(b"HELLO")
+    path = _image(tmp_path, _two_readings_of_one_fragment_block())
+    with open_archive(path) as archive:
+        assert archive.read("raw") == payload
+        assert archive.read("dec") == b"HELLO"
+
+
 # ── The package ────────────────────────────────────────────────────────────────────
 
 
