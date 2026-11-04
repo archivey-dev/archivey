@@ -42,6 +42,8 @@ every read, and stricter defaults for names and for archive shapes no writer pro
   differently; reported at INFO, raised only by `PEDANTIC` or `raise_on=`).
   `MEMBER_READERS_DISAGREE` also names a file that only one of an ISO image's trees
   (ISO 9660, Joliet, UDF) holds, and a member name with a NUL byte.
+- Python 3.15 is supported and tested on Linux, macOS and Windows, free-threaded 3.15t
+  included.
 
 ### Experimental
 
