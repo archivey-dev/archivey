@@ -114,7 +114,7 @@ remove them.
 
 ### Fixed
 
-- About 25 bugs found since 0.2.1, most of them in TAR, RAR and the decoders. Many came
+- About 30 bugs found since 0.2.1, most of them in TAR, RAR and the decoders. Many came
   from comparing archivey with
   [Apache Commons Compress](https://commons.apache.org/proper/commons-compress/) and its
   test archives, and from the [tar-minefield](https://github.com/haampie/tar-minefield)
