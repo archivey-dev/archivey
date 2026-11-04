@@ -164,8 +164,13 @@ def zlib_stream_may_follow(stream: BinaryIO, natives: Natives = IN_PROCESS) -> b
 
     The probes share a budget, as gzip's do (:func:`gzip_has_additional_member`); a
     scan that spends it answers ``True``, and the read goes to the standard library's
-    confirmation. **Side effect:** seeks the stream.
+    confirmation. Under process isolation it answers ``True`` without scanning: each
+    probe's decoder would be a child-process object, about 20 ms apiece, and a chance
+    header turns up every 2000 bytes or so (a crafted one every few bytes), so one
+    confirmation decode in the child costs less. **Side effect:** seeks the stream.
     """
+    if natives.isolated:
+        return True
     length = stream.seek(0, io.SEEK_END)
     last = length - _ZLIB_MIN_STREAM  # the last offset a further stream can start at
     budget = _STREAM_PROBE_BUDGET

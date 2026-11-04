@@ -433,27 +433,29 @@ decode: a candidate counts when its DEFLATE data ends four bytes before the end 
 source, or the probe runs out of its bounds. The probes share a budget, as gzip's member
 probes do, and a scan that spends it counts as a candidate. On a candidate the standard
 library confirms. Measured on 17 MiB of compressed text, the scan costs about 45% of a
-standard-library decode. A seek back stays behind the frontier, and a seek forward past it
-reads the bytes in between, so the check survives the TAR reader, which skips member data by
-seeking. The child decodes those bytes to seek past them anyway; the read-through adds their
-transfer out of it. For a reader that only skips, that transfer is the whole cost: listing a
-`.tar.zz` under `ON` moves the full decompressed archive out of the child once, where the
-seeks alone moved nothing. A mismatch is either damage or several zlib streams one after
-another (`rapidgzip` reads all of them; the trailer is the last one's), so the standard
-library then decodes the source again. It reads the first stream only, as it does with the
-accelerator off, where the rest is trailing data. When that stream ends before the output
-`rapidgzip` delivered, and the caller has none of the bytes past its end, the read goes to
-the standard library at the end of the first stream: a completing `read()` returns the first
-stream's bytes, a seek to the end lands there, and the rest is reported as
-`ARCHIVE_TRAILING_DATA`, as with `use_rapidgzip=OFF`. A caller that read on in bounded reads
-already has bytes of the second stream when the end shows up, and they cannot be taken back;
-there the decode goes on stream by stream up to the delivered length, and that output is
-accepted (§5). Whichever decode runs must reproduce the delivered bytes; failing that, the
-read or seek that reached the end raises `_StreamChecksumError`, a `CorruptionError`. The
-TAR end-of-archive scan, which otherwise ignores a tail that fails to decode, re-raises it,
-because the checksum covers members it already handed out. A stream never read to its end is
-not checked, and the standard library does not check one either: it verifies the trailer
-only when it consumes the end.
+standard-library decode. Under process isolation there is no scan: each probe's decoder
+would be a child-process object, about 20 ms apiece, so the confirmation runs at once. A
+seek back stays behind the frontier, and a seek forward past it reads the bytes in between,
+so the check survives the TAR reader, which skips member data by seeking. The child decodes
+those bytes to seek past them anyway; the read-through adds their transfer out of it. For a
+reader that only skips, that transfer is the whole cost: listing a `.tar.zz` under `ON`
+moves the full decompressed archive out of the child once, where the seeks alone moved
+nothing. A mismatch is either damage or several zlib streams one after another (`rapidgzip`
+reads all of them; the trailer is the last one's), so the standard library then decodes the
+source again. It reads the first stream only, as it does with the accelerator off, where the
+rest is trailing data. When that stream ends before the output `rapidgzip` delivered, and
+the caller has none of the bytes past its end, the read goes to the standard library at the
+end of the first stream: a completing `read()` returns the first stream's bytes, a seek to
+the end lands there, and the rest is reported as `ARCHIVE_TRAILING_DATA`, as with
+`use_rapidgzip=OFF`. A caller that read on in bounded reads already has bytes of the second
+stream when the end shows up, and they cannot be taken back; there the decode goes on stream
+by stream up to the delivered length, and that output is accepted (§5). Whichever decode
+runs must reproduce the delivered bytes; failing that, the read or seek that reached the end
+raises `_StreamChecksumError`, a `CorruptionError`. The TAR end-of-archive scan, which
+otherwise ignores a tail that fails to decode, re-raises it, because the checksum covers
+members it already handed out. A stream never read to its end is not checked, and the
+standard library does not check one either: it verifies the trailer only when it consumes
+the end.
 
 A cut zlib stream is the third cause of a mismatch: `rapidgzip` reads a stream cut inside
 its body as a shorter whole one, with no error, and sometimes stops before output the

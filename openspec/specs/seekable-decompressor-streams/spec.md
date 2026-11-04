@@ -296,35 +296,38 @@ stream; one that runs out of input first SHALL raise the standard library's `Tru
 
 rapidgzip does not validate zlib's Adler-32 and returns a silent short read on some
 mid-stream DEFLATE truncations. For a zlib stream the system SHALL check the Adler-32 after
-rapidgzip: once the stream has been read to its end (a forward seek reads the skipped bytes, so
-a reader that skips is still covered), a mismatch the standard library confirms SHALL raise
-`CorruptionError` from the read or seek that reached the end, and the TAR end-of-archive scan
-SHALL re-raise it. Where the standard library agrees with every byte rapidgzip delivered and
-then has more output, or meets the end of the source inside the stream (a cut stream), the
-read SHALL be handed to the standard library at the delivered position, so the bytes and the
-`TruncatedError` match `use_rapidgzip=OFF`. A stream rapidgzip ends before any output SHALL
-go to the standard library without the Adler-32 check, since the Adler-32 of no output is 1
-and a cut stream's last four bytes can read `00 00 00 01`. A trailer match SHALL NOT end the
-check while a second zlib stream may follow the first, since rapidgzip delivers every stream
-and the last one's trailer can be forged to the Adler-32 of all of them (after empty streams
-it needs no forging): the system SHALL scan the source for further zlib headers whose DEFLATE
-data reaches the trailer, with bounded probes, and on a candidate SHALL confirm with the
-standard library, which ends the read at the end of the first stream. Where the standard library's decode ends the first
-zlib stream before the bytes rapidgzip delivered (rapidgzip decodes on into a second stream)
-and the caller has no byte past that end yet, the read or seek SHALL be handed to the
-standard library at that end, so a completing read returns the first stream and the rest is
-reported as trailing data, as with `use_rapidgzip=OFF`. A caller that already has bytes past
-that end MAY keep the rapidgzip reading, which the decode of the following streams confirms;
-that caller then gets the following streams as content, and no `ARCHIVE_TRAILING_DATA` is
-reported. One stated exception: with a container-declared
-size, the read that reaches it is the verifying stage's verifying event, and when the probe past
-the size meets a cut trailer that read's chunk is withheld; the error is still `TruncatedError`.
-Raw DEFLATE carries no checksum, so there is no backstop for the deflate accelerator path. A
-DEFLATE-family member decoded inside a container (e.g. a ZIP member) SHALL rely on the
-container's own checksum (CRC-32 via the shared verifying stage) to catch truncation/corruption.
-A standalone deflate stream accelerated by rapidgzip MAY therefore miss a truncation that stdlib
-`zlib` would report; this is an accepted limitation of the accelerator path, and corruption
-inside a DEFLATE block SHALL still surface as `CorruptionError`.
+rapidgzip: once the stream has been read to its end (a forward seek reads the skipped bytes,
+so a reader that skips is still covered), a mismatch the standard library confirms SHALL
+raise `CorruptionError` from the read or seek that reached the end, and the TAR
+end-of-archive scan SHALL re-raise it. Where the standard library agrees with every byte
+rapidgzip delivered and then has more output, or meets the end of the source inside the
+stream (a cut stream), the read SHALL be handed to the standard library at the delivered
+position, so the bytes and the `TruncatedError` match `use_rapidgzip=OFF`. A stream
+rapidgzip ends before any output SHALL go to the standard library without the Adler-32
+check, since the Adler-32 of no output is 1 and a cut stream's last four bytes can read
+`00 00 00 01`. A trailer match SHALL NOT end the check while a second zlib stream may follow
+the first, since rapidgzip delivers every stream and the last one's trailer can be forged to
+the Adler-32 of all of them (after empty streams it needs no forging): the system SHALL scan
+the source for further zlib headers whose DEFLATE data reaches the trailer, with bounded
+probes, and on a candidate SHALL confirm with the standard library, which ends the read at
+the end of the first stream. Under process isolation the system SHALL confirm without the
+scan, since each probe would cost a child-process round trip. Where the standard library's
+decode ends the first zlib stream before the bytes rapidgzip delivered (rapidgzip decodes on
+into a second stream) and the caller has no byte past that end yet, the read or seek SHALL
+be handed to the standard library at that end, so a completing read returns the first stream
+and the rest is reported as trailing data, as with `use_rapidgzip=OFF`. A caller that
+already has bytes past that end MAY keep the rapidgzip reading, which the decode of the
+following streams confirms; that caller then gets the following streams as content, and no
+`ARCHIVE_TRAILING_DATA` is reported. One stated exception: with a container-declared size,
+the read that reaches it is the verifying stage's verifying event, and when the probe past
+the size meets a cut trailer that read's chunk is withheld; the error is still
+`TruncatedError`. Raw DEFLATE carries no checksum, so there is no backstop for the deflate
+accelerator path. A DEFLATE-family member decoded inside a container (e.g. a ZIP member)
+SHALL rely on the container's own checksum (CRC-32 via the shared verifying stage) to catch
+truncation/corruption. A standalone deflate stream accelerated by rapidgzip MAY therefore
+miss a truncation that stdlib `zlib` would report; this is an accepted limitation of the
+accelerator path, and corruption inside a DEFLATE block SHALL still surface as
+`CorruptionError`.
 
 #### Scenario: accelerator error matrix
 

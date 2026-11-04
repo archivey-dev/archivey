@@ -43,6 +43,7 @@ from archivey.internal.streams.codecs import (
     gzip_has_additional_member,
     open_codec_stream,
 )
+from archivey.internal.streams.codecs.isolated import ISOLATED
 from archivey.internal.streams.codecs.rapidgzip_child import (
     rapidgzip_child_unavailable_reason,
 )
@@ -1301,6 +1302,19 @@ def test_the_zlib_header_scan_finds_no_stream_in_a_single_one(data: bytes) -> No
     blob = zlib.compress(data)
     assert not zlib_stream_may_follow(io.BytesIO(blob))
     assert zlib_stream_may_follow(io.BytesIO(blob + zlib.compress(b"more")))
+
+
+def test_the_zlib_header_scan_does_not_probe_under_isolation(monkeypatch) -> None:
+    """Under process isolation each probe's decoder is a child-process object, so a
+    source crafted with a header every few bytes would cost minutes; the scan answers
+    at once and the standard library's confirmation decides."""
+    probes = []
+    monkeypatch.setattr(
+        codecs.zlib_codec, "_zlib_stream_at", lambda *a: probes.append(a) or (False, 0)
+    )
+    blob = zlib.compress(b"x") + b"\x78\x9c\x07" * 1000
+    assert zlib_stream_may_follow(io.BytesIO(blob), ISOLATED)
+    assert not probes
 
 
 @requires("rapidgzip")
