@@ -56,10 +56,11 @@ on:
 # test, dependency or CI path runs only the pull request set plus the free-threaded
 # 3.15t leg (the `scope` job). Every job below runs on pull requests unless it says
 # otherwise. On a pull request: lint (with the script tests), the `test` legs (Linux
-# 3.11 and 3.14 [all], Linux 3.11 core-only, Windows 3.14 [all]), free-threaded 3.13t,
+# 3.11 and 3.15 [all], Linux 3.11 core-only, Windows 3.15 [all]), free-threaded 3.13t,
 # the structural benchmark and the LZO check against liblzo2. Only past it: the
-# `test-queue` legs (the other Pythons, 3.14 core-only, the minimum versions, macOS,
-# Windows 3.11), 3.15t, the distribution unar packages, PyPy and the short Atheris fuzz.
+# `test-queue` legs (the other Pythons, 3.15 core-only, the minimum versions, macOS,
+# Windows 3.11, the 3.16 prerelease), 3.15t, the distribution unar packages, PyPy and
+# the short Atheris fuzz.
 # A failure there takes the pull request out of the queue. The split exists because the
 # organization's runners are shared (20 jobs at once, 5 of them macOS): full runs on
 # every push kept the queue's runs waiting for a runner until they timed out
@@ -138,12 +139,12 @@ jobs:
           # The one leg that measures coverage. Nothing reads the result (there is no
           # upload and no threshold, see CONTRIBUTING.md), and tracing doubled the run on
           # 3.11 (measured 2026-10-02), where coverage uses the C tracer: every other leg
-          # passes --no-cov. 3.14 is the cheapest place for it, since coverage uses
-          # sys.monitoring there. The steps pass --cov-report=term-missing here, which
+          # passes --no-cov. The max Python is the cheapest place for it, since coverage
+          # uses sys.monitoring from 3.14 on. The steps pass --cov-report=term-missing here, which
           # addopts already sets, only because an empty string is false in a GitHub
           # expression: `matrix.coverage && '' || '--no-cov'` would give --no-cov here too.
-          - { os: ubuntu-latest, python-version: "3.14", install: all, coverage: true }
-          - { os: windows-latest, python-version: "3.14", install: all }
+          - { os: ubuntu-latest, python-version: "3.15", install: all, coverage: true }
+          - { os: windows-latest, python-version: "3.15", install: all }
 
     steps: &test-steps
       - uses: actions/checkout@v4
@@ -528,13 +529,16 @@ jobs:
         include:
           # Zero-dep core on the max Python (`test` has the min; the core path barely
           # varies across point releases, so min/max is enough).
-          - { os: ubuntu-latest, python-version: "3.14", install: core-only }
+          - { os: ubuntu-latest, python-version: "3.15", install: core-only }
           # Linux [all] on the Pythons between min and max.
           - { os: ubuntu-latest, python-version: "3.12", install: all }
           - { os: ubuntu-latest, python-version: "3.13", install: all }
-          # CPython 3.15 prerelease (3.15.0rc3 as of 2026-10-08), allowed to fail. Drop
-          # `prerelease` and add the classifier once 3.15.0 final is out.
-          - { os: ubuntu-latest, python-version: "3.15", install: all, prerelease: true }
+          - { os: ubuntu-latest, python-version: "3.14", install: all }
+          # CPython 3.16 prerelease (3.16.0a1 as of 2026-11-04), allowed to fail. Its
+          # core-only suite passes; the [all] sync fails because cffi 2.1.1 (needed by
+          # cryptography) does not build on 3.16 yet. Drop `prerelease` and add the
+          # classifier once 3.16.0 final is out.
+          - { os: ubuntu-latest, python-version: "3.16", install: all, prerelease: true }
           # Minimum supported library versions (uv --resolution lowest-direct) on the min
           # Python: the [all] legs run the *current* versions of every dependency, so
           # this leg pins each declared dep to its floor (pycdlib 1.22, zstandard 0.23, …) to
@@ -543,7 +547,7 @@ jobs:
           # macOS on min/max Python and Windows on the min (cross-platform
           # path/symlink/junction surface; `test` has Windows on the max).
           - { os: macos-latest, python-version: "3.11", install: all }
-          - { os: macos-latest, python-version: "3.14", install: all }
+          - { os: macos-latest, python-version: "3.15", install: all }
           - { os: windows-latest, python-version: "3.11", install: all }
     # These rows have no `coverage` key: it evaluates to null, so the steps pass
     # --no-cov. actionlint reports the key as undefined here; that is expected.
@@ -638,23 +642,20 @@ jobs:
   #     behind a python_version >= '3.14' marker, where it keeps the GIL disabled.
   # Revisit both lists on 3.14t. See docs/install.md.
   #
-  # 3.15t is the 3.15 prerelease, allowed to fail like the 3.15 test leg. No lz4 wheel
-  # for it yet (2026-10-08), so lz4 builds from source; cryptography ships cp315 abi3t
-  # wheels since 50.0 and keeps the GIL disabled there, as on 3.14t. 3.15t does not run
-  # on pull requests; 3.13t does.
+  # 3.15t: no lz4 wheel for it (checked 2026-11-04, lz4 4.4.5), so lz4 builds from
+  # source; cryptography ships cp315 wheels since 50.0 and keeps the GIL disabled there,
+  # as on 3.14t. 3.15t does not run on pull requests; 3.13t does.
   free-threaded-concurrency:
     name: free-threaded-concurrency / py${{ matrix.python }} / core + GIL-safe extras
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # As in the `test-queue` job: a row without `prerelease` (3.13t) can fail the run.
-    continue-on-error: ${{ matrix.prerelease == true }}
     strategy:
       fail-fast: false
       matrix:
         include: >-
           ${{ fromJSON(github.event_name == 'pull_request'
           && '[{"python": "3.13t"}]'
-          || '[{"python": "3.13t"}, {"python": "3.15t", "prerelease": true}]') }}
+          || '[{"python": "3.13t"}, {"python": "3.15t"}]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
