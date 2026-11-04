@@ -230,8 +230,10 @@ Until it passes, each member's `verified` stays where its own reads left it, usu
   marks nothing. A walk that finds a later frame with no check drops the marked files
   to `LENGTH`. Damage does not: a walk that damage ends before the codec's end, or that
   ends without running a check the codec has, keeps their ceiling and hands them to
-  `verify_all()` as failures (`_note_spanning_unreachable`, a `SpanningCheckError`
-  whose cause is the damage). An xz or bzip2 check failure looks like damage to
+  every later `verify_all()` as failures (`_note_spanning_unreachable`, a
+  `SpanningCheckError` whose cause is the damage). The note lasts as long as the
+  reader, since a random-access listing is walked once, and leaves only when the check
+  runs (`_spanning_check_ran`). An xz or bzip2 check failure looks like damage to
   archivey and goes the same way. A failed gzip, zlib, lzip, zstd or LZ4 checksum
   (`_StreamChecksumError`) returns every listed file (§3.2). A walk the caller cut
   short changes nothing. Listing such an archive on a random-access reader reads it to
