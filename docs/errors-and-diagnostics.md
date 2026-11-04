@@ -144,7 +144,9 @@ unchecked data, read the whole member into memory or a temporary file first, and
 the read has finished without an error.
 
 A member tells you what has been checked so far. `member.verified` is a `Verification` level,
-and `member.verifiable` is the most a read from the start to the end can reach. Above `NONE`,
+and `member.verifiable` is the most a read from the start to the end can reach if the archive
+isn't damaged. Every member has a `verifiable` from the listing, but treat it as provisional
+until a stream of the member opens its data: it can settle then, lower or higher. Above `NONE`,
 `member.verified == member.verifiable` means every check the member carries has passed; at `NONE`
 nothing was proved, not even that the data is complete. A read
 that proves more raises them on the member in place. A member stream reports the same two values
@@ -200,8 +202,10 @@ which reads such a folder again until its checksum has matched, also after
 `CorruptionError` once it reaches that file's end, even when that file's own bytes are intact, and
 `verify_all()` returns each file that checksum covers with that error. A file with a checksum of
 its own is left to it: when the last file's own checksum fails, its read raises that error
-instead. The covered files stay at the level their own reads reached. In an encrypted 7z folder, a
-file whose checksum matches also confirms the password for the other files of that folder, though
+instead. The covered files stay at the level their own reads reached. Damage that stops the
+decode before the folder's end means the checksum can't run at all: the files before the damage
+stay at `LENGTH` below their `CHECKSUM`, and `verify_all()` returns them too. In an encrypted 7z
+folder, a file whose checksum matches also confirms the password for the other files of that folder, though
 not for other folders, which can use another password. A file you read before that confirmation
 keeps the level it had; calling `verify_all()` again reads it once more.
 
@@ -228,10 +232,10 @@ checksum for the whole compressed stream, checked at its end. Its files have `ve
 archive to its end and that checksum matches, every file in it reaches `CHECKSUM`, whether or not
 you read it, except a sparse TAR file, whose holes are not stored bytes: listing the archive does
 that, and so does a `stream_members()` pass that runs to the end. When that read finds the
-checksum can't pass, because the stream carries none (an `.xz` written with no check) or damage
-ends it early, the files' `verifiable` falls to `LENGTH`. A gzip, zstd or LZ4 checksum that runs
-and fails stays their ceiling, and `verify_all()` returns them. An xz or bzip2 check that fails
-looks like damage to archivey and lowers it the same way.
+stream carries no checksum (an `.xz` written with no check), the files' `verifiable` falls to
+`LENGTH`, since no read can do better. Damage never lowers it: when the checksum fails, or the
+archive is cut or damaged before it, the files stay below `CHECKSUM` and `verify_all()` returns
+them.
 
 To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
 to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the

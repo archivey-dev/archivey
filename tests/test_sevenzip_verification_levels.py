@@ -641,24 +641,19 @@ def test_an_unconfirmed_folder_builds_its_key_anchors_once(
 
 
 @pytest.mark.parametrize("seekable", [False, True])
-def test_damage_before_the_folder_end_drops_the_folder_crc_ceiling(
+def test_damage_before_the_folder_end_keeps_the_ceiling_and_fails_the_files(
     seekable: bool,
 ) -> None:
-    # The decode stops at the damage inside c's data, so the folder CRC never runs:
-    # a and b, read whole, fall to LENGTH and verify_all() leaves none below its
-    # ceiling (review of PR 1257, K1).
+    # The decode stops at the damage inside c's data, so the folder CRC never runs.
+    # Damage does not lower verifiable: a and b, read whole, stay at LENGTH below
+    # their CHECKSUM ceiling, and verify_all() returns them with c, every time.
     data = bytearray(_lzma2_folder(_THREE, folder_crc=_crc(_A + _B + _C)))
     data[32 + 40] ^= 0xFF
     with open_archive(io.BytesIO(bytes(data)), seekable_members=seekable) as reader:
         members = _by_name(reader.members())
-        assert members["a"].verifiable is Verification.CHECKSUM
-        failures = reader.verify_all()
-        failed = {m.name for m, _e in failures}
-        assert "c" in failed
-        for name, member in members.items():
-            if name not in failed:
-                assert member.verified == member.verifiable, name
-        reader.verify_all()  # a second call agrees
-        for name, member in members.items():
-            if name not in failed:
-                assert member.verified == member.verifiable, name
+        for _ in range(2):  # a second call agrees
+            failures = reader.verify_all()
+            assert sorted(m.name for m, _e in failures) == ["a", "b", "c"]
+            for name in ("a", "b"):
+                assert members[name].verified is Verification.LENGTH
+                assert members[name].verifiable is Verification.CHECKSUM

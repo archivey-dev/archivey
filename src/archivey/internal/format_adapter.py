@@ -403,13 +403,13 @@ class _PluginAdapter(BaseArchiveReader):
         except _StreamChecksumError:
             # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
             # it stays the ceiling of the members it covers, which verify_all()
-            # returns. An xz or bzip2 check failure reads as damage and lands below.
+            # returns. An xz or bzip2 check failure reads as damage, handled below.
             raise
-        except ArchiveyError:
-            # Damage ended the walk before the outer codec's end: its checksum cannot
-            # pass, so the members it would cover fall to what their own reads reach.
-            for member in self._listed:
-                drop_spanning_ceiling(member, Verification.LENGTH)
+        except ArchiveyError as e:
+            # Damage ended the walk before the outer codec's end, so its checksum
+            # cannot run. Damage does not lower ``verifiable``: the members only that
+            # checksum covers are failures of verify_all() instead.
+            self._note_spanning_unreachable("codec", self._listed, e)
             raise
         finally:
             # Members held and never yielded stop counting with the walk that held
@@ -1486,11 +1486,16 @@ class SequentialReaderAdapter(_PluginAdapter):
             return
         proofs = ask_verification_proofs(codec)
         if not (proofs.ended and proofs.content):
-            # The walk ended without that proof (a frame with no check, a broken
-            # decode): the members marked as covered fall to what their own reads
-            # reach.
-            for member in self._listed:
-                drop_spanning_ceiling(member, Verification.LENGTH)
+            if proofs.frame_unchecked or not proofs.content_possible:
+                # A frame with no check: no read of this archive can check every
+                # byte, so the members marked as covered fall to what their own
+                # reads reach. That is the format, not damage.
+                for member in self._listed:
+                    drop_spanning_ceiling(member, Verification.LENGTH)
+            else:
+                # The check exists but this walk did not run it (the data ends
+                # early): damage, which keeps the ceiling and makes failures.
+                self._note_spanning_unreachable("codec", self._listed, None)
             return
         for member in self._listed:
             if self._codec_covers(member):

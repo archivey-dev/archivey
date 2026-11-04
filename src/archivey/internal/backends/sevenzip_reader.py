@@ -146,7 +146,6 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.internal.streams.verification import (
     SpanningCheckError,
-    drop_spanning_ceiling,
     mark_spanning_checksum,
     raise_member_level,
 )
@@ -543,7 +542,7 @@ class _FolderChecks(DelegatingStream):
         on_folder_match: Callable[[], None],
         on_folder_mismatch: Callable[[int, bool | None], SpanningCheckError | None],
         on_key_proved: Callable[[], None],
-        on_folder_unreachable: Callable[[], None] = lambda: None,
+        on_folder_unreachable: Callable[[BaseException | None], None] = lambda _: None,
         tail: tuple[int, int] | None = None,
     ) -> None:
         super().__init__(inner)
@@ -579,20 +578,20 @@ class _FolderChecks(DelegatingStream):
             if self._gap_target is not None and n != 0:
                 self._settle_gap()
             data = read_blocking(self._inner, n)
-        except Exception:
+        except Exception as e:
             # The decode failed before the folder's end, so its CRC cannot run.
-            self._report_unreachable()
+            self._report_unreachable(e)
             raise
         if data and self._pos is not None:
             self._hash(data)
         elif not data and n != 0 and self._pos is not None and self._pos < self._size:
             # The decode ended short of the folder's end: the same.
-            self._report_unreachable()
+            self._report_unreachable(None)
         return data
 
-    def _report_unreachable(self) -> None:
+    def _report_unreachable(self, cause: BaseException | None) -> None:
         if self._folder_crc is not None:
-            self._on_folder_unreachable()
+            self._on_folder_unreachable(cause)
 
     def _settle_gap(self) -> None:
         """Read and hash from ``_pos`` up to the deferred seek's target.
@@ -944,8 +943,8 @@ class SevenZipReader(BaseArchiveReader):
             ):
                 self._folder_crc_only[index] = folder.crc & 0xFFFFFFFF
                 # A read of the whole folder in order runs that digest, so it is
-                # what these members can reach (``verifiable``), until a decode
-                # fails or ends before the folder's end (``_folder_crc_unreachable``).
+                # what these members can reach (``verifiable``). Damage that stops
+                # the decode does not lower it (``_folder_crc_unreachable``).
                 for member in members:
                     if _member_crc(member) is None:
                         mark_spanning_checksum(member)
@@ -1607,7 +1606,9 @@ class SevenZipReader(BaseArchiveReader):
             ),
             tail=self._folder_tail(folder_index) if folder_crc is not None else None,
             on_key_proved=lambda: self._folder_key_proved(folder_index),
-            on_folder_unreachable=lambda: self._folder_crc_unreachable(folder_index),
+            on_folder_unreachable=lambda cause: self._folder_crc_unreachable(
+                folder_index, cause
+            ),
         )
 
     def _key_anchors(self, folder_index: int) -> tuple[tuple[int, int, int], ...]:
@@ -1660,25 +1661,22 @@ class SevenZipReader(BaseArchiveReader):
             if _member_crc(member) is None:
                 raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
 
-    def _folder_crc_unreachable(self, folder_index: int) -> None:
+    def _folder_crc_unreachable(
+        self, folder_index: int, cause: BaseException | None
+    ) -> None:
         """A decode of this folder failed or ended before the folder's end.
 
-        Its CRC cannot run on this decode, and damage that stops one in-order decode
-        stops every one, so the members only it covers fall to what their own reads
-        reach (``drop_spanning_ceiling``): ``LENGTH``, or ``NONE`` while the folder's
-        password is unconfirmed. A later decode that does reach the end and match (a
-        password supplied since) still raises them (``_folder_crc_matched``).
+        Its CRC cannot run on this decode. That is damage, which does not lower
+        ``verifiable`` (the level an undamaged archive would reach): the members only
+        that CRC covers are kept for ``verify_all()`` to return as failures
+        (``_note_spanning_unreachable``). A later decode that does reach the end and
+        match (a password supplied since) still raises them (``_folder_crc_matched``).
         """
         if folder_index not in self._folder_crc_only:
             return
-        ceiling = (
-            Verification.NONE
-            if folder_index in self._folders_unconfirmed
-            else Verification.LENGTH
+        self._note_spanning_unreachable(
+            folder_index, self._folder_members.get(folder_index, ()), cause
         )
-        for member in self._folder_members.get(folder_index, ()):
-            if _member_crc(member) is None:
-                drop_spanning_ceiling(member, ceiling)
 
     @override
     def _awaiting_spanning_checks(self) -> set[int]:

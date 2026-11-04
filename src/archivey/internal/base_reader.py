@@ -14,6 +14,7 @@ from collections.abc import (
     Collection,
     Generator,
     Hashable,
+    Iterable,
     Iterator,
     Mapping,
     Sequence,
@@ -4363,6 +4364,42 @@ class BaseArchiveReader(ArchiveReader):
         what is held stays bounded by the number of checks, however often it is read.
         """
         self._unraised_spanning[key] = error
+
+    def _note_spanning_unreachable(
+        self,
+        key: object,
+        members: Iterable[ArchiveMember],
+        cause: BaseException | None,
+    ) -> None:
+        """Keep, for ``verify_all()``, the members a check over several of them covers
+        when damage keeps that check from running.
+
+        ``verifiable`` is what a read could reach if nothing were damaged, so damage
+        does not lower it. The members the check alone would have proved
+        (``ArchiveMember._spanning_checksum``) and that have not reached ``CHECKSUM``
+        another way are returned as failures instead, so ``verify_all()`` still leaves
+        no member below its ceiling unexplained. ``cause`` is the damage, or ``None``
+        when the data simply ended early.
+        """
+        covers = tuple(
+            m
+            for m in members
+            if m._spanning_checksum and m.verified is not Verification.CHECKSUM
+        )
+        if not covers:
+            return
+        names = ", ".join(quoted(member.name) for member in covers[:5])
+        if len(covers) > 5:
+            names += f" and {len(covers) - 5} more"
+        why = "the data ends early" if cause is None else str(cause)
+        error = SpanningCheckError(
+            f"The check that covers {names} could not run, so their data could not be "
+            f"confirmed: {why}",
+            covers=covers,
+        )
+        error.__cause__ = cause
+        error.archive_name = self._archive_name
+        self._note_unraised_spanning(key, error)
 
     def _with_spanning_failures(
         self,
