@@ -246,6 +246,8 @@ What goes in this file, from 0.2.0 on:
 
 - One line per new feature and per public API change (Added / Changed / Deprecated /
   Removed). A line that makes callers change their code starts with **Breaking:**.
+- A name outside the stability policy (`EXPERIMENTAL` in scripts/checks/api_surface.py)
+  gets its line under Experimental, after Added.
 - Each security fix gets its own line under Security.
 - A Performance section, after Fixed and before Security, gives the peer wall ratios
   for the release with the run's date and commit, and links benchmarks/RESULTS.md for
