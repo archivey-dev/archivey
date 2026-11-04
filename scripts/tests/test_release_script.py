@@ -682,3 +682,33 @@ def test_next_release_line(
     newest: str, verdict: str, labelled: list[str] | str, expected: str
 ) -> None:
     assert release.next_release_line("v0.2.0", newest, verdict, labelled) == expected
+
+
+#: Scheduled workflows whose failures do not open an issue, with the reason.
+NOT_ALERTED = {
+    "conflict-notice.yml": "runs hourly and only comments on pull requests",
+}
+
+
+def test_every_scheduled_workflow_is_alerted() -> None:
+    """A scheduled workflow's failure opens an issue unless it is listed in NOT_ALERTED."""
+    yaml = pytest.importorskip("yaml")
+    alert = yaml.safe_load(
+        (WORKFLOWS / "scheduled-failure-alert.yml").read_text(encoding="utf-8")
+    )
+    watched = set(alert.get("on", alert.get(True))["workflow_run"]["workflows"])
+    names = {}
+    for path in WORKFLOWS.glob("*.y*ml"):
+        if "schedule" in _triggers(path):
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            names[path.name] = data.get("name")
+    assert set(NOT_ALERTED) <= set(names)
+    missing = {
+        file: name
+        for file, name in names.items()
+        if file not in NOT_ALERTED and name not in watched
+    }
+    assert missing == {}, "add each `name:` to scheduled-failure-alert.yml"
+    assert watched <= set(names.values()), (
+        "a watched name matches no scheduled workflow"
+    )
