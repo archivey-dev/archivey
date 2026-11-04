@@ -16,7 +16,9 @@ Other pages own parts of this, and this page links them rather than repeating th
   [`formats/zip.md`](../formats/zip.md), [`formats/rar.md`](../formats/rar.md),
   [`formats/tar.md`](../formats/tar.md), [`formats/xz.md`](../formats/xz.md) and
   [`formats/zstd-lz4.md`](../formats/zstd-lz4.md) have the parts this page relies on.
-- [`formats/README.md`](../formats/README.md): this page gives no performance numbers.
+
+The page follows the handbook's page conventions in
+[`formats/README.md`](../formats/README.md), so it gives no performance numbers.
 
 The whole feature is **experimental** (`scripts/api_surface.py` lists it so): any release,
 a patch release included, may change it. The checks themselves are not experimental. A
