@@ -245,7 +245,10 @@ class CpioReader(SequentialReader):
             key = (header.dev, header.ino)
             if member.type is MemberType.FILE and header.nlink > 1:
                 group = groups.setdefault(key, _LinkGroup())
-                if group.name is not None:
+                # newc and crc store the data with one link, so a later name that
+                # stores data of its own is a file of its own, as GNU cpio writes it.
+                own_data = size > 0 and self._defers_link_data()
+                if group.name is not None and not own_data:
                     member.type = MemberType.HARDLINK
                     member.link_target = group.name
                     member.size = None

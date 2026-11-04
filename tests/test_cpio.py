@@ -453,6 +453,23 @@ def _newc(*members: tuple[bytes, int, int, int, bytes], nul: bool = True) -> byt
     return bytes(out)
 
 
+def test_each_newc_name_in_one_inode_reads_the_bytes_stored_with_it(
+    tmp_path: Path,
+) -> None:
+    """Two newc headers share a device and inode and both store data.
+
+    Each name reads the bytes in its own header, as GNU cpio and 7-Zip
+    extract them. A crc archive takes the same path.
+    """
+    data = _newc(
+        (b"early", _FILE, 7, 2, b"EARLY"),
+        (b"late", _FILE, 7, 2, b"LATE!!"),
+    )
+    with open_archive(_archive(tmp_path, data)) as reader:
+        assert reader.read("early") == b"EARLY"
+        assert reader.read("late") == b"LATE!!"
+
+
 def test_too_many_held_links(tmp_path: Path) -> None:
     """Links held back for their data count toward max_members while they are held."""
     links = [(f"l{i}".encode(), _FILE, 7, 6, b"") for i in range(5)]
