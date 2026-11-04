@@ -26,14 +26,6 @@ every read, and stricter defaults for names and for archive shapes no writer pro
   (`only=`, `exclude=`, `plugins=`) and which optional libraries it may load
   (`exclude_libraries=`, with the new `OptionalLibrary` enum).
   `PackageNotInstalledError.missing` names what is missing.
-- An experimental interface for formats and codecs from outside archivey:
-  `archivey.formats` with `register_format()` and `register_codec()`, and
-  `FormatPolicy(replace=)` to read a built-in container with your own reader. It is
-  outside the stability policy: any release may change it.
-- Experimental: `ArchiveStream.verified` and `.verifiable` say how far a member's data
-  has been checked (`Verification.NONE` to `CHECKSUM`), and `ArchiveStream.verify(level)`
-  runs the checks without keeping the bytes. A stream that can seek is left where it
-  was; one that cannot is read to the end. Any release may change these or the levels.
 - `ArchiveMember.accessed_utc()`, `created_utc()` and `ctime_utc()`, beside
   `modified_utc()`. Extraction restores a member's birth time (`created`) on Windows and
   macOS.
@@ -48,6 +40,23 @@ every read, and stricter defaults for names and for archive shapes no writer pro
   differently; reported at INFO, raised only by `PEDANTIC` or `raise_on=`).
   `MEMBER_READERS_DISAGREE` also names a file that only one of an ISO image's trees
   (ISO 9660, Joliet, UDF) holds, and a member name with a NUL byte.
+
+### Experimental
+
+These are outside the stability policy: any release, a patch included, may change or
+remove them.
+
+- An interface for formats and codecs from outside archivey: `archivey.formats` with
+  `register_format()` and `register_codec()`, and `FormatPolicy(replace=)` to read a
+  built-in container with your own reader.
+- Verification levels. `verified` and `verifiable`, on `ArchiveMember` and on
+  `ArchiveStream`, say how far a member's data has been checked: `Verification.NONE`,
+  `UNLOCKED` (the password is confirmed), `LENGTH` (all the data is there) or `CHECKSUM`
+  (every byte passed a stored checksum, at whatever layer it sits).
+  `ArchiveStream.verify()` runs the checks without keeping the bytes, and
+  `password_only=True` stops once the password is confirmed. A stream that can seek is
+  left where it was; one that cannot is read to the end. `reader.verify_all()` checks
+  every member and returns the ones that failed, each with its error.
 
 ### Changed
 
@@ -70,6 +79,9 @@ every read, and stricter defaults for names and for archive shapes no writer pro
   them, a PAX size on a directory or link no longer frames data, and an mtime field with
   no digit is `None`, not 1970.
 - `MEMBER_NAME_NORMALIZED` is no longer reported for a leading `./` alone.
+- A seek in a compressed stream no longer decodes anything itself: the next read decodes
+  up to the new position. A seek that no read follows, or that another seek replaces,
+  costs nothing.
 - Under `use_rapidgzip=AUTO`, rapidgzip also decodes large sequential DEFLATE reads on
   Linux and macOS, where it was measured to pay.
 - Extracting a ZIP takes about 0.8x the 0.2.1 time, and reading a single `.gz` file
@@ -81,8 +93,9 @@ every read, and stricter defaults for names and for archive shapes no writer pro
 - The ratio fields of `ExtractionLimits` (`max_ratio`, `ratio_activation_threshold`,
   `live_ratio_activation_threshold`): set them on `DecoderLimits`. They still apply, and
   are removed in 0.4.0.
-- Constructing `ArchiveStream` or `MemberPass` directly: they are now base classes you
-  receive from `open()`, `stream_members()` and `open_stream()`. Removed in 0.4.0.
+- Constructing or subclassing `ArchiveStream` or `MemberPass` as in 0.2: they are now
+  base classes you receive from `open()`, `stream_members()` and `open_stream()`. A 0.2
+  subclass still works, with a `DeprecationWarning`. Removed in 0.4.0.
 
 ### Security
 
@@ -96,7 +109,7 @@ every read, and stricter defaults for names and for archive shapes no writer pro
 
 ### Fixed
 
-- About 20 bugs found since 0.2.1, most of them in TAR, RAR and the decoders. Many came
+- About 25 bugs found since 0.2.1, most of them in TAR, RAR and the decoders. Many came
   from comparing archivey with
   [Apache Commons Compress](https://commons.apache.org/proper/commons-compress/) and its
   test archives, and from the [tar-minefield](https://github.com/haampie/tar-minefield)
@@ -233,6 +246,8 @@ What goes in this file, from 0.2.0 on:
 
 - One line per new feature and per public API change (Added / Changed / Deprecated /
   Removed). A line that makes callers change their code starts with **Breaking:**.
+- A name outside the stability policy (`EXPERIMENTAL` in scripts/checks/api_surface.py)
+  gets its line under Experimental, after Added.
 - Each security fix gets its own line under Security.
 - A Performance section, after Fixed and before Security, gives the peer wall ratios
   for the release with the run's date and commit, and links benchmarks/RESULTS.md for
