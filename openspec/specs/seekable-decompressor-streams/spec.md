@@ -226,7 +226,8 @@ a forged copy of the eight bytes, appended after a wrong trailer, overlapping it
 back into the compressed data, SHALL NOT pass for it, since the real CRC-32 is then a second
 occurrence; a copy more than 56 bytes after the end of the real trailer is not excluded, and
 needs rapidgzip to read past those bytes without an error, which rapidgzip 0.16 does not do
-for ten or more. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
+for ten or more unless they start a gzip header that runs past the end of the file, a shape
+the system SHALL hand to the stdlib engine before looking for the trailer. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
 rewind the seekable source and re-decode through the stdlib gzip engine so recoverable
 prefixes stream and truncation still raises from a read (never `close()`). The backstop SHALL
 run once, on the first read or seek that meets the end of rapidgzip's output, and is spent

@@ -497,6 +497,31 @@ def test_gzip_forged_trailer_reaching_back_into_the_compressed_data_is_not_one()
     _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, _no_seek), off)
 
 
+@requires("rapidgzip")
+@pytest.mark.parametrize("members", [1, 2])
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param(b"\x1f\x8b\x08\x04" + bytes(6) + b"\x04\x10", id="long-extra"),
+        pytest.param(b"\x1f\x8b\x08\x04" + bytes(7), id="cut-length"),
+    ],
+)
+def test_gzip_header_running_past_the_end_hides_no_forged_trailer(
+    members: int, tail: bytes
+) -> None:
+    """rapidgzip 0.16 reads a gzip header that runs past the end of the file (an extra
+    field longer than what is left, or an extra field whose length is cut) as the end of the
+    data, with no error. A copy of the last member's trailer placed after such a header
+    then passed the trailer check, so the cut read clean (found by the ``gzip_accel``
+    fuzz soak). The standard library reports the cut, and so must the accelerated read."""
+    _require_the_accelerator_in_use()
+    member = gzip.compress(b"atheris seed payload\n" * 8)
+    blob = member * members + tail + bytes(range(1, 51)) + member[-8:]
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
+
+
 def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_where_the_spec_accepts_it() -> (
     None
 ):
