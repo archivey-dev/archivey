@@ -126,9 +126,9 @@ in the lint job instead; leg 3 passes `tests/`, as CI's core-only leg does. `-n 
 (pytest-xdist) runs the suite on every core; it is not in `addopts`, so a plain `uv run
 pytest tests/test_zip.py` stays one process.
 
-CI also matrixes supported **Python versions** (3.11–3.14 on Linux; 3.11/3.14 on
-macOS/Windows). A pull request push runs a reduced set (Linux 3.11 and 3.14, one
-core-only leg, Windows 3.14, free-threaded 3.13t, the benchmark and plugin jobs); the
+CI also matrixes supported **Python versions** (3.11–3.15 on Linux; 3.11/3.15 on
+macOS/Windows, plus an allowed-to-fail 3.16 prerelease leg). A pull request push runs a
+reduced set (Linux 3.11 and 3.15, one core-only leg, Windows 3.15, free-threaded 3.13t, the benchmark and plugin jobs); the
 merge queue runs every leg plus PyPy, the distribution unar packages and the short
 Atheris fuzz, and a failure there takes the pull request out of the queue. A queued
 change that touches no path on `FULL` in `scripts/ci/ci_scope.py` (the library, the
@@ -194,7 +194,7 @@ Whether a release can be a patch follows
   to mypy, and prose there makes the file unparseable in the consumer's own run.
   `tests/test_no_stray_type_comments.py` is what keeps that true.
 - **Coverage is reported, never gated.** `pytest-cov` produces a report you can eyeball;
-  there is no `fail_under` threshold. CI measures it on one leg only (ubuntu, py3.14, the
+  there is no `fail_under` threshold. CI measures it on one leg only (ubuntu, py3.15, the
   `coverage: true` row in `ci.yml`); the others pass `--no-cov`, because tracing doubles
   the run on 3.11. Aim for meaningful coverage through the tests
   below, not a number.
