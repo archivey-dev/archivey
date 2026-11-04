@@ -43,12 +43,14 @@ from archivey.internal.streams.codecs import (
     gzip_has_additional_member,
     open_codec_stream,
 )
+from archivey.internal.streams.codecs.isolated import ISOLATED
 from archivey.internal.streams.codecs.rapidgzip_child import (
     rapidgzip_child_unavailable_reason,
 )
 from archivey.internal.streams.codecs.rapidgzip_select import (
     _deflate_family_uses_accelerator,
 )
+from archivey.internal.streams.codecs.zlib_codec import zlib_stream_may_follow
 from archivey.types import ArchiveFormat
 from tests.conftest import requires
 from tests.streams_util import rapidgzip_soft_end
@@ -1200,6 +1202,119 @@ def test_a_second_zlib_stream_is_not_content(steps: Callable[[BinaryIO], None]) 
     off = _outcome(Codec.ZLIB, blob, _OFF, steps)
     assert off[1] is None
     _assert_same(_outcome(Codec.ZLIB, blob, _ON, steps), off)
+
+
+def _seek_to_the_end(s: BinaryIO) -> None:
+    s.seek(0, io.SEEK_END)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    "steps", [_no_seek, _seek_to_the_end], ids=["read", "seek-end"]
+)
+def test_a_zlib_stream_cut_before_any_output_is_not_taken_for_an_empty_one(
+    steps: Callable[[BinaryIO], None],
+) -> None:
+    """rapidgzip ends this cut zlib stream (a fixed block and the start of a stored one)
+    before any output, with no error, and its last four bytes read as the Adler-32 of no
+    output, 1. The standard library reports the cut, so the accelerated read must too
+    (found by the ``zlib_accel`` fuzz soak)."""
+    _require_the_accelerator_in_use()
+    blob = bytes.fromhex("789c0200000001")
+    off = _outcome(Codec.ZLIB, blob, _OFF, steps)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.ZLIB, blob, _ON, steps), off)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    "steps", [_no_seek, _seek_to_the_end], ids=["read", "seek-end"]
+)
+@pytest.mark.parametrize("empties", [1, 2])
+def test_a_zlib_stream_after_empty_ones_is_not_content(
+    steps: Callable[[BinaryIO], None], empties: int
+) -> None:
+    """After empty zlib streams, the Adler-32 of all rapidgzip delivered is the last
+    stream's, so its trailer matches; the standard library still ends the read at the
+    end of the first stream."""
+    _require_the_accelerator_in_use()
+    blob = zlib.compress(b"") * empties + zlib.compress(b"hello")
+    off = _outcome(Codec.ZLIB, blob, _OFF, steps)
+    _assert_same(_outcome(Codec.ZLIB, blob, _ON, steps), off)
+
+
+def _forged_second_stream(first: bytes, *rest: bytes) -> bytes:
+    """``first`` and ``rest`` as zlib streams one after another, the last one's
+    trailer forged to the Adler-32 of all their output, which rapidgzip delivers."""
+    streams = [zlib.compress(data) for data in (first, *rest)]
+    forged = zlib.adler32(b"".join((first, *rest))).to_bytes(4, "big")
+    return b"".join(streams)[:-4] + forged
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    "steps", [_no_seek, _seek_to_the_end], ids=["read", "seek-end"]
+)
+@pytest.mark.parametrize(
+    "blob",
+    [
+        pytest.param(_forged_second_stream(b"first stream", b"second"), id="short"),
+        # Past the probe's input bound: counted without decoding to its end.
+        pytest.param(
+            _forged_second_stream(b"first stream", random.Random(7).randbytes(1 << 17)),
+            id="long",
+        ),
+        # The middle stream ends before the trailer; the last one is found instead.
+        pytest.param(
+            _forged_second_stream(b"first stream", b"middle", b"last"), id="three"
+        ),
+    ],
+)
+def test_a_forged_second_zlib_stream_is_not_content(
+    steps: Callable[[BinaryIO], None], blob: bytes
+) -> None:
+    """A second zlib stream whose trailer is forged to the Adler-32 of all the output
+    makes the trailer match; the header scan finds the second stream, and the standard
+    library ends the read at the end of the first, as with the accelerator off."""
+    _require_the_accelerator_in_use()
+    off = _outcome(Codec.ZLIB, blob, _OFF, steps)
+    assert off[1] is None
+    _assert_same(_outcome(Codec.ZLIB, blob, _ON, steps), off)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(
+            b" ".join(
+                random.Random(3).choice([b"alpha", b"beta", b"gamma", b"delta", b"pi"])
+                for _ in range(400_000)
+            ),
+            id="text",
+        ),
+        pytest.param(random.Random(5).randbytes(1 << 20), id="random"),
+    ],
+)
+def test_the_zlib_header_scan_finds_no_stream_in_a_single_one(data: bytes) -> None:
+    """About one offset in 2000 of compressed data looks like a zlib header; none of
+    them is taken for a second stream, and their probes stay within the budget, so a
+    single stream keeps the trailer check's fast path."""
+    blob = zlib.compress(data)
+    assert not zlib_stream_may_follow(io.BytesIO(blob))
+    assert zlib_stream_may_follow(io.BytesIO(blob + zlib.compress(b"more")))
+
+
+def test_the_zlib_header_scan_does_not_probe_under_isolation(monkeypatch) -> None:
+    """Under process isolation each probe's decoder is a child-process object, so a
+    source crafted with a header every few bytes would cost minutes; the scan answers
+    at once and the standard library's confirmation decides."""
+    probes = []
+    monkeypatch.setattr(
+        codecs.zlib_codec, "_zlib_stream_at", lambda *a: probes.append(a) or (False, 0)
+    )
+    blob = zlib.compress(b"x") + b"\x78\x9c\x07" * 1000
+    assert zlib_stream_may_follow(io.BytesIO(blob), ISOLATED)
+    assert not probes
 
 
 @requires("rapidgzip")
