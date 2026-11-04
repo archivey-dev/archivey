@@ -470,6 +470,26 @@ def test_each_newc_name_in_one_inode_reads_the_bytes_stored_with_it(
         assert reader.read("late") == b"LATE!!"
 
 
+def test_empty_newc_links_bind_to_the_data_name_around_them(tmp_path: Path) -> None:
+    """With two names that carry data, an empty link held before or between them
+    links to the first, and one after both links to the latest."""
+    data = _newc(
+        (b"pre", _FILE, 7, 5, b""),
+        (b"early", _FILE, 7, 5, b"EARLY"),
+        (b"mid", _FILE, 7, 5, b""),
+        (b"late", _FILE, 7, 5, b"LATE!!"),
+        (b"tail", _FILE, 7, 5, b""),
+    )
+    with open_archive(_archive(tmp_path, data)) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert members["early"].type is MemberType.FILE
+        assert members["late"].type is MemberType.FILE
+        for name, target in (("pre", "early"), ("mid", "early"), ("tail", "late")):
+            assert members[name].type is MemberType.HARDLINK
+            assert members[name].link_target == target
+        assert reader.read("tail") == b"LATE!!"
+
+
 def test_too_many_held_links(tmp_path: Path) -> None:
     """Links held back for their data count toward max_members while they are held."""
     links = [(f"l{i}".encode(), _FILE, 7, 6, b"") for i in range(5)]
