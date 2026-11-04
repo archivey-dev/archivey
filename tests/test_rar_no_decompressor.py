@@ -27,7 +27,7 @@ from tests.test_rar_reader import (
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _CORPUS = Path(__file__).parent / "fixtures" / "corpus" / "rar"
 _NONE = ArchiveyConfig(rar_decompressor=RarDecompressor.NONE)
-# As ``scripts/gen_rar_fixtures.py`` writes them.
+# As ``scripts/fixtures/gen_rar_fixtures.py`` writes them.
 _PAYLOADS = {
     "payload.bin": b"ABCDEFGH" * 200,
     "second.bin": hashlib.sha256(b"stored_solid_member").digest() * 64,

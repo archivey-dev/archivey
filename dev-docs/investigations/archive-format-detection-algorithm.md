@@ -1859,7 +1859,7 @@ open:
 Everything above is *measurement*: it chooses thresholds, once, from corpora. What follows
 is *testing*: it pins behaviour afterwards, in CI, where it has to survive later edits. They
 are separate deliverables, and only the second belongs in the OpenSpec change rather than in
-a one-off script under `scripts/exploration/`.
+a one-off script under `scripts/investigations/exploration/`.
 
 **Golden fixtures, one per required case.** Each row of §4 needs a committed fixture and a
 pinned expected result — format, evidence class, `payload_offset`, `prefix_kind`,

@@ -1,4 +1,4 @@
-# Bugs that got past the review loop, for scripts/review_eval.py.
+# Bugs that got past the review loop, for scripts/review/review_eval.py.
 #
 # Each case is a merged PR that the loop reviewed (its last round's verdict was
 # conditional, approved or clean) and a later PR that fixed a bug the reviewed

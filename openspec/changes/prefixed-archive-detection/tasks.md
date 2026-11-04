@@ -190,7 +190,7 @@ block. **0.4** is `(context)` — a prerequisite note, not a block.
       `VALID` (task 4.4). Pin: `test_inexact_7z_decoy_loses_to_a_later_exact_payload`
       (`xfail(strict=True)` on the real payload winning). Recorded in
       `dev-docs/topics/prefixed-archives.md`. `[~]` so this change cannot archive until the
-      tie-break lands (`scripts/check_openspec_archived.py`).
+      tie-break lands (`scripts/checks/check_openspec_archived.py`).
 - [x] 2.4 **(Block 3, or a slim follow-up after Block 1)** Validate a RAR 5 hit via the main header's CRC32; RAR 4 via a
       parseable main header. Named function on the RAR backend, same `HitOutcome` split
       as 2.3.

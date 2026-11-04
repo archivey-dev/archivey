@@ -1,4 +1,4 @@
-"""`scripts/ci_scope.py` and the `scope` job in ci.yml that uses it.
+"""`scripts/ci/ci_scope.py` and the `scope` job in ci.yml that uses it.
 
 A merge group that changes no library, library test, dependency or CI path skips the
 queue-only jobs. A wrong answer here either runs the whole matrix for nothing or, worse,
@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "ci_scope.py"
+SCRIPT = ROOT / "scripts" / "ci" / "ci_scope.py"
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 QUEUE_ONLY = ("test-queue", "unar-distro-packages", "pypy", "atheris")
 
@@ -35,15 +35,22 @@ _spec.loader.exec_module(scope)
         ["packages/archivey-cpio/src/archivey_cpio/reader.py"],
         ["tests/test_zip.py"],
         ["tests/conftest.py"],
-        ["scripts/gen_rar_fixtures.py"],
-        ["scripts/commons_compress/CcList.java"],
+        ["scripts/fixtures/gen_rar_fixtures.py"],
+        ["scripts/fixtures/commons_compress/CcList.java"],
         ["pyproject.toml"],
         ["uv.lock"],
         [".github/workflows/ci.yml"],
         [".github/workflows/atheris-fuzz.yml"],
         ["scripts/setup-dev-env.sh"],
-        ["scripts/junit_failure_lines.py"],
-        ["scripts/ci_scope.py"],
+        ["scripts/ci/junit_failure_lines.py"],
+        ["scripts/ci/ci_scope.py"],
+        ["scripts/investigations/scan_archives.py"],
+        ["scripts/checks/api_surface.py"],
+        # A script in no folder yet, or in a new one, counts until it is sorted.
+        ["scripts/new_tool.py"],
+        ["scripts/newfolder/x.py"],
+        # A name that only starts like a NOT_FULL folder.
+        ["scripts/reviewer.py"],
         [],
     ],
 )
@@ -56,10 +63,11 @@ def test_a_library_test_dependency_or_ci_change_runs_everything(
 @pytest.mark.parametrize(
     "paths",
     [
-        ["scripts/review_prep.py", "scripts/review_tally.py"],
+        ["scripts/review/review_prep.py", "scripts/review/review_tally.py"],
         # A script with its tests: those run in the lint job, which every run has.
-        ["scripts/review_prep.py", "scripts/tests/test_review_prep.py"],
+        ["scripts/review/review_prep.py", "scripts/tests/test_review_prep.py"],
         ["scripts/tests/test_ci_scope.py"],
+        ["scripts/release/release.py", "scripts/docs/llmstxt_preprocess.py"],
         [".claude/skills/code-review-skill/SKILL.md", "AGENTS.md"],
         [".github/workflows/review-loop.yml"],
         ["dev-docs/review-eval/results.md"],
@@ -91,41 +99,70 @@ def test_the_script_writes_a_github_output_line() -> None:
 
 
 def test_the_full_paths_exist() -> None:
-    for path in scope.FULL:
+    for path in scope.FULL + scope.NOT_FULL:
         assert (ROOT / path).exists(), path
 
 
 def test_every_script_the_workflows_run_is_a_full_path() -> None:
     """A script only a skipped job runs (PyPy's JUnit summary, the unar installers)
     would otherwise merge untested. `release.py` is only named in a comment, and
-    `scripts/tests` runs in the lint job, which no group skips."""
+    `scripts/tests/` runs in the lint job, which no group skips."""
     named = set()
     for workflow in (CI, CI.with_name("atheris-fuzz.yml")):
-        named |= set(re.findall(r"scripts/[\w.-]+", workflow.read_text()))
-    assert named - {"scripts/release.py", "scripts/tests"} <= set(scope.FULL)
+        named |= set(re.findall(r"scripts/[\w./-]*[\w-]", workflow.read_text()))
+    assert "scripts/ci/ci_scope.py" in named, "the scan found nothing"
+    named -= {"scripts/release/release.py", "scripts/tests"}
+    uncovered = sorted(
+        n
+        for n in named
+        if not n.startswith("scripts/tests/") and not scope.needs_full([n])
+    )
+    assert not uncovered, f"move these out of the NOT_FULL folders: {uncovered}"
 
 
 #: Script paths a library test names only in prose or as a member name inside an
 #: archive, so not a file the test reads.
-_NAMED_NOT_READ = {"scripts/release.py", "scripts/py7zr"}
+_NAMED_NOT_READ = {"scripts/release/release.py", "scripts/py7zr"}
+
+
+_PART = r"""\s*/\s*["']([\w.-]+)["']"""
+_JOIN = re.compile(r"""["']scripts["']((?:""" + _PART + r")+)")
+
+
+def _script_paths(text: str) -> set[str]:
+    """The ``scripts/...`` strings in ``text``, and each ``"scripts" / "a" / "b"`` join
+    spelled out to its full path."""
+    named = set(re.findall(r"scripts/[\w./-]*[\w-]", text))
+    for join in _JOIN.finditer(text):
+        named.add("/".join(["scripts", *re.findall(_PART, join[1])]))
+    return named
+
+
+def test_the_scan_spells_out_a_join_into_a_folder() -> None:
+    """A join into a NOT_FULL folder must come out whole: its first part alone
+    (``scripts/review``) has no trailing slash, so it would count as a full-run path."""
+    text = 'SCRIPT = ROOT / "scripts" / "review" / "review_prep.py"\n'
+    assert _script_paths(text) == {"scripts/review/review_prep.py"}
+    assert not scope.needs_full(["scripts/review/review_prep.py"])
 
 
 def test_every_script_a_library_test_reads_is_a_full_path() -> None:
     """A library test that reads or runs a script (a fixture generator, a scan it
     checks) must run on every leg when that script changes, or a script edit that breaks
     it on macOS or PyPy only would merge. The scan takes ``scripts/...`` strings and
-    ``"scripts" / "name"`` joins from every file under ``tests/``."""
+    ``"scripts" / ...`` joins from every file under ``tests/``."""
     named: set[str] = set()
+    joined: set[str] = set()
     for path in (ROOT / "tests").rglob("*.py"):
         text = path.read_text(encoding="utf-8")
-        named |= set(re.findall(r"scripts/[\w./-]*[\w-]", text))
-        named |= {
-            f"scripts/{m}"
-            for m in re.findall(r"""["']scripts["']\s*/\s*["']([\w./-]+)["']""", text)
-        }
-    assert "scripts/gen_rar_fixtures.py" in named, "the scan found nothing"
+        named |= _script_paths(text)
+        joined |= _script_paths("".join(m[0] for m in _JOIN.finditer(text)))
+    assert "scripts/fixtures/gen_rar_fixtures.py" in named, "the scan found nothing"
+    assert "scripts/investigations/scan_archives.py" in joined, (
+        "no join was spelled out"
+    )
     uncovered = sorted(n for n in named - _NAMED_NOT_READ if not scope.needs_full([n]))
-    assert not uncovered, f"add these to FULL in scripts/ci_scope.py: {uncovered}"
+    assert not uncovered, f"move these out of the NOT_FULL folders: {uncovered}"
 
 
 def test_script_tests_are_outside_full() -> None:

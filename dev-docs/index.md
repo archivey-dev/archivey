@@ -38,7 +38,7 @@ human UI.
 | `VISION.md` | The product vision and the tie-breaker when trade-offs conflict. User distill: `docs/philosophy.md` |
 | `CONTRIBUTING.md` | Coding and testing standards, the gates, OpenSpec mechanics, and where a new doc goes |
 | `AGENTS.md` | What every agent session needs; `CLAUDE.md` adds Claude Code specifics |
-| `docs/` | The **published** user guide, and nothing else. Every page has a nav entry in `mkdocs.yml` (`scripts/check_docs_nav.py`) |
+| `docs/` | The **published** user guide, and nothing else. Every page has a nav entry in `mkdocs.yml` (`scripts/checks/check_docs_nav.py`) |
 | `openspec/specs/<capability>/spec.md` | The authoritative machine-checkable contract. When it disagrees with the handbook or prose docs, pause and ask (`CONTRIBUTING.md` §Working with the specs) |
 | `openspec/changes/<change>/` | Committed work in flight: proposal, design, tasks. `openspec/project.md` has the capability map |
 | `review/` | Commissioned deep reviews: the lifecycle and brief conventions in `review/README.md`, finished rounds under `review/archive/` |

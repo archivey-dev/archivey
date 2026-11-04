@@ -1,4 +1,4 @@
-"""`scripts/compare_test_runs.py`, the before/after check for pull requests that move tests.
+"""`scripts/ci/compare_test_runs.py`, the before/after check for pull requests that move tests.
 
 The reports here are built in the shapes pytest and coverage.py write: JUnit XML with
 the xunit1 ``file`` attribute, and a coverage SQLite file with test contexts (its
@@ -21,7 +21,7 @@ import pytest
 nums_to_numbits = pytest.importorskip("coverage.numbits").nums_to_numbits
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "compare_test_runs.py"
+SCRIPT = ROOT / "scripts" / "ci" / "compare_test_runs.py"
 
 _spec = importlib.util.spec_from_file_location("compare_test_runs", SCRIPT)
 assert _spec is not None and _spec.loader is not None

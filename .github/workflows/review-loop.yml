@@ -25,7 +25,7 @@ name: Review loop
 # The reviewer is Opus for the first round of a standard or deep pull request, and
 # Sonnet for every other round (`OPUS_PASS_TIERS` in the gate says why).
 #
-# `scripts/review_loop_gate.py` makes the decisions and writes the closing comment, and
+# `scripts/review/review_loop_gate.py` makes the decisions and writes the closing comment, and
 # is unit tested. `dev-docs/review-loop.md` is the prose version.
 
 on:
@@ -79,10 +79,19 @@ jobs:
           BASE: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
-          git show "origin/$BASE:scripts/review_prep.py" > scripts/.review_prep_base.py
-          tier="$(python3 scripts/.review_prep_base.py --base "origin/$BASE" tier \
+          # Each copy runs at the depth it came from, since it finds the repository
+          # from its own path. A base from before scripts/ was sorted into folders has
+          # the script at the old path.
+          if git cat-file -e "origin/$BASE:scripts/review/review_prep.py" 2>/dev/null; then
+            base_prep=scripts/review/.review_prep_base.py
+            git show "origin/$BASE:scripts/review/review_prep.py" > "$base_prep"
+          else
+            base_prep=scripts/.review_prep_base.py
+            git show "origin/$BASE:scripts/review_prep.py" > "$base_prep"
+          fi
+          tier="$(python3 "$base_prep" --base "origin/$BASE" tier \
             | sed -n 's/^tier: //p')"
-          rm scripts/.review_prep_base.py
+          rm "$base_prep"
           echo "tier=$tier" >> "$GITHUB_OUTPUT"
           echo "Tier: $tier" >> "$GITHUB_STEP_SUMMARY"
 
@@ -149,7 +158,7 @@ jobs:
               label_since: $label_since, label_events: $label_events,
               repository: $repository, tier: $tier}' > /tmp/gate-input.json
 
-          python3 scripts/review_loop_gate.py < /tmp/gate-input.json > /tmp/gate.json
+          python3 scripts/review/review_loop_gate.py < /tmp/gate-input.json > /tmp/gate.json
           cat /tmp/gate.json
           {
             echo "run=$(jq -r .run /tmp/gate.json)"
@@ -243,7 +252,7 @@ jobs:
           # The pull request's Opus round.
           PASS: ${{ steps.gate.outputs.opus_pass == 'true' && 'opus' || '' }}
           TIER: ${{ steps.tier.outputs.tier }}
-        run: python3 scripts/review_loop_prompt.py >> "$GITHUB_OUTPUT"
+        run: python3 scripts/review/review_loop_prompt.py >> "$GITHUB_OUTPUT"
 
       # The prompt names the built-in read-only `Explore` subagent. A file in
       # `.claude/agents/` with that name would replace it, and the checkout is the pull
@@ -286,7 +295,7 @@ jobs:
           FINAL: ${{ steps.gate.outputs.final }}
           HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
           PASS: ${{ steps.gate.outputs.opus_pass == 'true' && 'opus' || '' }}
-        run: bash scripts/review_loop_close.sh
+        run: bash scripts/review/review_loop_close.sh
 
       # The review step's log shows only the start and the totals (`show_full_output`
       # stays off: it would print every tool result, and a result is where a secret
@@ -297,7 +306,7 @@ jobs:
         if: always() && steps.gate.outputs.run == 'true'
         continue-on-error: true
         run: >-
-          python3 scripts/review_loop_trace.py
+          python3 scripts/review/review_loop_trace.py
           "$RUNNER_TEMP/claude-execution-output.json"
           --trace "$RUNNER_TEMP/review-trace.jsonl"
           >> "$GITHUB_STEP_SUMMARY"

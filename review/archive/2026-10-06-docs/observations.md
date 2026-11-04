@@ -394,7 +394,7 @@ level and then exits 0, exactly as it does for a page missing from the nav.
 **Fixed, in both senses.** The two `formats.md` links were pointing *backwards* — the
 digest rule (D4) says Gotchas links to the page that owns a fact, not the reverse, and
 `formats.md` already stated both facts in full, so the link sentences are gone rather
-than repointed. The third is repointed. And `scripts/check_docs_nav.py` now resolves
+than repointed. The third is repointed. And `scripts/checks/check_docs_nav.py` now resolves
 every intra-`docs/` anchor, cross-page and same-page, deriving the ids by running each
 file through Python-Markdown's own `toc` extension rather than reimplementing the slug
 rule — so the check cannot drift from what the site serves. Verified against planted

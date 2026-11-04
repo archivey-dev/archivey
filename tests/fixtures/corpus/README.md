@@ -37,7 +37,7 @@ Requires the RARLAB `rar` binary (Debian/Ubuntu: `apt-get install rar`). `unrar`
 enough — it only reads.
 
 ```bash
-uv run python scripts/gen_corpus_rar_fixtures.py
+uv run python scripts/fixtures/gen_corpus_rar_fixtures.py
 ```
 
 Rewrites every `rar/*.rar` and `manifest.json`. Commit both together. Re-run it whenever
@@ -47,6 +47,6 @@ you change a corpus entry that declares `rar`; the suite will tell you if you fo
 
 That directory holds *targeted reader* fixtures — multi-volume sets, `-ver` file
 versions, RAR4 vs RAR5, tweaked checksums, legacy RAR 1.5/2.x archives that modern `rar`
-cannot even produce. It has its own generator (`scripts/gen_rar_fixtures.py`) and its own
+cannot even produce. It has its own generator (`scripts/fixtures/gen_rar_fixtures.py`) and its own
 README. This directory holds the *cross-format corpus contract* for RAR. They are
 deliberately separate and neither should absorb the other.

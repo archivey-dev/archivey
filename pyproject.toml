@@ -243,7 +243,7 @@ extend-immutable-calls = [
 [tool.ruff.lint.per-file-ignores]
 # This survey promises to run on a bare Python 3.8+ interpreter, so the UP rules, which
 # assume the package's py311 floor, don't apply to it.
-"scripts/exploration/brotli_probe_field_survey.py" = ["UP"]
+"scripts/investigations/exploration/brotli_probe_field_survey.py" = ["UP"]
 # The ISO reader patches pycdlib's parsers in place and reads a few of its private
 # attributes. Through setattr/getattr the checkers see `object`; a plain assignment or
 # attribute read would need a pyrefly and a ty suppression on every line instead.
@@ -346,7 +346,7 @@ addopts = "--cov=archivey --cov-branch --cov-report=term-missing --cov-report=xm
 # This is a diagnostic, not a fix; the hang itself is tracked internally.
 # It is an ini option rather than an addopts flag on purpose. Five pytest entry points
 # override addopts — the two free-threaded CI steps, the PPMd stress workflow,
-# scripts/ci_run_native_modules.py and the hand-run recipe in dev-docs/known-issues.md —
+# scripts/ci/ci_run_native_modules.py and the hand-run recipe in dev-docs/known-issues.md —
 # and a flag inside addopts would be dropped by every one of them, leaving a rule that
 # each new override site must remember to repeat it. The ini key is untouched by
 # `-o addopts=`, so they all inherit it and none of them names it.

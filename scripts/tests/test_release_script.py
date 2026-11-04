@@ -1,4 +1,4 @@
-"""The text edits `scripts/release.py` makes, exercised without git or GitHub.
+"""The text edits `scripts/release/release.py` makes, exercised without git or GitHub.
 
 A wrong edit here ships: a version that disagrees between the two packages fails the
 publish job after the tag, and a CHANGELOG entry moved to the wrong place becomes the
@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "release.py"
+SCRIPT = ROOT / "scripts" / "release" / "release.py"
 
 _spec = importlib.util.spec_from_file_location("release_script", SCRIPT)
 assert _spec is not None and _spec.loader is not None

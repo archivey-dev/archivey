@@ -84,7 +84,7 @@ instead of the whole file; that text is skill `748b61d70ac4` (commit `2439fb32`)
 | Guide characters read | | 472 724 | 433 138 |
 | `CONTRIBUTING.md` characters read | | 138 888 | 108 107 |
 
-The guides (the paths `GUIDES` in `scripts/review_eval.py` lists: the skill, its
+The guides (the paths `GUIDES` in `scripts/review/review_eval.py` lists: the skill, its
 references, `CONTRIBUTING.md`, the agent guides, `dev-docs/` and `openspec/`) were 18
 to 40 percent of what a review's tools returned; the rest is Bash output (the largest
 single item in every case), source and grep. A file read inside a longer shell command

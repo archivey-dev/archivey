@@ -200,7 +200,7 @@ exits.
 
 With Bug 1 fixed, macOS still aborted, as a `malloc … pointer being freed was not
 allocated` heap corruption, and only when both `rapidgzip` and `indexed_bzip2` were
-importable. `scripts/dual_accelerator_repro.py` isolates it (no archivey, no pytest):
+importable. `scripts/investigations/dual_accelerator_repro.py` isolates it (no archivey, no pytest):
 decompressing through both libraries in one process crashes about 100% of the time on
 macOS, while using either one alone, even with both imported, never crashes. The two
 libraries are by the same author and statically bundle a large overlapping C++ core. On
@@ -232,12 +232,12 @@ per the author, "has more memory overhead and might be slightly slower"). Archiv
 
 ## 8. Debugging tools
 
-- `scripts/dual_accelerator_repro.py` confirms the two-library crash (§7) and that routing
+- `scripts/investigations/dual_accelerator_repro.py` confirms the two-library crash (§7) and that routing
   both codecs through rapidgzip alone is safe.
-- `scripts/accelerator_crash_search.py` runs both decoders in-process on damaged input,
+- `scripts/investigations/accelerator_crash_search.py` runs both decoders in-process on damaged input,
   in a process it watches, and reports every crash by its signature, so it shows which
   crashes are still there after a rapidgzip upgrade.
-- `scripts/macos_accelerator_debug.py` characterises the finalization behaviour (§6) across
+- `scripts/investigations/macos_accelerator_debug.py` characterises the finalization behaviour (§6) across
   raw and guarded objects × cleanup strategies, each in its own subprocess.
 
 ## 9. Bug 5: `IndexedBzip2File` keeps its Python file object (bug-class — contained)

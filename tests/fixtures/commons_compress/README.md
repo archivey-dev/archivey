@@ -8,6 +8,6 @@ error class, the member count, and a digest of the members' names, types, bytes 
 CRC-32s. The keys are the corpus paths; nothing of the files' contents, member names or
 CRCs is stored.
 
-`scripts/gen_commons_compress_expected.py` rewrites it. Its docstring says how to get
+`scripts/fixtures/gen_commons_compress_expected.py` rewrites it. Its docstring says how to get
 the Commons Compress listing that the script needs. The `commons_compress` key records
 the checkout's commit; the script refuses a listing whose files are not that checkout's.

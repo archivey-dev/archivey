@@ -399,7 +399,7 @@ def sevenzip_with_riscv() -> str | None:
     """The first of ``7zz`` and ``7z`` on ``PATH`` whose ``7z i`` lists RISCV, or None.
 
     7-Zip 24 added the RISC-V filter; Ubuntu's ``7z`` (23.01) and p7zip predate it.
-    ``scripts/install-7zip-from-source.sh`` builds a ``7zz`` that has it. A run that
+    ``scripts/ci/install-7zip-from-source.sh`` builds a ``7zz`` that has it. A run that
     does not finish counts as not listing it and is written to stderr once.
     """
     for program in ("7zz", "7z"):

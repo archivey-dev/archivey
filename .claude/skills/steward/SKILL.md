@@ -48,7 +48,7 @@ and do not look for a label or “in progress” marker that this loop does not 
 | Default watcher posture | This repo |
 |---|---|
 | Confident, small, in-scope → push the fix | Ledger first, **reproduce before fixing**. Automated findings here are false positives often enough to matter |
-| Validate with "the repo's fast checks" | `./scripts/check.sh --fix` **and** `./scripts/test.sh`, plus `uv run python scripts/review_prep.py` before re-adding the `review` label. Pushing after `ruff` alone is this repo's most common self-inflicted CI failure — `pyrefly` and `ty` are separate gates |
+| Validate with "the repo's fast checks" | `./scripts/check.sh --fix` **and** `./scripts/test.sh`, plus `uv run python scripts/review/review_prep.py` before re-adding the `review` label. Pushing after `ruff` alone is this repo's most common self-inflicted CI failure — `pyrefly` and `ty` are separate gates |
 | Larger asks → reply with a proposal on the thread | Ask the maintainer, **one decision packet per turn** ([`pair-workflow.md`](../../../dev-docs/pair-workflow.md) §Decision packet), with the host's question tool if it has one |
 | Reply when a round resolves | Reply once per round **and resolve the threads you actually resolved** |
 | A finding you disagree with → say so | A disproven finding is rarely nothing. If a careful reviewer read this code and concluded it was broken, that is usually 🟡 doc-debt: encode the invariant in a comment or an assertion |

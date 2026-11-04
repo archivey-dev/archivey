@@ -1,5 +1,5 @@
 # The built-in python driver names the enclosing def or class in a hunk header;
-# scripts/review_prep.py keys on it.
+# scripts/review/review_prep.py keys on it.
 *.py diff=python
 
 # Archive fixtures are bytes, whatever git's text detection guesses: a Windows

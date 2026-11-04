@@ -93,12 +93,12 @@ def parse_unar_banner(text: str) -> Banner:
     return Banner(identified=True, version=parts)
 
 
-# ``tests/fixtures/rar/unar_drop__.rar`` (``scripts/gen_rar_fixtures.py``
+# ``tests/fixtures/rar/unar_drop__.rar`` (``scripts/fixtures/gen_rar_fixtures.py``
 # ``_build_unar_drop``): RAR 7.00 ``-m3``, one 14-byte member ``f.txt`` whose last
 # Huffman lookup peeks past the end of its packed data. A ``unar`` build with Debian's
 # bit-reader patch writes nothing for it and exits 0; upstream 1.10.1, 1.10.7, 1.10.8
-# and master write it exactly. ``scripts/find_unar_probe_member.py`` found the member
-# and explains the condition.
+# and master write it exactly. ``scripts/investigations/find_unar_probe_member.py``
+# found the member and explains the condition.
 _RAR5_PROBE_ARCHIVE = bytes.fromhex(
     "526172211a0701003392b5e50a010506000501018080004ef6e8102302030b8e"
     "00048e00a4830245296e7180030105662e7478740a0313e8ecbf6a629e630fc7"

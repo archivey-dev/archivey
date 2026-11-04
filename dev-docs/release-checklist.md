@@ -69,9 +69,9 @@ the date in that heading.)
   gh pr list --state merged --base main --search "merged:>$(git log -1 --format=%cI "$PREV" 2>/dev/null || echo 2020-01-01)" --limit 100
   ```
 
-- [ ] Run `uv run python scripts/release.py notes`. Its last line says whether this can
+- [ ] Run `uv run python scripts/release/release.py notes`. Its last line says whether this can
   be a patch release, from the public API at `PREV` against `HEAD`
-  (`scripts/api_surface.py`) and the merged pull requests labelled `needs-minor`. A `+`
+  (`scripts/checks/api_surface.py`) and the merged pull requests labelled `needs-minor`. A `+`
   line it prints is an **Added** item, a `-` line is **Removed**, and a `-` and `+` pair
   for the same name is **Changed** (or **Deprecated**, or a **Breaking:** line).
 
@@ -220,24 +220,24 @@ Also:
 
 ## 6. Version bump and tag
 
-`scripts/release.py` does the mechanical steps. Run each command from a clean,
+`scripts/release/release.py` does the mechanical steps. Run each command from a clean,
 up-to-date `main`, with your own `gh` login; `--dry-run` before a command prints what it
 would do. With §2 skipped where it allows, a patch release is §1, §3 to §5 and these
 four commands.
 
-1. `uv run python scripts/release.py notes` lists the merged pull requests since the last
+1. `uv run python scripts/release/release.py notes` lists the merged pull requests since the last
    tag. Write the entry under `## [Unreleased]` from it (§1). This can be its own small
    PR, or an agent can write it.
-2. `uv run python scripts/release.py start X.Y.Z` sets `X.Y.Z` in both pyproject files
+2. `uv run python scripts/release/release.py start X.Y.Z` sets `X.Y.Z` in both pyproject files
    (and the `archivey[recommended]==` pin), refreshes `uv.lock`, moves the `[Unreleased]`
    text under a dated `## [X.Y.Z]` heading with its compare links, opens the release PR
    from `release/vX.Y.Z`, and starts the TestPyPI dry run on that branch (Actions →
    Publish). It also starts each release gate workflow on that branch. These jobs do
    not run in full on every change, so a regression that only they catch could otherwise
-   ship. `RELEASE_GATE_WORKFLOWS` in `scripts/release.py` is the one list of them.
+   ship. `RELEASE_GATE_WORKFLOWS` in `scripts/release/release.py` is the one list of them.
    `start` refuses an empty `[Unreleased]`.
 3. When CI, the TestPyPI run and the release gates are green, merge the release PR. Then
-   `uv run python scripts/release.py tag X.Y.Z` checks that each gate's newest run on the
+   `uv run python scripts/release/release.py tag X.Y.Z` checks that each gate's newest run on the
    release PR's last commit is green. If one is missing, still running or red, it refuses
    and prints the command that starts it. A commit pushed to the release PR after `start`
    needs new gate runs. If the release PR's branch was deleted on merge, the refusal also
@@ -262,7 +262,7 @@ four commands.
 
 ## 7. Post-release
 
-- [ ] `uv run python scripts/release.py finish` opens a PR that sets `main` to the next
+- [ ] `uv run python scripts/release/release.py finish` opens a PR that sets `main` to the next
       `.dev0` (`X.Y.(Z+1).dev0`, or the next pre-release's `.dev0` after an `rc`), so
       installs from `main` stay distinguishable from the tag. Pass a version to
       choose another one (`finish 0.3.0.dev0`).
@@ -281,5 +281,5 @@ four commands.
 | Realistic wall + JSON | `uv run --no-sync python -m benchmarks.harness --mode full --scale realistic --warmup --json-out /tmp/wall.json --text-out /tmp/wall.md` |
 | Docs | `uv run --group docs mkdocs build --strict` |
 | Build only | `uv build` and `uv build packages/archivey-cli --out-dir dist` (both publish), then inspect `dist/` |
-| Release steps | `uv run python scripts/release.py --help` |
+| Release steps | `uv run python scripts/release/release.py --help` |
 | Version source | `pyproject.toml` → `[project].version` (copied in `packages/archivey-cli/pyproject.toml`) |

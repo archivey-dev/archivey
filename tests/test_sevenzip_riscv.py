@@ -365,7 +365,7 @@ def _require_7z_riscv() -> str:
     if program is None:
         pytest.skip(
             "no 7-Zip on PATH can write the RISC-V filter (7-Zip 24 or later can; "
-            "scripts/install-7zip-from-source.sh builds one)"
+            "scripts/ci/install-7zip-from-source.sh builds one)"
         )
     return program
 

@@ -66,7 +66,7 @@ caller never observes on `reader.cost`.
   mainly for *relatively large* files and may omit small-file headers; `-qo+`
   stores all; `-qo-` stores none (RARLAB technote / 7-Zip FR #1537).
 - **This repo’s fixtures:** 0/15 RAR5 fixtures contain a `QO` service name
-  marker (all small / `-m0` / solid test archives from `scripts/gen_rar_fixtures.py`
+  marker (all small / `-m0` / solid test archives from `scripts/fixtures/gen_rar_fixtures.py`
   with no `-qo*` flag). 11 RAR3/4 fixtures never can. So the corpus is entirely
   “no usable QO,” which matches typical small-archive and non-WinRAR-default
   producers.

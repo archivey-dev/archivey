@@ -1060,7 +1060,7 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
 measuring rather than assuming, because the binary's own switch list invites the opposite
 conclusion — `-si[name]` is documented as "Read data from standard input", and it is a
 `rar` **compressor** switch that on `unrar` is a command-line error
-(`scripts/exploration/rar_unrar_input_matrix.py`, RARLAB unrar 7.00):
+(`scripts/investigations/exploration/rar_unrar_input_matrix.py`, RARLAB unrar 7.00):
 
 | Handed the archive as | |
 | --- | --- |
@@ -1217,7 +1217,7 @@ family, and ANTI members and packed-nonzero/unpacked-zero empties are untested �
 be under-inclusive. What is not on the table under any of that is a silent fallback: a
 second engine would be an explicit opt-in, never a probe of `PATH` (threat-model C1).
 
-**Writing RAR4 needs an old binary.** RAR 7 dropped `-ma4`, so `scripts/gen_rar_fixtures.py`
+**Writing RAR4 needs an old binary.** RAR 7 dropped `-ma4`, so `scripts/fixtures/gen_rar_fixtures.py`
 downloads Ubuntu's rar 6.23 package from archive.ubuntu.com (SHA-256 pinned from Ubuntu's
 signed package index; rarlab.com is not reachable from every build environment), unpacks
 only the binary into the user cache and uses it purely to build the RAR4 fixtures.
@@ -1718,8 +1718,8 @@ Two claims here are about the **external binary** rather than about archivey, so
 hold them — they are probes instead, re-runnable when a new `unrar` lands:
 
 ```bash
-python3 scripts/exploration/rar_unrar_input_matrix.py       # §2.3 input modes, §2.2 volumes, §4 emission
-python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompressor table
+python3 scripts/investigations/exploration/rar_unrar_input_matrix.py       # §2.3 input modes, §2.2 volumes, §4 emission
+python3 scripts/investigations/exploration/rar_decompressor_matrix.py      # §3 the decompressor table
 ```
 
 | Claim |
@@ -1795,7 +1795,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | Mutation and coverage-guided fuzzing of the header walk |
 | `extract_all` over a listing cut part-way writes the members before the cut, then raises the listing's error, in both modes, under either `OnError`, with no report; a selected hard link in the prefix still gets its source's bytes; an entry unmatched in the prefix is not reported; listing limits still refuse before any write |
 
-**Building fixtures.** `uv run python scripts/gen_rar_fixtures.py` regenerates most of
+**Building fixtures.** `uv run python scripts/fixtures/gen_rar_fixtures.py` regenerates most of
 `tests/fixtures/rar/`; it needs the RARLAB `rar` writer, and because RAR 7 dropped `-ma4` it
 downloads a checksum-pinned RAR 6.23 into the user cache for the RAR4 variants. The corpus
 archives under `tests/fixtures/corpus/rar/` are committed and manifest-pinned instead
@@ -1842,8 +1842,8 @@ need `-qo+` or live AUTO; the gap and what would close it are in
   (the decompressor matrix, macOS install) ·
   [`rar-corpus-sweep-diagnosis.md`](../investigations/rar-corpus-sweep-diagnosis.md)
   (why the RAR column ran nowhere; the cross-format symlink digest table)
-- Probes: `scripts/exploration/rar_unrar_input_matrix.py` (input modes, volume discovery,
-  emission policy) · `scripts/exploration/rar_decompressor_matrix.py` (the §3 table). The
+- Probes: `scripts/investigations/exploration/rar_unrar_input_matrix.py` (input modes, volume discovery,
+  emission policy) · `scripts/investigations/exploration/rar_decompressor_matrix.py` (the §3 table). The
   input-mode and emission questions were first investigated in
   [PR #101](https://github.com/archivey-dev/archivey/pull/101), which was never merged; its
   conclusions are stated here and its measurements are what the first script re-runs, so the

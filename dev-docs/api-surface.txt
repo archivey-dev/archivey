@@ -1,4 +1,4 @@
-# The public API surface, written by scripts/api_surface.py --write.
+# The public API surface, written by scripts/checks/api_surface.py --write.
 # tests/test_api_surface.py fails when this file is stale. Do not edit it by hand.
 module archivey
 constant archivey.ARCHIVE_INTEGRITY_CODES: frozenset

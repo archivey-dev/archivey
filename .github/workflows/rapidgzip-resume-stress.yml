@@ -1,7 +1,7 @@
 name: rapidgzip resume stress
 
 # Stresses the rapidgzip child-process path (gzip, zlib and raw DEFLATE decode in a
-# child that rapidgzip aborts on every cut stream) with scripts/rapidgzip_resume_stress.py,
+# child that rapidgzip aborts on every cut stream) with scripts/investigations/rapidgzip_resume_stress.py,
 # and captures the stacks of any test that stalls. In 2026-10 the cut-stream tests
 # stalled the main CI step and lost xdist workers with no output: each abort wrote a
 # multi-GB core to the runner's crash handler while the test waited. The cause and the
@@ -91,7 +91,7 @@ jobs:
         if: steps.sync.outcome == 'success'
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
-          python scripts/rapidgzip_resume_stress.py
+          python scripts/investigations/rapidgzip_resume_stress.py
           --keep rgz-stress-logs
           --summary rgz-stress-summary-${{ env.TAG }}.md
 
@@ -105,7 +105,7 @@ jobs:
           VMSTAT=$!
           status=0
           uv run --python ${{ matrix.python-version }} --no-sync \
-            python scripts/rapidgzip_resume_stress.py "$MAIN_STEP_ITERS" \
+            python scripts/investigations/rapidgzip_resume_stress.py "$MAIN_STEP_ITERS" \
             --scenarios main_step --timeout-method thread \
             --keep rgz-stress-logs \
             --summary rgz-stress-main-step-${TAG}.md || status=$?

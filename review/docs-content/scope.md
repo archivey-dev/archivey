@@ -57,8 +57,8 @@ D-f's counts (1 / 3 / 5 / 6 / 13) are exact and unchanged. What the counts under
 beside each member — `AbortOn.NAME_SANITIZED` has a six-line comment saying almost
 exactly what `extracting.md:139-143` says, and `ExtractionResult.collided_with` has an
 eleven-line one. **mkdocstrings renders none of it.** The enum table comes from
-`scripts/griffe_extensions.py` `EnumMembersAsTable`, which reads `m.docstring`
-(`scripts/griffe_extensions.py:125`); `griffe_fieldz` does the same for dataclass fields.
+`scripts/docs/griffe_extensions.py` `EnumMembersAsTable`, which reads `m.docstring`
+(`scripts/docs/griffe_extensions.py:125`); `griffe_fieldz` does the same for dataclass fields.
 A `#` comment is not a docstring to griffe, so it reaches no reader.
 
 Consequences for this pass:

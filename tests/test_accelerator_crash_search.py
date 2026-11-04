@@ -1,4 +1,4 @@
-"""``scripts/accelerator_crash_search.py`` runs rapidgzip in-process on damaged input in a
+"""``scripts/investigations/accelerator_crash_search.py`` runs rapidgzip in-process on damaged input in a
 process it watches, and reports each crash by its signature. These tests keep it
 working: they run it on a few cases, and check that it finds the known DEFLATE abort.
 """
@@ -21,7 +21,7 @@ from tests.conftest import requires
 from tests.test_accelerator_truncation_abort import _rapidgzip_is_prebuilt_linux_wheel
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "accelerator_crash_search.py"
+SCRIPT = ROOT / "scripts" / "investigations" / "accelerator_crash_search.py"
 
 _spec = importlib.util.spec_from_file_location("accelerator_crash_search", SCRIPT)
 assert _spec is not None and _spec.loader is not None

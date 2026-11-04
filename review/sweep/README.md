@@ -16,7 +16,7 @@ pass.
 | The brief handed to each batch agent | [`brief-template.md`](brief-template.md) |
 | What a batch posts, and the `SWEPT` marker shape | [`whole-file-sweep.md`](../../.claude/skills/code-review-skill/reference/whole-file-sweep.md) |
 | What was actually read | The `SWEPT` markers on #315. The first pass over `src/` is complete |
-| How coverage is counted | [`scripts/sweep_coverage.py`](../../scripts/sweep_coverage.py); its docstring has the recipe |
+| How coverage is counted | [`scripts/review/sweep_coverage.py`](../../scripts/review/sweep_coverage.py); its docstring has the recipe |
 
 ## One `SWEPT` marker per file, findings or not
 
@@ -59,7 +59,7 @@ findings the pass produced.
 
 So "swept" decays, and it decays furthest exactly where the follow-up was most thorough. That
 is why a marker records `lines=` as read rather than pointing at the file: it is what lets
-[`sweep_coverage.py`](../../scripts/sweep_coverage.py) report a file as drifted instead of
+[`sweep_coverage.py`](../../scripts/review/sweep_coverage.py) report a file as drifted instead of
 counting a stale read as current. Run the script for the current drift table.
 
 **A re-sweep of `streamtools/` is decided, and the answer is not now** (davi, 2026-09-19):

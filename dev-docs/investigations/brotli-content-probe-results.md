@@ -386,7 +386,7 @@ Two other pieces of the realistic picture:
 - **Ordinary text files very much are.** An earlier draft of this section claimed
   "structured files are not at risk" from 0/950 repo files. That was an artifact of which
   file types got scanned (`.py`, `.md`, `.json`, `.toml`). A wider sweep — 39 859 files
-  under `/usr`, via `scripts/exploration/brotli_probe_field_survey.py` — finds **1377
+  under `/usr`, via `scripts/investigations/exploration/brotli_probe_field_survey.py` — finds **1377
   accepted (3.5%)**, and they are not high-entropy at all:
 
   | first 4 bytes | what it is | count |
@@ -738,7 +738,7 @@ No gate proposed here changes that, and none should claim to.
 
 ## 7.2 Field survey: what other operating systems say
 
-Everything above §7.1 was measured on one Linux container. `scripts/exploration/
+Everything above §7.1 was measured on one Linux container. `scripts/investigations/exploration/
 brotli_probe_field_survey.py` was run on GitHub's Windows, macOS and Linux images via a
 temporary workflow (`.github/workflows/brotli-field-survey.yml`), ~59 000 files each:
 
@@ -937,7 +937,7 @@ gate's false-negative count stays at zero.
 
 ### The one script that *is* in the repo
 
-`scripts/exploration/brotli_probe_field_survey.py` packages the header parser and every
+`scripts/investigations/exploration/brotli_probe_field_survey.py` packages the header parser and every
 survey above into one stdlib-only, read-only, Python 3.8+ file that runs on a bare system
 interpreter — no venv, no archivey. It exists because three conclusions here rest on
 corpora that one Linux container cannot make representative:
@@ -954,7 +954,7 @@ the ones still missing.
 
 ## 11. Residual after `probe-completeness-gate` (2026-08-25)
 
-Re-ran `scripts/exploration/probe_residual_census.py` on this image after shipping
+Re-ran `scripts/investigations/exploration/probe_residual_census.py` on this image after shipping
 completeness + the chain walk, **and again after raising the completeness output drain
 from 256 bytes to 64 KiB** (review F4; link cap 8, non-seekable `read_at` max offset
 1 MiB unchanged):
@@ -979,7 +979,7 @@ still survive both rules by construction.
 After keying `format_unconfirmed` / `PROBE_FORMAT_UNCONFIRMED` on probe-only provenance
 (rather than `GUESS` confidence), the fabrication *count* is unchanged — this change does
 not reject claims — but the honesty channel covers every uncorroborated probe hit.
-Re-ran `scripts/exploration/probe_residual_census.py` on this image (default roots,
+Re-ran `scripts/investigations/exploration/probe_residual_census.py` on this image (default roots,
 147 601 files):
 
 | | count |

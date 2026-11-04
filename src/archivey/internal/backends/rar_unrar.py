@@ -51,7 +51,7 @@ from archivey.types import MissingComponent
 
 # Inclusive major.minor floor. ``-n`` glob demux and ``-ver`` were checked
 # against RARLAB unrar 6.02, 6.12, 6.24, and 7.00 (RAR data tests plus
-# ``scripts/exploration/rar_unrar_input_matrix.py``). On 7.00, ``rar p``
+# ``scripts/investigations/exploration/rar_unrar_input_matrix.py``). On 7.00, ``rar p``
 # matched ``unrar p`` on the argv archivey actually spawns. 5.91 passed those
 # tests too, but hangs on an anonymous-fd multi-volume probe that 6.12+
 # exits 3 on — a path archivey does not use. Floor is 6.0 so Debian 12 /
