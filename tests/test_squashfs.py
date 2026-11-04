@@ -304,15 +304,15 @@ def test_fragments_filled_in_name_order_keep_listing_order(
     assert sorted(decoded) == sorted(set(decoded))
 
 
-def test_first_pass_reads_each_inode_once_in_table_order(
+def test_the_listing_parses_each_inode_once_in_table_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The first pass reads the inodes of everything but directories once each, sorted
-    by where they are in the inode table, whatever order the entries name them in; the
-    second reads each again, by its entry, as it makes the member, except for a hard
-    link, which takes what it needs from the member it names. Each listing is read
-    backwards here, so the entries name the inodes against table order; dir/hard.txt
-    names a.txt's inode a second time."""
+    """The listing parses the inode of everything but directories once, sorted by
+    where it is in the inode table, whatever order the entries name them in: the first
+    pass keeps a record of each, and the second makes the members from the records
+    without parsing an inode again. Each listing is read backwards here, so the
+    entries name the inodes against table order; dir/hard.txt names a.txt's inode a
+    second time."""
     read: list[tuple[int, int]] = []
     inode = SquashfsReader._inode
     entries = SquashfsReader._entries
@@ -332,12 +332,12 @@ def test_first_pass_reads_each_inode_once_in_table_order(
     with open_archive(DATA / "gzip.sqfs") as archive:
         members = archive.members()
     assert len(members) == len(TYPES)
-    unique = sorted(set(read))
-    assert read[: len(unique)] == unique
     made = [
         m for m in members if m.type not in (MemberType.DIRECTORY, MemberType.HARDLINK)
     ]
-    assert len(read) == len(unique) + len(made)
+    assert len(made) > 1
+    assert read == sorted(set(read))
+    assert len(read) == len(made)
 
 
 def _inode_header(kind: int, number: int) -> bytes:
@@ -413,15 +413,14 @@ def test_inodes_each_in_a_block_decode_linearly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A crafted image can put each inode in a metadata block of its own and order the
-    table against the listing, so the cache rarely hits on an inode. The first pass
-    reads the table in order and the second in listing order, so each inode's block
-    decodes at most twice."""
+    table against the listing, so the cache rarely hits on an inode. The listing reads
+    the table once, in order, so each inode's block decodes once."""
     names = [f"f{i:03}".encode() for i in range(300)]
     path = _image(tmp_path, _one_inode_per_block(names))
     decoded = _counting_decodes(monkeypatch)
     with open_archive(path) as archive:
         assert [m.name for m in archive.members()] == [n.decode() for n in names]
-    assert len(decoded) <= 2 * len(names) + 4
+    assert len(decoded) <= len(names) + 4
 
 
 def _four_inodes_a_block(block_of: Callable[[int], int]) -> tuple[bytes, list[bytes]]:
@@ -442,67 +441,36 @@ def _four_inodes_a_block(block_of: Callable[[int], int]) -> tuple[bytes, list[by
     return _flat_image(inodes, entries), names
 
 
-def _keeps(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """How many inodes each listing from now on keeps for its second pass."""
-    kept: list[int] = []
-    keep = SquashfsReader._kept_inodes
-
-    def recording(
-        self: SquashfsReader,
-        entries: list[squashfs_reader._Entry],
-        files: squashfs_reader._FileScan,
-    ) -> dict[tuple[int, int], squashfs_reader._Inode]:
-        inodes = keep(self, entries, files)
-        kept.append(len(inodes))
-        return inodes
-
-    monkeypatch.setattr(SquashfsReader, "_kept_inodes", recording)
-    return kept
-
-
 # The order f0, f80, f160, f240, f1, f81, ...: four to a block in table order.
 _STRIDED = [b * 4 + k for k in range(4) for b in range(80)]
 
 
-@pytest.mark.parametrize("stride", ["table", "member order"])
-def test_an_order_that_strides_the_inode_table_keeps_the_inodes(
+@pytest.mark.parametrize("stride", ["table", "member order", "none"])
+def test_an_order_that_strides_the_inode_table_decodes_each_block_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stride: str
 ) -> None:
     """320 files whose inodes are four to a metadata block in 80 blocks, more than the
-    reader's cache keeps. When the members come in an order that cycles through the 80
-    blocks, reading each inode again would decode a block per member, so the listing
-    keeps the inodes and each block decodes at most twice in all. Either the table
-    strides against the listing, or the table follows the listing and the members come
-    in another order (here put in place of the fragment order)."""
-    if stride == "table":
-        data, names = _four_inodes_a_block(lambda i: i % 80)
-        expected = [n.decode() for n in names]
-    else:
+    reader's cache keeps. Reading each inode in an order that cycles through the 80
+    blocks would decode a block per member; the listing reads them once in table
+    order and makes the members from its records, so each block decodes once whatever
+    the members' order. Either the table strides against the listing, or the table
+    follows the listing and the members come in another order (here put in place of
+    the fragment order), or neither."""
+    if stride == "member order":
         data, names = _four_inodes_a_block(lambda i: i // 4)
         expected = [names[i].decode() for i in _STRIDED]
         monkeypatch.setattr(
             SquashfsReader, "_in_fragment_order", lambda self, *_: _STRIDED
         )
-    kept = _keeps(monkeypatch)
+    else:
+        data, names = _four_inodes_a_block(
+            (lambda i: i % 80) if stride == "table" else (lambda i: i // 4)
+        )
+        expected = [n.decode() for n in names]
     decoded = _counting_decodes(monkeypatch)
     with open_archive(_image(tmp_path, data)) as archive:
         assert [m.name for m in archive.members()] == expected
-    assert len(decoded) <= 2 * 80 + 4
-    assert kept == [320]
-
-
-def test_an_order_that_follows_the_inode_table_reads_the_inodes_again(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The same 80 blocks, with the members in table order: the second pass reads
-    each inode again, and each block decodes twice, once per pass."""
-    data, names = _four_inodes_a_block(lambda i: i // 4)
-    kept = _keeps(monkeypatch)
-    decoded = _counting_decodes(monkeypatch)
-    with open_archive(_image(tmp_path, data)) as archive:
-        assert [m.name for m in archive.members()] == [n.decode() for n in names]
-    assert len(decoded) <= 2 * 80 + 4
-    assert kept == []
+    assert len(decoded) <= 80 + 4
 
 
 def test_hard_links_do_not_read_their_inode_again(
@@ -511,7 +479,7 @@ def test_hard_links_do_not_read_their_inode_again(
     """Five entries name one symlink inode whose 200-byte target is stored in 1-byte
     metadata blocks, more than the cache keeps: each read of that inode decodes about
     224 blocks. The four hard links take what they need from the member they name, so
-    the listing reads the inode twice (once per pass), not once per entry more."""
+    the listing reads the inode once, not once per entry."""
     target = b"t" * 200
     symlink = _inode_header(3, 2) + struct.pack("<II", 5, len(target)) + target
     inodes = b"".join(_metadata(symlink[i : i + 1]) for i in range(len(symlink)))
@@ -524,7 +492,7 @@ def test_hard_links_do_not_read_their_inode_again(
         ("l0", MemberType.SYMLINK, "t" * 200),
         *[(n.decode(), MemberType.HARDLINK, "l0") for n in names[1:]],
     ]
-    assert len(decoded) <= 2 * len(symlink) + 4
+    assert len(decoded) <= len(symlink) + 4
 
 
 def test_an_inode_longer_than_the_cache_is_read_once(
@@ -533,8 +501,7 @@ def test_an_inode_longer_than_the_cache_is_read_once(
     """Four distinct symlink inodes that overlap: the table repeats one 24-byte symlink
     header in 1-byte metadata blocks, each declaring a 200-byte target, so each inode's
     read runs through 224 blocks, more than the cache keeps, and through the next
-    inodes' bytes. The first pass keeps such an inode whole, so the listing reads
-    each one once, not once per pass."""
+    inodes' bytes. The listing reads each one once."""
     target_size, count = 200, 4
     symlink = _inode_header(3, 2) + struct.pack("<II", 1, target_size)
     stream = symlink * count + b"t" * target_size
@@ -599,8 +566,8 @@ def test_long_symlink_inodes_are_charged_as_the_first_pass_keeps_them(
     tmp_path: Path,
 ) -> None:
     """300 symlink inodes overlap in 1 000-byte metadata blocks, so each 65 535-byte
-    target runs through more blocks than the cache keeps and the first pass keeps the
-    inode (``_FileScan.long``): about 20 MB from an image of 77 KB. Each target is
+    target runs through more blocks than the cache keeps, and the first pass keeps
+    each target until its member is made: about 20 MB from an image of 77 KB. Each target is
     charged as it is kept, so a limit of 256 KiB refuses the listing after about four
     of them."""
     inodes, starts = _overlapping_symlinks(300, 1000)
@@ -613,13 +580,12 @@ def test_long_symlink_inodes_are_charged_as_the_first_pass_keeps_them(
     assert peak < 4 * 2**20
 
 
-def test_kept_symlink_inodes_are_charged_as_the_listing_keeps_them(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_strided_symlink_targets_are_charged_as_the_listing_keeps_them(
+    tmp_path: Path,
 ) -> None:
     """320 overlapping symlink inodes start four to a block in 80 full metadata blocks
-    and are listed in an order that strides across them, so the listing keeps every
-    inode for its second pass (``_kept_inodes``): about 20 MB of targets. Each target
-    is charged as it is kept."""
+    and are listed in an order that strides across them; the first pass keeps every
+    target for its member: about 20 MB. Each target is charged as it is kept."""
     inodes, _ = _overlapping_symlinks(80 * 8192 // 24 + 4, 8192)
     starts = [-(-b * 8192 // 24) * 24 + 24 * k for k in range(4) for b in range(80)]
     entries = [
@@ -627,10 +593,8 @@ def test_kept_symlink_inodes_are_charged_as_the_listing_keeps_them(
         for i, start in enumerate(starts)
     ]
     path = _image(tmp_path, _flat_image(inodes, entries))
-    kept = _keeps(monkeypatch)
     peak = _listed_with(path, ListingLimits(max_metadata_bytes=256 * 1024))
     assert peak < 4 * 2**20
-    assert kept == []  # refused while keeping them
 
 
 def _shared_listing(dirs: int, names: int) -> bytes:
@@ -697,7 +661,7 @@ def test_a_listing_within_the_limit_is_not_refused_by_the_charge(
 ) -> None:
     """The charge never passes what the members weigh: an image whose members add up
     to exactly ``max_metadata_bytes`` lists. In ``long.sqfs`` the first pass keeps a
-    symlink inode whose 65 535-byte target runs through more metadata blocks than the
+    symlink's 65 535-byte target, which runs through more metadata blocks than the
     cache keeps. The target is ASCII, so its member weighs it at one byte a byte: a
     charge that counted a kept target more than once would refuse that image, and
     one byte under its weight refuses it in the charge."""
@@ -881,6 +845,72 @@ def test_a_block_list_of_holes_larger_than_the_table_on_disk() -> None:
         assert members["holes.bin"].size == 1 << 30
         assert members["holes.bin"].is_sparse
         assert not members["data.bin"].is_sparse
+
+
+def _failing_inodes(count: int) -> bytes:
+    """An uncompressed image of ``count`` files named ``a`` under an extended root
+    directory, each naming its own offset in metadata blocks of ``0xFF`` bytes: an
+    inode of unknown type 65 535, so every entry's inode fails to read."""
+    per_block = 31 * 256  # whole directory headers, each naming one inode block
+    blocks = -(-count // per_block)
+    inodes = _metadata(b"\xff" * 8192) * blocks
+    listing = b""
+    for start in range(0, count, 256):
+        group = range(start, min(start + 256, count))
+        listing += struct.pack("<III", len(group) - 1, start // per_block * 8194, 2)
+        for i in group:
+            listing += struct.pack("<HhHH", i % per_block, 0, 2, 0) + b"a"
+    directory = b"".join(
+        _metadata(listing[i : i + 8192]) for i in range(0, len(listing), 8192)
+    )
+    root_ref = len(inodes)
+    inodes += _metadata(
+        _inode_header(8, 1)
+        + struct.pack("<IIIIHHI", 2, len(listing) + 3, 0, 0, 0, 0, 0xFFFFFFFF)
+    )
+    inode_table = 96
+    directory_table = inode_table + len(inodes)
+    ids = _metadata(struct.pack("<I", 0))
+    id_block = directory_table + len(directory)
+    body = inodes + directory + ids + struct.pack("<Q", id_block)
+    superblock = struct.pack(
+        "<IIIIIHHHHHHQQQQQQQQ",
+        0x73717368, 2, 0, 4096, 0, 1, 12, 0, 1, 4, 0,
+        root_ref << 16, 96 + len(body), id_block + len(ids), 0xFFFFFFFFFFFFFFFF,
+        inode_table, directory_table, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF,
+    )  # fmt: skip
+    return superblock + body
+
+
+def test_inodes_that_fail_to_read_are_not_held(tmp_path: Path) -> None:
+    """4 000 entries each name a different inode that does not read. The first pass
+    keeps only which ones failed, not their errors: an error keeps its traceback,
+    and holding 4 000 of them took the peak to 6.9 MB, against 1.1 MB without. The
+    first such member reads its inode again, which raises."""
+    path = _image(tmp_path, _failing_inodes(4000))
+
+    def action() -> None:
+        with (
+            open_archive(path) as archive,
+            pytest.raises(CorruptionError, match="unknown SquashFS inode type 65535"),
+        ):
+            archive.members()
+
+    assert traced_peak(action) < 3 * 2**20
+
+
+def test_a_block_list_that_does_not_read_raises_at_its_member(tmp_path: Path) -> None:
+    """A file whose 16 000-byte block list fits in what the inode table holds but runs
+    past the image's end. The first pass keeps only that it failed; its member scans
+    the list again and raises the error the first pass met."""
+    good = _empty_file(2)
+    bad = _inode_header(2, 3) + struct.pack("<IIII", 0, 0xFFFFFFFF, 0, 4000 * 4096)
+    image = _flat_image(_metadata(good + bad), [(b"a", 2, 0, 0), (b"b", 2, 0, 32)])
+    with (
+        open_archive(_image(tmp_path, image)) as archive,
+        pytest.raises(TruncatedError, match="runs past the image end"),
+    ):
+        archive.members()
 
 
 def test_a_block_list_longer_than_the_inode_table(tmp_path: Path) -> None:
