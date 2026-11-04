@@ -92,7 +92,7 @@ seekable = [
 # free-threaded build — NOT a claim that archivey is only free-thread-safe with it.
 # Membership is a property of the ecosystem, not of archivey, so it is expected to widen
 # and may eventually collapse into [recommended]. CI installs exactly this set on 3.13t
-# (required) and 3.15t (allowed to fail), and tests/check_free_threaded_gil.py imports
+# and 3.15t (both required), and tests/check_free_threaded_gil.py imports
 # whatever this list resolves to there and asserts the GIL is still off, so it cannot rot
 # silently on 3.13t.
 #

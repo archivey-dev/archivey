@@ -53,8 +53,8 @@ whoever asks. Then read the diff yourself.
      build). Check whether `main` fails the same way: read the latest daily `ci.yml` run on
      `main`, or dispatch one (`gh workflow run ci.yml --ref main`). If it does, see
      [A dependency broke](#a-dependency-broke-or-stopped-shipping-wheels).
-   - **The `3.15` prerelease leg or `3.15t`** (allowed to fail). Read it, but it blocks
-     nothing; see [A new CPython](#a-new-cpython-release).
+   - **The `3.16` prerelease leg** (allowed to fail). Read it, but it blocks nothing; see
+     [A new CPython](#a-new-cpython-release).
 3. For an agent: "CI failed on PR N in archivey-dev/archivey. Read the failed job log, decide
    whether the PR caused it, and fix it or say why not. Follow `.claude/skills/steward`."
 
@@ -133,8 +133,10 @@ When a new major version of one of these breaks a test, pin below it with a comm
   offers it, change the prerelease leg in `ci.yml` to the new version.
 - **A release candidate**: the prerelease leg should be on it already. Read the leg once.
   Failures there are usually a dependency without a wheel yet; see above.
-- **A final release**: in one small PR, drop `prerelease: true` from both prerelease rows
-  in `ci.yml` (the test matrix leg and the `free-threaded-concurrency` `3.Xt` leg), add
+- **A final release**: in one small PR, drop `prerelease: true` from the prerelease rows
+  in `ci.yml` (the test matrix leg, and a `free-threaded-concurrency` `3.Xt` leg if there
+  is one; that job needs `continue-on-error: ${{ matrix.prerelease == true }}` back while
+  it has a prerelease row, as it had for 3.15t), add
   the `Programming Language :: Python :: 3.X` classifier to the root `pyproject.toml`
   (the `archivey-cli` package has no per-version classifiers), and move the "max Python"
   legs (macOS, Windows, core-only, coverage) to the new version.

@@ -38,7 +38,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The oldest and newest Python the main CI's ubuntu [all] legs run.
+          # The oldest Python the main CI runs, and 3.14: the locked rapidgzip (0.16.0)
+          # has no cp315 wheel, and a source build behaves differently on truncated gzip.
           - { os: ubuntu-latest, python-version: "3.11" }
           - { os: ubuntu-latest, python-version: "3.14" }
     env:
