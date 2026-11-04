@@ -534,11 +534,12 @@ jobs:
           - { os: ubuntu-latest, python-version: "3.12", install: all }
           - { os: ubuntu-latest, python-version: "3.13", install: all }
           - { os: ubuntu-latest, python-version: "3.14", install: all }
-          # CPython 3.16 prerelease (3.16.0a1 as of 2026-11-04), allowed to fail. Its
-          # core-only suite passes; the [all] sync fails because cffi 2.1.1 (needed by
-          # cryptography) does not build on 3.16 yet. Drop `prerelease` and add the
+          # CPython 3.16 prerelease (3.16.0a1 as of 2026-11-04), allowed to fail. Core-only
+          # for now: the [all] sync fails because cffi 2.1.1 (needed by cryptography) does
+          # not build on 3.16 yet, and an [all] row would stop at install and run no tests.
+          # Move it to `all` once cffi builds there; drop `prerelease` and add the
           # classifier once 3.16.0 final is out.
-          - { os: ubuntu-latest, python-version: "3.16", install: all, prerelease: true }
+          - { os: ubuntu-latest, python-version: "3.16", install: core-only, prerelease: true }
           # Minimum supported library versions (uv --resolution lowest-direct) on the min
           # Python: the [all] legs run the *current* versions of every dependency, so
           # this leg pins each declared dep to its floor (pycdlib 1.22, zstandard 0.23, …) to
