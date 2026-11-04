@@ -5,7 +5,7 @@ one guards a failure that would be invisible on inspection (the redaction proper
 asserted from both ends, which is why there are four tests):
 
 1. **The redacted view is derivable and current.** `catalogue-neutral.md` is generated
-   from `catalogue.md` by `scripts/derive_neutral_catalogue.py`. The brief's §Definition
+   from `catalogue.md` by `scripts/review/derive_neutral_catalogue.py`. The brief's §Definition
    of done #4 wants it committed so redaction is not a manual step at experiment time;
    the hazard of committing a generated file is that it silently goes stale, so this
    asserts it matches its generator.
@@ -34,7 +34,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 CATALOGUE = ROOT / "review" / "problem-catalogue" / "catalogue.md"
 NEUTRAL = ROOT / "review" / "problem-catalogue" / "catalogue-neutral.md"
-DERIVE = ROOT / "scripts" / "derive_neutral_catalogue.py"
+DERIVE = ROOT / "scripts" / "review" / "derive_neutral_catalogue.py"
 
 ENTRY_RE = re.compile(
     r"^### ((?:FQ|UL|SEC|PLAT|PERF|API|PKG|CONC)-\d+) — (.*)$", re.MULTILINE
@@ -104,7 +104,7 @@ def test_neutral_catalogue_is_derivable_and_current() -> None:
     """`catalogue-neutral.md` matches what its generator produces.
 
     Definition of done #4. If this fails, run
-    `python scripts/derive_neutral_catalogue.py` — do not edit the derived file.
+    `python scripts/review/derive_neutral_catalogue.py` — do not edit the derived file.
     """
     assert NEUTRAL.exists(), f"{NEUTRAL} is missing; run {DERIVE.name}"
     result = subprocess.run(  # fixed argv, repo-local script

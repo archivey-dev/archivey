@@ -98,34 +98,35 @@ class ProcessIsolation(Enum):
     """The default: only the decoders seen to crash on some input run in a child
     process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``) and pyppmd (every PPMd
     member). Every other decoder runs in the caller's process. Processes are reused for
-    later decoders. Measured on one Linux machine (``scripts/bench_process_isolation.py``),
-    each PPMd decoder costs about 1.4 to 2 ms more than in-process: a non-solid 7z of
-    1024 PPMd members of 4 KiB took about twice as long. A ZIP member or a non-solid 7z
-    member has a decoder of its own. A solid PPMd folder is one decoder for all its
-    members: it pays that once, and about 0.1 to 0.35 ms for each 4 KiB member read from
-    it; the decoded bytes cross between processes on top of that, at the copying cost
-    ``NATIVE_DECODERS`` gives for single streams.
-    Where no child process can be started, a PPMd member raises
-    :class:`~archivey.ResourceUnavailableError` and rapidgzip under ``AUTO`` falls back to the
-    standard library."""
+    later decoders. Measured on one Linux machine
+    (``scripts/investigations/bench_process_isolation.py``), each PPMd decoder costs
+    about 1.4 to 2 ms more than in-process: a non-solid 7z of 1024 PPMd members of 4 KiB
+    took about twice as long. A ZIP member or a non-solid 7z member has a decoder of its
+    own. A solid PPMd folder is one decoder for all its members: it pays that once, and
+    about 0.1 to 0.35 ms for each 4 KiB member read from it; the decoded bytes cross
+    between processes on top of that, at the copying cost ``NATIVE_DECODERS`` gives for
+    single streams. Where no child process can be started, a PPMd member raises
+    :class:`~archivey.ResourceUnavailableError` and rapidgzip under ``AUTO`` falls back
+    to the standard library."""
     NATIVE_DECODERS = "native_decoders"
     """Every native decoder runs in a child process: zlib, bz2, lzma, zstd, lz4, brotli,
     inflate64, pyppmd, rapidgzip and python-lzo, including the trial decodes format
     detection runs. LZO without python-lzo decodes in Python, in the caller's process.
 
     Each open decoder has a process of its own, and processes are reused for later
-    decoders. Measured on one Linux machine (``scripts/bench_process_isolation.py``), a
-    single stream (1 to 64 MiB for gzip and zstd, 1 to 16 MiB for bzip2 and xz) took
-    about 1.05 to 1.5 times as long for bzip2, 1.1 to 1.6 times for xz, 1.4 to 2 times
-    for gzip and deflate, and 2 to 6 times for zstd, mostly copying data between
-    processes. Each decoder also costs about 0.6 to 1 ms (ZIP deflate and non-solid 7z
-    LZMA2 members), and a PPMd decoder about 1.4 to 2 ms, as under ``KNOWN_CRASHES``; an
-    archive of many small members pays mostly that. A solid 7z folder is one decoder,
-    plus about 0.1 to 0.3 ms for each 4 KiB member read from it, with the copying of
-    larger members on top. An idle process holds about 9 MB. Where no child process can
-    be started (a frozen application, archivey imported from a zip, a refused spawn),
-    opening a decoder raises :class:`~archivey.ResourceUnavailableError`; nothing is decoded
-    in the caller's process."""
+    decoders. Measured on one Linux machine
+    (``scripts/investigations/bench_process_isolation.py``), a single stream (1 to 64
+    MiB for gzip and zstd, 1 to 16 MiB for bzip2 and xz) took about 1.05 to 1.5 times as
+    long for bzip2, 1.1 to 1.6 times for xz, 1.4 to 2 times for gzip and deflate, and 2
+    to 6 times for zstd, mostly copying data between processes. Each decoder also costs
+    about 0.6 to 1 ms (ZIP deflate and non-solid 7z LZMA2 members), and a PPMd decoder
+    about 1.4 to 2 ms, as under ``KNOWN_CRASHES``; an archive of many small members pays
+    mostly that. A solid 7z folder is one decoder, plus about 0.1 to 0.3 ms for each 4
+    KiB member read from it, with the copying of larger members on top. An idle process
+    holds about 9 MB. Where no child process can be started (a frozen application,
+    archivey imported from a zip, a refused spawn), opening a decoder raises
+    :class:`~archivey.ResourceUnavailableError`; nothing is decoded in the caller's
+    process."""
     NONE = "none"
     """No child process at all: every decoder runs in the caller's process.
 
@@ -200,12 +201,13 @@ class RarDecompressor(Enum):
 # this; unknown size keeps pre-threshold AUTO.
 #
 # rapidgzip runs in a child process, so each accelerated stream pays about 45 ms to
-# start the child and open the stream, and a full read then saves about 3.4 ms per MB
-# of compressed input against the stdlib (``scripts/bench_rapidgzip_child.py``). So the
-# child breaks even near 13 MB compressed, and below that the stdlib is faster; 16 MiB
-# keeps AUTO on the side where rapidgzip pays for itself. A caller that seeks backward
-# a lot gains from rapidgzip's index sooner, and can set ``ON``. See the
-# rapidgzip-deflate-child-process design note.
+# start the child and open the stream, and a full read then saves about 3.4 ms per MB of
+# compressed input against the stdlib
+# (``scripts/investigations/bench_rapidgzip_child.py``). So the child breaks even near
+# 13 MB compressed, and below that the stdlib is faster; 16 MiB keeps AUTO on the side
+# where rapidgzip pays for itself. A caller that seeks backward a lot gains from
+# rapidgzip's index sooner, and can set ``ON``. See the rapidgzip-deflate-child-process
+# design note.
 RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
 
 # Minimum known compressed input size (bytes) before ``use_indexed_bzip2`` AUTO selects
@@ -214,9 +216,9 @@ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
 # The bzip2 decoder runs in a child process too, so each accelerated stream pays about
 # 45 ms to start the child. The standard library decodes bzip2 slowly, so the child pays
 # for itself much sooner than for DEFLATE: a full read broke even near 0.6 MiB
-# compressed with 4 cores, and near 2 MiB with one (``scripts/bench_bzip2_child.py``).
-# 1 MiB sits between the two. A caller that seeks backward a lot gains from the index
-# sooner, and can set ``ON``.
+# compressed with 4 cores, and near 2 MiB with one
+# (``scripts/investigations/bench_bzip2_child.py``). 1 MiB sits between the two. A
+# caller that seeks backward a lot gains from the index sooner, and can set ``ON``.
 INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE: int = 1024 * 1024
 
 
@@ -389,12 +391,12 @@ class ListingLimits:
     """Most members a listing may hold.
 
     Each listed member costs about 1.5 KiB of memory (measured by
-    ``scripts/measure_limit_costs.py``), so the default allows about 384 MiB at open on
-    7z, RAR and ISO, where a tiny compressed header can declare that many members (ZIP
-    checks the count too, but its directory costs about 46 bytes per entry). A
-    current Linux kernel source tree has about 90 000 files, a third of the default;
-    raise this for archives with more members, and lower it when opening untrusted
-    archives on a server with less memory to spare.
+    ``scripts/investigations/measure_limit_costs.py``), so the default allows about 384
+    MiB at open on 7z, RAR and ISO, where a tiny compressed header can declare that many
+    members (ZIP checks the count too, but its directory costs about 46 bytes per
+    entry). A current Linux kernel source tree has about 90 000 files, a third of the
+    default; raise this for archives with more members, and lower it when opening
+    untrusted archives on a server with less memory to spare.
     """
 
     max_metadata_bytes: int | None = 64 * 2**20

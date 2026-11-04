@@ -1,5 +1,5 @@
 {
-  "_comment": "Cache key of the corpus entry each committed fixture was built from. Regenerate with scripts/gen_corpus_rar_fixtures.py; a mismatch fails the suite rather than testing stale bytes.",
+  "_comment": "Cache key of the corpus entry each committed fixture was built from. Regenerate with scripts/fixtures/gen_corpus_rar_fixtures.py; a mismatch fails the suite rather than testing stale bytes.",
   "fixtures": {
     "rar/basic": "d222e6d49aa924218ee3a18e",
     "rar/comments": "8980cb359fb2522854afdae0",

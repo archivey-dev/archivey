@@ -389,7 +389,7 @@ mutation harness). Filter-only codecs (BCJ, Delta) are not required as standalon
 stream targets.
 
 CI SHALL run a **short** partitioned harness on every merge-queue group that changes
-a library, test, dependency or CI path (the list in `scripts/ci_scope.py`; the fuzz
+a library, test, dependency or CI path (the list in `scripts/ci/ci_scope.py`; the fuzz
 targets live under `tests/`, so a change to one always counts), and its failure SHALL
 keep the group from merging; a group that changes none of those paths, and pull request
 pushes, need not run it (same

@@ -4,7 +4,7 @@ name: Review tally
 # and what the implementer did with each finding: rounds per pull request, findings by
 # severity and by who raised them (a loop round or the Opus pass), fixed, disproven,
 # escalated or split, and findings an earlier fix caused. The report is the run's job
-# summary; nothing is posted or changed. `scripts/review_tally.py` does the counting.
+# summary; nothing is posted or changed. `scripts/review/review_tally.py` does the counting.
 
 on:
   schedule:
@@ -33,5 +33,5 @@ jobs:
 
       - name: Tally
         run: |
-          python3 scripts/review_tally.py --repo "$GITHUB_REPOSITORY" --days "$DAYS" \
+          python3 scripts/review/review_tally.py --repo "$GITHUB_REPOSITORY" --days "$DAYS" \
             >> "$GITHUB_STEP_SUMMARY"

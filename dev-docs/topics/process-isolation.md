@@ -58,7 +58,7 @@ Other pages own parts of this, and this page links them rather than repeating th
   reason by itself: the standard library's decoders are native and stay in-process.
   The one exception is rapidgzip's bzip2 decoder, which has not been seen to crash: it is
   isolated as a precaution, because it comes from the same library as the DEFLATE decoder
-  ([`formats/bzip2.md`](../formats/bzip2.md) §6). `scripts/accelerator_crash_search.py`
+  ([`formats/bzip2.md`](../formats/bzip2.md) §6). `scripts/investigations/accelerator_crash_search.py`
   keeps checking both rapidgzip decoders, so the rule can be undone when upstream is
   fixed.
 - **Two kinds of child, because the decoders take input in two ways.** A stream decoder
@@ -318,7 +318,7 @@ this section says what each cost comes from.
 
 ## 6. Open questions
 
-- **Does rapidgzip still crash?** `scripts/accelerator_crash_search.py` answers it. A run
+- **Does rapidgzip still crash?** `scripts/investigations/accelerator_crash_search.py` answers it. A run
   with no crash over a new release would let the DEFLATE family come back in-process,
   and with it the bzip2 decoder, which is isolated only because the DEFLATE one is.
 - **Where should brotli and inflate64 run on a free-threaded build?** Importing them turns
@@ -341,13 +341,13 @@ this section says what each cost comes from.
 The costs:
 
 ```bash
-uv run --no-sync python scripts/bench_process_isolation.py   # NONE / KNOWN_CRASHES / NATIVE_DECODERS
-uv run --no-sync python scripts/bench_accelerator_reads.py   # reads through the rapidgzip child
-uv run --no-sync python scripts/bench_rapidgzip_child.py     # the rapidgzip child against in-process
-uv run --no-sync python scripts/bench_bzip2_child.py         # the same for bzip2
+uv run --no-sync python scripts/investigations/bench_process_isolation.py   # NONE / KNOWN_CRASHES / NATIVE_DECODERS
+uv run --no-sync python scripts/investigations/bench_accelerator_reads.py   # reads through the rapidgzip child
+uv run --no-sync python scripts/investigations/bench_rapidgzip_child.py     # the rapidgzip child against in-process
+uv run --no-sync python scripts/investigations/bench_bzip2_child.py         # the same for bzip2
 ```
 
-Whether the rapidgzip child is still needed: `scripts/accelerator_crash_search.py`.
+Whether the rapidgzip child is still needed: `scripts/investigations/accelerator_crash_search.py`.
 
 ## 8. References
 

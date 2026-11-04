@@ -1,6 +1,6 @@
 """The posting-shape check, on hand-built posts instead of GitHub.
 
-`scripts/review_shape.py` says which of a round's posts miss the shape
+`scripts/review/review_shape.py` says which of a round's posts miss the shape
 `code-review-skill` §3 and §6 ask for. Each case breaks one rule and expects exactly that
 miss, and a well-formed round expects none, so a rule that stops firing, or fires on a
 good review, fails here.
@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "review_shape.py"
+SCRIPT = ROOT / "scripts" / "review" / "review_shape.py"
 
 _spec = importlib.util.spec_from_file_location("review_shape", SCRIPT)
 assert _spec is not None and _spec.loader is not None

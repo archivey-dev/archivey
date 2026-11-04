@@ -1,4 +1,4 @@
-"""Tests for `scripts/review_loop_prompt.py`, which writes each review round's prompt."""
+"""Tests for `scripts/review/review_loop_prompt.py`, which writes each review round's prompt."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "review_loop_prompt.py"
+SCRIPT = ROOT / "scripts" / "review" / "review_loop_prompt.py"
 
 _spec = importlib.util.spec_from_file_location("review_loop_prompt", SCRIPT)
 assert _spec is not None and _spec.loader is not None

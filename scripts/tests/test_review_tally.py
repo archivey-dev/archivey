@@ -1,6 +1,6 @@
 """The weekly review tally, exercised on hand-built comments instead of GitHub.
 
-`scripts/review_tally.py` reads round markers, findings and dispositions back from the
+`scripts/review/review_tally.py` reads round markers, findings and dispositions back from the
 shapes the review loop and the two review skills post. These cases pin those shapes, so
 a change to one of them that the tally would silently stop counting fails here.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "review_tally.py"
+SCRIPT = ROOT / "scripts" / "review" / "review_tally.py"
 
 _spec = importlib.util.spec_from_file_location("review_tally", SCRIPT)
 assert _spec is not None and _spec.loader is not None

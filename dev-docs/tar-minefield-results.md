@@ -1,6 +1,6 @@
 # tar-minefield results
 
-<!-- Written by scripts/gen_tar_minefield_expected.py; edit the reasons in
+<!-- Written by scripts/fixtures/gen_tar_minefield_expected.py; edit the reasons in
 tests/test_tar_minefield_corpus.py and rerun it. -->
 
 Archivey's TAR reader against the [tar-minefield](https://stoppels.ch/tar/) corpus ([source](https://github.com/haampie/tar-minefield) at `104b4bab`), next to GNU tar 1.35 and Astral's tar-codec, as the corpus's own matrix gives them. `tests/test_tar_minefield_corpus.py` runs it; its docstring says how. Each case links to its page on the corpus's site.

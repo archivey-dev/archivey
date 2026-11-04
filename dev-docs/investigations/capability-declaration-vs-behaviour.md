@@ -27,8 +27,8 @@ The predicates below and the script use the new name; the 2026-09-17 run used th
 ## Re-run
 
 ```bash
-uv run --no-sync python scripts/exploration/capability_declaration_sweep.py
-uv run --no-sync python scripts/exploration/capability_declaration_sweep.py --compare
+uv run --no-sync python scripts/investigations/exploration/capability_declaration_sweep.py
+uv run --no-sync python scripts/investigations/exploration/capability_declaration_sweep.py --compare
 ```
 
 `--compare` diffs **verdicts** against
@@ -37,7 +37,7 @@ Seek-count drift prints as `NUMERIC` and is not a failure. After a real
 behaviour change, update this page, then:
 
 ```bash
-uv run --no-sync python scripts/exploration/capability_declaration_sweep.py --write-snapshot
+uv run --no-sync python scripts/investigations/exploration/capability_declaration_sweep.py --write-snapshot
 ```
 
 The script draws rows from `tests.sample_archives.CORPUS` /

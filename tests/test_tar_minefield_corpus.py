@@ -24,7 +24,7 @@ and tar-codec's results are the corpus's own, ``contrib/matrix/matrix.json``.
 
 The pins in ``tests/fixtures/tar_minefield/expected.json`` hold, per case and policy,
 Archivey's outcome, a digest of its tree, whether that tree is GNU tar's, and the
-diagnostic codes a listing reports. ``scripts/gen_tar_minefield_expected.py`` rewrites
+diagnostic codes a listing reports. ``scripts/fixtures/gen_tar_minefield_expected.py`` rewrites
 them from a clone, and writes ``dev-docs/tar-minefield-results.md`` from the pins and
 the reasons below.
 
@@ -649,7 +649,7 @@ def render_results(expected: dict[str, Any]) -> str:
     lines = [
         "# tar-minefield results",
         "",
-        "<!-- Written by scripts/gen_tar_minefield_expected.py; edit the reasons in",
+        "<!-- Written by scripts/fixtures/gen_tar_minefield_expected.py; edit the reasons in",
         "tests/test_tar_minefield_corpus.py and rerun it. -->",
         "",
         (
@@ -956,7 +956,7 @@ def test_the_pins_cover_every_case() -> None:
     """The clone is the commit the pins were made from, with the same cases."""
     assert _ROOT is not None
     assert clone_commit(_ROOT) == _EXPECTED["tar_minefield"], (
-        "the clone is not the pinned commit: rerun scripts/gen_tar_minefield_expected.py"
+        "the clone is not the pinned commit: rerun scripts/fixtures/gen_tar_minefield_expected.py"
     )
     assert set(load_cases(_ROOT)) == set(_EXPECTED["cases"])
 
@@ -982,5 +982,5 @@ def test_every_difference_has_a_reason() -> None:
 
 def test_the_results_page_is_current() -> None:
     assert RESULTS_PATH.read_text(encoding="utf-8") == render_results(_EXPECTED), (
-        "rerun scripts/gen_tar_minefield_expected.py --results-only"
+        "rerun scripts/fixtures/gen_tar_minefield_expected.py --results-only"
     )

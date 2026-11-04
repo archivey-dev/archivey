@@ -117,14 +117,14 @@ so the two agree. A byte of the member after that end, a further stream too, is
 The decoder runs in a child process, as the DEFLATE family's does ([`gzip.md`](gzip.md)
 §2.3): `RapidgzipChildStream` with `bzip2=True`, which runs `rapidgzip_worker.py bzip2`. It
 has not been seen to abort on a cut or corrupt stream (40 runs of the truncation sweep, the
-corpus mutation harness and `scripts/accelerator_crash_search.py` produced Python
+corpus mutation harness and `scripts/investigations/accelerator_crash_search.py` produced Python
 exceptions only). It is isolated as a precaution: it comes from the same library as the
 DEFLATE decoder, which does abort on input archivey cannot always avoid. Native code alone
 is not the reason; the standard library's decoders run in-process. A child that crashes on
 the data hands the read to the standard library, like any data error (§2.3 below). The child
 costs about 45 ms per stream, which the 1 MiB `AUTO` threshold accounts for: a full read
 broke even near 0.6 MiB compressed with 4 cores and near 2 MiB with one
-(`scripts/bench_bzip2_child.py`). The guards below sit around the child's stream.
+(`scripts/investigations/bench_bzip2_child.py`). The guards below sit around the child's stream.
 
 - **A corrupt source must not read as empty.** The bundled decoder returns no output and no
   error for input that is not bzip2 at all: 40 000 zero bytes, a zero-byte file, a bare
@@ -267,9 +267,9 @@ bzip2-specific only; the shared items are [`single-file.md`](single-file.md) §4
 - **The accelerator is native code, contained in a child process.** An abort from the bzip2
   decoder costs the stream, and the standard library takes over and gives the verdict
   (§2.3). None has been seen on cut or mutated input. The Atheris `bzip2_accel` target
-  fuzzes it through archivey, and `scripts/accelerator_crash_search.py` runs it in-process
-  on damaged input to tell whether the isolation is still needed (threat-model O5). A busy
-  loop in the child is not bounded by a timeout.
+  fuzzes it through archivey, and `scripts/investigations/accelerator_crash_search.py`
+  runs it in-process on damaged input to tell whether the isolation is still needed
+  (threat-model O5). A busy loop in the child is not bounded by a timeout.
 - **A small file costs a whole block.** Each block expands up to 900 kB before the first
   output byte, and detection's inner-TAR probe reads up to 1 MiB of compressed input to
   reach it. Both are bounded by the block size; the detection budget bounds the probe
@@ -300,7 +300,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | The bzip2 accelerator is `rapidgzip`'s bundled decoder (ADR 0008) | `indexed_bzip2` and `rapidgzip` loaded together corrupt the heap on macOS; `rapidgzip` covers both codecs | The separate `indexed_bzip2` package |
-| Run the bzip2 accelerator in a child process, like the DEFLATE family (2026-10-10, reversing PR #493) | A precaution: no crash has been seen, but the decoder comes from the same library as the DEFLATE one, whose aborts cannot always be avoided. Isolation is for libraries with observed crashes (rapidgzip, pyppmd), not for native code as such. `scripts/accelerator_crash_search.py` keeps checking whether it is still needed | Keeping it in-process (PR #493); a config option for process isolation, which `use_indexed_bzip2=OFF` already covers |
+| Run the bzip2 accelerator in a child process, like the DEFLATE family (2026-10-10, reversing PR #493) | A precaution: no crash has been seen, but the decoder comes from the same library as the DEFLATE one, whose aborts cannot always be avoided. Isolation is for libraries with observed crashes (rapidgzip, pyppmd), not for native code as such. `scripts/investigations/accelerator_crash_search.py` keeps checking whether it is still needed | Keeping it in-process (PR #493); a config option for process isolation, which `use_indexed_bzip2=OFF` already covers |
 | Fall back to the standard library on a first empty read (PR #461) | The decoder's own state cannot tell garbage from an empty stream, and an accelerator must not change whether a corrupt source raises | Trusting the empty result; checking the magic by hand, which misses a valid header followed by garbage |
 | Serve the caller's source from this process (PR #462 trapped it in-process) | `rapidgzip` terminates the process when a Python source raises; the child's source never raises | Letting the exception cross the native boundary |
 | A 1 MiB size threshold for `AUTO` | The child costs a process start; the standard library is slow enough that the child pays for itself from about 1 MiB | No threshold (the in-process decoder cost no start); reusing the 16 MiB DEFLATE gate |

@@ -1,9 +1,9 @@
 """The review session summary, run on a hand-built execution file.
 
-`scripts/review_loop_trace.py` reads the SDK messages `claude-code-action` writes after
-a review round. These cases pin the message shapes it relies on (one event per content
-block sharing a message id, subagent events carrying `parent_tool_use_id`) and that no
-tool result text reaches the summary or the trace.
+`scripts/review/review_loop_trace.py` reads the SDK messages `claude-code-action` writes
+after a review round. These cases pin the message shapes it relies on (one event per
+content block sharing a message id, subagent events carrying `parent_tool_use_id`) and
+that no tool result text reaches the summary or the trace.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "review_loop_trace.py"
+SCRIPT = ROOT / "scripts" / "review" / "review_loop_trace.py"
 
 _spec = importlib.util.spec_from_file_location("review_loop_trace", SCRIPT)
 assert _spec is not None and _spec.loader is not None

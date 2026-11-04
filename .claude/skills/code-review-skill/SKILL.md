@@ -95,7 +95,7 @@ does not restate them.
 ### How deep: the tier
 
 A pull request's changed paths set how deep the review goes, not its author or its
-size. Run `python3 scripts/review_prep.py tier` first: it is stdlib only, so it needs no
+size. Run `python3 scripts/review/review_prep.py tier` first: it is stdlib only, so it needs no
 project environment, and it compares against `origin/main`. It prints the tier, the paths
 that decided it, and whether `dev-docs/api-surface.txt` changed. The path lists, and why
 each path is on its list, live in that script.

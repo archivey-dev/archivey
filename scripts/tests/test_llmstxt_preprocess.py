@@ -1,6 +1,6 @@
 """The link rewrite the docs build applies before writing the Markdown page copies.
 
-`scripts/llmstxt_preprocess.py` points a relative page link with an anchor at the
+`scripts/docs/llmstxt_preprocess.py` points a relative page link with an anchor at the
 page's Markdown copy, so an agent reading `llms.txt` copies stays in Markdown. A wrong
 rewrite breaks links in every copy, and no docs gate reads the copies, so the cases
 are pinned here.
@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "llmstxt_preprocess.py"
+SCRIPT = ROOT / "scripts" / "docs" / "llmstxt_preprocess.py"
 
 _spec = importlib.util.spec_from_file_location("llmstxt_preprocess", SCRIPT)
 assert _spec is not None and _spec.loader is not None

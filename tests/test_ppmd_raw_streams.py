@@ -2,7 +2,7 @@
 
 These tests exercise ``pyppmd`` and archivey's PPMd codec/stream adapters directly so
 Windows/Linux native aborts can be chased on the *minimal* surface (see
-``dev-docs/known-issues.md`` and ``scripts/ppmd_native_stress.py``).
+``dev-docs/known-issues.md`` and ``scripts/investigations/ppmd_native_stress.py``).
 
 Notes:
 - In-process PPMd7 create/destroy loops are skipped on Windows (have aborted CI);

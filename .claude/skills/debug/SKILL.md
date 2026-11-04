@@ -95,7 +95,7 @@ After a failed fix, state which hypothesis it rules out and what evidence ruled 
 before you write the next one. Do not retry a variant of the same theory.
 
 When the root cause is confirmed, write the regression test first and watch it fail on
-the unfixed code (`uv run python scripts/review_prep.py red-on-base <test ids>` shows it
+the unfixed code (`uv run python scripts/review/review_prep.py red-on-base <test ids>` shows it
 for the PR body). Put it with the tests that already own the behaviour, not in a new
 file by default.
 
