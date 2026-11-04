@@ -179,6 +179,32 @@ def test_gzip_stored_filename_surfaced(tmp_path: Path) -> None:
         assert member.raw_name == b"report.csv"
 
 
+def test_a_gzip_fname_with_parent_segments_is_not_the_extract_path(
+    tmp_path: Path,
+) -> None:
+    """FNAME is metadata. Extraction writes the archive's own name, inside dest,
+    when the stored name contains ``..``."""
+    payload = b"PWNED"
+    stored = b"../outside.txt"
+    comp = zlib.compress(payload)[2:-4]
+    header = b"\x1f\x8b\x08\x08" + b"\x00" * 4 + b"\x00\xff" + stored + b"\x00"
+    crc = zlib.crc32(payload) & 0xFFFFFFFF
+    raw = header + comp + crc.to_bytes(4, "little") + len(payload).to_bytes(4, "little")
+    path = tmp_path / "report.gz"
+    path.write_bytes(raw)
+    dest = tmp_path / "out"
+    with open_archive(path) as archive:
+        member = archive.members()[0]
+        assert member.name == "report"
+        assert member.raw_name == stored
+        assert member.extra["gzip.original_filename"] == "../outside.txt"
+        assert archive.read(member) == payload
+        archive.extract_all(dest)
+    assert (dest / "report").read_bytes() == payload
+    assert list(dest.iterdir()) == [dest / "report"]
+    assert not (tmp_path / "outside.txt").exists()
+
+
 def test_gzip_stored_filename_non_ascii_is_latin1(tmp_path: Path) -> None:
     # RFC 1952 specifies FNAME as ISO-8859-1 (Latin-1). The gzip tooling stores
     # "café.txt" as the bytes b"caf\xe9.txt"; decoding those as UTF-8 would mangle them

@@ -453,6 +453,29 @@ def _newc(*members: tuple[bytes, int, int, int, bytes], nul: bool = True) -> byt
     return bytes(out)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="a later newc link that stores its own data reads the earlier link's bytes",
+)
+def test_each_newc_name_in_one_inode_reads_the_bytes_stored_with_it(
+    tmp_path: Path,
+) -> None:
+    """Two newc headers share a device and inode and both store data.
+
+    Each name reads the bytes in its own header. 7-Zip extracts both files.
+    The reader makes the later name a hard link to the earlier one, so a read
+    of the later name returns the earlier bytes. A crc archive takes the same
+    path.
+    """
+    data = _newc(
+        (b"early", _FILE, 7, 2, b"EARLY"),
+        (b"late", _FILE, 7, 2, b"LATE!!"),
+    )
+    with open_archive(_archive(tmp_path, data)) as reader:
+        assert reader.read("early") == b"EARLY"
+        assert reader.read("late") == b"LATE!!"
+
+
 def test_too_many_held_links(tmp_path: Path) -> None:
     """Links held back for their data count toward max_members while they are held."""
     links = [(f"l{i}".encode(), _FILE, 7, 6, b"") for i in range(5)]
