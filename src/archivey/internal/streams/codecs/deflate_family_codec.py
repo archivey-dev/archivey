@@ -61,10 +61,6 @@ class _DeflateFamilyCodec(StreamCodec):
     # DEFLATE or zlib stream looking for a concatenated member, and an AES pad after it
     # would look like a second member.
     _bounds_source: ClassVar[bool] = True
-    # Whether a stream rapidgzip ends before any output goes to the standard library
-    # (``empty_to_stdlib`` of :class:`_StdlibOnAcceleratorError`). zlib checks that
-    # end in its own wrapper.
-    _empty_to_stdlib: ClassVar[bool] = False
 
     @override
     def open(
@@ -145,7 +141,12 @@ class _DeflateFamilyCodec(StreamCodec):
             label=label,
             limit=self._accelerated_limit(params, config),
             translate=compose_translators(self.translate, self.eof_truncation),
-            empty_to_stdlib=self._empty_to_stdlib,
+            # A stream rapidgzip ends before any output goes to the standard
+            # library: rapidgzip ends some cut streams there with no error, and for
+            # zlib the trailer check cannot tell them from an empty stream, since the
+            # Adler-32 of no output is 1 and a cut stream's last four bytes can read
+            # 00 00 00 01 (found by the zlib_accel fuzz target).
+            empty_to_stdlib=True,
         )
         stream: BinaryIO = takeover if end_check is None else end_check(takeover)
         return _StdlibSeekContract(_wrap_accelerated_length(stream, config))

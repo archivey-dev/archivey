@@ -1176,6 +1176,28 @@ def test_a_second_zlib_stream_is_not_content(steps: Callable[[BinaryIO], None]) 
     _assert_same(_outcome(Codec.ZLIB, blob, _ON, steps), off)
 
 
+def _seek_to_the_end(s: BinaryIO) -> None:
+    s.seek(0, io.SEEK_END)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    "steps", [_no_seek, _seek_to_the_end], ids=["read", "seek-end"]
+)
+def test_a_zlib_stream_cut_before_any_output_is_not_taken_for_an_empty_one(
+    steps: Callable[[BinaryIO], None],
+) -> None:
+    """rapidgzip ends this cut zlib stream (a fixed block and the start of a stored one)
+    before any output, with no error, and its last four bytes read as the Adler-32 of no
+    output, 1. The standard library reports the cut, so the accelerated read must too
+    (found by the ``zlib_accel`` fuzz soak)."""
+    _require_the_accelerator_in_use()
+    blob = bytes.fromhex("789c0200000001")
+    off = _outcome(Codec.ZLIB, blob, _OFF, steps)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.ZLIB, blob, _ON, steps), off)
+
+
 @requires("rapidgzip")
 def test_a_second_zlib_stream_is_reported_as_trailing_data(tmp_path) -> None:
     path = tmp_path / "two.zz"

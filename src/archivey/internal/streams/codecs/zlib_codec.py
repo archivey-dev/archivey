@@ -536,7 +536,6 @@ class _ZlibErrorCodec(_DeflateFamilyCodec):
 class DeflateCodec(_ZlibErrorCodec):
     codec = Codec.DEFLATE
     _label = "deflate"
-    _empty_to_stdlib = True
 
     @override
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:

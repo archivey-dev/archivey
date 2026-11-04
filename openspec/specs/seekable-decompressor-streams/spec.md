@@ -301,7 +301,9 @@ a reader that skips is still covered), a mismatch the standard library confirms 
 SHALL re-raise it. Where the standard library agrees with every byte rapidgzip delivered and
 then has more output, or meets the end of the source inside the stream (a cut stream), the
 read SHALL be handed to the standard library at the delivered position, so the bytes and the
-`TruncatedError` match `use_rapidgzip=OFF`. Where the standard library's decode ends the first
+`TruncatedError` match `use_rapidgzip=OFF`. A stream rapidgzip ends before any output SHALL
+go to the standard library without the Adler-32 check, since the Adler-32 of no output is 1
+and a cut stream's last four bytes can read `00 00 00 01`. Where the standard library's decode ends the first
 zlib stream before the bytes rapidgzip delivered (rapidgzip decodes on into a second stream)
 and the caller has no byte past that end yet, the read or seek SHALL be handed to the
 standard library at that end, so a completing read returns the first stream and the rest is
