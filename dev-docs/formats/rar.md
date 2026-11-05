@@ -1344,10 +1344,16 @@ RAR-specific only. General extraction and name hazards are §2.4.
   version 20 (RAR 2.0). The RARLAB writer stores those targets M0 — it does not
   produce a compressed (LZ-data) RAR3 symlink target, which is why that case is
   not in the fixtures. `FILE_COPY` (RAR5 redirect type 5) is pinned with
-  archives `rar -oi` writes at test time. Residual is
-  unfixtured existing kinds — Windows symlink, Windows junction — and future kinds
-  whose emission `is_payload_file()` gets wrong (tracked internally). A later reader must
-  not conclude the current kinds are all pinned.
+  archives `rar -oi` writes at test time. Windows symlinks and junctions (types 2 and 3)
+  are pinned with `winlinks_solid__.rar`, written on Windows by WinRAR 7.23 `rar -ol`
+  (`scripts/investigations/exploration/probe_rar_windows_links.py`, run by
+  `rar-windows-links-probe.yml`): with `unrar` 7.23 on Windows, Linux and macOS, a
+  relative or absolute file symlink, a directory symlink and a junction each print
+  nothing, and a solid pass prints exactly the regular files. They list with size 0,
+  unlike a Unix link. `rar` stores directories, directory links and junctions after the
+  files of a run, and keeps them last when a later run appends files, so only the file
+  links have data after them in an archive `rar` wrote. The residual is future kinds
+  whose emission `is_payload_file()` gets wrong.
 - **A stream source materializes the archive to disk.** The temp file is `0600` and the temp
   volume directory `0700`, and both are removed on close; the exposure is disk space and
   lifetime, not readability by other users. `CostReceipt.notes` carries the caveat at open
@@ -1768,6 +1774,7 @@ python3 scripts/investigations/exploration/rar_decompressor_matrix.py      # §3
 | RAR5 Windows symlink and junction targets list as ZIP's and 7z's do, and a drive or UNC target is refused at extraction |
 | A RAR5 name that is not UTF-8, and an 8-bit RAR 1.5-4 name with a byte windows-1252 leaves undefined, list as distinct names, read their own bytes through `unrar`, and extract escaped |
 | Solid symlink / hardlink demux does not consume pipe bytes |
+| Solid Windows symlink and junction demux (WinRAR-written, measured on Windows, Linux and macOS) does not consume pipe bytes |
 | Solid link emission per generation: RAR5 packed 0 / unpacked > 0, RAR4 packed > 0 / unpacked > 0, both emit 0; `is_payload_file()` is False |
 | A RAR5 file copy lists as `FILE` with `is_file_copy` and its source, reads and extracts as an independent file (both programs, solid and not); a dangling or wrong-size copy raises; a hard link stays `HARDLINK` |
 | A solid pass decodes a file copy's source once for all its copies (both programs; the source read or skipped, extracted or filtered out); kept in the spool past the memory allowance, decoded again when the spool limit has no room; the spool charge starts at the first kept byte, after a stream source's own copy, and ends once the pass has reached the last counted copy of every source in the file, at the latest with the pass; a `members=` collection counts only the copies it selects, so one that selects none of a source's copies never starts it, while under a predicate every copy counts; a pass that reads nothing writes nothing; the kept bytes are checked against the source's digest and count toward extraction limits |

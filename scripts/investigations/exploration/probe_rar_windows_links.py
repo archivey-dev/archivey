@@ -76,7 +76,6 @@ def _build(rar: str, out: Path) -> None:
     ]
     variants = {
         "winlinks_solid__.rar": ["-ma5", "-s", "-m3", "-ol"],
-        "winlinks_solid_stored__.rar": ["-ma5", "-s", "-m0", "-ol"],
         "winlinks_nonsolid__.rar": ["-ma5", "-m3", "-ol"],
     }
     for name, flags in variants.items():
