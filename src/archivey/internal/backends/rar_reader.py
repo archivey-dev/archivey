@@ -4103,18 +4103,14 @@ class RarReader(BaseArchiveReader):
             try:
                 if unrar_mask_selects(mask_view, view, dot_rule=dot_rule):
                     selected.append(position)
-            except UnrarSelectionUnknown:
+            except UnrarSelectionUnknown as exc:
                 if position <= target_position:
+                    which = "it" if position == target_position else "an earlier member"
                     raise _UnrarCannotAddress(
                         self._unrar_name_refused(
                             target,
-                            "whether unrar's mask for it selects "
-                            + (
-                                "it"
-                                if position == target_position
-                                else "an earlier member"
-                            )
-                            + " depends on memory unrar reads past that member's name",
+                            f"whether unrar's mask for it selects {which} cannot be "
+                            f"predicted ({exc})",
                         )
                     ) from None
                 # After the target, counting it only bounds the read.

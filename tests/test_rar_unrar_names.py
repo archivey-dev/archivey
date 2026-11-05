@@ -251,7 +251,17 @@ _CASE_NAMES: list[tuple[bytes, int]] = [
     ("ω.txt".encode(), 1),
     ("d/straße/f".encode(), 1),
     (b"D/STRASSE/F", 1),
+    # Above U+FFFF: two UTF-16 units each on Windows.
+    ("\U0001f600\U0001f600.txt".encode(), 1),
+    ("\U0001f600.txt".encode(), 1),
 ]
+# On Windows, the masks that compare equal to a shorter name, and those names.
+_CASE_UNKNOWN_ON_WINDOWS = {
+    "STRASSE": [5],
+    "D\\STRASSE\\F": [9],
+    "d/STRASSE/f": [9],
+    "E\u0301.TXT": [0, 1, 2],
+}
 
 
 @requires_binary("unrar")
@@ -294,21 +304,44 @@ def test_case_fold_selection_is_the_one_unrar_makes_on_this_os(
                     expected.append(index)
             except UnrarSelectionUnknown:
                 unknown.append(index)
-        assert not unknown or sys.platform == "win32"
+        if unknown != (
+            _CASE_UNKNOWN_ON_WINDOWS.get(mask, []) if sys.platform == "win32" else []
+        ):
+            mismatches.append((mask, "unknown", unknown))
         if [i for i in actual if i not in unknown] != expected:
             mismatches.append((mask, expected, unknown, actual))
     assert not mismatches
 
     # Whatever the model cannot answer is refused; every other read is the member's.
+    # On Windows that is STRASSE after straße, and D/STRASSE/F after d/straße/f.
     monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    refused = []
     with open_archive(archive, config=_UNRAR_SHARED) as reader:
         for index, member in enumerate(reader.members()):
             try:
                 data = reader.read(member)
             except UnsupportedFeatureError:
-                assert sys.platform == "win32", member.name
+                refused.append(index)
                 continue
             assert data == _payload(index), member.name
+    assert refused == ([6, 10] if sys.platform == "win32" else [])
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_selection_keys_grow_linearly_with_the_name(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """A name with many separators gets one fixed-size key per separator.
+
+    The keys were the prefixes themselves, so ``"a/" * 30000`` cost about 1.7 GB.
+    """
+    monkeypatch.setattr(rar_unrar.sys, "platform", platform)
+    keys = rar_unrar.unrar_selection_keys("a/" * 30000 + "f")
+    assert len(keys) <= 2 * 30000 + 3
+    assert max(len(key) for key in keys) < 200
+    mask_keys = rar_unrar.unrar_mask_keys("./" + "a/" * 29999 + "a")
+    assert mask_keys is not None
+    assert set(mask_keys) & set(keys)
 
 
 @requires_binary("unrar")

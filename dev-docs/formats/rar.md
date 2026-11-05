@@ -1493,8 +1493,12 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   threat-model C1), a stream or prefixed source (`unar` would need a copy), or an
   archive `unar` refuses (§3); those still raise `UnsupportedFeatureError`, naming the
   tool that refused. Whether any of them earns a route of its own is open.
-- **Open: the name model on Windows and macOS is unmeasured.** The selection tests run
-  on Linux only.
+- **Open: the name model on Windows and macOS is only partly measured.** The tests
+  that compare the full name sets with `unrar` run on Linux only.
+  `test_case_fold_selection_is_the_one_unrar_makes_on_this_os` runs on every OS, so
+  the Windows case fold and `CompareStringW` are measured for its names under the
+  CI runner's en-US locale; other locales, `FoldStringW` and the rest of macOS are
+  not.
   - Windows: `unrar` folds a character with `CharUpperW` in `match()` and compares
     a mask with a name's start, and an exact mask's directory with the name's, with
     `CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE|SORT_STRINGSORT)`
