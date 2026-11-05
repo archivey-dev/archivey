@@ -72,7 +72,7 @@ from archivey.internal.streams.codecs.ppmd_child import (
     ppmd_child_unavailable_reason,
 )
 from archivey.internal.streams.decompressor_stream import (
-    _COMPRESSED_READ_SIZE_MAX,
+    _LARGE_READ_STEP,
     retire_decoder_children,
 )
 from tests.conftest import requires, requires_binary, run_7z
@@ -484,7 +484,7 @@ def test_a_failed_check_retires_a_child_under_a_wrapper(
 def test_a_child_request_can_carry_more_than_4_gib() -> None:
     """``max_ppmd_held_input=None`` puts no bound on a held member, and the whole of it
     goes to the child in one request, so the frame's payload length is 64 bits."""
-    size = (1 << 32) + _COMPRESSED_READ_SIZE_MAX
+    size = (1 << 32) + _LARGE_READ_STEP
     assert FRAME.unpack(FRAME.pack(0, 0, size))[2] == size
 
 

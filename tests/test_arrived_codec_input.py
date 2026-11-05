@@ -257,10 +257,13 @@ def _assert_same_from_every_piece_size(
 ) -> None:
     # The same source with every read full: one feed takes up to 64 KiB. A source
     # that can seek is checked at open and can find a Brotli stream's end, so an
-    # error can differ from it; data that reads clean reads the same.
+    # error can differ from it; data that reads clean reads the same. Its trailing
+    # scan can also see more: a decode that fails past the trailer hands back the
+    # bytes before the failure on a source that can seek (decoded again), and a pipe
+    # loses its failing call's output, so the reports may differ.
     expected = _outcome(NonSeekableBytesIO(data), fmt, piece, config)
     if expected[0] != "<open>" and expected[1] is None:
-        assert _outcome(io.BytesIO(data), fmt, piece, config) == expected
+        assert _outcome(io.BytesIO(data), fmt, piece, config)[:2] == expected[:2]
     for size in pieces:
         got = _outcome(ShortReadNonSeekable(data, size), fmt, piece, config)  # type: ignore[arg-type]  # RawIOBase double
         assert same(got, expected), (

@@ -1612,14 +1612,16 @@ def test_decompressor_read_one_bounds_internal_buffer() -> None:
     deflate = co.compress(payload) + co.flush()
     with ZlibDecompressorStream(io.BytesIO(deflate)) as stream:
         assert stream.read(1) == b"A"
-        assert len(stream._buffer) < 64_000
+        # One call asks for 64 KiB of output whatever the read size (fixed feeding).
+        assert len(stream._buffer) < 65_536
         assert stream.read(1000) == b"A" * 1000
 
     # xz
     xz = lzma.compress(payload, format=lzma.FORMAT_XZ)
     with XzDecompressorStream(io.BytesIO(xz)) as stream:
         assert stream.read(1) == b"A"
-        assert len(stream._buffer) < 64_000
+        # One call asks for 64 KiB of output whatever the read size (fixed feeding).
+        assert len(stream._buffer) < 65_536
 
 
 def test_decompressor_owns_inner_closes_private_source(tmp_path: Path) -> None:
@@ -1671,8 +1673,9 @@ def test_unix_compress_read_one_bounds_internal_buffer() -> None:
     compressed = make_unix_compress(payload)
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
         assert stream.read(1) == b"A"
-        # DecompressorStream buffer after a budgeted feed.
-        assert len(stream._inner._buffer) < 64_000
+        # DecompressorStream buffer after a budgeted feed: one decoder call asks for
+        # 64 KiB of output (fixed feeding), and LZW may finish the code it is in.
+        assert len(stream._inner._buffer) < 2 * 65_536
 
 
 @requires("brotli")
@@ -1718,7 +1721,8 @@ def test_deflate64_read_one_bounds_internal_buffer(tmp_path: Path) -> None:
     comp = data[30 + nlen + elen : 30 + nlen + elen + csize]
     with Deflate64DecompressorStream(io.BytesIO(comp)) as stream:
         assert stream.read(1) == b"A"
-        assert len(stream._buffer) < 64_000
+        # One call asks for 64 KiB of output whatever the read size (fixed feeding).
+        assert len(stream._buffer) < 65_536
         assert stream.read(1000) == b"A" * 1000
 
 

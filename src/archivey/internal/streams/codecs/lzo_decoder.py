@@ -391,6 +391,10 @@ class LzopDecompressor:
         self._check_block = check_block
         self._in = bytearray()
         self._out = bytearray()
+        # A block that fails its decode or check while a good block's output is still
+        # held: that output is handed out first, and this raises once it is gone
+        # (spec ``compressed-streams``).
+        self._raise_after: CorruptionError | None = None
         self._header: LzopHeader | None = None
         self._ended = False
         self.unused_data = b""
@@ -401,9 +405,12 @@ class LzopDecompressor:
 
     @property
     def needs_input(self) -> bool:
-        return not self._out and not self._ended
+        # False after a failed block, so the next call is made at once and raises.
+        return self._raise_after is None and not self._out and not self._ended
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        if self._raise_after is not None:
+            raise self._raise_after
         if self._ended:
             if data:
                 self.unused_data += data
@@ -415,7 +422,12 @@ class LzopDecompressor:
         del self._out[:n]
         # With the output used up, decode the next block the input holds, so
         # ``needs_input`` is true only when no whole block is left unread.
-        self._fill()
+        try:
+            self._fill()
+        except CorruptionError as exc:
+            if not out:
+                raise
+            self._raise_after = exc
         return out
 
     def _fill(self) -> None:

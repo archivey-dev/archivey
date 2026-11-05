@@ -67,7 +67,7 @@ from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
 from archivey.internal.overrides import override
 from archivey.internal.streams.decompressor_stream import (
-    _COMPRESSED_READ_SIZE_MAX,
+    _LARGE_READ_STEP,
     retire_decoder_children,
 )
 from archivey.internal.streams.resume import (
@@ -101,9 +101,9 @@ _DigestTransforms = Mapping[HashAlgorithm, Callable[[bytes], bytes]]
 # sized branch: ``expected_size`` is a decompression-bomb cap. The step itself is not
 # the bound (the drain stops at ``expected_size`` whatever the step), so it is sized
 # for speed: a member up to one step arrives as one piece, which ``b"".join`` returns
-# without copying, and it is the decoder's largest compressed feed, so one step is one
-# inflate call.
-_SIZED_DRAIN_CHUNK = _COMPRESSED_READ_SIZE_MAX
+# without copying. The decoder underneath makes its own calls: up to 1 MiB on a file,
+# 64 KiB on a pipe.
+_SIZED_DRAIN_CHUNK = _LARGE_READ_STEP
 
 
 def _algo_key(algorithm: HashAlgorithm | str) -> str:

@@ -66,6 +66,7 @@ from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     IndexReport,
     PrebuiltIndex,
+    probe_streams,
 )
 from archivey.internal.streams.streamtools import (
     SharedSource,
@@ -284,9 +285,15 @@ class SingleFileReader(BaseArchiveReader):
         """
         if not self._seekable:
             return
-        with self._member_stream(
-            self._open_codec_parts(attribute_member=False, accelerated=False)
-        ) as probe:
+        # Inside probe_streams an error raises where the decoder meets it: no bytes
+        # handed back before it and no second decode to find them, so damage at the
+        # start fails the open here. The one-byte read asks the decoder for one byte.
+        with (
+            probe_streams(),
+            self._member_stream(
+                self._open_codec_parts(attribute_member=False, accelerated=False)
+            ) as probe,
+        ):
             probe.read(1)
 
     def _build_member(self, archive_name: str | None) -> ArchiveMember:
