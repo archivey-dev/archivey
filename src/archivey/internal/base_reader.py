@@ -1251,9 +1251,10 @@ class BaseArchiveReader(ArchiveReader):
         :meth:`_hold_to_ratio` builds no guard for it and counts its recorded ``size``
         toward the archive-wide total instead; a member with no recorded size is held
         whatever this says. ``False`` here: a format whose members are each compressed
-        (or expand, as a sparse member's holes do) is held. TAR is the only format that
-        answers ``True`` so far; CPIO and ar have the same shape, and ISO does except for
-        a zisofs member.
+        (or expand, as a sparse member's holes do) is held. TAR answers ``True`` for a
+        member with no holes, and a sequential plugin (CPIO, ar) for one whose span
+        names stored bytes. ISO does not: two of its files can name the same extent,
+        so its stored bytes can be read out more than once, which a guard judges.
         """
         return False
 

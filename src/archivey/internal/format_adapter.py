@@ -1646,6 +1646,13 @@ class SequentialReaderAdapter(_PluginAdapter):
         return True
 
     @override
+    def _member_data_is_stream_bytes(self, member: ArchiveMember) -> bool:
+        # A span's ``data_length`` bytes are stored as they are (CPIO, ar). A member
+        # the reader decodes itself (``MemberSpan.data``) is compressed on its own.
+        record = member._raw
+        return isinstance(record, _Span) and record.decoded is None
+
+    @override
     def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
         record = member._raw
         assert isinstance(record, _Span), "a sequential member is missing its span"

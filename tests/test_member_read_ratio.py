@@ -544,6 +544,29 @@ def test_tar_members_without_holes_are_not_guarded_but_still_counted(
     assert built == ["holes"]
 
 
+def test_ar_members_are_not_guarded_but_still_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ar member's data is stored as it is (a sequential plugin's ``data_length``
+    span), so like a TAR member it gets no per-member guard and counts at its size."""
+    members = [(f"m{i}", _noise()) for i in range(3)]
+    path = tmp_path / "plain.a"
+    path.write_bytes(
+        b"!<arch>\n"
+        + b"".join(
+            _ar_header(name + "/", len(data)) + data + bytes(len(data) % 2)
+            for name, data in members
+        )
+    )
+    built = _count_guards(monkeypatch)
+    with open_archive(path, config=_TAR_RATIO) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            _drain(stream)
+        assert [reader.read(name) for name, _ in members] == [d for _, d in members]
+    assert built == []
+
+
 def test_tar_holes_alone_pass_the_same_limit(tmp_path: Path) -> None:
     """The control for the test above: without the stored members, the same holes
     read in full, so it is their count in the total that refuses them there."""
