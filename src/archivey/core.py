@@ -37,6 +37,7 @@ from archivey.diagnostics import (
     UnusedArgumentContext,
 )
 from archivey.exceptions import (
+    ArchiveyError,
     FormatDetectionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
@@ -878,19 +879,29 @@ def _open_resolved(
     payload_offset = detected.payload_offset if detected is not None else 0
 
     backend = backend_cls()
-    reader = backend.open_read(
-        archive_source,
-        format=resolved_format,
-        streaming=streaming,
-        passwords=passwords,
-        encoding=encoding,
-        archive_name=archive_name,
-        config=config,
-        collector=collector,
-        member_streams=member_streams,
-        open_site=open_site,
-        start_offset=payload_offset,
-    )
+    try:
+        reader = backend.open_read(
+            archive_source,
+            format=resolved_format,
+            streaming=streaming,
+            passwords=passwords,
+            encoding=encoding,
+            archive_name=archive_name,
+            config=config,
+            collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
+            start_offset=payload_offset,
+        )
+    except ArchiveyError as exc:
+        # A backend that reads its first headers while it is built (7z, RAR) raises
+        # before the reader that stamps its errors exists. Stamp them here, so a cut
+        # download names the file and the format as every later error does.
+        if exc.source_format is None:
+            exc.source_format = resolved_format
+        if exc.archive_name is None:
+            exc.archive_name = archive_name
+        raise
     # An empty listing is only interesting when the bytes never confirmed the format.
     # That is known here and the listing is not, so carry it to the reader rather than
     # adding a parameter to every backend's open_read for a fact none of them reads.

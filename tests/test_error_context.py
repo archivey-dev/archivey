@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveReader, open_archive
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, TruncatedError
 from archivey.types import ArchiveFormat
 
 try:
@@ -159,4 +159,35 @@ def test_archive_error_stamps_format_and_archive(
         trigger(ar)
     err = excinfo.value
     assert err.source_format is not None
+    assert err.archive_name is not None and source.name in err.archive_name
+
+
+# ---------------------------------------------------------------------------
+# Open-phase errors: the 7z and RAR readers read their signature and first headers
+# while they are built, before the reader that stamps errors exists. A cut download
+# must still name the file and the format.
+# ---------------------------------------------------------------------------
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected_format"),
+    [
+        ("damaged_member/7z_copy_nonsolid.7z", ArchiveFormat.SEVEN_Z),
+        ("corpus/rar/comments.rar", ArchiveFormat.RAR),
+    ],
+    ids=["7z", "rar"],
+)
+@pytest.mark.parametrize("cut", [4, 20, 60])
+def test_open_phase_truncation_stamps_format_and_archive(
+    tmp_path: Path, fixture: str, expected_format: ArchiveFormat, cut: int
+) -> None:
+    data = (_FIXTURES / fixture).read_bytes()
+    source = tmp_path / f"cut{Path(fixture).suffix}"
+    source.write_bytes(data[:cut])
+    with pytest.raises(TruncatedError) as excinfo, open_archive(source) as ar:
+        ar.members()
+    err = excinfo.value
+    assert err.source_format is expected_format
     assert err.archive_name is not None and source.name in err.archive_name
