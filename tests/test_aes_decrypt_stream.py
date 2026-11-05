@@ -308,6 +308,44 @@ def test_read_asks_source_in_block_multiples() -> None:
         assert stream.nearest_resume_offset(17) == AES_BLOCK_SIZE
 
 
+class _ShortReads(io.BytesIO):
+    """Seekable ciphertext that returns at most ``cap`` bytes per ``read``."""
+
+    def __init__(self, data: bytes, cap: int) -> None:
+        super().__init__(data)
+        self._cap = cap
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        if n is None or n < 0 or n > self._cap:
+            n = self._cap
+        return super().read(n)
+
+
+@pytest.mark.parametrize("cap", [1, 7, 4096])
+def test_short_source_reads_give_the_same_plaintext(cap: int) -> None:
+    """Regression guard: plaintext never depended on full-count source reads."""
+    cipher = _encrypt(_PLAIN[:48])
+    stream = AesDecryptStream(_ShortReads(cipher, cap), AesParams(key=_KEY, iv=_IV))
+    out = b""
+    while chunk := stream.read(5):
+        out += chunk
+    assert out == _PLAIN[:48]
+
+
+@pytest.mark.parametrize("cap", [7, 4096])
+@pytest.mark.parametrize("cipher_start", [0, 5])
+def test_cipher_tell_is_the_source_cursor(cap: int, cipher_start: int) -> None:
+    """``cipher_tell`` is where the next source read starts, at mid-block positions
+    that leave decrypted bytes unread and with a source that returns short reads."""
+    source = _ShortReads(b"\x00" * cipher_start + _encrypt(_PLAIN[:48]), cap)
+    source.seek(cipher_start)
+    stream = AesDecryptStream(source, AesParams(key=_KEY, iv=_IV))
+    assert stream.cipher_tell() == source.tell()
+    for n in (7, 3, 13, 1, 30):
+        stream.read(n)
+        assert stream.cipher_tell() == source.tell()
+
+
 class _ResumeSource(io.BytesIO):
     """Seekable ciphertext whose resume offset is injected, not derived."""
 

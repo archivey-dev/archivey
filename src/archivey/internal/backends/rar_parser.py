@@ -82,18 +82,31 @@ from archivey.types import OptionalLibrary
 
 
 class _Readable(Protocol):
-    """Header-walk surface: sequential ``read`` plus a ciphertext ``tell``.
+    """Header-walk surface: sequential ``read`` plus ``tell`` as an archive offset.
 
-    Both the archive ``BinaryIO`` and :class:`_HeaderDecryptStream` provide this.
-    It is not ``BinaryIO``: the decrypt stream is not an ``IOBase`` (no
-    ``readinto`` / ``close`` / ``writable``), and the walk never seeks it —
-    packed-data skips go through the underlying ``source`` so AES-CBC state is
-    not asked to reposition. streamtools bases either close the inner stream
-    or have no ciphertext ``tell``.
+    Both the archive ``BinaryIO`` and :class:`_HeaderDecryptStream` provide this,
+    and the walk reads the offset through :func:`_archive_offset`. For the archive
+    handle ``tell`` is that offset; for the decrypt stream it is the ciphertext
+    cursor in the archive, by design. It is not ``BinaryIO``: the decrypt stream
+    is not an ``IOBase`` (no ``readinto`` / ``close`` / ``writable``), and the walk
+    never seeks it — packed-data skips go through the underlying ``source`` so
+    AES-CBC state is not asked to reposition. ``AesDecryptStream`` borrows its
+    source too, but its ``tell`` is the plaintext position, so it is not a
+    ``_Readable``.
     """
 
     def read(self, n: int = -1, /) -> bytes: ...
     def tell(self) -> int: ...
+
+
+def _archive_offset(fd: _Readable) -> int:
+    """Offset in the archive file of the next byte the header walk reads from ``fd``.
+
+    The one name for what ``tell`` means on both arms of ``_Readable``: the raw
+    archive handle, or the header decrypt stream's ciphertext cursor (AES padding
+    included), which is where packed data or the next header's IV starts.
+    """
+    return fd.tell()
 
 
 # ---------------------------------------------------------------------------
@@ -2534,7 +2547,7 @@ def _parse_rar3(
             )
 
         try:
-            header_offset = header_fd.tell()
+            header_offset = _archive_offset(header_fd)
             buf = read_exact(header_fd, _S_BLK_HDR.size)
             if not buf:
                 truncated = _no_header(
@@ -2566,9 +2579,7 @@ def _parse_rar3(
             if truncated is None:
                 raise
             break
-        # HeaderDecryptStream.tell() reports the underlying ciphertext position
-        # (including AES block padding), which is the correct data_offset.
-        data_offset = header_fd.tell()
+        data_offset = _archive_offset(header_fd)
 
         pos = _S_BLK_HDR.size
         if flags & _RAR3_LONG_BLOCK:
@@ -3807,7 +3818,7 @@ def _read_rar5_block(
     is the ciphertext cursor. Leftover ``_buf`` is not rewind room — mid-header
     it is still-owed plaintext; after ``header_size`` it is AES padding.
     """
-    header_offset = fd.tell()
+    header_offset = _archive_offset(fd)
     preload = 4 + 1
     head = bytearray(read_exact(fd, preload))
     if not head:
@@ -3836,9 +3847,7 @@ def _read_rar5_block(
     hdata = start_bytes + read_exact(fd, header_size - len(start_bytes))
     if len(hdata) != header_size:
         raise _RarHeaderCutError("Unexpected EOF while reading RAR5 header body")
-    # Ciphertext cursor, including AES block padding. Same invariant as the
-    # RAR3 walk: this is where packed data (or the next header's IV) starts.
-    data_offset = fd.tell()
+    data_offset = _archive_offset(fd)
 
     if header_crc != _crc32(memoryview(hdata)[4:]):
         try:
