@@ -870,7 +870,7 @@ file charged to `SpoolLimits.max_bytes` from the source's first decoded byte, so
 that reads nothing writes nothing and the pass's own copy of a stream source is charged
 first. A source is let go at the member after its last copy: its memory is freed, and
 once no source in the file still waits for a copy, the file is deleted and its charge
-given back; what is left goes when the pass ends. Members are still yielded in archive
+given back; what is left goes when the pass ends. Only copies the pass will yield count: a `members=` collection is asked up front (`FileCopyPass.wanted`, recording nothing), so a source whose copies it leaves out is not kept; a predicate is asked once per member, in order, so every copy counts, except under extraction, which turns a predicate into a collection over the listing first. Members are still yielded in archive
 order. A source with no room left, or one the pass does not
 emit (a `unar` refusal), falls back to the named open, which is also what `open()` and a
 non-solid archive use (there a named open decodes only the source).

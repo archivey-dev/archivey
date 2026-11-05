@@ -696,3 +696,46 @@ def test_a_source_let_go_before_the_pipe_reaches_it_is_never_charged() -> None:
     with sources.open(2, lambda end: None) as kept:  # type: ignore[union-attr]
         assert kept.read() == b"y" * size
     sources.close()
+
+
+def test_a_name_selector_keeps_no_source_for_unselected_copies(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``members=`` name set that leaves out every copy keeps no source: the pass
+    asks the set up front which copies it will yield. Fails if the source's copies
+    are counted without the selector (the source would sit in the spool)."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    config = _config("unrar")
+    archive, payload = _solid_with_copies(tmp_path)
+    names = ["a_prefix.txt", "b_source.txt", "c_other.txt"]
+    with open_archive(archive, config=config) as reader:
+        seen = []
+        for member, stream in reader.stream_members(members=names):
+            assert stream is not None
+            data = stream.read()
+            if member.name == "b_source.txt":
+                assert data == payload
+            seen.append(member.name)
+            assert reader._resource_usage().spool_bytes == 0
+        assert seen == names
+    assert spawns == ["unrar"]
+
+
+def test_a_name_selector_still_serves_the_copies_it_selects(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With one copy in the name set, its source is kept and the copy is served from
+    the one decode."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    config = _config("unrar")
+    archive, payload = _solid_with_copies(tmp_path)
+    names = ["b_source.txt", _COPY_NAMES[-1]]
+    with open_archive(archive, config=config) as reader:
+        got = {}
+        for member, stream in reader.stream_members(members=names):
+            assert stream is not None
+            got[member.name] = stream.read()
+            if member.name == "b_source.txt":
+                assert reader._resource_usage().spool_bytes == len(payload)
+    assert got == dict.fromkeys(names, payload)
+    assert spawns == ["unrar"]
