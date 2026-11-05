@@ -78,7 +78,6 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
-    ResourceUnavailableError,
     UnsupportedFeatureError,
     _UsageTypeError,
     _UsageValueError,
@@ -98,7 +97,11 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
-from archivey.internal.format_provenance import FormatProvenance
+from archivey.internal.format_provenance import (
+    FormatProvenance,
+    stamp_error_context,
+    unconfirmed_context,
+)
 from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.measurement import (
@@ -164,7 +167,7 @@ from archivey.internal.windows_reparse import (
     reparse_payload_length,
 )
 from archivey.reader import ArchiveReader, MemberPass
-from archivey.terminal import escape_control_chars, quoted
+from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
     EXTRA_IS_JUNCTION,
@@ -235,9 +238,6 @@ are not read through this cap: the header parser has already allocated them, and
 """
 
 
-_UnconfirmedEvidence = Literal["extension", "content_probe"]
-
-
 # Members ``_drain_walk`` pulls per hold of the walk lock: enough that the lock and
 # guards cost nothing per member, few enough that a pass on another thread is not kept
 # waiting for a whole listing.
@@ -249,31 +249,6 @@ _VERIFY_ALL_CHUNK = 1 << 20
 
 _ArgT = TypeVar("_ArgT")
 _RetT = TypeVar("_RetT")
-
-
-class _UnconfirmedWording(NamedTuple):
-    code: DiagnosticCode
-    evidence_text: str  # "identified only by {evidence_text}"
-    evidence_short: str  # "unconfirmed ({evidence_short})"
-
-
-_UNCONFIRMED_EVIDENCE: Mapping[_UnconfirmedEvidence, _UnconfirmedWording] = {
-    "extension": _UnconfirmedWording(
-        DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
-        "its file extension",
-        "extension only",
-    ),
-    "content_probe": _UnconfirmedWording(
-        DiagnosticCode.PROBE_FORMAT_UNCONFIRMED,
-        "a content probe",
-        "content probe only",
-    ),
-}
-"""A decode-failure diagnostic per unconfirmed evidence: its code and two phrasings.
-
-The extension code is also the empty-listing code, which
-``_emit_listed_empty_unconfirmed`` emits with its own message.
-"""
 
 
 def _closer_of(source: Iterator[object]) -> Callable[[], None] | None:
@@ -1664,109 +1639,8 @@ class BaseArchiveReader(ArchiveReader):
         chosen_by: Literal["argument", "extension", "content_probe"],
         detected_format: str | None,
     ) -> UnconfirmedFormatContext:
-        return UnconfirmedFormatContext(
-            archive_name=self._archive_name,
-            format=self._format.display_name,
-            chosen_by=chosen_by,
-            detected_format=detected_format,
-        )
-
-    def _mark_format_unconfirmed(
-        self,
-        exc: ArchiveyError,
-        evidence: _UnconfirmedEvidence,
-    ) -> None:
-        """Stamp a decode failure under an unconfirmed format and emit its diagnostic.
-
-        ``evidence`` says what the format rested on: a content probe with nothing
-        corroborating it (``PROBE_FORMAT_UNCONFIRMED``), or the filename alone, because
-        every content signal declined (``EXTENSION_FORMAT_UNCONFIRMED``).
-        """
-        code, evidence_text, evidence_short = _UNCONFIRMED_EVIDENCE[evidence]
-        if not exc.format_unconfirmed:
-            # The stamped message speaks of the format the exception names, which a
-            # lower layer (a codec, the spool) may have set to something other than
-            # this reader's format; the diagnostic below speaks of the reader's.
-            stamped_format = (exc.source_format or self._format).display_name
-            detail = exc.raw_message.rstrip(".")
-            unconfirmed = (
-                f"Format identification was unconfirmed ({evidence_short}); "
-                f"the source may not be {stamped_format}."
-            )
-            if isinstance(exc, ResourceUnavailableError):
-                # The system ran short, maybe part-way through (a decoder process
-                # killed from outside), so no limit is to blame and output may exist.
-                new_msg = (
-                    f"{unconfirmed} The read was stopped because the system ran short: "
-                    f"{detail}. Partial output may already have been produced"
-                )
-            elif isinstance(exc, ResourceLimitError):
-                # A limit stops the read rather than the decoder failing on it, and a
-                # decoder-memory refusal stops it before anything is decoded, so
-                # neither "decode failed" nor "partial output" would be true of it.
-                new_msg = f"{unconfirmed} The read was stopped by a limit: {detail}"
-            else:
-                new_msg = (
-                    f"{unconfirmed} Decode failed: {detail}. "
-                    f"Partial output may already have been produced"
-                )
-            escaped = escape_control_chars(new_msg)
-            exc.raw_message = new_msg
-            exc.message = escaped
-            exc.args = (escaped,)
-            exc.format_unconfirmed = True
-
-        # Test and set in one step: two threads failing at once on a CONCURRENT
-        # reader would otherwise both pass the test and emit twice. Set before
-        # emitting, for the reason below.
-        with self._unconfirmed_failure_lock:
-            if self._unconfirmed_failure_emitted:
-                return
-            self._unconfirmed_failure_emitted = True
-
-        # Under PEDANTIC (RAISE on every code), a bare emit would raise DiagnosticRaisedError
-        # mid-raise and destroy the typed TruncatedError/CorruptionError/
-        # ResourceLimitError. escalate_as keeps that type when RAISE fires; under
-        # COLLECT we leave it unset so the already-stamped ``exc`` is re-raised by the
-        # caller.
-        raising = code in self._diagnostics_collector.policy.raise_on
-
-        # The flag is set above, before emitting: under RAISE the emit does not return,
-        # and a flag set afterwards would never be reached — every retried read would
-        # record the diagnostic again. `diagnostics` splits those concerns ("deduplication is a
-        # presentation concern; escalation is not"), and normally a deduplicated code
-        # still escalates on later occurrences via `escalate_only`. This code needs no
-        # such re-escalation: the caller re-raises the stamped `exc` — same type, same
-        # `format_unconfirmed=True` — on every occurrence, so a caller who asked to be
-        # stopped is stopped whether or not the diagnostic fires a second time.
-        reader_format = self._format.display_name
-        escalate_as: type[BaseException] | None = None
-        escalate_message: str | None = None
-        escalate_kwargs: dict[str, object] | None = None
-        if raising:
-            escalate_as = type(exc)
-            escalate_message = exc.raw_message
-            escalate_kwargs = {
-                "source_format": exc.source_format,
-                "archive_name": exc.archive_name,
-                "member_name": exc.member_name,
-                "link_target": exc.link_target,
-                "format_unconfirmed": True,
-            }
-        self._diagnostics_collector.emit(
-            code=code,
-            message=f"Reading {reader_format} failed (a decode failure or a limit), and "
-            f"it was identified only by {evidence_text}; the source may not be that "
-            f"format",
-            context=self._unconfirmed_context(
-                evidence,
-                # An extension guess is what detection falls back to when it refuses
-                # the bytes, so it has no content answer to restate.
-                reader_format if evidence == "content_probe" else None,
-            ),
-            escalate_as=escalate_as,
-            escalate_message=escalate_message,
-            escalate_kwargs=escalate_kwargs,
+        return unconfirmed_context(
+            self._format, self._archive_name, chosen_by, detected_format
         )
 
     def _finalize_and_publish(
@@ -4877,21 +4751,28 @@ class BaseArchiveReader(ArchiveReader):
     def _stamp_error_context(
         self, exc: ArchiveyError, member_name: str | None = None
     ) -> None:
-        """Stamp format/archive/member context onto an ArchiveyError if not already set."""
-        if exc.source_format is None:
-            exc.source_format = self._format
-        if exc.archive_name is None:
-            exc.archive_name = self._archive_name
-        if exc.member_name is None and member_name is not None:
-            exc.member_name = member_name
-        provenance = self._format_provenance
-        if provenance is None or not isinstance(
-            exc, (CorruptionError, ResourceLimitError)
-        ):
-            return
-        evidence = provenance.unconfirmed_evidence
-        if evidence is not None:
-            self._mark_format_unconfirmed(exc, evidence)
+        """Stamp format/archive/member context onto an ArchiveyError if not already set,
+        and mark a decode failure under an unconfirmed format (see
+        :func:`~archivey.internal.format_provenance.stamp_error_context`)."""
+        stamp_error_context(
+            exc,
+            archive_format=self._format,
+            archive_name=self._archive_name,
+            provenance=self._format_provenance,
+            collector=self._diagnostics_collector,
+            member_name=member_name,
+            claim_diagnostic=self._claim_unconfirmed_diagnostic,
+        )
+
+    def _claim_unconfirmed_diagnostic(self) -> bool:
+        """Whether this reader has yet to emit its unconfirmed-format diagnostic, which
+        is one provenance fact per reader. Claimed before the emit, under a lock, so two
+        threads failing at once on a CONCURRENT reader do not both emit."""
+        with self._unconfirmed_failure_lock:
+            if self._unconfirmed_failure_emitted:
+                return False
+            self._unconfirmed_failure_emitted = True
+            return True
 
     def io_stats(self) -> IoStats | None:
         """Return I/O counters if measurement is enabled, else ``None``.
