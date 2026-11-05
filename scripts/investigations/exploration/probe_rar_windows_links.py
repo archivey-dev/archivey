@@ -39,6 +39,11 @@ _FILES = {
     "sub/b_inside.txt": "inside " * 300,
     "z_last.txt": "last " * 500,
 }
+# Added by a second ``rar a``, which appends it after every member already in the
+# archive. ``rar`` stores directories, directory links and junctions after the files
+# of one run, so without this no data would follow them in the solid stream and a
+# miscount there would go unseen.
+_APPENDED = {"zz_after.txt": "after " * 450}
 
 
 def _build(rar: str, out: Path) -> None:
@@ -82,6 +87,12 @@ def _build(rar: str, out: Path) -> None:
             cwd=tree,
             check=True,
         )
+        for appended, text in _APPENDED.items():
+            (tree / appended).write_text(text, encoding="ascii")
+            subprocess.run(
+                [rar, "a", *flags, str(archive), appended], cwd=tree, check=True
+            )
+            (tree / appended).unlink()
         listing = subprocess.run(
             [rar, "lt", str(archive)], capture_output=True, check=True
         ).stdout.decode("utf-8", "replace")
@@ -116,7 +127,12 @@ def _check(archives: list[Path]) -> int:
                 payload = bool(raw.is_payload_file())  # type: ignore[union-attr]
                 if payload:
                     counted += m.size or 0
-                alone = len(_unrar_p(archive, m.name.rstrip("/").replace("/", os.sep)))
+                # A directory name selects its contents too, so it says nothing here.
+                alone = (
+                    None
+                    if m.type.name == "DIRECTORY"
+                    else len(_unrar_p(archive, m.name.replace("/", os.sep)))
+                )
                 rows.append(
                     {
                         "name": m.name,
