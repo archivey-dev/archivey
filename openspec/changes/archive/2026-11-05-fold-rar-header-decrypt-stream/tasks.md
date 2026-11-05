@@ -62,6 +62,10 @@ whose boxes can only tick one way is a change that parks in `openspec/changes/` 
 
 Gate failed: three new behaviours, more than one argument (refuse `read(-1)`, flag a cut
 instead of `finalize`, no seek on the shared handle). A header-limit `SlicingStream`
-covers the seek without a two-phase re-bound, but not the other two. Counted by reading
-the code, not prototyped. Under that arm 2.1 left the class and pointed both docstrings at
+covers the seek without a two-phase re-bound, but not the other two. The exact
+`header_size` bound from 1.1 needs that two-phase re-bound and still leaves the `read(-1)`
+refusal and the cut flag, so it fails the gate too. Counted by reading the code, not
+prototyped. For 2.4: only docstrings changed; `check.sh` was green apart from the
+`script tests` leg, which fails the same way on main in this container, and the suite was
+left to CI. Under that arm 2.1 left the class and pointed both docstrings at
 the `rar.md` row; 2.2, 2.3 and 3.2 apply only to a fold and did not run.

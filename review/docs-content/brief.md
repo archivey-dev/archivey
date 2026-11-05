@@ -278,7 +278,7 @@ spans instead. That is also why the gap stays invisible until someone counts.
 - Library behaviour changes. Topic 9 is archived; a defect found here is a finding plus a
   separate fix PR (the `#225` pattern), never an edit inside a docs PR.
 - Specs for unlanded phases — `archive-writing` (Phase 9) and the Phase 8
-  `seekable-gzip-and-block-writing` change (live, 0/24, specs-only by design). They are
+  `seekable-gzip-and-block-writing` change (archived 2026-11-05 undone; split into tracked cards). They are
   deliberately ahead of the code and are not documentation gaps.
 - Persuasion, positioning, competitive framing — Topic 7 owns those, and the docs reviews
   deliberately hand adoption findings to it.

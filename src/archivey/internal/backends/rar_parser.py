@@ -2006,8 +2006,7 @@ class _HeaderDecryptStream:
     Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`: folding
     this class into it would take three header-only behaviours (refusing
     ``read(-1)``, flagging a cut instead of ``finalize``, and not seeking the
-    shared archive handle), more than the one constructor argument the fold
-    was allowed. The decrypt *stage* is shared; the pull stream is not. The
+    shared archive handle), and each would be a flag on that class. The decrypt *stage* is shared; the pull stream is not. The
     measurement is the "Keep ``_HeaderDecryptStream``" row in
     ``dev-docs/formats/rar.md``.
 

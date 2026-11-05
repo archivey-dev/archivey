@@ -319,9 +319,10 @@ class AesDecryptStream(ReadOnlyIOStream):
     the same backend and keeps its own pull loop, because its ``read`` also
     feeds the HMAC and checks it at the end.
 
-    ``_HeaderDecryptStream`` (RAR headers) stays a separate class: folding it
-    in would take more than one constructor argument. The measurement is the
-    "Keep ``_HeaderDecryptStream``" row in ``dev-docs/formats/rar.md``.
+    ``_HeaderDecryptStream`` (RAR headers) stays a separate class: it refuses
+    ``read(-1)``, flags a cut instead of calling ``finalize``, and must not
+    seek the shared archive handle. The measurement is the "Keep
+    ``_HeaderDecryptStream``" row in ``dev-docs/formats/rar.md``.
 
     Ownership is ``owns_inner`` (both borrow). ``read`` already gathers short
     source reads. A short last ciphertext block raises ``TruncatedError``
