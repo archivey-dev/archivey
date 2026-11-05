@@ -154,8 +154,9 @@ With the `seekable` extra installed, archivey reads large DEFLATE data, and bzip
 which is faster on large files. It returns the same data and errors as the standard library and
 tools such as 7-Zip and unzip, except for a few files built on purpose, which no known tool writes:
 a ZIP or 7z member holding two DEFLATE streams under one CRC
-([Where the guarantees stop](security.md#where-the-guarantees-stop)), and a cut `.gz` whose last
-bytes are made to look like its trailer
+([Where the guarantees stop](security.md#where-the-guarantees-stop)), a `.zz` file holding several
+zlib streams under a last checksum that covers them all, read with `use_rapidgzip=ON`, and a cut
+`.gz` whose last bytes are made to look like its trailer
 ([Limits and accelerators](formats.md#limits-and-accelerators)). For the first, the result can also
 change with how many cores the machine has and with the platform. If your code must give the same
 answer as other tools, on every machine, and you would rather it be slower than differ, turn the
