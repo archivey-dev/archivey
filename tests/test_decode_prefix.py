@@ -25,7 +25,13 @@ import pytest
 
 from archivey.exceptions import ArchiveyError
 from archivey.internal.config import AcceleratorMode, StreamConfig
-from archivey.internal.streams.codecs import Codec, deps, open_codec_stream
+from archivey.internal.streams.codecs import (
+    Codec,
+    deflate_decoder,
+    deps,
+    open_codec_stream,
+)
+from archivey.internal.streams.codecs.deflate_decoder import GzipDecoder, ZlibDecoder
 from archivey.internal.streams.decompressor_stream import probe_streams
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
@@ -92,6 +98,85 @@ def test_every_bounded_read_size_gets_the_same_prefix(name: str) -> None:
     assert expected[1] is not None, "the damage must surface as an error"
     for size in (61, 4096, 100_000, 1 << 20, 5 << 20):
         assert _prefix(io.BytesIO(damaged), codec, size) == expected, size
+
+
+def _raw_deflate(data: bytes) -> bytes:
+    compressor = zlib.compressobj(wbits=-15)
+    return compressor.compress(data) + compressor.flush()
+
+
+_DEFLATE_FAMILY: dict[str, tuple[Codec, Callable[[bytes], bytes]]] = {
+    "gzip": CODECS["gzip"],
+    "zlib": (Codec.ZLIB, zlib.compress),
+    "deflate": (Codec.DEFLATE, lambda d: _raw_deflate(d)),
+}
+
+
+_DEFLATE_WBITS = {"gzip": 31, "zlib": zlib.MAX_WBITS, "deflate": -zlib.MAX_WBITS}
+
+
+@pytest.mark.parametrize("name", list(_DEFLATE_FAMILY))
+@pytest.mark.parametrize("size", [512, 1 << 20])
+def test_deflate_from_a_pipe_gets_every_byte_before_the_error(
+    name: str, size: int
+) -> None:
+    """A pipe cannot be decoded again, but zlib's state can be copied before each
+    call: the copy decodes the failing call's input again to the error."""
+    codec, _ = _DEFLATE_FAMILY[name]
+    good = PAYLOAD[:500_000]
+    compressor = zlib.compressobj(wbits=_DEFLATE_WBITS[name])
+    # A full flush ends on a byte boundary, so the next byte is a block header:
+    # 0x07 is a final block of the reserved type 3, which every inflater refuses.
+    # Damage at a random spot can decode on in raw deflate, which has no checksum,
+    # and where it stops depends on the zlib build.
+    damaged = (
+        compressor.compress(good)
+        + compressor.flush(zlib.Z_FULL_FLUSH)
+        + b"\x07"
+        + bytes(64)
+    )
+    expected = _prefix(io.BytesIO(damaged), codec, 1 << 20)
+    # zlib, asked for one byte per call, can meet the bad header before it hands
+    # out the last good byte; the file path decodes again that way too.
+    assert expected[1] is not None
+    assert len(good) - 1 <= expected[0] <= len(good)
+    assert _prefix(NonSeekableBytesIO(damaged), codec, size) == expected
+
+
+def test_a_second_gzip_member_from_a_pipe_gets_every_byte_before_the_error() -> None:
+    first = _text(200_000, 2)
+    data = gzip.compress(first, mtime=0) + _damage(
+        gzip.compress(PAYLOAD[:500_000], mtime=0), 0.5
+    )
+    expected = _prefix(io.BytesIO(data), Codec.GZIP, 1 << 20)
+    assert expected[0] > len(first)
+    assert _prefix(NonSeekableBytesIO(data), Codec.GZIP, 1 << 20) == expected
+
+
+@pytest.mark.parametrize("decoder_type", [ZlibDecoder, GzipDecoder])
+def test_an_unbounded_inflate_step_is_not_replayed(
+    decoder_type: type[ZlibDecoder | GzipDecoder], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unbounded read raises without the prefix, so the step takes no copy:
+    replaying a high-ratio step one byte per call costs millions of calls."""
+    if decoder_type is GzipDecoder:
+        decoder: ZlibDecoder | GzipDecoder = GzipDecoder()
+        good = gzip.compress(b"\0" * (8 << 20), mtime=0)
+    else:
+        decoder = ZlibDecoder(zlib.MAX_WBITS)
+        good = zlib.compress(b"\0" * (8 << 20))
+    damaged = good[:-1] + bytes([good[-1] ^ 1])  # the trailing checksum
+    decoder.keep_output_before_errors()
+    replays: list[int] = []
+    monkeypatch.setattr(
+        deflate_decoder,
+        "_decode_to_error",
+        lambda *args: replays.append(1) or b"",
+    )
+    with pytest.raises(ArchiveyError):
+        decoder.feed(damaged, -1)
+        decoder.flush()
+    assert replays == []
 
 
 @pytest.mark.parametrize("name", ["gzip", "xz"])

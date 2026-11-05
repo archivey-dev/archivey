@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import zlib
+from collections.abc import Callable
 from functools import partial
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -41,7 +43,78 @@ def _zlib_label(wbits: int) -> str:
     return "zlib" if wbits > 0 else "deflate"
 
 
-class ZlibDecoder(BaseDecoder):
+class _KeepsOutputBeforeErrors(BaseDecoder):
+    """Inflate steps that keep the bytes zlib decodes before an error, on a pipe.
+
+    CPython's ``decompressobj.decompress`` drops a call's output when the call raises,
+    and a pipe cannot be decoded again (``DecompressorStream._redecode_to_error``).
+    Once :meth:`keep_output_before_errors` is called, each step first takes
+    ``decompressobj.copy()`` (the 32 KiB window and the state). When the step raises,
+    the copy decodes the same input again one output byte per call up to the error;
+    those bytes are handed back, and the next call raises the error. Only a bounded
+    step takes the copy: an unbounded ``read()`` raises without the prefix
+    (``compressed-streams``), and replaying a whole unbounded step one byte per call
+    could cost millions of calls. Only a zlib error is replayed; any other error,
+    ``MemoryError`` included, raises at once. The copy costs within 1% on a 40 MB
+    pipe read; a source that can seek is decoded again instead, so it never takes
+    one. A decompressor in a decoder child has no ``copy()``, and keeps the stream's
+    behaviour.
+    """
+
+    _decomp: Any
+    _keep = False
+    _raise_next: Exception | None = None
+
+    @override
+    def keep_output_before_errors(self) -> None:
+        self._keep = hasattr(self._decomp, "copy")
+
+    def _raise_pending(self) -> None:
+        if self._raise_next is not None:
+            raise self._raise_next
+
+    def _inflate_step(
+        self, data: bytes, max_length: int, error: Callable[[zlib.error], Exception]
+    ) -> bytes:
+        if not self._keep or max_length <= 0:
+            # ``_inflate`` reads 0 as no limit too.
+            return _inflate(self._decomp, data, max_length, error)
+        snapshot = self._decomp.copy()
+        try:
+            return _inflate(self._decomp, data, max_length, error)
+        except Exception as exc:
+            if not isinstance(exc.__cause__, zlib.error):
+                raise
+            recovered = _decode_to_error(snapshot, data, max_length)
+            if not recovered:
+                raise
+            self._raise_next = exc
+            return recovered
+
+
+def _decode_to_error(decomp: Any, data: bytes, max_length: int) -> bytes:
+    """The bytes ``decomp`` gives from ``data`` before it raises, one per call, at
+    most ``max_length`` (positive) of them.
+
+    Empty when the input runs out, the stream ends or ``max_length`` is reached
+    first: the call that raised did not stop there, so the error was not met again
+    and nothing is handed back.
+    """
+    got = bytearray()
+    pending = data
+    try:
+        while len(got) < max_length:
+            out = decomp.decompress(pending, 1)
+            pending = decomp.unconsumed_tail
+            if not out or decomp.eof:
+                return b""
+            got += out
+    except zlib.error:
+        return bytes(got)
+    return b""
+
+
+class ZlibDecoder(_KeepsOutputBeforeErrors):
     """Inflate a raw-deflate or zlib-wrapped stream via ``zlib.decompressobj``."""
 
     def __init__(
@@ -74,6 +147,7 @@ class ZlibDecoder(BaseDecoder):
             super().close()
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        self._raise_pending()
         if self._decomp.eof:
             # Past the end; the stream stops reading once these hold a non-zero byte.
             self._past_end(chunk)
@@ -83,12 +157,13 @@ class ZlibDecoder(BaseDecoder):
         data = self._decomp.unconsumed_tail + chunk
         if not data:
             return DecodeOut(b"")
-        out = _inflate(self._decomp, data, max_length, self._error)
-        if self._decomp.eof:
+        out = self._inflate_step(data, max_length, self._error)
+        if self._raise_next is None and self._decomp.eof:
             self._past_end(self._decomp.unused_data)
         return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
+        self._raise_pending()
         leftover = _inflate_rest(self._decomp, self._error)
         if not self._decomp.eof:
             self._pending_error = TruncatedError(truncated_message(self._label))
@@ -101,10 +176,10 @@ class ZlibDecoder(BaseDecoder):
     @property
     @override
     def needs_input(self) -> bool:
-        return not self._decomp.unconsumed_tail
+        return self._raise_next is None and not self._decomp.unconsumed_tail
 
 
-class GzipDecoder(BaseDecoder):
+class GzipDecoder(_KeepsOutputBeforeErrors):
     """gzip-window inflate with multi-member chaining.
 
     Uses ``wbits=16+MAX_WBITS`` so zlib validates CRC/ISIZE. Right after a member,
@@ -224,6 +299,7 @@ class GzipDecoder(BaseDecoder):
         return b""
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        self._raise_pending()
         if self._finished or self._pending_error is not None:
             return DecodeOut(b"")
 
@@ -271,13 +347,15 @@ class GzipDecoder(BaseDecoder):
             # CorruptionError here so a raw GzipDecompressorStream does not leak
             # zlib.error (GzipCodec.translate maps it too, but the decoder must stand
             # on its own). A failed CRC-32/ISIZE check is a _StreamChecksumError.
-            produced = _inflate(self._decomp, data, limit, gzip_error)
+            produced = self._inflate_step(data, limit, gzip_error)
             if produced:
                 if self._pending_point is not None:
                     points.append(self._pending_point)
                     self._pending_point = None
                 output.append(produced)
                 produced_total += len(produced)
+            if self._raise_next is not None:
+                break
 
             if self._decomp.eof:
                 data = self._decomp.unused_data
@@ -295,6 +373,7 @@ class GzipDecoder(BaseDecoder):
         return DecodeOut(b"".join(output), points)
 
     def flush(self) -> DecodeOut:
+        self._raise_pending()
         if self._finished:
             return DecodeOut(b"")
         # Drain mid-member unconsumed_tail / continue member chaining with no new input.
@@ -326,6 +405,8 @@ class GzipDecoder(BaseDecoder):
     @property
     @override
     def needs_input(self) -> bool:
+        if self._raise_next is not None:
+            return False
         if self._pending_error is not None or self._finished:
             return True
         if self._decomp.unconsumed_tail:
