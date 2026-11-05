@@ -1,5 +1,7 @@
 # One spool limit, and a bound on the spool that already happens
 
+> **Archive note:** Archived on 2026-11-05 with the remaining tasks undone (maintainer decision). Spooling a pipe for 7z/RAR/ISO stays tracked internally at low priority.
+
 > **Parked, not part of 0.2.0** (maintainer decision, 2026-10-07). No further work is
 > scheduled. The release does not need this change, and the drafted design stays here so a
 > later change can pick it up. It is tracked internally. What already shipped is recorded below.

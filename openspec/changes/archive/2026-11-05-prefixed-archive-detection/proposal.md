@@ -1,3 +1,5 @@
+> **Archive note:** Archived unimplemented on 2026-11-05 (maintainer decision). The makeself `.run` installer case stays tracked internally.
+
 > **Cut on 2026-09-25.** The ZIP tail probe (Block 2) and `prefix_kind` / `PrefixKind` are
 > struck, the exhaustive scan is deferred unless asked, and `ArchiveyConfig.detection_budget`
 > has landed. The spec deltas below still describe the struck parts and must be trimmed

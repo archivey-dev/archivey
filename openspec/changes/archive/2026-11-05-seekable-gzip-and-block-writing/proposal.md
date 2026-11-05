@@ -1,5 +1,7 @@
 # Seekable blocked-gzip reading + block-split writing
 
+> **Archive note:** Archived on 2026-11-05 with the remaining tasks undone (maintainer decision). mgzip reading, an `indexed_gzip` backend and block-split writing are tracked internally as three separate items.
+
 ## Why
 
 Random access inside a single gzip stream currently requires an accelerator: the
