@@ -21,9 +21,13 @@ from pathlib import Path
 import pytest
 
 from archivey import open_archive
-from archivey.exceptions import ArchiveyError, CorruptionError
+from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
 from archivey.internal.backends import rar_synthetic as rs
-from archivey.internal.backends.rar_parser import RarMemberInfo
+from archivey.internal.backends.rar_parser import (
+    RarArchive,
+    RarMemberInfo,
+    parse_rar_archive,
+)
 from archivey.internal.backends.rar_reader import RarReader
 from archivey.internal.backends.rar_unrar import open_unrar_p
 from tests.conftest import requires_unrar_cli
@@ -122,7 +126,7 @@ def _synthetic_read(
                 raw.compress_size,
             )
         )
-    synthetic = rs.SyntheticArchive(archive.version)
+    synthetic = rs.SyntheticArchive(archive.version, solid=len(chain) > 1)
     try:
         synthetic.append(members)
         proc, stdout = open_unrar_p(
@@ -176,25 +180,26 @@ def test_main_header_solid_flag_is_set_in_place() -> None:
         assert plain != solid
 
 
-def _stub_member(version: int, data: bytes) -> rs.SyntheticMember:
+def _stub_member(data: bytes) -> rs.SyntheticMember:
     return rs.SyntheticMember(
         header=b"H" * 10, data=lambda: [(BytesIO(data), len(data))], data_size=len(data)
     )
 
 
 def test_append_writes_each_member_once_and_moves_endarc() -> None:
-    synthetic = rs.SyntheticArchive(5)
+    synthetic = rs.SyntheticArchive(5, solid=True)
     try:
-        assert stat.S_IMODE(os.stat(synthetic.path).st_mode) == 0o600
+        if os.name == "posix":
+            assert stat.S_IMODE(os.stat(synthetic.path).st_mode) == 0o600
         empty = rs.SyntheticArchive.overhead(5)
         assert synthetic.size == empty == synthetic.path.stat().st_size
-        synthetic.append([_stub_member(5, b"a" * 5)])
+        synthetic.append([_stub_member(b"a" * 5)])
         assert synthetic.count == 1
         assert synthetic.size == empty + 15 == synthetic.path.stat().st_size
         data = synthetic.path.read_bytes()
         assert data.endswith(rs.end_header(5))
         assert data[8:].startswith(rs.main_header(5, solid=False))
-        synthetic.append([_stub_member(5, b"b" * 3)])
+        synthetic.append([_stub_member(b"b" * 3)])
         data = synthetic.path.read_bytes()
         assert synthetic.size == empty + 28 == len(data)
         assert data[8:].startswith(rs.main_header(5, solid=True))
@@ -209,7 +214,7 @@ def test_append_writes_each_member_once_and_moves_endarc() -> None:
 def test_append_cut_short_keeps_the_file_as_it_was() -> None:
     synthetic = rs.SyntheticArchive(4)
     try:
-        synthetic.append([_stub_member(4, b"x")])
+        synthetic.append([_stub_member(b"x")])
         before = synthetic.path.read_bytes()
         short = rs.SyntheticMember(
             header=b"H", data=lambda: [(BytesIO(b"ab"), 5)], data_size=5
@@ -220,6 +225,107 @@ def test_append_cut_short_keeps_the_file_as_it_was() -> None:
         assert synthetic.count == 1
     finally:
         synthetic.close()
+
+
+def test_nonsolid_file_keeps_main_plain() -> None:
+    synthetic = rs.SyntheticArchive(5)
+    try:
+        synthetic.append([_stub_member(b"a"), _stub_member(b"b")])
+        assert synthetic.path.read_bytes()[8:].startswith(
+            rs.main_header(5, solid=False)
+        )
+    finally:
+        synthetic.close()
+
+
+def test_append_refuses_data_that_does_not_add_up_and_closes_streams() -> None:
+    synthetic = rs.SyntheticArchive(5)
+    streams = [BytesIO(b"abcdef"), BytesIO(b"z")]
+    try:
+        before = synthetic.path.read_bytes()
+        wrong = rs.SyntheticMember(
+            header=b"H", data=lambda: [(streams[0], 6), (streams[1], 1)], data_size=1
+        )
+        with pytest.raises(ValueError, match="does not add up"):
+            synthetic.append([wrong])
+        assert synthetic.path.read_bytes() == before
+        assert all(stream.closed for stream in streams)
+        cut = [BytesIO(b"ab"), BytesIO(b"later")]
+        short = rs.SyntheticMember(
+            header=b"H", data=lambda: [(cut[0], 5), (cut[1], 5)], data_size=10
+        )
+        with pytest.raises(ArchiveyError):
+            synthetic.append([short])
+        assert all(stream.closed for stream in cut)
+    finally:
+        synthetic.close()
+
+
+def _fixture_archive(name: str, password: str | None = None) -> RarArchive:
+    with (_FIXTURES / name).open("rb") as f:
+        return parse_rar_archive(f, password=password)
+
+
+def _reader_of(path: Path):
+    data = path.read_bytes()
+    return lambda offset, size: data[offset : offset + size]
+
+
+def test_encrypted_header_needs_a_key() -> None:
+    archive = _fixture_archive("encrypted_header__.rar", "header_password")
+    member = archive.members[0]
+    with pytest.raises(ValueError, match="header_key"):
+        rs.read_stored_header(
+            _reader_of(_FIXTURES / "encrypted_header__.rar"),
+            archive,
+            volume_index=0,
+            offset=member.header_offset,
+            size=member.header_size,
+            excluded=frozenset(),
+        )
+
+
+def test_rar5_volume_without_its_crypt_record_is_corrupt() -> None:
+    archive = _fixture_archive("encrypted_header__.rar", "header_password")
+    member = archive.members[0]
+    with pytest.raises(CorruptionError, match="volume 2"):
+        rs.read_stored_header(
+            _reader_of(_FIXTURES / "encrypted_header__.rar"),
+            archive,
+            volume_index=1,
+            offset=member.header_offset,
+            size=member.header_size,
+            header_key=lambda salt, count: b"k" * 32,
+            excluded=frozenset(),
+        )
+
+
+def test_short_header_reread_is_truncated() -> None:
+    archive = _fixture_archive("basic_nonsolid__.rar")
+    member = archive.members[0]
+    with pytest.raises(TruncatedError):
+        rs.read_stored_header(
+            lambda offset, size: b"\x00" * (size - 1),
+            archive,
+            volume_index=0,
+            offset=member.header_offset,
+            size=member.header_size,
+            excluded=frozenset(),
+        )
+
+
+def test_rar5_service_header_keeps_its_name() -> None:
+    fields = _vint(0) + _vint(3) + _vint(0) + _vint(0x30 << 0) + _vint(0)
+    body = _vint(3) + _vint(0x02) + _vint(3) + fields + _vint(3) + b"CMT"
+    raw = rs._rar5_block(body)
+    header = rs.parse_stored_header(5, raw)
+    patched = rs.patch_header(header, name="m0", data_size=3, join=False)
+    assert patched.endswith(b"CMT")
+    assert rs.parse_stored_header(5, patched).data_size == 3
+
+
+def _vint(value: int) -> bytes:
+    return rs._vint(value)
 
 
 def _rar3_file_header(
