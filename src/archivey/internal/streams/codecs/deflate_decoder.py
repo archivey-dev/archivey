@@ -51,8 +51,9 @@ class ZlibSnapshot:
 
     It holds everything the decode carries forward, mid-block too: the window, the bit
     position, the Huffman tables, and the running checksum (gzip's CRC-32 and length,
-    zlib's Adler-32), so a decode resumed from it still checks the trailer. ``decomp`` is never decoded
-    from: each resume takes a copy of it (:meth:`resume`), so the point can be shared.
+    zlib's Adler-32; raw DEFLATE has none), so a decode resumed from it still checks a
+    gzip or zlib trailer. ``decomp`` is never decoded from: each resume takes a copy of
+    it (:meth:`resume`), so the point can be shared.
     The copy is taken at the start of a feed and keeps ``unconsumed_tail``, the input
     an earlier feed left undecoded, so its compressed offset is where that feed's new
     input starts, past the tail: a resumed decoder prepends the tail to what it reads

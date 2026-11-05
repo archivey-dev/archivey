@@ -157,24 +157,25 @@ end. A `.gzi` index is a separate file, which a stream cannot find, so it is not
 `rapidgzip` none of this applies: its own index serves the seeks.
 
 **zlib snapshots.** On declared seek demand, `GzipDecoder` also records a seek point
-inside a member, and `ZlibDecoder` (zlib, and raw DEFLATE such as a ZIP member's) inside its
-stream, about every MiB of output (`SNAPSHOT_SPACING`), whose state is
+inside a member, and `ZlibDecoder` (zlib, and raw DEFLATE such as a ZIP member's) inside
+its stream, about every MiB of output (`SNAPSHOT_SPACING`), whose state is
 `decompressobj.copy()` (`ZlibSnapshot`). Python's `zlib` reports no DEFLATE block
 boundary, so the window-and-bit-offset points `deflate_resume.py` builds from
 `rapidgzip`'s index cannot be found here; a copy needs none, because it holds the whole
-inflate state, mid-block included. It holds the running CRC-32 and length too (zlib's
-Adler-32 for a zlib stream), so a
-decode resumed from it still checks the member's trailer, which a `deflate_resume.py`
-point cannot. A copy is taken at the start of a feed, never before a member's first
-output, which is the member's own point. It keeps `unconsumed_tail`, the input an earlier
-feed left undecoded under its output bound, so its compressed offset is where the feed's
-new input starts, after that tail; the tail counts toward the snapshot's memory. Taking
-copies on those feeds too keeps the spacing near 1 MiB on data that compresses better
-than about 16:1, where one 64 KiB read decodes to more than one feed's 1 MiB. Each resume decodes from
-a copy of the copy, so a point is never changed. A copy costs about 1 µs and 39 KiB; a
-seek then decodes about half a MiB on average, about 2 ms against about 50 ms from the
-start of a 64 MiB member, and a full read costs the same as without copies (measured on a
-64 MiB text member, 4 cores). Snapshots differ between passes, since where a feed starts
+inflate state, mid-block included. It holds the running checksum too (gzip's CRC-32 and
+length, zlib's Adler-32), so a decode resumed from it still checks a gzip or zlib
+trailer, which a `deflate_resume.py` point cannot. Raw DEFLATE carries no checksum; a
+ZIP member's CRC-32 is checked above the codec, by the member verifier. A copy is taken
+at the start of a feed; in gzip, never before a member's first output, which is the
+member's own point. It keeps `unconsumed_tail`, the input an earlier feed left undecoded
+under its output bound, so its compressed offset is where the feed's new input starts,
+after that tail; the tail counts toward the snapshot's memory. Taking copies on those
+feeds too keeps the spacing near 1 MiB on data that compresses better than about 16:1,
+where one 64 KiB read decodes to more than one feed's 1 MiB. Each resume decodes from a
+copy of the copy, so a point is never changed. A copy costs about 1 µs and 39 KiB; a seek
+then decodes about half a MiB on average: about 2 ms against about 50 ms from the start
+of a 64 MiB gzip member, and 1.6 ms in a 64 MiB ZIP member. A full read costs the same
+as without copies (64 MiB text, 4 cores). Snapshots differ between passes, since where a feed starts
 depends on the reads, so `DecompressorStream` keeps them apart instead of comparing them:
 one within half the spacing of a point it holds is dropped, and of two at one offset the
 first is kept. Their memory is capped at `MAX_SNAPSHOT_BYTES` (32 MiB, about 800
