@@ -3039,7 +3039,7 @@ class RarReader(BaseArchiveReader):
                 isinstance(m._raw, RarMemberInfo)
                 and m._raw.is_file_copy()
                 and (source := m.link_target_member) is not None
-                and (copies.wanted is None or copies.wanted(m))
+                and copies.yields(m)
             ):
                 sources[id(source)] = source
                 counts[id(source)] = counts.get(id(source), 0) + 1
@@ -3242,7 +3242,7 @@ class RarReader(BaseArchiveReader):
                 if (
                     sources is not None
                     and member.link_target_member is not None
-                    and (copies.wanted is None or copies.wanted(member))
+                    and copies.yields(member)
                 ):
                     # Only the copies counted up front count down.
                     sources.copy_reached(id(member.link_target_member))
