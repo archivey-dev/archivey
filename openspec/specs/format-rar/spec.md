@@ -1539,7 +1539,11 @@ SHALL NOT refuse a read or change the bytes a read returns, and it is not a fiel
 `SpoolLimits.max_bytes` (`archive-reading`). The file SHALL be created, and the source
 charged, only when the source's first byte is decoded, so a pass that reads nothing writes
 nothing and any copy of the archive source the pass needs is charged before the kept
-source. The charge SHALL be given back when the pass ends. A source the limit has no room
+source. Once the pass has reached the member after a source's last copy, it SHALL let
+the source go: its memory is freed, and when no source in the temporary file is still
+waiting for a copy, the file is deleted and its charge given back, so a later source
+starts a new one. The pass SHALL NOT change the order it yields members in for this.
+Whatever is still kept SHALL be let go when the pass ends. A source the limit has no room
 for SHALL NOT be kept, and its copies SHALL read the source with a named open, as
 `open()` does; that SHALL NOT raise `ResourceLimitError`. A source that the pass does not
 emit (a `unar` refusal) SHALL fall back the same way.
@@ -1570,6 +1574,7 @@ stream, solid or not, and a solid pass SHALL then keep no source.
 | Source over 8 MiB, no member read, stream source | Nothing is written: no temporary file, no copy of the archive |
 | Source over the memory constant, within `SpoolLimits.max_bytes` | Kept in the temporary file; one decompressor run |
 | Two passes on one reader, room for the source once | Each pass keeps it; one decompressor run per pass |
+| Two sources, each followed by its copy, then a member; room in the limit for one source | Each is kept in turn; the first is let go after its copy; one decompressor run |
 | Stream source, first member a source; the archive copy and the source each fit the limit, not both | The archive copy is made; the source is not kept; each copy decodes it again; no `ResourceLimitError` |
 | `SpoolLimits.max_bytes=0`, path source, source over the memory constant | Not kept; each copy decodes it again; nothing is refused |
 | Kept bytes that do not match the source's digest | `CorruptionError` on the copy's read |

@@ -745,7 +745,8 @@ class SpoolLimits:
     it, up to 8 MiB in memory and the rest in a temporary file within this limit, so
     a copy does not decode the solid stream again. That file counts only from the
     source's first decoded byte, after any copy of the archive the pass needs, until
-    the pass ends and deletes it. Unlike a copy's bytes, which keep counting after the
+    the pass is past the last copy of every source in the file, or ends, and deletes
+    it. Unlike a copy's bytes, which keep counting after the
     copy is removed, the kept file's bytes then stop counting. A source the limit has
     no room for is not kept, and its copies decode it again from the archive; that is
     never refused.

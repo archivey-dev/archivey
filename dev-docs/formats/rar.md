@@ -866,9 +866,12 @@ reads as its pipe passes it, read by the caller or not, and serves the copies fr
 from its start, so fifty copies of a 1 KiB file behind 100 MiB of solid data decoded
 about 5 GiB in 51 decompressor runs, and now decode 100 MiB in one. Up to 8 MiB per pass
 is kept in memory (a tuning constant, not a caller limit) and the rest in a temporary
-file charged to `SpoolLimits.max_bytes` from the source's first decoded byte until the
-pass ends, so a pass that reads nothing writes nothing and the pass's own copy of a
-stream source is charged first. A source with no room left, or one the pass does not
+file charged to `SpoolLimits.max_bytes` from the source's first decoded byte, so a pass
+that reads nothing writes nothing and the pass's own copy of a stream source is charged
+first. A source is let go at the member after its last copy: its memory is freed, and
+once no source in the file still waits for a copy, the file is deleted and its charge
+given back; what is left goes when the pass ends. Members are still yielded in archive
+order. A source with no room left, or one the pass does not
 emit (a `unar` refusal), falls back to the named open, which is also what `open()` and a
 non-solid archive use (there a named open decodes only the source).
 Extraction keeps none of the sources it writes from the pass: the pass asks

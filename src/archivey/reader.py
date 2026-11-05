@@ -651,8 +651,9 @@ class ForwardArchiveReader(ABC):
         stores as a copy of an earlier member (``extra["is_file_copy"]``, a RAR5 file
         copy). Its bytes and digests are its source's, ``link_target_member``, so a
         caller that records hashes can reuse the source's. A solid RAR pass then keeps
-        nothing for the copies; by default it keeps each source until the pass ends,
-        in memory or in a temporary file within ``SpoolLimits.max_bytes``.
+        nothing for the copies; by default it keeps each source until the pass is past
+        its last copy, in memory or in a temporary file within
+        ``SpoolLimits.max_bytes``.
 
         The yielded stream is forward-only on every format, with or without
         ``seekable_members=True``: ``seekable()`` is ``False``, ``seek()`` raises
