@@ -253,3 +253,31 @@ def test_lzw_decoders_hand_back_every_byte_before_a_bad_code(
     assert 0 < expected < 300_000
     pipe = _prefix(NonSeekableBytesIO(damaged), codec, size)
     assert pipe == (expected, "CorruptionError")
+
+
+def test_an_interrupt_during_the_second_decode_reaches_the_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Ctrl-C while a failed call is decoded again is not held behind the bytes a
+    large read already gathered."""
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    real = DecompressorStream._redecode_step
+    calls = 0
+
+    def interrupt_on_third(self: Any, decoder: Any, max_length: int) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise KeyboardInterrupt
+        return real(self, decoder, max_length)
+
+    monkeypatch.setattr(DecompressorStream, "_redecode_step", interrupt_on_third)
+    damaged = _damage(gzip.compress(PAYLOAD, mtime=0), 0.5)
+    with (
+        open_codec_stream(Codec.GZIP, io.BytesIO(damaged), config=_CONFIG) as stream,
+        pytest.raises(KeyboardInterrupt),
+    ):
+        while stream.read(5 << 20):
+            pass
+    assert calls == 3
