@@ -443,15 +443,26 @@ def test_mgzip_walk_gives_the_size_and_member_points_without_decoding(
     name: bytes,
 ) -> None:
     data = make_mgzip(PARTS, name=name)
-    source = CountingBytesIO(data)
-    with _open(source) as stream:
+    with _open(io.BytesIO(data)) as stream:
         assert stream.seek(0, io.SEEK_END) == len(FULL)
-        # Two small reads per member, the header and the ISIZE; nothing inflated.
-        assert source.bytes_read < len(data)
         assert _points(stream) == STARTS
         for pos in (STARTS[4] + 7, 3, STARTS[2], len(FULL) - 1):
             assert stream.seek(pos) == pos
             assert stream.read(300) == FULL[pos : pos + 300]
+
+
+def test_mgzip_walk_jumps_over_members_larger_than_the_read_buffer() -> None:
+    # Members of 1 MiB, several times the largest read buffer (128 KiB from Python
+    # 3.14): each jump costs a header read and an ISIZE read, each at most one buffer
+    # fill, so the walk reads a small part of the file and inflates nothing. Members
+    # smaller than the buffer are read about whole, as BGZF's are.
+    parts = [random.Random(20 + i).randbytes(1 << 20) for i in range(4)]
+    data = make_mgzip(parts)
+    source = CountingBytesIO(data)
+    with _open(source) as stream:
+        assert stream.seek(0, io.SEEK_END) == 4 << 20
+        assert source.bytes_read < len(data) // 2
+        assert _points(stream) == [i << 20 for i in range(4)]
 
 
 def test_mgzip_backward_seek_resumes_at_the_member_it_lands_in() -> None:

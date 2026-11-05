@@ -33,7 +33,9 @@ large members (100 MB of input each by default) and an ``MZ`` subfield, SLEN 4, 
 the size of the member's DEFLATE data, not of the whole member. Its members may carry an
 ``FNAME`` after the extra field, so the member size is the header (parsed to its end),
 the DEFLATE data and the trailer. With members that large, the walk jumps from header to
-header: two small reads per member, for the header and for the ISIZE at its end. ISIZE
+header: two small reads per member, for the header and for the ISIZE at its end, each
+at most one fill of the read buffer, so members smaller than the buffer are read about
+whole, as BGZF's are. ISIZE
 is the input size modulo 2**32, so a member written from 4 GiB or more of input gives
 wrong points after it. A forward read through that member catches it like any other
 contradicted index; a cold seek past it serves bytes from the wrong offset with no
