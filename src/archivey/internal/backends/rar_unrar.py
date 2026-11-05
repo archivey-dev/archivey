@@ -20,7 +20,7 @@ import sys
 import tempfile
 import threading
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -1422,10 +1422,12 @@ def unrar_mask_is_usable(mask_view: str) -> bool:
 
 
 def _key(kind: str, data: bytes) -> str:
+    """A selection-index key: ``kind`` names which comparison it models."""
     return kind + hashlib.blake2b(data, digest_size=16).hexdigest()
 
 
 def _text_bytes(text: str) -> bytes:
+    """``text`` as the bytes a key hashes (UTF-16 units, surrogates kept)."""
     return text.encode("utf-16-le", "surrogatepass")
 
 
@@ -1433,13 +1435,26 @@ def _segments(text: str) -> list[str]:
     return re.split(r"[/\\]", text)
 
 
-def _windows_dir_digest(segments: list[str]) -> Any:
-    """A running hash over the segments' sort keys, one per separator passed."""
+def _windows_running_digests(segments: list[str]) -> Iterator[str]:
+    """The digest over the segments' sort keys after each one, then after none.
+
+    Yields one hex digest per segment, in order; the last is the whole path's.
+    Both :func:`unrar_selection_keys` and :func:`unrar_mask_keys` hash through
+    here, so a member and a mask always encode a step the same way.
+    """
     digest = hashlib.blake2b(digest_size=16)
     for segment in segments:
         key = _windows_sort_key(segment)
         digest.update(len(key).to_bytes(4, "little") + key)
-    return digest
+        yield digest.copy().hexdigest()
+
+
+def _windows_dir_key(segments: list[str]) -> str:
+    """The running digest over all but the last segment (the directory)."""
+    directory = hashlib.blake2b(digest_size=16).hexdigest()
+    for directory in _windows_running_digests(segments[:-1]):
+        pass
+    return directory
 
 
 def unrar_selection_keys(view: str) -> tuple[str, ...]:
@@ -1474,15 +1489,9 @@ def unrar_selection_keys(view: str) -> tuple[str, ...]:
             keys.add("f:" + running.copy().hexdigest())
     if windows:
         segments = _segments(name)
-        digest = hashlib.blake2b(digest_size=16)
-        for segment in segments[:-1]:
-            key = _windows_sort_key(segment)
-            digest.update(len(key).to_bytes(4, "little") + key)
-            keys.add("s:" + digest.copy().hexdigest())
-        directory = digest.hexdigest()
-        key = _windows_sort_key(segments[-1])
-        digest.update(len(key).to_bytes(4, "little") + key)
-        keys.add("s:" + digest.hexdigest())
+        running = list(_windows_running_digests(segments))
+        keys.update("s:" + value for value in running)
+        directory = _windows_dir_key(segments)
         keys.add("d:" + directory + "|" + _unrar_fold_all(segments[-1]).rstrip("."))
     return tuple(keys)
 
@@ -1507,8 +1516,8 @@ def unrar_mask_keys(mask_view: str) -> tuple[str, ...] | None:
     ]
     if windows:
         segments = _segments(mask)
-        directory = _windows_dir_digest(segments[:-1]).hexdigest()
-        keys.append("s:" + _windows_dir_digest(segments).hexdigest())
+        directory = _windows_dir_key(segments)
+        keys.append("s:" + list(_windows_running_digests(segments))[-1])
         base = _unrar_fold_all(segments[-1])
         keys.append("d:" + directory + "|" + base)
         keys.append("d:" + directory + "|" + base.rstrip("."))
