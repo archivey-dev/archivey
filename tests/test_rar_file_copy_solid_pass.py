@@ -673,3 +673,26 @@ def test_a_released_memory_source_frees_its_room() -> None:
     with sources.open(2, lambda end: None) as kept:  # type: ignore[union-attr]
         assert kept.read() == b"y" * size
     sources.close()
+
+
+def test_a_source_let_go_before_the_pipe_reaches_it_is_never_charged() -> None:
+    """The caller skipped a source and its copy, so the source is let go while still
+    pending. The pipe then passes it: nothing is charged and no file opens, and a
+    later source still fits in memory. Fails if ``_release`` leaves the source in the
+    pending list (the pipe would then place it in the spool)."""
+    charged: list[int] = []
+    sources = rar_copy_sources.FileCopySources(
+        {1: 1, 2: 1}, lambda n: charged.append(n) or True, lambda n: None
+    )
+    size = rar_copy_sources._MEMORY_LIMIT
+    sources.register(1, 0, size)
+    block = sources.tee(io.BytesIO(b"x" * size + b"y" * size))
+    sources.copy_reached(1)
+    sources.advance()
+    sources.register(2, size, size)
+    assert block.read() == b"x" * size + b"y" * size
+    assert charged == []
+    assert sources._file is None
+    with sources.open(2, lambda end: None) as kept:  # type: ignore[union-attr]
+        assert kept.read() == b"y" * size
+    sources.close()

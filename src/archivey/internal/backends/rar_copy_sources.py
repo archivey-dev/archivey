@@ -8,18 +8,18 @@ data decoded 5 GiB.
 
 :class:`FileCopySources` sits between the pass's decompressor output and its
 :class:`~archivey.internal.streams.streamtools.solid.SolidBlockReader` and keeps the
-bytes of every member a later copy reads, as the pipe passes them, whether or not
-the caller reads that member. Small sources stay in memory; a larger one goes to a
-temporary file charged to the reader's spool budget (``SpoolLimits.max_bytes``). The
-file is opened, and the source charged, only when the source's first byte arrives.
-A source is let go once the pass has moved past its last copy: its memory is freed, and
-once no source in the temporary file is still waiting for a copy, the file is deleted
-and its charge given back. :meth:`FileCopySources.close` lets go of the rest. A source that fits neither
-is not kept, and its copies fall back to the named open. So is a source the pass's
-``keep`` callback declines when its first byte arrives: extraction declines a source it
-is writing to disk, and copies the source's copies from the written file.
-Kept bytes are served unverified; the caller wraps them in the source's digest
-check, as it does the pipe's own bytes.
+bytes of every member a later copy reads, as the pipe passes them, whether or not the
+caller reads that member. Small sources stay in memory; a larger one goes to a temporary
+file charged to the reader's spool budget (``SpoolLimits.max_bytes``). The file is
+opened, and the source charged, only when the source's first byte arrives. A source is
+let go once the pass has moved past its last copy: its memory is freed, and once no
+source in the temporary file is still waiting for a copy, the file is deleted and its
+charge given back. :meth:`FileCopySources.close` lets go of the rest. A source that fits
+neither is not kept, and its copies fall back to the named open. So is a source the
+pass's ``keep`` callback declines when its first byte arrives: extraction declines a
+source it is writing to disk, and copies the source's copies from the written file. Kept
+bytes are served unverified; the caller wraps them in the source's digest check, as it
+does the pipe's own bytes.
 """
 
 from __future__ import annotations
@@ -205,13 +205,13 @@ class FileCopySources:
         if not self._try_spool(kept.size):
             kept.state = "dropped"
             return False
-        # Counted before the file opens, so close() gives the charge back even if
+        # Counted before the file opens, so _close_file() gives the charge back even if
         # opening it fails.
         kept.file_offset = self._file_size
         self._file_size += kept.size
         self._file_live += kept.size
         if self._file is None:
-            self._file = tempfile.TemporaryFile()  # noqa: SIM115 - closed in close()
+            self._file = tempfile.TemporaryFile()  # noqa: SIM115 - closed in _close_file()
         return True
 
     def _wanted(self, kept: _Kept) -> bool:
