@@ -739,3 +739,22 @@ def test_a_name_selector_still_serves_the_copies_it_selects(
                 assert reader._resource_usage().spool_bytes == len(payload)
     assert got == dict.fromkeys(names, payload)
     assert spawns == ["unrar"]
+
+
+def test_extract_with_a_predicate_keeps_no_source_for_unselected_copies(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``extract_all`` asks a ``members=`` predicate over the listing first and passes
+    the pass a collection, so a source that neither it nor any of its copies selects
+    is not kept. (A source it writes is never kept, so the source is left out too.)"""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    config = _config("unrar")
+    archive, _payload = _solid_with_copies(tmp_path)
+    dest = tmp_path / "out"
+    with open_archive(archive, config=config) as reader:
+        reader.extract_all(
+            dest, members=lambda m: m.name in ("a_prefix.txt", "c_other.txt")
+        )
+        assert reader._resource_usage().spool_bytes == 0
+    assert sorted(p.name for p in dest.iterdir()) == ["a_prefix.txt", "c_other.txt"]
+    assert spawns == ["unrar"]

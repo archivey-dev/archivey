@@ -59,6 +59,7 @@ stream, solid or not, and a solid pass SHALL then keep no source.
 | Two sources, each followed by its copy, then a member; room in the limit for one source | Each is kept in turn; the first is let go after its copy; one decompressor run |
 | `stream_members(members=[...])` naming the source but none of its copies | The source is not kept; one decompressor run |
 | `stream_members(members=[...])` naming the source and one copy | The source is kept; the copy reads its bytes; one decompressor run |
+| `extract_all(members=predicate)` selecting neither the source nor its copies | The source is not kept; one decompressor run |
 | Stream source, first member a source; the archive copy and the source each fit the limit, not both | The archive copy is made; the source is not kept; each copy decodes it again; no `ResourceLimitError` |
 | `SpoolLimits.max_bytes=0`, path source, source over the memory constant | Not kept; each copy decodes it again; nothing is refused |
 | Kept bytes that do not match the source's digest | `CorruptionError` on the copy's read |

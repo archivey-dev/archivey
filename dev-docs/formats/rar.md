@@ -870,23 +870,26 @@ file charged to `SpoolLimits.max_bytes` from the source's first decoded byte, so
 that reads nothing writes nothing and the pass's own copy of a stream source is charged
 first. A source is let go at the member after its last copy: its memory is freed, and
 once no source in the file still waits for a copy, the file is deleted and its charge
-given back; what is left goes when the pass ends. Only copies the pass will yield count: a `members=` collection is asked up front (`FileCopyPass.wanted`, recording nothing), so a source whose copies it leaves out is not kept; a predicate is asked once per member, in order, so every copy counts, except under extraction, which turns a predicate into a collection over the listing first. Members are still yielded in archive
-order. A source with no room left, or one the pass does not
-emit (a `unar` refusal), falls back to the named open, which is also what `open()` and a
-non-solid archive use (there a named open decodes only the source).
-Extraction keeps none of the sources it writes from the pass: the pass asks
-(`FileCopyPass.keep_source`) at a source's first decoded byte, and the coordinator says
-no for a member whose stream it is writing. Each later copy is then copied from that
-file, after checking on the opened file that it is still the one written (device, inode,
-size and mtime); if not, or if the source was never written, the copy reads its stream,
-which serves kept bytes or decodes the source again. A dry run writes empty files, so it
-keeps sources as a plain pass does. `stream_members(file_copy_streams=False)` yields
-`None` for each copy and the pass keeps nothing. The source is the latest
-**earlier** member whose name the target names (archive-root relative, like a hard link
-target) and it must be a `FILE`; a copy of a copy stands for the first source. A copy
-with no such source still lists, and reading it raises `LinkTargetNotFoundError`; a copy
-whose declared size differs from its source's raises `CorruptionError`. A RAR5 hard link
-(`rar -oh`, type 4) stays `HARDLINK`.
+given back; what is left goes when the pass ends. Only copies the pass will yield count:
+a `members=` collection is asked up front (`FileCopyPass.wanted`, recording nothing), so
+a source whose copies it leaves out is not kept; a predicate is asked once per member,
+in order, so every copy counts, except under extraction, which turns a predicate into a
+collection over the listing first when the reader has one. Members are still yielded in
+archive order. A source with no room left, or one the pass does not emit (a `unar`
+refusal), falls back to the named open, which is also what `open()` and a non-solid
+archive use (there a named open decodes only the source). Extraction keeps none of the
+sources it writes from the pass: the pass asks (`FileCopyPass.keep_source`) at a
+source's first decoded byte, and the coordinator says no for a member whose stream it is
+writing. Each later copy is then copied from that file, after checking on the opened
+file that it is still the one written (device, inode, size and mtime); if not, or if the
+source was never written, the copy reads its stream, which serves kept bytes or decodes
+the source again. A dry run writes empty files, so it keeps sources as a plain pass
+does. `stream_members(file_copy_streams=False)` yields `None` for each copy and the pass
+keeps nothing. The source is the latest **earlier** member whose name the target names
+(archive-root relative, like a hard link target) and it must be a `FILE`; a copy of a
+copy stands for the first source. A copy with no such source still lists, and reading it
+raises `LinkTargetNotFoundError`; a copy whose declared size differs from its source's
+raises `CorruptionError`. A RAR5 hard link (`rar -oh`, type 4) stays `HARDLINK`.
 
 Two digest rules are worth stating because they look like missing data and are not:
 
