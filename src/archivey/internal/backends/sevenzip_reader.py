@@ -1788,7 +1788,7 @@ class SevenZipReader(BaseArchiveReader):
         tail_pack_size = 0
         if tail is not None:
             tail_pack_size = self._archive.pack_sizes[
-                self._folder_pack_starts[folder_index] + tail.source
+                self._folder_pack_starts[folder_index]
             ]
             check_aes_tail_sizes(tail, tail_pack_size)
 
@@ -1804,7 +1804,7 @@ class SevenZipReader(BaseArchiveReader):
             if tail is None:
                 return False
             return aes_tail_confirms(
-                self._folder_pack_views(folder_index)[tail.source],
+                self._folder_pack_views(folder_index)[0],
                 tail_pack_size,
                 tail,
                 password=kdf_password,
@@ -1848,9 +1848,10 @@ class SevenZipReader(BaseArchiveReader):
     ) -> PasswordConfirmPlan:
         """The confirm ladder's plan for one encrypted folder (rungs 2 and 3).
 
-        7z AES has no password check value, so rung 1 is empty here and the ladder
-        starts at the integrity anchor: member CRCs in substream order, then the folder
-        digest. The earliest anchor covering at least 4 bytes wins; one past
+        7z AES has no password check value. Rung 1 is the AES tail-padding check,
+        which ``_password_for_folder`` runs before this plan; this plan covers a
+        candidate that check did not confirm, starting at the integrity anchor: member
+        CRCs in substream order, then the folder digest. The earliest anchor covering at least 4 bytes wins; one past
         ``PASSWORD_CONFIRM_PREFIX_BYTES`` is walked only when no decoder in the chain rejects
         random input, or when ``full`` asks for the walk (several candidates survived
         the bounded plan, and only the anchor can tell them apart).

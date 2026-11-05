@@ -647,12 +647,11 @@ class AesTail:
     """The AES coder of a folder that decrypts its one pack stream directly.
 
     ``unpack_size`` is the coder's declared output, the plaintext before the block
-    padding the writer added. ``source`` is the pack stream's position in
-    ``packed_indices`` (always 0: the folder has one).
+    padding the writer added. The pack stream is the folder's only one, so its view is
+    the first of the folder's pack views.
     """
 
     coder: SevenZipCoder
-    source: int
     unpack_size: int
 
 
@@ -675,9 +674,7 @@ def folder_aes_tail(folder: SevenZipFolder) -> AesTail | None:
             return None
         (in_index,) = graph.inputs[index]
         if graph.producer(in_index) is None and in_index in folder.packed_indices:
-            return AesTail(
-                coder, folder.packed_indices.index(in_index), folder.unpack_sizes[index]
-            )
+            return AesTail(coder, folder.unpack_sizes[index])
     return None
 
 

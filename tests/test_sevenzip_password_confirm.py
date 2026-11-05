@@ -435,12 +435,18 @@ def test_input_cap_bounds_the_packed_bytes_and_running_out_is_inconclusive(
     monkeypatch.setattr(
         sevenzip_reader_mod, "PASSWORD_CONFIRM_MAX_INPUT_BYTES", _SMALL_CAP
     )
+    # 7-Zip pads AES with zeros, so the tail check may confirm this folder before the
+    # capped decode runs; this test is about the decode.
+    monkeypatch.setattr(sevenzip_reader_mod, "aes_tail_confirms", lambda *a, **k: False)
     counters = _count_pack_reads(monkeypatch)
     with open_archive(archive, password=_PASSWORD) as reader:
         member = next(m for m in reader.members() if m.is_file)
         with reader.open(member) as stream:
             assert stream.read(1) == data[:1]
-        confirm = counters[0]
+        # The first view is the one handed to the stubbed tail check, which reads
+        # nothing; the capped decode reads through the next.
+        tail_view, confirm = counters[0], counters[1]
+        assert tail_view.bytes_read == 0
         assert 0 < confirm.bytes_read <= _SMALL_CAP
         # The cap, not the key, ended the confirm: accepted as INCONCLUSIVE, so the
         # abandoned read is reported.
@@ -466,4 +472,4 @@ def test_input_cap_bounds_the_packed_bytes_and_running_out_is_inconclusive(
     monkeypatch.setattr(sevenzip_reader_mod, "plan_password_confirm", unbounded)
     counters.clear()
     _first_member_read(archive, _PASSWORD)
-    assert counters[0].bytes_read > _SMALL_CAP
+    assert counters[1].bytes_read > _SMALL_CAP

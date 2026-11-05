@@ -276,10 +276,13 @@ def test_key_derivation_runs_once_per_candidate(
     assert len(calls) == 1
 
 
-def test_a_folder_with_no_crc_confirmed_on_its_tail_is_unlocked() -> None:
-    # The tail proves the key, so the members start at UNLOCKED and a full read
-    # reaches LENGTH. It proves nothing about the data: DIGEST_UNVERIFIABLE still
-    # fires.
+@pytest.mark.parametrize("pad", [b"\0", b"\xa5"], ids=["zero-tail", "residue-tail"])
+def test_a_folder_with_no_crc_confirmed_on_its_tail_is_unlocked(pad: bytes) -> None:
+    # The tail proves the key, so the members start at UNLOCKED, a full read reaches
+    # LENGTH, and a read abandoned part-way is not reported as unverified. It proves
+    # nothing about the data: DIGEST_UNVERIFIABLE still fires. With residue in the
+    # padding the tail proves nothing, so the same steps stay at NONE and the abandoned
+    # read is reported, which keeps the first half from passing vacuously.
     import io
 
     from archivey import Verification
@@ -300,7 +303,7 @@ def test_a_folder_with_no_crc_confirmed_on_its_tail_is_unlocked() -> None:
         compressed = _lzma2(payload, 1 << 20)
         if -len(compressed) % 16 >= pipeline_mod.AES_TAIL_MIN_PADDING:
             break
-    packed = _aes_encrypt(compressed, "pw")
+    packed = _aes_encrypt(compressed, "pw", pad=pad)
     folder = _linear([_coder(_AES, props=b"\x00"), _coder(_LZMA2, props=bytes([16]))])
     header = _header(
         folders=[folder],
@@ -309,13 +312,22 @@ def test_a_folder_with_no_crc_confirmed_on_its_tail_is_unlocked() -> None:
         names=["x"],
     )
     data = _archive(packed, header)
+    confirmed = pad == b"\0"
+    with open_archive(io.BytesIO(data), password="pw") as reader:
+        (member,) = reader.members()
+        with reader.open(member) as stream:
+            assert stream.read(1) == payload[:1]
+        partial = member.verified
+        counts = reader.diagnostics.counts  # type: ignore[attr-defined]
+        abandoned = counts.get(DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED, 0)
+    assert partial is (Verification.UNLOCKED if confirmed else Verification.NONE)
+    assert abandoned == (0 if confirmed else 1)
+
     with open_archive(io.BytesIO(data), password="pw") as reader:
         (member,) = reader.members()
         assert reader.read(member) == payload
-        assert (member.verified, member.verifiable) == (
-            Verification.LENGTH,
-            Verification.LENGTH,
-        )
+        level = Verification.LENGTH if confirmed else Verification.NONE
+        assert (member.verified, member.verifiable) == (level, level)
         counts = reader.diagnostics.counts  # type: ignore[attr-defined]
         assert counts.get(DiagnosticCode.DIGEST_UNVERIFIABLE, 0) == 1
         assert counts.get(DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED, 0) == 0
