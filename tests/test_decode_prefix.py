@@ -94,6 +94,46 @@ def test_every_bounded_read_size_gets_the_same_prefix(name: str) -> None:
         assert _prefix(io.BytesIO(damaged), codec, size) == expected, size
 
 
+def _raw_deflate(data: bytes) -> bytes:
+    compressor = zlib.compressobj(wbits=-15)
+    return compressor.compress(data) + compressor.flush()
+
+
+_DEFLATE_FAMILY: dict[str, tuple[Codec, Callable[[bytes], bytes]]] = {
+    "gzip": CODECS["gzip"],
+    "zlib": (Codec.ZLIB, zlib.compress),
+    "deflate": (Codec.DEFLATE, lambda d: _raw_deflate(d)),
+}
+
+
+@pytest.mark.parametrize("name", list(_DEFLATE_FAMILY))
+@pytest.mark.parametrize("size", [512, 1 << 20])
+def test_deflate_from_a_pipe_gets_every_byte_before_the_error(
+    name: str, size: int
+) -> None:
+    """A pipe cannot be decoded again, but zlib's state can be copied before each
+    call: the copy decodes the failing call's input again to the error."""
+    codec, compress = _DEFLATE_FAMILY[name]
+    compressed = compress(PAYLOAD[:1_000_000])
+    at = len(compressed) // 2
+    # Set bits: an invalid block type or distance, which raw deflate (no checksum)
+    # meets where random bytes can decode on to the end.
+    damaged = compressed[:at] + b"\xff" * 64 + compressed[at + 64 :]
+    expected = _prefix(io.BytesIO(damaged), codec, 1 << 20)
+    assert expected[1] is not None
+    assert _prefix(NonSeekableBytesIO(damaged), codec, size) == expected
+
+
+def test_a_second_gzip_member_from_a_pipe_gets_every_byte_before_the_error() -> None:
+    first = _text(200_000, 2)
+    data = gzip.compress(first, mtime=0) + _damage(
+        gzip.compress(PAYLOAD[:500_000], mtime=0), 0.5
+    )
+    expected = _prefix(io.BytesIO(data), Codec.GZIP, 1 << 20)
+    assert expected[0] > len(first)
+    assert _prefix(NonSeekableBytesIO(data), Codec.GZIP, 1 << 20) == expected
+
+
 @pytest.mark.parametrize("name", ["gzip", "xz"])
 def test_a_pipe_loses_at_most_one_call(name: str) -> None:
     """A pipe cannot be decoded again: a read loses at most the decoder call that

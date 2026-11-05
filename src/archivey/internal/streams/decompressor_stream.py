@@ -545,6 +545,11 @@ class BaseDecoder:
         whose child process must then not serve another member ends it at close. A
         no-op here; overridden by PPMd."""
 
+    def keep_output_before_errors(self) -> None:
+        """The source cannot be read again (a pipe): a decoder that can snapshot its
+        state cheaply hands back every byte it decodes before an error, and raises the
+        error from its next call. A no-op here; the deflate decoders override it."""
+
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]:
@@ -971,10 +976,15 @@ class DecompressorStream(ReadOnlyIOStream):
                 if owns_inner:
                     self._owned_inner = path
             self._decoder: Decoder = make_decoder(self._seek_points[0], self._inner)
+            seekable = self._inner.seekable()
             # The most output one bounded decoder call asks for (see _FEED_OUTPUT).
-            self._call_output = (
-                _SEEKABLE_FEED_OUTPUT if self._inner.seekable() else _FEED_OUTPUT
-            )
+            self._call_output = _SEEKABLE_FEED_OUTPUT if seekable else _FEED_OUTPUT
+            if not seekable and not self._probe:
+                # A pipe cannot be decoded again (_redecode_to_error): a decoder that
+                # can snapshot its state keeps the bytes before an error itself.
+                keep = getattr(self._decoder, "keep_output_before_errors", None)
+                if keep is not None:
+                    keep()
         except BaseException:
             # ``close()`` needs a decoder, and ``IOBase.__del__`` calls it on any
             # instance not marked closed, including one whose ``__init__`` raised.
