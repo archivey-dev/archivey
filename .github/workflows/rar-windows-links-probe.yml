@@ -167,8 +167,6 @@ jobs:
           ./scripts/ci/install-rarlab-unrar.ps1 -Dest $dest
           echo $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Control run on the runner (OEM 437)
-        # The name-model job reports this runner's result; the container still runs.
-        continue-on-error: true
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$env:RUNNER_TEMP\deps"
@@ -197,4 +195,4 @@ jobs:
             -v "${env:GITHUB_WORKSPACE}:C:\src" `
             -e PYTHONPATH=C:\deps `
             archivey-cp932 `
-            cmd /c "set PATH=C:\unrar;C:\py;%PATH% && chcp && python C:\src\scripts\investigations\exploration\probe_rar_oem_dbcs.py & python C:\src\scripts\investigations\exploration\probe_rar_name_model.py"
+            cmd /c "set PATH=C:\unrar;C:\py;%PATH% && chcp && python C:\src\scripts\investigations\exploration\probe_rar_oem_dbcs.py && python C:\src\scripts\investigations\exploration\probe_rar_name_model.py"

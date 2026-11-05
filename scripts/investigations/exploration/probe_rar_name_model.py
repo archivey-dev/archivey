@@ -102,6 +102,7 @@ def _compare(
     archive: Path, views: list[str | None], masks: list[str | bytes]
 ) -> list[dict[str, object]]:
     from archivey.internal.backends.rar_unrar import (
+        UnrarSelectionUnknown,
         unrar_dot_rule,
         unrar_mask_is_usable,
         unrar_mask_selects,
@@ -117,22 +118,31 @@ def _compare(
         mask_view = unrar_mask_view(mask)
         if mask_view is None or not unrar_mask_is_usable(mask_view):
             continue
-        expected = [
-            index
-            for index, view in enumerate(views)
-            if view is not None
-            and unrar_mask_selects(mask_view, view, dot_rule=bool(dot_rule))
-        ]
+        expected: list[int] = []
+        unknown: list[int] = []
+        for index, view in enumerate(views):
+            if view is None:
+                continue
+            try:
+                if unrar_mask_selects(mask_view, view, dot_rule=bool(dot_rule)):
+                    expected.append(index)
+            except UnrarSelectionUnknown:
+                # unrar's answer depends on memory past the name; reported, not
+                # compared, and the reader refuses such a read.
+                unknown.append(index)
         try:
             actual: object = _unrar_selects(archive, mask, len(views))
         except AssertionError as exc:
             actual = f"unparsed: {exc}"
+        if isinstance(actual, list):
+            actual = [index for index in actual if index not in unknown]
         if actual != expected:
             rows.append(
                 {
                     "mask": mask.hex(" ") if isinstance(mask, bytes) else mask,
                     "model": expected,
                     "unrar": actual,
+                    "unknown": unknown,
                 }
             )
     return rows

@@ -1499,12 +1499,20 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   threat-model C1), a stream or prefixed source (`unar` would need a copy), or an
   archive `unar` refuses (§3); those still raise `UnsupportedFeatureError`, naming the
   tool that refused. Whether any of them earns a route of its own is open.
-- **Open: the name model on Windows and macOS is only partly measured.** The tests
-  that compare the full name sets with `unrar` run on Linux only.
-  `test_case_fold_selection_is_the_one_unrar_makes_on_this_os` runs on every OS, so
-  the Windows case fold and `CompareStringW` are measured for its names under the
-  CI runner's en-US locale; other locales, `FoldStringW` and the rest of macOS are
-  not.
+- **Measured (2026-11-05): the name model on Windows, macOS and a DBCS OEM code
+  page.** The tests that compare the full name sets with `unrar` run on Linux only,
+  since their expected views are Linux's. `probe_rar_name_model.py`
+  (`scripts/investigations/exploration/`, run by `rar-windows-links-probe.yml`)
+  makes the same comparison with each OS's own model, for the RAR5 and RAR 1.5-4
+  name sets of those tests, Shift-JIS names with a Windows and a Unix host byte, and
+  names for the Windows case fold. It agrees with unrar 7.23 on Linux, macOS,
+  Windows under OEM 437 / ANSI 1252, and a Windows container whose OEM and ANSI code
+  pages are 932 (set by `reg add` in the image; a hosted runner cannot change its
+  own without a reboot). Every member of every set reads its own bytes or is
+  refused. `test_case_fold_selection_is_the_one_unrar_makes_on_this_os` keeps the
+  Windows case fold under test on every OS. Still open: user locales other than
+  en-US (the case fold and `CompareStringW` follow the user locale), other DBCS code
+  pages than 932, and older Windows builds (below).
   - Windows: `unrar` folds a character with `CharUpperW` in `match()` and compares
     a mask with a name's start, and an exact mask's directory with the name's, with
     `CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE|SORT_STRINGSORT)`
@@ -1517,10 +1525,12 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
     that member is at or before the target, and counts it after. The mask and the
     name both get `/` turned into `\` (the mask in `CheckArgs`, a change the
     source dates 2025-09-11, so older Windows builds may differ; the name in
-    `ConvertFileHeader`), so the model converts both sides; an 8-bit name is read
-    through the OEM then ANSI code page, which is modelled only for a single-byte
-    OEM, so a DBCS OEM (cp932) can mis-size the skip.
-    Precomposition (`FoldStringW`) for a Unix-host name is modelled but unmeasured.
+    `ConvertFileHeader`), so the model converts both sides. An 8-bit name is read
+    through the OEM then ANSI code page with the same two calls `unrar` makes
+    (`_windows_unrar_8bit_name`), and under cp932 that gives what `unrar` reads: a
+    trail byte `\x5c` stays inside its character (`\x95\x5c` is `表`), and the lead
+    byte of `caf\xe9.txt` takes the `.` with it. Precomposition (`FoldStringW`) for
+    a Unix-host name agrees with `unrar` for a decomposed `é`.
   - macOS: `unrar` reads 8-bit names, and the argv mask, with its own `UtfToWide`
     (`CharToWide` under `_APPLE`), which stops at the first byte that is not UTF-8.
     That is modelled. So an 8-bit name that is not UTF-8 from its first byte (cp1251
