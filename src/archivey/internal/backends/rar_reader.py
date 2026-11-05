@@ -98,6 +98,16 @@ from archivey.internal.backends.rar_parser import (
     rar5_data_key,
     rar5_hash_key,
 )
+from archivey.internal.backends.rar_synthetic import (
+    SyntheticArchive,
+    SyntheticMember,
+    SyntheticUnsupported,
+    check_against_listing,
+    member_headers,
+    patch_header,
+    placeholder_name,
+    read_stored_header,
+)
 from archivey.internal.backends.rar_unar import (
     REFUSE_NON_ASCII_PASSWORD,
     UNAR_PURPOSE,
@@ -188,12 +198,15 @@ from archivey.internal.streams.crypto import (
 )
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
+    DelegatingStream,
     SharedSource,
     SlicingStream,
     SolidBlockReader,
     is_seekable,
+    read_exact,
     skip_forward,
 )
+from archivey.internal.streams.streamtools.binaryio import ask_resume_offset
 from archivey.internal.streams.verify import build_member_verifier
 from archivey.internal.unix_mode import special_file_type
 from archivey.internal.volumes import (
@@ -240,6 +253,36 @@ def _stream_volumes_disk_copy_note(program: str) -> str:
         f"Reading a member that {program} has to read, such as a compressed one, will "
         f"copy every volume to a temp directory so {program} can read them."
     )
+
+
+def _rar_member_copy_notes(
+    source: ArchiveSource, limits: SpoolLimits
+) -> tuple[str, ...]:
+    """Open-time caveat for a stream source of a nonsolid archive read with ``unrar``.
+
+    Each read ``unrar`` serves copies one member's packed bytes into a synthetic
+    archive (``rar_synthetic``), not the whole archive.
+    """
+    if source.path is not None or source.volume_paths:
+        return ()
+    note = (
+        "Reading a member that RARLAB unrar has to read, such as a compressed one, "
+        "will copy that member's packed bytes to disk so unrar can read them."
+    )
+    limit = limits.max_bytes
+    if limit is None:
+        return (f"{note} The copy has no size limit (SpoolLimits.max_bytes=None).",)
+    if limit == 0:
+        return (
+            _stream_copy_refused_note(
+                "RARLAB unrar", "SpoolLimits.max_bytes=0 allows no copy of a member"
+            ),
+        )
+    refused = (
+        f"A member whose packed bytes pass SpoolLimits.max_bytes={limit} is refused "
+        "instead of copied."
+    )
+    return (f"{note} {refused}",)
 
 
 def _resolve_decompressor(choice: RarDecompressor) -> RarDecompressor:
@@ -501,6 +544,11 @@ _RAR5_XREDIR_WINDOWS_JUNCTION = 3
 # (``RarReader._confirm_unsettled_plaintext``). Matches the verifier's own drain
 # step; the pass is bounded by the member, which is bounded by the source.
 _CONFIRM_CHUNK_BYTES = 64 * 1024
+# Above this many packed bytes, a member of an archive on disk is read from the
+# archive with an include mask rather than copied into a synthetic archive
+# (openspec ``rar-synthetic-archives``, D1): copying 200 MiB took twice as long as
+# decoding it. Below it the copy is cheaper than ``unrar``'s walk of every header.
+_SYNTHETIC_IN_PLACE_THRESHOLD = 64 * 1024 * 1024
 
 # Shared CompressionMethod tuples — many-member listing hits the same method byte
 # (typically store / M1–M5) thousands of times; avoid per-member allocations.
@@ -1014,6 +1062,79 @@ def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO
         raise
 
 
+class _SyntheticFile:
+    """The synthetic archive one member's ``unrar`` reads share, and its spool charge.
+
+    Made on the first spawn and kept for the respawns after a backward seek, so
+    the member's bytes are copied once. :meth:`close` removes the file and gives
+    back the charge; the member stream calls it when it closes, and the reader at
+    its own close for any left (a password probe's).
+    """
+
+    def __init__(
+        self,
+        reader: RarReader,
+        member: SyntheticMember,
+        charge: int,
+    ) -> None:
+        self._reader = reader
+        self._member = member
+        self._charge = charge
+        self._file: SyntheticArchive | None = None
+        self._closed = False
+        self._lock = threading.Lock()
+
+    def path(self) -> Path:
+        with self._lock:
+            if self._closed:
+                raise ValueError("synthetic RAR archive is closed")
+            if self._file is None:
+                synthetic = SyntheticArchive(self._reader._archive.version)
+                try:
+                    synthetic.append([self._member])
+                except BaseException:
+                    synthetic.close()
+                    raise
+                self._file = synthetic
+            return self._file.path
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            synthetic, self._file = self._file, None
+        if synthetic is not None:
+            synthetic.close()
+        self._reader._drop_synthetic(self, self._charge)
+
+
+class _ClosesSyntheticFile(DelegatingStream):
+    """A member stream that removes its synthetic archive once it closes."""
+
+    def __init__(self, inner: BinaryIO, synthetic: _SyntheticFile) -> None:
+        # Before the base constructor, so close() can read it if that raises.
+        self._synthetic = synthetic
+        super().__init__(inner)
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        # The member's verifier asks whether a forward seek decodes what it skips;
+        # this layer changes nothing about that, so the answer is the inner's.
+        return ask_resume_offset(self._inner, target)
+
+    @override
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            super().close()
+        finally:
+            # Unset only when the constructor was never run.
+            synthetic = getattr(self, "_synthetic", None)
+            if synthetic is not None:
+                synthetic.close()
+
+
 def _open_unar_blob_pipe(path: Path) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """``unar`` for the one-entry archive :func:`decompress_rar3_blob` builds."""
     return open_unar_stdout(path, [0], purpose=UNAR_PURPOSE)
@@ -1116,6 +1237,9 @@ class RarReader(BaseArchiveReader):
         # The one spool allowance for this reader's copies, made on the first copy
         # (``_spool_budget``) and kept, so a refused copy is not retried.
         self._spool: SpoolBudget | None = None
+        # Synthetic archives made for ``unrar`` reads and not yet removed, so reader
+        # close removes any a member stream left (``_SyntheticFile``).
+        self._synthetic_files: set[_SyntheticFile] = set()
         self._volume_paths: list[Path] = []
         # Each discovered volume's 1-based number in its set, read from its name,
         # when the set has a gap: volume 1 missing, or one in the middle. ``None``
@@ -1214,6 +1338,13 @@ class RarReader(BaseArchiveReader):
             if self._decompressor is RarDecompressor.UNAR
             else None
         )
+        if (
+            self._unar_policy is None
+            and self._decompressor is not RarDecompressor.NONE
+            and not self._archive.is_solid
+        ):
+            # Nonsolid reads through unrar copy one member, not the archive.
+            self._cost_notes = _rar_member_copy_notes(source, self._config.spool_limits)
         # Members an unknown-version member ahead of them keeps from being decoded:
         # by any program in its solid stream, by ``unrar`` in the rest of a solid
         # archive. Keyed by ``id`` of the parsed member.
@@ -4477,6 +4608,23 @@ class RarReader(BaseArchiveReader):
         if self._unar_policy is not None:
             return self._open_member_with_unar(member, raw, self._unar_policy)
 
+        synthetic = self._synthetic_file(member, raw)
+        if synthetic is not None:
+            try:
+                data_password = self._member_data_password(member)
+                has_hash = (
+                    bool(member.hashes) or self._tweaked_verify_spec(raw) is not None
+                )
+                spawn = self._synthetic_spawner(raw, synthetic)
+                return self._open_spawned_member(
+                    member,
+                    lambda: spawn(data_password, has_hash),
+                    synthetic=synthetic,
+                )
+            except BaseException:
+                synthetic.close()
+                raise
+
         try:
             spawner = self._unrar_spawner_by_name(member, raw)
         except _UnrarCannotAddress as refusal:
@@ -4515,6 +4663,11 @@ class RarReader(BaseArchiveReader):
         The spawner takes the password and whether the member has a digest archivey
         checks itself, and copies a stream source to disk on its first call.
         """
+        synthetic = self._synthetic_file(member, raw)
+        if synthetic is not None:
+            # Removed at reader close: the probes that call this spawn and close
+            # their streams one candidate at a time.
+            return self._synthetic_spawner(raw, synthetic)
         try:
             return self._unrar_spawner_by_name(member, raw)
         except _UnrarCannotAddress as refusal:
@@ -4668,8 +4821,137 @@ class RarReader(BaseArchiveReader):
 
         return _spawn
 
+    def _synthetic_file(
+        self, member: ArchiveMember, raw: RarMemberInfo
+    ) -> _SyntheticFile | None:
+        """The synthetic archive an ``unrar`` read of ``member`` gets, or ``None``.
+
+        ``None`` keeps today's read of the original archive with an include mask:
+        a solid archive (its streams are a later change), a member of an archive on
+        disk above :data:`_SYNTHETIC_IN_PLACE_THRESHOLD` packed bytes or over the
+        spool limit, and a RAR 1.5-4 member joined past 4 GiB without 64-bit size
+        fields. A stream source has no such fallback: a copy over the spool limit
+        raises ``ResourceLimitError``, as the whole-archive copy did, but for the
+        member's bytes alone.
+
+        The member's header is read again here, before anything is spawned or
+        copied, and checked against the listing (``CorruptionError`` when it
+        differs). The copy is charged to the spool budget now; nothing is written
+        until the first spawn.
+        """
+        if self._archive.is_solid:
+            return None
+        # The member alone: no other member's dictionary is decoded.
+        self._check_dictionary_memory(member, self._dictionary_costs[id(member)])
+        in_place = bool(self._volume_paths)
+        if in_place and raw.compress_size > _SYNTHETIC_IN_PLACE_THRESHOLD:
+            return None
+        (volume, offset, size), part_size, join = member_headers(raw)
+        with self._translated_errors(member.name):
+            stored = read_stored_header(
+                self._read_source_at,
+                self._archive,
+                volume_index=volume,
+                offset=offset,
+                size=size,
+                header_key=(
+                    self._header_key if self._archive.has_header_encryption else None
+                ),
+                excluded=self._excluded,
+            )
+            check_against_listing(stored, raw, part_size=part_size)
+        try:
+            header = patch_header(
+                stored, name=placeholder_name(0), data_size=raw.compress_size, join=join
+            )
+        except SyntheticUnsupported:
+            return None
+        parts = raw.data_parts or [(raw.data_offset, raw.compress_size)]
+        shared = self._shared
+        entry = SyntheticMember(
+            header=header,
+            data=lambda: [
+                (shared.view(start, length), length) for start, length in parts
+            ],
+            data_size=raw.compress_size,
+        )
+        charge = SyntheticArchive.overhead(self._archive.version) + entry.size
+        with self._materialize_lock:
+            # Named only when this copy refuses: a fallback's own copy names itself.
+            budget = self._spool_budget(None)
+            if not budget.try_reserve(charge):
+                if not in_place:
+                    budget = self._spool_budget("this member's packed bytes")
+                    with self._translated_errors(member.name):
+                        budget.check_total(charge)
+                return None
+            synthetic = _SyntheticFile(self, entry, charge)
+            self._synthetic_files.add(synthetic)
+        return synthetic
+
+    def _drop_synthetic(self, synthetic: _SyntheticFile, charge: int) -> None:
+        """Forget a removed synthetic archive and give back its spool charge."""
+        with self._materialize_lock:
+            if synthetic in self._synthetic_files:
+                self._synthetic_files.discard(synthetic)
+                assert self._spool is not None
+                self._spool.release(charge)
+
+    def _read_source_at(self, offset: int, size: int) -> bytes:
+        view = self._shared.view(offset, size)
+        try:
+            return read_exact(view, size)
+        finally:
+            view.close()
+
+    def _header_key(
+        self, salt: bytes, kdf_count: int | None
+    ) -> bytes | tuple[bytes, bytes]:
+        """The header key for ``salt``: RAR5 ``key`` or RAR 1.5-4 ``(key, iv)``.
+
+        The header password is the one the listing decrypted with; the KDF cache
+        already holds its derivation.
+        """
+        password = self._unrar_password
+        assert password is not None, "an -hp archive lists only with its password"
+        if kdf_count is None:
+            return self._kdf_cache.rar3(password, salt)
+        return self._kdf_cache.rar5(password, salt, 1 << kdf_count)
+
+    def _synthetic_spawner(
+        self, raw: RarMemberInfo, synthetic: _SyntheticFile
+    ) -> Callable[[str | None, bool], BinaryIO]:
+        """Spawn ``unrar p`` on ``synthetic``, which holds ``raw`` alone.
+
+        No ``-n`` mask: ``unrar`` prints the only member. ``-ver`` always, so a
+        history row is not skipped.
+        """
+
+        def _spawn(data_password: str | None, has_hash: bool) -> BinaryIO:
+            proc, stdout = open_unrar_p(
+                synthetic.path(),
+                password=data_password,
+                version_control=True,
+                rar5=self._archive.version == 5,
+            )
+            owned = _UnrarOwnedStream(
+                stdout,
+                proc,
+                named_member=True,
+                has_verifiable_hash=has_hash,
+                encrypted=raw.is_encrypted,
+            )
+            with _close_on_error(owned):
+                return self._track_decompressed(owned)
+
+        return _spawn
+
     def _open_spawned_member(
-        self, member: ArchiveMember, spawn: Callable[[], BinaryIO]
+        self,
+        member: ArchiveMember,
+        spawn: Callable[[], BinaryIO],
+        *,
+        synthetic: _SyntheticFile | None = None,
     ) -> MemberStreamParts:
         """Wrap one member's decompressor pipe: respawn on rewind, verify, count.
 
@@ -4700,6 +4982,8 @@ class RarReader(BaseArchiveReader):
                     min_redecode_bytes=self._solid_prefix(member),
                 )
             inner = self._watch_unverified(inner, member)
+            if synthetic is not None:
+                inner = _ClosesSyntheticFile(inner, synthetic)
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
             # Fused verify in _payload_parts bounds/checks declared size + digests.
             return self._payload_parts(
@@ -4995,6 +5279,10 @@ class RarReader(BaseArchiveReader):
 
     @override
     def _close_archive(self) -> None:
+        with self._materialize_lock:
+            left = list(self._synthetic_files)
+        for synthetic in left:
+            synthetic.close()
         with self._materialize_lock:
             self._shared.close()
             if self._owned_concat is not None:

@@ -275,3 +275,123 @@ def test_damaged_header_and_listing_mismatch_raise() -> None:
     rs.check_against_listing(header, member, part_size=3)
     with pytest.raises(CorruptionError, match="packed size"):
         rs.check_against_listing(header, member, part_size=4)
+
+
+# ------------------------------------------------------------------- reader route
+
+
+class _TempSpy:
+    """Every synthetic archive a test's reads make, with its size when made full."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.paths: list[Path] = []
+        self.sizes: list[int] = []
+        real = rs.SyntheticArchive.append
+
+        def append(synthetic: rs.SyntheticArchive, members: object) -> None:
+            real(synthetic, members)  # type: ignore[arg-type]
+            self.paths.append(synthetic.path)
+            self.sizes.append(synthetic.size)
+
+        monkeypatch.setattr(rs.SyntheticArchive, "append", append)
+
+
+@pytest.fixture
+def synthetic_spy(monkeypatch: pytest.MonkeyPatch) -> _TempSpy:
+    return _TempSpy(monkeypatch)
+
+
+@requires_unrar_cli()
+@pytest.mark.parametrize(
+    ("fixture", "name"),
+    [
+        ("wildcard_names__.rar", "a*.txt"),
+        ("wildcard_names__rar4.rar", "a*.txt"),
+        ("wildcard_names__.rar", "b?.txt"),
+        ("wildcard_dirglob__.rar", "d*/x.txt"),
+        ("wildcard_backslash__.rar", "a/b*.txt"),
+        ("wildcard_backslash__.rar", "a/b_TGT.txt"),
+    ],
+)
+def test_names_the_mask_refused_read_through_a_synthetic_archive(
+    fixture: str, name: str, synthetic_spy: _TempSpy
+) -> None:
+    """A name never reaches unrar, so a glob, a directory glob or a backslash in it
+    reads the member's own bytes, with no config flag."""
+    with open_archive(_FIXTURES / fixture) as reader:
+        data = reader.read(name)
+        member = reader.get(name)
+    assert len(data) == member.size
+    assert len(synthetic_spy.paths) == 1
+    assert not synthetic_spy.paths[0].exists()
+
+
+@requires_unrar_cli()
+def test_stream_source_copies_the_member_not_the_archive(
+    synthetic_spy: _TempSpy,
+) -> None:
+    raw = (_FIXTURES / "wildcard_names__.rar").read_bytes()
+    with open_archive(BytesIO(raw)) as reader:
+        assert len(reader.read("b1.txt")) == reader.get("b1.txt").size
+        packed = reader.get("b1.txt")._raw.compress_size
+    (size,) = synthetic_spy.sizes
+    assert packed < size < packed + 200 < len(raw)
+
+
+@requires_unrar_cli()
+def test_backward_seek_respawns_on_the_same_file(synthetic_spy: _TempSpy) -> None:
+    with open_archive(_FIXTURES / "wildcard_names__.rar", seekable_members=True) as r:
+        with r.open(r.get("b1.txt")) as stream:
+            first = stream.read()
+            stream.seek(0)
+            assert stream.read() == first
+            assert len(synthetic_spy.paths) == 1
+            assert synthetic_spy.paths[0].exists()
+        assert not synthetic_spy.paths[0].exists()
+
+
+@requires_unrar_cli()
+def test_large_member_of_a_file_on_disk_keeps_the_original(
+    monkeypatch: pytest.MonkeyPatch, synthetic_spy: _TempSpy
+) -> None:
+    from archivey.internal.backends import rar_reader
+
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    with open_archive(_FIXTURES / "wildcard_names__.rar") as reader:
+        assert reader.read("b1.txt")
+    assert synthetic_spy.paths == []
+
+
+@requires_unrar_cli()
+def test_header_changed_after_open_is_refused_before_unrar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey.internal.backends import rar_reader
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError("unrar was spawned")
+
+    raw = bytearray((_FIXTURES / "wildcard_names__.rar").read_bytes())
+    source = BytesIO(raw)
+    with open_archive(source) as reader:
+        info = reader.get("b1.txt")._raw
+        assert isinstance(info, RarMemberInfo)
+        monkeypatch.setattr(rar_reader, "open_unrar_p", refuse)
+        # One byte inside the stored header, past its CRC: the CRC now fails.
+        source.getbuffer()[info.header_offset + 8] ^= 0xFF
+        with pytest.raises(CorruptionError):
+            reader.read("b1.txt")
+
+
+@requires_unrar_cli()
+def test_reader_close_removes_a_file_left_by_an_open_stream(
+    synthetic_spy: _TempSpy,
+) -> None:
+    reader = open_archive(_FIXTURES / "wildcard_names__.rar")
+    stream = reader.open(reader.get("b1.txt"))
+    stream.read(1)
+    (path,) = synthetic_spy.paths
+    assert path.exists()
+    reader.close()
+    assert not path.exists()
+    stream.close()

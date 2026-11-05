@@ -419,6 +419,7 @@ def test_unrar_reads_a_compressed_rar4_name_with_a_surrogate_unit(
 @requires_binary("unrar")
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows sends no `?` mask")
 def test_unrar_sizes_a_read_past_a_surrogate_name_the_mask_also_selects(
+    unrar_mask_route: None,
     tmp_path: Path,
 ) -> None:
     """``hi?.txt`` selects ``hiX.txt`` too, so ``unrar`` pipes the earlier member first.
@@ -445,6 +446,7 @@ def test_unrar_sizes_a_read_past_a_surrogate_name_the_mask_also_selects(
 @requires_binary("unrar")
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows argv carries the unit")
 def test_unrar_refuses_a_surrogate_unit_in_a_directory_and_names_unar(
+    unrar_mask_route: None,
     tmp_path: Path,
 ) -> None:
     """The unit would reach ``unrar`` as a directory glob, which cannot be sized."""

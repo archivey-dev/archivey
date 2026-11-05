@@ -782,12 +782,21 @@ On a compressed tar, the stream's own checksum adds three cases:
 - An uncompressed encrypted member split across volumes, and any member encrypted with the RAR 2.0
   cipher (archives from RAR 2.0 to 2.8), still need the program: each part of a split member has its
   own encryption record, and archivey does not implement the old cipher.
-- **A stream source is copied to disk for `unrar`.** `unrar` reads only files, so a RAR opened from
-  a `BytesIO` or a file object is copied whole to a temporary file (a volume set, to a temporary
-  directory) on the first member read that needs the program, and removed on close. Members
-  archivey reads itself are read in place and need no copy. `ArchiveyConfig.spool_limits`
-  (`SpoolLimits.max_bytes`, default 1 GiB) bounds the copy: over it, the read raises
-  `ResourceLimitError` before anything is written. Opening from a path avoids the copy.
+- **`unrar` reads a member of an archive that is not solid from a small copy.** For each read it
+  needs, archivey writes a temporary RAR file that holds only that member's header and its packed
+  (still compressed, still encrypted) bytes, and gives `unrar` that file. This means a read does
+  not slow down as the archive grows, and a member split across volumes is joined into one file.
+  The file is removed when the member stream closes. A member of an archive opened from a path
+  that packs more than 64 MiB is read in place instead. For a header-encrypted (`-hp`) archive the
+  temporary file holds the member's header decrypted: its sizes, times and checksum, but not its
+  name.
+- **A stream source of a solid archive is copied to disk for `unrar`.** `unrar` reads only files,
+  so a solid RAR opened from a `BytesIO` or a file object is copied whole to a temporary file (a
+  volume set, to a temporary directory) on the first member read that needs the program, and
+  removed on close. Members archivey reads itself are read in place and need no copy.
+- `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB) bounds every copy: over
+  it, the read raises `ResourceLimitError` before anything is written. A member of an archive
+  opened from a path is read in place instead.
 - **A member read waits as long as `unrar` does.** `read()` on a RAR member stream has no time
   bound: archivey does not stop an `unrar` process that stalls. A solid archive can produce no bytes
   for a long time while `unrar` decodes the members ahead of the one you asked for, so no idle
@@ -842,6 +851,8 @@ raises `UnsupportedFeatureError` before anything runs, and `archive.cost.notes` 
 
 ### Names unrar cannot select
 
+In an archive that is not solid, a member's name never reaches `unrar` (except for a member over
+64 MiB of an archive opened from a path), so none of what follows applies to it. Otherwise,
 `unrar` is told which member to write with an include *mask* built from its name. Some names make
 that mask select the wrong members, or none:
 

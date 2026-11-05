@@ -88,9 +88,10 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   whole member in memory. A container inside a compression stream (a `.tar.gz`, a format handler's
   `.cpio.xz`) is held to it whenever it's decoded, listing included, since listing one decodes all
   of it. So is what a format handler's walk decodes by itself: a compressed payload it opens
-  part-way through the archive, and a member's decoded data. A RAR archive opened from a
-  file object rather than a path is copied to a temporary file the first time a member needs
-  `unrar` or `unar`. `spool_limits.max_bytes` caps that copy, along with the few other temporary
+  part-way through the archive, and a member's decoded data. When `unrar` reads a member of a RAR
+  archive that is not solid, archivey copies that member's packed bytes to a temporary file. A
+  solid RAR archive opened from a file object rather than a path is copied whole to a temporary
+  file the first time a member needs `unrar` or `unar`. `spool_limits.max_bytes` caps those copies, along with the few other temporary
   files archivey makes for RAR archives, listed in the table below. When the archive records a
   member's size in `member.size`, archivey never decodes more than that, and a member holding
   more raises `CorruptionError`.
@@ -264,7 +265,10 @@ in the repository measures what each limit costs in time and memory on your mach
   `process_isolation` keeps in a child process. It costs up to twice the limit in memory
   while a PPMd member decodes, 32 MiB at the default.
 - **`spool_limits.max_bytes`**, default 1 GiB, caps the temporary disk space for RAR archives.
-  `unrar` and `unar` need the archive as a file, so a RAR opened from a file object is copied, and
+  `unrar` and `unar` need the archive as a file. Each `unrar` read of a member of an archive that
+  is not solid copies that member's packed bytes into a small RAR file (mode 0600, removed when
+  the member stream closes; for a header-encrypted archive it holds the member's decrypted header,
+  but not its name). Otherwise a RAR opened from a file object is copied, and
   so are volumes archivey can't link into its temporary folder and, for `unar`, an archive with data
   before it. A pass over a solid RAR also keeps the members that later file copies repeat. It costs
   the disk space itself.
