@@ -915,6 +915,37 @@ def test_rejected_header_raises_corruption_in_both_modes(
     assert names == ["a"]
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_rejected_header_after_a_member_quotes_the_walker_reason(
+    streaming: bool,
+) -> None:
+    # The report on a bad first header already says why it was refused. A bad header
+    # after a member must say it too, not only that "a member header does not parse".
+    data = (
+        tar_build.block(b"first", size=3)
+        + tar_build.data(b"abc")
+        + tar_build.pax({"size": ""})
+        + tar_build.block(b"hidden", size=3)
+        + tar_build.data(b"xyz")
+        + tar_build.block(b"after", size=3)
+        + tar_build.data(b"def")
+        + tar_build.END
+    )
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    with (
+        pytest.raises(CorruptionError) as excinfo,
+        open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar,
+    ):
+        for _member, _stream in ar.stream_members():
+            pass
+    message = str(excinfo.value)
+    assert "the members after it are not listed" in message
+    assert message.startswith(
+        "TAR archive is corrupt: the member header at offset 1024 does not parse ("
+    )
+    assert "empty size record" in message.split("does not parse (", 1)[1]
+
+
 def test_corrupt_final_header_extract_raises(tmp_path: Path) -> None:
     # Extraction surfaces the corruption too. Random access extracts in one pass, as
     # streaming does, so the EOF check runs after the members before the damage are
