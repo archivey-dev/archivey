@@ -263,15 +263,15 @@ class _BigThenFails(_FailsOnFeed):
 
 
 def test_a_decoder_error_after_a_short_chunk_does_not_keep_the_chunk_alive() -> None:
-    """As above, for a decoder error on the decode after a short chunk: the raise's
-    frames hold no second copy, and the chunk comes back on the next read."""
+    """As above, for a decoder error on the decode after a short chunk: the read hands
+    the chunk back, and the next read's raise holds no copy of it on its frames."""
     stream = DecompressorStream(
         io.BytesIO(_DATA), make_decoder=lambda point, inner: _BigThenFails()
     )
+    assert stream.read(4 << 20) == bytes(1 << 20)
     with pytest.raises(OSError, match="Invalid data stream") as caught:
         stream.read(4 << 20)
     assert _largest_library_local(caught.value) < 4096
-    assert stream.read(4 << 20) == bytes(1 << 20)
 
 
 def test_a_spent_decoder_is_restarted_by_a_seek_to_the_same_place() -> None:
@@ -290,17 +290,17 @@ def test_a_spent_decoder_is_restarted_by_a_seek_to_the_same_place() -> None:
 
 
 def test_a_decoder_error_after_output_hands_back_the_buffer_then_raises() -> None:
-    # The read that reaches the error raises with the first chunk's output buffered.
-    # Later reads hand that output back, then raise the same error; none of them
-    # feeds the spent decoder, whose ValueError would replace the verdict.
+    # The read that reaches the error hands back the first chunk's output; the next
+    # reads raise the error, the same one each time. None of them feeds the spent
+    # decoder, whose ValueError would replace the verdict.
     stream = DecompressorStream(
         io.BytesIO(_DATA), make_decoder=lambda point, inner: _FailsOnFeed(2)
     )
-    with pytest.raises(OSError, match="Invalid data stream") as first:
-        stream.read(len(_DATA))
     got = stream.read(len(_DATA))
     assert got
     assert got == _DATA[: len(got)]
+    with pytest.raises(OSError, match="Invalid data stream") as first:
+        stream.read(len(_DATA))
     for _ in range(2):
         with pytest.raises(OSError) as again:
             stream.read(len(_DATA))

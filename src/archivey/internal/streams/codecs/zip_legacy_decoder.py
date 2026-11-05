@@ -78,6 +78,9 @@ class _BitDecompressor:
         self._limit = -1
         # Output decoded but not yet returned, and the total decoded so far.
         self._out = bytearray()
+        # A corrupt code met with output held: that output is handed out first, and
+        # this raises once it is gone (spec ``compressed-streams``).
+        self._raise_after: CorruptionError | None = None
         self._produced = 0
         self._paused = False
         self._done = False
@@ -152,6 +155,10 @@ class _BitDecompressor:
         return data
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        if self._raise_after is not None:
+            if self._out:
+                return self._hand_out(max_length)
+            raise self._raise_after
         if data:
             if self._done:
                 self._unused += data
@@ -160,7 +167,12 @@ class _BitDecompressor:
                 self._data_pos = 0
         if max_length < 0 or len(self._out) < max_length:
             self._limit = max_length
-            self._run()
+            try:
+                self._run()
+            except CorruptionError as exc:
+                if not self._out:
+                    raise
+                self._raise_after = exc
         return self._hand_out(max_length)
 
     def end_input(self) -> None:
@@ -188,7 +200,8 @@ class _BitDecompressor:
 
     @property
     def needs_input(self) -> bool:
-        return not self._out and not self._paused
+        # False after a corrupt code, so the next call is made at once and raises.
+        return self._raise_after is None and not self._out and not self._paused
 
 
 # --- Shrink (method 1): LZW with 9- to 13-bit codes and partial clearing ---

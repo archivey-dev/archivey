@@ -54,6 +54,7 @@ from archivey.internal.streams.codecs.zlib_codec import (
     ZlibCodec,
 )
 from archivey.internal.streams.codecs.zstd_codec import ZstdCodec
+from archivey.internal.streams.decompressor_stream import probe_streams
 from archivey.internal.streams.streamtools import (
     fix_stream_start_position,
     is_seekable,
@@ -289,7 +290,7 @@ def open_codec_stream(
     # the caller's ``seekable=`` explicitly.
     stream_seekable = True if seekable is None else seekable
     return ArchiveStreamImpl(
-        lambda: backend.open(source, params),
+        lambda: _open_backend(backend, source, params, config),
         translate=backend.translate,
         stamp=stamp,
         lazy=False,
@@ -336,7 +337,7 @@ def open_codec_raw(
     """
     source, config, backend = _prepared_backend(codec, source, config, collector)
     try:
-        stream = backend.open(source, params)
+        stream = _open_backend(backend, source, params, config)
     except Exception as e:  # noqa: BLE001 - re-raised via the translator
         raise_translated(e, backend.translate)
     return OpenedCodec(
@@ -344,6 +345,20 @@ def open_codec_raw(
         translate=backend.translate,
         rewind_warning=backend.rewind_warning,
     )
+
+
+def _open_backend(
+    backend: CodecBackend,
+    source: CodecSource,
+    params: CodecParams,
+    config: StreamConfig,
+) -> BinaryIO:
+    """``backend.open``; a detection probe's streams (``probe_read_bound``) ask their
+    decoder for exactly what each read asks (:func:`probe_streams`)."""
+    if config.probe_read_bound is None:
+        return backend.open(source, params)
+    with probe_streams():
+        return backend.open(source, params)
 
 
 def _prepared_backend(
