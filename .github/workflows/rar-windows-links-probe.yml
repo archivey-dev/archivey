@@ -13,6 +13,7 @@ on:
   pull_request:
     paths:
       - scripts/investigations/exploration/probe_rar_windows_links.py
+      - scripts/investigations/exploration/probe_rar_oem_dbcs.py
       - .github/workflows/rar-windows-links-probe.yml
 
 permissions:
@@ -102,3 +103,55 @@ jobs:
         run: |
           unrar 2>&1 | head -n 2 || true
           python scripts/investigations/exploration/probe_rar_windows_links.py check probe-out/*.rar
+
+  dbcs:
+    # Windows unrar reads an 8-bit RAR 1.5-4 name through the OEM code page, and
+    # archivey's model of that was measured only under OEM 437. A hosted runner cannot
+    # change its own code pages (that needs a reboot), so the probe runs in a Windows
+    # container whose image sets OEMCP and ACP to 932, with the runner's Python, the
+    # installed package and UnRAR.exe mounted in. The runner itself (437) is the control.
+    name: DBCS OEM name model (Windows container, cp932)
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: py
+        with:
+          python-version: "3.12"
+      - name: Install archivey into a directory the container can mount
+        shell: pwsh
+        run: python -m pip install --target "$env:RUNNER_TEMP\deps" .
+      - name: Install unrar
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP 'rarlab-unrar'
+          ./scripts/ci/install-rarlab-unrar.ps1 -Dest $dest
+          echo $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Control run on the runner (OEM 437)
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "$env:RUNNER_TEMP\deps"
+          python scripts/investigations/exploration/probe_rar_oem_dbcs.py
+      - name: Build a cp932 image
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'cp932-image'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          @'
+          FROM mcr.microsoft.com/windows/servercore:ltsc2022
+          RUN reg add HKLM\SYSTEM\CurrentControlSet\Control\Nls\CodePage /v OEMCP /t REG_SZ /d 932 /f && reg add HKLM\SYSTEM\CurrentControlSet\Control\Nls\CodePage /v ACP /t REG_SZ /d 932 /f
+          '@ | Set-Content -Path (Join-Path $dir 'Dockerfile') -Encoding ascii
+          docker build -t archivey-cp932 $dir
+      - name: Probe in the cp932 container
+        shell: pwsh
+        run: |
+          $py = Split-Path -Parent '${{ steps.py.outputs.python-path }}'
+          docker run --rm `
+            -v "${py}:C:\py" `
+            -v "$env:RUNNER_TEMP\deps:C:\deps" `
+            -v "$env:RUNNER_TEMP\rarlab-unrar:C:\unrar" `
+            -v "${env:GITHUB_WORKSPACE}:C:\src" `
+            -e PYTHONPATH=C:\deps `
+            archivey-cp932 `
+            cmd /c "set PATH=C:\unrar;C:\py;%PATH% && chcp && python C:\src\scripts\investigations\exploration\probe_rar_oem_dbcs.py"
