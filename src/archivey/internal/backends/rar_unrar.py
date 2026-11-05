@@ -9,6 +9,7 @@ argv) and optional ``-n./member`` include masks. Never ``x`` / extract-to-disk.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -21,7 +22,7 @@ import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from archivey.exceptions import (
     PackageNotInstalledError,
@@ -1124,12 +1125,60 @@ def _unrar_name_pos(text: str) -> int:
     return 0
 
 
+class UnrarSelectionUnknown(Exception):
+    """``unrar``'s answer for this mask and name depends on memory it reads past the name.
+
+    Windows ``unrar`` compares a mask with the start of a name linguistically
+    (``CompareStringW``), so a mask can equal a name it is longer than (``STRASSE``
+    and ``straße``). It then looks at the name's character at the mask's length,
+    which lies past the name's terminating NUL.
+    """
+
+
+# ``CompareStringW`` flags and locale as ``wcsnicomp`` passes them.
+_LOCALE_USER_DEFAULT = 0x0400
+_NORM_IGNORECASE = 0x00000001
+_SORT_STRINGSORT = 0x00001000
+_LCMAP_SORTKEY = 0x00000400
+
+
+def _windows_dlls() -> tuple[Any, Any] | None:
+    """``(user32, kernel32)``, or ``None`` off Windows.
+
+    The model branches on ``sys.platform``, which tests patch to run its Windows
+    branch elsewhere; there the helpers below use Python's case mapping instead.
+    """
+    import ctypes
+
+    windll = getattr(ctypes, "windll", None)
+    return None if windll is None else (windll.user32, windll.kernel32)
+
+
+@functools.lru_cache(maxsize=4096)
+def _windows_char_upper(char: str) -> str:
+    dlls = _windows_dlls()
+    if dlls is None:
+        upper = char.upper()
+        return upper if len(upper) == 1 else char
+    import ctypes
+
+    char_upper = dlls[0].CharUpperW
+    char_upper.argtypes = [ctypes.c_void_p]
+    char_upper.restype = ctypes.c_void_p
+    return chr((char_upper(ord(char) & 0xFFFF) or 0) & 0xFFFF)
+
+
 def _unrar_fold(char: str) -> str:
-    """``touppercw``: identity on Unix; one character's upper case on Windows."""
+    """``touppercw``: identity on Unix; ``CharUpperW`` of one UTF-16 unit on Windows.
+
+    Python's ``str.upper`` is not the same table: it folds ``ı`` (U+0131) to ``I``,
+    where ``CharUpperW`` leaves it (measured on Windows CI, unrar 7.23, user locale
+    en-US). The child shares this process's user locale, so the same call gives the
+    same answer.
+    """
     if sys.platform != "win32":
         return char
-    upper = char.upper()
-    return upper if len(upper) == 1 else char
+    return _windows_char_upper(char)
 
 
 def _unrar_fold_all(text: str) -> str:
@@ -1138,12 +1187,55 @@ def _unrar_fold_all(text: str) -> str:
     return "".join(_unrar_fold(char) for char in text)
 
 
-def _unrar_same(left: str, right: str) -> bool:
-    if len(left) != len(right):
-        return False
+def _windows_compare_equal(left: str, right: str) -> bool:
+    """``CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE|SORT_STRINGSORT)``: equal?"""
+    dlls = _windows_dlls()
+    if dlls is None:
+        return _unrar_fold_all(left) == _unrar_fold_all(right)
+    import ctypes
+
+    result = dlls[1].CompareStringW(
+        _LOCALE_USER_DEFAULT,
+        _NORM_IGNORECASE | _SORT_STRINGSORT,
+        ctypes.create_unicode_buffer(left, len(left) + 1),
+        len(left),
+        ctypes.create_unicode_buffer(right, len(right) + 1),
+        len(right),
+    )
+    if result == 0:
+        raise UnrarSelectionUnknown(f"CompareStringW failed for {left!r}")
+    return bool(result == 2)
+
+
+def _windows_sort_key(text: str) -> str:
+    """A key equal for two strings exactly when :func:`_windows_compare_equal` is."""
+    dlls = _windows_dlls()
+    if dlls is None:
+        return "\0sortkey:" + _unrar_fold_all(text)
+    import ctypes
+
+    map_string = dlls[1].LCMapStringW
+    flags = _LCMAP_SORTKEY | _NORM_IGNORECASE | _SORT_STRINGSORT
+    source = ctypes.create_unicode_buffer(text, len(text) + 1)
+    size = map_string(_LOCALE_USER_DEFAULT, flags, source, len(text), None, 0)
+    if size <= 0:
+        raise UnrarSelectionUnknown(f"LCMapStringW failed for {text!r}")
+    out = ctypes.create_string_buffer(size)
+    map_string(_LOCALE_USER_DEFAULT, flags, source, len(text), out, size)
+    return "\0sortkey:" + out.raw[:size].hex()
+
+
+def _unrar_ncompare(wild: str, name: str, count: int) -> bool:
+    """``mwcsnicompc(wild, name, count) == 0`` as ``CmpName`` calls it.
+
+    On Unix ``wcsncmp``. On Windows ``wcsnicomp``, which gives ``CompareStringW``
+    each string's first ``count`` units, counting its terminating NUL when the
+    string is shorter: a linguistic, case-insensitive comparison, so the two sides
+    can differ in length (``STRASSE`` and ``straße``) or in characters it ignores.
+    """
     if sys.platform != "win32":
-        return left == right
-    return all(_unrar_fold(a) == _unrar_fold(b) for a, b in zip(left, right))
+        return wild[:count] == name[:count]
+    return _windows_compare_equal((wild + "\0")[:count], (name + "\0")[:count])
 
 
 def _unrar_match(pattern: str, string: str, *, dot_rule: bool) -> bool:
@@ -1189,16 +1281,21 @@ def _unrar_cmp_name(wild: str, name: str, *, dot_rule: bool) -> bool:
     wild_pos = _unrar_name_pos(wild)
     # A mask selects everything below the path it names: ``ab`` selects ``ab/x``,
     # and, because both separators are tested on every platform, ``ab\\x``.
-    if _unrar_same(name[: len(wild)], wild) and (
-        len(name) == len(wild) or name[len(wild)] in ("\\", "/")
-    ):
-        return True
+    if _unrar_ncompare(wild, name, len(wild)):
+        if len(wild) > len(name):
+            # Only Windows' linguistic comparison gets here; unrar then reads
+            # ``Name[WildLength]``, past the name's NUL.
+            raise UnrarSelectionUnknown(
+                f"the mask {wild!r} equals {name!r} but is longer than it"
+            )
+        if len(name) == len(wild) or name[len(wild)] in ("\\", "/"):
+            return True
     if _unrar_is_wild(wild[:wild_pos]):
         return _unrar_match(wild, name, dot_rule=dot_rule)
     if _unrar_is_wild(wild):
-        if wild_pos > 0 and not _unrar_same(name[:wild_pos], wild[:wild_pos]):
+        if wild_pos > 0 and not _unrar_ncompare(wild, name, wild_pos):
             return False
-    elif wild_pos != name_pos or not _unrar_same(name[:wild_pos], wild[:wild_pos]):
+    elif wild_pos != name_pos or not _unrar_ncompare(wild, name, wild_pos):
         return False
     return _unrar_match(wild[wild_pos:], name[name_pos:], dot_rule=dot_rule)
 
@@ -1284,20 +1381,34 @@ def unrar_selection_keys(view: str) -> tuple[str, ...]:
     An exact mask (no ``?``) selects a name only when, after ``ConvertPath``, it
     equals the name up to trailing dots (exactly, without the dot rule), or equals
     the part of the name before one of its separators. The keys are those strings,
-    folded on Windows. The index is a filter: :func:`unrar_mask_selects` still
-    decides.
+    folded on Windows, where the comparisons ``CompareStringW`` makes add their sort
+    keys. The index is a filter: :func:`unrar_mask_selects` still decides.
     """
     if sys.platform == "win32":
         view = view.replace("/", "\\")  # as in :func:`unrar_mask_selects`
     name = view[_unrar_convert_path_offset(view) :]
     folded = _unrar_fold_all(name)
     keys = {folded.rstrip(".")}
+    prefixes = [name]
     for separator in ("/", "\\"):
         index = folded.find(separator)
         while index != -1:
             keys.add(folded[:index])
+            prefixes.append(name[:index])
             index = folded.find(separator, index + 1)
+    if sys.platform == "win32":
+        # Windows compares the mask with the name's start, and an exact mask's
+        # directory with the name's, linguistically (:func:`_unrar_ncompare`), so
+        # strings whose folds differ can still be equal.
+        keys.update(_windows_sort_key(prefix) for prefix in prefixes)
+        keys.add(_windows_split_key(name).rstrip("."))
     return tuple(keys)
+
+
+def _windows_split_key(text: str) -> str:
+    """The directory's sort key, then the folded last component."""
+    pos = _unrar_name_pos(text)
+    return _windows_sort_key(text[:pos]) + "|" + _unrar_fold_all(text[pos:])
 
 
 def unrar_mask_keys(mask_view: str) -> tuple[str, ...] | None:
@@ -1311,6 +1422,15 @@ def unrar_mask_keys(mask_view: str) -> tuple[str, ...] | None:
     if _unrar_is_wild(mask):
         return None
     folded = _unrar_fold_all(mask)
+    if sys.platform == "win32":
+        split = _windows_split_key(mask)
+        return (
+            folded,
+            folded.rstrip("."),
+            _windows_sort_key(mask),
+            split,
+            split.rstrip("."),
+        )
     return (folded, folded.rstrip("."))
 
 

@@ -112,6 +112,7 @@ from archivey.internal.backends.rar_unrar import (
     UnrarMask,
     UnrarMaskRefusal,
     UnrarNameRefusal,
+    UnrarSelectionUnknown,
     decompress_rar3_blob,
     find_rarlab_unrar,
     open_unrar_p,
@@ -3932,11 +3933,17 @@ class RarReader(BaseArchiveReader):
                 host_os=raw.host_os,
                 file_version=raw.file_version,
             )
+            keys: tuple[str, ...] = ()
+            try:
+                if view is not None:
+                    keys = unrar_selection_keys(view)
+            except UnrarSelectionUnknown:
+                view = None
             views.append(view)
             if view is None:
                 unknown.append(position)
                 continue
-            for key in unrar_selection_keys(view):
+            for key in keys:
                 by_key.setdefault(key, []).append(position)
         names = _UnrarNames(views, positions, by_key, unknown)
         self._unrar_names_cache = names
@@ -3976,7 +3983,10 @@ class RarReader(BaseArchiveReader):
         """
         names = self._unrar_names()
         target_position = names.positions[id(target)]
-        keys = unrar_mask_keys(mask_view)
+        try:
+            keys = unrar_mask_keys(mask_view)
+        except UnrarSelectionUnknown:
+            keys = None  # test every member instead
         candidates: Iterable[int]
         if keys is None:
             candidates = range(len(self._members))
@@ -4001,11 +4011,21 @@ class RarReader(BaseArchiveReader):
         # only when the two disagree up to the target: a member after it changes
         # neither the skip nor the cost, and counting it in ``others`` under either
         # rule only bounds the read, which is safe.
-        with_dot_rule = self._unrar_selected(mask_view, considered, dot_rule=True)
+        with_dot_rule = self._unrar_selected(
+            mask_view,
+            considered,
+            dot_rule=True,
+            target=target,
+            target_position=target_position,
+        )
         selected = with_dot_rule
         if unrar_dot_rule_can_matter(mask_view):
             without_dot_rule = self._unrar_selected(
-                mask_view, with_dot_rule, dot_rule=False
+                mask_view,
+                with_dot_rule,
+                dot_rule=False,
+                target=target,
+                target_position=target_position,
             )
             up_to_target = [p for p in with_dot_rule if p <= target_position]
             if up_to_target != [p for p in without_dot_rule if p <= target_position]:
@@ -4066,7 +4086,13 @@ class RarReader(BaseArchiveReader):
         return prefix, others, cost
 
     def _unrar_selected(
-        self, mask_view: str, candidates: list[int], *, dot_rule: bool
+        self,
+        mask_view: str,
+        candidates: list[int],
+        *,
+        dot_rule: bool,
+        target: ArchiveMember,
+        target_position: int,
     ) -> list[int]:
         """The positions among ``candidates`` that the mask selects under ``dot_rule``."""
         views = self._unrar_names().views
@@ -4074,7 +4100,24 @@ class RarReader(BaseArchiveReader):
         for position in candidates:
             view = views[position]
             assert view is not None, "_unrar_selection drops members with no view"
-            if unrar_mask_selects(mask_view, view, dot_rule=dot_rule):
+            try:
+                if unrar_mask_selects(mask_view, view, dot_rule=dot_rule):
+                    selected.append(position)
+            except UnrarSelectionUnknown:
+                if position <= target_position:
+                    raise _UnrarCannotAddress(
+                        self._unrar_name_refused(
+                            target,
+                            "whether unrar's mask for it selects "
+                            + (
+                                "it"
+                                if position == target_position
+                                else "an earlier member"
+                            )
+                            + " depends on memory unrar reads past that member's name",
+                        )
+                    ) from None
+                # After the target, counting it only bounds the read.
                 selected.append(position)
         return selected
 
