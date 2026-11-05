@@ -185,7 +185,8 @@ def read_stored_header(
     | None = None,
     excluded: frozenset[OptionalLibrary],
 ) -> StoredHeader:
-    """Read the header at ``offset`` (``header_size`` bytes) again and parse it.
+    """Read the header at ``offset`` (``size`` bytes, the walk's ``header_size``) again
+    and parse it.
 
     ``read_at(offset, n)`` reads ``n`` bytes of the concatenated volume space.
     For a header-encrypted archive ``offset`` is the first ciphertext byte, right after
@@ -437,7 +438,9 @@ def _patch_rar3(raw: bytes, name: bytes | None, data_size: int, join: bool) -> b
 class SyntheticMember:
     """One member to append: its patched header and the packed bytes after it.
 
-    ``data`` yields the streams to copy, in order, and ``data_size`` is their total.
+    ``data`` returns the streams to copy, in order, each with its size, and
+    ``data_size`` is their total. :meth:`SyntheticArchive.append` closes every
+    stream ``data`` returns, the ones a failed copy leaves unread included.
     """
 
     header: bytes
@@ -454,25 +457,32 @@ class SyntheticArchive:
 
     The file always ends with an ENDARC header: :meth:`append` writes the new members
     over the old ENDARC and a new one after them, so nothing already in the file is
-    copied again. The MAIN header's solid flag is set once the file holds more than
-    one member. The file is created with mode 0600 (``mkstemp``) and removed by
-    :meth:`close`.
+    copied again. ``solid`` says the members form one solid chain; the MAIN header's
+    solid flag is then set once the file holds more than one member. The file is
+    created with mode 0600 (``mkstemp``; on POSIX) and removed by :meth:`close`.
+
+    No handle stays open between calls. ``unrar`` on Windows opens its archive with
+    read sharing only, so a write handle held here would make it fail to open the
+    file (exit 6).
     """
 
-    def __init__(self, version: int, *, directory: str | None = None) -> None:
+    def __init__(
+        self, version: int, *, solid: bool = False, directory: str | None = None
+    ) -> None:
         self.version = version
+        self.solid = solid
         self._main_at = len(signature(version))
         fd, name = tempfile.mkstemp(
             prefix="archivey-rar-", suffix=".rar", dir=directory
         )
         self.path = Path(name)
-        self._file: BinaryIO | None = os.fdopen(fd, "w+b")
+        self._closed = False
         try:
-            self._file.write(signature(version))
-            self._file.write(main_header(version, solid=False))
-            self._end_at = self._file.tell()
-            self._file.write(end_header(version))
-            self._file.flush()
+            with os.fdopen(fd, "wb") as f:
+                f.write(signature(version))
+                f.write(main_header(version, solid=False))
+                self._end_at = f.tell()
+                f.write(end_header(version))
         except BaseException:
             self.close()
             raise
@@ -493,58 +503,69 @@ class SyntheticArchive:
         """Write ``members`` after the ones already in the file, then a new ENDARC.
 
         A stream that ends before its declared size raises :class:`TruncatedError`;
-        the file then still ends with the old ENDARC, so it is what it was.
+        the file then still ends with the old ENDARC, so it is what it was. Streams
+        that add up to other than the member's ``data_size`` are a caller bug and
+        raise ``ValueError``, the file again left as it was.
         """
-        f = self._file
-        if f is None:
+        if self._closed:
             raise ValueError("synthetic archive is closed")
         added = 0
-        f.seek(self._end_at)
         end = self._end_at
-        try:
-            for member in members:
-                f.write(member.header)
-                for stream, size in member.data():
-                    _copy_exact(stream, f, size)
-                end += member.size
-                added += 1
-            f.write(end_header(self.version))
-            f.truncate()
-        except BaseException:
+        with self.path.open("r+b") as f:
             f.seek(self._end_at)
-            f.write(end_header(self.version))
-            f.truncate()
-            f.flush()
-            raise
-        if self.count < 2 <= self.count + added:
-            f.seek(self._main_at)
-            f.write(main_header(self.version, solid=True))
-        f.flush()
+            try:
+                for member in members:
+                    f.write(member.header)
+                    _copy_all(member.data(), f)
+                    end += member.size
+                    if f.tell() != end:
+                        raise ValueError(
+                            "synthetic RAR member data does not add up to its "
+                            f"declared {member.data_size} bytes"
+                        )
+                    added += 1
+                f.write(end_header(self.version))
+                f.truncate()
+            except BaseException:
+                f.seek(self._end_at)
+                f.write(end_header(self.version))
+                f.truncate()
+                raise
+            if self.solid and self.count < 2 <= self.count + added:
+                # ``unrar`` keeps the decoder's state from one member to the next
+                # only in an archive whose MAIN header says it is solid; otherwise
+                # it does not decode the chain's earlier members, and the target
+                # decodes against an empty window (13 solid fixture sets fail).
+                f.seek(self._main_at)
+                f.write(main_header(self.version, solid=True))
         self.count += added
         self._end_at = end
         self.size = end + len(end_header(self.version))
 
     def close(self) -> None:
         """Remove the file. Safe to call more than once."""
-        f, self._file = self._file, None
-        if f is not None:
-            f.close()
+        if not self._closed:
+            self._closed = True
             self.path.unlink(missing_ok=True)
 
 
-def _copy_exact(src: BinaryIO, dst: BinaryIO, size: int) -> None:
-    remaining = size
+def _copy_all(parts: Iterable[tuple[BinaryIO, int]], dst: BinaryIO) -> None:
+    """Copy each ``(stream, size)`` of ``parts`` exactly, and close every stream."""
+    pending = list(parts)
     try:
-        while remaining > 0:
-            chunk = src.read(min(remaining, _COPY_CHUNK))
-            if not chunk:
-                raise TruncatedError(
-                    f"RAR member data ends {remaining} bytes before its packed size"
-                )
-            dst.write(chunk)
-            remaining -= len(chunk)
+        for stream, size in pending:
+            remaining = size
+            while remaining > 0:
+                chunk = stream.read(min(remaining, _COPY_CHUNK))
+                if not chunk:
+                    raise TruncatedError(
+                        f"RAR member data ends {remaining} bytes before its packed size"
+                    )
+                dst.write(chunk)
+                remaining -= len(chunk)
     finally:
-        src.close()
+        for stream, _ in pending:
+            stream.close()
 
 
 # --------------------------------------------------------------------------- planning
