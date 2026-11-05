@@ -70,7 +70,10 @@ from archivey.internal.streams.codecs.ppmd_child import (
     open_ppmd_child,
     ppmd_child_unavailable_reason,
 )
-from archivey.internal.streams.decompressor_stream import retire_decoder_children
+from archivey.internal.streams.decompressor_stream import (
+    _COMPRESSED_READ_SIZE_MAX,
+    retire_decoder_children,
+)
 from tests.conftest import requires, requires_binary, run_7z
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_ppmd_raw_streams import (
@@ -465,7 +468,9 @@ def test_none_holds_input_only_up_to_what_one_child_request_carries(
 ) -> None:
     """``max_held_input=None`` still feeds a member in pieces past the ceiling, since
     the held input goes to the child in one request whose length field is 32 bits."""
-    assert ppmd_decoder._MAX_HELD_INPUT_CEILING < (1 << 32) - FRAME.size
+    # One request: the held input, the feed that took it past the limit, a call header.
+    request = ppmd_decoder._MAX_HELD_INPUT_CEILING + _COMPRESSED_READ_SIZE_MAX + 4096
+    FRAME.pack(0, 0, request)  # its 32-bit length field takes it
     data = random.Random(7).randbytes(4096)
     packed = _encode_ppmd7(data)
     monkeypatch.setattr(ppmd_decoder, "_MAX_HELD_INPUT_CEILING", 64)

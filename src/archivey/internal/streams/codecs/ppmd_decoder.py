@@ -69,8 +69,12 @@ _PPMD_MAX_REQUEST = (1 << 31) - 1
 _DEFAULT_MAX_HELD_INPUT = DecoderLimits().max_ppmd_held_input
 
 # The most input held and handed over whole, whatever ``max_ppmd_held_input`` says
-# (``None`` included). Held input goes to the child in one request, whose frame records
-# its length in 32 bits (``decoder_worker.FRAME``); a member past this is fed in pieces.
+# (``None`` included); a member past it is fed in pieces. Held input goes to the child
+# in one request, whose frame records its length in an unsigned 32-bit field
+# (``decoder_worker.FRAME``). The request carries the held input, the chunk that took it
+# past the limit and a small call header, so the ceiling is half the field: a round
+# bound that leaves room for both without tying it to their sizes. The same ceiling
+# holds under ``NONE``, so that where a member decodes never changes how it is fed.
 _MAX_HELD_INPUT_CEILING = 1 << 31
 
 # Input after a member's declared output that a ``refuse_input_after_end`` decoder
