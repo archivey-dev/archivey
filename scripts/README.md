@@ -17,7 +17,10 @@ a different sort of attention.
 | `tests/` | The tests of everything here; they never import `archivey` | the pull request set (in the lint job) |
 
 "Every leg" means the merge queue runs the whole matrix. "The pull request set" means
-it runs only what a pull request push runs. `ci/ci_scope.py` holds the rule:
+it runs only what a pull request push runs. A pull request push whose diff stays in
+those four folders (and other paths no job reads, such as docs) runs the lint job
+alone, which runs `scripts/tests/`; the merge queue then runs the pull request set on
+the merged tree. `ci/ci_scope.py` holds the rule:
 `NOT_FULL` lists the last four folders, and everything else under `scripts/` counts as
 a full-run path, a new folder included. `tests/test_ci_scope.py` fails when a library
 test reads, or `ci.yml` runs, a file in one of the four.

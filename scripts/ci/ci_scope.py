@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Decide whether a merge-queue run needs the whole CI matrix.
+"""Decide whether a CI run needs the library's tests.
 
-Reads the changed paths of a merge group, one per line, on stdin, and prints
-``full=true`` or ``full=false`` for ``$GITHUB_OUTPUT``. A group that changes none of
-`FULL` (the library, the plugin packages, the library tests, the dependencies, the CI
-that tests them, and every script outside `NOT_FULL`) skips the jobs a pull request
-push skips too: the `test-queue` legs, the distribution unar packages, PyPy and the
-short Atheris fuzz. It still runs every job a pull request runs, on the merged tree.
+Reads the changed paths of a pull request or a merge group, one per line, on stdin,
+and prints ``full=true`` or ``full=false`` for ``$GITHUB_OUTPUT``. A diff that changes
+none of `FULL` (the library, the plugin packages, the library tests, the dependencies,
+the CI that tests them, and every script outside `NOT_FULL`) says ``full=false``. On a
+pull request push that runs only the lint job, which runs the script tests. In the
+merge queue it skips the jobs a pull request push skips: the `test-queue` legs, the
+distribution unar packages, PyPy and the short Atheris fuzz; the group still runs every
+job of the pull request set, on the merged tree, so the library is tested once before
+the change merges.
 ``--truncated`` (the compare API stopped listing files) and an empty list both mean the
 full run, since an unknown diff is not a small one.
 
@@ -51,7 +54,8 @@ def _covers(prefixes: tuple[str, ...], path: str) -> bool:
 
 
 def needs_full(paths: list[str], *, truncated: bool = False) -> bool:
-    """Whether a merge group changing ``paths`` runs every job."""
+    """Whether a pull request or merge group changing ``paths`` needs the library's
+    tests."""
     if truncated or not paths:
         return True
     return any(_covers(FULL, p) and not _covers(NOT_FULL, p) for p in paths)

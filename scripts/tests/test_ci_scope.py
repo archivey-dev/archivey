@@ -1,9 +1,10 @@
 """`scripts/ci/ci_scope.py` and the `scope` job in ci.yml that uses it.
 
-A merge group that changes no library, library test, dependency or CI path skips the
-queue-only jobs. A wrong answer here either runs the whole matrix for nothing or, worse,
-lets a library change into main without the legs only the queue runs, so both the path
-rule and the wiring are pinned.
+A pull request or merge group that changes no library, library test, dependency or CI
+path skips some jobs: the library legs of the pull request set on a pull request push,
+the queue-only jobs in the merge queue. A wrong answer here either runs the whole
+matrix for nothing or, worse, lets a library change into main without the legs only the
+queue runs, so both the path rule and the wiring are pinned.
 """
 
 from __future__ import annotations
@@ -20,6 +21,9 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "ci" / "ci_scope.py"
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 QUEUE_ONLY = ("test-queue", "unar-distro-packages", "pypy", "atheris")
+#: The pull request set's library legs: a pull request push skips them when `scope`
+#: says ``full=false``; the merge queue always runs them.
+PR_LIBRARY = ("test", "free-threaded-concurrency", "benchmark", "lzo-oracle")
 
 _spec = importlib.util.spec_from_file_location("ci_scope", SCRIPT)
 assert _spec and _spec.loader
@@ -188,7 +192,9 @@ def test_the_queue_only_jobs_wait_on_scope_and_run_when_it_did_not() -> None:
     runs it with the dev group, which has PyYAML."""
     yaml = pytest.importorskip("yaml")
     jobs = yaml.safe_load(CI.read_text())["jobs"]
-    assert jobs["scope"]["if"] == "github.event_name == 'merge_group'"
+    assert jobs["scope"]["if"] == (
+        "github.event_name == 'merge_group' || github.event_name == 'pull_request'"
+    )
     for name in QUEUE_ONLY:
         job = jobs[name]
         assert _needs(job) == ["scope"], name
@@ -196,6 +202,29 @@ def test_the_queue_only_jobs_wait_on_scope_and_run_when_it_did_not() -> None:
         assert "needs.scope.outputs.full != 'false'" in job["if"], name
     # The gate fails a group whose scope failed, and every queue-only job counts.
     assert {"scope", *QUEUE_ONLY} <= set(_needs(jobs["gate"]))
-    # Nothing else waits on scope: the pull request set starts at once.
+    # Besides those, only the pull request set's library legs wait on scope; lint,
+    # which runs the script tests, starts at once.
     waiting = {n for n, j in jobs.items() if "scope" in _needs(j)}
-    assert waiting - {"gate"} == set(QUEUE_ONLY)
+    assert waiting - {"gate"} == {*QUEUE_ONLY, *PR_LIBRARY}
+
+
+def test_a_script_only_pull_request_skips_the_library_legs_only_there() -> None:
+    """Each library leg of the pull request set runs unless it is a pull request push
+    whose scope said `full=false`: the merge queue, the daily run and a dispatch run it,
+    and so does a pull request whose scope failed or found library paths."""
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load(CI.read_text())["jobs"]
+    expected = (
+        "${{ !cancelled() && (github.event_name != 'pull_request' "
+        "|| needs.scope.outputs.full != 'false') }}"
+    )
+    for name in PR_LIBRARY:
+        job = jobs[name]
+        assert _needs(job) == ["scope"], name
+        assert job["if"] == expected, name
+        assert {name} <= set(_needs(jobs["gate"])), name
+    env = next(
+        step["env"] for step in jobs["scope"]["steps"] if step.get("id") == "scope"
+    )
+    assert "github.event.pull_request.base.sha" in env["BASE"]
+    assert "github.event.pull_request.head.sha" in env["HEAD"]
