@@ -600,7 +600,7 @@ _INDEX_SOURCES = {
     "xz": "xz block index",
     "lzip": "lzip member trailers",
     "zstd": "zstd seek table",
-    "gzip": "BGZF block sizes",
+    "gzip": "BGZF or mgzip block sizes",
 }
 
 

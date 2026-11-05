@@ -23,7 +23,14 @@ from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.codecs.bgzf_index import walk_bgzf
 from archivey.internal.streams.decompressor_stream import DecompressorStream
-from tests.streams_util import BGZF_EOF, CountingBytesIO, make_bgzf, make_bgzf_block
+from tests.streams_util import (
+    BGZF_EOF,
+    CountingBytesIO,
+    make_bgzf,
+    make_bgzf_block,
+    make_mgzip,
+    make_mgzip_member,
+)
 
 # Incompressible, so the blocks are large next to the reads a walk makes.
 PARTS = [random.Random(i).randbytes(40_000 + i) for i in range(6)]
@@ -426,3 +433,86 @@ def test_damage_at_an_honest_block_raises_after_the_walk_is_dropped() -> None:
     (report,) = _degraded(seen)
     assert report.context.scan == "decode_check"
     assert report.context.error_type == "SeekIndexContradicted"
+
+
+# mgzip: large members, an ``MZ`` subfield holding the DEFLATE data's size, an ``FNAME``.
+
+
+@pytest.mark.parametrize("name", [b"", b"reads.fastq"])
+def test_mgzip_walk_gives_the_size_and_member_points_without_decoding(
+    name: bytes,
+) -> None:
+    data = make_mgzip(PARTS, name=name)
+    source = CountingBytesIO(data)
+    with _open(source) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(FULL)
+        # Two small reads per member, the header and the ISIZE; nothing inflated.
+        assert source.bytes_read < len(data)
+        assert _points(stream) == STARTS
+        for pos in (STARTS[4] + 7, 3, STARTS[2], len(FULL) - 1):
+            assert stream.seek(pos) == pos
+            assert stream.read(300) == FULL[pos : pos + 300]
+
+
+def test_mgzip_backward_seek_resumes_at_the_member_it_lands_in() -> None:
+    with _open(io.BytesIO(make_mgzip(PARTS))) as stream:
+        stream.seek(STARTS[5] + 10)
+        assert stream.read(10) == FULL[STARTS[5] + 10 : STARTS[5] + 20]
+        assert _engine(stream).nearest_resume_offset(STARTS[3] + 5) == STARTS[3]
+        stream.seek(STARTS[3] + 5)
+        assert stream.read(10) == FULL[STARTS[3] + 5 : STARTS[3] + 15]
+
+
+def test_mgzip_then_plain_member_keeps_the_walked_points_and_no_size() -> None:
+    tail = random.Random(9).randbytes(5000)
+    data = make_mgzip(PARTS[:3]) + gzip.compress(tail, mtime=0)
+    blocks, size, _ = walk_bgzf(io.BytesIO(data), len(data))
+    assert [b.decompressed_start for b in blocks] == STARTS[:3]
+    assert size is None
+    with _open(io.BytesIO(data)) as stream:
+        assert stream.read() == b"".join(PARTS[:3]) + tail
+
+
+def test_a_cut_mgzip_member_ends_the_walk_without_a_size() -> None:
+    data = make_mgzip(PARTS)[:-100]
+    blocks, size, _ = walk_bgzf(io.BytesIO(data), len(data))
+    assert len(blocks) == len(PARTS) - 1
+    assert size is None
+
+
+def test_an_mgzip_header_without_its_name_end_ends_the_walk() -> None:
+    member = make_mgzip_member(b"x" * 100, name=b"n" * 70_000)
+    blocks, size, _ = walk_bgzf(io.BytesIO(member), len(member))
+    assert (blocks, size) == ([], None)
+
+
+def test_mgzip_walk_over_the_cap_is_thinned_with_its_own_scan_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey.internal.streams import decompressor_stream
+
+    monkeypatch.setattr(decompressor_stream, "MAX_SEEK_POINTS", 4)
+    parts = [bytes([i]) * (1000 + i) for i in range(20)]
+    data = make_mgzip(parts)
+    full = b"".join(parts)
+    collector, seen = _collector()
+    with _open(io.BytesIO(data), collector=collector) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(full)
+        degraded = _degraded(seen)
+        assert degraded[-1].context.scan == "mgzip_blocks"
+        stream.seek(len(full) // 2)
+        assert stream.read(1500) == full[len(full) // 2 : len(full) // 2 + 1500]
+
+
+def test_an_mgzip_member_size_that_lies_is_caught_by_a_forward_read() -> None:
+    """The sizes are trusted (threat-model O17) until a decode contradicts them."""
+    members = [bytearray(make_mgzip_member(p, name=b"d")) for p in PARTS]
+    # Member 2's ISIZE claims one byte more: the walk's later points are off by one.
+    trailer = len(members[2]) - 4
+    members[2][trailer:] = struct.pack("<I", len(PARTS[2]) + 1)
+    data = b"".join(bytes(m) for m in members)
+    with _open(io.BytesIO(data)) as stream:
+        stream.seek(0, io.SEEK_END)
+        stream.seek(0)
+        with pytest.raises(CorruptionError):
+            stream.read()

@@ -155,6 +155,17 @@ The size is `None`, as for plain gzip, until a seek walks the file or a read rea
 end. A `.gzi` index is a separate file, which a stream cannot find, so it is not read. Under
 `rapidgzip` none of this applies: its own index serves the seeks.
 
+**mgzip members.** When the first member carries an `MZ` subfield instead of `BC`, the walk
+reads mgzip: the subfield holds the size of the member's DEFLATE data (not of the whole
+member, whatever mgzip's own `get_index` assumes), so the member size is the header
+parsed to its end (`FNAME`, `FCOMMENT`, `FHCRC`), that size and the 8-byte trailer. Its
+members are large, so here the walk does jump: a 512-byte header read per member (up to
+64 KiB for a long name) and a 4-byte ISIZE read at its end. ISIZE is the input size
+modulo 2^32, so a member written from 4 GiB of input or more gives wrong points after it,
+which a forward read catches like any other contradicted index. The rest matches BGZF:
+it stops quietly at the first member without `MZ`, trusts the sizes (O17), and thins past
+the seek-table cap with scan `mgzip_blocks`.
+
 **When `rapidgzip` is used.** `use_rapidgzip` is an `AcceleratorMode`, `AUTO` by default:
 
 | Mode | gzip, zlib, raw DEFLATE |
@@ -568,6 +579,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `gzip -n` | Reads; no name, `modified=None` |
 | `pigz`, `pigz -i` | Reads. `-i` resets the window at each block, which archivey does not use for seeking |
 | `bgzip` (BGZF, the genomics format) | Reads, as a run of 64 KiB members; no `FNAME`. On declared seek demand the block size in `FEXTRA` gives a seek point per member (§2.3) |
+| `mgzip` (multi-threaded Python writer) | Reads, as a run of large members (100 MB of input by default), each with the base name in `FNAME`. On declared seek demand the `MZ` subfield (the member's DEFLATE size) gives a seek point per member (§2.3) |
 | Two `gzip` files concatenated | Reads both payloads |
 | A member followed by NUL padding | Reads; the padding is skipped. GNU `gzip -dc` does the same, silently |
 | A member, 4 NUL bytes, a member (crafted: no known writer emits this) | Reads the first payload, then `ARCHIVE_TRAILING_DATA` at the second member's first byte, with or without `rapidgzip`; `DiagnosticPolicy.STRICT` raises. GNU `gzip -dc` writes the first payload, warns "decompression OK, trailing garbage ignored" and exits 0. 7-Zip and `bsdcat` stop after the first member; `rapidgzip` raises "Invalid gzip/zlib wrapper". Python's `gzip` reads both members (§6) |
@@ -678,9 +690,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   do not enumerate streams at decode time. So the backstop's byte scan for a further
   `1f 8b 08` stays, and the per-member sum cannot use the index. A change proposal to
   detect multi-member files through the index was closed on this finding.
-- **mgzip and `pigz -i` restart points.** mgzip names each member's size in an `MZ`
-  subfield, which the BGZF walk could read too (the `seekable-gzip-and-block-writing`
-  proposal). `pigz -i` resets the window inside one member, which only a decode finds.
+- **`pigz -i` restart points.** `pigz -i` resets the window inside one member, which
+  only a decode finds.
 - **Replaying the standard library engine after a `rapidgzip` abort**, to deliver the rest
   of a cut stream's prefix. Tracked internally.
 
