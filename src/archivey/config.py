@@ -623,7 +623,8 @@ class DecoderLimits:
     in this process: the held input, and about as much again while it is copied. A
     larger member, and a ZIP member read from a stream that cannot seek with its sizes
     stored after its data, is fed in pieces. ``None`` holds every member whose size is
-    known, at a memory cost that grows with the member."""
+    known, at a memory cost that grows with the member, up to 2 GiB: a member past that
+    is fed in pieces whatever this says."""
 
     max_ratio: float | None = 800.0
     """Largest decompressed-to-compressed ratio allowed. ``800.0``.

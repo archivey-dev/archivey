@@ -68,6 +68,11 @@ _PPMD_MAX_REQUEST = (1 << 31) - 1
 
 _DEFAULT_MAX_HELD_INPUT = DecoderLimits().max_ppmd_held_input
 
+# The most input held and handed over whole, whatever ``max_ppmd_held_input`` says
+# (``None`` included). Held input goes to the child in one request, whose frame records
+# its length in 32 bits (``decoder_worker.FRAME``); a member past this is fed in pieces.
+_MAX_HELD_INPUT_CEILING = 1 << 31
+
 # Input after a member's declared output that a ``refuse_input_after_end`` decoder
 # collects before its end check: room for an end mark and its range-coder flush.
 # Measured on pyppmd 1.3.1 and 7-Zip 23.01, that is at most 3 bytes for PPMd8 and 1
@@ -227,8 +232,13 @@ class PpmdDecoder(BaseDecoder):
         self._in_child = isolation is not ProcessIsolation.NONE
         # ``DecoderLimits.max_ppmd_held_input``: a member up to it is handed to
         # pyppmd whole, one past it in pieces, under every ``isolation`` (which decides
-        # only where the decode runs). ``None``: held whole whenever the size is known.
-        self._max_held_input = max_held_input
+        # only where the decode runs). ``None``: held whole whenever the size is known,
+        # up to ``_MAX_HELD_INPUT_CEILING``, which caps any setting.
+        self._max_held_input = (
+            _MAX_HELD_INPUT_CEILING
+            if max_held_input is None
+            else min(max_held_input, _MAX_HELD_INPUT_CEILING)
+        )
         # Compressed input held back from pyppmd until the whole member is here, or
         # compressed EOF, or ``max_held_input`` is passed. ``None`` once handed
         # over: from then on ``_decomp`` exists and the rest of this class works as

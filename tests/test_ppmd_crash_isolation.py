@@ -39,6 +39,7 @@ from archivey.exceptions import (
     ResourceUnavailableError,
     TruncatedError,
 )
+from archivey.internal.backends.sevenzip_reader import _ReadAheadStream
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.child_process import is_crash, is_no_verdict
 from archivey.internal.streams.codecs import (
@@ -56,7 +57,7 @@ from archivey.internal.streams.codecs.decoder_child import (
     DecoderChildStartError,
     start_error,
 )
-from archivey.internal.streams.codecs.decoder_worker import CALL
+from archivey.internal.streams.codecs.decoder_worker import CALL, FRAME
 from archivey.internal.streams.codecs.isolated import PPMD_ERRORS, ChildPpmdDecoder
 from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildAllocationError,
@@ -64,6 +65,7 @@ from archivey.internal.streams.codecs.ppmd_child import (
     open_ppmd_child,
     ppmd_child_unavailable_reason,
 )
+from archivey.internal.streams.decompressor_stream import retire_decoder_children
 from tests.conftest import requires, requires_binary, run_7z
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_ppmd_raw_streams import (
@@ -435,6 +437,50 @@ def test_a_failed_check_above_the_decoder_retires_its_child() -> None:
     decoder.spoil_child()
     decoder.close()
     assert POOL.idle_count() == 0
+
+
+def test_a_failed_check_retires_a_child_under_a_read_ahead_wrapper() -> None:
+    """``retire_decoder_children`` reaches a decoder under a 7z read-ahead wrapper, whose
+    member stream is held as ``_rest`` rather than ``_inner``."""
+    data = b"clean member " * 100
+    packed = _encode_ppmd7(data)
+    with _ReadAheadStream(
+        b"",
+        open_codec_stream(
+            Codec.PPMD, io.BytesIO(packed), params=_params(7, len(packed), len(data))
+        ),
+    ) as stream:
+        assert stream.read() == data
+        retire_decoder_children(stream)
+    assert POOL.idle_count() == 0
+
+
+def test_none_holds_input_only_up_to_what_one_child_request_carries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``max_held_input=None`` still feeds a member in pieces past the ceiling, since
+    the held input goes to the child in one request whose length field is 32 bits."""
+    assert ppmd_decoder._MAX_HELD_INPUT_CEILING < (1 << 32) - FRAME.size
+    data = random.Random(7).randbytes(4096)
+    packed = _encode_ppmd7(data)
+    monkeypatch.setattr(ppmd_decoder, "_MAX_HELD_INPUT_CEILING", 64)
+    decoder = ppmd_decoder.PpmdDecoder(
+        order=_ORDER,
+        mem_size=_MEM,
+        unpack_size=len(data),
+        pack_size=len(packed),
+        max_held_input=None,
+    )
+    out = bytearray()
+    for start in range(0, len(packed), 32):
+        out += decoder.feed(packed[start : start + 32]).data
+        if start >= 64:
+            assert decoder._held is None
+    out += decoder.flush().data
+    while decoder.drains_after_flush and (more := decoder.feed(b"").data):
+        out += more
+    decoder.close()
+    assert bytes(out) == data
 
 
 def test_child_decoder_round_trip_and_errors() -> None:
