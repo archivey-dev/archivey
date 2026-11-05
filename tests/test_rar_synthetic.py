@@ -30,7 +30,7 @@ from archivey.internal.backends.rar_parser import (
 )
 from archivey.internal.backends.rar_reader import RarReader
 from archivey.internal.backends.rar_unrar import open_unrar_p
-from tests.conftest import requires_unrar_cli
+from tests.conftest import requires, requires_unrar_cli
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -271,6 +271,7 @@ def _reader_of(path: Path):
     return lambda offset, size: data[offset : offset + size]
 
 
+@requires("cryptography")
 def test_encrypted_header_needs_a_key() -> None:
     archive = _fixture_archive("encrypted_header__.rar", "header_password")
     member = archive.members[0]
@@ -285,6 +286,7 @@ def test_encrypted_header_needs_a_key() -> None:
         )
 
 
+@requires("cryptography")
 def test_rar5_volume_without_its_crypt_record_is_corrupt() -> None:
     archive = _fixture_archive("encrypted_header__.rar", "header_password")
     member = archive.members[0]
