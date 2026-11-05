@@ -120,8 +120,9 @@ def test_a_size_over_the_decoder_memory_cap_is_refused() -> None:
 
 
 def test_a_size_the_block_cannot_reach_is_refused_before_the_decode() -> None:
-    """1.8 GB declared over a 20-byte block: refused before the decode allocates it."""
-    forged = _mozlz4(b"", size=0x7000_0000, block=b"\x00" * 20)
+    """800 MB declared over a 20-byte block (twice that fits the default memory cap):
+    refused before the decode allocates it."""
+    forged = _mozlz4(b"", size=0x3000_0000, block=b"\x00" * 20)
     with pytest.raises(CorruptionError, match="can decode to"):
         _read(io.BytesIO(forged), format=ArchiveFormat.MOZLZ4)
 
@@ -147,3 +148,54 @@ def test_a_seekable_member_seeks_back_and_forward() -> None:
             assert stream.read(50) == _DATA[20_000:20_050]
             stream.seek(10)
             assert stream.read(5) == _DATA[10:15]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_block_larger_than_one_feed_reads(pipe: bool, tmp_path: Path) -> None:
+    """Seeded random hex compresses about 2:1, so the block spans many feeds."""
+    import random
+
+    data = random.Random(3).randbytes(150_000).hex().encode()
+    blob = _mozlz4(data)
+    assert len(blob) > 3 * 65536
+    if pipe:
+        with open_archive(NonSeekableBytesIO(blob), streaming=True) as archive:
+            got = [stream.read() for _member, stream in archive.stream_members()]
+        assert got == [data]
+    else:
+        path = tmp_path / "sessionstore.jsonlz4"
+        path.write_bytes(blob)
+        assert _read(path) == data
+
+
+def test_the_cap_counts_the_decode_buffer_and_its_copy() -> None:
+    """The decode holds the buffer and the bytes copied from it: twice the size."""
+    size = len(_DATA)
+    under = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=2 * size))
+    assert _read(io.BytesIO(_mozlz4(_DATA)), config=under) == _DATA
+    over = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=2 * size - 1))
+    with pytest.raises(ResourceLimitError, match="twice"):
+        _read(io.BytesIO(_mozlz4(_DATA)), config=over)
+
+
+def test_detection_decodes_at_most_one_mebibyte(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A small file that declares more than 1 MiB is not decoded by a probe; one under
+    it is (the inner-TAR probe reaches its end)."""
+    from archivey.internal.streams.codecs.isolated import Natives
+
+    decoded: list[int] = []
+    real = Natives.lz4_block_decompress
+
+    def spy(self: Natives, block: bytes, **kwargs: object) -> bytes:
+        decoded.append(kwargs["uncompressed_size"])  # type: ignore[arg-type]
+        return real(self, block, **kwargs)
+
+    monkeypatch.setattr(Natives, "lz4_block_decompress", spy)
+    big = bytes(512) + bytes(15 << 20)
+    assert detect_format(io.BytesIO(_mozlz4(big))).format == ArchiveFormat.MOZLZ4
+    assert decoded == []
+    small = bytes(512) + bytes(100_000)
+    assert detect_format(io.BytesIO(_mozlz4(small))).format == ArchiveFormat.MOZLZ4
+    assert all(size <= 1 << 20 for size in decoded)

@@ -450,8 +450,9 @@ class DecoderLimits:
 
     **What is capped today:** both PPMd paths, and the LZMA dictionary size
     wherever an archive declares one — 7z LZMA and LZMA2, ZIP method 14, each xz
-    block, ``.lzma`` and each lzip member — and the window each zstd frame declares,
-    on ``.zst``, ZIP method 93 and 7z. RAR's dictionary is checked too, before
+    block, ``.lzma`` and each lzip member — the window each zstd frame declares,
+    on ``.zst``, ZIP method 93 and 7z, and twice the decoded size a mozlz4 header
+    declares (the decode buffer and its copy). RAR's dictionary is checked too, before
     ``unrar`` or ``unar`` is started, at what that program allocates for it. ``unar``
     writes to the whole declared dictionary, so the declared size counts. ``unrar``
     writes to it only as output is produced, so the declared size counts only up

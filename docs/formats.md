@@ -1341,8 +1341,9 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   decodes at any setting, and raises `UnsupportedFeatureError`. Detection decodes its sample with
   the window capped at 128 MiB, what `zstd -d` decodes without `--long`. Detection never
   reserves more than that, whatever the frame declares.
-- A mozlz4 header declares the decoded size, and the decoder allocates that much.
-  `DecoderLimits.max_decoder_memory` caps it, and a size over the cap raises `ResourceLimitError`.
+- A mozlz4 header declares the decoded size, and the decode holds twice that at its
+  peak (the decode buffer and the copy returned). `DecoderLimits.max_decoder_memory` caps
+  twice the size, and a size over the cap raises `ResourceLimitError`.
   A size larger than the block can decode to raises `CorruptionError` before anything is
   allocated, and so does a block longer than the declared size can encode to.
 - With the `[seekable]` rapidgzip accelerator on a seekable `.gz` (by default from 16 MiB, with
