@@ -416,8 +416,12 @@ class AesDecryptStream(ReadOnlyIOStream):
         """Ciphertext offset in the source that the next source read starts at.
 
         The plaintext handed out, plus the plaintext decrypted and not yet read,
-        past the ciphertext origin. Exact because ``read`` gathers whole blocks
-        from the source and the stage holds no partial block before the end.
+        past the ciphertext origin. Exact while reading forward and after a seek
+        that lands inside the plaintext, because ``read`` gathers whole blocks
+        from the source and the stage holds no partial block before the end. Not
+        defined after a seek past the end or once a read has reached a truncated
+        last block. On a non-seekable source it counts from where this wrapper
+        started, not from the start of the source.
         """
         self._raise_if_closed()
         return self._cipher_start + self._pos + len(self._buf)

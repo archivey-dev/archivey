@@ -346,6 +346,17 @@ def test_cipher_tell_is_the_source_cursor(cap: int, cipher_start: int) -> None:
         assert stream.cipher_tell() == source.tell()
 
 
+def test_cipher_tell_after_a_seek_inside_the_plaintext() -> None:
+    source = io.BytesIO(_encrypt(_PLAIN[:48]))
+    stream = AesDecryptStream(source, AesParams(key=_KEY, iv=_IV))
+    stream.read(3)
+    for target in (21, 5, 32, 0):
+        stream.seek(target)
+        assert stream.cipher_tell() == source.tell()
+        stream.read(2)
+        assert stream.cipher_tell() == source.tell()
+
+
 class _ResumeSource(io.BytesIO):
     """Seekable ciphertext whose resume offset is injected, not derived."""
 

@@ -712,8 +712,8 @@ padded to a 16-byte block. `_HeaderDecryptStream.tell()` is the **ciphertext** c
 including that padding — that is the correct `data_offset`, because packed data and the
 next header's salt/IV start after the padded ciphertext, not after the logical
 `header_size`. The walk reads it, and the raw handle's `tell()`, through
-`_archive_offset`, which names what both mean. Leftover bytes in `_buf` are the unread tail of the last decrypted block.
-Mid-header that tail is still-owed plaintext; after `header_size` it is AES padding.
+`_archive_offset`, which names what both mean. Leftover bytes in `_buf` are the unread
+tail of the last decrypted block. Mid-header that tail is still-owed plaintext; after `header_size` it is AES padding.
 Either way, subtracting `len(_buf)` from `tell()` is wrong: on the committed
 `encrypted_header__.rar` / `encrypted_header__rar4.rar` fixtures every FILE
 `header_size % 16 != 0`, and that counterfactual fails the parse

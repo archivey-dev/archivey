@@ -91,8 +91,8 @@ class _Readable(Protocol):
     is not an ``IOBase`` (no ``readinto`` / ``close`` / ``writable``), and the walk
     never seeks it — packed-data skips go through the underlying ``source`` so
     AES-CBC state is not asked to reposition. ``AesDecryptStream`` borrows its
-    source too, but its ``tell`` is the plaintext position, so it is not a
-    ``_Readable``.
+    source too, but its ``tell`` is the plaintext position, so it must not be
+    passed as one: it matches the protocol's shape, not its meaning.
     """
 
     def read(self, n: int = -1, /) -> bytes: ...
