@@ -50,9 +50,10 @@ class ZlibSnapshot:
     """A :class:`SeekPoint` state: ``decompressobj.copy()`` taken between two feeds.
 
     It holds everything the decode carries forward, mid-block too: the window, the bit
-    position, the Huffman tables, and the running CRC-32 and length, so a decode
-    resumed from it still checks the member's trailer. ``decomp`` is never decoded
-    from: each resume takes a copy of it (:meth:`resume`), so the point can be shared.
+    position, the Huffman tables, and the running checksum (gzip's CRC-32 and length,
+    zlib's Adler-32; raw DEFLATE has none), so a decode resumed from it still checks a
+    gzip or zlib trailer. ``decomp`` is never decoded from: each resume takes a copy of
+    it (:meth:`resume`), so the point can be shared.
     The copy is taken at the start of a feed and keeps ``unconsumed_tail``, the input
     an earlier feed left undecoded, so its compressed offset is where that feed's new
     input starts, past the tail: a resumed decoder prepends the tail to what it reads
@@ -68,6 +69,19 @@ class ZlibSnapshot:
 
     def resume(self) -> Any:
         return self.decomp.copy()
+
+
+def _snapshot_point(decomp: Any, produced: int, fed_end: int) -> SeekPoint:
+    """A snapshot seek point taken at the start of a feed: output offset ``produced``,
+    compressed offset ``fed_end``, where the feed's new input starts."""
+    return SeekPoint(
+        produced,
+        fed_end,
+        ZlibSnapshot(
+            decomp.copy(),
+            held_bytes=SNAPSHOT_HELD_BYTES + len(decomp.unconsumed_tail),
+        ),
+    )
 
 
 def _zlib_label(wbits: int) -> str:
@@ -148,16 +162,38 @@ def _decode_to_error(decomp: Any, data: bytes, max_length: int) -> bytes:
 
 
 class ZlibDecoder(_KeepsOutputBeforeErrors):
-    """Inflate a raw-deflate or zlib-wrapped stream via ``zlib.decompressobj``."""
+    """Inflate a raw-deflate or zlib-wrapped stream via ``zlib.decompressobj``.
+
+    With ``index`` (declared seek demand), a :class:`ZlibSnapshot` is a seek point
+    about every :data:`SNAPSHOT_SPACING` of output, at the start of a feed, as in
+    :class:`GzipDecoder` (in process only). A zlib stream's copy carries the running
+    Adler-32, so a decode resumed from it still checks the trailer. ``start`` is the
+    point this decoder resumes from.
+    """
 
     def __init__(
-        self, wbits: int = RAW_DEFLATE_WBITS, *, natives: Natives = IN_PROCESS
+        self,
+        wbits: int = RAW_DEFLATE_WBITS,
+        *,
+        index: bool = False,
+        start: SeekPoint | None = None,
+        natives: Natives = IN_PROCESS,
     ) -> None:
         self._wbits = wbits
+        self._index = index
         self._natives = natives
-        self._decomp = natives.zlib_decompressobj(wbits)
+        if start is not None and isinstance(start.state, ZlibSnapshot):
+            self._decomp = start.state.resume()
+        else:
+            self._decomp = natives.zlib_decompressobj(wbits)
         self._label = _zlib_label(wbits)
         self._error = partial(zlib_error, label=self._label)
+        # Source offset just past every byte fed, and output offset just past every
+        # byte produced, for snapshot points; counted only on declared seek demand.
+        self._fed_end = start.compressed_offset if start is not None else 0
+        self._produced = start.decompressed_offset if start is not None else 0
+        self._snapshots = index and hasattr(self._decomp, "copy")
+        self._last_snapshot = self._produced
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
         del inner
@@ -169,7 +205,9 @@ class ZlibDecoder(_KeepsOutputBeforeErrors):
                 truncated=truncated_message(self._label),
                 natives=self._natives,
             )
-        return ZlibDecoder(self._wbits, natives=self._natives)
+        return ZlibDecoder(
+            self._wbits, index=self._index, start=point, natives=self._natives
+        )
 
     @override
     def close(self) -> None:
@@ -187,13 +225,20 @@ class ZlibDecoder(_KeepsOutputBeforeErrors):
             return DecodeOut(b"")
         # unconsumed_tail holds input not yet consumed under a prior max_length cap;
         # prepend it exactly once (mirrors gzip._GzipReader).
-        data = self._decomp.unconsumed_tail + chunk
+        tail = self._decomp.unconsumed_tail
+        data = tail + chunk
         if not data:
             return DecodeOut(b"")
+        points: list[SeekPoint] = []
+        if self._snapshots and self._produced - self._last_snapshot >= SNAPSHOT_SPACING:
+            self._last_snapshot = self._produced
+            points.append(_snapshot_point(self._decomp, self._produced, self._fed_end))
+        self._fed_end += len(chunk)
         out = self._inflate_step(data, max_length, self._error)
+        self._produced += len(out)
         if self._raise_next is None and self._decomp.eof:
             self._past_end(self._decomp.unused_data)
-        return DecodeOut(out)
+        return DecodeOut(out, points)
 
     def flush(self) -> DecodeOut:
         self._raise_pending()
@@ -356,14 +401,7 @@ class GzipDecoder(_KeepsOutputBeforeErrors):
             if data and self._snapshot_due():
                 self._last_snapshot = self._produced
                 points.append(
-                    SeekPoint(
-                        self._produced,
-                        self._fed_end,
-                        ZlibSnapshot(
-                            self._decomp.copy(),
-                            held_bytes=SNAPSHOT_HELD_BYTES + len(tail),
-                        ),
-                    )
+                    _snapshot_point(self._decomp, self._produced, self._fed_end)
                 )
         self._fed_end += len(chunk)
 
@@ -497,12 +535,19 @@ def ZlibDecompressorStream(
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
     refuse_input_after_end: bool = False,
+    index: bool = False,
     natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
-    """Inflate a raw-deflate or zlib-wrapped stream (forward-only)."""
+    """Inflate a raw-deflate or zlib-wrapped stream.
+
+    A backward seek decodes from the start, unless ``index`` (declared seek demand)
+    makes zlib snapshots seek points (:class:`ZlibDecoder`).
+    """
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: ZlibDecoder(wbits, natives=natives),
+        make_decoder=lambda point, _i: ZlibDecoder(
+            wbits, index=index, start=point, natives=natives
+        ),
         collector=collector,
         codec_name=_zlib_label(wbits),
         report_trailing_data=report_trailing_data,

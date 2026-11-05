@@ -92,6 +92,7 @@ def _stdlib_zlib(
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
         refuse_input_after_end=config.refuse_input_after_end,
+        index=config.seekable,
         natives=config.natives,
     )
 
@@ -546,7 +547,8 @@ class DeflateCodec(_ZlibErrorCodec):
 
     @override
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
-        # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
+        # Stdlib raw deflate; a backward seek re-decodes from the nearest zlib snapshot,
+        # or from the start (see rewind_warning).
         # Under rapidgzip it is also the takeover's decoder, so bytes after the stream
         # that rapidgzip fails on are refused there too (refuse_input_after_end).
         return _stdlib_zlib(source, config, wbits=RAW_DEFLATE_WBITS)
@@ -625,7 +627,8 @@ class ZlibCodec(_ZlibErrorCodec):
 
     @override
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
-        # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
+        # Stdlib zlib; a backward seek re-decodes from the nearest zlib snapshot, or
+        # from the start (see rewind_warning).
         return _stdlib_zlib(source, config)
 
     @override
