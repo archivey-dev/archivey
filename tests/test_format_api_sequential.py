@@ -1785,6 +1785,30 @@ def test_decoded_random_access(decoded: _DecodedFixture, tmp_path: Path) -> None
         assert cost.listing_cost is ListingCost.REQUIRES_DECOMPRESSION
 
 
+def test_a_decoded_member_keeps_its_ratio_guard(
+    decoded: _DecodedFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A member the plugin decodes itself (``MemberSpan.data``) can expand past its
+    stored bytes, so it is held to the ratio, unlike a ``data_length`` member. Fails
+    if the adapter answers ``_member_data_is_stream_bytes`` for every span."""
+    from archivey.internal.bomb_tracker import MemberRatioGuard
+
+    built: list[str] = []
+    init = MemberRatioGuard.__init__
+
+    def counting(self: MemberRatioGuard, *args: object, **kwargs: object) -> None:
+        built.append(kwargs["member"].name)  # type: ignore[union-attr]
+        init(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(MemberRatioGuard, "__init__", counting)
+    fmt, _ = decoded
+    path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
+    with open_archive(path, format=fmt) as reader:
+        for name in ("docs/a.txt", "b.bin", "c.bin"):
+            assert reader.read(name) == _DECODED_DATA[name]
+    assert set(built) >= {"docs/a.txt", "b.bin", "c.bin"}
+
+
 def test_decoded_in_order_opens_walk_once(
     decoded: _DecodedFixture, tmp_path: Path
 ) -> None:

@@ -134,6 +134,7 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.crypto import _AesCbcTruncatedError
+from archivey.internal.streams.decompressor_stream import retire_decoder_children
 from archivey.internal.streams.resume import ask_resume_offset, ask_seek_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
@@ -822,6 +823,10 @@ class _ReadAheadStream(ReadOnlyIOStream):
         if len(data) < n:
             data += self._rest.read(n - len(data))
         return data
+
+    def decoder_layers_below(self) -> tuple[BinaryIO]:
+        """``rest``, for ``retire_decoder_children``."""
+        return (self._rest,)
 
     @override
     def close(self) -> None:
@@ -1956,7 +1961,12 @@ class SevenZipReader(BaseArchiveReader):
             # runner keeps that one ``REJECTED``.
             if input_ran_out():
                 return PasswordConfirmVerdict.INCONCLUSIVE
+            # A child that decoded with a rejected key is not reused.
+            retire_decoder_children(stream)
             raise wrong_password_error("Wrong password or corrupt 7z folder") from exc
+        else:
+            if verdict is PasswordConfirmVerdict.REJECTED:
+                retire_decoder_children(stream)
         finally:
             stream.close()
         if verdict is PasswordConfirmVerdict.REJECTED:

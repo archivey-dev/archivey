@@ -228,6 +228,8 @@ class PpmdDecoder(BaseDecoder):
         # ``DecoderLimits.max_ppmd_held_input``: a member up to it is handed to
         # pyppmd whole, one past it in pieces, under every ``isolation`` (which decides
         # only where the decode runs). ``None``: held whole whenever the size is known.
+        # Held input goes to the child in one request; ``decoder_worker.FRAME``'s 64-bit
+        # payload length carries any size.
         self._max_held_input = max_held_input
         # Compressed input held back from pyppmd until the whole member is here, or
         # compressed EOF, or ``max_held_input`` is passed. ``None`` once handed

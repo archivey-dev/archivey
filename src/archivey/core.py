@@ -37,6 +37,7 @@ from archivey.diagnostics import (
     UnusedArgumentContext,
 )
 from archivey.exceptions import (
+    ArchiveyError,
     FormatDetectionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
@@ -69,7 +70,7 @@ from archivey.internal.format_args import (
     coerce_stream_or_archive_format,
     outer_stream_format,
 )
-from archivey.internal.format_provenance import FormatProvenance
+from archivey.internal.format_provenance import FormatProvenance, stamp_error_context
 from archivey.internal.open_site import OpenSite, capture_open_site
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import (
@@ -877,29 +878,46 @@ def _open_resolved(
     # argument carries the same promise a slice would — see `ReadBackend.open_read`.
     payload_offset = detected.payload_offset if detected is not None else 0
 
-    backend = backend_cls()
-    reader = backend.open_read(
-        archive_source,
-        format=resolved_format,
-        streaming=streaming,
-        passwords=passwords,
-        encoding=encoding,
-        archive_name=archive_name,
-        config=config,
-        collector=collector,
-        member_streams=member_streams,
-        open_site=open_site,
-        start_offset=payload_offset,
-    )
     # An empty listing is only interesting when the bytes never confirmed the format.
     # That is known here and the listing is not, so carry it to the reader rather than
     # adding a parameter to every backend's open_read for a fact none of them reads.
-    reader._format_provenance = _format_provenance(
+    # Built before the backend, so an error raised while the reader is built gets the
+    # same unconfirmed-format stamp as every later one.
+    provenance = _format_provenance(
         archive_source.path,
         format,
         detected,
         is_directory=archive_source.is_directory,
     )
+    backend = backend_cls()
+    try:
+        reader = backend.open_read(
+            archive_source,
+            format=resolved_format,
+            streaming=streaming,
+            passwords=passwords,
+            encoding=encoding,
+            archive_name=archive_name,
+            config=config,
+            collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
+            start_offset=payload_offset,
+        )
+    except ArchiveyError as exc:
+        # A backend that reads its first headers while it is built (7z, RAR, ZIP)
+        # raises before the reader that stamps its errors exists. Stamp them here, so a
+        # cut download names the file and the format, and says when only the filename
+        # chose that format, as every later error does.
+        stamp_error_context(
+            exc,
+            archive_format=resolved_format,
+            archive_name=archive_name,
+            provenance=provenance,
+            collector=collector,
+        )
+        raise
+    reader._format_provenance = provenance
     reader._format_info = format_info
     # After provenance, so an open-time decode failure carries format_unconfirmed.
     try:

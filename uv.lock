@@ -99,7 +99,7 @@ requires-dist = [
     { name = "lz4", marker = "extra == 'recommended'", specifier = ">=4.4.5" },
     { name = "pycdlib", marker = "extra == 'free-threaded'", specifier = ">=1.22.0" },
     { name = "pycdlib", marker = "extra == 'recommended'", specifier = ">=1.22.0" },
-    { name = "pyppmd", marker = "extra == 'recommended'", specifier = ">=1.3.1" },
+    { name = "pyppmd", marker = "extra == 'recommended'", specifier = ">=1.3.1,<2" },
     { name = "rapidgzip", marker = "extra == 'seekable'", specifier = ">=0.16.0" },
     { name = "tqdm", marker = "extra == 'free-threaded'", specifier = ">=4.67.0" },
     { name = "tqdm", marker = "extra == 'recommended'", specifier = ">=4.67.0" },

@@ -305,13 +305,12 @@ stream (a cut stream), the read SHALL be handed to the standard library at the d
 position, so the bytes and the `TruncatedError` match `use_rapidgzip=OFF`. A stream
 rapidgzip ends before any output SHALL go to the standard library without the Adler-32
 check, since the Adler-32 of no output is 1 and a cut stream's last four bytes can read
-`00 00 00 01`. A trailer match SHALL NOT end the check while a second zlib stream may follow
-the first, since rapidgzip delivers every stream and the last one's trailer can be forged to
-the Adler-32 of all of them (after empty streams it needs no forging): the system SHALL scan
-the source for further zlib headers whose DEFLATE data reaches the trailer, with bounded
-probes, and on a candidate SHALL confirm with the standard library, which ends the read at
-the end of the first stream. Under process isolation the system SHALL confirm without the
-scan, since each probe would cost a child-process round trip. Where the standard library's
+`00 00 00 01`. A trailer that matches ends the check: where several zlib streams precede it
+and it matches the Adler-32 of all of them (forged, or after empty streams), a read or seek
+that reaches the end (a completing read, bounded reads, or a seek to the end or past the
+frontier) MAY return every stream as content and land past every stream, with no
+trailing-data report, an accepted difference from the standard library.
+Where the standard library's
 decode ends the first zlib stream before the bytes rapidgzip delivered (rapidgzip decodes on
 into a second stream) and the caller has no byte past that end yet, the read or seek SHALL
 be handed to the standard library at that end, so a completing read returns the first stream
@@ -359,7 +358,8 @@ accelerator path, and corruption inside a DEFLATE block SHALL still surface as
 | bzip2 through the accelerator with junk, a damaged stream header, or a stream whose block and end-of-stream magics are damaged, before or between streams | The bytes and the error of the accelerator `OFF`; no byte from after the skipped region reaches the caller, also after a seek past it |
 | bzip2 through the accelerator with a cut or damaged stream right after the data, or anything after zero bytes | The bytes, the error and the trailing-data report of the accelerator `OFF`; past a bounded stretch (1 MiB) of empty streams between two streams, the standard library takes over and decodes the stretch itself, with the same result |
 | gzip through rapidgzip with NUL bytes, then a further member | The first member's bytes and a trailing-data report at the further member, as with the accelerator `OFF` |
-| Two zlib streams through rapidgzip, completing read or seek to the end | The first stream, and a trailing-data report, as with the accelerator `OFF` |
+| Two zlib streams through rapidgzip whose last trailer does not match the Adler-32 of all of them, completing read or seek to the end | The first stream, and a trailing-data report, as with the accelerator `OFF` |
+| Several zlib streams through rapidgzip whose last trailer matches the Adler-32 of all of them (forged, or after empty streams), any read or seek that reaches the end | Every stream as content, a seek to the end landing past them all, and no trailing-data report: an accepted difference from the accelerator `OFF` |
 | Valid empty gzip through rapidgzip | Succeeds with zero bytes |
 
 ### Requirement: Accelerator lifecycle is safe at shutdown

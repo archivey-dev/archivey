@@ -43,14 +43,12 @@ from archivey.internal.streams.codecs import (
     gzip_has_additional_member,
     open_codec_stream,
 )
-from archivey.internal.streams.codecs.isolated import ISOLATED
 from archivey.internal.streams.codecs.rapidgzip_child import (
     rapidgzip_child_unavailable_reason,
 )
 from archivey.internal.streams.codecs.rapidgzip_select import (
     _deflate_family_uses_accelerator,
 )
-from archivey.internal.streams.codecs.zlib_codec import zlib_stream_may_follow
 from archivey.types import ArchiveFormat
 from tests.conftest import requires
 from tests.streams_util import rapidgzip_soft_end
@@ -1226,23 +1224,6 @@ def test_a_zlib_stream_cut_before_any_output_is_not_taken_for_an_empty_one(
     _assert_same(_outcome(Codec.ZLIB, blob, _ON, steps), off)
 
 
-@requires("rapidgzip")
-@pytest.mark.parametrize(
-    "steps", [_no_seek, _seek_to_the_end], ids=["read", "seek-end"]
-)
-@pytest.mark.parametrize("empties", [1, 2])
-def test_a_zlib_stream_after_empty_ones_is_not_content(
-    steps: Callable[[BinaryIO], None], empties: int
-) -> None:
-    """After empty zlib streams, the Adler-32 of all rapidgzip delivered is the last
-    stream's, so its trailer matches; the standard library still ends the read at the
-    end of the first stream."""
-    _require_the_accelerator_in_use()
-    blob = zlib.compress(b"") * empties + zlib.compress(b"hello")
-    off = _outcome(Codec.ZLIB, blob, _OFF, steps)
-    _assert_same(_outcome(Codec.ZLIB, blob, _ON, steps), off)
-
-
 def _forged_second_stream(first: bytes, *rest: bytes) -> bytes:
     """``first`` and ``rest`` as zlib streams one after another, the last one's
     trailer forged to the Adler-32 of all their output, which rapidgzip delivers."""
@@ -1251,70 +1232,59 @@ def _forged_second_stream(first: bytes, *rest: bytes) -> bytes:
     return b"".join(streams)[:-4] + forged
 
 
+# Streams whose last trailer matches the Adler-32 of everything rapidgzip delivers: after
+# empty streams it needs no forging, otherwise it is forged.
+_MATCHING_TRAILER_STREAMS = [
+    pytest.param(zlib.compress(b"") + zlib.compress(b"hello"), id="one-empty"),
+    pytest.param(zlib.compress(b"") * 2 + zlib.compress(b"hello"), id="two-empty"),
+    pytest.param(_forged_second_stream(b"first stream", b"second"), id="forged-short"),
+    pytest.param(
+        _forged_second_stream(b"first stream", random.Random(7).randbytes(1 << 17)),
+        id="forged-long",
+    ),
+    pytest.param(
+        _forged_second_stream(b"first stream", b"middle", b"last"), id="forged-three"
+    ),
+]
+
+
 @requires("rapidgzip")
-@pytest.mark.parametrize(
-    "steps", [_no_seek, _seek_to_the_end], ids=["read", "seek-end"]
-)
-@pytest.mark.parametrize(
-    "blob",
-    [
-        pytest.param(_forged_second_stream(b"first stream", b"second"), id="short"),
-        # Past the probe's input bound: counted without decoding to its end.
-        pytest.param(
-            _forged_second_stream(b"first stream", random.Random(7).randbytes(1 << 17)),
-            id="long",
-        ),
-        # The middle stream ends before the trailer; the last one is found instead.
-        pytest.param(
-            _forged_second_stream(b"first stream", b"middle", b"last"), id="three"
-        ),
-    ],
-)
-def test_a_forged_second_zlib_stream_is_not_content(
-    steps: Callable[[BinaryIO], None], blob: bytes
+@pytest.mark.parametrize("blob", _MATCHING_TRAILER_STREAMS)
+def test_a_seek_to_the_end_lands_past_every_zlib_stream_whose_trailer_matches(
+    blob: bytes,
 ) -> None:
-    """A second zlib stream whose trailer is forged to the Adler-32 of all the output
-    makes the trailer match; the header scan finds the second stream, and the standard
-    library ends the read at the end of the first, as with the accelerator off."""
+    """The same accepted difference as the read below (handbook gzip.md §5): a seek to
+    the end takes the trailer match too, so it lands past every stream, where the
+    standard library stops at the end of the first, and a read from 0 after it returns
+    every stream."""
     _require_the_accelerator_in_use()
-    off = _outcome(Codec.ZLIB, blob, _OFF, steps)
-    assert off[1] is None
-    _assert_same(_outcome(Codec.ZLIB, blob, _ON, steps), off)
+    every = _outcome(Codec.ZLIB, blob, _ON, _no_seek)[0]
+    first = _outcome(Codec.ZLIB, blob, _OFF, _no_seek)[0]
+    for mode, content in ((_OFF, first), (_ON, every)):
+        with open_codec_stream(Codec.ZLIB, io.BytesIO(blob), config=_config(mode)) as s:
+            assert s.seek(0, io.SEEK_END) == len(content)
+            s.seek(0)
+            assert s.read() == content
+    assert len(every) > len(first)
 
 
-@pytest.mark.parametrize(
-    "data",
-    [
-        pytest.param(
-            b" ".join(
-                random.Random(3).choice([b"alpha", b"beta", b"gamma", b"delta", b"pi"])
-                for _ in range(400_000)
-            ),
-            id="text",
-        ),
-        pytest.param(random.Random(5).randbytes(1 << 20), id="random"),
-    ],
-)
-def test_the_zlib_header_scan_finds_no_stream_in_a_single_one(data: bytes) -> None:
-    """About one offset in 2000 of compressed data looks like a zlib header; none of
-    them is taken for a second stream, and their probes stay within the budget, so a
-    single stream keeps the trailer check's fast path."""
-    blob = zlib.compress(data)
-    assert not zlib_stream_may_follow(io.BytesIO(blob))
-    assert zlib_stream_may_follow(io.BytesIO(blob + zlib.compress(b"more")))
-
-
-def test_the_zlib_header_scan_does_not_probe_under_isolation(monkeypatch) -> None:
-    """Under process isolation each probe's decoder is a child-process object, so a
-    source crafted with a header every few bytes would cost minutes; the scan answers
-    at once and the standard library's confirmation decides."""
-    probes = []
-    monkeypatch.setattr(
-        codecs.zlib_codec, "_zlib_stream_at", lambda *a: probes.append(a) or (False, 0)
-    )
-    blob = zlib.compress(b"x") + b"\x78\x9c\x07" * 1000
-    assert zlib_stream_may_follow(io.BytesIO(blob), ISOLATED)
-    assert not probes
+@requires("rapidgzip")
+@pytest.mark.parametrize("blob", _MATCHING_TRAILER_STREAMS)
+def test_a_matching_trailer_after_several_zlib_streams_reads_them_all(
+    blob: bytes,
+) -> None:
+    """An accepted difference (handbook gzip.md §5): rapidgzip delivers every stream,
+    and the last trailer matches all of it, so a read to the end returns every stream
+    as content where the standard library returns the first. Finding the first
+    stream's end would take a second decode or a scan for further headers on every
+    accelerated read; a caller who needs the standard library's result sets
+    ``use_rapidgzip=OFF``."""
+    _require_the_accelerator_in_use()
+    off = _outcome(Codec.ZLIB, blob, _OFF, _no_seek)
+    on = _outcome(Codec.ZLIB, blob, _ON, _no_seek)
+    assert off[1] is None and on[1] is None
+    assert on[0].startswith(off[0])
+    assert len(on[0]) > len(off[0])
 
 
 @requires("rapidgzip")

@@ -101,7 +101,10 @@ from archivey.internal.streams.crypto import (
     get_crypto_backend,
     open_aes_decrypt_stream,
 )
-from archivey.internal.streams.decompressor_stream import DataAfterEndError
+from archivey.internal.streams.decompressor_stream import (
+    DataAfterEndError,
+    retire_decoder_children,
+)
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
 from archivey.internal.streams.streamtools.base import DelegatingStream
@@ -1186,6 +1189,8 @@ def decode_folder_to_bytes(
             and folder.crc is not None
             and zlib.crc32(decoded) & 0xFFFFFFFF != folder.crc & 0xFFFFFFFF
         ):
+            # A child that decoded bytes failing their check is not reused.
+            retire_decoder_children(stream)
             raise CorruptionError("Decoded 7z folder CRC mismatch")
         return decoded
     finally:

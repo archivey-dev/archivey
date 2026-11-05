@@ -373,6 +373,11 @@ class AesDecryptStream(ReadOnlyIOStream):
         self._eof = False
         self._pos = 0
 
+    def decoder_layers_below(self) -> tuple[BinaryIO]:
+        """``source``, for ``retire_decoder_children``: a 7z folder may decrypt the
+        output of a decoder."""
+        return (self._source,)
+
     def _raise_if_closed(self) -> None:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
