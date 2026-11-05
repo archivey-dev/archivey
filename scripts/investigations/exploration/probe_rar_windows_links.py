@@ -44,6 +44,8 @@ _FILES = {
 def _build(rar: str, out: Path) -> None:
     if os.name != "nt":
         sys.exit("build runs on Windows only: junctions and Windows links need it")
+    # rar runs in the tree, so the archive path must not be relative to here.
+    out = out.resolve()
     tree = out / "tree"
     if tree.exists():
         shutil.rmtree(tree)
@@ -76,7 +78,7 @@ def _build(rar: str, out: Path) -> None:
         archive = out / name
         archive.unlink(missing_ok=True)
         subprocess.run(
-            [rar, "a", "-idq", "-r", *flags, str(archive), *order],
+            [rar, "a", "-r", *flags, str(archive), *order],
             cwd=tree,
             check=True,
         )
