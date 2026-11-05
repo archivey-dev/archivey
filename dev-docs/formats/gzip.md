@@ -16,7 +16,7 @@ behaviour and links the row.
 | Read | gzip and zlib as one-member archives; raw DEFLATE as a ZIP or 7z coder, and inside `.tar.gz` |
 | Write | **Not shipped** |
 | Backends | The standard library's `zlib` under `DecompressorStream`, always available. `rapidgzip` from `[seekable]`, used when `use_rapidgzip` selects it (§2.3) |
-| Seeking | Without `rapidgzip`, a backward seek decodes again from the start, or, on declared seek demand, from the nearest member start: those a forward read has passed, and every member of a BGZF (`bgzip`) file, walked without decoding (§2.3). With `rapidgzip`, from the nearest point of the index it builds while decoding |
+| Seeking | Without `rapidgzip`, a backward seek decodes again from the start, or, on declared seek demand, from the nearest point a forward read has passed: a member start, or a zlib snapshot taken about every MiB inside a member; every member of a BGZF (`bgzip`) file is walked without decoding (§2.3). With `rapidgzip`, from the nearest point of the index it builds while decoding |
 | Size | `None`, for both. gzip's ISIZE is the last member's size mod 2³²; zlib has no size field |
 | Digests | None listed. Every gzip member's CRC-32 is checked on read, and a zlib stream's Adler-32 too; under `rapidgzip`, archivey checks the Adler-32 when the stream is read to its end (§2.3) |
 | Metadata | gzip only: `MTIME` → `modified`, `FNAME` → `raw_name` and `extra["gzip.original_filename"]` |
@@ -46,7 +46,8 @@ raw DEFLATE:  DEFLATE blocks …  (the container knows the sizes)
 **DEFLATE can only be decoded from the start.** Each block may copy from anywhere in the
 32 KiB before it, so resuming at a block needs the 32 KiB window that preceded it. Nothing
 in the stream records one. So a backward seek decodes again from byte zero unless someone
-saved windows on the way; `rapidgzip` does, which is what its index is (§2.3). A new member
+saved windows on the way; `rapidgzip` does, which is what its index is (§2.3), and so do
+the standard library engine's zlib snapshots (§2.3). A new member
 starts a fresh window, so a member start is a restart point, and BGZF names every
 member's size (§2.3). `pigz -i` resets the window inside one member, which archivey does
 not look for (§7).
@@ -154,6 +155,28 @@ the whole file and a size query must be cheap (`GzipDecoder.index_reads_whole_so
 The size is `None`, as for plain gzip, until a seek walks the file or a read reaches the
 end. A `.gzi` index is a separate file, which a stream cannot find, so it is not read. Under
 `rapidgzip` none of this applies: its own index serves the seeks.
+
+**zlib snapshots.** On declared seek demand, `GzipDecoder` also records a seek point
+inside a member about every MiB of output (`SNAPSHOT_SPACING`), whose state is
+`decompressobj.copy()` (`ZlibSnapshot`). Python's `zlib` reports no DEFLATE block
+boundary, so the window-and-bit-offset points `deflate_resume.py` builds from
+`rapidgzip`'s index cannot be found here; a copy needs none, because it holds the whole
+inflate state, mid-block included. It holds the running CRC-32 and length too, so a
+decode resumed from it still checks the member's trailer, which a `deflate_resume.py`
+point cannot. A copy is taken at the start of a feed with nothing left of the last one
+(`unconsumed_tail` empty), so its compressed offset is where that feed starts, and never
+before a member's first output, which is the member's own point. Each resume decodes from
+a copy of the copy, so a point is never changed. A copy costs about 1 µs and 39 KiB; a
+seek then decodes about half a MiB on average, about 2 ms against about 50 ms from the
+start of a 64 MiB member, and a full read costs the same as without copies (measured on a
+64 MiB text member, 4 cores). Snapshots differ between passes, since where a feed starts
+depends on the reads, so `DecompressorStream` keeps them apart instead of comparing them:
+one within half the spacing of a point it holds is dropped, and of two at one offset the
+first is kept. Their memory is capped at `MAX_SNAPSHOT_BYTES` (32 MiB, about 800
+snapshots, one per MiB up to about 800 MiB of output). Past it only snapshots are thinned,
+to half of it, by doubling their spacing, silently: they are this library's own
+accelerator, not an index the file carries. A decompressor in a decoder child has no
+`copy()` and takes none.
 
 **mgzip members.** When the first member carries an `MZ` subfield instead of `BC`, the walk
 reads mgzip: the subfield holds the size of the member's DEFLATE data (not of the whole

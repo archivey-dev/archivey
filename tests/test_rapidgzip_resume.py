@@ -305,7 +305,13 @@ def test_after_a_backward_seek_the_takeover_resumes_before_the_reader(
     real_add = DecompressorStream.add_seek_points
 
     def spy(self: DecompressorStream, points: list[SeekPoint]) -> None:
-        resumed.extend(point.decompressed_offset for point in points)
+        # The takeover's points only: a standard-library GzipDecoder in the same
+        # stream records zlib snapshot points too.
+        resumed.extend(
+            point.decompressed_offset
+            for point in points
+            if isinstance(point.state, DeflateResume)
+        )
         real_add(self, points)
 
     monkeypatch.setattr(DecompressorStream, "add_seek_points", spy)

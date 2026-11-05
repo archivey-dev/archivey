@@ -632,6 +632,39 @@ _NO_DEFERRAL: AbstractContextManager[Callable[[], Exception | None]] = nullconte
 # CLEAR every 10 kB of input, so reaching it takes a multi-GiB file even at the densest.
 MAX_SEEK_POINTS = 1 << 18
 
+# Upper bound on the memory a stream's seek table holds in decoder snapshots, points
+# whose state is a whole decoder (:class:`SnapshotState`, zlib's ``decompressobj.copy()``
+# at about 40 KiB each). Only those points count. Passing it thins the snapshots alone,
+# doubling their spacing until they hold half of it, and later snapshots keep that
+# spacing. Silent, unlike the entry cap: the snapshots are this library's own
+# accelerator, not an index the file carries, so a sparser set loses nothing the file
+# offered. 32 MiB holds about 800 snapshots, one per MiB of output up to about 800 MiB.
+MAX_SNAPSHOT_BYTES = 32 << 20
+
+
+class SnapshotState(Protocol):
+    """A :class:`SeekPoint` state that is a copy of a decoder's whole state.
+
+    A decoder records these anywhere in its output, not only where a unit begins, so
+    two passes can offer them at different offsets (the :class:`DecodeOut` rule does
+    not hold for them). The stream keeps them apart instead: one closer than
+    ``min_gap`` to a point it holds is dropped, and of two at one output offset the
+    first is kept. ``held_bytes`` is what the snapshot holds in memory, counted
+    against :data:`MAX_SNAPSHOT_BYTES`.
+    """
+
+    @property
+    def held_bytes(self) -> int: ...
+
+    @property
+    def min_gap(self) -> int: ...
+
+
+def _held_bytes(state: object) -> int:
+    """The memory a point's state holds as a snapshot; 0 for any other state."""
+    return getattr(state, "held_bytes", 0)
+
+
 # ``SeekIndexContext.error_type`` when a table was thinned; no exception is involved.
 SEEK_TABLE_THINNED = "SeekTableThinned"
 # ``SeekIndexContext.error_type`` (scan ``decode_check``) when the decode put a unit at
@@ -942,6 +975,10 @@ class DecompressorStream(ReadOnlyIOStream):
         # (0 until then); see _thin_seek_table.
         self._min_spacing = 0
         self._table_thinned = False
+        # Memory the table holds in decoder snapshots (SnapshotState), and the spacing
+        # kept between snapshots once they passed MAX_SNAPSHOT_BYTES (_thin_snapshots).
+        self._snapshot_bytes = 0
+        self._snapshot_spacing = 0
         # The table's points by compressed offset, kept while the table holds index
         # points, to find where the index and the decode disagree (_contradicts). It
         # holds only points the table holds (_note_kept), so it is bounded like the
@@ -1035,7 +1072,12 @@ class DecompressorStream(ReadOnlyIOStream):
         (:meth:`_contradicts`). The same resume data at another output offset proves the
         index wrong there, so the stream drops the index (:meth:`_drop_index`).
 
+        A snapshot point (:class:`SnapshotState`) closer than its ``min_gap`` to a point
+        the table holds is dropped too, and past :data:`MAX_SNAPSHOT_BYTES` the
+        snapshots are thinned (:meth:`_thin_snapshots`).
+
         Same-``decompressed_offset`` collisions:
+        - Two snapshots: the first is kept.
         - Origin (offset 0) may always be refined in place (unix-compress header commit),
           but never by an index point.
         - Where one side is an index point, the other a decoded one, with the same
@@ -1084,7 +1126,12 @@ class DecompressorStream(ReadOnlyIOStream):
                 )
                 if point.from_index:
                     continue
-            if self._min_spacing and self._too_close(point):
+            if self._min_spacing and self._too_close(point, self._min_spacing):
+                continue
+            held = _held_bytes(point.state)
+            if held and self._too_close(
+                point, max(point.state.min_gap, self._snapshot_spacing)
+            ):
                 continue
             if point < self._seek_points[-1]:
                 i = bisect.bisect_left(self._seek_points, point)
@@ -1101,6 +1148,8 @@ class DecompressorStream(ReadOnlyIOStream):
                 self._note_kept(None, point)
             if len(self._seek_points) > MAX_SEEK_POINTS:
                 self._thin_seek_table()
+            if self._snapshot_bytes > MAX_SNAPSHOT_BYTES:
+                self._thin_snapshots()
 
     def _contradicts(self, point: SeekPoint) -> SeekPoint | None:
         """The table's point that ``point`` proves the index wrong against, if any.
@@ -1125,8 +1174,11 @@ class DecompressorStream(ReadOnlyIOStream):
         return None
 
     def _note_kept(self, old: SeekPoint | None, new: SeekPoint) -> None:
-        """Keep ``_claims`` in step with the table: ``new`` was added, in place of
-        ``old`` when one is given."""
+        """Keep ``_claims`` and ``_snapshot_bytes`` in step with the table: ``new`` was
+        added, in place of ``old`` when one is given."""
+        self._snapshot_bytes += _held_bytes(new.state) - (
+            _held_bytes(old.state) if old is not None else 0
+        )
         claims = self._claims
         if claims is None:
             return
@@ -1180,21 +1232,18 @@ class DecompressorStream(ReadOnlyIOStream):
             self._size_from_index = False
             self._index_built = False
 
-    def _too_close(self, point: SeekPoint) -> bool:
-        """Whether ``point`` lands within ``_min_spacing`` of a neighbour in the table."""
+    def _too_close(self, point: SeekPoint, spacing: int) -> bool:
+        """Whether ``point`` lands within ``spacing`` of a neighbour in the table."""
         points = self._seek_points
         i = bisect.bisect_left(points, point)
         if i < len(points) and points[i] == point:
             return False  # same offset: the collision rules decide
         # i >= 1: the origin sits at offset 0 and point is past it.
-        if point.decompressed_offset - points[i - 1].decompressed_offset < (
-            self._min_spacing
-        ):
+        if point.decompressed_offset - points[i - 1].decompressed_offset < spacing:
             return True
         return (
             i < len(points)
-            and points[i].decompressed_offset - point.decompressed_offset
-            < self._min_spacing
+            and points[i].decompressed_offset - point.decompressed_offset < spacing
         )
 
     def _thin_seek_table(self) -> None:
@@ -1208,9 +1257,7 @@ class DecompressorStream(ReadOnlyIOStream):
         self._seek_points[:] = spaced_subset(
             self._seek_points, lambda p: p.decompressed_offset, self._min_spacing
         )
-        if self._claims is not None:
-            # The points the table dropped are no longer compared (_contradicts).
-            self._claims = {p.compressed_offset: p for p in self._seek_points}
+        self._recount_after_thinning()
         message = (
             f"{self._codec_name} seek table passed {MAX_SEEK_POINTS} entries; kept "
             "a spaced subset, so seeks may decode further"
@@ -1235,9 +1282,39 @@ class DecompressorStream(ReadOnlyIOStream):
             logger=logger,
         )
 
+    def _recount_after_thinning(self) -> None:
+        """Bring ``_claims`` and ``_snapshot_bytes`` back in step with a thinned table."""
+        if self._claims is not None:
+            # The points the table dropped are no longer compared (_contradicts).
+            self._claims = {p.compressed_offset: p for p in self._seek_points}
+        self._snapshot_bytes = sum(_held_bytes(p.state) for p in self._seek_points)
+
+    def _thin_snapshots(self) -> None:
+        """Bring the table's snapshots past :data:`MAX_SNAPSHOT_BYTES` down to half of it.
+
+        Only snapshot points are dropped: each is kept when it is at least a spacing
+        past the last snapshot kept, and the spacing doubles until they fit. Later
+        snapshots keep it (``add_seek_points``). Every other point stays, and every
+        point resumes on its own, so any subset is safe.
+        """
+        points = self._seek_points
+        snapshots = [p for p in points if _held_bytes(p.state)]
+        spacing = max(self._snapshot_spacing, 1)
+        kept = snapshots
+        while sum(_held_bytes(p.state) for p in kept) > MAX_SNAPSHOT_BYTES // 2:
+            spacing *= 2
+            kept = spaced_subset(snapshots, lambda p: p.decompressed_offset, spacing)
+        self._snapshot_spacing = spacing
+        keep = {id(p) for p in kept}
+        points[:] = [p for p in points if not _held_bytes(p.state) or id(p) in keep]
+        self._recount_after_thinning()
+
     def _resolve_same_offset_collision(self, index: int, point: SeekPoint) -> None:
         """Skip duplicates; allow forward refinement / richer-state merge; else error."""
         existing = self._seek_points[index]
+        if _held_bytes(existing.state) and _held_bytes(point.state):
+            # Two snapshots at one offset (SnapshotState): either resumes there.
+            return
         if _same_state(existing.state, point.state) and (
             existing.from_index or point.from_index
         ):
