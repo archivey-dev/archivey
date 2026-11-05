@@ -285,8 +285,9 @@ class SingleFileReader(BaseArchiveReader):
         """
         if not self._seekable:
             return
-        # Exact reads: one byte, not a 64 KiB decoder call that could reach damage
-        # further on and fail the open (fixed feeding is for streams callers read).
+        # Inside probe_streams an error raises where the decoder meets it: no bytes
+        # handed back before it and no second decode to find them, so damage at the
+        # start fails the open here. The one-byte read asks the decoder for one byte.
         with (
             probe_streams(),
             self._member_stream(

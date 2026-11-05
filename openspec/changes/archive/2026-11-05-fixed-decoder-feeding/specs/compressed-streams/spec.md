@@ -7,8 +7,10 @@
 On a source that can seek, the bytes a `DecompressorStream`'s bounded reads (`read(n)`,
 `n ≥ 1`) return before a decoder's data error SHALL be every byte the decoder gives
 before it, whatever `n` is, found by decoding again from the last seek point to the
-failing byte. A read after an index seek MAY return a different prefix from a linear
-read (DR-4a). An accelerator SHALL give the prefix of the decoder it replaces.
+failing byte. Each decoder call SHALL ask for what the read asks, at most 1 MiB, so a
+clean read costs about what it did before fixed feeding. A read after an index seek MAY
+return a different prefix from a linear read (DR-4a). An accelerator SHALL give the
+prefix of the decoder it replaces.
 
 #### Scenario: read sizes
 
@@ -56,7 +58,17 @@ as it is) and SHALL ask for what the read asks, at most 64 KiB.
 
 The decoders archivey implements (`.Z` LZW, lzop, ZIP Shrink, Reduce and Implode) SHALL
 return the bytes they decoded before a corrupt code or a failed block, and raise the
-error from the next call.
+error from the next call. A decoder that calls its decompressor more than once per call
+(`FramedDecoder`) SHALL return the bytes earlier calls gave when a later one raises,
+and raise the error from its next call.
+
+#### Scenario: a bad LZW code
+
+- **GIVEN** a `.Z` or ZIP Shrink stream of 300 KB of text with a code past the table in
+  the middle
+- **WHEN** it is read from a pipe in `read(512)` or `read(1 MiB)` steps
+- **THEN** it gets as many bytes as a decoder asked for one output byte per call gives,
+  then the error
 
 #### Scenario: a damaged lzop block
 

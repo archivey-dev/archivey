@@ -52,7 +52,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.overrides import override
-from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
+from archivey.internal.streams.decompressor_stream import _LARGE_READ_STEP
 from archivey.internal.streams.streamtools import read_within_reach
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.terminal import quoted
@@ -98,7 +98,7 @@ READ_STEP = 64 * 1024
 # (``verify._SIZED_DRAIN_CHUNK``, which is this constant too), so one such piece is one
 # read here; at 64 KiB it was sixteen reads and a join. A caller's larger read is still
 # split.
-DATA_READ_STEP = _COMPRESSED_READ_SIZE_MAX
+DATA_READ_STEP = _LARGE_READ_STEP
 
 POSIX_MAGIC = b"ustar\x00"
 # star writes "tar\0" at 508 and keeps only 131 bytes of the 155-byte prefix field,

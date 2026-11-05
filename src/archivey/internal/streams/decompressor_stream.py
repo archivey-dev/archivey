@@ -285,15 +285,19 @@ def _is_data_verdict(exc: Exception) -> bool:
     return not isinstance(exc, ReadError) or isinstance(exc, CorruptionError)
 
 
+# The arguments of the error CPython's ``bz2`` raises on damaged data.
+_BZ2_DATA_ERROR = ("Invalid data stream",)
+
+
 def _may_recover(exc: Exception) -> bool:
     """Whether a decoder error is one to decode again up to (``_redecode_to_error``).
 
-    A verdict on the data (:func:`_is_data_verdict`), and ``bz2``'s, which is a plain
-    ``OSError`` with no ``errno`` ("Invalid data stream"). An error from the source
-    is an ``OSError`` subclass or carries an ``errno``: reading the source again for it
-    could fail the same way, or cost a second read of a remote file for nothing.
+    A verdict on the data (:func:`_is_data_verdict`), and ``bz2``'s, a plain ``OSError``
+    whose only argument is "Invalid data stream". Any other ``OSError`` raised inside a
+    decode is the source's: reading the source again for it could fail the same way,
+    or cost a second read of a remote file for nothing.
     """
-    if type(exc) is OSError and exc.errno is None:
+    if type(exc) is OSError and exc.errno is None and exc.args == _BZ2_DATA_ERROR:
         return True
     return _is_data_verdict(exc)
 
@@ -550,19 +554,23 @@ class BaseDecoder:
 
 # How the decoder is fed. Each feed is the compressed input up to the next multiple of
 # ``_FEED_SLICE`` counted from where the decoder started, and each bounded call asks
-# for what the read asks, at most ``_FEED_OUTPUT`` bytes (``read(n)`` used to feed
+# for what the read asks, at most ``_FEED_OUTPUT`` bytes on a pipe and
+# ``_SEEKABLE_FEED_OUTPUT`` on a source that can seek (``read(n)`` used to feed
 # ``min(n, 1 MiB)`` and ask for ``n``). CPython's zlib, bz2, lzma and zstd wrappers drop
 # a call's output when the call raises, so a call loses at most what it asked for: a
 # TAR parser reading a header, then a member's data to its end, gets every member
 # before the damaged one whole. On a source that can seek, a call that raises is
 # decoded again to the failing byte (``_redecode_to_error``), so every read size gets
-# every byte before the error; on a pipe a read can get up to ``_FEED_OUTPUT`` fewer
-# (spec ``compressed-streams``).
+# every byte before the error, and a call there can be as large as a read used to
+# feed: fewer calls keep a clean ``read(1 MiB)`` within a few percent of one call per
+# read, where 64 KiB calls cost about 10% more (gzip, measured). On a pipe a read can
+# get up to ``_FEED_OUTPUT`` fewer (spec ``compressed-streams``).
 #
 # 64 KiB of input is also the measured plateau for per-call overhead on ZIP members
 # (#136/#137, ``review/archive/2026-07-28-performance/residual-gap.md``).
 _FEED_SLICE = 65536
 _FEED_OUTPUT = 65536
+_SEEKABLE_FEED_OUTPUT = 1 << 20
 # Set while a probe opens its codec stream (:func:`probe_streams`).
 _PROBE_STREAM: ContextVar[bool] = ContextVar("archivey_probe_stream", default=False)
 
@@ -583,15 +591,17 @@ def probe_streams() -> Generator[None]:
         _PROBE_STREAM.reset(token)
 
 
-# Large bounded reads elsewhere step by this much: ``verify._SIZED_DRAIN_CHUNK`` and
-# ``tar_parser.DATA_READ_STEP`` follow it, and the latter is TAR's stated allocation
+# The step of large bounded reads over a decompressed stream; this module does not use
+# it. ``verify._SIZED_DRAIN_CHUNK`` and ``tar_parser.DATA_READ_STEP`` follow it, and the latter is TAR's stated allocation
 # bound (``tar.md``, ``threat-model.md`` O15 say 1 MiB): change those docs with it.
-_COMPRESSED_READ_SIZE_MAX = 1 << 20
+_LARGE_READ_STEP = 1 << 20
 # Output budget when skipping forward during seek (unbounded skip would reintroduce
 # the per-read amplification bomb on highly compressible spans).
 _SEEK_OUTPUT_CHUNK = 65536
 # Calls in a row with no output after which a re-decode gives up
-# (``DecompressorStream._redecode_to_error``).
+# (``DecompressorStream._redecode_to_error``): far more than the empty calls a decoder
+# makes between outputs (a header, a block's input), and still a bounded loop over a
+# hostile stream. Giving up only hands back no bytes; the error raises as before.
 _REDECODE_IDLE_LIMIT = 4096
 
 
@@ -960,6 +970,10 @@ class DecompressorStream(ReadOnlyIOStream):
                 if owns_inner:
                     self._owned_inner = path
             self._decoder: Decoder = make_decoder(self._seek_points[0], self._inner)
+            # The most output one bounded decoder call asks for (see _FEED_OUTPUT).
+            self._call_output = (
+                _SEEKABLE_FEED_OUTPUT if self._inner.seekable() else _FEED_OUTPUT
+            )
         except BaseException:
             # ``close()`` needs a decoder, and ``IOBase.__del__`` calls it on any
             # instance not marked closed, including one whose ``__init__`` raised.
@@ -1420,14 +1434,14 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _read_decompressed_chunk(self, max_length: int = -1) -> bytes:
         """One decoder call's output, at most ``max_length`` bytes when bounded, and
-        never more than ``_FEED_OUTPUT``."""
+        never more than ``_call_output``."""
         if self._spent is not None:
             # Only after a re-decode handed back the bytes before an error
             # (_redecode_to_error): the decoder is not fed again until a seek.
             self._raise_spent()
         bounded = max_length >= 0
         if bounded:
-            max_length = min(max_length, _FEED_OUTPUT)
+            max_length = min(max_length, self._call_output)
         if not self._decoder.needs_input:
             out = self._decoding(
                 lambda: self._decoder.feed(b"", max_length), bounded=bounded
@@ -1528,7 +1542,7 @@ class DecompressorStream(ReadOnlyIOStream):
         """The output between ``before`` and the decoder's error, decoded again.
 
         A standard-library decoder drops the output of a call that raises, and a call
-        asks for up to ``_FEED_OUTPUT`` bytes, so the bytes just before damage would be
+        asks for up to ``_call_output`` bytes, so the bytes just before damage would be
         lost to a large read. This restarts a decoder at the last seek point at or
         before ``before``, decodes to ``before`` in calls that stop there, then on one
         output byte per call until the error comes back, and hands back what came
@@ -1557,7 +1571,7 @@ class DecompressorStream(ReadOnlyIOStream):
             pos = point.decompressed_offset
             idle = 0
             while pos < before and idle < _REDECODE_IDLE_LIMIT:
-                out = self._redecode_step(decoder, min(_FEED_OUTPUT, before - pos))
+                out = self._redecode_step(decoder, min(self._call_output, before - pos))
                 if out is None:
                     return b""
                 idle = 0 if out else idle + 1
@@ -1565,14 +1579,19 @@ class DecompressorStream(ReadOnlyIOStream):
             if pos != before:
                 return b""
             idle = 0
-            while len(got) <= _FEED_OUTPUT and idle < _REDECODE_IDLE_LIMIT:
+            while len(got) <= self._call_output and idle < _REDECODE_IDLE_LIMIT:
                 out = self._redecode_step(decoder, 1)
                 if out is None:
                     got += decoder.flush().data
                     break
                 idle = 0 if out else idle + 1
                 got += out
-        except Exception:  # noqa: BLE001 - the error this recovers from raises instead
+        except Exception as exc:
+            # Only the verdict met again is the error this hands bytes back before: a
+            # failed source read or a MemoryError during the second decode is its own
+            # error, and raises.
+            if isinstance(exc, MemoryError) or not _may_recover(exc):
+                raise
             return bytes(got) if pos == before else b""
         # The decode did not meet the error again where it was met: hand back nothing
         # rather than bytes the first decode never reached.
@@ -1854,9 +1873,11 @@ class DecompressorStream(ReadOnlyIOStream):
                     parts.append(more)
                     got += len(more)
                 more = b""
-        except BaseException:
+        except BaseException as exc:
             self._stage(parts)
-            if not self._returns_before_spent():
+            # Only a decode error waits behind the bytes it gathered: an interrupt
+            # (KeyboardInterrupt, SystemExit) raises now.
+            if not isinstance(exc, Exception) or not self._returns_before_spent():
                 raise
             return None
         if not got or self._restart_pending or pending() is not None:
@@ -1876,10 +1897,11 @@ class DecompressorStream(ReadOnlyIOStream):
         after the buffered bytes raises it. Returning them now, rather than raising
         with them still buffered, gives a caller the same bytes before the error
         whatever its read size: the public stream repeats its first error on every
-        later read, so bytes left buffered behind a raise never reach the caller. An
-        error that is not the decoder's (the source's ``OSError``) raises at once, and
-        so does every error in a probe's stream (:func:`probe_streams`): a probe
-        judges the source by whether its read raises.
+        later read, so bytes left buffered behind a raise never reach the caller. A
+        source error from this stream's own feed read raises at once; one raised
+        inside a decoder call (xz's resume hand-off seeks the source) is kept like
+        the decoder's. Every error in a probe's stream raises at once
+        (:func:`probe_streams`): a probe judges the source by whether its read raises.
         """
         return not self._probe and self._spent is not None and bool(self._buffer)
 

@@ -234,6 +234,9 @@ class FramedDecoder(BaseDecoder):
         # stream, fewer than a magic, waiting for the rest (``_need_more``).
         self._held = b""
         self._need_more = False
+        # An error a decompressor raised after this ``feed`` already had output: the
+        # output is handed back, and the next ``feed`` raises this.
+        self._raise_next: Exception | None = None
         self._done = False
         # The last ``feed``'s output budget, which bounds the output ``flush`` drains.
         self._max_length = -1
@@ -336,6 +339,8 @@ class FramedDecoder(BaseDecoder):
             raise damaged_stream_error()
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        if self._raise_next is not None:
+            raise self._raise_next
         if self._done:
             return DecodeOut(b"")
         data = self._held + chunk
@@ -361,7 +366,15 @@ class FramedDecoder(BaseDecoder):
             limit = max_length - len(output) if max_length >= 0 else -1
             if self._head_pending and data:
                 self._take_head(data)
-            produced = self._decomp.decompress(data, limit)
+            try:
+                produced = self._decomp.decompress(data, limit)
+            except Exception as exc:
+                # Bytes decoded before an error are handed back, not lost with it
+                # (spec ``compressed-streams``): the next feed raises.
+                if not output:
+                    raise
+                self._raise_next = exc
+                break
             if produced and self._pending_point is not None:
                 points.append(self._pending_point)
                 self._pending_point = None
@@ -453,6 +466,8 @@ class FramedDecoder(BaseDecoder):
     @property
     @override
     def needs_input(self) -> bool:
+        if self._raise_next is not None:
+            return False
         if self._done or self._draining:
             return True
         if self._held:

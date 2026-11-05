@@ -2,7 +2,7 @@
 
 Spec ``compressed-streams``: each decoder call is fed the compressed input up to the
 next 64 KiB boundary from the decoder's start and asks for what the read asks, at most
-64 KiB. On a source that can seek, a call that raises is decoded again to the failing
+1 MiB on a file and 64 KiB on a pipe. On a source that can seek, a call that raises is decoded again to the failing
 byte, so every bounded read size gets every byte the decoder gives before its error.
 A pipe loses at most the call that failed. These tests fail with read-size-scaled
 feeding (``read(n)`` fed ``min(n, 1 MiB)`` of input and asked ``n`` bytes per call).
@@ -15,6 +15,7 @@ import gzip
 import io
 import lzma
 import random
+import zlib
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -87,7 +88,7 @@ def test_every_bounded_read_size_gets_the_same_prefix(name: str) -> None:
     damaged = _damage(compress(PAYLOAD), 0.5)
     expected = _prefix(io.BytesIO(damaged), codec, 65536)
     assert expected[1] is not None, "the damage must surface as an error"
-    for size in (7, 4096, 100_000, 1 << 20, 5 << 20):
+    for size in (61, 4096, 100_000, 1 << 20, 5 << 20):
         assert _prefix(io.BytesIO(damaged), codec, size) == expected, size
 
 
@@ -109,8 +110,22 @@ def test_a_pipe_loses_at_most_one_call(name: str) -> None:
     assert whole[0] - 512 <= short[0] <= whole[0]
 
 
+_RAW: dict[Codec, Callable[[], Any]] = {
+    Codec.GZIP: lambda: zlib.decompressobj(31),
+    Codec.XZ: lzma.LZMADecompressor,
+    Codec.BZIP2: bz2.BZ2Decompressor,
+}
+
+
 def _exact_prefix(data: bytes, codec: Codec) -> int:
-    """Bytes a decoder gives before its error, asked for one output byte per call."""
+    """Bytes a decoder gives before its error, asked for one output byte per call.
+
+    A standard-library decoder is driven directly (one-byte reads through the stream
+    stack take seconds per 100 kB); the others through the stream, under
+    ``probe_streams`` so nothing is handed back or decoded again.
+    """
+    if codec in _RAW:
+        return _raw_exact_prefix(data, _RAW[codec]())
     got = 0
     with (
         probe_streams(),
@@ -121,6 +136,27 @@ def _exact_prefix(data: bytes, codec: Codec) -> int:
                 got += 1
         except ArchiveyError:
             pass
+    return got
+
+
+def _raw_exact_prefix(data: bytes, decoder: Any) -> int:
+    got = 0
+    zlib_like = hasattr(decoder, "unconsumed_tail")
+    pending = data
+    try:
+        while not decoder.eof:
+            out = decoder.decompress(pending, 1)
+            got += len(out)
+            if zlib_like:
+                pending = decoder.unconsumed_tail
+                if not out and not pending:
+                    break
+            else:
+                pending = b""
+                if not out and decoder.needs_input:
+                    break
+    except (OSError, EOFError, zlib.error, lzma.LZMAError):
+        pass
     return got
 
 
@@ -139,7 +175,7 @@ def test_damage_in_the_second_gzip_member_keeps_the_first_whole() -> None:
     expected = _prefix(io.BytesIO(data), Codec.GZIP, 65536)
     assert expected[1] is not None
     assert expected[0] > len(first)
-    for size in (7, 1 << 20):
+    for size in (61, 1 << 20):
         assert _prefix(io.BytesIO(data), Codec.GZIP, size) == expected
 
 
@@ -162,7 +198,7 @@ def test_rapidgzip_gives_the_same_prefix_as_the_standard_library() -> None:
     expected = _prefix(io.BytesIO(damaged), Codec.GZIP, 65536)
     assert expected[1] is not None, "the damage must surface as an error"
     on = replace(_CONFIG, use_rapidgzip=AcceleratorMode.ON)
-    for size in (7, 65536, 1 << 20):
+    for size in (61, 65536, 1 << 20):
         assert _prefix(io.BytesIO(damaged), Codec.GZIP, size, on) == expected, size
 
 
@@ -178,3 +214,42 @@ def test_lzop_hands_back_the_blocks_before_a_damaged_one(size: int, pipe: bool) 
     damaged[len(damaged) - 1000] ^= 0xFF  # inside the third block
     source = NonSeekableBytesIO(bytes(damaged)) if pipe else io.BytesIO(bytes(damaged))
     assert _prefix(source, Codec.LZOP, size) == (2 * 256 * 1024, "CorruptionError")
+
+
+def _bad_code(data: bytes, at: float) -> bytes:
+    """``data`` with eight bytes of set bits at ``at``: an LZW code past the table."""
+    damaged = bytearray(data)
+    pos = int(len(damaged) * at)
+    damaged[pos : pos + 8] = b"\xff" * 8
+    return bytes(damaged)
+
+
+def _unix_compress(data: bytes) -> bytes:
+    from tests.streams_util import make_unix_compress
+
+    return make_unix_compress(data)
+
+
+def _shrink(data: bytes) -> bytes:
+    from tests.zip_legacy_build import shrink
+
+    return shrink(data)[0]
+
+
+@pytest.mark.parametrize(
+    ("codec", "compress"),
+    [(Codec.UNIX_COMPRESS, _unix_compress), (Codec.SHRINK, _shrink)],
+    ids=["unix_compress", "shrink"],
+)
+@pytest.mark.parametrize("size", [512, 1 << 20])
+def test_lzw_decoders_hand_back_every_byte_before_a_bad_code(
+    codec: Codec, compress: Callable[[bytes], bytes], size: int
+) -> None:
+    """The in-house LZW decoders (.Z and ZIP Shrink) decode a whole input slice per
+    call; a bad code in it must not take the bytes before it along, even from a pipe,
+    where nothing can be decoded again."""
+    damaged = _bad_code(compress(_text(300_000, 4)), 0.5)
+    expected = _exact_prefix(damaged, codec)
+    assert 0 < expected < 300_000
+    pipe = _prefix(NonSeekableBytesIO(damaged), codec, size)
+    assert pipe == (expected, "CorruptionError")

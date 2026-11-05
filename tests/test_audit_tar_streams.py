@@ -953,12 +953,11 @@ def test_untyped_block_check_after_trailer_is_reported(
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("codec", ["bz2", "xz"])
 def test_untyped_block_check_is_never_silent(codec: str, streaming: bool) -> None:
-    """format-tar: the same failed bzip2/xz check has two outcomes, never silence.
+    """format-tar: a failed bzip2/xz check after the member is reported, never silent.
 
-    With only ``tarfile``'s own record padding, the check is reached either while
-    the member is read (``CorruptionError`` from ``read()``) or in the trailing scan
-    (``DIGEST_UNVERIFIABLE``), depending on the codec and the member size. Neither
-    arm is silent.
+    With only ``tarfile``'s own record padding, the check fails after the member's
+    bytes. The member read hands back every byte before the failure, so the member
+    reads whole and the trailing scan reports ``DIGEST_UNVERIFIABLE`` at every size.
     """
     fmt = ArchiveFormat.TAR_BZ2 if codec == "bz2" else ArchiveFormat.TAR_XZ
     outcomes: set[str] = set()
@@ -976,9 +975,7 @@ def test_untyped_block_check_is_never_silent(codec: str, streaming: bool) -> Non
             continue
         assert DiagnosticCode.DIGEST_UNVERIFIABLE in counts, f"silent at {size}"
         outcomes.add("reported")
-    # Which sizes land in which arm depends on the codec and its backend; the
-    # reporting arm is pinned by the 64 KiB-padding test above.
-    assert outcomes
+    assert outcomes == {"reported"}
 
 
 def _checksumless_codec(codec: str, raw: bytes) -> bytes:
