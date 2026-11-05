@@ -14,12 +14,20 @@ import io
 import tarfile
 import zipfile
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from archivey import ArchiveReader, open_archive
-from archivey.exceptions import ArchiveyError, TruncatedError
+from archivey.config import ArchiveyConfig
+from archivey.diagnostics import Diagnostic, DiagnosticCode, DiagnosticPolicy
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    DiagnosticRaisedError,
+    TruncatedError,
+)
 from archivey.types import ArchiveFormat
 
 try:
@@ -191,3 +199,40 @@ def test_open_phase_truncation_stamps_format_and_archive(
     err = excinfo.value
     assert err.source_format is expected_format
     assert err.archive_name is not None and source.name in err.archive_name
+    # Four bytes are too few for the signature, so only the filename chose the format;
+    # 20 and 60 hold the signature.
+    assert err.format_unconfirmed is (cut == 4)
+    assert ("extension only" in err.message) is (cut == 4)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected_format"),
+    [(".7z", ArchiveFormat.SEVEN_Z), (".rar", ArchiveFormat.RAR)],
+    ids=["7z", "rar"],
+)
+@pytest.mark.parametrize(
+    "policy", [None, DiagnosticPolicy.STRICT], ids=["default", "strict"]
+)
+def test_open_phase_failure_on_an_extension_only_format_is_marked_unconfirmed(
+    tmp_path: Path,
+    suffix: str,
+    expected_format: ArchiveFormat,
+    policy: DiagnosticPolicy | None,
+) -> None:
+    # Junk named like an archive: the filename alone chose the format, and the backend
+    # refuses it while the reader is built, before any reader exists to stamp it.
+    source = tmp_path / f"junk{suffix}"
+    source.write_bytes(b"not an archive at all. " * 5)
+    diagnostics: list[Diagnostic] = []
+    config = ArchiveyConfig(on_diagnostic=diagnostics.append)
+    if policy is not None:
+        config = replace(config, diagnostic_policy=policy)
+    with pytest.raises(CorruptionError) as excinfo, open_archive(source, config=config):
+        pass
+    err = excinfo.value
+    assert not isinstance(err, DiagnosticRaisedError)
+    assert err.source_format is expected_format
+    assert err.format_unconfirmed is True
+    assert "extension only" in err.message
+    codes = [d.code for d in diagnostics]
+    assert codes.count(DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED) == 1
