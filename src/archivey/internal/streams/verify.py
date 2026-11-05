@@ -101,7 +101,8 @@ _DigestTransforms = Mapping[HashAlgorithm, Callable[[bytes], bytes]]
 # sized branch: ``expected_size`` is a decompression-bomb cap. The step itself is not
 # the bound (the drain stops at ``expected_size`` whatever the step), so it is sized
 # for speed: a member up to one step arrives as one piece, which ``b"".join`` returns
-# without copying. The decoder underneath still makes its own fixed 64 KiB calls.
+# without copying. The decoder underneath makes its own calls: up to 1 MiB on a file,
+# 64 KiB on a pipe.
 _SIZED_DRAIN_CHUNK = _LARGE_READ_STEP
 
 

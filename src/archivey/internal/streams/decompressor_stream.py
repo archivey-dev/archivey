@@ -591,9 +591,10 @@ def probe_streams() -> Generator[None]:
         _PROBE_STREAM.reset(token)
 
 
-# The step of large bounded reads over a decompressed stream; this module does not use
-# it. ``verify._SIZED_DRAIN_CHUNK`` and ``tar_parser.DATA_READ_STEP`` follow it, and the latter is TAR's stated allocation
-# bound (``tar.md``, ``threat-model.md`` O15 say 1 MiB): change those docs with it.
+# The step of large bounded reads over a decompressed stream; this module does not
+# use it. ``verify._SIZED_DRAIN_CHUNK`` and ``tar_parser.DATA_READ_STEP`` follow it,
+# and the latter is TAR's stated allocation bound (``tar.md``, ``threat-model.md``
+# O15 say 1 MiB): change those docs with it.
 _LARGE_READ_STEP = 1 << 20
 # Output budget when skipping forward during seek (unbounded skip would reintroduce
 # the per-read amplification bomb on highly compressible spans).

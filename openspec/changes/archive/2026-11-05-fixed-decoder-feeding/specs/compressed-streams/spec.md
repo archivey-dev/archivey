@@ -16,7 +16,7 @@ prefix of the decoder it replaces.
 
 - **GIVEN** a `.gz`, `.xz`, `.bz2` or `.zst` file of 3 MB of text with 64 bytes damaged
   in the middle
-- **WHEN** it is read in loops of `read(7)`, `read(4096)`, `read(65536)`, `read(100000)`,
+- **WHEN** it is read in loops of `read(61)`, `read(4096)`, `read(65536)`, `read(100000)`,
   `read(1 MiB)` and `read(5 MiB)`
 - **THEN** every loop gets the same bytes before the same error, as many as a decoder
   asked for one output byte per call gives
@@ -24,7 +24,7 @@ prefix of the decoder it replaces.
 #### Scenario: damage in a later gzip member
 
 - **GIVEN** a two-member `.gz` with the damage in member 2
-- **WHEN** it is read in loops of `read(7)`, `read(65536)` and `read(1 MiB)`
+- **WHEN** it is read in loops of `read(61)`, `read(65536)` and `read(1 MiB)`
 - **THEN** every loop gets the same prefix, member 1 whole
 
 #### Scenario: rapidgzip

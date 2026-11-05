@@ -2,8 +2,9 @@
 
 Spec ``compressed-streams``: each decoder call is fed the compressed input up to the
 next 64 KiB boundary from the decoder's start and asks for what the read asks, at most
-1 MiB on a file and 64 KiB on a pipe. On a source that can seek, a call that raises is decoded again to the failing
-byte, so every bounded read size gets every byte the decoder gives before its error.
+1 MiB on a file and 64 KiB on a pipe. On a source that can seek, a call that raises
+is decoded again to the failing byte, so every bounded read size gets every byte the
+decoder gives before its error.
 A pipe loses at most the call that failed. These tests fail with read-size-scaled
 feeding (``read(n)`` fed ``min(n, 1 MiB)`` of input and asked ``n`` bytes per call).
 """
