@@ -58,8 +58,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   …); there, as with a compressed TAR, listing needs decompression and members are solid.
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
-  Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4 and Brotli need
-  `[recommended]`. One member. Members: direct. Readable from a pipe. Seeking inside the member
+  Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
+  files and Brotli need `[recommended]`. One member. Members: direct. Readable from a pipe. Seeking inside the member
   needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
 - **UDIF disk images** (`.dmg`): recognised and refused ([Disk images](#disk-images)).
 
@@ -1198,12 +1198,20 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 
 - **Needs:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` are in core (`.Z` with
   archivey's own LZW decoder). Zstandard is in core on Python 3.14 and later, and needs
-  `[recommended]` before. LZ4 and Brotli need `[recommended]`. `.lzo`, the format `lzop` writes,
+  `[recommended]` before. LZ4, mozlz4 and Brotli need `[recommended]`. `.lzo`, the format `lzop` writes,
   decodes LZO1X with liblzo2 when the `python-lzo` package is installed, and otherwise in Python,
   more than 25 times slower on text. `python-lzo` is not in an extra: it is GPL, and has no Linux
   wheels, so installing it needs the liblzo2 headers.
+- **mozlz4** is the format Firefox keeps its session, add-on and search files in
+  (`sessionstore.jsonlz4`, `search.json.mozlz4`, `recovery.baklz4`, `addonStartup.json.lz4`):
+  one LZ4 block behind a `mozLz40` header that stores the decoded size. archivey finds it by that
+  header, whatever the extension, so `addonStartup.json.lz4` reads as mozlz4, not LZ4. The block
+  has no checksum, and it decodes only when the whole file has arrived, so the first byte from a
+  pipe waits for the end of the input. The decoded size must match the header, or the read raises
+  `CorruptionError`.
 - **Listing:** one synthetic member, named from the source path, or `data` for a source with no
-  name. `encoding=` has no effect, and passing it reports `ENCODING_ARGUMENT_UNUSED`.
+  name. `.jsonlz4` and `.baklz4` become `.json` and `.bak` (`sessionstore.jsonlz4` holds
+  `sessionstore.json`). `encoding=` has no effect, and passing it reports `ENCODING_ARGUMENT_UNUSED`.
 - **Reading:** forward only, until you pass `seekable_members=True`
   ([Seeking inside a member](reading.md#seeking-inside-a-member)). `archivey.open_stream(...)`
   follows the same rule: not seekable unless `seekable=True`. `.Z` decodes forward from a pipe, and
@@ -1232,6 +1240,7 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries a name (`FNAME`).
 - `.lzo` exposes `extra["lzop.original_filename"]` when its header stores a name, and the
   modification time and permission bits the header stores.
+- mozlz4 sets `member.size` at listing, from its header.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is cheap to
   reach (a path or an in-memory stream; not a pipe or another archive's member). It is the size
   modulo 2^32 only for a file of one gzip member with nothing after it. A file of several members
@@ -1332,6 +1341,10 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   decodes at any setting, and raises `UnsupportedFeatureError`. Detection decodes its sample with
   the window capped at 128 MiB, what `zstd -d` decodes without `--long`. Detection never
   reserves more than that, whatever the frame declares.
+- A mozlz4 header declares the decoded size, and the decoder allocates that much.
+  `DecoderLimits.max_decoder_memory` caps it, and a size over the cap raises `ResourceLimitError`.
+  A size larger than the block can decode to raises `CorruptionError` before anything is
+  allocated, and so does a block longer than the declared size can encode to.
 - With the `[seekable]` rapidgzip accelerator on a seekable `.gz` (by default from 16 MiB, with
   `seekable_members=True`, or on Linux and macOS without it when the file compresses 3:1 or
   less), archivey adds its own checks, because rapidgzip can end a cut file with no error. If

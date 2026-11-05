@@ -907,6 +907,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
     ("tar-unix-compress", "no corpus builder for tar + unix compress (.tar.Z)"),
     ("udif", "UDIF is recognised and refused; there is no reader"),
     (
+        "mozlz4",
+        "no corpus builder for Firefox mozlz4; tests/test_mozlz4.py seeks in a file",
+    ),
+    (
         "ar",
         (
             "no corpus builder: the corpus trees hold directories, which ar cannot; "
@@ -929,6 +933,8 @@ _UNTESTED_FORMATS = {
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE): "tar-lzma-alone",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS): "tar-unix-compress",
     ArchiveFormat.DMG: "udif",
+    ArchiveFormat.MOZLZ4: "mozlz4",
+    ArchiveFormat(ContainerFormat.TAR, StreamFormat.MOZLZ4): "mozlz4",
     **{ArchiveFormat(ContainerFormat.AR, stream): "ar" for stream in StreamFormat},
     **{ArchiveFormat(ContainerFormat.CPIO, s): "cpio" for s in StreamFormat},
     ArchiveFormat.SQUASHFS: "squashfs",

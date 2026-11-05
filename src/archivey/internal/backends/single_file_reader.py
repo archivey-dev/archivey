@@ -92,6 +92,13 @@ def _compression_exts() -> frozenset[str]:
 
 
 _TAR_SHORT_TO_TAR: dict[str, str] = dict.fromkeys(COMPRESSED_TAR_SHORT_SUFFIXES, ".tar")
+# One-word suffixes whose file decodes to a file with its own extension: a compressed
+# tar, and Firefox's mozlz4 files (``sessionstore.jsonlz4`` holds ``sessionstore.json``).
+_SUFFIX_REPLACEMENTS: dict[str, str] = {
+    **_TAR_SHORT_TO_TAR,
+    ".jsonlz4": ".json",
+    ".baklz4": ".bak",
+}
 
 
 class _IndexReportRecorder(DiagnosticCollector):
@@ -147,8 +154,8 @@ def _infer_member_name(archive_name: str | None) -> str:
     """Infer the single member's name from the source filename (see the spec)."""
     return infer_member_name_from_archive(
         archive_name,
-        strip_suffixes=_compression_exts(),
-        replace_suffixes=_TAR_SHORT_TO_TAR,
+        strip_suffixes=_compression_exts() - _SUFFIX_REPLACEMENTS.keys(),
+        replace_suffixes=_SUFFIX_REPLACEMENTS,
     )
 
 
