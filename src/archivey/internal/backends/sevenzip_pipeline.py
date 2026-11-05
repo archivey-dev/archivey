@@ -54,6 +54,7 @@ from archivey.internal.backends.sevenzip_methods import (
     METHOD_LZMA2,
     MethodKind,
     _method_hex,
+    is_aes,
     is_bcj,
     is_lzma_family,
     lookup,
@@ -94,7 +95,12 @@ from archivey.internal.streams.codecs.zstd_framing import (
     MAX_FRAME_HEADER_SIZE,
     frame_window_size,
 )
-from archivey.internal.streams.crypto import open_aes_decrypt_stream
+from archivey.internal.streams.crypto import (
+    AES_BLOCK_SIZE,
+    AesParams,
+    get_crypto_backend,
+    open_aes_decrypt_stream,
+)
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
@@ -629,6 +635,120 @@ def _open_aes_stage(
     except ValueError as exc:
         raise CorruptionError(f"Malformed 7z AES properties: {exc}") from exc
     return open_aes_decrypt_stream(source, params, excluded=excluded)
+
+
+#: Fewest padding bytes the tail key check reads. At one byte a wrong key has a zero
+#: tail 1 time in 256; at four, about 1 in 4 billion.
+AES_TAIL_MIN_PADDING = 4
+
+
+@dataclass(frozen=True, slots=True)
+class AesTail:
+    """The AES coder of a folder that decrypts its one pack stream directly.
+
+    ``unpack_size`` is the coder's declared output, the plaintext before the block
+    padding the writer added. ``source`` is the pack stream's position in
+    ``packed_indices`` (always 0: the folder has one).
+    """
+
+    coder: SevenZipCoder
+    source: int
+    unpack_size: int
+
+
+def folder_aes_tail(folder: SevenZipFolder) -> AesTail | None:
+    """The AES coder that reads the folder's one pack stream, or ``None``.
+
+    ``None`` for a folder with several pack streams (BCJ2), a coder with several
+    outputs, or an AES coder fed by another coder: there the pack stream's last
+    bytes are not the AES padding, so the tail key check has nothing to read.
+    """
+    if len(folder.packed_indices) != 1:
+        return None
+    if any(coder.num_out_streams != 1 for coder in folder.coders):
+        return None
+    graph = FolderGraph.of(folder)
+    for index, coder in enumerate(folder.coders):
+        if not is_aes(coder.method) or coder.num_in_streams != 1:
+            continue
+        if index >= len(folder.unpack_sizes):
+            return None
+        (in_index,) = graph.inputs[index]
+        if graph.producer(in_index) is None and in_index in folder.packed_indices:
+            return AesTail(
+                coder, folder.packed_indices.index(in_index), folder.unpack_sizes[index]
+            )
+    return None
+
+
+def check_aes_tail_sizes(tail: AesTail, pack_size: int) -> None:
+    """Refuse an AES coder that declares more output than its pack stream holds.
+
+    AES-CBC output is never longer than its input, so such a header is corrupt
+    whatever the password. Without this check the short decrypt reads as a wrong
+    password under the correct one. A pack stream longer than the output plus one
+    block, or not a whole number of blocks, is left to the decoder: the bytes it
+    needs may all be there.
+    """
+    if pack_size < tail.unpack_size:
+        raise CorruptionError(
+            f"7z folder is corrupt: its AES coder declares {tail.unpack_size} bytes "
+            f"of output from a {pack_size}-byte packed stream, and AES never outputs "
+            "more than it reads"
+        )
+
+
+def aes_tail_confirms(
+    view: BinaryIO,
+    pack_size: int,
+    tail: AesTail,
+    *,
+    password: bytes,
+    key_cache: SevenZipKeyCache,
+    excluded: frozenset[OptionalLibrary],
+) -> bool:
+    """Whether the last AES block of the pack stream decrypts to zero padding.
+
+    The cheap key check of the 7z confirm ladder: CBC recovers the last plaintext
+    block from the last two ciphertext blocks (or the IV and the only block), so it
+    reads at most 32 bytes at the end of ``view``, decodes nothing, and costs one
+    block decrypt after the key derivation every candidate pays anyway. 7-Zip and
+    py7zr both pad the plaintext with zeros.
+
+    Confirm-only: ``False`` means "no evidence", never "wrong password". A writer
+    that pads with other bytes must not lose its correct password, so the caller
+    goes on to the integrity anchor. The check does not run when the pack stream is
+    not a whole number of blocks, or the padding is under ``AES_TAIL_MIN_PADDING``
+    or over one block.
+    """
+    padding = pack_size - tail.unpack_size
+    if pack_size % AES_BLOCK_SIZE or not (
+        AES_TAIL_MIN_PADDING <= padding < AES_BLOCK_SIZE
+    ):
+        return False
+    if tail.coder.properties is None:
+        return False
+    try:
+        params = key_cache.aes_params_from_properties(password, tail.coder.properties)
+    except ValueError:
+        return False
+    # The block before the last one is the last one's IV; a one-block stream uses
+    # the coder's.
+    one_block = pack_size == AES_BLOCK_SIZE
+    start = 0 if one_block else pack_size - 2 * AES_BLOCK_SIZE
+    view.seek(start)
+    data = read_exact(view, pack_size - start)
+    if len(data) != pack_size - start:
+        return False
+    if one_block:
+        iv, block = params.iv, data
+    else:
+        iv, block = data[:AES_BLOCK_SIZE], data[AES_BLOCK_SIZE:]
+    stage = get_crypto_backend(excluded).aes_cbc_decrypt_stage(
+        AesParams(key=params.key, iv=iv)
+    )
+    plain = stage.update(block)
+    return len(plain) == AES_BLOCK_SIZE and plain[-padding:] == bytes(padding)
 
 
 def _filter_stage(coder: SevenZipCoder, unpack_size: int) -> _FilterStage:

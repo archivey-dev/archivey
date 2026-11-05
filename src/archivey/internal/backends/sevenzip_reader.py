@@ -77,8 +77,11 @@ from archivey.internal.backends.sevenzip_parser import (
     read_signature_and_next_header,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
+    aes_tail_confirms,
+    check_aes_tail_sizes,
     decode_encoded_header,
     encoded_header_needs_password,
+    folder_aes_tail,
     open_folder_pipeline,
 )
 from archivey.internal.base_reader import (
@@ -1781,17 +1784,41 @@ class SevenZipReader(BaseArchiveReader):
         if folder_index in self._folder_passwords:
             return self._folder_passwords[folder_index]
 
+        tail = folder_aes_tail(folder)
+        tail_pack_size = 0
+        if tail is not None:
+            tail_pack_size = self._archive.pack_sizes[
+                self._folder_pack_starts[folder_index] + tail.source
+            ]
+            check_aes_tail_sizes(tail, tail_pack_size)
+
         plan = self._folder_password_confirm_plan(folder_index)
         # The plan that walks to the folder's end anchor whatever the codec: it settles
         # a candidate the bounded plan could only call inconclusive, when several
         # candidates survive the bounded one.
         full_plan = self._folder_password_confirm_plan(folder_index, full=True)
 
+        def tail_confirms(kdf_password: bytes) -> bool:
+            # Rung 1 of the ladder, the cheap key check: zero padding in the last AES
+            # block. Confirm-only, so a False goes on to the anchor plan.
+            if tail is None:
+                return False
+            return aes_tail_confirms(
+                self._folder_pack_views(folder_index)[tail.source],
+                tail_pack_size,
+                tail,
+                password=kdf_password,
+                key_cache=self._key_cache,
+                excluded=self._stream_config.excluded_libraries,
+            )
+
         # The callbacks below run once per candidate password, inside
         # ``attempt_with_confirm``: each judges the candidate against the folder,
         # raising the wrong-password error to move on.
         def probe(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
             kdf_password = _password_to_kdf_bytes(candidate)
+            if tail_confirms(kdf_password):
+                return kdf_password, PasswordConfirmVerdict.CONFIRMED
             return kdf_password, self._confirm_folder_password(
                 folder_index, kdf_password, plan
             )
