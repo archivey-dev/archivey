@@ -6,6 +6,7 @@ from __future__ import annotations
 import bz2
 import dataclasses
 import functools
+import gzip
 import io
 import os
 import tarfile
@@ -544,27 +545,67 @@ def test_tar_members_without_holes_are_not_guarded_but_still_counted(
     assert built == ["holes"]
 
 
-def test_ar_members_are_not_guarded_but_still_counted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An ar member's data is stored as it is (a sequential plugin's ``data_length``
-    span), so like a TAR member it gets no per-member guard and counts at its size."""
-    members = [(f"m{i}", _noise()) for i in range(3)]
-    path = tmp_path / "plain.a"
-    path.write_bytes(
-        b"!<arch>\n"
-        + b"".join(
-            _ar_header(name + "/", len(data)) + data + bytes(len(data) % 2)
-            for name, data in members
-        )
+def _newc(members: list[tuple[str, bytes]]) -> bytes:
+    """A newc CPIO archive of regular files, then its trailer."""
+    out = bytearray()
+    for i, (name, data) in enumerate([*members, ("TRAILER!!!", b"")]):
+        stored = name.encode() + b"\0"
+        mode = 0o100644 if data or name != "TRAILER!!!" else 0
+        fields = (i + 1, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(stored), 0)
+        header = b"070701" + b"".join(b"%08X" % value for value in fields)
+        out += header + stored + bytes(-(len(header) + len(stored)) % 4)
+        out += data + bytes(-len(data) % 4)
+    return bytes(out)
+
+
+def _ar(members: list[tuple[str, bytes]]) -> bytes:
+    return b"!<arch>\n" + b"".join(
+        _ar_header(name + "/", len(data)) + data + bytes(len(data) % 2)
+        for name, data in members
     )
+
+
+_STORED_PLUGIN_FORMATS = {"a": _ar, "cpio": _newc}
+
+
+@pytest.mark.parametrize("suffix", list(_STORED_PLUGIN_FORMATS))
+def test_stored_plugin_members_are_not_guarded_but_still_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    """An ar or CPIO member's data is stored as it is (a sequential plugin's
+    ``data_length`` span), so like a TAR member it gets no per-member guard, and it
+    counts at its size in the archive-wide total, once however often it is read."""
+    members = [(f"m{i}", _noise()) for i in range(3)]
+    path = tmp_path / f"plain.{suffix}"
+    path.write_bytes(_STORED_PLUGIN_FORMATS[suffix](members))
     built = _count_guards(monkeypatch)
     with open_archive(path, config=_TAR_RATIO) as reader:
-        for member, stream in reader.stream_members():
+        for _member, stream in reader.stream_members():
             assert stream is not None
             _drain(stream)
         assert [reader.read(name) for name, _ in members] == [d for _, d in members]
+        total = reader._read_ratio_tally.advance(-1, 0)  # type: ignore[attr-defined]
     assert built == []
+    assert total == sum(len(data) for _, data in members)
+
+
+@pytest.mark.parametrize("suffix", list(_STORED_PLUGIN_FORMATS))
+def test_a_compressed_stored_plugin_bomb_read_whole_in_a_pass_is_refused(
+    tmp_path: Path, suffix: str
+) -> None:
+    """With no member guard, a whole read of a stored member reads the outer guard's
+    stream directly; its refusal, held for the read after the bytes before it, still
+    comes out as the refusal, not as a cut archive."""
+    archive = _STORED_PLUGIN_FORMATS[suffix]([("f", bytes(64 * _MIB))])
+    path = tmp_path / f"bomb.{suffix}.gz"
+    path.write_bytes(gzip.compress(archive))
+    with (
+        open_archive(path) as reader,
+        pytest.raises(AlwaysStopResourceLimitError),
+    ):
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            stream.read()
 
 
 def test_tar_holes_alone_pass_the_same_limit(tmp_path: Path) -> None:

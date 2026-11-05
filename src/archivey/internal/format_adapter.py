@@ -1000,14 +1000,30 @@ class _SpanWindow(ReadOnlyIOStream):
         want = left if whole else min(n, left)
         if want <= 0:
             return b""
-        data = self._forward.read(want)
-        self._done += len(data)
-        if len(data) < want and (whole or not data):
-            raise TruncatedError(
-                f"{self._what} is truncated inside a member's data at offset "
-                f"{span.offset + self._done}"
-            )
-        return data
+        if not whole:
+            data = self._forward.read(want)
+            self._done += len(data)
+            if not data:
+                raise self._cut()
+            return data
+        # A read with no size goes on after a short read, so that an error the walk's
+        # stream holds for its next read (a ratio guard's refusal, after the bytes
+        # before it) comes out as itself; only a stream that has ended is a cut.
+        chunks: list[bytes] = []
+        while left > 0:
+            chunk = self._forward.read(left)
+            if not chunk:
+                raise self._cut()
+            chunks.append(chunk)
+            self._done += len(chunk)
+            left -= len(chunk)
+        return b"".join(chunks)
+
+    def _cut(self) -> TruncatedError:
+        return TruncatedError(
+            f"{self._what} is truncated inside a member's data at offset "
+            f"{self._span.offset + self._done}"
+        )
 
 
 class _DecodedWindow(ReadOnlyIOStream):
@@ -1515,8 +1531,8 @@ class SequentialReaderAdapter(_PluginAdapter):
         outer = self._owned_stream if self._streaming else self._shared
         return (
             member.is_file
+            and self._member_data_is_stream_bytes(member)
             and isinstance(record, _Span)
-            and record.decoded is None
             and (record.layer.stream if self._streaming else record.layer.shared)
             is outer
         )
