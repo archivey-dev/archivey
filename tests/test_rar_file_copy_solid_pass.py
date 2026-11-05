@@ -758,3 +758,22 @@ def test_extract_with_a_predicate_keeps_no_source_for_unselected_copies(
         assert reader._resource_usage().spool_bytes == 0
     assert sorted(p.name for p in dest.iterdir()) == ["a_prefix.txt", "c_other.txt"]
     assert spawns == ["unrar"]
+
+
+def test_a_predicate_still_counts_every_copy(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``stream_members`` predicate is asked once per member, in order, never ahead,
+    so every copy counts: the source is kept even when the predicate selects none of
+    its copies. Fails if the pass starts asking predicates up front."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    config = _config("unrar")
+    archive, payload = _solid_with_copies(tmp_path)
+    with open_archive(archive, config=config) as reader:
+        for member, stream in reader.stream_members(
+            members=lambda m: m.name == "b_source.txt"
+        ):
+            assert stream is not None
+            assert stream.read() == payload, member.name
+        assert reader._resource_usage().spool_bytes == len(payload)
+    assert spawns == ["unrar"]
