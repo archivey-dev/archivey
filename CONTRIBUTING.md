@@ -132,8 +132,9 @@ reduced set (Linux 3.11 and 3.15, one core-only leg, Windows 3.15, free-threaded
 merge queue runs every leg plus PyPy, the distribution unar packages and the short
 Atheris fuzz, and a failure there takes the pull request out of the queue. A queued
 change that touches no path on `FULL` in `scripts/ci/ci_scope.py` (the library, the
-library tests, the dependencies, the CI, and every script outside the folders its
-`NOT_FULL` lists, [`scripts/README.md`](scripts/README.md)) runs only the pull request
+library tests and the files they read, the benchmarks, the dependencies, the CI, and
+every script outside the folders its `NOT_FULL` lists,
+[`scripts/README.md`](scripts/README.md)) runs only the pull request
 set plus the free-threaded 3.15t leg there, and skips the short fuzz. On a pull request
 push, such a change runs the lint job alone (it runs the script tests); the library
 legs wait for the queue. `ci.yml` does not

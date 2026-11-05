@@ -16,10 +16,12 @@ on:
   pull_request:
     # A pull request that changes only documentation does not start this workflow; the
     # docs build and OpenSpec checks live in docs-checks.yml so they still run. A
-    # workflow-level filter costs nothing, where a classifier job would hold every code
-    # run in the runner queue until it finished. `**` first, then the documentation
-    # globs with `!`, then the two doc paths that tests read, re-included (later
-    # patterns win): docs/api.md (test_public_api) and review/problem-catalogue/
+    # workflow-level filter starts no run at all for a docs-only pull request, where the
+    # `scope` job below (which decides whether a code run needs the library legs) would
+    # still start one. `**` first, then the documentation globs with `!`, then the doc
+    # paths that tests read, re-included (later patterns win): docs/api.md
+    # (test_public_api), dev-docs/tar-minefield-results.md (test_tar_minefield_corpus),
+    # LICENSE (test_cli_companion_package) and review/problem-catalogue/
     # (test_review_problem_catalogue). Add a path there when a test starts reading
     # another doc file. scripts/tests/test_ci_doc_paths.py checks that the re-includes
     # come after every `!` entry, and that atheris-fuzz.yml (called in the merge queue)
@@ -32,8 +34,9 @@ on:
     # check from this one at all, and would wait on it forever.
     paths:
       - "**"
-      # Dotfiles listed explicitly in case `**` skips them: .github/ and
-      # .pre-commit-config.yaml changes must run the tests.
+      # Dotfiles listed explicitly in case `**` skips them: a .github/ or
+      # .pre-commit-config.yaml change starts this workflow, and the `scope` job decides
+      # whether it needs the library legs.
       - ".*"
       - ".*/**"
       - "!**.md"
@@ -42,6 +45,8 @@ on:
       - "!mkdocs.yml"
       - "!LICENSE"
       - docs/api.md
+      - dev-docs/tar-minefield-results.md
+      - LICENSE
       - review/problem-catalogue/**
   # The merge queue. Path filters do not apply to merge_group, so every queued group runs
   # the whole workflow, and the `CI gate` job below is the check the ruleset requires.
@@ -52,15 +57,15 @@ on:
   workflow_dispatch:
 
 # A pull request push runs a reduced set of jobs; the merge queue, the daily run and a
-# dispatched run get all of them, except that a merge group changing no library, library
-# test, dependency or CI path runs only the pull request set plus the free-threaded
-# 3.15t leg (the `scope` job). Every job below runs on pull requests unless it says
-# otherwise. On a pull request: lint (with the script tests), the `test` legs (Linux
-# 3.11 and 3.15 [all], Linux 3.11 core-only, Windows 3.15 [all]), free-threaded 3.13t,
-# the structural benchmark and the LZO check against liblzo2. A pull request whose
-# diff changes no library, library test, dependency or CI path runs lint alone, which
-# runs the script tests (the `scope` job again). Only past it: the
-# `test-queue` legs (the other Pythons, 3.15 core-only, the minimum versions, macOS,
+# dispatched run get all of them, except that a merge group whose diff misses every
+# `FULL` path in scripts/ci/ci_scope.py (the library, its tests and the files they read,
+# the dependencies, CI, and every script outside `NOT_FULL`) runs only the pull request
+# set plus the free-threaded 3.15t leg (the `scope` job). Every job below runs on pull
+# requests unless it says otherwise. On a pull request: lint (with the script tests),
+# the `test` legs (Linux 3.11 and 3.15 [all], Linux 3.11 core-only, Windows 3.15 [all]),
+# free-threaded 3.13t, the structural benchmark and the LZO check against liblzo2. A
+# pull request whose diff misses every `FULL` path runs lint alone, which runs the
+# script tests. Not on a pull request: the `test-queue` legs (the other Pythons, 3.15 core-only, the minimum versions, macOS,
 # Windows 3.11, the 3.16 prerelease), 3.15t, the distribution unar packages, PyPy and
 # the short Atheris fuzz.
 # A failure there takes the pull request out of the queue, except in the 3.16 prerelease

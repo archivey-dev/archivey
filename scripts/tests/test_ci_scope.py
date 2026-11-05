@@ -50,6 +50,16 @@ _spec.loader.exec_module(scope)
         ["scripts/ci/ci_scope.py"],
         ["scripts/investigations/scan_archives.py"],
         ["scripts/checks/api_surface.py"],
+        # Files outside the code that a library test or a skipped job reads.
+        ["benchmarks/harness.py"],
+        ["benchmarks/conftest.py"],
+        ["docs/api.md"],
+        ["dev-docs/api-surface.txt"],
+        ["dev-docs/tar-minefield-results.md"],
+        ["LICENSE"],
+        [".github/workflows/publish.yml"],
+        [".python-version"],
+        [".gitattributes"],
         # A script in no folder yet, or in a new one, counts until it is sorted.
         ["scripts/new_tool.py"],
         ["scripts/newfolder/x.py"],
@@ -75,12 +85,37 @@ def test_a_library_test_dependency_or_ci_change_runs_everything(
         [".claude/skills/code-review-skill/SKILL.md", "AGENTS.md"],
         [".github/workflows/review-loop.yml"],
         ["dev-docs/review-eval/results.md"],
+        # Read by pre-commit on a developer's machine, by no CI job.
+        [".pre-commit-config.yaml"],
+        [".github/workflows/pr-gate.yml"],
+        # Read by the script tests, which the lint job runs on every push.
+        ["review/problem-catalogue/catalogue.md"],
         # A name that only starts like a FULL path.
         ["src_notes.md", "pyproject.toml.bak"],
     ],
 )
-def test_other_changes_run_the_pull_request_set(paths: list[str]) -> None:
+def test_other_changes_are_not_full_paths(paths: list[str]) -> None:
     assert not scope.needs_full(paths)
+
+
+def test_every_doc_ci_re_includes_for_a_library_test_is_a_full_path() -> None:
+    """ci.yml's path filter re-includes a doc file a test reads so a change to it starts
+    the workflow. A library test's doc must also be on `FULL`, or that run skips the
+    test that reads it."""
+    spec = importlib.util.spec_from_file_location(
+        "ci_doc_paths", Path(__file__).with_name("test_ci_doc_paths.py")
+    )
+    assert spec and spec.loader
+    doc_paths = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doc_paths)
+    library_docs = {
+        path: reader
+        for path, reader in doc_paths.TEST_READ.items()
+        if (ROOT / "tests" / f"{reader}.py").exists()
+    }
+    assert "docs/api.md" in library_docs, "the scan found nothing"
+    uncovered = sorted(p for p in library_docs if not scope.needs_full([p]))
+    assert not uncovered, f"add these to FULL: {uncovered}"
 
 
 def test_a_cut_off_diff_runs_everything() -> None:
