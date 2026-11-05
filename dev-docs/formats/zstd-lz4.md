@@ -183,14 +183,15 @@ The legacy format is what Linux kernel images and initramfs files compressed wit
 **mozlz4** (`ArchiveFormat.MOZLZ4`, `mozlz4_codec.py`) is a separate format on the same
 library: Firefox's `mozLz40\0`, a 4-byte little-endian decoded size, then one raw LZ4 block
 to the end of the file, with no checksum and no end mark. archivey detects it by the magic,
-so a Firefox `addonStartup.json.lz4` reads as mozlz4 (the extension's LZ4 claim is logged as a
-format conflict). The size is listed from the header and enforced: the block must decode to
-exactly that many bytes. The block decodes only at the end of the input, so a pipe gives its
-first byte when the writer closes. Twice the size (the decode buffer and python-lz4's
-copy) is checked against `max_decoder_memory`, a detection probe decodes at most 1 MiB, and the size is checked
-against what the block can decode to (255 bytes per input byte) before the decode allocates
-it; a block longer than `LZ4_COMPRESSBOUND(size)` is refused as it arrives. Found by the
-backup-drive scan ([`../investigations/2026-10-backup-scan.md`](../investigations/2026-10-backup-scan.md) §6).
+so a Firefox `addonStartup.json.lz4` reads as mozlz4 (the extension's LZ4 claim is logged as
+a format conflict). The size is listed from the header and enforced: the block must decode
+to exactly that many bytes. The block decodes only at the end of the input, so a pipe gives
+its first byte when the writer closes. Twice the size (the decode buffer and python-lz4's
+copy) is checked against `max_decoder_memory`, a detection probe decodes at most 1 MiB, and
+the size is checked against what the block can decode to (255 bytes per input byte) before
+the decode allocates it; a block longer than `LZ4_COMPRESSBOUND(size)` is refused as it
+arrives. Found by the backup-drive scan
+([`../investigations/2026-10-backup-scan.md`](../investigations/2026-10-backup-scan.md) §6).
 
 ## 4. Threat surface
 

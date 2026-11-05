@@ -12,12 +12,12 @@ block runs to the end of the file, so it decodes only once the input has ended
 
 **What the file can make this allocate.** The decoded size is 32 bits, and it is the
 size of the buffer the block decodes into, and python-lz4 copies that buffer into the
-``bytes`` it returns, so the decode peaks at twice the size. Twice the size is
-checked against ``DecoderLimits.max_decoder_memory`` before any input is held, and the
-size against the most the block can decode to (255 bytes per input byte) before the
-decode allocates it. A detection probe decodes at most 1 MiB (``_size_check``). The compressed block is
-held whole until the input ends; it can be no longer than LZ4's bound for the declared
-size (``LZ4_COMPRESSBOUND``), and a longer one is refused as it arrives.
+``bytes`` it returns, so the decode peaks at twice the size. Twice the size is checked
+against ``DecoderLimits.max_decoder_memory`` before any input is held, and the size
+against the most the block can decode to (255 bytes per input byte) before the decode
+allocates it. A detection probe decodes at most 1 MiB (``_size_check``). The compressed
+block is held whole until the input ends; it can be no longer than LZ4's bound for the
+declared size (``LZ4_COMPRESSBOUND``), and a longer one is refused as it arrives.
 """
 
 from __future__ import annotations
