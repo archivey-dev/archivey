@@ -26,8 +26,9 @@ import textwrap
 import time
 import weakref
 import zlib
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -447,18 +448,35 @@ def test_a_failed_check_above_the_decoder_retires_its_child() -> None:
     assert POOL.idle_count() == 0
 
 
-def test_a_failed_check_retires_a_child_under_a_read_ahead_wrapper() -> None:
-    """``retire_decoder_children`` reaches a decoder under a 7z read-ahead wrapper, whose
-    member stream is held as ``_rest`` rather than ``_inner``."""
+def _wrap_read_ahead(stream: BinaryIO) -> BinaryIO:
+    return _ReadAheadStream(b"", stream)
+
+
+def _wrap_aes(stream: BinaryIO) -> BinaryIO:
+    pytest.importorskip("cryptography")
+    from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stream
+
+    return open_aes_decrypt_stream(
+        stream, AesParams(key=bytes(32), iv=bytes(16)), owns_inner=True
+    )
+
+
+@pytest.mark.parametrize(
+    "wrap", [_wrap_read_ahead, _wrap_aes], ids=["read-ahead", "aes-outside"]
+)
+def test_a_failed_check_retires_a_child_under_a_wrapper(
+    wrap: Callable[[BinaryIO], BinaryIO],
+) -> None:
+    """``retire_decoder_children`` reaches a decoder under a wrapper that holds it by
+    another name than ``_inner``: the 7z read-ahead wrapper's ``_rest``, and an AES
+    stage's ``_source`` when a folder decrypts a decoder's output."""
     data = b"clean member " * 100
     packed = _encode_ppmd7(data)
-    with _ReadAheadStream(
-        b"",
-        open_codec_stream(
-            Codec.PPMD, io.BytesIO(packed), params=_params(7, len(packed), len(data))
-        ),
-    ) as stream:
-        assert stream.read() == data
+    member = open_codec_stream(
+        Codec.PPMD, io.BytesIO(packed), params=_params(7, len(packed), len(data))
+    )
+    assert member.read() == data
+    with wrap(member) as stream:
         retire_decoder_children(stream)
     assert POOL.idle_count() == 0
 
