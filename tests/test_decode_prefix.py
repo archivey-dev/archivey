@@ -112,6 +112,9 @@ _DEFLATE_FAMILY: dict[str, tuple[Codec, Callable[[bytes], bytes]]] = {
 }
 
 
+_DEFLATE_WBITS = {"gzip": 31, "zlib": zlib.MAX_WBITS, "deflate": -zlib.MAX_WBITS}
+
+
 @pytest.mark.parametrize("name", list(_DEFLATE_FAMILY))
 @pytest.mark.parametrize("size", [512, 1 << 20])
 def test_deflate_from_a_pipe_gets_every_byte_before_the_error(
@@ -119,14 +122,24 @@ def test_deflate_from_a_pipe_gets_every_byte_before_the_error(
 ) -> None:
     """A pipe cannot be decoded again, but zlib's state can be copied before each
     call: the copy decodes the failing call's input again to the error."""
-    codec, compress = _DEFLATE_FAMILY[name]
-    compressed = compress(PAYLOAD[:1_000_000])
-    at = len(compressed) // 2
-    # Set bits: an invalid block type or distance, which raw deflate (no checksum)
-    # meets where random bytes can decode on to the end.
-    damaged = compressed[:at] + b"\xff" * 64 + compressed[at + 64 :]
+    codec, _ = _DEFLATE_FAMILY[name]
+    good = PAYLOAD[:500_000]
+    compressor = zlib.compressobj(wbits=_DEFLATE_WBITS[name])
+    # A full flush ends on a byte boundary, so the next byte is a block header:
+    # 0x07 is a final block of the reserved type 3, which every inflater refuses.
+    # Damage at a random spot can decode on in raw deflate, which has no checksum,
+    # and where it stops depends on the zlib build.
+    damaged = (
+        compressor.compress(good)
+        + compressor.flush(zlib.Z_FULL_FLUSH)
+        + b"\x07"
+        + bytes(64)
+    )
     expected = _prefix(io.BytesIO(damaged), codec, 1 << 20)
+    # zlib, asked for one byte per call, can meet the bad header before it hands
+    # out the last good byte; the file path decodes again that way too.
     assert expected[1] is not None
+    assert len(good) - 1 <= expected[0] <= len(good)
     assert _prefix(NonSeekableBytesIO(damaged), codec, size) == expected
 
 
