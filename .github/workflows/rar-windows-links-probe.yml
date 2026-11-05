@@ -14,6 +14,7 @@ on:
     paths:
       - scripts/investigations/exploration/probe_rar_windows_links.py
       - scripts/investigations/exploration/probe_rar_oem_dbcs.py
+      - scripts/investigations/exploration/probe_rar_name_model.py
       - .github/workflows/rar-windows-links-probe.yml
 
 permissions:
@@ -104,6 +105,43 @@ jobs:
           unrar 2>&1 | head -n 2 || true
           python scripts/investigations/exploration/probe_rar_windows_links.py check probe-out/*.rar
 
+  names:
+    # archivey predicts which members an unrar -n mask selects, to size the skip
+    # before a named member. The tests compare that with unrar on Linux only; this runs
+    # the comparison with each OS's own model. Linux is the control.
+    name: Name model (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install archivey and pytest (the archive builders live in the tests)
+        run: python -m pip install . pytest
+      - name: Install unrar (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q unrar
+      - name: Install unrar (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          DEST="${RUNNER_TEMP}/rarlab-unrar"
+          ./scripts/ci/install-rarlab-unrar.sh --dest "$DEST"
+          echo "$DEST" >> "$GITHUB_PATH"
+      - name: Install unrar (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP 'rarlab-unrar'
+          ./scripts/ci/install-rarlab-unrar.ps1 -Dest $dest
+          echo $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Probe
+        run: python scripts/investigations/exploration/probe_rar_name_model.py
+
   dbcs:
     # Windows unrar reads an 8-bit RAR 1.5-4 name through the OEM code page, and
     # archivey's model of that was measured only under OEM 437. A hosted runner cannot
@@ -121,7 +159,7 @@ jobs:
           python-version: "3.12"
       - name: Install archivey into a directory the container can mount
         shell: pwsh
-        run: python -m pip install --target "$env:RUNNER_TEMP\deps" .
+        run: python -m pip install --target "$env:RUNNER_TEMP\deps" . pytest
       - name: Install unrar
         shell: pwsh
         run: |
@@ -133,6 +171,9 @@ jobs:
         run: |
           $env:PYTHONPATH = "$env:RUNNER_TEMP\deps"
           python scripts/investigations/exploration/probe_rar_oem_dbcs.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/investigations/exploration/probe_rar_name_model.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build a cp932 image
         shell: pwsh
         run: |
@@ -154,4 +195,4 @@ jobs:
             -v "${env:GITHUB_WORKSPACE}:C:\src" `
             -e PYTHONPATH=C:\deps `
             archivey-cp932 `
-            cmd /c "set PATH=C:\unrar;C:\py;%PATH% && chcp && python C:\src\scripts\investigations\exploration\probe_rar_oem_dbcs.py"
+            cmd /c "set PATH=C:\unrar;C:\py;%PATH% && chcp && python C:\src\scripts\investigations\exploration\probe_rar_oem_dbcs.py && python C:\src\scripts\investigations\exploration\probe_rar_name_model.py"
