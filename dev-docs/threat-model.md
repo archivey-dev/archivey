@@ -1249,9 +1249,9 @@ with a hard latency budget set them to `OFF`. Public:
 
 ### A seek trusts the file's own index
 
-A cold seek into a `.xz`, `.lz`, seekable `.zst` or BGZF `.gz` goes where the file's index
-says (XZ block records, lzip member trailers, the zstd seek table, or BGZF block sizes and
-ISIZEs), and all are attacker-controlled. An index consistent with itself
+A cold seek into a `.xz`, `.lz`, seekable `.zst`, or BGZF or mgzip `.gz` goes where the
+file's index says (XZ block records, lzip member trailers, the zstd seek table, BGZF block
+sizes, or mgzip `MZ` DEFLATE sizes, with the ISIZEs of both), and all are attacker-controlled. An index consistent with itself
 but not with the data serves bytes from the wrong unit, and `try_get_size()` /
 `member.size` report the index's total, with no error. Accepted, ruled by davi on
 2026-09-23 (PR #407 review round 1): a unit's real end is known only by decompressing
@@ -1473,7 +1473,7 @@ writing lands (possibly after 1.0), and must be a day-one decision of the writin
 | O14 | 7z encoded-header nesting | [Listing](#listing) |
 | O15 | Tar extended header sized an allocation | [Allocations sized by a header field](#allocations-sized-by-a-header-field) |
 | O16 | ISO directory record sized an allocation | [Allocations sized by a header field](#allocations-sized-by-a-header-field) |
-| O17 | Seek trusts the xz/lzip/zstd/BGZF index | [A seek trusts the file's own index](#a-seek-trusts-the-files-own-index) |
+| O17 | Seek trusts the xz/lzip/zstd/BGZF/mgzip index | [A seek trusts the file's own index](#a-seek-trusts-the-files-own-index) |
 | O18 | Archive chooses the key-derivation cost | [Key derivation](#key-derivation) |
 | O19 | Data-stored symlink target sized an allocation | [Listing](#listing) |
 | O20 | 7z BCJ2 in pure Python | CPU: [No CPU or wall-clock bound](#no-cpu-or-wall-clock-bound); memory: [Decoder memory](#decoder-memory) |

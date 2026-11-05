@@ -480,6 +480,29 @@ def test_a_cut_mgzip_member_ends_the_walk_without_a_size() -> None:
     assert size is None
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        # Fails if the walk drops its second header read (a name past the first 512 B).
+        {"name": b"n" * 1000},
+        # Fails if _header_end skips FCOMMENT.
+        {"comment": b"made by a test"},
+        # Fails if _header_end drops FHCRC's 2 bytes.
+        {"hcrc": True},
+        {"name": b"n" * 1000, "comment": b"c" * 700, "hcrc": True},
+    ],
+    ids=["long-name", "comment", "hcrc", "all-three"],
+)
+def test_mgzip_walk_parses_every_optional_header_field(fields: dict[str, Any]) -> None:
+    data = b"".join(make_mgzip_member(p, **fields) for p in PARTS[:3])
+    blocks, size, _ = walk_bgzf(io.BytesIO(data), len(data))
+    assert [b.decompressed_start for b in blocks] == STARTS[:3]
+    assert size == STARTS[3]
+    with _open(io.BytesIO(data)) as stream:
+        stream.seek(STARTS[2] + 5)
+        assert stream.read(50) == FULL[STARTS[2] + 5 : STARTS[2] + 55]
+
+
 def test_an_mgzip_header_without_its_name_end_ends_the_walk() -> None:
     member = make_mgzip_member(b"x" * 100, name=b"n" * 70_000)
     blocks, size, _ = walk_bgzf(io.BytesIO(member), len(member))

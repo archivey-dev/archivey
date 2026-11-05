@@ -161,8 +161,11 @@ member, whatever mgzip's own `get_index` assumes), so the member size is the hea
 parsed to its end (`FNAME`, `FCOMMENT`, `FHCRC`), that size and the 8-byte trailer. Its
 members are large, so here the walk does jump: a 512-byte header read per member (up to
 64 KiB for a long name) and a 4-byte ISIZE read at its end. ISIZE is the input size
-modulo 2^32, so a member written from 4 GiB of input or more gives wrong points after it,
-which a forward read catches like any other contradicted index. The rest matches BGZF:
+modulo 2^32, so a member written from 4 GiB of input or more gives wrong points after it.
+A forward read through that member catches it like any other contradicted index; a cold
+seek past it serves bytes from the wrong offset with no error (O17). mgzip's own reader
+cannot read such a member back either (it inflates `max_length=ISIZE`, then fails its CRC
+check), so no mgzip round trip produces one. The rest matches BGZF:
 it stops quietly at the first member without `MZ`, trusts the sizes (O17), and thins past
 the seek-table cap with scan `mgzip_blocks`.
 

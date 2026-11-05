@@ -433,18 +433,27 @@ def make_bgzf(parts: list[bytes], *, eof: bool = True) -> bytes:
     return b"".join(make_bgzf_block(p) for p in parts) + (BGZF_EOF if eof else b"")
 
 
-def make_mgzip_member(data: bytes, *, name: bytes = b"") -> bytes:
+def make_mgzip_member(
+    data: bytes, *, name: bytes = b"", comment: bytes = b"", hcrc: bool = False
+) -> bytes:
     """One mgzip member holding ``data``, as ``mgzip``'s ``_write_member_header`` writes
     it: ``FEXTRA`` with an ``MZ`` subfield holding the DEFLATE data's size, then an
-    optional ``FNAME``."""
+    optional ``FNAME``. ``comment`` and ``hcrc`` add the ``FCOMMENT`` and ``FHCRC``
+    fields mgzip never writes, to cover the rest of the header parse."""
     compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
     body = compressor.compress(data) + compressor.flush()
-    flags = 0x04 | (0x08 if name else 0)
+    flags = (
+        0x04 | (0x08 if name else 0) | (0x10 if comment else 0) | (0x02 if hcrc else 0)
+    )
     header = bytes([0x1F, 0x8B, 0x08, flags]) + b"\x00" * 4 + b"\x02\xff"
     extra = b"MZ" + struct.pack("<HI", 4, len(body))
-    fname = name + b"\x00" if name else b""
+    header += struct.pack("<H", len(extra)) + extra
+    header += name + b"\x00" if name else b""
+    header += comment + b"\x00" if comment else b""
+    if hcrc:
+        header += struct.pack("<H", zlib.crc32(header) & 0xFFFF)
     trailer = struct.pack("<II", zlib.crc32(data), len(data))
-    return header + struct.pack("<H", len(extra)) + extra + fname + body + trailer
+    return header + body + trailer
 
 
 def make_mgzip(parts: list[bytes], *, name: bytes = b"data") -> bytes:

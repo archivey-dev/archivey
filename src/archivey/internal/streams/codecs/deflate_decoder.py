@@ -129,11 +129,12 @@ class GzipDecoder(BaseDecoder):
 
     With ``index`` (declared seek demand), every member after the first that has output
     is a seek point, recorded when the decode reaches it, and :meth:`build_index` walks
-    a BGZF file's members without decoding (:mod:`.bgzf_index`). ``start`` is the point
+    a BGZF or mgzip file's members without decoding (:mod:`.bgzf_index`). ``start`` is the point
     this decoder resumes from.
     """
 
-    # The BGZF walk reads the whole file, so a size query does not run it.
+    # The BGZF walk reads the whole file (the mgzip walk jumps, but runs only after the
+    # first header says mgzip), so a size query does not run it.
     index_reads_whole_source = True
 
     def __init__(
@@ -373,7 +374,7 @@ def GzipDecompressorStream(
     """Inflate a gzip stream with multi-member chaining.
 
     A backward seek decodes from the start, unless ``index`` (declared seek demand)
-    makes member starts and a BGZF file's members seek points (:class:`GzipDecoder`).
+    makes member starts and a BGZF or mgzip file's members seek points (:class:`GzipDecoder`).
     """
     return DecompressorStream(
         path,

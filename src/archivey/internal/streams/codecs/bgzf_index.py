@@ -35,7 +35,11 @@ the size of the member's DEFLATE data, not of the whole member. Its members may 
 the DEFLATE data and the trailer. With members that large, the walk jumps from header to
 header: two small reads per member, for the header and for the ISIZE at its end. ISIZE
 is the input size modulo 2**32, so a member written from 4 GiB or more of input gives
-wrong points after it, which a forward read catches like any other contradicted index.
+wrong points after it. A forward read through that member catches it like any other
+contradicted index; a cold seek past it serves bytes from the wrong offset with no
+error, as for any index O17 trusts. mgzip's own reader cannot read such a member back
+either (it inflates ``max_length=ISIZE`` and fails its CRC check), so no mgzip round
+trip produces one.
 
 Spec: https://samtools.github.io/hts-specs/SAMv1.pdf §4.1
 mgzip: https://github.com/vinlok/mgzip (``multiProcGzip.py``, ``_write_member_header``)
