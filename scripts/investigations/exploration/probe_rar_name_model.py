@@ -19,7 +19,7 @@ the reader sends) and a few globs, and compares the members ``unrar`` prints wit
 ones the model predicts. It then reads every member with archivey through ``unrar``
 and checks it gets its own bytes or a refusal. It exits 1 on any difference.
 
-Run by ``.github/workflows/rar-windows-links-probe.yml`` on Linux (the control),
+Run by ``.github/workflows/rar-name-model-probe.yml`` on Linux (the control),
 macOS and Windows, and inside a Windows container whose code pages are 932.
 Needs ``pytest`` importable (the archive builders live in the tests).
 """

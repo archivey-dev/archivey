@@ -14,7 +14,7 @@ with archivey through ``unrar``, by ``read()`` and in ``stream_members()``. Each
 says whether the read returned the member's own bytes, was refused, or failed. It
 exits 1 when a read returns wrong bytes or fails with anything but a refusal.
 
-Run by ``.github/workflows/rar-windows-links-probe.yml`` inside a Windows container
+Run by ``.github/workflows/rar-name-model-probe.yml`` inside a Windows container
 whose OEM and ANSI code pages are set to 932, and on the runner itself (437) as the
 control. Needs ``pytest`` importable (the RAR 1.5-4 header rewriters live in the
 tests).

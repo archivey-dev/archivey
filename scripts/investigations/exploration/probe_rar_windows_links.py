@@ -7,8 +7,8 @@ unmeasured for them. A wrong guess shifts every later member's bytes.
 
 Two modes:
 
-``build`` (Windows only) makes a tree with a file symlink, a directory symlink and a
-junction between regular files, and archives it with WinRAR's ``rar -ol`` (solid and
+``build`` (Windows only) makes a tree with file symlinks between regular files, a
+directory symlink and a junction, and archives it with WinRAR's ``rar -ol`` (solid and
 not). Each archive is also printed as base64 between markers, so a run log carries it.
 
 ``check`` (any OS) reads each archive with the RARLAB ``unrar`` on PATH and with
@@ -17,8 +17,9 @@ archivey, and reports, per member: the type archivey lists, whether
 compares the whole-archive ``unrar p`` length with the sum archivey counts, and every
 ``stream_members()`` stream with ``open()``. It exits 1 on any mismatch.
 
-Run by ``.github/workflows/rar-windows-links-probe.yml``; results feed
-``dev-docs/formats/rar.md``.
+Run by hand: ``build`` needs WinRAR's ``rar`` on a Windows machine, which CI does
+not install (ADR 0016); it wrote ``tests/fixtures/rar/winlinks_solid__.rar``.
+``check`` needs only ``unrar``. Results feed ``dev-docs/formats/rar.md``.
 """
 
 from __future__ import annotations

@@ -1346,8 +1346,9 @@ RAR-specific only. General extraction and name hazards are §2.4.
   not in the fixtures. `FILE_COPY` (RAR5 redirect type 5) is pinned with
   archives `rar -oi` writes at test time. Windows symlinks and junctions (types 2 and 3)
   are pinned with `winlinks_solid__.rar`, written on Windows by WinRAR 7.23 `rar -ol`
-  (`scripts/investigations/exploration/probe_rar_windows_links.py`, run by
-  `rar-windows-links-probe.yml`): with `unrar` 7.23 on Windows, Linux and macOS, a
+  (`scripts/investigations/exploration/probe_rar_windows_links.py`; run once on a
+  GitHub Windows runner, then dropped from CI so no `rar` writer runs there, ADR
+  0016): with `unrar` 7.23 on Windows, Linux and macOS, a
   relative or absolute file symlink, a directory symlink and a junction each print
   nothing, and a solid pass prints exactly the regular files. They list with size 0,
   unlike a Unix link. `rar` stores directories, directory links and junctions after the
@@ -1502,7 +1503,7 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
 - **Measured (2026-11-05): the name model on Windows, macOS and a DBCS OEM code
   page.** The tests that compare the full name sets with `unrar` run on Linux only,
   since their expected views are Linux's. `probe_rar_name_model.py`
-  (`scripts/investigations/exploration/`, run by `rar-windows-links-probe.yml`)
+  (`scripts/investigations/exploration/`, run by `rar-name-model-probe.yml`)
   makes the same comparison with each OS's own model, for the RAR5 and RAR 1.5-4
   name sets of those tests, Shift-JIS names with a Windows and a Unix host byte, and
   names for the Windows case fold. It agrees with unrar 7.23 on Linux, macOS,
