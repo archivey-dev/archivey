@@ -754,8 +754,10 @@ opened from a stream is spooled (`internal/spool.py`), capped by `SpoolLimits.ma
 (1 GiB) and checked before anything is written. A path source is read in place, except
 the prefixed and unlinkable cases the `SpoolLimits` docstring lists, which are capped the
 same way. The same cap holds the file a solid RAR pass keeps file-copy sources in
-(`rar_copy_sources.py`); that keep is charged from its first written byte to the end of
-the pass, and declined rather than refused when the cap has no room.
+(`rar_copy_sources.py`); that keep is charged from its first written byte until no
+source in it still waits for a copy the pass will yield, and at the latest to the end of
+the pass. A `members=` collection that selects none of a source's copies never starts
+the charge. The keep is declined rather than refused when the cap has no room.
 
 #### Extraction bombs
 
