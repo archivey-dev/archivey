@@ -12,6 +12,7 @@ killing the session.
 from __future__ import annotations
 
 import contextlib
+import functools
 import gc
 import io
 import marshal
@@ -25,8 +26,9 @@ import textwrap
 import time
 import weakref
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -35,10 +37,15 @@ from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
+    EncryptionError,
     ReadError,
     ResourceUnavailableError,
     TruncatedError,
 )
+from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
+from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFolder
+from archivey.internal.backends.sevenzip_pipeline import decode_folder_to_bytes
+from archivey.internal.backends.sevenzip_reader import _ReadAheadStream
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.child_process import is_crash, is_no_verdict
 from archivey.internal.streams.codecs import (
@@ -56,13 +63,17 @@ from archivey.internal.streams.codecs.decoder_child import (
     DecoderChildStartError,
     start_error,
 )
-from archivey.internal.streams.codecs.decoder_worker import CALL
+from archivey.internal.streams.codecs.decoder_worker import CALL, FRAME
 from archivey.internal.streams.codecs.isolated import PPMD_ERRORS, ChildPpmdDecoder
 from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildAllocationError,
     _PpmdChild,
     open_ppmd_child,
     ppmd_child_unavailable_reason,
+)
+from archivey.internal.streams.decompressor_stream import (
+    _COMPRESSED_READ_SIZE_MAX,
+    retire_decoder_children,
 )
 from tests.conftest import requires, requires_binary, run_7z
 from tests.corruption_util import raises_corruption_not_truncation
@@ -435,6 +446,69 @@ def test_a_failed_check_above_the_decoder_retires_its_child() -> None:
     decoder.spoil_child()
     decoder.close()
     assert POOL.idle_count() == 0
+
+
+def _wrap_read_ahead(stream: BinaryIO) -> BinaryIO:
+    return _ReadAheadStream(b"", stream)
+
+
+def _wrap_aes(stream: BinaryIO) -> BinaryIO:
+    pytest.importorskip("cryptography")
+    from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stream
+
+    return open_aes_decrypt_stream(
+        stream, AesParams(key=bytes(32), iv=bytes(16)), owns_inner=True
+    )
+
+
+@pytest.mark.parametrize(
+    "wrap", [_wrap_read_ahead, _wrap_aes], ids=["read-ahead", "aes-outside"]
+)
+def test_a_failed_check_retires_a_child_under_a_wrapper(
+    wrap: Callable[[BinaryIO], BinaryIO],
+) -> None:
+    """``retire_decoder_children`` reaches a decoder under a wrapper that holds it by
+    another name than ``_inner``: the 7z read-ahead wrapper's ``_rest``, and an AES
+    stage's ``_source`` when a folder decrypts a decoder's output."""
+    data = b"clean member " * 100
+    packed = _encode_ppmd7(data)
+    member = open_codec_stream(
+        Codec.PPMD, io.BytesIO(packed), params=_params(7, len(packed), len(data))
+    )
+    assert member.read() == data
+    with wrap(member) as stream:
+        retire_decoder_children(stream)
+    assert POOL.idle_count() == 0
+
+
+def test_a_child_request_can_carry_more_than_4_gib() -> None:
+    """``max_ppmd_held_input=None`` puts no bound on a held member, and the whole of it
+    goes to the child in one request, so the frame's payload length is 64 bits."""
+    size = (1 << 32) + _COMPRESSED_READ_SIZE_MAX
+    assert FRAME.unpack(FRAME.pack(0, 0, size))[2] == size
+
+
+def test_none_holds_a_member_whole_whatever_its_size() -> None:
+    """``max_held_input=None`` hands nothing to pyppmd before the whole member is in."""
+    data = random.Random(7).randbytes(4096)
+    packed = _encode_ppmd7(data)
+    decoder = ppmd_decoder.PpmdDecoder(
+        order=_ORDER,
+        mem_size=_MEM,
+        unpack_size=len(data),
+        pack_size=len(packed),
+        max_held_input=None,
+    )
+    out = bytearray()
+    for start in range(0, len(packed), 32):
+        out += decoder.feed(packed[start : start + 32]).data
+        if start + 32 < len(packed):
+            assert decoder._held is not None
+    out += decoder.flush().data
+    while decoder.drains_after_flush and (more := decoder.feed(b"").data):
+        out += more
+    decoder.close()
+    assert bytes(out) == data
 
 
 def test_child_decoder_round_trip_and_errors() -> None:
@@ -900,16 +974,22 @@ def test_every_error_the_child_reports_translates_as_it_would_in_process() -> No
         )
 
 
-def _ppmd_archive_with_crc(tmp_path: Path, archive_type: str, *, wrong: bool) -> Path:
+def _ppmd_archive_with_crc(
+    tmp_path: Path,
+    archive_type: str,
+    *,
+    wrong: bool,
+    coders: Sequence[str] = ("-m0=PPMd",),
+) -> Path:
     """A one-member PPMd archive written by ``7z``, its stored CRC flipped when
-    ``wrong``: the decode ends cleanly, and only the digest check above it fails."""
+    ``wrong``: the decode ends cleanly, and only the digest check above it fails.
+    ``coders`` are the 7z coder switches."""
     data = b"clean member with a stored crc\n" * 2000
     (tmp_path / "member.txt").write_bytes(data)
     archive = tmp_path / f"out.{archive_type}"
-    method = "-mm=PPMd" if archive_type == "zip" else "-m0=PPMd"
-    switches = [] if archive_type == "zip" else ["-mhc=off"]
+    methods = ["-mm=PPMd"] if archive_type == "zip" else [*coders, "-mhc=off"]
     result = run_7z(
-        ["a", f"-t{archive_type}", method, *switches, str(archive), "member.txt"],
+        ["a", f"-t{archive_type}", *methods, str(archive), "member.txt"],
         cwd=tmp_path,
     )
     if result.returncode != 0:
@@ -947,6 +1027,104 @@ def test_a_member_whose_crc_does_not_match_retires_its_child(
         else:
             ar.read(member)
     assert POOL.idle_count() == (0 if wrong else 1)
+
+
+# A filter coder over PPMd reads it through a buffered reader; a BCJ2 folder with six
+# Delta coders before PPMd on its main input is a tree deeper than 32 streams.
+_DELTAS = [f"-m{i}=Delta:{i}" for i in range(1, 7)]
+_FILTER_CHAINS = {
+    "bcj": ("-m0=BCJ", "-m1=PPMd", "-mb0:1"),
+    "bcj2-deltas": (
+        "-m0=BCJ2",
+        *_DELTAS,
+        "-m7=PPMd",
+        "-m8=LZMA",
+        "-m9=LZMA",
+        "-mb0s0:1",
+        *(f"-mb{i}:{i + 1}" for i in range(1, 7)),
+        "-mb0s1:8",
+        "-mb0s2:9",
+    ),
+}
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize("chain", list(_FILTER_CHAINS))
+def test_a_crc_mismatch_retires_a_child_under_filter_coders(
+    tmp_path: Path, chain: str
+) -> None:
+    """The retire walk reaches PPMd under filter coders, however many the folder
+    declares."""
+    archive = _ppmd_archive_with_crc(
+        tmp_path, "7z", wrong=True, coders=_FILTER_CHAINS[chain]
+    )
+    POOL.close_idle()
+    with open_archive(archive) as ar:
+        (member,) = ar.members()
+        with raises_corruption_not_truncation():
+            ar.read(member)
+    assert POOL.idle_count() == 0
+
+
+@pytest.mark.parametrize("wrong", [False, True], ids=["crc-ok", "crc-wrong"])
+def test_a_whole_folder_decode_retires_its_child_on_a_crc_mismatch(wrong: bool) -> None:
+    """``decode_folder_to_bytes`` (an encoded header's folder) checks the folder CRC
+    after a decode that ended cleanly; on a mismatch the child is not reused."""
+    data = b"folder decoded whole " * 200
+    packed = _encode_ppmd7(data)
+    folder = SevenZipFolder(
+        coders=[
+            SevenZipCoder(
+                method=b"\x03\x04\x01",
+                num_in_streams=1,
+                num_out_streams=1,
+                properties=struct.pack("<BL", _ORDER, _MEM),
+            )
+        ],
+        bind_pairs=[],
+        packed_indices=[0],
+        unpack_sizes=[len(data)],
+        crc=zlib.crc32(data) ^ (1 if wrong else 0),
+        digest_defined=True,
+    )
+    POOL.close_idle()
+    decode = functools.partial(
+        decode_folder_to_bytes,
+        io.BytesIO(packed),
+        folder,
+        compressed_size=len(packed),
+        uncompressed_size=len(data),
+        password=None,
+        key_cache=SevenZipKeyCache(),
+    )
+    if wrong:
+        with pytest.raises(CorruptionError, match="folder CRC mismatch"):
+            decode()
+    else:
+        assert decode() == data
+    assert POOL.idle_count() == (0 if wrong else 1)
+
+
+@requires_binary("7z")
+def test_a_rejected_password_retires_the_child_that_decoded_with_it(
+    tmp_path: Path,
+) -> None:
+    """The 7z password confirm decodes the folder's first bytes with each candidate
+    key; a child that decoded with a rejected key is not reused."""
+    (tmp_path / "member.txt").write_bytes(b"secret member\n" * 4000)
+    archive = tmp_path / "locked.7z"
+    result = run_7z(
+        ["a", "-t7z", "-m0=PPMd", "-psecret", "-mhe=off", str(archive), "member.txt"],
+        cwd=tmp_path,
+    )
+    if result.returncode != 0:
+        pytest.skip("7z cannot write an encrypted PPMd 7z")
+    POOL.close_idle()
+    with open_archive(archive, password="wrong") as ar:
+        (member,) = ar.members()
+        with pytest.raises(EncryptionError):
+            ar.read(member)
+    assert POOL.idle_count() == 0
 
 
 def test_a_model_a_fresh_child_cannot_allocate_part_way_is_a_shortage(

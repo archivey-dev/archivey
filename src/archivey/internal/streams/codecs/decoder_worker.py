@@ -63,7 +63,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import IO, Any
 
-FRAME = struct.Struct("<BqI")
+# The payload size is 64 bits: a held PPMd member goes to the child in one request,
+# and ``max_ppmd_held_input=None`` puts no bound on it.
+FRAME = struct.Struct("<BqQ")
 # The range of FRAME's integer argument, its signed 64-bit ``q``.
 ARG_MIN, ARG_MAX = -(1 << 63), (1 << 63) - 1
 

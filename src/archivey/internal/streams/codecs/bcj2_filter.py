@@ -184,6 +184,11 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         self._main_stream = main
         self._start_decoding()
 
+    def decoder_layers_below(self) -> tuple[BinaryIO, ...]:
+        """The four input streams, for ``retire_decoder_children``: each may be a
+        decoder of its own."""
+        return self._inputs
+
     def _start_decoding(self) -> None:
         """Set every piece of decode state to the start of the output."""
         _, call, jump, rc = self._inputs
