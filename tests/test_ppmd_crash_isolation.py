@@ -12,6 +12,7 @@ killing the session.
 from __future__ import annotations
 
 import contextlib
+import functools
 import gc
 import io
 import marshal
@@ -40,6 +41,9 @@ from archivey.exceptions import (
     ResourceUnavailableError,
     TruncatedError,
 )
+from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
+from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFolder
+from archivey.internal.backends.sevenzip_pipeline import decode_folder_to_bytes
 from archivey.internal.backends.sevenzip_reader import _ReadAheadStream
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.child_process import is_crash, is_no_verdict
@@ -1037,6 +1041,45 @@ def test_a_crc_mismatch_retires_a_child_under_filter_coders(
         with raises_corruption_not_truncation():
             ar.read(member)
     assert POOL.idle_count() == 0
+
+
+@pytest.mark.parametrize("wrong", [False, True], ids=["crc-ok", "crc-wrong"])
+def test_a_whole_folder_decode_retires_its_child_on_a_crc_mismatch(wrong: bool) -> None:
+    """``decode_folder_to_bytes`` (an encoded header's folder) checks the folder CRC
+    after a decode that ended cleanly; on a mismatch the child is not reused."""
+    data = b"folder decoded whole " * 200
+    packed = _encode_ppmd7(data)
+    folder = SevenZipFolder(
+        coders=[
+            SevenZipCoder(
+                method=b"\x03\x04\x01",
+                num_in_streams=1,
+                num_out_streams=1,
+                properties=struct.pack("<BL", _ORDER, _MEM),
+            )
+        ],
+        bind_pairs=[],
+        packed_indices=[0],
+        unpack_sizes=[len(data)],
+        crc=zlib.crc32(data) ^ (1 if wrong else 0),
+        digest_defined=True,
+    )
+    POOL.close_idle()
+    decode = functools.partial(
+        decode_folder_to_bytes,
+        io.BytesIO(packed),
+        folder,
+        compressed_size=len(packed),
+        uncompressed_size=len(data),
+        password=None,
+        key_cache=SevenZipKeyCache(),
+    )
+    if wrong:
+        with pytest.raises(CorruptionError, match="folder CRC mismatch"):
+            decode()
+    else:
+        assert decode() == data
+    assert POOL.idle_count() == (0 if wrong else 1)
 
 
 @requires_binary("7z")
