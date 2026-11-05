@@ -276,7 +276,7 @@ the full stub matrix is task 4.3 of `prefixed-archive-detection`.
 
 - Specs: [`format-detection`](../../openspec/specs/format-detection/spec.md) ·
   [`detection-cost`](../../openspec/specs/detection-cost/spec.md)
-- In flight: `openspec/changes/prefixed-archive-detection/` (the four implementation blocks;
+- Archived undone: `openspec/changes/archive/2026-11-05-prefixed-archive-detection/` (the four implementation blocks;
   Block 1 ships today; Block 2 and `prefix_kind` were struck on 2026-09-25) · decided against:
   `openspec/changes/archive/2026-09-25-detection-evidence-ledger/`
 - Archived: `openspec/changes/archive/2026-08-21-sfx-format-detection/` ·

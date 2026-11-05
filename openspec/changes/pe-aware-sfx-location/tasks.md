@@ -63,7 +63,7 @@ Block 3 is the overlay-start rule. Each reuses Block 1's PE layout helper.
       64 KiB.
 - [ ] 2.5 Docs: `prefixed-archives.md` (§2 tier table, §3 cost, §7 decisions), `detection.md` (tier list and the "no ZIP tail probe" lines),
       `docs/formats.md` (SFX bullet), and a pointer from the struck Block 2 note in
-      `prefixed-archive-detection/tasks.md`.
+      `archive/2026-11-05-prefixed-archive-detection/tasks.md`.
 
 ## 3. Overlay start first (Block 3)
 

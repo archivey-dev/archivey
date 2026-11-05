@@ -2003,14 +2003,12 @@ class _HeaderDecryptStream:
     a plaintext offset. Do not prefetch plaintext and rewind — that is why
     :func:`_read_rar5_block` reads the size vint byte-at-a-time.
 
-    Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`. That 7z
-    wrapper has ``owns_inner`` (both streams borrow) and a plaintext
-    ``tell``/``seek``. What still blocks folding this class in is the header
-    walk: ``header_fd`` is either the raw handle or this stream, and
-    ``tell()`` means archive offset for both arms; and this wrapper sits
-    mid-file unbounded, so a seeking decrypt stream would reposition the
-    shared archive handle. The decrypt *stage* is shared; the pull stream is
-    not.
+    Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`: folding
+    this class into it would take three header-only behaviours (refusing
+    ``read(-1)``, flagging a cut instead of ``finalize``, and not seeking the
+    shared archive handle), and each would be a flag on that class. The decrypt *stage* is shared; the pull stream is not. The
+    measurement is the "Keep ``_HeaderDecryptStream``" row in
+    ``dev-docs/formats/rar.md``.
 
     ``read`` rejects unbounded ``n < 0``. It has no per-read size cap: the
     caller already bounds the ask. RAR5 refuses ``hdrlen > _RAR5_MAX_HEADER``

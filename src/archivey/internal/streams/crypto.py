@@ -319,15 +319,10 @@ class AesDecryptStream(ReadOnlyIOStream):
     the same backend and keeps its own pull loop, because its ``read`` also
     feeds the HMAC and checks it at the end.
 
-    Folding ``_HeaderDecryptStream`` in is blocked by the header walk, not by
-    flags this class is missing:
-
-    - ``tell()`` is archive offset for both arms. ``header_fd`` is either the
-      raw handle or the decrypt stream; a second method does not help while
-      the raw handle is the other arm.
-    - The stream sits mid-file on the shared archive handle, unbounded.
-      Without a ``length=`` bound it would treat the rest of the file as
-      ciphertext and report seekable; seeking would reposition the archive.
+    ``_HeaderDecryptStream`` (RAR headers) stays a separate class: it refuses
+    ``read(-1)``, flags a cut instead of calling ``finalize``, and must not
+    seek the shared archive handle. The measurement is the "Keep
+    ``_HeaderDecryptStream``" row in ``dev-docs/formats/rar.md``.
 
     Ownership is ``owns_inner`` (both borrow). ``read`` already gathers short
     source reads. A short last ciphertext block raises ``TruncatedError``
