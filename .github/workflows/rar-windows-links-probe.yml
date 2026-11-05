@@ -1,0 +1,104 @@
+name: RAR Windows links probe
+
+# Runs scripts/investigations/exploration/probe_rar_windows_links.py. A Windows job
+# builds RAR5 archives with a file symlink, a directory symlink and a junction using
+# WinRAR's own `rar -ol`, then every OS checks that archivey's solid demux agrees with
+# what `unrar p` prints for them. Results feed dev-docs/formats/rar.md. Runs on demand,
+# and on PRs only when the probe itself changes.
+#
+# This is the one place CI runs the RARLAB `rar` writer: Windows links can only be
+# written on Windows, by WinRAR. The test matrix still never installs it (ci.yml).
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/investigations/exploration/probe_rar_windows_links.py
+      - .github/workflows/rar-windows-links-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and check (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install archivey (core only)
+        run: python -m pip install .
+      - name: Unpack Rar.exe and UnRAR.exe from the pinned WinRAR installer
+        shell: pwsh
+        run: |
+          # Same release and digest as scripts/ci/install-rarlab-unrar.ps1.
+          $Version = '723'
+          $Sha256 = '8ff0daf3ed564cc743c0e23ff2e253997ffc74460f9673f0b6dd037b2db4ce7b'
+          $dest = Join-Path $env:RUNNER_TEMP 'winrar'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $installer = Join-Path $env:RUNNER_TEMP "winrar-x64-$Version.exe"
+          for ($i = 1; $i -le 4; $i++) {
+            try {
+              Invoke-WebRequest -Uri "https://www.rarlab.com/rar/winrar-x64-$Version.exe" -OutFile $installer -TimeoutSec 60
+              break
+            } catch {
+              if ($i -eq 4) { throw }
+              Start-Sleep -Seconds ([math]::Pow(2, $i))
+            }
+          }
+          $got = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($got -ne $Sha256) { throw "WinRAR installer SHA-256 $got, expected $Sha256" }
+          & 7z e $installer "-o$dest" 'Rar.exe' 'UnRAR.exe' -y | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "7z exited $LASTEXITCODE" }
+          echo $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Build archives
+        shell: bash
+        run: |
+          python scripts/investigations/exploration/probe_rar_windows_links.py build \
+            --rar "$RUNNER_TEMP/winrar/Rar.exe" --out probe-out
+      - name: Check (Windows unrar)
+        shell: bash
+        run: |
+          unrar 2>&1 | head -n 2 || true
+          python scripts/investigations/exploration/probe_rar_windows_links.py check probe-out/*.rar
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rar-windows-links
+          path: probe-out/*.rar
+
+  check:
+    name: Check (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install archivey (core only)
+        run: python -m pip install .
+      - name: Install unrar (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q unrar
+      - name: Install unrar (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          DEST="${RUNNER_TEMP}/rarlab-unrar"
+          ./scripts/ci/install-rarlab-unrar.sh --dest "$DEST"
+          echo "$DEST" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@v4
+        with:
+          name: rar-windows-links
+          path: probe-out
+      - name: Check
+        run: |
+          unrar 2>&1 | head -n 2 || true
+          python scripts/investigations/exploration/probe_rar_windows_links.py check probe-out/*.rar
