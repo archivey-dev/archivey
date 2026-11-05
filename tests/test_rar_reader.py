@@ -4867,7 +4867,10 @@ def test_glob_member_matching_nothing_else_still_reads(name: str) -> None:
     ],
 )
 def test_auto_reads_with_unar_a_member_unrar_cannot_name(
-    name: str, contents: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None,
+    name: str,
+    contents: dict[str, bytes],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Under ``AUTO``, a member whose name unrar refuses goes to an accepted unar.
 
@@ -4934,6 +4937,7 @@ def test_auto_keeps_the_unrar_refusal_without_an_accepted_unar(
 
 @requires_binary("unrar", "unar")
 def test_plaintext_members_of_an_encrypted_archive_get_no_password(
+    unrar_mask_route: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A spawn that reads one member gets a password only when that member needs one.
@@ -4967,7 +4971,7 @@ def test_plaintext_members_of_an_encrypted_archive_get_no_password(
 
 @requires_binary("unrar", "unar")
 def test_auto_keeps_the_unrar_refusal_when_unar_would_need_a_copy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A prefix before the RAR means unar reads a copy, which the open-time cost
     notes under unrar do not announce, so the unrar refusal stands."""

@@ -374,7 +374,7 @@ def test_a_name_that_selects_only_empty_earlier_members_reads(tmp_path: Path) ->
 
 @requires_binary("unrar", "unar")
 def test_auto_reads_a_name_that_selects_earlier_members_with_unar(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """unar names entries by index, so under AUTO a shared name needs no flag: the
     refused members go to unar, with no password on its command line, and the first,
