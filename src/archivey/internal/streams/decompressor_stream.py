@@ -2206,20 +2206,17 @@ def release_decoder_children(holder: object, depth: int = 3) -> None:
             release_decoder_children(value, depth - 1)
 
 
-# How many streams ``retire_decoder_children`` looks through; a member stream has a
-# handful (a BCJ2 folder a few more), so this only bounds a walk gone wrong.
-_MAX_WRAPPERS = 32
-
-
 def retire_decoder_children(stream: object) -> None:
     """Tell every decoder under ``stream`` that its member failed a check (see
     :meth:`BaseDecoder.spoil_child`), looking through the wrappers' ``_inner``, a
-    slice's ``_stream`` (a solid member's is its folder) and the inputs a stream names
-    in ``decoder_layers_below`` (a BCJ2 folder has four): a 7z coder chain stacks one
-    decoder on another, and a solid folder's decoder serves all its members."""
+    slice's ``_stream`` (a solid member's is its folder), a buffered reader's ``raw``
+    and the inputs a stream names in ``decoder_layers_below`` (a BCJ2 folder has four):
+    a 7z coder chain stacks one decoder on another, and a solid folder's decoder serves
+    all its members. The whole tree is walked, however many coders the archive
+    declares; ``seen`` stops a cycle."""
     pending: list[object] = [stream]
     seen: set[int] = set()
-    while pending and len(seen) < _MAX_WRAPPERS:
+    while pending:
         current = pending.pop()
         if id(current) in seen:
             continue
@@ -2235,6 +2232,12 @@ def _layers_below(stream: object) -> list[object]:
     named = getattr(stream, "decoder_layers_below", None)
     if named is not None:
         return list(named())
+    if isinstance(stream, io.BufferedReader):
+        # A filter coder reads the coder below it through one (``ensure_bufferedio``).
+        try:
+            return [stream.raw]
+        except ValueError:  # detached
+            return []
     for name in ("_inner", "_stream"):
         below = getattr(stream, name, None)
         if below is not None:

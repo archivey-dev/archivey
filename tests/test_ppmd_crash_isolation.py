@@ -25,7 +25,7 @@ import textwrap
 import time
 import weakref
 import zlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -35,6 +35,7 @@ from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
+    EncryptionError,
     ReadError,
     ResourceUnavailableError,
     TruncatedError,
@@ -946,16 +947,22 @@ def test_every_error_the_child_reports_translates_as_it_would_in_process() -> No
         )
 
 
-def _ppmd_archive_with_crc(tmp_path: Path, archive_type: str, *, wrong: bool) -> Path:
+def _ppmd_archive_with_crc(
+    tmp_path: Path,
+    archive_type: str,
+    *,
+    wrong: bool,
+    coders: Sequence[str] = ("-m0=PPMd",),
+) -> Path:
     """A one-member PPMd archive written by ``7z``, its stored CRC flipped when
-    ``wrong``: the decode ends cleanly, and only the digest check above it fails."""
+    ``wrong``: the decode ends cleanly, and only the digest check above it fails.
+    ``coders`` are the 7z coder switches."""
     data = b"clean member with a stored crc\n" * 2000
     (tmp_path / "member.txt").write_bytes(data)
     archive = tmp_path / f"out.{archive_type}"
-    method = "-mm=PPMd" if archive_type == "zip" else "-m0=PPMd"
-    switches = [] if archive_type == "zip" else ["-mhc=off"]
+    methods = ["-mm=PPMd"] if archive_type == "zip" else [*coders, "-mhc=off"]
     result = run_7z(
-        ["a", f"-t{archive_type}", method, *switches, str(archive), "member.txt"],
+        ["a", f"-t{archive_type}", *methods, str(archive), "member.txt"],
         cwd=tmp_path,
     )
     if result.returncode != 0:
@@ -993,6 +1000,65 @@ def test_a_member_whose_crc_does_not_match_retires_its_child(
         else:
             ar.read(member)
     assert POOL.idle_count() == (0 if wrong else 1)
+
+
+# A filter coder over PPMd reads it through a buffered reader; a BCJ2 folder with six
+# Delta coders before PPMd on its main input is a tree deeper than 32 streams.
+_DELTAS = [f"-m{i}=Delta:{i}" for i in range(1, 7)]
+_FILTER_CHAINS = {
+    "bcj": ("-m0=BCJ", "-m1=PPMd", "-mb0:1"),
+    "bcj2-deltas": (
+        "-m0=BCJ2",
+        *_DELTAS,
+        "-m7=PPMd",
+        "-m8=LZMA",
+        "-m9=LZMA",
+        "-mb0s0:1",
+        *(f"-mb{i}:{i + 1}" for i in range(1, 7)),
+        "-mb0s1:8",
+        "-mb0s2:9",
+    ),
+}
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize("chain", list(_FILTER_CHAINS))
+def test_a_crc_mismatch_retires_a_child_under_filter_coders(
+    tmp_path: Path, chain: str
+) -> None:
+    """The retire walk reaches PPMd under filter coders, however many the folder
+    declares."""
+    archive = _ppmd_archive_with_crc(
+        tmp_path, "7z", wrong=True, coders=_FILTER_CHAINS[chain]
+    )
+    POOL.close_idle()
+    with open_archive(archive) as ar:
+        (member,) = ar.members()
+        with raises_corruption_not_truncation():
+            ar.read(member)
+    assert POOL.idle_count() == 0
+
+
+@requires_binary("7z")
+def test_a_rejected_password_retires_the_child_that_decoded_with_it(
+    tmp_path: Path,
+) -> None:
+    """The 7z password confirm decodes the folder's first bytes with each candidate
+    key; a child that decoded with a rejected key is not reused."""
+    (tmp_path / "member.txt").write_bytes(b"secret member\n" * 4000)
+    archive = tmp_path / "locked.7z"
+    result = run_7z(
+        ["a", "-t7z", "-m0=PPMd", "-psecret", "-mhe=off", str(archive), "member.txt"],
+        cwd=tmp_path,
+    )
+    if result.returncode != 0:
+        pytest.skip("7z cannot write an encrypted PPMd 7z")
+    POOL.close_idle()
+    with open_archive(archive, password="wrong") as ar:
+        (member,) = ar.members()
+        with pytest.raises(EncryptionError):
+            ar.read(member)
+    assert POOL.idle_count() == 0
 
 
 def test_a_model_a_fresh_child_cannot_allocate_part_way_is_a_shortage(
