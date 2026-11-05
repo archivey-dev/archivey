@@ -27,6 +27,7 @@ from archivey.exceptions import ArchiveyError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import Codec, deps, open_codec_stream
 from archivey.internal.streams.decompressor_stream import probe_streams
+from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
 
@@ -239,7 +240,10 @@ def _shrink(data: bytes) -> bytes:
 
 @pytest.mark.parametrize(
     ("codec", "compress"),
-    [(Codec.UNIX_COMPRESS, _unix_compress), (Codec.SHRINK, _shrink)],
+    [
+        pytest.param(Codec.UNIX_COMPRESS, _unix_compress, marks=requires("ncompress")),
+        (Codec.SHRINK, _shrink),
+    ],
     ids=["unix_compress", "shrink"],
 )
 @pytest.mark.parametrize("size", [512, 1 << 20])
