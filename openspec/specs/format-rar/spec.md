@@ -1531,7 +1531,11 @@ each member that a later RAR5 file copy (`rar -oi`) in the pass reads, as its pi
 them, whether the caller reads that member or skips it, under `unrar` and `unar`. It
 SHALL serve the copies from the kept bytes, so a kept source is decoded once for all its
 copies. Kept bytes SHALL pass the source's digest check and declared size as the pipe's
-own bytes do, and SHALL count toward extraction limits once per copy.
+own bytes do, and SHALL count toward extraction limits once per copy. When the pass's
+`members=` is a collection of names or members, a copy the collection does not select
+SHALL NOT count, so a source whose copies it all leaves out is not kept. A predicate is
+asked only as each member comes, so every copy counts. Extraction passes the collection
+it built by asking a predicate over the listing up front, when the reader has one.
 
 The pass SHALL keep up to 8 MiB of sources in memory. This constant is a tuning value: it
 SHALL NOT refuse a read or change the bytes a read returns, and it is not a field of
@@ -1575,6 +1579,9 @@ stream, solid or not, and a solid pass SHALL then keep no source.
 | Source over the memory constant, within `SpoolLimits.max_bytes` | Kept in the temporary file; one decompressor run |
 | Two passes on one reader, room for the source once | Each pass keeps it; one decompressor run per pass |
 | Two sources, each followed by its copy, then a member; room in the limit for one source | Each is kept in turn; the first is let go after its copy; one decompressor run |
+| `stream_members(members=[...])` naming the source but none of its copies | The source is not kept; one decompressor run |
+| `stream_members(members=[...])` naming the source and one copy | The source is kept; the copy reads its bytes; one decompressor run |
+| `extract_all(members=predicate)` selecting neither the source nor its copies | The source is not kept; one decompressor run |
 | Stream source, first member a source; the archive copy and the source each fit the limit, not both | The archive copy is made; the source is not kept; each copy decodes it again; no `ResourceLimitError` |
 | `SpoolLimits.max_bytes=0`, path source, source over the memory constant | Not kept; each copy decodes it again; nothing is refused |
 | Kept bytes that do not match the source's digest | `CorruptionError` on the copy's read |

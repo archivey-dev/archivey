@@ -3039,6 +3039,7 @@ class RarReader(BaseArchiveReader):
                 isinstance(m._raw, RarMemberInfo)
                 and m._raw.is_file_copy()
                 and (source := m.link_target_member) is not None
+                and copies.yields(m)
             ):
                 sources[id(source)] = source
                 counts[id(source)] = counts.get(id(source), 0) + 1
@@ -3238,7 +3239,12 @@ class RarReader(BaseArchiveReader):
                 # last copy that was is read by nothing now.
                 sources.advance()
             if raw.is_file_copy():
-                if sources is not None and member.link_target_member is not None:
+                if (
+                    sources is not None
+                    and member.link_target_member is not None
+                    and copies.yields(member)
+                ):
+                    # Only the copies counted up front count down.
                     sources.copy_reached(id(member.link_target_member))
                 # Not in the pipe; served from its source's bytes, kept as the pipe
                 # passed them, so the solid stream is not decoded again for it.

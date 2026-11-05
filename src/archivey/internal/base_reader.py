@@ -4354,6 +4354,13 @@ class BaseArchiveReader(ArchiveReader):
             if isinstance(selector, CollectionSelector) and selector is not members
             else None
         )
+        if isinstance(selector, CollectionSelector):
+            # A name or identity set can be asked ahead, recording nothing, so a solid
+            # RAR pass keeps no source whose copies this pass will not yield.
+            collection = selector
+            copies = replace(
+                copies, wanted=lambda m: collection.would_select(m, (m.name,))
+            )
         return self._iter_stream_members(
             selector, report, copies, hold_to_ratio=hold_to_ratio
         )
