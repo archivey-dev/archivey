@@ -280,7 +280,9 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     layer issue a plain ``inner.read(n)``, because their inner is full-count
     (fill-or-EOF) and a short return there is a terminal signal to forward, not
     to retry — see ADR 0014 and the comment in ``SlicingStream.read``. Use this
-    only where the caller will not read again, so a short must be gathered here.
+    only where the caller will not read again, so a short must be gathered here,
+    or where a short read would leave a partial unit inside a stateful consumer
+    (``AesDecryptStream``: a CBC block held in its decrypt stage).
 
     When one read satisfies the ask the inner's own object is returned rather than
     a copy, the same fast path the source boundary's gathering read has, so **callers must

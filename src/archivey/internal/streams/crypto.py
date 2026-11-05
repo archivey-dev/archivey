@@ -387,18 +387,17 @@ class AesDecryptStream(ReadOnlyIOStream):
         if n == 0:
             return b""
         while not self._eof and (n < 0 or len(self._buf) < n):
-            # Round the source ask up to a block so CBC does not withhold a
-            # partial block (and so the ciphertext cursor is derivable as
-            # ``_cipher_start + _pos + len(_buf)`` for a full-count source —
-            # ADR 0014). A short non-empty source read leaves bytes in the
-            # stage buffer and the identity does not hold.
+            # Round the source ask up to a block and gather a short source read,
+            # so the stage never holds a partial block before the end and the
+            # ciphertext cursor is ``_cipher_start + _pos + len(_buf)``
+            # (``cipher_tell``).
             if n < 0:
                 ask = 65536
             else:
                 want = max(n - len(self._buf), 1)
                 extra = want % AES_BLOCK_SIZE
                 ask = want if extra == 0 else want + (AES_BLOCK_SIZE - extra)
-            chunk = self._source.read(ask)
+            chunk = read_exact(self._source, ask)
             if not chunk:
                 self._buf.extend(self._stage.finalize())
                 self._eof = True
@@ -417,6 +416,20 @@ class AesDecryptStream(ReadOnlyIOStream):
     def tell(self, /) -> int:
         self._raise_if_closed()
         return self._pos
+
+    def cipher_tell(self) -> int:
+        """Ciphertext offset in the source that the next source read starts at.
+
+        The plaintext handed out, plus the plaintext decrypted and not yet read,
+        past the ciphertext origin. Exact while reading forward and after a seek
+        that lands inside the plaintext, because ``read`` gathers whole blocks
+        from the source and the stage holds no partial block before the end. Not
+        defined after a seek past the end or once a read has reached a truncated
+        last block. On a non-seekable source it counts from where this wrapper
+        started, not from the start of the source.
+        """
+        self._raise_if_closed()
+        return self._cipher_start + self._pos + len(self._buf)
 
     @override
     def seekable(self) -> bool:

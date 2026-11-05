@@ -15,7 +15,7 @@ decoder means "do not close the inner." Silence on a `DelegatingStream` means
 | `SharedView` | borrow, hardcoded | none — Parcel B split this class so `lock=` could not switch modes |
 | `DecompressorStream` | borrow | `owns_inner=True` on later staged BCJ filters (first-stage Copy+BCJ / BCJ-alone borrows the pack view) |
 | `DelegatingStream` | **own** | none; `_SUBCLASS_CLOSES_INNER` is *who* closes, not *whether* |
-| `AesDecryptStream` | borrow | `owns_inner=True` — 7z AES-CBC pull stream; default matches other transform wrappers. Production 7z borrows the pack `SharedView`. |
+| `AesDecryptStream` | borrow | `owns_inner=True` — 7z AES-CBC pull stream; default matches other transform wrappers. Production 7z borrows the pack `SharedView`. `tell` is plaintext; `cipher_tell()` is the ciphertext cursor in the source. |
 | `_HeaderDecryptStream` | borrow, hardcoded | none — RAR header cursor must not close the archive; ciphertext `tell`, not a member stream |
 | `WinZipAesDecryptStream` | **own**, hardcoded | none — ZIP AE-x payload slice has no borrow caller; CTR+HMAC, not CBC |
 | `ArchiveSource` | borrow the caller's object; own what it opened or built | none — how it was built decides: `for_path` owns its lazy handle, `for_stream` borrows (and detaches, never closes, a buffer it put in front), `for_volumes` owns the join, which borrows its caller-stream parts |
