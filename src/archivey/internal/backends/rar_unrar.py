@@ -1212,6 +1212,9 @@ def _windows_sort_key(text: str) -> str:
     dlls = _windows_dlls()
     if dlls is None:
         return "\0sortkey:" + _unrar_fold_all(text)
+    if not text:
+        # ``LCMapStringW`` refuses an empty source; a top-level name has no directory.
+        return "\0sortkey:"
     import ctypes
 
     map_string = dlls[1].LCMapStringW
