@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import zlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 from typing import Any, BinaryIO
 
@@ -35,6 +36,38 @@ from archivey.internal.streams.decompressor_stream import (
     truncated_message,
     zlib_error,
 )
+
+# Output between two snapshot seek points one decode records (:class:`ZlibSnapshot`).
+# A seek decodes about half of it on average: about 2 ms on a 4-core machine.
+SNAPSHOT_SPACING = 1 << 20
+# What one ``decompressobj.copy()`` holds: zlib's inflate state, about 7 KiB, and its
+# 32 KiB window (``tracemalloc`` counts 39 KiB on zlib 1.3).
+SNAPSHOT_HELD_BYTES = 40 << 10
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ZlibSnapshot:
+    """A :class:`SeekPoint` state: ``decompressobj.copy()`` taken between two feeds.
+
+    It holds everything the decode carries forward, mid-block too: the window, the bit
+    position, the Huffman tables, and the running CRC-32 and length, so a decode
+    resumed from it still checks the member's trailer. ``decomp`` is never decoded
+    from: each resume takes a copy of it (:meth:`resume`), so the point can be shared.
+    The copy is taken at the start of a feed and keeps ``unconsumed_tail``, the input
+    an earlier feed left undecoded, so its compressed offset is where that feed's new
+    input starts, past the tail: a resumed decoder prepends the tail to what it reads
+    from there, as the decoder it was copied from would have. Taking copies on those
+    continuation feeds too keeps the spacing near :data:`SNAPSHOT_SPACING` when one
+    read decodes to more than a feed's output. ``held_bytes`` counts the tail, which
+    the copy keeps alive. A :class:`~decompressor_stream.SnapshotState`.
+    """
+
+    decomp: Any
+    held_bytes: int = SNAPSHOT_HELD_BYTES
+    min_gap: int = SNAPSHOT_SPACING // 2
+
+    def resume(self) -> Any:
+        return self.decomp.copy()
 
 
 def _zlib_label(wbits: int) -> str:
@@ -204,8 +237,11 @@ class GzipDecoder(_KeepsOutputBeforeErrors):
 
     With ``index`` (declared seek demand), every member after the first that has output
     is a seek point, recorded when the decode reaches it, and :meth:`build_index` walks
-    a BGZF or mgzip file's members without decoding (:mod:`.bgzf_index`). ``start`` is the point
-    this decoder resumes from.
+    a BGZF or mgzip file's members without decoding (:mod:`.bgzf_index`). Inside a
+    member, a :class:`ZlibSnapshot` is a seek point about every
+    :data:`SNAPSHOT_SPACING` of output, at the start of a feed (in process only: a
+    decompressor in a decoder child has no ``copy()``). ``start`` is the point this
+    decoder resumes from.
     """
 
     # The BGZF walk reads the whole file (the mgzip walk jumps, but runs only after the
@@ -235,7 +271,14 @@ class GzipDecoder(_KeepsOutputBeforeErrors):
         # The current member's start, recorded once the member has output: an empty
         # member (BGZF's end marker) shares its offset with whatever follows.
         self._pending_point: SeekPoint | None = None
-        self._decomp = natives.zlib_decompressobj(GZIP_WBITS)
+        if start is not None and isinstance(start.state, ZlibSnapshot):
+            self._decomp = start.state.resume()
+        else:
+            self._decomp = natives.zlib_decompressobj(GZIP_WBITS)
+        # Snapshot seek points (ZlibSnapshot): only on declared seek demand, and only
+        # where ``copy()`` exists. The output offset of the last one, or of the start.
+        self._snapshots = index and hasattr(self._decomp, "copy")
+        self._last_snapshot = self._produced
         # Post-member bytes not yet resolved (NUL padding / next magic / junk).
         # Never store unconsumed_tail here — that lives on the decompressobj.
         self._retained = b""
@@ -303,17 +346,30 @@ class GzipDecoder(_KeepsOutputBeforeErrors):
         if self._finished or self._pending_error is not None:
             return DecodeOut(b"")
 
+        points: list[SeekPoint] = []
         if self._between_members:
             data = self._retained + chunk
             self._retained = b""
         else:
-            data = self._decomp.unconsumed_tail + chunk
+            tail = self._decomp.unconsumed_tail
+            data = tail + chunk
+            if data and self._snapshot_due():
+                self._last_snapshot = self._produced
+                points.append(
+                    SeekPoint(
+                        self._produced,
+                        self._fed_end,
+                        ZlibSnapshot(
+                            self._decomp.copy(),
+                            held_bytes=SNAPSHOT_HELD_BYTES + len(tail),
+                        ),
+                    )
+                )
         self._fed_end += len(chunk)
 
         # Output pieces, joined once at the end: one ``decompress`` call is the common
         # case, and ``b"".join`` hands a lone piece back without copying it.
         output: list[bytes] = []
-        points: list[SeekPoint] = []
         produced_total = 0
         while True:
             if self._pending_error is not None or self._finished:
@@ -371,6 +427,16 @@ class GzipDecoder(_KeepsOutputBeforeErrors):
 
         self._produced += produced_total
         return DecodeOut(b"".join(output), points)
+
+    def _snapshot_due(self) -> bool:
+        """Whether a feed inside a member starts with a snapshot seek point
+        (:class:`ZlibSnapshot`). Never before a member's first output, which is the
+        member's own point."""
+        return (
+            self._snapshots
+            and self._pending_point is None
+            and self._produced - self._last_snapshot >= SNAPSHOT_SPACING
+        )
 
     def flush(self) -> DecodeOut:
         self._raise_pending()

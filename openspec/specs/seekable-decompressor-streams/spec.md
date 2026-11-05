@@ -99,8 +99,9 @@ rapidgzip-bundled decoder.
 
 When rapidgzip is unavailable or disabled, gzip and bzip2 SHALL use stdlib
 decoders; backward seek is serviced by re-decompressing from the start, or for gzip
-from the nearest member or BGZF block start it knows (§"gzip member starts are seek
-points", §"BGZF members are walked without decoding"), and MUST not degrade silently.
+from the nearest member start, BGZF block start or zlib snapshot it knows (§"gzip member
+starts are seek points", §"BGZF members are walked without decoding", §"gzip decodes
+record zlib snapshot points"), and MUST not degrade silently.
 
 The system MUST NOT run any rapidgzip decoder in the caller's process. The bzip2 decoder
 SHALL run in a child process with the same rules as the DEFLATE family's (next
@@ -122,7 +123,7 @@ signature, so that whether the isolation is still needed stays measurable.
 | `use_indexed_bzip2` enabled and rapidgzip installed | bzip2 uses `rapidgzip.IndexedBzip2File` in a child process; the caller's process imports neither rapidgzip nor standalone `indexed_bzip2` |
 | `use_indexed_bzip2=AUTO`, no child process can start | stdlib decoder; one warning per process naming `use_indexed_bzip2=OFF` |
 | `use_indexed_bzip2=ON`, no child process can start | `ResourceUnavailableError`; never decoded in-process |
-| rapidgzip absent or flag `OFF` | stdlib decoder; backward seek re-decompresses from the start, or from a known gzip member start, and warns when it re-decodes past the threshold |
+| rapidgzip absent or flag `OFF` | stdlib decoder; backward seek re-decompresses from the start, or from a known gzip member start or snapshot, and warns when it re-decodes past the threshold |
 
 ### Requirement: DEFLATE-family random access uses rapidgzip
 
@@ -702,3 +703,39 @@ decode contradicts them. A walk over the seek-table cap SHALL report scan `mgzip
 | A header whose `FNAME` runs past 64 KiB | No points |
 | Walk over the seek-table cap | `SEEK_INDEX_DEGRADED` (scan `mgzip_blocks`, `SeekTableThinned`) |
 | A member's ISIZE claims one byte more; walk, then a read from the start | The read raises `CorruptionError` at that member's trailer |
+
+### Requirement: gzip decodes record zlib snapshot points
+
+On declared seek demand, the standard library engine SHALL record a seek point inside a
+gzip member about every MiB of output, whose state is a `zlib` `decompressobj.copy()`
+taken between two feeds. A decode resumed from one MUST still check the member's CRC-32
+and ISIZE, which the copy carries. A decompressor in a decoder child has no `copy()` and
+records none.
+
+#### Scenario: snapshot matrix
+
+- **WHEN** a gzip stream is read and seeks back
+- **THEN** it behaves as below
+
+| Case | Expected |
+| --- | --- |
+| One-member gzip, read forward with seek demand, then seek back | Resumes at the nearest snapshot before the target |
+| Trailer CRC-32 damaged, seek back to a snapshot and read on | `CorruptionError` at the end of the member |
+| Stream opened without seek demand | No snapshots |
+
+### Requirement: Snapshot points have a memory cap
+
+Snapshot points SHALL hold at most 32 MiB in one stream. Past that, only they are
+thinned, to half of it, by doubling their spacing, later ones keep that spacing, and no
+diagnostic is reported. A snapshot closer than half its spacing to a point the stream
+holds SHALL NOT be recorded.
+
+#### Scenario: snapshot cap matrix
+
+- **WHEN** snapshots accumulate in one stream
+- **THEN** they are kept as below
+
+| Case | Expected |
+| --- | --- |
+| A second pass over a span already read | No snapshot within half the spacing of one held |
+| Snapshots past 32 MiB | Thinned to half of it, spacing doubled; no diagnostic |
