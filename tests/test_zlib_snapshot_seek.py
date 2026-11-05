@@ -1,4 +1,4 @@
-"""Random access inside a gzip member without ``rapidgzip``: zlib snapshot points.
+"""Random access inside DEFLATE data without ``rapidgzip``: zlib snapshot points.
 
 On declared seek demand the standard-library engine records ``decompressobj.copy()``
 about every MiB of output (``GzipDecoder``, ``ZlibSnapshot``), so a backward seek
@@ -13,10 +13,14 @@ import io
 import itertools
 import random
 import struct
+import zipfile
+import zlib
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from archivey import ArchiveyConfig, open_archive
 from archivey.exceptions import CorruptionError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import decompressor_stream
@@ -157,3 +161,58 @@ def test_snapshots_past_the_memory_cap_are_thinned(
         for target in (5_500_000, 100):
             stream.seek(target)
             assert stream.read(1000) == payload[target : target + 1000]
+
+
+def _open_codec(codec: Codec, data: bytes) -> Any:
+    config = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.OFF)
+    return open_codec_stream(codec, io.BytesIO(data), config=config)
+
+
+@pytest.mark.parametrize(
+    ("codec", "wbits"), [(Codec.ZLIB, zlib.MAX_WBITS), (Codec.DEFLATE, -15)]
+)
+def test_zlib_and_raw_deflate_seek_from_snapshots(codec: Codec, wbits: int) -> None:
+    payload = _payload()
+    packer = zlib.compressobj(6, zlib.DEFLATED, wbits)
+    data = packer.compress(payload) + packer.flush()
+    with _open_codec(codec, data) as stream:
+        while stream.read(1 << 20):
+            pass
+        offsets = _snapshots(stream)
+        assert len(offsets) >= len(payload) // SNAPSHOT_SPACING - 1
+        for target in (5_000_000, 1_234_567, 10):
+            stream.seek(target)
+            assert stream.read(70_000) == payload[target : target + 70_000]
+        assert _engine(stream)._find_best_seek_point(5_000_000).decompressed_offset > (
+            4_000_000
+        )
+
+
+def test_a_zlib_decode_resumed_from_a_snapshot_still_checks_the_adler() -> None:
+    payload = _payload()
+    data = bytearray(zlib.compress(payload, 6))
+    data[-1] ^= 1
+    with _open_codec(Codec.ZLIB, bytes(data)) as stream:
+        while len(stream.read(1 << 20)) and stream.tell() < 4 << 20:
+            pass
+        assert _snapshots(stream)
+        stream.seek(3 << 20)
+        with pytest.raises(CorruptionError):
+            stream.read()
+
+
+def test_a_zip_member_seeks_from_snapshots(tmp_path: Path) -> None:
+    payload = _payload()
+    path = tmp_path / "a.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("a.txt", payload)
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
+    with (
+        open_archive(path, seekable_members=True, config=config) as archive,
+        archive.open("a.txt") as member,
+    ):
+        while member.read(1 << 20):
+            pass
+        assert _snapshots(member)
+        member.seek(4_000_000)
+        assert member.read(1000) == payload[4_000_000:4_001_000]

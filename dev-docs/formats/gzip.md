@@ -157,11 +157,13 @@ end. A `.gzi` index is a separate file, which a stream cannot find, so it is not
 `rapidgzip` none of this applies: its own index serves the seeks.
 
 **zlib snapshots.** On declared seek demand, `GzipDecoder` also records a seek point
-inside a member about every MiB of output (`SNAPSHOT_SPACING`), whose state is
+inside a member, and `ZlibDecoder` (zlib, and raw DEFLATE such as a ZIP member's) inside its
+stream, about every MiB of output (`SNAPSHOT_SPACING`), whose state is
 `decompressobj.copy()` (`ZlibSnapshot`). Python's `zlib` reports no DEFLATE block
 boundary, so the window-and-bit-offset points `deflate_resume.py` builds from
 `rapidgzip`'s index cannot be found here; a copy needs none, because it holds the whole
-inflate state, mid-block included. It holds the running CRC-32 and length too, so a
+inflate state, mid-block included. It holds the running CRC-32 and length too (zlib's
+Adler-32 for a zlib stream), so a
 decode resumed from it still checks the member's trailer, which a `deflate_resume.py`
 point cannot. A copy is taken at the start of a feed, never before a member's first
 output, which is the member's own point. It keeps `unconsumed_tail`, the input an earlier
