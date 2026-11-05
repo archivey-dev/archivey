@@ -11,8 +11,10 @@ data decoded 5 GiB.
 bytes of every member a later copy reads, as the pipe passes them, whether or not
 the caller reads that member. Small sources stay in memory; a larger one goes to a
 temporary file charged to the reader's spool budget (``SpoolLimits.max_bytes``). The
-file is opened, and the source charged, only when the source's first byte arrives,
-and :meth:`FileCopySources.close` gives the charge back. A source that fits neither
+file is opened, and the source charged, only when the source's first byte arrives.
+A source is let go once the pass has moved past its last copy: its memory is freed, and
+once no source in the temporary file is still waiting for a copy, the file is deleted
+and its charge given back. :meth:`FileCopySources.close` lets go of the rest. A source that fits neither
 is not kept, and its copies fall back to the named open. So is a source the pass's
 ``keep`` callback declines when its first byte arrives: extraction declines a source it
 is writing to disk, and copies the source's copies from the written file.
@@ -24,7 +26,7 @@ from __future__ import annotations
 
 import io
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import BinaryIO, Literal
 
 from archivey.internal.overrides import override
@@ -43,7 +45,7 @@ from archivey.internal.streams.streamtools.slice import SlicingStream
 # archive copy ``unrar`` needs. ``format-rar``'s spec states the value.
 _MEMORY_LIMIT = 8 << 20
 
-_State = Literal["memory", "file", "dropped"]
+_State = Literal["memory", "file", "dropped", "released"]
 
 
 class _Kept:
@@ -58,7 +60,7 @@ class _Kept:
         self.received = 0
         # Set at registration. "file" is the temporary file, if the spool budget has
         # room when the first byte arrives; "dropped" is not kept, and its copies
-        # use the fallback.
+        # use the fallback; "released" was let go after its last copy.
         self.state: _State = state
         self.data: bytearray | bytes = bytearray()
         # Where the source's span in the temporary file starts; ``None`` until its
@@ -95,7 +97,8 @@ class FileCopySources:
 
     A member is keyed by ``id()`` of its one ``ArchiveMember`` object, which the
     reader keeps alive; ``_member_id`` is not assigned yet when a streaming pass
-    starts. ``source_ids`` are the keys of every member a copy in the pass reads.
+    starts. ``copies`` counts, for the key of every member a copy in the pass reads,
+    how many copies read it.
     The pass calls :meth:`register` with each such member's pipe range as it reaches
     it, before any read can move the pipe past it, and builds its block reader over
     :meth:`tee`. ``try_spool(size)`` charges the spool budget and says whether
@@ -105,16 +108,23 @@ class FileCopySources:
     archive source it needs (that copy comes before the decompressor that produces
     the byte), so a keep never takes the allowance that copy needed. ``keep(key)``,
     when given, is asked at that same first byte; ``False`` leaves the source unkept.
+
+    The pass calls :meth:`copy_reached` as it reaches each copy, and :meth:`advance`
+    as it reaches each member, after it has closed the previous member's stream. A
+    source whose last copy has been reached is let go at the next ``advance``, when
+    nothing reads it any more.
     """
 
     def __init__(
         self,
-        source_ids: frozenset[int],
+        copies: Mapping[int, int],
         try_spool: Callable[[int], bool],
         release_spool: Callable[[int], None],
         keep: Callable[[int], bool] | None = None,
     ) -> None:
-        self._source_ids = source_ids
+        self._copies_left = dict(copies)
+        # Sources whose last copy the pass has reached, let go at the next advance().
+        self._done: list[int] = []
         self._keep = keep
         self._try_spool = try_spool
         self._release_spool = release_spool
@@ -128,9 +138,44 @@ class FileCopySources:
         # budget. Two sources can be pending at once (a caller that skips both), so
         # each gets its own span.
         self._file_size = 0
+        # Bytes of the file held by sources not yet let go.
+        self._file_live = 0
 
     def is_source(self, key: int) -> bool:
-        return key in self._source_ids
+        return key in self._copies_left
+
+    def copy_reached(self, key: int) -> None:
+        """The pass has reached a copy of source ``key``."""
+        left = self._copies_left.get(key)
+        if left is None:
+            return
+        if left <= 1:
+            del self._copies_left[key]
+            self._done.append(key)
+        else:
+            self._copies_left[key] = left - 1
+
+    def advance(self) -> None:
+        """The pass has reached its next member, and closed the stream before it:
+        let go of every source whose last copy came before it."""
+        done, self._done = self._done, []
+        for key in done:
+            kept = self._kept.get(key)
+            if kept is not None:
+                self._release(kept)
+        if self._file is not None and self._file_live == 0:
+            self._close_file()
+
+    def _release(self, kept: _Kept) -> None:
+        if kept in self._pending:
+            # Its copies were all skipped before the pipe passed it.
+            self._pending.remove(kept)
+        if kept.state == "memory":
+            self._memory -= kept.size
+        elif kept.state == "file" and kept.file_offset is not None:
+            self._file_live -= kept.size
+        kept.state = "released"
+        kept.data = b""
 
     def register(self, key: int, start: int, size: int) -> None:
         """Keep ``[start, start + size)`` of the pipe for ``key``'s copies."""
@@ -164,6 +209,7 @@ class FileCopySources:
         # opening it fails.
         kept.file_offset = self._file_size
         self._file_size += kept.size
+        self._file_live += kept.size
         if self._file is None:
             self._file = tempfile.TemporaryFile()  # noqa: SIM115 - closed in close()
         return True
@@ -218,7 +264,7 @@ class FileCopySources:
         the way. A pipe that ends early raises from there, as reading the source would.
         """
         kept = self._kept.get(key)
-        if kept is None or kept.state == "dropped":
+        if kept is None or kept.state in ("dropped", "released"):
             return None
         if kept.received < kept.size:
             advance_past(kept.end)
@@ -235,6 +281,13 @@ class FileCopySources:
         """Delete the temporary file and give its spool charge back."""
         self._kept.clear()
         self._pending.clear()
+        self._done.clear()
+        self._close_file()
+
+    def _close_file(self) -> None:
+        """Delete the temporary file and give its spool charge back; a later source
+        starts a new one."""
+        self._file_live = 0
         try:
             if self._file is not None:
                 self._file.close()

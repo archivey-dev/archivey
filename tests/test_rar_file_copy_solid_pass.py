@@ -599,3 +599,77 @@ def test_file_copy_streams_takes_a_bool(tmp_path: Path) -> None:
         pytest.raises(ArchiveyUsageError, match="file_copy_streams"),
     ):
         reader.stream_members(file_copy_streams=0)  # type: ignore[arg-type]
+
+
+def _two_sources_with_copies(tmp_path: Path) -> tuple[Path, bytes, bytes]:
+    """A solid RAR5 of a first source and its copy, then a second source and its
+    copy, then a last member (``rar`` stores names sorted)."""
+    src = tmp_path / "src2"
+    src.mkdir()
+    first, second = _text(3, 5000), _text(4, 5000)
+    (src / "a_first.txt").write_bytes(first)
+    (src / "b_first_copy.txt").write_bytes(first)
+    (src / "c_second.txt").write_bytes(second)
+    (src / "d_second_copy.txt").write_bytes(second)
+    (src / "e_last.txt").write_bytes(b"last")
+    archive = tmp_path / "two.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ma5", "-s", "-oi:1000", str(archive)]
+        + sorted(p.name for p in src.iterdir()),
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    listing = subprocess.run(
+        ["rar", "lt", str(archive)], capture_output=True, check=True, timeout=60
+    ).stdout
+    assert listing.count(b"File reference") == 2
+    return archive, first, second
+
+
+def test_a_source_is_let_go_after_its_last_copy(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the pass is past a source's last copy, the source's spool charge is given
+    back, so a later source fits in a limit with room for one source only. Without
+    that, the second source would not be kept and its copy would start a named
+    ``unrar`` open."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    _config("unrar")  # skips without rar and unrar
+    archive, first, second = _two_sources_with_copies(tmp_path)
+    config = _config(
+        "unrar", spool_limits=SpoolLimits(max_bytes=len(first) + len(first) // 2)
+    )
+    expected = {"b_first_copy.txt": first, "d_second_copy.txt": second}
+    with open_archive(archive, config=config) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            data = stream.read()
+            if member.name in expected:
+                assert data == expected[member.name], member.name
+    assert spawns == ["unrar"]
+
+
+def test_a_released_memory_source_frees_its_room() -> None:
+    """A source let go after its last copy frees its share of the in-memory
+    allowance, and a copy reached after that falls back to a named open."""
+    charged: list[int] = []
+    sources = rar_copy_sources.FileCopySources(
+        {1: 1, 2: 1}, lambda n: charged.append(n) or True, lambda n: None
+    )
+    size = rar_copy_sources._MEMORY_LIMIT
+    sources.register(1, 0, size)
+    block = sources.tee(io.BytesIO(b"x" * size + b"y" * size))
+    assert block.read(size) == b"x" * size
+    sources.copy_reached(1)
+    with sources.open(1, lambda end: None) as kept:  # type: ignore[union-attr]
+        assert kept.read() == b"x" * size
+    sources.advance()
+    assert sources.open(1, lambda end: None) is None
+    # The second source fits in memory now: nothing is charged to the spool.
+    sources.register(2, size, size)
+    assert block.read() == b"y" * size
+    assert charged == []
+    with sources.open(2, lambda end: None) as kept:  # type: ignore[union-attr]
+        assert kept.read() == b"y" * size
+    sources.close()

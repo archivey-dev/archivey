@@ -3032,18 +3032,21 @@ class RarReader(BaseArchiveReader):
         it has no copies, or it yields none of their streams."""
         if not copies.streams:
             return None
-        sources = {
-            id(source): source
-            for m in self._members
-            if isinstance(m._raw, RarMemberInfo)
-            and m._raw.is_file_copy()
-            and (source := m.link_target_member) is not None
-        }
+        sources: dict[int, ArchiveMember] = {}
+        counts: dict[int, int] = {}
+        for m in self._members:
+            if (
+                isinstance(m._raw, RarMemberInfo)
+                and m._raw.is_file_copy()
+                and (source := m.link_target_member) is not None
+            ):
+                sources[id(source)] = source
+                counts[id(source)] = counts.get(id(source), 0) + 1
         if not sources:
             return None
         keep_source = copies.keep_source
         return FileCopySources(
-            frozenset(sources),
+            counts,
             self._try_spool,
             self._release_spool,
             keep=None if keep_source is None else lambda key: keep_source(sources[key]),
@@ -3230,7 +3233,13 @@ class RarReader(BaseArchiveReader):
             self._read_pass_link_target(member)
             raw = member._raw
             assert isinstance(raw, RarMemberInfo)
+            if sources is not None:
+                # The driver has closed the previous member's stream: a source whose
+                # last copy that was is read by nothing now.
+                sources.advance()
             if raw.is_file_copy():
+                if sources is not None and member.link_target_member is not None:
+                    sources.copy_reached(id(member.link_target_member))
                 # Not in the pipe; served from its source's bytes, kept as the pipe
                 # passed them, so the solid stream is not decoded again for it.
                 return self._pass_file_copy_stream(
