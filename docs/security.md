@@ -256,8 +256,7 @@ in the repository measures what each limit costs in time and memory on your mach
 - **`decoder_limits.max_key_derivation_rounds`**, default 2^25, caps the password-hashing work per
   open archive. It costs 0.2-0.7 µs per round, 7-25 s at the default.
 - **`decoder_limits.max_ppmd_held_input`**, default 16 MiB, caps the largest PPMd member
-  that's held and handed to the decoder whole, up to 2 GiB whatever it is set to (`None`
-  included). A larger one is fed in pieces, which
+  that's held and handed to the decoder whole. A larger one is fed in pieces, which
   `process_isolation` keeps in a child process. It costs up to twice the limit in memory
   while a PPMd member decodes, 32 MiB at the default.
 - **`spool_limits.max_bytes`**, default 1 GiB, caps the temporary disk space for RAR archives.

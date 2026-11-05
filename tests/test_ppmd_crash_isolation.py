@@ -481,17 +481,17 @@ def test_a_failed_check_retires_a_child_under_a_wrapper(
     assert POOL.idle_count() == 0
 
 
-def test_none_holds_input_only_up_to_what_one_child_request_carries(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``max_held_input=None`` still feeds a member in pieces past the ceiling, since
-    the held input goes to the child in one request whose length field is 32 bits."""
-    # One request: the held input, the feed that took it past the limit, a call header.
-    request = ppmd_decoder._MAX_HELD_INPUT_CEILING + _COMPRESSED_READ_SIZE_MAX + 4096
-    FRAME.pack(0, 0, request)  # its 32-bit length field takes it
+def test_a_child_request_can_carry_more_than_4_gib() -> None:
+    """``max_ppmd_held_input=None`` puts no bound on a held member, and the whole of it
+    goes to the child in one request, so the frame's payload length is 64 bits."""
+    size = (1 << 32) + _COMPRESSED_READ_SIZE_MAX
+    assert FRAME.unpack(FRAME.pack(0, 0, size))[2] == size
+
+
+def test_none_holds_a_member_whole_whatever_its_size() -> None:
+    """``max_held_input=None`` hands nothing to pyppmd before the whole member is in."""
     data = random.Random(7).randbytes(4096)
     packed = _encode_ppmd7(data)
-    monkeypatch.setattr(ppmd_decoder, "_MAX_HELD_INPUT_CEILING", 64)
     decoder = ppmd_decoder.PpmdDecoder(
         order=_ORDER,
         mem_size=_MEM,
@@ -502,8 +502,8 @@ def test_none_holds_input_only_up_to_what_one_child_request_carries(
     out = bytearray()
     for start in range(0, len(packed), 32):
         out += decoder.feed(packed[start : start + 32]).data
-        if start >= 64:
-            assert decoder._held is None
+        if start + 32 < len(packed):
+            assert decoder._held is not None
     out += decoder.flush().data
     while decoder.drains_after_flush and (more := decoder.feed(b"").data):
         out += more

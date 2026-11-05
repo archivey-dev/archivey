@@ -1312,8 +1312,7 @@ SHALL bound the compressed bytes of one PPMd member the process holds to hand to
 whole, in the child or, under `process_isolation=NONE`, in-process; a larger member, and
 one whose size is known only once it has been read (a ZIP member with bit 3 set, read from
 a non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
-whose size is known, up to 2 GiB: past that, whatever the setting, a member SHALL be fed in
-pieces, since the held input goes to the child in one request whose length is 32 bits.
+whose size is known.
 `process_isolation` SHALL be converted from the member or its name at construction, as
 the accelerator fields are. `process_isolation=NONE` together with `use_rapidgzip=ON` or
 `use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` at construction: rapidgzip runs
@@ -1373,7 +1372,6 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | Same member, `process_isolation=NONE`, `max_ppmd_held_input=1024` / default | In-process, fed in pieces / held and decoded whole |
 | Valid 7z PPMd member of 8 MiB (one random 1 MiB block, 8 times), default config | Held, decoded whole in a child, read in full |
 | Same member, `max_ppmd_held_input` of 1 MiB, in a child or with `process_isolation=NONE` | Fed in pieces, read in full |
-| PPMd member over 2 GiB compressed, `max_ppmd_held_input=None` | Fed in pieces past 2 GiB, read in full; no `struct.error` |
 | `ArchiveyConfig(process_isolation="none")` | Holds `ProcessIsolation.NONE` |
 | `ArchiveyConfig(process_isolation=ProcessIsolation.NONE, use_rapidgzip=AcceleratorMode.ON)` | `ArchiveyUsageError` at construction |
 | Password list `["wrong", right]`, budget covering only the right candidate's derivations | `ResourceLimitError`, not `EncryptionError`; the list does not continue |
