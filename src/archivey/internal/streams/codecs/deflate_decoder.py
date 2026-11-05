@@ -51,10 +51,14 @@ class _KeepsOutputBeforeErrors(BaseDecoder):
     Once :meth:`keep_output_before_errors` is called, each step first takes
     ``decompressobj.copy()`` (the 32 KiB window and the state). When the step raises,
     the copy decodes the same input again one output byte per call up to the error;
-    those bytes are handed back, and the next call raises the error. The copy costs
-    about 5% on a pipe read, so a source that can seek, which is decoded again
-    instead, never takes one. A decompressor in a decoder child has no ``copy()``,
-    and keeps the stream's behaviour.
+    those bytes are handed back, and the next call raises the error. Only a bounded
+    step takes the copy: an unbounded ``read()`` raises without the prefix
+    (``compressed-streams``), and replaying a whole unbounded step one byte per call
+    could cost millions of calls. Only a zlib error is replayed; any other error,
+    ``MemoryError`` included, raises at once. The copy costs within 1% on a 40 MB
+    pipe read; a source that can seek is decoded again instead, so it never takes
+    one. A decompressor in a decoder child has no ``copy()``, and keeps the stream's
+    behaviour.
     """
 
     _decomp: Any
@@ -72,12 +76,15 @@ class _KeepsOutputBeforeErrors(BaseDecoder):
     def _inflate_step(
         self, data: bytes, max_length: int, error: Callable[[zlib.error], Exception]
     ) -> bytes:
-        if not self._keep:
+        if not self._keep or max_length <= 0:
+            # ``_inflate`` reads 0 as no limit too.
             return _inflate(self._decomp, data, max_length, error)
         snapshot = self._decomp.copy()
         try:
             return _inflate(self._decomp, data, max_length, error)
         except Exception as exc:
+            if not isinstance(exc.__cause__, zlib.error):
+                raise
             recovered = _decode_to_error(snapshot, data, max_length)
             if not recovered:
                 raise
@@ -86,7 +93,8 @@ class _KeepsOutputBeforeErrors(BaseDecoder):
 
 
 def _decode_to_error(decomp: Any, data: bytes, max_length: int) -> bytes:
-    """The bytes ``decomp`` gives from ``data`` before it raises, one per call.
+    """The bytes ``decomp`` gives from ``data`` before it raises, one per call, at
+    most ``max_length`` (positive) of them.
 
     Empty when the input runs out, the stream ends or ``max_length`` is reached
     first: the call that raised did not stop there, so the error was not met again
@@ -95,7 +103,7 @@ def _decode_to_error(decomp: Any, data: bytes, max_length: int) -> bytes:
     got = bytearray()
     pending = data
     try:
-        while max_length < 0 or len(got) < max_length:
+        while len(got) < max_length:
             out = decomp.decompress(pending, 1)
             pending = decomp.unconsumed_tail
             if not out or decomp.eof:

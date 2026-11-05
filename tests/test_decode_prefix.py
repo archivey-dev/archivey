@@ -25,7 +25,13 @@ import pytest
 
 from archivey.exceptions import ArchiveyError
 from archivey.internal.config import AcceleratorMode, StreamConfig
-from archivey.internal.streams.codecs import Codec, deps, open_codec_stream
+from archivey.internal.streams.codecs import (
+    Codec,
+    deflate_decoder,
+    deps,
+    open_codec_stream,
+)
+from archivey.internal.streams.codecs.deflate_decoder import GzipDecoder, ZlibDecoder
 from archivey.internal.streams.decompressor_stream import probe_streams
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
@@ -132,6 +138,32 @@ def test_a_second_gzip_member_from_a_pipe_gets_every_byte_before_the_error() -> 
     expected = _prefix(io.BytesIO(data), Codec.GZIP, 1 << 20)
     assert expected[0] > len(first)
     assert _prefix(NonSeekableBytesIO(data), Codec.GZIP, 1 << 20) == expected
+
+
+@pytest.mark.parametrize("decoder_type", [ZlibDecoder, GzipDecoder])
+def test_an_unbounded_inflate_step_is_not_replayed(
+    decoder_type: type[ZlibDecoder | GzipDecoder], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unbounded read raises without the prefix, so the step takes no copy:
+    replaying a high-ratio step one byte per call costs millions of calls."""
+    if decoder_type is GzipDecoder:
+        decoder: ZlibDecoder | GzipDecoder = GzipDecoder()
+        good = gzip.compress(b"\0" * (8 << 20), mtime=0)
+    else:
+        decoder = ZlibDecoder(zlib.MAX_WBITS)
+        good = zlib.compress(b"\0" * (8 << 20))
+    damaged = good[:-1] + bytes([good[-1] ^ 1])  # the trailing checksum
+    decoder.keep_output_before_errors()
+    replays: list[int] = []
+    monkeypatch.setattr(
+        deflate_decoder,
+        "_decode_to_error",
+        lambda *args: replays.append(1) or b"",
+    )
+    with pytest.raises(ArchiveyError):
+        decoder.feed(damaged, -1)
+        decoder.flush()
+    assert replays == []
 
 
 @pytest.mark.parametrize("name", ["gzip", "xz"])
