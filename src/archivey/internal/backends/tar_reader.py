@@ -925,8 +925,7 @@ class TarReader(BaseArchiveReader):
             self._emit_eof_marker(
                 "rejected_header",
                 observed_bytes=BLOCKSIZE,
-                header_offset=end.offset,
-                reason=end.reason,
+                rejected=end,
             )
             return
         if (
@@ -1207,8 +1206,7 @@ class TarReader(BaseArchiveReader):
         end: _EofFinding,
         *,
         observed_bytes: int,
-        header_offset: int | None = None,
-        reason: str | None = None,
+        rejected: TarEnd | None = None,
     ) -> None:
         """Report a missing or damaged two-zero-block end-of-archive marker.
 
@@ -1217,9 +1215,9 @@ class TarReader(BaseArchiveReader):
         the first means a header that does not parse ended the walk and shortened the
         listing, the second that a file with no member is a zero block and then junk,
         which must not open as an empty tar. The other three follow the policy.
-        For ``"rejected_header"``, ``header_offset`` and ``reason`` are where the
-        header sits and why the walker refused it; the message quotes both, as the
-        report on a bad first header does.
+        For ``"rejected_header"``, ``rejected`` is the walker's end: where the header
+        sits and why it was refused. The message quotes both, as the report on a bad
+        first header does.
         ``"damaged_second_block"`` gets its own ``expected_marker``,
         ``"second_zero_block"``, so a caller can tell a whole listing from a
         shortened one by the context, not the message.
@@ -1237,14 +1235,14 @@ class TarReader(BaseArchiveReader):
             expected_marker = "second_zero_block"
             expected_bytes = 512
         elif end == "rejected_header":
+            assert rejected is not None
+            why = f" ({rejected.reason})" if rejected.reason else ""
             message = (
-                "TAR archive is corrupt: a member header that does not parse appears "
-                "where the next header or the end-of-archive marker was expected, so "
-                "the members after it are not listed."
+                f"TAR archive is corrupt: the member header at offset "
+                f"{rejected.offset} does not parse{why}. It sits where the next header "
+                "or the end-of-archive marker was expected, so the members after it "
+                "are not listed."
             )
-            if reason:
-                where = "" if header_offset is None else f" at offset {header_offset}"
-                message += f" The header{where} does not parse ({reason})."
             escalate_as = CorruptionError
         elif end == "no_member":
             message = (

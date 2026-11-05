@@ -940,7 +940,9 @@ def test_rejected_header_after_a_member_quotes_the_walker_reason(
             pass
     message = str(excinfo.value)
     assert "the members after it are not listed" in message
-    assert "The header at offset 1024 does not parse (" in message
+    assert message.startswith(
+        "TAR archive is corrupt: the member header at offset 1024 does not parse ("
+    )
     assert "empty size record" in message.split("does not parse (", 1)[1]
 
 
