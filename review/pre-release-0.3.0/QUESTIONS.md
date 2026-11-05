@@ -26,7 +26,13 @@ with the last link. The xfail test asks for each header's own bytes.
 Option 1 and option 2 both avoid returning the wrong bytes. Option 3 still
 returns the later bytes for the earlier name.
 
-## Q2 — A sized read of a cut member (disagreement)
+## Q2 — A sized read of a cut member (disagreement) — answered
+
+**Answer.** Keep the short return, as ADR 0014 and
+`docs/errors-and-diagnostics.md` describe it: the maintainer chose this on
+2026-11-04 after reading the argument for raising. The docs already tell a
+caller to check the length or read once more. No code change. Kept below as
+asked.
 
 **Context.** ADR 0014 and `docs/errors-and-diagnostics.md` say
 `stream.read(member.size)` may return a short result. The next read raises
