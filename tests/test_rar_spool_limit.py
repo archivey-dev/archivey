@@ -521,9 +521,11 @@ def test_volume_set_limit_stops_mid_copy_and_removes_the_directory(
     """The copy itself enforces the limit, not only the up-front total.
 
     The up-front check is switched off, so what refuses here is the budget running
-    out during the copy.
+    out during the copy. A member copy refused for its size (``check_fits``) is
+    switched off too, so the read reaches the copy of the volumes.
     """
     monkeypatch.setattr(SpoolBudget, "check_total", lambda self, total: None)
+    monkeypatch.setattr(SpoolBudget, "check_fits", lambda self, total: None)
     with (
         open_archive(sources(), config=_config(limit)) as archive,
         pytest.raises(ResourceLimitError),

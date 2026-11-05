@@ -89,10 +89,11 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   `.cpio.xz`) is held to it whenever it's decoded, listing included, since listing one decodes all
   of it. So is what a format handler's walk decodes by itself: a compressed payload it opens
   part-way through the archive, and a member's decoded data. When `unrar` reads a member of a RAR
-  archive that is not solid, archivey copies that member's packed bytes to a temporary file. A
-  solid RAR archive opened from a file object rather than a path is copied whole to a temporary
-  file the first time a member needs `unrar` or `unar`. `spool_limits.max_bytes` caps those copies, along with the few other temporary
-  files archivey makes for RAR archives, listed in the table below. When the archive records a
+  archive that is not solid, archivey copies that member's packed bytes to a temporary file.
+  Otherwise (a solid archive, or any archive read with `unar`), a RAR archive opened from a file
+  object rather than a path is copied whole to a temporary file the first time a member needs
+  `unrar` or `unar`. `spool_limits.max_bytes` caps those copies, along with the few other
+  temporary files archivey makes for RAR archives, listed in the table below. When the archive records a
   member's size in `member.size`, archivey never decodes more than that, and a member holding
   more raises `CorruptionError`.
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,

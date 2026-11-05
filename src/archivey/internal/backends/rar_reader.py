@@ -255,6 +255,10 @@ def _stream_volumes_disk_copy_note(program: str) -> str:
     )
 
 
+def _no_cleanup() -> None:
+    """A cleanup with nothing to remove."""
+
+
 def _rar_member_copy_notes(
     source: ArchiveSource, limits: SpoolLimits
 ) -> tuple[str, ...]:
@@ -267,7 +271,9 @@ def _rar_member_copy_notes(
         return ()
     note = (
         "Reading a member that RARLAB unrar has to read, such as a compressed one, "
-        "will copy that member's packed bytes to disk so unrar can read them."
+        "will copy that member's packed bytes to disk so unrar can read them. "
+        "(A RAR 1.5-4 member split past 4 GiB with no 64-bit size fields copies "
+        "the whole archive instead.)"
     )
     limit = limits.max_bytes
     if limit is None:
@@ -2165,7 +2171,7 @@ class RarReader(BaseArchiveReader):
         found = self._unchecked_passwords.get(id(reference))
         if found is None:
             try:
-                probe, full_check = self._unchecked_password_checks(reference)
+                probe, full_check, cleanup = self._unchecked_password_checks(reference)
             except UnsupportedFeatureError:
                 if not for_archive:
                     raise
@@ -2191,6 +2197,8 @@ class RarReader(BaseArchiveReader):
                     # Wrong password or damage: nothing here can tell which.
                     mark_unverified_data(error)
                 raise error from exc
+            finally:
+                cleanup()
             self._unchecked_passwords[id(reference)] = found
             if verdict is PasswordConfirmVerdict.CONFIRMED:
                 self._unchecked_confirmed.add(id(reference))
@@ -2201,12 +2209,23 @@ class RarReader(BaseArchiveReader):
     ) -> tuple[
         Callable[[bytes], tuple[bytes, PasswordConfirmVerdict]],
         Callable[[bytes], tuple[bytes, PasswordConfirmVerdict]] | None,
+        Callable[[], None],
     ]:
-        """The bounded probe and the full check for one encrypted RAR3/4 member."""
+        """The bounded probe and the full check for one encrypted RAR3/4 member,
+        and the cleanup to run once the candidate is chosen (or none was).
+
+        The cleanup removes the synthetic archive the probes read, so a probed
+        member is not left on disk, charged to the spool limit, while its read
+        copies it again.
+        """
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
         if self._stored_natively_checkable(raw):
-            return (lambda password: self._stored_check(raw, password)), None
+            return (
+                (lambda password: self._stored_check(raw, password)),
+                None,
+                _no_cleanup,
+            )
 
         size = _member_stream_size(member)
         crc = raw.crc32 if not _crc_is_tweaked(raw) else None
@@ -2214,6 +2233,7 @@ class RarReader(BaseArchiveReader):
         # verified once a password is chosen, so for such a member unrar's exit code is
         # the only CRC signal the probe gets, and suppressing it would leave none.
         has_hash = bool(member.hashes)
+        cleanup = _no_cleanup
         if self._unar_policy is not None:
             unar_spawn = self._unar_spawner(member, raw, self._unar_policy)
 
@@ -2221,7 +2241,7 @@ class RarReader(BaseArchiveReader):
                 return unar_spawn(password)
 
         else:
-            unrar_spawn = self._unrar_spawner(member, raw)
+            unrar_spawn, cleanup = self._unrar_spawner(member, raw)
 
             def spawn(password: str | None) -> BinaryIO:
                 return unrar_spawn(password, has_hash)
@@ -2282,6 +2302,7 @@ class RarReader(BaseArchiveReader):
             None
             if full_plan is None
             else (lambda password: decode_check(password, full_plan)),
+            cleanup,
         )
 
     def _crypto_usable(self) -> bool:
@@ -4608,10 +4629,25 @@ class RarReader(BaseArchiveReader):
         if self._unar_policy is not None:
             return self._open_member_with_unar(member, raw, self._unar_policy)
 
+        # Picked before the member's copy is reserved: a RAR3/4 candidate list is
+        # judged by reading the member through a synthetic archive of its own, which
+        # is removed again before this read reserves one (the two would otherwise
+        # both count against the spool limit). A solid archive keeps the order below.
+        # A probe that cannot name the member (no synthetic archive for it) is left
+        # to the mask route below, which may hand the member to ``unar`` instead.
+        early_password: str | None = None
+        picked = False
+        if not self._archive.is_solid:
+            try:
+                early_password = self._member_data_password(member)
+                picked = True
+            except UnsupportedFeatureError:
+                pass
         synthetic = self._synthetic_file(member, raw)
         if synthetic is not None:
+            assert picked, "the probe reads through a synthetic archive too"
             try:
-                data_password = self._member_data_password(member)
+                data_password = early_password
                 has_hash = (
                     bool(member.hashes) or self._tweaked_verify_spec(raw) is not None
                 )
@@ -4643,7 +4679,7 @@ class RarReader(BaseArchiveReader):
         # Picked before anything is copied for ``unrar``: a RAR5 PswCheck rejects a
         # wrong candidate without spooling a stream source to disk. A RAR3/4 candidate
         # list is judged by running ``unrar``, so that one does copy.
-        data_password = self._member_data_password(member)
+        data_password = early_password if picked else self._member_data_password(member)
         # Prefer our fused digest check (including tweaked ConvertHashToMAC) over
         # unrar's exit code for corruption; wrong-password (11) still maps. After the
         # password: the tweaked check needs the one the member's PswCheck accepted.
@@ -4654,22 +4690,24 @@ class RarReader(BaseArchiveReader):
 
     def _unrar_spawner(
         self, member: ArchiveMember, raw: RarMemberInfo
-    ) -> Callable[[str | None, bool], BinaryIO]:
-        """Check what ``unrar p`` needs to read ``member``; return its spawner.
+    ) -> tuple[Callable[[str | None, bool], BinaryIO], Callable[[], None]]:
+        """Check what ``unrar p`` needs to read ``member``; return its spawner and
+        the cleanup that removes what the spawner wrote.
 
         Every refusal is decided here from the parsed member table, plus at most one
         cached run of the dot-rule probe (:func:`unrar_dot_rule`) when the members a
         mask selects depend on it; the read itself spawns nothing here.
         The spawner takes the password and whether the member has a digest archivey
-        checks itself, and copies a stream source to disk on its first call.
+        checks itself. On its first call it writes the file ``unrar`` reads: the
+        member's synthetic archive, or a copy of a stream source. The cleanup
+        removes the synthetic archive and gives back its spool charge; the copy of
+        a stream source is the reader's, and stays.
         """
         synthetic = self._synthetic_file(member, raw)
         if synthetic is not None:
-            # Removed at reader close: the probes that call this spawn and close
-            # their streams one candidate at a time.
-            return self._synthetic_spawner(raw, synthetic)
+            return self._synthetic_spawner(raw, synthetic), synthetic.close
         try:
-            return self._unrar_spawner_by_name(member, raw)
+            return self._unrar_spawner_by_name(member, raw), _no_cleanup
         except _UnrarCannotAddress as refusal:
             raise refusal.error from None
 
@@ -4830,9 +4868,10 @@ class RarReader(BaseArchiveReader):
         a solid archive (its streams are a later change), a member of an archive on
         disk above :data:`_SYNTHETIC_IN_PLACE_THRESHOLD` packed bytes or over the
         spool limit, and a RAR 1.5-4 member joined past 4 GiB without 64-bit size
-        fields. A stream source has no such fallback: a copy over the spool limit
-        raises ``ResourceLimitError``, as the whole-archive copy did, but for the
-        member's bytes alone.
+        fields. A stream source falls back only for that unsupported header, and
+        then copies the whole archive. Its member copy over the spool limit raises
+        ``ResourceLimitError`` for the member's bytes alone, and records nothing:
+        a later member that fits is still copied.
 
         The member's header is read again here, before anything is spawned or
         copied, and checked against the listing (``CorruptionError`` when it
@@ -4883,7 +4922,8 @@ class RarReader(BaseArchiveReader):
                 if not in_place:
                     budget = self._spool_budget("this member's packed bytes")
                     with self._translated_errors(member.name):
-                        budget.check_total(charge)
+                        # Not recorded: a smaller member may still fit.
+                        budget.check_fits(charge)
                 return None
             synthetic = _SyntheticFile(self, entry, charge)
             self._synthetic_files.add(synthetic)

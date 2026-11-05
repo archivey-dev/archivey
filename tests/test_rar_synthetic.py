@@ -20,8 +20,13 @@ from pathlib import Path
 
 import pytest
 
-from archivey import open_archive
-from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
+from archivey import ArchiveyConfig, SpoolLimits, open_archive
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    ResourceLimitError,
+    TruncatedError,
+)
 from archivey.internal.backends import rar_synthetic as rs
 from archivey.internal.backends.rar_parser import (
     RarArchive,
@@ -503,3 +508,60 @@ def test_reader_close_removes_a_file_left_by_an_open_stream(
     reader.close()
     assert not path.exists()
     stream.close()
+
+
+def _limited(max_bytes: int) -> ArchiveyConfig:
+    return ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=max_bytes))
+
+
+def _stream_reader(fixture: str, max_bytes: int) -> RarReader:
+    raw = (_FIXTURES / fixture).read_bytes()
+    reader = open_archive(BytesIO(raw), config=_limited(max_bytes))
+    assert isinstance(reader, RarReader)
+    return reader
+
+
+def _member_copy(reader: RarReader, name: str) -> object:
+    member = reader.get(name)
+    assert isinstance(member._raw, RarMemberInfo)
+    return reader._synthetic_file(member, member._raw)
+
+
+def test_a_member_over_the_spool_limit_does_not_refuse_the_next() -> None:
+    """A member copy refused for its size records nothing: a smaller one still fits.
+
+    The copies cost 73, 76 and 72 bytes for the three files. Nothing is spawned or
+    written: the charge is taken before the first spawn.
+    """
+    with _stream_reader("basic_nonsolid__.rar", 75) as reader:
+        with pytest.raises(ResourceLimitError, match="76 bytes"):
+            _member_copy(reader, "subdir/file2.txt")
+        small = _member_copy(reader, "implicit_subdir/file3.txt")
+        assert small is not None
+
+
+def test_a_member_refused_beside_another_copy_fits_once_that_closes() -> None:
+    with _stream_reader("basic_nonsolid__.rar", 76 + 72 - 1) as reader:
+        big = _member_copy(reader, "subdir/file2.txt")
+        assert big is not None
+        with pytest.raises(ResourceLimitError, match="72 bytes on top of 76"):
+            _member_copy(reader, "implicit_subdir/file3.txt")
+        big.close()  # type: ignore[attr-defined]
+        assert _member_copy(reader, "implicit_subdir/file3.txt") is not None
+
+
+@requires_unrar_cli()
+def test_password_probe_removes_its_copy_before_the_read(
+    synthetic_spy: _TempSpy,
+) -> None:
+    """The probe's synthetic archive is gone once the candidate is chosen, so the
+    read's own copy fits a limit that holds one copy of the member (106 bytes) but
+    not two."""
+    raw = (_FIXTURES / "encryption__rar4.rar").read_bytes()
+    with open_archive(
+        BytesIO(raw), password=["wrong", "password"], config=_limited(150)
+    ) as reader:
+        member = reader.get("secret.txt")
+        assert len(reader.read(member)) == member.size
+        assert len(synthetic_spy.paths) >= 2
+        assert not any(path.exists() for path in synthetic_spy.paths)
