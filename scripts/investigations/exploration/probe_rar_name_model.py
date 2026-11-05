@@ -39,8 +39,8 @@ sys.path.insert(0, str(_ROOT))
 # RAR5 names for the Windows-only steps: CharUpperW's case fold and FoldStringW's
 # precomposition of a Unix-host name (host 1 here is the tests' "Unix").
 _RAR5_EXTRA: list[tuple[bytes, int]] = [
-    ("é.txt".encode(), 1),
-    ("é.txt".encode(), 1),
+    ("e\u0301.txt".encode(), 1),  # decomposed: FoldStringW precomposes it
+    ("\u00e9.txt".encode(), 1),  # precomposed
     ("É.TXT".encode(), 1),
     ("ı.txt".encode(), 1),
     (b"I.txt", 1),
@@ -49,8 +49,8 @@ _RAR5_EXTRA: list[tuple[bytes, int]] = [
     ("Ω.txt".encode(), 1),
     ("ω.txt".encode(), 1),
 ]
-_RAR5_GLOBS = ["ab.", "ab...", "a?", "?", "??", "a?b", "d/ab", "é", "x/../ab"]
-_RAR5_GLOBS += ["É.TXT", "?.txt", "STRASSE", "i.txt"]
+_RAR5_GLOBS = ["ab.", "ab...", "a?", "?", "??", "a?b", "d/ab", "\u00e9", "x/../ab"]
+_RAR5_GLOBS += ["E\u0301.TXT", "?.txt", "STRASSE", "i.txt"]
 
 # Shift-JIS names. A trail byte of 0x5c is the classic DBCS trap.
 _DBCS_NAMES: list[bytes] = [

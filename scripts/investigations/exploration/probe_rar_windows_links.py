@@ -39,10 +39,11 @@ _FILES = {
     "sub/b_inside.txt": "inside " * 300,
     "z_last.txt": "last " * 500,
 }
-# Added by a second ``rar a``, which appends it after every member already in the
-# archive. ``rar`` stores directories, directory links and junctions after the files
-# of one run, so without this no data would follow them in the solid stream and a
-# miscount there would go unseen.
+# Added by a second ``rar a``. It was meant to put data after the directory link and
+# the junction, but ``rar`` keeps directories, directory links and junctions last
+# even then: the appended file goes before them. So in an archive ``rar`` writes,
+# only the file links have data after them; the per-member ``unrar p`` check covers
+# the directory link and the junction.
 _APPENDED = {"zz_after.txt": "after " * 450}
 
 

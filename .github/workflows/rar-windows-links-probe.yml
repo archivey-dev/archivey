@@ -15,6 +15,11 @@ on:
       - scripts/investigations/exploration/probe_rar_windows_links.py
       - scripts/investigations/exploration/probe_rar_oem_dbcs.py
       - scripts/investigations/exploration/probe_rar_name_model.py
+      # What the probes import or measure.
+      - src/archivey/internal/backends/rar_unrar.py
+      - tests/test_rar_unrar_names.py
+      - tests/test_audit_rar_iso_dir.py
+      - tests/fixtures/rar/hostile_argv__rar4.rar
       - .github/workflows/rar-windows-links-probe.yml
 
 permissions:

@@ -16,23 +16,21 @@ exits 1 when a read returns wrong bytes or fails with anything but a refusal.
 
 Run by ``.github/workflows/rar-windows-links-probe.yml`` inside a Windows container
 whose OEM and ANSI code pages are set to 932, and on the runner itself (437) as the
-control.
+control. Needs ``pytest`` importable (the RAR 1.5-4 header rewriters live in the
+tests).
 """
 
 from __future__ import annotations
 
 import ctypes
 import json
-import struct
 import sys
 import tempfile
-import zlib
 from pathlib import Path
 
-_SIG = b"Rar!\x1a\x07\x00"
-_FIXTURE = (
-    Path(__file__).resolve().parents[3] / "tests/fixtures/rar/hostile_argv__rar4.rar"
-)
+_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(_ROOT))
+_FIXTURE = _ROOT / "tests/fixtures/rar/hostile_argv__rar4.rar"
 
 # Shift-JIS (cp932) names. A trail byte of 0x5c is the classic DBCS trap.
 _NAMES = {
@@ -46,46 +44,15 @@ _NAMES = {
 }
 
 
-def _parse(data: bytes) -> list[dict[str, object]]:
-    pos = len(_SIG)
-    blocks: list[dict[str, object]] = []
-    while pos + 7 <= len(data):
-        _crc, block_type, flags, size = struct.unpack_from("<HBHH", data, pos)
-        add = 0
-        if flags & 0x8000 or block_type == 0x74:
-            add = struct.unpack_from("<I", data, pos + 7)[0]
-        blocks.append(
-            {
-                "type": block_type,
-                "header": bytearray(data[pos : pos + size]),
-                "data": data[pos + size : pos + size + add],
-            }
-        )
-        pos += size + add
-    return blocks
-
-
 def _renamed(name: bytes, host: int | None) -> bytes:
-    blocks = _parse(_FIXTURE.read_bytes())
+    from tests.test_audit_rar_iso_dir import _rar3_build, _rar3_parse, _rar3_rename
+
+    blocks = _rar3_parse(_FIXTURE.read_bytes())
     block = next(b for b in blocks if b["type"] == 0x74)
-    header = block["header"]
-    assert isinstance(header, bytearray)
-    flags = struct.unpack_from("<H", header, 3)[0]
-    old_len = struct.unpack_from("<H", header, 26)[0]
-    offset = 32 + (8 if flags & 0x100 else 0)
-    header[offset : offset + old_len] = name
-    struct.pack_into("<H", header, 26, len(name))
-    struct.pack_into("<H", header, 3, flags & ~0x0200)
-    struct.pack_into("<H", header, 5, len(header))
+    _rar3_rename(block, name)
     if host is not None:
-        header[15] = host
-    out = bytearray(_SIG)
-    for b in blocks:
-        h = b["header"]
-        assert isinstance(h, bytearray)
-        struct.pack_into("<H", h, 0, zlib.crc32(bytes(h[2:])) & 0xFFFF)
-        out += h + b["data"]  # type: ignore[operator]
-    return bytes(out)
+        block["header"][15] = host
+    return _rar3_build(blocks)
 
 
 def _code_pages() -> dict[str, int | None]:

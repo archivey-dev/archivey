@@ -166,4 +166,4 @@ written on Windows):
 
 | Files | Notes |
 | --- | --- |
-| `winlinks_solid__.rar` | RAR5 `-s -m3 -ol`, written by WinRAR 7.23 on a GitHub Windows runner (`scripts/investigations/exploration/probe_rar_windows_links.py build`, workflow `rar-windows-links-probe.yml`). A relative and an absolute file symlink, a directory symlink and a junction between regular files; `zz_after.txt` added by a second `rar a`. The absolute targets name the runner's checkout |
+| `winlinks_solid__.rar` | RAR5 `-s -m3 -ol`, written by WinRAR 7.23 on a GitHub Windows runner (`scripts/investigations/exploration/probe_rar_windows_links.py build`, workflow `rar-windows-links-probe.yml`). A relative and an absolute file symlink between regular files, then a directory symlink and a junction, which `rar` stores last; `zz_after.txt`, added by a second `rar a`, still lands before them. The absolute targets name the runner's checkout |

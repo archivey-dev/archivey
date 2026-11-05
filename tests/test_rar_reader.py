@@ -726,7 +726,8 @@ def test_solid_symlink_demux_and_link_targets(
         assert spawns == ["file1.txt", None]
 
 
-# What ``probe_rar_windows_links.py`` wrote into the Windows-built fixtures below.
+# What ``probe_rar_windows_links.py`` wrote into the Windows-built fixture
+# ``winlinks_solid__.rar``.
 _WINLINKS_TEXT = {
     "a_first.txt": b"first " * 400,
     "sub/b_inside.txt": b"inside " * 300,
@@ -740,8 +741,8 @@ def test_solid_windows_link_and_junction_demux() -> None:
     """Windows symlinks and junctions take no bytes in a solid ``unrar p`` pass.
 
     Built on Windows by WinRAR 7.23 ``rar -ol`` (``probe_rar_windows_links.py``):
-    a relative and an absolute file symlink, a directory symlink and a junction
-    (redirect types 2 and 3), between regular files. Measured with ``unrar`` 7.23 on
+    a relative and an absolute file symlink between regular files, then a directory
+    symlink and a junction (redirect types 2 and 3). Measured with ``unrar`` 7.23 on
     Windows, Linux and macOS: each link prints nothing alone, and the whole pass
     prints exactly the regular files. ``rar`` stores directories, directory links and
     junctions after the files of a run, so in these archives only the file links have
