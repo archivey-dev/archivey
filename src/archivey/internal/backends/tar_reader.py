@@ -922,7 +922,12 @@ class TarReader(BaseArchiveReader):
             if directory is not None and end.offset == directory.data_offset:
                 assert last_member is not None
                 self._refuse_directory_blocks(last_member, directory)
-            self._emit_eof_marker("rejected_header", observed_bytes=BLOCKSIZE)
+            self._emit_eof_marker(
+                "rejected_header",
+                observed_bytes=BLOCKSIZE,
+                header_offset=end.offset,
+                reason=end.reason,
+            )
             return
         if (
             directory is not None
@@ -1197,7 +1202,14 @@ class TarReader(BaseArchiveReader):
             logger=backends_logger,
         )
 
-    def _emit_eof_marker(self, end: _EofFinding, *, observed_bytes: int) -> None:
+    def _emit_eof_marker(
+        self,
+        end: _EofFinding,
+        *,
+        observed_bytes: int,
+        header_offset: int | None = None,
+        reason: str | None = None,
+    ) -> None:
         """Report a missing or damaged two-zero-block end-of-archive marker.
 
         ``end`` says what was found where the marker belongs (see :data:`_EofFinding`).
@@ -1205,6 +1217,9 @@ class TarReader(BaseArchiveReader):
         the first means a header that does not parse ended the walk and shortened the
         listing, the second that a file with no member is a zero block and then junk,
         which must not open as an empty tar. The other three follow the policy.
+        For ``"rejected_header"``, ``header_offset`` and ``reason`` are where the
+        header sits and why the walker refused it; the message quotes both, as the
+        report on a bad first header does.
         ``"damaged_second_block"`` gets its own ``expected_marker``,
         ``"second_zero_block"``, so a caller can tell a whole listing from a
         shortened one by the context, not the message.
@@ -1227,6 +1242,9 @@ class TarReader(BaseArchiveReader):
                 "where the next header or the end-of-archive marker was expected, so "
                 "the members after it are not listed."
             )
+            if reason:
+                where = "" if header_offset is None else f" at offset {header_offset}"
+                message += f" The header{where} does not parse ({reason})."
             escalate_as = CorruptionError
         elif end == "no_member":
             message = (
