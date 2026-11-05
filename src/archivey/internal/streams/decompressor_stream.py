@@ -648,8 +648,8 @@ class SnapshotState(Protocol):
     A decoder records these anywhere in its output, not only where a unit begins, so
     two passes can offer them at different offsets (the :class:`DecodeOut` rule does
     not hold for them). The stream keeps them apart instead: one closer than
-    ``min_gap`` to a point it holds is dropped, and of two at one output offset the
-    first is kept. ``held_bytes`` is what the snapshot holds in memory, counted
+    ``min_gap`` to a point it holds is dropped, and one at an output offset the table
+    already has a point for yields to that point. ``held_bytes`` is what the snapshot holds in memory, counted
     against :data:`MAX_SNAPSHOT_BYTES`.
     """
 
@@ -1077,7 +1077,7 @@ class DecompressorStream(ReadOnlyIOStream):
         snapshots are thinned (:meth:`_thin_snapshots`).
 
         Same-``decompressed_offset`` collisions:
-        - Two snapshots: the first is kept.
+        - A snapshot and any other point: the one held is kept.
         - Origin (offset 0) may always be refined in place (unix-compress header commit),
           but never by an index point.
         - Where one side is an index point, the other a decoded one, with the same
@@ -1128,8 +1128,7 @@ class DecompressorStream(ReadOnlyIOStream):
                     continue
             if self._min_spacing and self._too_close(point, self._min_spacing):
                 continue
-            held = _held_bytes(point.state)
-            if held and self._too_close(
+            if _held_bytes(point.state) and self._too_close(
                 point, max(point.state.min_gap, self._snapshot_spacing)
             ):
                 continue
@@ -1312,8 +1311,9 @@ class DecompressorStream(ReadOnlyIOStream):
     def _resolve_same_offset_collision(self, index: int, point: SeekPoint) -> None:
         """Skip duplicates; allow forward refinement / richer-state merge; else error."""
         existing = self._seek_points[index]
-        if _held_bytes(existing.state) and _held_bytes(point.state):
-            # Two snapshots at one offset (SnapshotState): either resumes there.
+        if _held_bytes(existing.state) or _held_bytes(point.state):
+            # A snapshot (SnapshotState) at an offset the table already has a point
+            # for: the point held resumes there, whatever it is.
             return
         if _same_state(existing.state, point.state) and (
             existing.from_index or point.from_index
@@ -1350,7 +1350,8 @@ class DecompressorStream(ReadOnlyIOStream):
         # Two different resume states at one output offset (xz block records that the
         # backward index scan and a forward read's per-stream scan disagree on). Two
         # decode-discovered points cannot collide: by the rule on DecodeOut a pass never
-        # offers an earlier point than one already kept. Points without resume state
+        # offers an earlier point than one already kept, and snapshots, which that rule
+        # does not cover, were settled first. Points without resume state
         # where one is the index's were settled above, without a raise.
         raise CorruptionError(
             f"The {self._index_source()} and the data do not agree. Output offset "

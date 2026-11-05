@@ -25,7 +25,7 @@ from archivey.internal.streams.codecs.deflate_decoder import (
     SNAPSHOT_SPACING,
     ZlibSnapshot,
 )
-from archivey.internal.streams.decompressor_stream import DecompressorStream
+from archivey.internal.streams.decompressor_stream import DecompressorStream, SeekPoint
 
 
 @functools.cache
@@ -93,16 +93,51 @@ def test_without_declared_seeking_no_snapshot_is_taken() -> None:
         assert _snapshots(stream) == []
 
 
-def test_a_second_pass_adds_no_snapshot_beside_the_first_ones() -> None:
+def test_a_second_pass_adds_no_snapshot_beside_the_first_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fails with ``ZlibSnapshot.min_gap`` 0: the second pass resumes at the second
+    member's start, whose compressed offset is not a multiple of the read size, so its
+    feeds start elsewhere than the first pass's and its snapshots land beside theirs."""
     payload = _payload()
-    with _open(gzip.compress(payload, 6)) as stream:
-        stream.read()
+    cut = 3 << 20
+    first_member = gzip.compress(payload[:cut], 6)
+    assert len(first_member) % (64 << 10)
+    data = first_member + gzip.compress(payload[cut:], 6)
+    offered: list[int] = []
+    real_add = DecompressorStream.add_seek_points
+
+    def spy(self: DecompressorStream, points: list[SeekPoint]) -> None:
+        offered.extend(
+            p.decompressed_offset for p in points if isinstance(p.state, ZlibSnapshot)
+        )
+        real_add(self, points)
+
+    monkeypatch.setattr(DecompressorStream, "add_seek_points", spy)
+    with _open(data) as stream:
+        assert stream.read() == payload
         first = _snapshots(stream)
-        stream.seek(first[1] + 300_000)
-        assert stream.read() == payload[first[1] + 300_000 :]
+        offered.clear()
+        stream.seek(cut + 10)
+        assert stream.read() == payload[cut + 10 :]
         points = _snapshots(stream)
-        gap = SNAPSHOT_SPACING // 2
-        assert all(b - a >= gap for a, b in itertools.pairwise(points))
+    assert set(offered) - set(points), "the second pass dropped no snapshot"
+    assert set(first) <= set(points)
+    gap = SNAPSHOT_SPACING // 2
+    assert all(b - a >= gap for a, b in itertools.pairwise(points))
+
+
+def test_snapshots_keep_their_spacing_on_data_that_compresses_well() -> None:
+    """One 64 KiB read of zeros decodes to far more than a feed's 1 MiB of output, so
+    snapshots are taken on the feeds that go on with the input left over."""
+    payload = bytes(24 << 20)
+    with _open(gzip.compress(payload, 6)) as stream:
+        while stream.read(1 << 20):
+            pass
+        offsets = _snapshots(stream)
+        assert len(offsets) >= len(payload) // SNAPSHOT_SPACING - 1
+        stream.seek(20 << 20)
+        assert stream.read(1000) == bytes(1000)
 
 
 def test_snapshots_past_the_memory_cap_are_thinned(

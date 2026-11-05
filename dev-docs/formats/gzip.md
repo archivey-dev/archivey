@@ -163,9 +163,12 @@ boundary, so the window-and-bit-offset points `deflate_resume.py` builds from
 `rapidgzip`'s index cannot be found here; a copy needs none, because it holds the whole
 inflate state, mid-block included. It holds the running CRC-32 and length too, so a
 decode resumed from it still checks the member's trailer, which a `deflate_resume.py`
-point cannot. A copy is taken at the start of a feed with nothing left of the last one
-(`unconsumed_tail` empty), so its compressed offset is where that feed starts, and never
-before a member's first output, which is the member's own point. Each resume decodes from
+point cannot. A copy is taken at the start of a feed, never before a member's first
+output, which is the member's own point. It keeps `unconsumed_tail`, the input an earlier
+feed left undecoded under its output bound, so its compressed offset is where the feed's
+new input starts, after that tail; the tail counts toward the snapshot's memory. Taking
+copies on those feeds too keeps the spacing near 1 MiB on data that compresses better
+than about 16:1, where one 64 KiB read decodes to more than one feed's 1 MiB. Each resume decodes from
 a copy of the copy, so a point is never changed. A copy costs about 1 µs and 39 KiB; a
 seek then decodes about half a MiB on average, about 2 ms against about 50 ms from the
 start of a 64 MiB member, and a full read costs the same as without copies (measured on a

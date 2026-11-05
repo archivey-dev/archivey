@@ -53,8 +53,13 @@ class ZlibSnapshot:
     position, the Huffman tables, and the running CRC-32 and length, so a decode
     resumed from it still checks the member's trailer. ``decomp`` is never decoded
     from: each resume takes a copy of it (:meth:`resume`), so the point can be shared.
-    Its compressed offset is where the next feed starts, which takes the copy only
-    while ``unconsumed_tail`` is empty. A :class:`~decompressor_stream.SnapshotState`.
+    The copy is taken at the start of a feed and keeps ``unconsumed_tail``, the input
+    an earlier feed left undecoded, so its compressed offset is where that feed's new
+    input starts, past the tail: a resumed decoder prepends the tail to what it reads
+    from there, as the decoder it was copied from would have. Taking copies on those
+    continuation feeds too keeps the spacing near :data:`SNAPSHOT_SPACING` when one
+    read decodes to more than a feed's output. ``held_bytes`` counts the tail, which
+    the copy keeps alive. A :class:`~decompressor_stream.SnapshotState`.
     """
 
     decomp: Any
@@ -348,13 +353,16 @@ class GzipDecoder(_KeepsOutputBeforeErrors):
         else:
             tail = self._decomp.unconsumed_tail
             data = tail + chunk
-            if chunk and not tail and self._snapshot_due():
+            if data and self._snapshot_due():
                 self._last_snapshot = self._produced
                 points.append(
                     SeekPoint(
                         self._produced,
                         self._fed_end,
-                        ZlibSnapshot(self._decomp.copy()),
+                        ZlibSnapshot(
+                            self._decomp.copy(),
+                            held_bytes=SNAPSHOT_HELD_BYTES + len(tail),
+                        ),
                     )
                 )
         self._fed_end += len(chunk)
@@ -421,9 +429,8 @@ class GzipDecoder(_KeepsOutputBeforeErrors):
         return DecodeOut(b"".join(output), points)
 
     def _snapshot_due(self) -> bool:
-        """Whether a feed inside a member, with nothing left of an earlier feed, starts
-        with a snapshot seek point (:class:`ZlibSnapshot`): its compressed offset is
-        where the new input starts. Never before a member's first output, which is the
+        """Whether a feed inside a member starts with a snapshot seek point
+        (:class:`ZlibSnapshot`). Never before a member's first output, which is the
         member's own point."""
         return (
             self._snapshots
