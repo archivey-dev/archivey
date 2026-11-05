@@ -21,6 +21,8 @@ FILTERED = ("ci.yml",)
 # Doc paths a test reads, and the test that reads each one.
 TEST_READ = {
     "docs/api.md": "test_public_api",
+    "dev-docs/tar-minefield-results.md": "test_tar_minefield_corpus",
+    "LICENSE": "test_cli_companion_package",
     "review/problem-catalogue/**": "test_review_problem_catalogue",
 }
 

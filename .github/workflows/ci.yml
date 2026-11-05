@@ -16,10 +16,12 @@ on:
   pull_request:
     # A pull request that changes only documentation does not start this workflow; the
     # docs build and OpenSpec checks live in docs-checks.yml so they still run. A
-    # workflow-level filter costs nothing, where a classifier job would hold every code
-    # run in the runner queue until it finished. `**` first, then the documentation
-    # globs with `!`, then the two doc paths that tests read, re-included (later
-    # patterns win): docs/api.md (test_public_api) and review/problem-catalogue/
+    # workflow-level filter starts no run at all for a docs-only pull request, where the
+    # `scope` job below (which decides whether a code run needs the library legs) would
+    # still start one. `**` first, then the documentation globs with `!`, then the doc
+    # paths that tests read, re-included (later patterns win): docs/api.md
+    # (test_public_api), dev-docs/tar-minefield-results.md (test_tar_minefield_corpus),
+    # LICENSE (test_cli_companion_package) and review/problem-catalogue/
     # (test_review_problem_catalogue). Add a path there when a test starts reading
     # another doc file. scripts/tests/test_ci_doc_paths.py checks that the re-includes
     # come after every `!` entry, and that atheris-fuzz.yml (called in the merge queue)
@@ -32,8 +34,9 @@ on:
     # check from this one at all, and would wait on it forever.
     paths:
       - "**"
-      # Dotfiles listed explicitly in case `**` skips them: .github/ and
-      # .pre-commit-config.yaml changes must run the tests.
+      # Dotfiles listed explicitly in case `**` skips them: a .github/ or
+      # .pre-commit-config.yaml change starts this workflow, and the `scope` job decides
+      # whether it needs the library legs.
       - ".*"
       - ".*/**"
       - "!**.md"
@@ -42,6 +45,8 @@ on:
       - "!mkdocs.yml"
       - "!LICENSE"
       - docs/api.md
+      - dev-docs/tar-minefield-results.md
+      - LICENSE
       - review/problem-catalogue/**
   # The merge queue. Path filters do not apply to merge_group, so every queued group runs
   # the whole workflow, and the `CI gate` job below is the check the ruleset requires.
@@ -52,13 +57,15 @@ on:
   workflow_dispatch:
 
 # A pull request push runs a reduced set of jobs; the merge queue, the daily run and a
-# dispatched run get all of them, except that a merge group changing no library, library
-# test, dependency or CI path runs only the pull request set plus the free-threaded
-# 3.15t leg (the `scope` job). Every job below runs on pull requests unless it says
-# otherwise. On a pull request: lint (with the script tests), the `test` legs (Linux
-# 3.11 and 3.15 [all], Linux 3.11 core-only, Windows 3.15 [all]), free-threaded 3.13t,
-# the structural benchmark and the LZO check against liblzo2. Only past it: the
-# `test-queue` legs (the other Pythons, 3.15 core-only, the minimum versions, macOS,
+# dispatched run get all of them, except that a merge group whose diff misses every
+# `FULL` path in scripts/ci/ci_scope.py (the library, its tests and the files they read,
+# the dependencies, CI, and every script outside `NOT_FULL`) runs only the pull request
+# set plus the free-threaded 3.15t leg (the `scope` job). Every job below runs on pull
+# requests unless it says otherwise. On a pull request: lint (with the script tests),
+# the `test` legs (Linux 3.11 and 3.15 [all], Linux 3.11 core-only, Windows 3.15 [all]),
+# free-threaded 3.13t, the structural benchmark and the LZO check against liblzo2. A
+# pull request whose diff misses every `FULL` path runs lint alone, which runs the
+# script tests. Not on a pull request: the `test-queue` legs (the other Pythons, 3.15 core-only, the minimum versions, macOS,
 # Windows 3.11, the 3.16 prerelease), 3.15t, the distribution unar packages, PyPy and
 # the short Atheris fuzz.
 # A failure there takes the pull request out of the queue, except in the 3.16 prerelease
@@ -114,6 +121,8 @@ jobs:
 
   test:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
+    needs: scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
     runs-on: ${{ matrix.os }}
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
@@ -465,17 +474,21 @@ jobs:
           pytest tests/test_property_safety.py -q -n auto
           ${{ matrix.coverage && '--cov-report=term-missing' || '--no-cov' }}
 
-  # Whether a merge-queue run needs every job. A group that changes none of the paths in
+  # Whether a run needs the library's tests. A diff that changes none of the paths in
   # `scripts/ci/ci_scope.py` (the library, the plugin packages, the library tests, the
-  # dependencies, this CI, and every script outside the folders its NOT_FULL lists) runs
-  # what a pull request push runs, on the merged tree, and skips the four queue-only
-  # jobs that wait on this one: `test-queue`, `unar-distro-packages`, `pypy` and
-  # `atheris`. The daily run still runs them all. Only a merge_group runs it; a skipped
-  # or failed scope, and a diff the compare API cut off, mean the full run. The four jobs
-  # start after it in every group, a few seconds plus a runner wait.
+  # dependencies, this CI, and every script outside the folders its NOT_FULL lists)
+  # says `full=false`. On a pull request push that skips the library legs of the pull
+  # request set: `test`, `free-threaded-concurrency`, `benchmark` and `lzo-oracle`.
+  # Lint, which runs the script tests, still runs. In the merge queue those legs still
+  # run, on the merged tree, so a script-only pull request is tested once before it
+  # merges; `full=false` there skips the four queue-only jobs: `test-queue`,
+  # `unar-distro-packages`, `pypy` and `atheris`. The daily run and a dispatch skip this
+  # job and run everything. A skipped or failed scope, and a diff the compare API cut
+  # off, mean the full run. The jobs that wait on it start a few seconds plus a runner
+  # wait later.
   scope:
-    name: Queue scope
-    if: github.event_name == 'merge_group'
+    name: Scope
+    if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -492,8 +505,8 @@ jobs:
         id: scope
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE: ${{ github.event.merge_group.base_sha }}
-          HEAD: ${{ github.event.merge_group.head_sha }}
+          BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" > /tmp/compare.json
@@ -649,6 +662,8 @@ jobs:
   # as on 3.14t. 3.15t does not run on pull requests; 3.13t does.
   free-threaded-concurrency:
     name: free-threaded-concurrency / py${{ matrix.python }} / core + GIL-safe extras
+    needs: scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -812,6 +827,8 @@ jobs:
   # as a change-guarded scheduled job — see `.github/workflows/benchmark-wall.yml`.
   benchmark:
     name: Benchmark gate (structural)
+    needs: scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -847,6 +864,8 @@ jobs:
   # child process when it is installed but never depends on (GPL, no Linux wheels).
   lzo-oracle:
     name: LZO against liblzo2
+    needs: scope
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
