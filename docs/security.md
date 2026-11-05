@@ -133,9 +133,10 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
     machine and be refused on another. Without rapidgzip you get `CorruptionError`, and 7-Zip and
     unzip read the first stream and report a bad CRC. No known tool writes such a member. The second
     is a `.zz` file holding several zlib streams whose last checksum covers them all, opened with
-    `use_rapidgzip=ON`: reading it to the end returns every stream, where the standard library
-    returns the first and reports the rest as trailing data. Turn rapidgzip off if your code must
-    refuse these.
+    `use_rapidgzip=ON`: reading it to the end, or seeking there, returns every stream, where the
+    standard library returns the first and reports the rest as trailing data. Turn rapidgzip off
+    if your code must refuse the first shape or read only the first stream of the second (add
+    `DiagnosticPolicy.STRICT` to refuse the second).
 
     ??? note "Why not check for it?"
         rapidgzip doesn't say where a DEFLATE stream ends. Archivey checks the end of the data

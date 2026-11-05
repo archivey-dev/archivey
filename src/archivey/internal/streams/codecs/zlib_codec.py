@@ -164,7 +164,10 @@ class _ZlibAdlerCheckStream(DelegatingStream):
     goes on, one zlib stream after another, until it has as many bytes as rapidgzip
     delivered, and that output is accepted. Every decode must succeed and reproduce the
     delivered length and Adler-32; otherwise the read or seek that reached the end raises
-    :class:`_StreamChecksumError`. The second decode runs only on a mismatch.
+    :class:`_StreamChecksumError`. The second decode runs only on a mismatch, so a last
+    trailer that matches the Adler-32 of several streams (forged, or after empty ones)
+    is accepted, and every stream is content (an accepted difference, handbook
+    ``gzip.md`` §5).
 
     A third cause is a cut stream: rapidgzip reads a zlib stream cut inside its body
     as a shorter whole one, with no error, and can stop before output the standard
@@ -293,6 +296,10 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             return b""
         self._checked = True
         if self._trailer == self._sum.value:
+            # Trusted knowing it may cover several zlib streams: rapidgzip delivers
+            # them all, so a last trailer matching all of them (forged, or after empty
+            # streams) makes every stream content, for a read or a seek to the end. An
+            # accepted difference: telling it apart costs a second decode (gzip.md §5).
             return b""
         try:
             self._confirm_with_stdlib()

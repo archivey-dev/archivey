@@ -1250,13 +1250,22 @@ _MATCHING_TRAILER_STREAMS = [
 
 @requires("rapidgzip")
 @pytest.mark.parametrize("blob", _MATCHING_TRAILER_STREAMS)
-def test_a_seek_to_the_end_stops_at_the_first_zlib_stream(blob: bytes) -> None:
-    """A seek to the end confirms with the standard library, which ends the stream at
-    the end of the first one, whatever the trailer says."""
+def test_a_seek_to_the_end_lands_past_every_zlib_stream_whose_trailer_matches(
+    blob: bytes,
+) -> None:
+    """The same accepted difference as the read below (handbook gzip.md §5): a seek to
+    the end takes the trailer match too, so it lands past every stream, where the
+    standard library stops at the end of the first, and a read from 0 after it returns
+    every stream."""
     _require_the_accelerator_in_use()
-    off = _outcome(Codec.ZLIB, blob, _OFF, _seek_to_the_end)
-    assert off[1] is None
-    _assert_same(_outcome(Codec.ZLIB, blob, _ON, _seek_to_the_end), off)
+    every = _outcome(Codec.ZLIB, blob, _ON, _no_seek)[0]
+    first = _outcome(Codec.ZLIB, blob, _OFF, _no_seek)[0]
+    for mode, content in ((_OFF, first), (_ON, every)):
+        with open_codec_stream(Codec.ZLIB, io.BytesIO(blob), config=_config(mode)) as s:
+            assert s.seek(0, io.SEEK_END) == len(content)
+            s.seek(0)
+            assert s.read() == content
+    assert len(every) > len(first)
 
 
 @requires("rapidgzip")
