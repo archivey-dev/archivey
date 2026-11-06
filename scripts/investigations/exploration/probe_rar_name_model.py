@@ -195,6 +195,24 @@ def _code_pages() -> dict[str, int | None]:
     return {"oem": k.GetOEMCP(), "ansi": k.GetACP()}
 
 
+def _code_page_mismatch(pages: dict[str, int | None]) -> bool:
+    """True when ``ARCHIVEY_PROBE_CODE_PAGE`` names a page the OEM or ANSI page is not.
+
+    The cp932 container job sets it, so a container left on its default code pages
+    fails instead of passing as the runner's control. ``chcp`` is the console page
+    and says nothing about ``GetOEMCP``.
+    """
+    import os
+
+    want = os.environ.get("ARCHIVEY_PROBE_CODE_PAGE")
+    if not want:
+        return False
+    if pages["oem"] != int(want) or pages["ansi"] != int(want):
+        print(f"CODE PAGE MISMATCH: want {want}, got {pages}")
+        return True
+    return False
+
+
 def main() -> int:
     from archivey.internal.backends.rar_reader import RarReader
     from archivey.internal.backends.rar_unrar import (
@@ -261,6 +279,9 @@ def main() -> int:
                 **reads,
             }
     print(json.dumps(report, indent=1))
+    pages = report["code_pages"]
+    assert isinstance(pages, dict)
+    bad += _code_page_mismatch(pages)
     print(f"RESULT: {bad} difference(s)")
     return 1 if bad else 0
 

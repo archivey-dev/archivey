@@ -116,5 +116,6 @@ jobs:
             -v "$env:RUNNER_TEMP\rarlab-unrar:C:\unrar" `
             -v "${env:GITHUB_WORKSPACE}:C:\src" `
             -e PYTHONPATH=C:\deps `
+            -e ARCHIVEY_PROBE_CODE_PAGE=932 `
             archivey-cp932 `
-            cmd /c "set PATH=C:\unrar;C:\py;%PATH% && chcp && python C:\src\scripts\investigations\exploration\probe_rar_oem_dbcs.py && python C:\src\scripts\investigations\exploration\probe_rar_name_model.py"
+            cmd /c "set PATH=C:\unrar;C:\py;%PATH% && python C:\src\scripts\investigations\exploration\probe_rar_oem_dbcs.py && python C:\src\scripts\investigations\exploration\probe_rar_name_model.py"
