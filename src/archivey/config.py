@@ -867,19 +867,6 @@ class ArchiveyConfig:
     spool_limits: SpoolLimits = SpoolLimits()
     """Caps on what a reader writes to temporary storage. See :class:`SpoolLimits`."""
 
-    max_read_through: int = 2**20
-    """The longest forward gap, in bytes, that reading a remote archive reads through
-    rather than starting a new request.
-
-    Applies only to an ``fsspec.core.OpenFile`` source, which archivey reads by range
-    requests. When a read lands at most this many bytes past the end of the last fetch,
-    archivey fetches the gap too and keeps the run of reads sequential: a TAR listing
-    then hops over small members' data in a few large requests instead of one request
-    per header. A longer gap starts a new request. The default, 1 MiB, sits just under
-    the break-even of one request against its bytes on a typical object store (about
-    30 ms at 50 MB/s). ``0`` fetches only the bytes a read needs.
-    """
-
     detection_budget: DetectionBudget = BALANCED_BUDGET
     """Upper bounds on what format detection may read and decode.
 
@@ -946,6 +933,19 @@ class ArchiveyConfig:
     """Which formats this call may open. See :class:`~archivey.FormatPolicy`.
 
     The default allows every format archivey reads and every registered plugin format.
+    """
+
+    max_read_through: int = 2**20
+    """The longest forward gap, in bytes, that reading a remote archive reads through
+    rather than starting a new request.
+
+    Applies only to an ``fsspec.core.OpenFile`` source, which archivey reads by range
+    requests. When a read lands at most this many bytes past the end of the last fetch,
+    archivey fetches the gap too and keeps the run of reads sequential: a TAR listing
+    then hops over small members' data in a few large requests instead of one request
+    per header. A longer gap starts a new request. The default, 1 MiB, sits just under
+    the break-even of one request against its bytes on a typical object store (about
+    30 ms at 50 MB/s). ``0`` fetches only the bytes a read needs.
     """
 
     def __post_init__(self) -> None:

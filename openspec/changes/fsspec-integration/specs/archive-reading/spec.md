@@ -114,12 +114,12 @@ class ArchiveyConfig:
     listing_limits: ListingLimits = ListingLimits()
     decoder_limits: DecoderLimits = DecoderLimits()
     spool_limits: SpoolLimits = SpoolLimits()
-    max_read_through: int = 2**20
     detection_budget: DetectionBudget = BALANCED_BUDGET
     always_probe_content: bool = False
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
     on_diagnostic: Callable[[Diagnostic], None] | None = None
+    max_read_through: int = 2**20
 ```
 
 `max_retained_diagnostic_references` SHALL be non-negative. `max_read_through` is the
