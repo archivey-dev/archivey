@@ -30,7 +30,7 @@ RAR_HEAD = b"Rar!\x1a\x07\x01\x00"
 
 
 class CountingMemoryFS(MemoryFileSystem):
-    """A memory file system of its own that counts ``ls`` calls."""
+    """A memory file system of its own that counts ``ls`` and ``info`` calls."""
 
     cachable = False
 
@@ -39,10 +39,15 @@ class CountingMemoryFS(MemoryFileSystem):
         self.store: dict[str, Any] = {}
         self.pseudo_dirs = [""]
         self.listings = 0
+        self.infos = 0
 
     def ls(self, path: str, detail: bool = True, **kwargs: Any) -> Any:
         self.listings += 1
         return super().ls(path, detail=detail, **kwargs)
+
+    def info(self, path: str, **kwargs: Any) -> Any:
+        self.infos += 1
+        return super().info(path, **kwargs)
 
 
 @pytest.fixture
@@ -69,8 +74,12 @@ def test_a_numbered_set_opens_as_one_reader_from_one_listing(
         fs.pipe(f"/d/x.zip.{index:03d}", part)
     fs.pipe("/d/unrelated.txt", b"x")
     listings_before = fs.listings
+    infos_before = fs.infos
     with open_archive(OpenFile(fs, "/d/x.zip.001", mode="rb")) as reader:
         assert fs.listings - listings_before == 1
+        # Each part's size comes from the listing: no part costs a request of its
+        # own before its bytes are read.
+        assert fs.infos == infos_before
         assert reader.info.extra["zip.volume_count"] == 3
         assert {m.name: reader.read(m) for m in reader.members() if m.is_file} == (
             members

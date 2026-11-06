@@ -491,6 +491,13 @@ class RemoteVolumePath:
     def head(self, n: int) -> bytes:
         return cast(bytes, self.fs.cat_file(self.path, 0, n))
 
+    def listed_size(self) -> int | None:
+        """The size the listing gave, so opening the volume needs no ``info``
+        request; ``None`` when the listing has no whole-number size."""
+        info = self._info()
+        size = None if info is None else info.get("size")
+        return size if isinstance(size, int) and size >= 0 else None
+
 
 # What volume discovery runs on: a local path, or one on an ``fsspec`` file system. The
 # naming rules are the same for both, so a remote set is found as a local one is; a
@@ -605,8 +612,9 @@ def _collect_old_rar_volumes(parent: _VP, base: str) -> list[_VP] | None:
 def _siblings_with_base(parent: _VP, pattern: re.Pattern[str], base: str) -> list[_VP]:
     """The files in ``parent`` that ``pattern`` reads with ``base``, case-folded.
 
-    The name tests run before ``is_file``, so a large directory costs a ``stat`` per
-    matching name, not one per entry.
+    The name tests run before ``is_file``, so a large local directory costs a
+    ``stat`` per matching name, not one per entry. A ``RemoteVolumePath`` answers
+    every question from one cached listing of ``parent``.
     """
     folded = base.lower()
     return [
@@ -678,7 +686,10 @@ def _discover_volume_siblings(path: _VP) -> list[_VP] | None:
         # matches the extension's case but spells the base as the stub does, so
         # ``archive.exe`` beside ``ARCHIVE.R00`` is not an entry point (the set is
         # still found from ``ARCHIVE.R00``). Closing that would cost an ``iterdir``
-        # on every ``.exe`` / ``.sfx`` open.
+        # on every local ``.exe`` / ``.sfx`` open. These costs are a local path's:
+        # on a ``RemoteVolumePath`` the first ``is_file`` lists the parent once, so
+        # every remote ``.rar``, ``.exe`` or ``.sfx`` open pays one listing, which
+        # ``discover_volumes=False`` skips.
         if not lower.endswith(".rar") and not any(
             (parent / f"{path.stem}.{letter}00").is_file() for letter in ("r", "R")
         ):
@@ -1479,14 +1490,22 @@ class _RangeSources:
     stream part, so the source over it closes these (:meth:`close_all`).
     """
 
-    def __init__(self, max_read_through: int) -> None:
+    def __init__(
+        self, max_read_through: int, sizes: dict[str, int] | None = None
+    ) -> None:
         self._pool = WindowPool()
         self._max_read_through = max_read_through
+        # Sizes discovery read from a listing, by path, so no part costs a size
+        # request of its own.
+        self._sizes = sizes or {}
         self.opened: list[RangeSource] = []
 
     def open(self, of: object) -> RangeSource:
         ranged = RangeSource.from_open_file(
-            of, pool=self._pool, max_read_through=self._max_read_through
+            of,
+            pool=self._pool,
+            max_read_through=self._max_read_through,
+            size=self._sizes.get(cast("OpenFile", of).path),
         )
         self.opened.append(ranged)
         return ranged
@@ -1538,9 +1557,11 @@ def resolve_source(
 
 
 def _resolve_volume_list(
-    raw_items: Sequence[object], max_read_through: int
+    raw_items: Sequence[object],
+    max_read_through: int,
+    sizes: dict[str, int] | None = None,
 ) -> ResolvedSource:
-    ranges = _RangeSources(max_read_through)
+    ranges = _RangeSources(max_read_through, sizes)
     try:
         items = [_coerce_path_or_stream(item, ranges) for item in raw_items]
         paths = [item for item in items if isinstance(item, Path)]
@@ -1574,21 +1595,29 @@ def _resolve_volume_list(
     return ResolvedSource(archive_source, name, len(items))
 
 
-def _remote_volume_siblings(source: OpenFile) -> list[OpenFile] | None:
+def _remote_volume_siblings(
+    source: OpenFile,
+) -> tuple[list[OpenFile], dict[str, int]] | None:
     """The volume set an ``OpenFile`` belongs to, found as a local one is, from one
-    ``ls`` of its directory (:class:`RemoteVolumePath`); ``None`` when it is not part
-    of one. The named file keeps its own ``OpenFile``; each sibling gets one on the
-    same file system."""
+    ``ls`` of its directory (:class:`RemoteVolumePath`), and each part's size from
+    that listing; ``None`` when it is not part of one. The named file keeps its own
+    ``OpenFile``; each sibling gets one on the same file system."""
     named = RemoteVolumePath(source.fs, source.path, {})
     siblings = discover_volume_siblings(named)
     if siblings is None:
         return None
-    return [
+    files = [
         source
         if sibling == named
         else type(source)(source.fs, sibling.path, mode=source.mode)
         for sibling in siblings
     ]
+    sizes = {
+        sibling.path: size
+        for sibling in siblings
+        if (size := sibling.listed_size()) is not None
+    }
+    return files, sizes
 
 
 def _resolve_single(
@@ -1601,7 +1630,8 @@ def _resolve_single(
             else None
         )
         if siblings is not None:
-            return _resolve_volume_list(siblings, max_read_through)
+            files, sizes = siblings
+            return _resolve_volume_list(files, max_read_through, sizes)
         ranged = RangeSource.from_open_file(
             source, pool=WindowPool(), max_read_through=max_read_through
         )
