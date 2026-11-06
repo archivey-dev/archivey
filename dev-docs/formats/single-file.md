@@ -44,7 +44,8 @@ out on purpose ([`gzip.md`](gzip.md) §6). Bytes after the last stream are neith
 nor ignored: the payload reads in full and the bytes are reported as
 `ARCHIVE_TRAILING_DATA`, although `xz` and `zstd` refuse such a file (§2.3, §3). A
 backward seek decodes again from the start of the stream unless the codec has resume
-points in front of the target, and most have none (§2.3). And the gzip header's stored
+points in front of the target. Most formats record none; on declared seek demand, gzip,
+zlib and raw DEFLATE get a zlib snapshot about every MiB a read passes (§2.3). And the gzip header's stored
 filename is reported, never used: the member's name comes from the name of the file
 archivey was given (§2.2).
 
@@ -84,7 +85,9 @@ last member's size, which is why archivey never reports it as the file's size.
 **Decoding runs forward, and random access needs points to resume from.** A decoder
 reaches offset N by decoding everything before it, unless the stream has places where
 decoding can restart: xz blocks and streams, lzip members, `.Z` CLEAR codes, and the
-index `rapidgzip` builds as it reads gzip or bzip2. Where there are none, and for most
+index `rapidgzip` builds as it reads gzip or bzip2. For DEFLATE (gzip, zlib, raw), the
+standard library engine also keeps its own on declared seek demand: a copy of zlib's
+decoder state about every MiB a read passes ([`gzip.md`](gzip.md) §2.3). Where there are none, and for most
 files there are none (default `xz` writes one block, `lzip` one member, and `plzip` one member for a small file), a backward seek
 decodes again from byte zero. The decode engine (§2.3) keeps the points it finds and
 reports a backward seek that costs more than a megabyte.
@@ -232,7 +235,9 @@ of the file, without decoding (`build_index_backwards`), when a caller seeks to 
 asks the size. A seek bisects to the nearest point before the target, rebuilds the decoder
 there and decodes forward, discarding output in 64 KiB steps. The table is capped at
 2¹⁸ points (`MAX_SEEK_POINTS`): past that it is thinned to an evenly spaced half, which
-costs seeks some extra decoding and emits `SEEK_INDEX_DEGRADED`. A codec with no points
+costs seeks some extra decoding and emits `SEEK_INDEX_DEGRADED`. zlib snapshot points,
+about 40 KiB each, have a cap of their own, 32 MiB a stream (`MAX_SNAPSHOT_BYTES`), past
+which only they are thinned, silently. A codec with no points
 starts every backward seek from byte zero. Library-backed codecs seek the same way inside
 the library, from the start.
 
