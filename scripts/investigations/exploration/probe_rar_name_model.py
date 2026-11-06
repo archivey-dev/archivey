@@ -100,7 +100,12 @@ def _build_rar3(path: Path, names: list[tuple[bytes, int]]) -> Path:
 
 def _compare(
     archive: Path, views: list[str | None], masks: list[str | bytes]
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], dict[str, list[int]]]:
+    """Return the mismatching masks and, for every mask, the members it left unknown.
+
+    A mask whose every member is unknown compared nothing; it is reported as a
+    mismatch, so a probe where the comparison fails open does not pass.
+    """
     from archivey.internal.backends.rar_unrar import (
         UnrarSelectionUnknown,
         unrar_dot_rule,
@@ -112,6 +117,7 @@ def _compare(
 
     dot_rule = unrar_dot_rule()
     rows = []
+    unknowns: dict[str, list[int]] = {}
     for mask in dict.fromkeys(masks):
         if isinstance(mask, str) and any("\ud800" <= c <= "\udfff" for c in mask):
             continue
@@ -130,6 +136,13 @@ def _compare(
                 # unrar's answer depends on memory past the name; reported, not
                 # compared, and the reader refuses such a read.
                 unknown.append(index)
+        label = mask.hex(" ") if isinstance(mask, bytes) else mask
+        if unknown:
+            unknowns[label] = unknown
+        known = sum(view is not None for view in views)
+        if known and len(unknown) == known:
+            rows.append({"mask": label, "model": "every member unknown"})
+            continue
         try:
             actual: object = _unrar_selects(archive, mask, len(views))
         except AssertionError as exc:
@@ -139,13 +152,13 @@ def _compare(
         if actual != expected:
             rows.append(
                 {
-                    "mask": mask.hex(" ") if isinstance(mask, bytes) else mask,
+                    "mask": label,
                     "model": expected,
                     "unrar": actual,
                     "unknown": unknown,
                 }
             )
-    return rows
+    return rows, unknowns
 
 
 def _read_all(archive: Path) -> dict[str, list[object]]:
@@ -237,13 +250,14 @@ def main() -> int:
                 if argument:
                     masks.append(argument)
             masks += globs
-            mismatches = _compare(archive, views, masks)
+            mismatches, unknowns = _compare(archive, views, masks)
             reads = _read_all(archive)
             bad += len(mismatches) + len(reads["wrong"])
             archives[label] = {
                 "views": views,
                 "masks_compared": len(dict.fromkeys(masks)),
                 "mismatches": mismatches,
+                "unknown": unknowns,
                 **reads,
             }
     print(json.dumps(report, indent=1))

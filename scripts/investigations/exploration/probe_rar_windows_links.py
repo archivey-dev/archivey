@@ -76,6 +76,8 @@ def _build(rar: str, out: Path) -> None:
         "sub",
         "z_last.txt",
     ]
+    # ``-m3``, not ``-m0``: ``rar -s -m0`` writes a nonsolid archive, so a stored
+    # variant would not measure a solid pipe. ``check`` asserts the flag.
     variants = {
         "winlinks_solid__.rar": ["-ma5", "-s", "-m3", "-ol"],
         "winlinks_nonsolid__.rar": ["-ma5", "-m3", "-ol"],
@@ -122,6 +124,10 @@ def _check(archives: list[Path]) -> int:
         rows = []
         counted = 0
         with open_archive(archive, config=config) as reader:
+            solid = reader.info.is_solid
+            if ("nonsolid" not in archive.name) != solid:
+                failures += 1
+                print(f"MISMATCH {archive.name}: is_solid is {solid}")
             members = reader.members()
             for m in members:
                 raw = m._raw
@@ -185,6 +191,7 @@ def _check(archives: list[Path]) -> int:
         report.append(
             {
                 "archive": archive.name,
+                "is_solid": solid,
                 "unrar_p_total": len(whole),
                 "archivey_counted": counted,
                 "stream_error": stream_error,
