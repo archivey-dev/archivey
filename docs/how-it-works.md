@@ -67,8 +67,9 @@ Compressed data can't be read starting from the middle, so a seek inside a membe
 routes. Without help, archivey decompresses the member again from its start, or from where it
 already is if the target is ahead. Some formats record where they can be restarted: xz keeps an
 index of its blocks, so a seek starts decoding at the nearest block before the target. DEFLATE data,
-such as gzip files and most ZIP members, gets restart points too once you declare seeking: archivey
-marks one about every MiB it reads, and later seeks resume from the nearest one. For bzip2 data, and
+such as gzip files and most ZIP members, gets restart points too when you open it with
+`seekable_members=True`: archivey marks one about every MiB it reads, and later seeks resume from
+the nearest one. For bzip2 data, and
 large DEFLATE data, the `seekable` extra adds an accelerator that marks restart points as it reads.
 [Seeking inside a member](reading.md#seeking-inside-a-member) says what decoding again from the
 start and the accelerator mean for the checksum.
