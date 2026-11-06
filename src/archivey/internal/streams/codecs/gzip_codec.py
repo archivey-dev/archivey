@@ -929,8 +929,8 @@ class GzipCodec(_DeflateFamilyCodec):
         # Stdlib path: gzip-window DecompressorStream (not gzip.GzipFile). CRC/ISIZE
         # outcomes come from zlib's gzip window; members with nothing between them
         # chain, and NULs end the data as in GNU gzip (GzipDecoder). With declared seek
-        # demand, a backward seek resumes at the nearest member or BGZF block start.
-        # Otherwise it decodes again from the start, and warns once the discarded
+        # demand, a backward seek resumes at the nearest member or BGZF block start, or
+        # zlib snapshot. Otherwise it decodes again from the start, and warns once the discarded
         # progress reaches REWIND_REDECODE_WARN_BYTES.
         return _stdlib_gzip(source, config)
 
