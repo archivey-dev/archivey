@@ -50,6 +50,7 @@ import io
 import struct
 import zlib
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import BinaryIO, NoReturn
 
@@ -92,11 +93,13 @@ from archivey.internal.backends.zip_parser import (
 )
 from archivey.internal.overrides import override
 from archivey.internal.sfx import (
+    PE_LAYOUT_PREFIX,
     SFX_MAX,
     VALIDATOR_PEEK_MAX,
     HitOutcome,
     cut_signature_error,
     is_cut_signature,
+    pe_layout,
 )
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import read_exact
@@ -1190,23 +1193,36 @@ class LocalHeaderWalk:
         the window bounds the work, and the validator reads only the header.
         """
         window = bytearray()
+
+        def peek_at(pos: int) -> Callable[[int], bytes]:
+            def peek_more(n: int) -> bytes:
+                while (
+                    len(window) < pos + n and len(window) < SFX_MAX + VALIDATOR_PEEK_MAX
+                ):
+                    more = self.source.read(_READ_CHUNK)
+                    if not more:
+                        break
+                    window.extend(more)
+                return bytes(window[pos : pos + n])
+
+            return peek_more
+
+        # A PE's overlay start first, as detection and the RAR and 7z scans judge it:
+        # a decoy header in the program's own sections never competes with the payload.
+        layout = pe_layout(peek_at(0)(PE_LAYOUT_PREFIX), None)
+        if layout is not None and layout.overlay_start + 4 <= SFX_MAX:
+            first = peek_at(layout.overlay_start)
+            if (
+                first(len(LOCAL_HEADER_SIGNATURE)) == LOCAL_HEADER_SIGNATURE
+                and validate_zip_local_header(first, None) is HitOutcome.VALID
+            ):
+                self.source.unread(window[layout.overlay_start :])
+                return None
         searched = 0
         while True:
             pos = window.find(LOCAL_HEADER_SIGNATURE, searched, SFX_MAX)
             if pos >= 0:
-
-                def peek_more(n: int, _pos: int = pos) -> bytes:
-                    while (
-                        len(window) < _pos + n
-                        and len(window) < SFX_MAX + VALIDATOR_PEEK_MAX
-                    ):
-                        more = self.source.read(_READ_CHUNK)
-                        if not more:
-                            break
-                        window.extend(more)
-                    return bytes(window[_pos : _pos + n])
-
-                if validate_zip_local_header(peek_more, None) is HitOutcome.VALID:
+                if validate_zip_local_header(peek_at(pos), None) is HitOutcome.VALID:
                     self.source.unread(window[pos:])
                     return None
                 searched = pos + 1

@@ -135,11 +135,11 @@ from archivey.internal.sfx import (
     HitOutcome,
     HitSelector,
     HitValidator,
+    PeLayout,
     ScanNeedle,
     executable_cue,
     iter_magic_in_prefix,
     pe_layout,
-    pe_payload_end,
 )
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs.brotli_framing import (
@@ -1059,7 +1059,14 @@ def _scan_for_sfx_payload(
     # The window bounds where a magic may start, not how far its validator reads: a
     # candidate inside it is judged on its whole header, as far as the budget allows.
     view_limit = scan_limit + peek_allowance
-    payload_end = pe_payload_end(leading, workspace.remaining_known())
+    layout = pe_layout(leading, workspace.remaining_known())
+    payload_end = None if layout is None else layout.payload_end
+    if layout is not None:
+        first = _judge_overlay_start(
+            layout, entries, by_needle, formats, workspace, scan_limit, view_limit
+        )
+        if first is not None:
+            return first
     for hit in iter_magic_in_prefix(
         peek_more, needles, limit=scan_limit, dropped=dropped
     ):
@@ -1184,6 +1191,59 @@ def _probe_pe_tail(
         prefixed=True,
         payload_end=layout.payload_end,
     )
+
+
+def _judge_overlay_start(
+    layout: PeLayout,
+    entries: list[MagicSignature],
+    by_needle: dict[bytes, tuple[int, HitValidator | None]],
+    formats: list[ArchiveFormat],
+    workspace: PrefixWorkspace,
+    scan_limit: int,
+    view_limit: int,
+) -> FormatInfo | None:
+    """The SFX answer at a PE's overlay start, judged before the forward scan.
+
+    The overlay start is where the PE format itself says appended data begins, so it
+    is stronger evidence than "earliest needle" and than the 7z exact-end tie-break.
+    A candidate there that its validator grades ``VALID`` or ``VALID_SHORT`` is the
+    answer (a signed 7z SFX ends before its certificate, so ``VALID_SHORT`` is the
+    common case); anything else leaves the scan to run as it does for any stub. The
+    RAR and 7z parsers' scans and the forward ZIP walk apply the same rule, so forced
+    ``format=`` opens the same payload.
+    """
+    origin = layout.overlay_start
+    if layout.payload_end is not None and origin >= layout.payload_end:
+        return None
+    for entry in entries:
+        start = origin + entry.offset
+        if start + len(entry.magic) > scan_limit:
+            continue
+        view = workspace.candidate_view(origin, limit=view_limit)
+        if view(entry.offset + len(entry.magic))[entry.offset :] != entry.magic:
+            continue
+        key, validator = by_needle[entry.magic]
+        outcome = HitOutcome.VALID
+        if validator is not None:
+            source_len = workspace.remaining_known()
+            remaining = None if source_len is None else max(0, source_len - origin)
+            outcome = validator(
+                workspace.candidate_view(origin, limit=view_limit), remaining
+            )
+        if outcome not in (HitOutcome.VALID, HitOutcome.VALID_SHORT):
+            continue
+        # The window examined is the bytes up to the candidate's magic.
+        workspace.charge_scanned(start + len(entry.magic))
+        workspace.take_clamped_view_read()
+        return FormatInfo(
+            formats[key],
+            DetectionConfidence.PROBABLE,
+            "sfx_scan",
+            payload_offset=origin,
+            prefixed=True,
+            payload_end=layout.payload_end,
+        )
+    return None
 
 
 def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:

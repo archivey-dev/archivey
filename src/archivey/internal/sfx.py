@@ -552,6 +552,25 @@ def read_payload_end(handle: BinaryIO, total_size: int | None) -> int | None:
     return pe_payload_end(head, total_size)
 
 
+def overlay_start_of(source: BinaryIO) -> int | None:
+    """The PE overlay start of the seekable ``source`` from its current position, or
+    ``None``; the position is restored.
+
+    For the RAR and 7z parsers' scans, which judge the candidate there first, as
+    detection does (``format-detection``, *Overlay start first*). One read of the
+    bytes the scan reads anyway.
+    """
+    position = source.tell()
+    try:
+        head = source.read(PE_LAYOUT_PREFIX)
+    finally:
+        source.seek(position)
+    total = source_byte_size(source)
+    remaining = None if total is None else total - position
+    layout = pe_layout(head, remaining)
+    return None if layout is None else layout.overlay_start
+
+
 def _is_elf(prefix: bytes) -> bool:
     """Whether an ``\\x7fELF`` prefix carries a valid identification block.
 
@@ -767,8 +786,15 @@ def scan_for_magic(
     *,
     limit: int = SFX_MAX,
     validator: HitValidator | None = None,
+    first_at: int | None = None,
 ) -> MagicScan:
     """The earliest ``needles`` match within ``limit`` bytes, as a :class:`MagicScan`.
+
+    ``first_at`` is a candidate origin to judge before anything else: a PE's overlay
+    start (:attr:`PeLayout.overlay_start`), where the format itself says appended data
+    begins. A ``VALID`` or ``VALID_SHORT`` hit there is the answer, ahead of every
+    other needle in the window; anything else there leaves the scan below unchanged.
+    It needs a ``validator``.
 
     The scan starts at ``source``'s **current position** and the returned candidate
     origin is relative to it. A needle counts as found only when it lies wholly inside
@@ -854,6 +880,19 @@ def scan_for_magic(
 
     def finish() -> MagicScan:
         return MagicScan(*selector.result(), selector.rejected)
+
+    if first_at is not None and validator is not None and first_at >= 0:
+        for needle in normalized:
+            if first_at + len(needle.magic) > limit:
+                continue
+            if peek_more(len(needle.magic), origin=first_at) != needle.magic:
+                continue
+            outcome = validator(
+                bind_view(first_at), _remaining_from_origin(scan_start, first_at, total)
+            )
+            if outcome in (HitOutcome.VALID, HitOutcome.VALID_SHORT):
+                return MagicScan(MagicHit(first_at, needle.magic, 0), None, 0)
+            break
 
     while consumed < limit:
         chunk = source.read(min(_SCAN_CHUNK, limit - consumed))
