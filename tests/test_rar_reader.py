@@ -1449,10 +1449,6 @@ def test_multi_volume_compressed_roundtrip() -> None:
         assert archive.read("payload.bin") == _M3_PAYLOAD
 
 
-def _single_stream_copy_note_present(notes: tuple[str, ...]) -> bool:
-    return any("will copy the whole archive to disk" in note for note in notes)
-
-
 def _stream_volumes_copy_note_present(notes: tuple[str, ...]) -> bool:
     return any("will copy every volume to a temp directory" in note for note in notes)
 
@@ -1487,7 +1483,7 @@ def test_stream_compressed_read_keeps_open_time_cost_note() -> None:
     blob = _fixture("basic_solid__.rar").read_bytes()
     with open_archive(io.BytesIO(blob)) as archive:
         held = archive.cost
-        assert _single_stream_copy_note_present(held.notes)
+        assert any("packed bytes of its solid stream" in note for note in held.notes)
         archive.read("file1.txt")
         assert archive.cost == held
 

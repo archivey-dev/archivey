@@ -371,8 +371,10 @@ def _only_note(source: object, max_bytes: int | None) -> str:
 
 def test_cost_note_names_the_limit() -> None:
     blob = _SOLID.read_bytes()
+    # A solid archive: a read copies its solid stream up to the member.
     note = _only_note(io.BytesIO(blob), len(blob))
-    assert "will copy the whole archive to disk" in note
+    assert "will copy the packed bytes of its solid stream" in note
+    assert "copies whole solid streams a few at a time" in note
     assert f"SpoolLimits.max_bytes={len(blob)}" in note
     # A nonsolid set: unrar reads each member from a copy of that member alone.
     note = _only_note(_volume_streams(), _volume_total())
@@ -402,9 +404,9 @@ def test_cost_note_names_the_limit() -> None:
         ),
         pytest.param(
             lambda: io.BytesIO(_SOLID.read_bytes()),
-            _SOLID.stat().st_size - 1,
-            f"a copy of the archive would be {_SOLID.stat().st_size} bytes",
-            id="stream-over",
+            0,
+            "max_bytes=0 allows no copy of a solid stream",
+            id="solid-zero",
         ),
         pytest.param(
             _volume_streams,
@@ -427,7 +429,7 @@ def test_cost_note_says_refused_when_the_limit_decides_at_open(
 def test_cost_note_for_an_unknown_size_names_the_limit() -> None:
     blob = _SOLID.read_bytes()
     note = _only_note(_UnsizedStream(blob), len(blob) - 1)
-    assert "will copy the whole archive to disk" in note
+    assert "will copy the packed bytes of its solid stream" in note
     assert f"SpoolLimits.max_bytes={len(blob) - 1}" in note
 
 

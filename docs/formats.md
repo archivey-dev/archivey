@@ -799,10 +799,17 @@ On a compressed tar, the stream's own checksum adds three cases:
   that each go further in while every earlier one is still open copy the stream's start each
   time. For an archive opened from a path, a stream whose copy would pass 64 MiB is read in place
   instead.
-- **A pass over a solid archive opened from a stream source copies the archive.**
+- **A pass over a solid archive opened from a stream source copies a few solid streams at a time.**
   `stream_members()` and `extract_all()` on a solid RAR opened from a `BytesIO` or a file object
-  copy it whole to a temporary file (a volume set, to a temporary directory), removed on close.
-  Members archivey reads itself are read in place and need no copy.
+  run one `unrar` per run of whole solid streams, each on a temporary file holding that run alone,
+  removed when its output ends. A run takes streams until it holds 64 MiB of packed bytes, so many
+  small streams share one `unrar` start; a larger stream runs alone, and so does every stream when
+  `SpoolLimits.max_bytes` is under 128 MiB. An archive that would be a single run is copied whole
+  and read with one `unrar` instead: that run would hold every packed member anyway, and the
+  whole copy reads faster. So is an archive with a member of an unknown compression version, a
+  volume missing, or a RAR 1.5-4 member past 4 GiB (a volume set is copied to a temporary
+  directory); the copy is removed on close. A pass over an archive opened from a path reads it in place,
+  with one `unrar` run. Members archivey reads itself are read in place and need no copy.
 - `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB) bounds every copy: over
   it, the read raises `ResourceLimitError` before anything is written. A member of an archive
   opened from a path is read in place instead.

@@ -277,6 +277,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.sevenzip_reader._FolderEndCheck": (
         "no __init__ of its own; close() is DelegatingStream's"
     ),
+    "archivey.internal.backends.rar_reader._SolidPassPipe": (
+        "assigns every field close() reads before ReadOnlyIOStream.__init__"
+    ),
     "archivey.internal.backends.rar_reader._ClosesSyntheticFile": (
         "assigns _synthetic, all close() reads beyond the base, before "
         "DelegatingStream.__init__"

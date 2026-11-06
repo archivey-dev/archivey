@@ -520,6 +520,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         detection._BoundedPeekReader,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
+        # The same pass's output from several unrar runs back to back: subprocess
+        # stdout, with nothing below it that has a table.
+        rar_reader._SolidPassPipe,
         # A member's stored bytes, read forward from the walk's stream (for .tar.gz,
         # the decompressed stream) in one pass. TAR stores member data as is, so no
         # codec above it has a table, and a pass's member streams are forward-only.
