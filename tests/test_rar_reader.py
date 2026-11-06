@@ -7,6 +7,7 @@ import errno
 import hashlib
 import io
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -762,7 +763,18 @@ def test_solid_windows_link_and_junction_demux() -> None:
         assert links["l_file_link.txt"].link_target == "a_first.txt"
         assert links["m_dir_link"].link_target == "sub"
         assert links["o_junction"].extra.get("is_junction") is True
+        # Absolute targets carry the build runner's path; check the drive and tail.
+        for name, tail in (
+            ("n_abs_file_link.txt", "/a_first.txt"),
+            ("o_junction", "/sub"),
+        ):
+            target = links[name].link_target
+            assert target is not None
+            assert re.match(r"[A-Za-z]:/", target) and target.endswith(tail), target
         for member in links.values():
+            # Unlike a Unix link, a Windows link lists with no size.
+            assert member.size == 0
+            assert member.compressed_size == 0
             assert member.extra.get("is_reparse_point") is True
             raw = member._raw
             assert isinstance(raw, RarMemberInfo)

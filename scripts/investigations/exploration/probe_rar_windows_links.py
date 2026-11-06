@@ -107,10 +107,11 @@ def _build(rar: str, out: Path) -> None:
 
 
 def _unrar_p(archive: Path, member: str | None = None) -> bytes:
+    """``unrar p`` stdout; exit 0 required, since a name miss is rc 10 and no bytes."""
     args = ["unrar", "p", "-inul", "-cfg-", "-p-", str(archive)]
     if member is not None:
         args.append(member)
-    return subprocess.run(args, check=False, capture_output=True, timeout=60).stdout
+    return subprocess.run(args, check=True, capture_output=True, timeout=60).stdout
 
 
 def _check(archives: list[Path]) -> int:
