@@ -877,3 +877,139 @@ def test_a_stream_pass_charges_each_member_its_own_run() -> None:
         runs = reader._solid_pass_groups()
         assert runs is not None and len(runs) == 1
         assert reader._stream_pass_costs(runs) == reader._pass_dictionary_costs()
+
+
+# ------------------------------------------------------------- nonsolid batches
+
+
+class _Spawns:
+    """The synthetic archives ``unrar`` is started on, with their member counts."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.calls: list[Path] = []
+        real = rr.open_unrar_p
+
+        def spawn(path: Path, *args: object, **kwargs: object) -> object:
+            self.calls.append(Path(path))
+            return real(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(rr, "open_unrar_p", spawn)
+
+
+_BATCHED = ["wildcard_names__.rar", "wildcard_names__rar4.rar"]
+
+
+def _nonsolid_expected(path: Path) -> dict[str, bytes]:
+    with open_archive(path) as reader:
+        return {m.name: reader.read(m) for m in reader.members() if m.is_file}
+
+
+@requires_unrar_cli()
+@pytest.mark.parametrize("fixture", _BATCHED)
+@pytest.mark.parametrize("stream_source", [False, True], ids=["path", "stream"])
+def test_a_nonsolid_pass_reads_a_batch_with_one_unrar(
+    monkeypatch: pytest.MonkeyPatch, fixture: str, stream_source: bool
+) -> None:
+    """The six compressed members share one synthetic archive and one ``unrar``;
+    the stored one is read by archivey. The run's file is gone after the pass."""
+    path = _FIXTURES / fixture
+    expected = _nonsolid_expected(path)
+    spawns = _Spawns(monkeypatch)
+    live = _LiveFiles(monkeypatch)
+    source: object = BytesIO(path.read_bytes()) if stream_source else path
+    assert _pass_bytes(source) == expected
+    assert len(spawns.calls) == 1
+    assert live.made == 1
+    assert live.live == 0
+
+
+@requires_unrar_cli()
+@pytest.mark.parametrize("fixture", _BATCHED)
+def test_a_nonsolid_pass_that_skips_members_still_reads_the_rest(
+    monkeypatch: pytest.MonkeyPatch, fixture: str
+) -> None:
+    path = _FIXTURES / fixture
+    expected = _nonsolid_expected(path)
+    spawns = _Spawns(monkeypatch)
+    with open_archive(path) as reader:
+        names = [m.name for m in reader.members() if m.is_file]
+        wanted = {names[-1], names[2]}
+        got = {
+            member.name: stream.read()
+            for member, stream in reader.stream_members()
+            if stream is not None and member.name in wanted
+        }
+    assert got == {name: expected[name] for name in wanted}
+    assert len(spawns.calls) == 1
+
+
+@requires_unrar_cli()
+@pytest.mark.parametrize("fixture", _BATCHED)
+def test_a_batch_that_stops_lining_up_reads_the_rest_on_their_own(
+    monkeypatch: pytest.MonkeyPatch, fixture: str
+) -> None:
+    """A member whose output does not match its CRC32 marks the batch: the
+    members after it are read one at a time, and every read is still right."""
+    path = _FIXTURES / fixture
+    expected = _nonsolid_expected(path)
+    real = RarReader._nonsolid_pass_batches
+
+    def misplanned(self: RarReader) -> list[rr._NonsolidBatch]:
+        batches = real(self)
+        batches[0].crcs[1] ^= 1
+        return batches
+
+    monkeypatch.setattr(RarReader, "_nonsolid_pass_batches", misplanned)
+    spawns = _Spawns(monkeypatch)
+    assert _pass_bytes(path) == expected
+    with open_archive(path) as reader:
+        assert isinstance(reader, RarReader)
+        (batch,) = real(reader)
+    # The batch's run, then one read each for the members after position 1.
+    assert len(spawns.calls) == 1 + len(batch.indices) - 2
+
+
+@requires_unrar_cli()
+def test_a_batch_over_the_spool_limit_reads_each_member_on_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _FIXTURES / "wildcard_names__.rar"
+    expected = _nonsolid_expected(path)
+    with open_archive(path) as reader:
+        assert isinstance(reader, RarReader)
+        (batch,) = reader._nonsolid_pass_batches()
+        largest = max(reader._archive.members[i].compress_size for i in batch.indices)
+    spawns = _Spawns(monkeypatch)
+    # Room for any one member's copy, not for the batch's.
+    limit = rs.SyntheticArchive.overhead(5) + largest + 200
+    assert limit < batch.packed
+    got = _pass_bytes(BytesIO(path.read_bytes()), config=_limited(limit))
+    assert got == expected
+    assert len(spawns.calls) == len(batch.indices)
+
+
+def _checked(output: bytes | None, sizes: list[int], crcs: list[int]) -> tuple:
+    batch = rr._NonsolidBatch([0] * len(sizes), sizes, crcs, 0)
+    run = rr._CheckedRun(None if output is None else BytesIO(output), batch)
+    data = b""
+    while chunk := run.read(3):
+        data += chunk
+    run.close()
+    return data, batch.tainted
+
+
+def test_a_checked_run_holds_the_output_to_the_plan() -> None:
+    a, b = b"hello", b"world!"
+    crcs = [zlib.crc32(a), zlib.crc32(b)]
+    assert _checked(a + b, [5, 6], crcs) == (a + b, None)
+    # Extra output is dropped; the last member still checks.
+    assert _checked(a + b + b"tail", [5, 6], crcs) == (a + b, None)
+    # One byte short in the first member: everything after is off by one.
+    data, tainted = _checked(a[:4] + b, [5, 6], crcs)
+    assert len(data) == 11 and tainted == 0
+    # Ends early: padded with zeros, marked where it ended.
+    assert _checked(a, [5, 6], crcs) == (a + bytes(6), 1)
+    # No run at all.
+    assert _checked(None, [5, 6], crcs) == (bytes(11), 0)
+    # An empty member checks at once.
+    assert _checked(a, [0, 5], [0, zlib.crc32(a)]) == (a, None)
