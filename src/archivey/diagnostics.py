@@ -190,6 +190,12 @@ class DiagnosticCode(StrEnum):
     unzip write them, but another reader may keep the first, write through an earlier
     symlink, or refuse the archive. Real archives have it (``tar -r`` appends, cabal
     sdists), so it is advisory."""
+    SOURCE_CHANGE_UNDETECTABLE = "source_change_undetectable"
+    """The archive is read by range requests from an ``fsspec`` file system that
+    archivey cannot pin to one version of the object, so a replacement of the same
+    length while it reads would go unseen. A replacement of a different length that a
+    fetch can see raises :class:`~archivey.SourceChangedError`. Advisory: it describes
+    how the archive arrives, not its bytes."""
     MEMBER_READERS_DISAGREE = "member_readers_disagree"
     """A member takes a shape that real writers produce but readers make different
     trees of: a TAR regular file named like a directory, a link name on a TAR regular
@@ -278,6 +284,8 @@ DiagnosticCodeStr = Literal[
     "member-name-duplicate",
     "member_readers_disagree",
     "member-readers-disagree",
+    "source_change_undetectable",
+    "source-change-undetectable",
 ]
 
 
@@ -937,6 +945,21 @@ class SizeWrapContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class SourceChangeContext(_JsonSafeContext):
+    """Why a change to a remote source would go undetected.
+
+    ``protocol`` is the first protocol of the ``fsspec`` file system the archive is
+    read from (``"s3"``, ``"https"``, ``"memory"``). ``reason`` says why neither a
+    pinned version nor a conditional request guards the reads.
+    """
+
+    kind: Literal["source_change"] = "source_change"
+    archive_name: str | None = None
+    protocol: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class UnknownMemberTypeContext(_JsonSafeContext):
     """A member header has a type archivey does not know: a TAR typeflag, a RAR5
     redirect type, or the file-type bits of another format's mode, from a format plugin.
@@ -1069,6 +1092,7 @@ DiagnosticContext = (
     | OffsetWrapContext
     | SizeWrapContext
     | UnknownMemberTypeContext
+    | SourceChangeContext
     | NameDuplicateContext
     | ReaderDisagreementContext
 )
@@ -1112,6 +1136,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_TYPE_UNKNOWN: "unknown_member_type",
         DiagnosticCode.MEMBER_NAME_DUPLICATE: "name_duplicate",
         DiagnosticCode.MEMBER_READERS_DISAGREE: "reader_disagreement",
+        DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE: "source_change",
     }
 )
 
@@ -1142,7 +1167,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Seventeen codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Eighteen codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -1199,6 +1224,9 @@ and the reasons are part of the contract rather than an oversight:
   ``FILE``, so nothing is hidden. ``STRICT`` would refuse an archive GNU tar extracts.
   The same holds for a RAR5 redirect of an unknown type: it holds no data, and
   ``unrar`` warns, skips it and extracts the rest with exit code 0.
+- ``SOURCE_CHANGE_UNDETECTABLE`` — describes the transport an ``fsspec`` source
+  arrives through, not the archive's bytes, and holds for every read from such a
+  store. ``STRICT`` would refuse every remote archive.
 - ``MEMBER_NAME_DUPLICATE`` and ``MEMBER_READERS_DISAGREE`` — shapes real archives
   have (``tar -r`` appends, cabal sdists, v7 directories, star and GNU incremental
   headers), which archivey reads as the format's own tool does. ``STRICT`` would refuse
@@ -1213,6 +1241,7 @@ _INFO_LOG_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
         DiagnosticCode.MEMBER_NAME_DUPLICATE,
         DiagnosticCode.MEMBER_READERS_DISAGREE,
+        DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
     }
 )
 """Codes whose log record is INFO rather than WARNING (``logging`` spec).
@@ -1223,8 +1252,9 @@ the reason
 reason the solid re-decode record on ``archivey.backends`` is INFO (maintainer,
 2026-10-23). ``MEMBER_NAME_DUPLICATE`` and ``MEMBER_READERS_DISAGREE`` report shapes
 of ordinary archives that only matter to a caller comparing readers, who asks for them
-through the policy. The policy still collects, counts and raises them like any other
-code.
+through the policy. ``SOURCE_CHANGE_UNDETECTABLE`` is recorded at every open of a
+remote archive whose store cannot pin a version, so a warning would fire on every one.
+The policy still collects, counts and raises them like any other code.
 """
 
 
@@ -1634,6 +1664,7 @@ __all__ = [
     "SeekIndexContext",
     "SelectorUnmatchedContext",
     "SizeWrapContext",
+    "SourceChangeContext",
     "SpecialFileDataContext",
     "StreamRewindContext",
     "SymlinkTargetContext",

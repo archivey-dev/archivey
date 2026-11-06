@@ -27,6 +27,11 @@ from archivey import (  # noqa: E402
     ArchiveFormat,
     ArchiveyConfig,
     ArchiveyUsageError,
+    CorruptionError,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    ReadError,
+    SourceChangedError,
     detect_format,
     open_archive,
     open_stream,
@@ -268,7 +273,9 @@ def test_open_archive_reads_an_open_file(memfs):
     with open_archive(of) as reader:
         got = {m.name: reader.read(m) for m in reader.members() if m.is_file}
         assert got == MEMBERS
-        assert reader.format_info == detect_format(fsspec.open("memory://t/a.zip"))
+        detected = detect_format(fsspec.open("memory://t/a.zip"))
+        assert reader.format_info.format == detected.format
+        assert reader.format_info.diagnostics.counts == detected.diagnostics.counts
 
 
 def test_concurrent_threads_read_their_members(memfs):
@@ -452,3 +459,54 @@ def test_committed_fixture_reads_the_same_through_the_planner(
         pytest.skip(f"fixture does not open standalone from a BytesIO: {exc}")
     with planner_constants(SMALL):
         assert _probe(_open_file(memfs, data), (FIXTURE_PASSWORD,)) == baseline
+
+
+# --- a changed object (design D7, tier 3) ------------------------------------------------
+
+
+def test_a_shorter_object_raises_source_changed(memfs):
+    data = _zip_bytes(MEMBERS)
+    memfs.pipe("/t/a.zip", data)
+    # No read-through, so the listing leaves the members' bytes unfetched.
+    config = ArchiveyConfig(max_read_through=0)
+    with open_archive(fsspec.open("memory://t/a.zip"), config=config) as reader:
+        members = [m for m in reader.members() if m.is_file]
+        memfs.pipe("/t/a.zip", data[: len(data) // 2])
+        with pytest.raises(SourceChangedError) as info:
+            for member in members:
+                reader.read(member)
+    assert isinstance(info.value, ReadError)
+    assert not isinstance(info.value, CorruptionError)
+
+
+def test_a_planner_fetch_of_another_length_raises():
+    src, fs = _source(DATA)
+    fs.data = DATA[:100]
+    with pytest.raises(SourceChangedError, match="changed while it was read"):
+        src.read(10)
+
+
+def test_undetectable_change_is_recorded_at_open(memfs):
+    memfs.pipe("/t/a.zip", _zip_bytes(MEMBERS))
+    with open_archive(
+        fsspec.open("memory://t/a.zip"),
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+    ) as reader:
+        (diag,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE
+        ]
+        assert diag.context.kind == "source_change"
+        assert diag.context.protocol == "memory"
+    info = detect_format(fsspec.open("memory://t/a.zip"))
+    assert info.diagnostics.counts.get(DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE) == 1
+
+
+def test_a_local_source_records_no_source_change(tmp_path: Path):
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_bytes(MEMBERS))
+    with open_archive(path) as reader:
+        assert (
+            DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE not in reader.diagnostics.counts
+        )

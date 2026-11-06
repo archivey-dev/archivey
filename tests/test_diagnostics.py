@@ -1131,6 +1131,8 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         # Shapes real archives have, read as the format's own tool reads them.
         DiagnosticCode.MEMBER_NAME_DUPLICATE,
         DiagnosticCode.MEMBER_READERS_DISAGREE,
+        # The transport an fsspec source arrives through, not the archive's bytes.
+        DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
     }
 
 
