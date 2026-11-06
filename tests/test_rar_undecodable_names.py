@@ -9,7 +9,7 @@ it the shared way (``%FF`` under ``STRICT``/``STANDARD``, the raw byte under
 
 ``unrar`` 7.00 reads a RAR5 name only up to its first invalid byte, so both of those
 names are ``a`` to it. A read through ``unrar`` must still return each member's own
-bytes; the mask is built from the stored bytes (``rar_unrar.unrar_member_view``).
+bytes; each reads through a synthetic archive, under a placeholder name.
 """
 
 from __future__ import annotations

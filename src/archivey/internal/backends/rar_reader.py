@@ -5157,10 +5157,20 @@ class RarReader(BaseArchiveReader):
 
     def _plain_mask(self, member: ArchiveMember) -> str | None:
         """The mask text that selects ``member`` alone in the original archive, or
-        ``None`` (:func:`_plain_unrar_masks`)."""
+        ``None`` (:func:`_plain_unrar_masks`).
+
+        ``None`` for every member when a volume's walk stopped at a damaged header
+        (``RarArchive.damaged``): ``unrar`` searches past it and may see headers the
+        listing does not hold, so no name is known to select one member. A cut volume
+        (``truncated``) ends the file, so it hides no header ``unrar`` could reach.
+        """
         masks = self._plain_masks
         if masks is None:
-            masks = _plain_unrar_masks(self._members, rar5=self._archive.version == 5)
+            masks = (
+                {}
+                if self._archive.damaged is not None
+                else _plain_unrar_masks(self._members, rar5=self._archive.version == 5)
+            )
             self._plain_masks = masks
         return masks.get(id(member))
 

@@ -4519,11 +4519,10 @@ def test_wildcard_member_name_reads_its_own_bytes(
 @requires_binary("unrar")
 @pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
 def test_glob_member_matching_nothing_else_still_reads(name: str) -> None:
-    """A glob name that matches no other member has no prefix, so it is not refused.
+    """A glob name that matches no other member reads its own bytes.
 
-    ``only*.dat`` is the accidental ``report*.pdf`` case: the mask matches only
-    itself, the skip ``_unrar_selection`` sizes is 0, and the refusal never triggers. This is the
-    boundary the refusal must not overshoot, so it is pinned without the flag.
+    ``only*.dat`` is the accidental ``report*.pdf`` case. The name never reaches
+    ``unrar``: the member reads through a synthetic archive under a placeholder.
     """
     with open_archive(_fixture(name)) as archive:
         assert archive.read("only*.dat") == _WILDCARD_CONTENTS["only*.dat"]

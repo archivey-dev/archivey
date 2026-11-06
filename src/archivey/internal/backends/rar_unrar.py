@@ -648,9 +648,9 @@ def open_unrar_p(
 
     A named ``member`` is passed as a ``-n./`` include mask, never positionally, so a
     hostile member name cannot inject an ``unrar`` switch or ``@listfile`` argument
-    (see :func:`_member_include_switch`). The child runs under a UTF-8 locale (:func:`_unrar_env`). ``None`` means no ``-n`` mask, so every
-    payload member is piped: the solid pass wants that, and a named read must never
-    pass it.
+    (see :func:`_member_include_switch`). The child runs under a UTF-8 locale
+    (:func:`_unrar_env`). ``None`` means no ``-n`` mask, so every payload member is
+    piped: the solid pass wants that, and a named read must never pass it.
 
     When a non-empty ``password`` is given, the switch is bare ``-p`` and the password
     (plus a trailing newline) is written to the child's stdin — ``unrar`` reads it from

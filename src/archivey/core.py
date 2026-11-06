@@ -57,6 +57,7 @@ from archivey.internal.backends.zip_detect import (
     is_zip_split_segment_name,
 )
 from archivey.internal.config import stream_config_from_archivey
+from archivey.internal.config_copy import copy_config_quietly
 from archivey.internal.detection import (
     detect_format,
     detect_format_into,
@@ -1164,7 +1165,7 @@ def _resolve_stream_format(
     # The caller says the source is a compressed stream, so a probe answers only which
     # codec it is, never whether it is an archive: every probe runs, whatever its name.
     if not config.always_probe_content:
-        config = replace(config, always_probe_content=True)
+        config = copy_config_quietly(config, always_probe_content=True)
     detected = detect_format_into(open_source, config=config, collector=collector)
     outer = outer_stream_format(detected.format)
     if outer is None:

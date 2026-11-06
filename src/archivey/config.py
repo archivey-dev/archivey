@@ -23,6 +23,7 @@ from archivey.internal.arg_checks import (
     check_limit,
     check_limit_fields,
 )
+from archivey.internal.config_copy import copying_config
 from archivey.internal.enum_args import coerce_enum
 from archivey.types import ArchiveMember, OptionalLibrary
 
@@ -1010,7 +1011,9 @@ class ArchiveyConfig:
                 call=f"ArchiveyConfig({field_name}=…)",
                 allow_none=False,
             )
-        if self.rar_allow_glob_member_concatenation:
+        # Archivey's own copies of a caller's config (``copy_config_quietly``) pass
+        # the field on as if it were set again; only the caller's construction warns.
+        if self.rar_allow_glob_member_concatenation and not copying_config():
             warnings.warn(
                 "ArchiveyConfig.rar_allow_glob_member_concatenation is deprecated and "
                 "has no effect: no RAR read decodes other members because of a "

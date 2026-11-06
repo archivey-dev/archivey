@@ -14,6 +14,7 @@ The archives are derived from committed fixtures by rewriting headers, so only
 
 from __future__ import annotations
 
+import dataclasses
 import struct
 import zlib
 from pathlib import Path
@@ -187,6 +188,93 @@ def test_a_large_member_without_a_plain_name_is_copied(
         got = [reader.read(member) for member in reader.members()]
     assert got == [_payload(i) for i in range(3)]
     assert spawned == [None, "aXb", "plain.txt"]
+
+
+def test_a_history_row_is_masked_with_its_version_suffix() -> None:
+    """``unrar -ver`` names a history row ``name;n``; the live row keeps the bare
+    name. Fails if the ``;n`` suffix is dropped (two rows would share ``file.txt``)
+    or if history rows were counted against the current rows only (KeyError)."""
+    with open_archive(_fixture("file_version__.rar"), config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        masks = [reader._plain_mask(m) for m in reader.members()]
+    assert masks == ["file.txt;1", "file.txt;2", "file.txt"]
+
+
+@requires_binary("unrar")
+def test_a_history_row_reads_in_place_by_its_versioned_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-place read of a history row passes ``-n./file.txt;1`` with ``-ver``
+    and gets that row alone, the same bytes as the synthetic read."""
+    path = _fixture("file_version__.rar")
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        expected = [reader.read(member) for member in reader.members()]
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    spawned: list[str | None] = []
+    real = rar_reader.open_unrar_p
+
+    def spawn(archive: object, *args: object, **kwargs: object) -> object:
+        spawned.append(kwargs.get("member"))  # type: ignore[arg-type]
+        return real(archive, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spawn)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        got = [reader.read(member) for member in reader.members()]
+    assert got == expected
+    assert len(set(expected)) == len(expected)
+    assert spawned == ["file.txt;1", "file.txt;2", "file.txt"]
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        # An ASCII 8-bit name is plain.
+        (b"plain.txt", "plain.txt"),
+        # A RAR 1.5-4 backslash is a separator, and the mask uses ``/``.
+        (b"d\\x.txt", "d/x.txt"),
+        # A non-ASCII 8-bit name has no code page unrar is known to share.
+        (b"caf\xe9.txt", None),
+    ],
+)
+def test_rar4_8bit_names_and_the_plain_rule(
+    tmp_path: Path, name: bytes, expected: str | None
+) -> None:
+    """Fails if 8-bit names were decoded with a code page for the mask, or if a
+    ``\\`` were kept (or refused) instead of read as ``/``."""
+    path = _rar4_with_name(tmp_path, name)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        masks = [reader._plain_mask(m) for m in reader.members()]
+    others = ["-inul", "@atfile"] if expected is not None else [None, None]
+    assert masks == [expected, *others]
+
+
+def test_a_rar4_unicode_name_with_a_lone_surrogate_is_not_plain(
+    tmp_path: Path,
+) -> None:
+    """A UTF-16 field with a lone surrogate makes no name in the archive plain.
+    Fails if the surrogate check were dropped."""
+    path = _rar4_with_name(tmp_path, b"plain.txt")
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        raw = reader.members()[0]._raw
+        assert rar_reader._plain_unrar_text(raw, rar5=False) == "plain.txt"
+        lone = dataclasses.replace(raw, rar3_unicode_name="hi\ud800.txt")
+        assert rar_reader._plain_unrar_text(lone, rar5=False) is None
+        pair = dataclasses.replace(raw, rar3_unicode_name="hi\U0001f600.txt")
+        assert rar_reader._plain_unrar_text(pair, rar5=False) == "hi\U0001f600.txt"
+
+
+def test_a_damaged_listing_reads_no_member_in_place(tmp_path: Path) -> None:
+    """When a volume's walk stopped at a damaged header, ``unrar`` may find headers
+    past it that the listing lacks, so no name is trusted to select one member."""
+    path = _nocrc_rar5(tmp_path, [(b"plain.txt", 1), (b"other.txt", 1)])
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        members = reader.members()
+        reader._archive.damaged = "a damaged header"
+        assert [reader._plain_mask(m) for m in members] == [None, None]
 
 
 def _duplicate_names(tmp_path: Path, *, solid: bool) -> Path:

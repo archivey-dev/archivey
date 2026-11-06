@@ -253,3 +253,19 @@ def test_glob_concatenation_flag_is_deprecated_and_warns_only_when_set() -> None
         warnings.simplefilter("error")
         archivey.ArchiveyConfig()
         archivey.ArchiveyConfig(rar_allow_glob_member_concatenation=False)
+
+
+def test_glob_concatenation_flag_warns_once_not_again_from_archiveys_own_copy() -> None:
+    """``open_stream`` copies the caller's config (``always_probe_content=True``);
+    that copy must not warn again from inside the library."""
+    import gzip
+    import warnings
+
+    with pytest.warns(DeprecationWarning):
+        cfg = archivey.ArchiveyConfig(rar_allow_glob_member_concatenation=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        with archivey.open_stream(
+            io.BytesIO(gzip.compress(b"hello")), config=cfg
+        ) as stream:
+            assert stream.read() == b"hello"

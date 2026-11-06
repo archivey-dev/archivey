@@ -480,11 +480,10 @@ class RarMemberInfo:
     # WinRAR ``-ver`` history: RAR5 FHEXTRA_VERSION vint, or RAR3 ``FILE_VERSION``
     # (``;n`` stripped from ``filename``). ``None`` / ``0`` = live revision.
     file_version: int | None = None
-    # A RAR3 name whose Unicode field decoded, as decoded: what ``unrar`` compares
-    # a ``-n`` mask against, once ``unrar_member_view`` splits a valid pair into
-    # its two units. ``filename`` can differ from it
-    # (``_fix_rar3_astral_truncation``). ``None`` for RAR5 and for a RAR3 name
-    # ``unrar`` reads from the 8-bit field.
+    # A RAR3 name whose Unicode field decoded, as decoded: the name ``unrar``
+    # reads, which the plain-name rule checks (``rar_reader._plain_unrar_text``).
+    # ``filename`` can differ from it (``_fix_rar3_astral_truncation``). ``None``
+    # for RAR5 and for a RAR3 name ``unrar`` reads from the 8-bit field.
     rar3_unicode_name: str | None = None
     # A RAR 1.5-4 8-bit name, with no Unicode flag, that decoded as UTF-8 where the
     # caller's ``encoding=`` would have given a different name.

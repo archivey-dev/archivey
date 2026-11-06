@@ -176,12 +176,6 @@ tests check directly.
 Renaming those without updating `tests/leak_oracle.py` pins nothing, and the
 tests being edited are the ones that would have caught it.
 
-Confirm the gate still fires: delete `owns_inner=True` at
-`src/archivey/internal/backends/rar_reader.py` (`_bounded_member_pipe`) and run
-`pytest tests/test_rar_reader.py -q --no-cov`. Expect the two
-`assert inner.closed` unit tests plus the oracle's live-`unrar` errors. Restore
-before committing.
-
 ## 6. Verify
 
 ```bash
