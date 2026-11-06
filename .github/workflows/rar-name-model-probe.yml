@@ -71,6 +71,8 @@ jobs:
     # container whose image sets OEMCP and ACP to 932, with the runner's Python, the
     # installed package and UnRAR.exe mounted in. The runner itself (437) is the control.
     name: DBCS OEM name model (Windows container, cp932)
+    # Pinned, not windows-latest: a Windows container must match the host OS
+    # version, and the image below is servercore:ltsc2022.
     runs-on: windows-2022
     timeout-minutes: 40
     steps:

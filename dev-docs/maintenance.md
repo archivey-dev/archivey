@@ -34,7 +34,7 @@ those use the AI plan's quota.
 | `rapidgzip-resume-stress.yml` | monthly (the 1st) | no | the rapidgzip child process stalled or lost a worker; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `scheduled-failure-alert.yml` | each time a watched scheduled workflow finishes on `main` | no | its own script failed. A failed scheduled run opens one issue per workflow, assigned to the maintainer; each later failure comments on it and the next green scheduled run closes it. GitHub's own failure email goes only to whoever last edited the cron line, which is often the merge-queue bot |
 | `conflict-notice.yml` | each push to `main`, and hourly | no | its own script failed; it only comments on PRs |
-| `rapidgzip-truncation-sweep.yml`, `writer-timestamps.yml`, `rar-name-model-probe.yml` | only when their own files change, or on demand | no | investigation probes; ignore unless you are working on them |
+| `rapidgzip-truncation-sweep.yml`, `writer-timestamps.yml`, `rar-name-model-probe.yml` | only when their own files change, or on demand; `rar-name-model-probe.yml` also when `rar_unrar.py`, the two test modules its probes import, or `hostile_argv__rar4.rar` change | no | investigation probes; ignore unless you are working on them (a red name-model probe on a library PR means the unrar selection model changed) |
 | `publish.yml` | a `v*` tag, or on demand | no | see [Release checklist](release-checklist.md) §6 |
 
 At the lower budget, review rounds are the cost to control. The implementing agent adds
