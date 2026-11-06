@@ -339,14 +339,17 @@ def load_sevenzip_archive(
     collector: DiagnosticCollector | None = None,
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
+    will_read: Callable[[int, int], None] | None = None,
 ) -> SevenZipArchive:
     """Two-phase header load: parse → decode encoded → re-parse → materialize.
 
     The one open flow: :class:`SevenZipReader` and the fuzz harnesses both call it.
     ``fp`` starts at the signature header. ``max_members`` and ``max_metadata_bytes``
     are the reader's ``ListingLimits``; both hold at open (``None`` disables one).
+    ``will_read`` takes the next-header range hint
+    (:func:`~archivey.internal.backends.sevenzip_parser.read_signature_and_next_header`).
     """
-    signature = read_signature_and_next_header(fp)
+    signature = read_signature_and_next_header(fp, will_read=will_read)
     if not signature.header_data:
         return empty_archive(signature)
 
@@ -973,6 +976,9 @@ class SevenZipReader(BaseArchiveReader):
             collector=self._diagnostics_collector,
             max_members=self._config.listing_limits.max_members,
             max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
+            will_read=lambda start, end: self._will_read(
+                self._origin + start, self._origin + end
+            ),
         )
 
     def _report_trailing_data(self) -> None:

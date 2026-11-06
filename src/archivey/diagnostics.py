@@ -193,9 +193,9 @@ class DiagnosticCode(StrEnum):
     SOURCE_CHANGE_UNDETECTABLE = "source_change_undetectable"
     """The archive is read by range requests from an ``fsspec`` file system that
     archivey cannot pin to one version of the object, so a replacement of the same
-    length while it reads would go unseen. A replacement of a different length that a
-    fetch can see raises :class:`~archivey.SourceChangedError`. Advisory: it describes
-    how the archive arrives, not its bytes."""
+    length, or a longer one, while it reads would go unseen. A shorter one raises
+    :class:`~archivey.SourceChangedError` on the first fetch past its end. Advisory: it
+    describes how the archive arrives, not its bytes."""
     MEMBER_PATH_REFUSED = "member_path_refused"
     """A member is left out of an ``archivey://`` file system's tree
     (:class:`~archivey.fsspec.ArchiveyFileSystem`) because the file system's extraction

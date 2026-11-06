@@ -612,8 +612,20 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
     return scan.hit.candidate_origin
 
 
-def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
+# The span before the next header's end that a remote read is told to expect at open:
+# an encoded header (the 7-Zip and py7zr default) is a short record pointing at a packed
+# header stream that sits just before it, so fetching the two together saves a request.
+NEXT_HEADER_HINT = 64 * 1024
+
+
+def read_signature_and_next_header(
+    fp: BinaryIO, *, will_read: Callable[[int, int], None] | None = None
+) -> SignatureInfo:
     """Read signature header, verify CRCs, return next-header bytes (possibly empty).
+
+    ``will_read(start, end)``, given a span relative to the signature, is told before
+    the next header is read that the ``NEXT_HEADER_HINT`` bytes ending with it are read
+    next (a range hint for a remote source; nothing else).
 
     ``fp`` is expected to begin *at* the signature header: every offset in a 7z archive
     is relative to it, so a self-extracting archive is opened by handing this a view
@@ -654,6 +666,9 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
             SIGNATURE_HEADER_SIZE + fields.next_header_offset,
         )
 
+    if will_read is not None:
+        end = SIGNATURE_HEADER_SIZE + fields.next_header_offset + fields.next_header_size
+        will_read(max(SIGNATURE_HEADER_SIZE, end - NEXT_HEADER_HINT), end)
     try:
         fp.seek(SIGNATURE_HEADER_SIZE + fields.next_header_offset)
     except (OSError, OverflowError) as exc:
