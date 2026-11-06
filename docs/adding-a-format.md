@@ -217,6 +217,11 @@ There are four ways to build the stream. Pick the first one that fits your forma
 with its own position, so two members open at the same time do not move each other. A
 format that stores members uncompressed returns a view, as TOYA does.
 
+Before opening a member's view, call `ReaderSource.will_read(start, end)` with the span
+the member's bytes come from. An archive read by range from an `fsspec` file system then
+fetches that span in one request rather than in steps that start small; on a local file
+it does nothing, and it never changes what a read returns.
+
 **A compression method archivey decodes.** Hand the member's compressed bytes to
 `ReaderContext.decompress()` and return what it gives:
 

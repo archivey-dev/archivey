@@ -2719,6 +2719,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # several; pycdlib's own file object would add a layer that seeks the shared
         # handle on every read.
         spans = self._data_spans(record)
+        if spans:
+            # One hint is kept at a time, so only the first extent is hinted; a
+            # multi-extent file's later extents are fetched by the planner's rules.
+            start, length = spans[0]
+            self._source.will_read(start, start + length)
         stream: BinaryIO
         if len(spans) == 1:
             stream = self._source.view(*spans[0])

@@ -61,7 +61,13 @@
       header: an encoded header (the 7-Zip and py7zr default) is a short record after a
       packed header stream, and one fetch takes both. The pack-stream hint covers the
       folder's first pack stream from its start.
-- [ ] 3.4 ISO extent hints; RAR header-position hints during the listing walk.
+- [x] 3.4 ISO extent hints; RAR header-position hints during the listing walk.
+      ISO reads through the plugin API, so the hint is a public
+      `ReaderSource.will_read(start, end)` that any plugin can call; ISO hints a
+      member's first extent. The RAR header hint is not added: measured on stored
+      RAR5 archives, it turns the walk's read-through into one request per header
+      (20 x 200 KB members: 7 requests and 4.0 MB become 21 and 1.3 MB; 200 x 2 KB: 4
+      become 7), a loss under the design's cost model. The walk keeps rule 2.
 - [ ] 3.5 Batched span fetches for `extract_all()` and `stream_members()` over
       non-solid ZIP and 7z: `merge_offset_ranges` then one `cat_ranges` per batch,
       into the window pool (design D5).

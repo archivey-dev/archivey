@@ -198,8 +198,8 @@ a thin planner that decides each fetch's start and length:
    | ZIP, member | `[local header, next local header or central directory)`: header, data and data descriptor in one request |
    | 7z, open | The next-header span named by the signature header |
    | 7z, member | The pack stream span, from pack info; for a solid folder, from the folder start |
-   | ISO, member | The member's extent |
-   | RAR, listing | The next header's position as each block is parsed (it lets the planner tell a header hop from a jump) |
+   | ISO, member | The member's first extent, through the plugin API's `ReaderSource.will_read` |
+   | RAR, listing | None. A hint at each next header turned the walk's read-through into one request per header (measured in stage 3); rule 2 covers it |
    | TAR | None; rule 2 covers it |
 
 4. **Bounded memory, per reader.** One reader has one window pool, shared by every

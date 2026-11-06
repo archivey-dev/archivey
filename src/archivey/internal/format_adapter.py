@@ -624,7 +624,7 @@ class IndexedReaderAdapter(_PluginAdapter):
             source, wrap_handle=self._seek_handle_wrapper()
         )
         plugin_source = ReaderSource(
-            shared.view, shared.size, source.path, shared.read_at
+            shared.view, shared.size, source.path, shared.read_at, source.will_read
         )
         with self._translated_errors(), self._handle_guard():
             reader = self._plugin.open(plugin_source, context)

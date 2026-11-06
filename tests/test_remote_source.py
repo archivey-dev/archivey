@@ -768,3 +768,54 @@ def test_7z_hints_the_folder_pack_stream_before_a_member_read(
         listed = list(hints)
         assert reader.read(member) == payload
     assert hints[len(listed) :] == [(32, 32 + 300_000)]
+
+
+def _iso_bytes(members: dict[str, bytes]) -> bytes:
+    pycdlib = pytest.importorskip("pycdlib")
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    for name, data in members.items():
+        iso.add_fp(io.BytesIO(data), len(data), f"/{name.upper()};1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+def test_iso_reads_a_member_within_the_max_fetch_in_one_request():
+    """The spec ceiling: list + 1. The ISO reader hints the member's extent through
+    ``ReaderSource.will_read``, so the read is one fetch from the extent's start rather
+    than a ramp from the minimum fetch. Red with the hint call removed (3 fetches)."""
+    rng = random.Random(9)
+    # The default constants: under SMALL the cap shrinks with the listing's windows.
+    payload = rng.randbytes(400_000)
+    data = _iso_bytes({"a.bin": rng.randbytes(50_000), "b.bin": payload})
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, "/a.iso", mode="rb")) as reader:
+        member = reader.get("B.BIN")
+        listed = len(fs.fetches)
+        # Small reads, as a consumer streaming the member does: without the hint the
+        # first one starts a run at the minimum fetch, which then doubles.
+        with reader.open(member) as stream:
+            assert b"".join(iter(lambda: stream.read(4096), b"")) == payload
+    extent = data.index(payload[:64])
+    assert fs.fetches[listed:] == [(extent, extent + len(payload))]
+
+
+def test_a_plugin_hint_reaches_the_range_source(monkeypatch: pytest.MonkeyPatch):
+    """``ReaderSource.will_read`` passes the plugin's offsets on unchanged."""
+    rng = random.Random(10)
+    payload = rng.randbytes(20_000)
+    data = _iso_bytes({"b.bin": payload})
+    hints: list[tuple[int, int]] = []
+    original = RangeSource.will_read
+
+    def spy(self: RangeSource, start: int, end: int) -> None:
+        hints.append((start, end))
+        original(self, start, end)
+
+    monkeypatch.setattr(RangeSource, "will_read", spy)
+    with open_archive(OpenFile(RecordingFS(data), "/a.iso", mode="rb")) as reader:
+        assert reader.read(reader.get("B.BIN")) == payload
+    extent = data.index(payload[:64])
+    assert hints == [(extent, extent + len(payload))]

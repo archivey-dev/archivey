@@ -29,9 +29,10 @@ Hints SHALL change only how bytes are fetched, never which bytes a read returns,
 do nothing on a local source. The source facts are those of `archive-reading` §"The source
 facts of an OpenFile".
 
-The ZIP, 7z and ISO backends SHALL hint the index they read at open and each member's
-stored span before reading it. The RAR backend SHALL hint each header position during
-its listing walk.
+The ZIP and 7z backends SHALL hint the index they read at open, and the ZIP, 7z and ISO
+backends SHALL hint each member's stored span before reading it. A format plugin SHALL be
+able to hint through `ReaderSource.will_read(start, end)`, which does nothing on a local
+source. The RAR listing walk SHALL NOT be hinted: it reads through by the planner's rules.
 
 #### Scenario: ceilings that follow from the format
 
