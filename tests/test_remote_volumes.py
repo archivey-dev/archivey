@@ -158,3 +158,38 @@ def test_a_discovered_link_is_refused(tmp_path: Path) -> None:
         discover_volume_siblings(
             RemoteVolumePath(fs, (tmp_path / "x.zip.001").as_posix(), {})
         )
+
+
+def test_a_remote_set_with_a_gap_is_refused_as_a_local_one_is(
+    fs: CountingMemoryFS, tmp_path: Path
+) -> None:
+    from archivey import TruncatedError
+
+    parts, _ = _zip_parts(3)
+    for index in (1, 3):
+        fs.pipe(f"/d/x.zip.{index:03d}", parts[index - 1])
+        (tmp_path / f"x.zip.{index:03d}").write_bytes(parts[index - 1])
+    with pytest.raises(TruncatedError, match="missing part 2"):
+        open_archive(tmp_path / "x.zip.001")
+    with pytest.raises(TruncatedError, match="missing part 2"):
+        open_archive(OpenFile(fs, "/d/x.zip.001", mode="rb"))
+    # A list the caller gives is checked by name too.
+    with pytest.raises(TruncatedError, match="missing part 2"):
+        open_archive(
+            [OpenFile(fs, f"/d/x.zip.{index:03d}", mode="rb") for index in (1, 3)]
+        )
+
+
+class BrokenListingFS(CountingMemoryFS):
+    def ls(self, path: str, detail: bool = True, **kwargs: Any) -> Any:
+        raise RuntimeError("expired credentials")
+
+
+def test_a_listing_failure_that_is_not_a_refusal_propagates() -> None:
+    """Only a refusal (``OSError``) or no ``ls`` means "no siblings"; a timeout or an
+    auth failure is not blamed on the archive."""
+    fs = BrokenListingFS()
+    parts, _ = _zip_parts(3)
+    fs.pipe("/d/x.zip.001", parts[0])
+    with pytest.raises(RuntimeError, match="expired credentials"):
+        open_archive(OpenFile(fs, "/d/x.zip.001", mode="rb"))

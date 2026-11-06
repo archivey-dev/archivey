@@ -13,7 +13,7 @@ from bisect import bisect_right
 from collections import Counter, OrderedDict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -455,10 +455,12 @@ class RemoteVolumePath:
         if listing is None:
             try:
                 entries = self.fs.ls(self.path, detail=True)
-            except Exception:  # noqa: BLE001
-                # A file system that cannot list a directory (an HTTP server with no
-                # index, a store that refuses the request) has no siblings to offer:
-                # the named file opens alone, as a lone local volume does.
+            except (OSError, NotImplementedError):
+                # A file system that cannot list a directory (a store that refuses
+                # the request, which fsspec raises as PermissionError or
+                # FileNotFoundError, or one with no ``ls``) has no siblings to
+                # offer: the named file opens alone, as a lone local volume does. Any
+                # other failure (a timeout, expired credentials) propagates.
                 entries = []
             listing = {
                 posixpath.basename(str(entry["name"]).rstrip("/")): entry
@@ -536,7 +538,7 @@ def _starts_like_rar(path: Path | RemoteVolumePath) -> bool:
                 head = handle.read(len(_RAR_MARKER_PREFIX))
         else:
             head = path.head(len(_RAR_MARKER_PREFIX))
-    except OSError:
+    except (OSError, NotImplementedError):  # as ``RemoteVolumePath._listing``
         return False
     return head == _RAR_MARKER_PREFIX
 
@@ -1171,7 +1173,7 @@ def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
     )
 
 
-def _old_rar_bases(paths: Sequence[Path]) -> frozenset[str]:
+def _old_rar_bases(paths: Sequence[PurePath]) -> frozenset[str]:
     """The case-folded bases of every old-scheme continuation in the sequence."""
     return frozenset(
         match.group("base").lower()
@@ -1223,7 +1225,7 @@ def _different_sets_error(first: str, second: str) -> _UsageValueError:
     )
 
 
-def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
+def _validate_volume_sequence_bases(paths: Sequence[PurePath]) -> None:
     """Require the sequence to name the parts of one archive, as far as names can say.
 
     Parts of two different sets concatenate into bytes that are neither archive, and
@@ -1336,7 +1338,7 @@ def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
             raise _different_sets_error(marked_base, stem)
 
 
-def _validate_numbered_volume_completeness(paths: Sequence[Path]) -> None:
+def _validate_numbered_volume_completeness(paths: Sequence[PurePath]) -> None:
     """Require ``name.EXT.001 … .00N`` parts to be numbered 1..N with no gaps.
 
     Concatenating a set with a hole produces bytes that are neither the original
@@ -1542,9 +1544,25 @@ def _resolve_volume_list(
     try:
         items = [_coerce_path_or_stream(item, ranges) for item in raw_items]
         paths = [item for item in items if isinstance(item, Path)]
-        joined = (
-            join_volumes(paths) if len(paths) == len(items) else ConcatenatedFile(items)
-        )
+        if len(paths) == len(items):
+            joined = join_volumes(paths)
+        else:
+            # Parts on an fsspec file system have names too, and the checks read only
+            # names: a remote set with a gap is refused as a local one is. A list
+            # holding a caller's stream has no name to check.
+            names = [
+                item
+                if isinstance(item, Path)
+                else PurePosixPath(cast("OpenFile", raw).path)
+                if is_open_file(raw)
+                else None
+                for raw, item in zip(raw_items, items, strict=True)
+            ]
+            named = [name for name in names if name is not None]
+            if len(named) == len(names):
+                _validate_volume_sequence_bases(named)
+                _validate_numbered_volume_completeness(named)
+            joined = ConcatenatedFile(items)
     except BaseException:
         ranges.close_all()
         raise
