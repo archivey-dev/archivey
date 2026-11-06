@@ -21,6 +21,13 @@ fsspec file as a plain file object; the cases open it the two ways a caller woul
 - ``default``: ``fs.open(path)``: fsspec's own default cache (``readahead``, 5 MiB
   blocks), which fetches far more than it needs on a small read.
 
+Operations: list; read the first, a middle and the last member; ``extract_all()``;
+``stream_members()`` under ``streaming=True``; and, on the formats that open members
+independently, eight threads reading eight members (``threads``) and sixteen member
+streams open at once (``many_streams``), the cases that pin the planner's window rules.
+Threads that share one caller-opened file race for its position, so ``threads`` is
+reported and not gated.
+
 Recorded per case: ``range_requests``, ``metadata_requests``, ``bytes_fetched``, and
 ``archive_size`` for scale. ``overfetch`` is ``bytes_fetched / archive_size``: the
 design's ``bytes_needed`` (the least an operation could read) needs per-format span
@@ -231,15 +238,69 @@ def _op_stream_members(reader: Any, _dest: Path) -> None:
             stream.read()
 
 
-# operation name -> (streaming=, callable)
-OPERATIONS: dict[str, tuple[bool, Callable[[Any, Path], None]]] = {
-    "list": (False, _op_list),
-    "read_first": (False, _read_one(lambda n: 0)),
-    "read_middle": (False, _read_one(lambda n: n // 2)),
-    "read_last": (False, _read_one(lambda n: n - 1)),
-    "extract_all": (False, _op_extract_all),
-    "stream_members": (True, _op_stream_members),
+THREADED_READERS = 8
+OPEN_STREAMS = 16
+
+
+def _op_threads(reader: Any, _dest: Path) -> None:
+    """Eight threads, each reading one of eight members spread over the archive.
+
+    Every thread opens its stream before any reads, so all eight runs are active at
+    once (design D2 rule 4, the shrinking fetch). The bytes each thread reads are
+    deterministic; the order of the requests is not, so only counts are recorded.
+    """
+    members = _members_with_data(reader)
+    step = max(len(members) // THREADED_READERS, 1)
+    chosen = members[::step][:THREADED_READERS]
+    streams = [reader.open(m) for m in chosen]
+    barrier = threading.Barrier(len(streams))
+
+    def work(stream: Any) -> None:
+        barrier.wait()
+        with stream:
+            while stream.read(4096):
+                pass
+
+    threads = [threading.Thread(target=work, args=(s,)) for s in streams]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+
+def _op_many_streams(reader: Any, _dest: Path) -> None:
+    """Sixteen member streams open at once, read round-robin in small steps.
+
+    Twice the window count under the planner's test constants (design D2 rule 4, the
+    unbuffered reads past the window limit). One thread: the order is deterministic.
+    """
+    members = _members_with_data(reader)[:OPEN_STREAMS]
+    streams = [reader.open(m) for m in members]
+    try:
+        live = list(streams)
+        while live:
+            live = [s for s in live if s.read(4096)]
+    finally:
+        for s in streams:
+            s.close()
+
+
+# operation name -> (open_archive keywords, callable)
+OPERATIONS: dict[str, tuple[dict[str, Any], Callable[[Any, Path], None]]] = {
+    "list": ({}, _op_list),
+    "read_first": ({}, _read_one(lambda n: 0)),
+    "read_middle": ({}, _read_one(lambda n: n // 2)),
+    "read_last": ({}, _read_one(lambda n: n - 1)),
+    "extract_all": ({}, _op_extract_all),
+    "stream_members": ({"streaming": True}, _op_stream_members),
+    "threads": ({"concurrent_operations": True}, _op_threads),
+    "many_streams": ({"concurrent_operations": True}, _op_many_streams),
 }
+
+# Operations that need several member streams open at once: only the formats that
+# open members independently run them (a solid or compressed-TAR stream cannot).
+MULTI_STREAM_OPERATIONS = frozenset({"threads", "many_streams"})
+MULTI_STREAM_FORMATS = frozenset({"zip_stored", "zip_deflate", "tar"})
 
 
 @dataclass(frozen=True)
@@ -265,6 +326,14 @@ REMOTE_SCALES: dict[str, RemoteScale] = {
 # compressed ones also depend on the zlib or liblzma build (zlib-ng writes other
 # bytes), so their counts are reported but not gated.
 GATED_FORMATS = frozenset({"zip_stored", "tar"})
+
+# Threads sharing one caller-opened fsspec file race for its position and its cache, so
+# their request count changes from run to run: reported, not gated.
+UNGATED_OPERATIONS = frozenset({"threads"})
+
+
+def is_gated(fmt: str, operation: str) -> bool:
+    return fmt in GATED_FORMATS and operation not in UNGATED_OPERATIONS
 
 
 def baseline_applies(baseline: dict[str, Any]) -> bool:
@@ -344,12 +413,12 @@ def _fixture_paths(root: Path, scale: str) -> dict[str, Path]:
 def run_case(
     fmt: str, path: Path, operation: str, cache: str, work: Path
 ) -> RemoteCaseResult:
-    streaming, op = OPERATIONS[operation]
+    open_kwargs, op = OPERATIONS[operation]
     fs = CountingFileSystem()
     dest = work / f"{fmt}-{operation}-{cache}"
     with (
         fs.open(str(path), "rb", **CACHE_MODES[cache]) as remote,
-        open_archive(remote, streaming=streaming) as reader,
+        open_archive(remote, **open_kwargs) as reader,
     ):
         op(reader, dest)
     shutil.rmtree(dest, ignore_errors=True)
@@ -373,6 +442,11 @@ def run_cases(scale: str = "ci") -> list[RemoteCaseResult]:
         fixtures.mkdir()
         for fmt, path in _fixture_paths(fixtures, scale).items():
             for operation in OPERATIONS:
+                if (
+                    operation in MULTI_STREAM_OPERATIONS
+                    and fmt not in MULTI_STREAM_FORMATS
+                ):
+                    continue
                 for cache in CACHE_MODES:
                     results.append(run_case(fmt, path, operation, cache, work))
     return results
@@ -390,7 +464,7 @@ def check_against_baseline(
     base_cases: dict[str, Any] = baseline.get("cases", {})
     seen = set()
     for r in results:
-        if r.format not in GATED_FORMATS:
+        if not is_gated(r.format, r.operation):
             continue
         seen.add(r.case)
         base = base_cases.get(r.case)
@@ -412,7 +486,7 @@ def check_against_baseline(
         for name in sorted(
             n
             for n, b in base_cases.items()
-            if b["format"] in GATED_FORMATS and n not in seen
+            if is_gated(b["format"], b["operation"]) and n not in seen
         )
     )
     return failures
@@ -427,7 +501,10 @@ def to_payload(results: list[RemoteCaseResult]) -> dict[str, Any]:
         },
         "cases": {
             r.case: {k: v for k, v in asdict(r).items() if k not in {"case"}}
-            | {"overfetch": round(r.overfetch, 3), "gated": r.format in GATED_FORMATS}
+            | {
+                "overfetch": round(r.overfetch, 3),
+                "gated": is_gated(r.format, r.operation),
+            }
             for r in results
         },
     }
