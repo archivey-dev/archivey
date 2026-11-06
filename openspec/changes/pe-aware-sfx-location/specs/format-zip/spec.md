@@ -12,7 +12,8 @@ the declared comment are the comment, whatever they hold. The end record is sear
 in the last 65 558 bytes before the payload end (`archive-reading`, *Honour detection
 payload_offset at open*), which is the end of the file when there is none. Opened at start 0
 with no end passed, the seekable reader reads its first bytes to derive one when the search
-finds no end record or a non-zero byte follows the archive, so a forced `format=ZIP`
+finds no end record, the record it finds says bytes precede its archive, or a non-zero byte
+follows the archive, so a forced `format=ZIP`
 searches the same span and reports the same bytes as auto-detect. Bytes at or past
 the payload end are the executable's certificate, not data after the archive, and SHALL
 raise no diagnostic; a non-zero byte between the archive's end and the payload end is
