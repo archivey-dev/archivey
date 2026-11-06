@@ -266,7 +266,7 @@ _CASE_UNKNOWN_ON_WINDOWS = {
 
 @requires_binary("unrar")
 def test_case_fold_selection_is_the_one_unrar_makes_on_this_os(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The model's selection for non-ASCII case matches unrar's on every OS.
 
@@ -326,6 +326,13 @@ def test_case_fold_selection_is_the_one_unrar_makes_on_this_os(
             assert data == _payload(index), member.name
     assert refused == ([6, 10] if sys.platform == "win32" else [])
 
+    # A synthetic archive names no member, so every read is the member's on any OS.
+    monkeypatch.undo()
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    with open_archive(archive, config=_UNRAR_SHARED) as reader:
+        for index, member in enumerate(reader.members()):
+            assert reader.read(member) == _payload(index), member.name
+
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
 def test_selection_keys_grow_linearly_with_the_name(
@@ -370,7 +377,7 @@ def test_rar3_8bit_mask_selection_is_the_one_unrar_makes(tmp_path: Path) -> None
 
 @requires_binary("unrar")
 def test_every_rar5_member_reads_its_own_bytes_or_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Whatever unrar selects alongside a member, the bytes returned are its own.
 
@@ -439,7 +446,7 @@ def test_duplicate_names_read_by_position(tmp_path: Path, solid: bool) -> None:
 @requires_binary("unrar")
 @pytest.mark.parametrize("solid", [False, True], ids=["nonsolid", "solid"])
 def test_a_name_that_selects_earlier_members_is_refused_by_default(
-    tmp_path: Path, solid: bool
+    unrar_mask_route: None, tmp_path: Path, solid: bool
 ) -> None:
     """A duplicate name costs unrar the same decode of earlier members as a glob, and
     is refused the same way. The first member selects nothing before it and reads."""
@@ -483,7 +490,7 @@ def test_a_name_that_selects_only_empty_earlier_members_reads(tmp_path: Path) ->
 
 @requires_binary("unrar", "unar")
 def test_auto_reads_a_name_that_selects_earlier_members_with_unar(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """unar names entries by index, so under AUTO a shared name needs no flag: the
     refused members go to unar, with no password on its command line, and the first,
@@ -530,7 +537,9 @@ def test_invalid_utf8_name_reads_through_the_prefix_unrar_sees(tmp_path: Path) -
 
 
 @requires_binary("unrar")
-def test_name_unrar_reads_as_empty_is_refused(tmp_path: Path) -> None:
+def test_name_unrar_reads_as_empty_is_refused(
+    unrar_mask_route: None, tmp_path: Path
+) -> None:
     source = _fixture("hostile_argv__.rar")
     blocks = _rar5_parse(source.read_bytes())
     files = [block for block in blocks if block["type"] == 2]
@@ -548,7 +557,7 @@ def test_name_unrar_reads_as_empty_is_refused(tmp_path: Path) -> None:
 @requires_binary("unrar")
 @_LINUX_ONLY
 def test_earlier_name_unrar_cannot_be_modelled_refuses_later_reads(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With no UTF-8 locale, an 8-bit name's reading by unrar is unknown."""
     path = _rar4_with_name(tmp_path, b"caf\xe9")
@@ -585,7 +594,7 @@ def _mask_selects_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Pa
 
 @requires_binary("unrar")
 def test_mask_that_does_not_select_its_member_is_refused_under_unrar(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = _mask_selects_nothing(monkeypatch, tmp_path)
     with (
@@ -634,7 +643,9 @@ def test_five_and_six_byte_forms_are_modelled_as_glibc_reads_them() -> None:
 
 @requires_binary("unrar")
 @_LINUX_ONLY
-def test_overlong_five_byte_name_does_not_refuse_later_reads(tmp_path: Path) -> None:
+def test_overlong_five_byte_name_does_not_refuse_later_reads(
+    unrar_mask_route: None, tmp_path: Path
+) -> None:
     """unrar maps an overlong form, so the earlier name is known and later
     members read; the accepted form is not modelled and refuses them."""
     with open_archive(_fixture("hostile_argv__rar4.rar"), config=_UNRAR_ONLY) as ar:
@@ -744,7 +755,9 @@ def test_valid_utf8_rar3_name_wins_over_the_encoding_argument(
 
 
 @requires_binary("unrar")
-def test_8bit_rar3_name_decoded_with_encoding_still_reads(tmp_path: Path) -> None:
+def test_8bit_rar3_name_decoded_with_encoding_still_reads(
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The mask is the stored bytes, whatever the name was decoded with."""
     with open_archive(_fixture("hostile_argv__rar4.rar"), config=_UNRAR_ONLY) as ar:
         expected = ar.read("canary.txt")
@@ -756,11 +769,15 @@ def test_8bit_rar3_name_decoded_with_encoding_still_reads(tmp_path: Path) -> Non
                 reader.read(reader.members()[0])
         else:
             assert reader.read(reader.members()[0]) == expected
+    # A synthetic archive names no member: it reads on every OS.
+    monkeypatch.undo()
+    with open_archive(path, encoding="cp1251", config=_UNRAR_ONLY) as reader:
+        assert reader.read(reader.members()[0]) == expected
 
 
 @requires_binary("unrar")
 def test_8bit_name_macos_unrar_reads_as_empty_is_refused_before_spawning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """macOS ``unrar`` converts an 8-bit name, and the argv mask, with ``UtfToWide``
     (``unicode.cpp``, ``CharToWide`` under ``_APPLE``), which stops at the first
@@ -908,7 +925,10 @@ def test_dot_rule_probe_that_cannot_run_is_not_stored(
 @requires_binary("unrar")
 @pytest.mark.parametrize("answer", [True, False, None])
 def test_reader_asks_for_the_dot_rule_only_when_it_changes_the_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: bool | None
+    unrar_mask_route: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: bool | None,
 ) -> None:
     """``ab`` and ``ab.``: only the read of ``ab.`` depends on the rule.
 

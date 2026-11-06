@@ -585,7 +585,9 @@ def test_rar3_version_suffix_is_parsed_without_a_bare_value_error(
 
 
 @requires_binary("unrar")
-def test_nul_in_member_name_read_raises_an_archivey_error(tmp_path: Path) -> None:
+def test_nul_in_member_name_read_raises_an_archivey_error(
+    unrar_mask_route: None, tmp_path: Path
+) -> None:
     blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
     _rar5_file_blocks(blocks)[0]["name"] = b"nul\x00x.txt"
     path = tmp_path / "nul.rar"
@@ -904,7 +906,7 @@ def test_unrar_counts_the_window_ahead_of_an_encrypted_stored_solid_member(
 
 @requires_binary("unrar")
 def test_unrar_counts_an_earlier_member_its_shared_mask_decodes(
-    tmp_path: Path, no_spawn: None
+    unrar_mask_route: None, tmp_path: Path, no_spawn: None
 ) -> None:
     """A duplicate name makes unrar decode the earlier entry before the target.
 

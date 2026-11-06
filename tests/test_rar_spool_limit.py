@@ -373,8 +373,9 @@ def test_cost_note_names_the_limit() -> None:
     note = _only_note(io.BytesIO(blob), len(blob))
     assert "will copy the whole archive to disk" in note
     assert f"SpoolLimits.max_bytes={len(blob)}" in note
+    # A nonsolid set: unrar reads each member from a copy of that member alone.
     note = _only_note(_volume_streams(), _volume_total())
-    assert "will copy every volume to a temp directory" in note
+    assert "will copy that member's packed bytes to disk" in note
     assert f"SpoolLimits.max_bytes={_volume_total()}" in note
     for source in (io.BytesIO(blob), _volume_streams()):
         note = _only_note(source, None)
@@ -406,12 +407,9 @@ def test_cost_note_names_the_limit() -> None:
         ),
         pytest.param(
             _volume_streams,
-            _volume_total() - 1,
-            f"a copy of every volume would be {_volume_total()} bytes",
-            id="volumes-over",
-        ),
-        pytest.param(
-            _volume_streams, 0, "max_bytes=0 allows no copy", id="volumes-zero"
+            0,
+            "max_bytes=0 allows no copy of a member",
+            id="volumes-zero",
         ),
     ],
 )
@@ -479,18 +477,21 @@ def test_volume_set_within_the_limit_reads(temp_artifacts: list[Path]) -> None:
     assert not temp_artifacts[0].exists()
 
 
-def test_volume_set_limit_weighs_the_total_not_each_volume(
-    temp_artifacts: list[Path], no_unrar: None
+@requires_binary("unrar")
+def test_volume_set_under_its_total_reads_through_a_member_copy(
+    temp_artifacts: list[Path],
 ) -> None:
-    # Every volume fits on its own; the set does not.
+    """A limit below the set's total no longer refuses: only the member is copied.
+
+    The read copies the member's joined parts into one synthetic archive
+    (``rar_synthetic``) rather than every volume, so the limit weighs that copy.
+    """
     limit = _volume_total() - 1
-    assert all(path.stat().st_size <= limit for path in _VOLUMES)
-    with (
-        open_archive(_volume_streams(), config=_config(limit)) as archive,
-        pytest.raises(ResourceLimitError, match=r"every volume"),
-    ):
-        archive.read("payload.bin")
-    assert temp_artifacts == []
+    with open_archive(_volume_streams(), config=_config(limit)) as archive:
+        assert archive.read("payload.bin") == _VOLUME_PAYLOAD
+        # One synthetic archive, removed when the member stream closed.
+        assert len(temp_artifacts) == 1
+        assert not temp_artifacts[0].exists()
 
 
 @pytest.mark.parametrize(
@@ -520,9 +521,11 @@ def test_volume_set_limit_stops_mid_copy_and_removes_the_directory(
     """The copy itself enforces the limit, not only the up-front total.
 
     The up-front check is switched off, so what refuses here is the budget running
-    out during the copy.
+    out during the copy. A member copy refused for its size (``check_fits``) is
+    switched off too, so the read reaches the copy of the volumes.
     """
     monkeypatch.setattr(SpoolBudget, "check_total", lambda self, total: None)
+    monkeypatch.setattr(SpoolBudget, "check_fits", lambda self, total: None)
     with (
         open_archive(sources(), config=_config(limit)) as archive,
         pytest.raises(ResourceLimitError),

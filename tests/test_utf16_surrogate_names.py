@@ -397,19 +397,31 @@ _UNRAR = ArchiveyConfig(rar_decompressor=RarDecompressor.UNRAR)
 def test_unrar_reads_a_compressed_rar4_name_with_a_surrogate_unit(
     tmp_path: Path, name: str
 ) -> None:
-    """``unrar`` matches these names unit by unit; the mask sends each unit as ``?``.
+    """The member reads through a synthetic archive, so its name never reaches
+    ``unrar``: a lone unit reads on Windows too, where no argv can carry it.
 
-    No argv encoding carries a surrogate unit to ``unrar``. Before, a lone unit was
-    U+FFFD (the read selected nothing and reported a ``TruncatedError``), and a valid
-    pair was sent as one character where ``unrar`` holds two.
+    Before, a lone unit was U+FFFD (the read selected nothing and reported a
+    ``TruncatedError``), and a valid pair was sent as one character where ``unrar``
+    holds two.
     """
     archive, expected = _compressed_rar4_surrogate(tmp_path, (name,))
     with archivey.open_archive(archive, config=_UNRAR) as reader:
         assert reader.members()[0].name == name
+        assert reader.read(name) == expected[0]
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", ["hi\ud800.txt", "pair\U0001f600.txt"])
+def test_unrar_mask_sends_a_surrogate_unit_as_a_wildcard(
+    unrar_mask_route: None, tmp_path: Path, name: str
+) -> None:
+    """On the mask route, ``unrar`` matches these names unit by unit and the mask
+    sends each unit as ``?``; Windows refuses a lone unit, which no argv carries."""
+    archive, expected = _compressed_rar4_surrogate(tmp_path, (name,))
+    with archivey.open_archive(archive, config=_UNRAR) as reader:
         lone_unit = any("\ud800" <= char <= "\udfff" for char in name)
         if sys.platform == "win32" and lone_unit:
-            # Windows argv carries a valid pair exactly; a lone unit is refused there
-            # (what Windows unrar does with one is unmeasured).
+            # What Windows unrar does with a lone unit is unmeasured.
             with pytest.raises(UnsupportedFeatureError, match="unar"):
                 reader.read(name)
             return
@@ -419,6 +431,7 @@ def test_unrar_reads_a_compressed_rar4_name_with_a_surrogate_unit(
 @requires_binary("unrar")
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows sends no `?` mask")
 def test_unrar_sizes_a_read_past_a_surrogate_name_the_mask_also_selects(
+    unrar_mask_route: None,
     tmp_path: Path,
 ) -> None:
     """``hi?.txt`` selects ``hiX.txt`` too, so ``unrar`` pipes the earlier member first.
@@ -445,6 +458,7 @@ def test_unrar_sizes_a_read_past_a_surrogate_name_the_mask_also_selects(
 @requires_binary("unrar")
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows argv carries the unit")
 def test_unrar_refuses_a_surrogate_unit_in_a_directory_and_names_unar(
+    unrar_mask_route: None,
     tmp_path: Path,
 ) -> None:
     """The unit would reach ``unrar`` as a directory glob, which cannot be sized."""

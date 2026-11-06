@@ -323,6 +323,7 @@ def test_dot_named_member_never_reads_a_siblings_bytes(tmp_path: Path) -> None:
 
 @requires_binary("unrar")
 def test_member_unrar_cannot_address_is_refused_not_reported_corrupt(
+    unrar_mask_route: None,
     tmp_path: Path,
 ) -> None:
     """``rar.md`` §5: such a name raises ``UnsupportedFeatureError`` on the unrar path.

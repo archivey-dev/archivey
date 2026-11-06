@@ -541,3 +541,16 @@ def named_fifo_with_writer() -> Iterator[Callable[[Path, bytes], None]]:
             finally:
                 os.close(fd)
         assert not thread.is_alive(), f"FIFO writer for {path} is still blocked"
+
+
+@pytest.fixture
+def unrar_mask_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read RAR members as before synthetic archives: the original archive and a mask.
+
+    For the tests of that route (the name model, its refusals, the whole-archive
+    copy of a stream source), which still serves solid archives, large members of
+    an archive on disk, and ``unar``. Removed with the route.
+    """
+    from archivey.internal.backends.rar_reader import RarReader
+
+    monkeypatch.setattr(RarReader, "_synthetic_file", lambda self, member, raw: None)

@@ -1468,7 +1468,8 @@ def test_stream_source_has_copy_cost_note_at_open() -> None:
     blob = _fixture("stored_m0.rar").read_bytes()
     with open_archive(io.BytesIO(blob)) as archive:
         held = archive.cost
-        assert _single_stream_copy_note_present(held.notes)
+        # Nonsolid: an unrar read copies the member, not the archive.
+        assert any("copy that member's packed bytes" in n for n in held.notes)
         member = next(m for m in archive.members() if m.is_file)
         assert archive.read(member) == b"stored payload"
         assert archive.cost == held
@@ -1492,7 +1493,8 @@ def test_multi_volume_stream_materialization() -> None:
         with open_archive(streams) as archive:
             assert archive.info.is_multivolume is True
             held = archive.cost
-            assert _stream_volumes_copy_note_present(held.notes)
+            # Nonsolid: an unrar read copies the member, not every volume.
+            assert any("copy that member's packed bytes" in n for n in held.notes)
             assert archive.read("payload.bin") == _M3_PAYLOAD
             assert archive.cost == held
     finally:
@@ -1573,6 +1575,7 @@ def test_stream_volume_listing_writes_nothing(
 
 @requires_binary("unrar")
 def test_stream_volume_read_materializes_once(
+    unrar_mask_route: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The copy happens on the first read unrar serves, and only once."""
@@ -1614,6 +1617,7 @@ def test_stream_volume_read_materializes_once(
     ],
 )
 def test_concurrent_stream_materialize_writes_once_and_cleans_up(
+    unrar_mask_route: None,
     monkeypatch: pytest.MonkeyPatch,
     source_factory: Callable[[], io.BytesIO | list[io.BytesIO]],
 ) -> None:
@@ -4786,7 +4790,7 @@ def test_unrar_glob_demux_ok_basename_only() -> None:
 @requires_binary("unrar")
 @pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
 def test_wildcard_member_name_reads_its_own_bytes(
-    name: str, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None, name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``unrar -n./a*.txt`` concatenates every match; we skip to the named member.
 
@@ -4818,7 +4822,9 @@ def test_wildcard_member_name_reads_its_own_bytes(
 
 @requires_binary("unrar")
 @pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
-def test_glob_member_with_earlier_matches_is_refused(name: str) -> None:
+def test_glob_member_with_earlier_matches_is_refused(
+    unrar_mask_route: None, name: str
+) -> None:
     """A glob name whose mask also matches earlier members is refused by default.
 
     ``unrar -n./a*.txt`` decompresses every match and emits them concatenated, so
@@ -4861,7 +4867,10 @@ def test_glob_member_matching_nothing_else_still_reads(name: str) -> None:
     ],
 )
 def test_auto_reads_with_unar_a_member_unrar_cannot_name(
-    name: str, contents: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None,
+    name: str,
+    contents: dict[str, bytes],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Under ``AUTO``, a member whose name unrar refuses goes to an accepted unar.
 
@@ -4910,6 +4919,7 @@ def test_auto_keeps_the_unrar_refusal_when_unar_refuses_the_archive() -> None:
 
 @requires_binary("unrar")
 def test_auto_keeps_the_unrar_refusal_without_an_accepted_unar(
+    unrar_mask_route: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def no_unar(*, purpose: str) -> str:
@@ -4927,6 +4937,7 @@ def test_auto_keeps_the_unrar_refusal_without_an_accepted_unar(
 
 @requires_binary("unrar", "unar")
 def test_plaintext_members_of_an_encrypted_archive_get_no_password(
+    unrar_mask_route: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A spawn that reads one member gets a password only when that member needs one.
@@ -4960,7 +4971,7 @@ def test_plaintext_members_of_an_encrypted_archive_get_no_password(
 
 @requires_binary("unrar", "unar")
 def test_auto_keeps_the_unrar_refusal_when_unar_would_need_a_copy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A prefix before the RAR means unar reads a copy, which the open-time cost
     notes under unrar do not announce, so the unrar refusal stands."""
@@ -4980,7 +4991,9 @@ def test_auto_keeps_the_unrar_refusal_when_unar_would_need_a_copy(
 
 
 @requires_binary("unrar")
-def test_glob_concatenation_flag_names_itself_in_the_refusal() -> None:
+def test_glob_concatenation_flag_names_itself_in_the_refusal(
+    unrar_mask_route: None,
+) -> None:
     """The refusal tells the caller the byte count and the exact flag to set."""
     with (
         open_archive(_fixture("wildcard_names__.rar"), config=_UNRAR_ONLY) as archive,
@@ -5030,7 +5043,9 @@ def test_wildcard_solid_stream_members_reads_all() -> None:
 
 
 @requires_binary("unrar")
-def test_wildcard_nonsolid_stream_members_hits_the_refusal() -> None:
+def test_wildcard_nonsolid_stream_members_hits_the_refusal(
+    unrar_mask_route: None,
+) -> None:
     """A nonsolid streaming pass takes the named route, so the refusal reaches it.
 
     ``_iter_with_data`` falls through to per-member named opens for nonsolid archives,
@@ -5104,6 +5119,7 @@ _SEPARATOR_OR_DIR_GLOB = (
 
 @requires_binary("unrar")
 def test_wildcard_dirglob_and_backslash_names_are_refused(
+    unrar_mask_route: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A glob in a directory component, or a backslash in the stored name, stays a
@@ -5150,7 +5166,9 @@ def test_wildcard_dirglob_and_backslash_names_are_refused(
 @requires_binary("unrar")
 @pytest.mark.parametrize("config", [_UNRAR_ONLY, None], ids=["unrar", "auto"])
 def test_refused_glob_open_of_a_stream_source_writes_nothing(
-    config: ArchiveyConfig | None, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None,
+    config: ArchiveyConfig | None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A refused ``open()`` must not spool the source to disk on its way to the raise.
 
