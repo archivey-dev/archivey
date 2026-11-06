@@ -667,7 +667,9 @@ def read_signature_and_next_header(
         )
 
     if will_read is not None:
-        end = SIGNATURE_HEADER_SIZE + fields.next_header_offset + fields.next_header_size
+        end = (
+            SIGNATURE_HEADER_SIZE + fields.next_header_offset + fields.next_header_size
+        )
         will_read(max(SIGNATURE_HEADER_SIZE, end - NEXT_HEADER_HINT), end)
     try:
         fp.seek(SIGNATURE_HEADER_SIZE + fields.next_header_offset)
