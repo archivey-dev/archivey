@@ -29,8 +29,9 @@ Operations: list; read the first, a middle and the last member; ``extract_all()`
 ``stream_members()`` under ``streaming=True``; and, on the formats that open members
 independently, eight threads reading eight members (``threads``) and sixteen member
 streams open at once (``many_streams``), the cases that pin the planner's window rules.
-Threads that share one caller-opened file race for its position, so ``threads`` is
-reported and not gated.
+Threads that share one caller-opened file race for its position and its cache, so
+both the requests and the bytes fetched of ``threads`` move from run to run, on TAR as on
+ZIP: the case is reported and not gated.
 
 Recorded per case: ``range_requests``, ``metadata_requests``, ``bytes_fetched``, and
 ``archive_size`` for scale. ``overfetch`` is ``bytes_fetched / archive_size``: the
@@ -264,25 +265,38 @@ def _op_threads(reader: Any, _dest: Path) -> None:
 
     Every thread opens its stream before any reads, so all eight runs are active at
     once (design D2 rule 4, the shrinking fetch). The bytes each thread reads are
-    deterministic; the order of the requests is not, so only counts are recorded.
+    deterministic; the order of the requests is not, so the requests and the bytes
+    fetched both move a little from run to run, on TAR as on ZIP. The case is
+    reported and not gated (``UNGATED_OPERATIONS``).
     """
     members = _members_with_data(reader)
     step = max(len(members) // THREADED_READERS, 1)
     chosen = members[::step][:THREADED_READERS]
-    streams = [reader.open(m) for m in chosen]
-    barrier = threading.Barrier(len(streams))
+    streams: list[Any] = []
+    try:
+        streams.extend(reader.open(m) for m in chosen)
+        barrier = threading.Barrier(len(streams))
+        errors: list[BaseException] = []
 
-    def work(stream: Any) -> None:
-        barrier.wait()
-        with stream:
-            while stream.read(4096):
-                pass
+        def work(stream: Any) -> None:
+            try:
+                barrier.wait()
+                while stream.read(4096):
+                    pass
+            except BaseException as exc:  # noqa: BLE001  # re-raised below, after every join
+                errors.append(exc)
+                barrier.abort()
 
-    threads = [threading.Thread(target=work, args=(s,)) for s in streams]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+        threads = [threading.Thread(target=work, args=(s,)) for s in streams]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if errors:
+            raise errors[0]
+    finally:
+        for s in streams:
+            s.close()
 
 
 def _op_many_streams(reader: Any, _dest: Path) -> None:
@@ -345,7 +359,8 @@ REMOTE_SCALES: dict[str, RemoteScale] = {
 GATED_FORMATS = frozenset({"zip_stored", "tar"})
 
 # Threads sharing one caller-opened fsspec file race for its position and its cache, so
-# their request count changes from run to run: reported, not gated.
+# their requests and bytes fetched change from run to run, on TAR as on ZIP: reported,
+# not gated.
 UNGATED_OPERATIONS = frozenset({"threads"})
 
 

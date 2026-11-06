@@ -9,6 +9,7 @@ refused ``OpenFile`` fields, and the facts the source settles at open.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import subprocess
 import sys
@@ -30,6 +31,7 @@ from archivey import (  # noqa: E402
     CorruptionError,
     DiagnosticCode,
     DiagnosticPolicy,
+    DiagnosticRaisedError,
     ReadError,
     SourceChangedError,
     detect_format,
@@ -217,6 +219,52 @@ def test_fetch_shrinks_when_more_runs_than_the_pool_holds_at_max_fetch():
     assert pool.held_bytes <= constants.pool_bytes
 
 
+def test_a_run_started_after_the_pool_filled_still_gets_a_window():
+    """An exactly full pool below the window limit trims the other windows, so a new
+    run is buffered, not one request per read."""
+    constants = PlannerConstants(
+        min_fetch=16 * KIB, max_fetch=128 * KIB, pool_bytes=256 * KIB
+    )
+    pool = WindowPool(constants)
+    src, fs = _source(DATA, constants=constants, pool=pool)
+    positions = [0, 512 * KIB]
+    while pool.held_bytes < constants.pool_bytes:
+        for i in range(2):
+            src.seek(positions[i])
+            src.read(16 * KIB)
+            positions[i] += 16 * KIB
+    assert pool.held_bytes == constants.pool_bytes
+    before = len(fs.fetches)
+    third = 900 * KIB
+    for step in range(6):
+        src.seek(third + step * KIB)
+        assert src.read(KIB) == DATA[third + step * KIB : third + (step + 1) * KIB]
+    assert pool.run_count == 3
+    assert len(fs.fetches) - before == 1
+    assert pool.held_bytes <= constants.pool_bytes
+
+
+class RangeIgnoringFS(RecordingFS):
+    """Answers every range request with the whole object, as an HTTP server that
+    ignores ``Range`` does."""
+
+    def cat_file(self, path: str, start: int, end: int) -> bytes:
+        super().cat_file(path, start, end)
+        return self.data
+
+
+@pytest.mark.parametrize("read", [10, 6000])
+def test_a_file_system_that_ignores_ranges_is_refused(read: int):
+    constants = PlannerConstants(min_fetch=1024, max_fetch=4096, pool_bytes=8192)
+    fs = RangeIgnoringFS(DATA)
+    pool = WindowPool(constants)
+    src = RangeSource(fs, "obj", size=len(DATA), pool=pool, max_read_through=0)
+    src.seek(100)
+    with pytest.raises(OSError, match="does not honour range requests"):
+        src.read(read)
+    assert pool.held_bytes == 0
+
+
 def test_an_idle_run_gives_its_window_to_a_new_one():
     pool = WindowPool(SMALL)
     src, _ = _source(DATA, pool=pool)
@@ -274,7 +322,10 @@ def test_open_archive_reads_an_open_file(memfs):
         got = {m.name: reader.read(m) for m in reader.members() if m.is_file}
         assert got == MEMBERS
         detected = detect_format(fsspec.open("memory://t/a.zip"))
-        assert reader.format_info.format == detected.format
+        # Equal but for the diagnostics, whose occurrence ids differ by run.
+        assert dataclasses.replace(
+            reader.format_info, diagnostics=None
+        ) == dataclasses.replace(detected, diagnostics=None)
         assert reader.format_info.diagnostics.counts == detected.diagnostics.counts
 
 
@@ -360,8 +411,11 @@ def test_ignored_open_file_without_compression_reads_the_gzip(memfs):
         assert reader.read(member) == b"payload"
 
 
-def test_a_url_string_stays_a_local_path():
-    with pytest.raises(FileNotFoundError):
+def test_a_url_string_stays_a_local_path(memfs):
+    # The object exists on memory://, so only a local-path open can fail. The OS
+    # decides how: FileNotFoundError on POSIX, EINVAL for the ':' on Windows.
+    memfs.pipe("/t/a.zip", _zip_bytes(MEMBERS))
+    with pytest.raises(OSError):
         open_archive("memory://t/a.zip")
 
 
@@ -479,6 +533,21 @@ def test_a_shorter_object_raises_source_changed(memfs):
     assert not isinstance(info.value, CorruptionError)
 
 
+def test_a_longer_object_is_not_detected(memfs):
+    """What tier 3 cannot see (design D7): every fetch lies inside the size read at
+    open, and a longer replacement returns those ranges in full. Pinned so the docs
+    cannot drift back to "a change of length raises"."""
+    data = _zip_bytes({"a.bin": b"a" * 400_000})
+    memfs.pipe("/t/a.zip", data)
+    config = ArchiveyConfig(max_read_through=0)
+    with open_archive(fsspec.open("memory://t/a.zip"), config=config) as reader:
+        (member,) = [m for m in reader.members() if m.is_file]
+        memfs.pipe("/t/a.zip", b"B" * (2 * len(data)))
+        with pytest.raises(CorruptionError) as info:
+            reader.read(member)
+    assert not isinstance(info.value, SourceChangedError)
+
+
 def test_a_planner_fetch_of_another_length_raises():
     src, fs = _source(DATA)
     fs.data = DATA[:100]
@@ -486,12 +555,33 @@ def test_a_planner_fetch_of_another_length_raises():
         src.read(10)
 
 
-def test_undetectable_change_is_recorded_at_open(memfs):
-    memfs.pipe("/t/a.zip", _zip_bytes(MEMBERS))
+def _volume_bytes(data: bytes, parts: int) -> list[bytes]:
+    step = -(-len(data) // parts)
+    return [data[i : i + step] for i in range(0, len(data), step)]
+
+
+@pytest.mark.parametrize("how", ["detected", "format", "volumes"])
+def test_undetectable_change_is_recorded_at_open(memfs, how: str):
+    data = _zip_bytes(MEMBERS)
+    if how == "volumes":
+        names = []
+        for n, part in enumerate(_volume_bytes(data, 3), start=1):
+            memfs.pipe(f"/t/v.zip.{n:03d}", part)
+            names.append(f"memory://t/v.zip.{n:03d}")
+        source: Any = [fsspec.open(name) for name in names]
+    else:
+        memfs.pipe("/t/a.zip", data)
+        source = fsspec.open("memory://t/a.zip")
+    kwargs: dict[str, Any] = {"format": ArchiveFormat.ZIP} if how == "format" else {}
     with open_archive(
-        fsspec.open("memory://t/a.zip"),
+        source,
         config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+        **kwargs,
     ) as reader:
+        assert (
+            reader.diagnostics.counts.get(DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE)
+            == 1
+        )
         (diag,) = [
             d
             for d in reader.diagnostics.retained
@@ -499,8 +589,32 @@ def test_undetectable_change_is_recorded_at_open(memfs):
         ]
         assert diag.context.kind == "source_change"
         assert diag.context.protocol == "memory"
-    info = detect_format(fsspec.open("memory://t/a.zip"))
-    assert info.diagnostics.counts.get(DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE) == 1
+    if how == "detected":
+        info = detect_format(fsspec.open("memory://t/a.zip"))
+        assert (
+            info.diagnostics.counts.get(DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE) == 1
+        )
+
+
+def test_open_stream_with_format_records_it_and_pedantic_refuses(memfs):
+    import gzip
+
+    memfs.pipe("/t/a.gz", gzip.compress(b"payload"))
+    seen: list[Any] = []
+    with open_stream(
+        fsspec.open("memory://t/a.gz"),
+        format=ArchiveFormat.GZ,
+        config=ArchiveyConfig(on_diagnostic=seen.append),
+    ) as s:
+        assert s.read() == b"payload"
+    assert [d.code for d in seen] == [DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE]
+    # The leak oracle checks the source this refusal opened is closed.
+    with pytest.raises(DiagnosticRaisedError):
+        open_stream(
+            fsspec.open("memory://t/a.gz"),
+            format=ArchiveFormat.GZ,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.PEDANTIC),
+        )
 
 
 def test_a_local_source_records_no_source_change(tmp_path: Path):

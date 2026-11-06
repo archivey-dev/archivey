@@ -62,8 +62,10 @@ When the source's file system can pin a version of the object, the planner SHALL
 version seen at open. When it forwards request headers and the object has an `ETag`, the
 planner SHALL send `If-Match` with it on every fetch. When neither is possible, the reader
 SHALL record `SOURCE_CHANGE_UNDETECTABLE` (`diagnostics`) at open, saying that a
-replacement of the same length cannot be detected, and the planner SHALL compare the total
-size on each fetch whose response reports it. A file system for which archivey does not
+replacement of the same length, or a longer one, cannot be detected, and the planner SHALL
+raise on each fetch that returns fewer bytes than the range it asked for, inside the size
+read at open. A fetch that returns more bytes than it asked for SHALL raise `OSError`: the
+file system ignores range requests, which is not a change of the object. A file system for which archivey does not
 implement version pinning or header forwarding SHALL be treated as offering neither. A change that is detected SHALL raise; it MUST NOT return bytes of the new
 object as bytes of the archive.
 
@@ -73,7 +75,8 @@ object as bytes of the archive.
 | --- | --- |
 | Versioned store, object replaced mid-read | Reads continue from the pinned version |
 | HTTP with `ETag`, object replaced mid-read | The next fetch raises |
-| No version, no `ETag` | `SOURCE_CHANGE_UNDETECTABLE` at open; a length change raises `SourceChangedError` on the next fetch |
+| No version, no `ETag` | `SOURCE_CHANGE_UNDETECTABLE` at open; a shorter object raises `SourceChangedError` on the next fetch past its end; a longer one is not detected |
+| A file system that ignores ranges and returns the whole object | `OSError` on the first fetch, not `SourceChangedError` |
 | `DiagnosticPolicy.STRICT`, no version, no `ETag` | Opens; the diagnostic is collected, not raised |
 
 ### Requirement: Multi-volume discovery over fsspec
