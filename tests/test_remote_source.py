@@ -669,6 +669,22 @@ def test_a_hint_past_the_max_fetch_keeps_the_part_that_ends_with_the_read():
     assert start <= 300 * KIB < 300 * KIB + 10 <= end
 
 
+def test_a_hint_past_a_runs_window_starts_its_own_run():
+    # The read at 20 KiB continues the first run, but its hint starts past that run's
+    # window: the hinted span gets a run of its own, and the first window stays for
+    # whichever stream is still reading it.
+    src, fs = _source(DATA, gap=8 * KIB)
+    assert src.read(10) == DATA[:10]
+    src.will_read(20 * KIB, 30 * KIB)
+    src.seek(20 * KIB)
+    assert src.read(100) == DATA[20 * KIB : 20 * KIB + 100]
+    src.seek(100)
+    assert src.read(100) == DATA[100:200]
+    first, second = fs.fetches
+    assert first == (0, 16 * KIB)
+    assert second[0] == 20 * KIB
+
+
 def test_a_hint_never_changes_the_bytes():
     src, _ = _source(DATA)
     for start in range(0, len(DATA), 37 * KIB):
