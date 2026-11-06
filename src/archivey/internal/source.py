@@ -555,9 +555,10 @@ class ArchiveSource(ReadOnlyIOStream):
         """Say that ``[start, end)`` of this source is read next.
 
         A remote source (an ``fsspec`` ``OpenFile``) then fetches that span in one
-        request, up to the maximum fetch, when the read comes; any other source ignores it. A hint never changes
-        the bytes a read returns. Offsets are this source's own. A volume list is not
-        hinted: its offsets span several range sources.
+        request, up to the maximum fetch, when the read comes; any other source
+        ignores it. A hint never changes the bytes a read returns. Offsets are this
+        source's own. A volume list is not hinted: its offsets span several range
+        sources.
         """
         remote = self._remote
         if len(remote) == 1 and self._joined is None:

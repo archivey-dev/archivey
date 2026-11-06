@@ -361,8 +361,9 @@ class WindowPool:
         """Record that ``source`` will read ``[start, end)`` next (design D2 rule 3).
 
         Nothing is fetched here: the next read that lands in the span and finds no
-        window fetches the span in one request, up to the maximum fetch. A span a window already holds needs
-        nothing. One pending hint per source; a later one replaces it.
+        window fetches the span in one request, up to the maximum fetch. A span a
+        window already holds needs nothing. One pending hint per source; a later one
+        replaces it.
         """
         with self._lock:
             end = min(end, source.size)
@@ -435,8 +436,11 @@ class RangeSource(io.RawIOBase):
         return self.path
 
     def will_read(self, start: int, end: int) -> None:
-        """The backend reads ``[start, end)`` next: fetch it in one request, up to the
-        maximum fetch, when the read comes (design D2 rule 3). It never changes the bytes a read returns."""
+        """The backend reads ``[start, end)`` next (design D2 rule 3).
+
+        The read that comes fetches the span in one request, up to the maximum fetch.
+        A hint never changes the bytes a read returns.
+        """
         self.pool.hint(self, start, end)
 
     @property

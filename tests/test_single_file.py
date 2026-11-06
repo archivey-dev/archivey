@@ -1072,13 +1072,20 @@ def _brotli_compress(data: bytes) -> bytes:
     return brotli.compress(data)
 
 
+def _mozlz4_compress(data: bytes) -> bytes:
+    import lz4.block
+
+    size = len(data).to_bytes(4, "little")
+    return b"mozLz40\0" + size + lz4.block.compress(data, store_size=False)
+
+
 def _lz4_compress(data: bytes) -> bytes:
     import lz4.frame
 
     return lz4.frame.compress(data)
 
 
-# suffix -> (compressor, skip marks). The eleven single-file codecs.
+# suffix -> (compressor, skip marks). The twelve single-file codecs.
 _SINGLE_FILE_CODECS = {
     ".gz": (gzip.compress, ()),
     ".bz2": (bz2.compress, ()),
@@ -1091,6 +1098,7 @@ _SINGLE_FILE_CODECS = {
     ".lz4": (_lz4_compress, (requires("lz4"),)),
     ".Z": (make_unix_compress, (requires("ncompress"),)),
     ".lzo": (make_lzop, ()),
+    ".mozlz4": (_mozlz4_compress, (requires("lz4"),)),
 }
 
 _NOT_A_STREAM = {"zeros": b"\x00" * 40_000, "zero-byte": b""}

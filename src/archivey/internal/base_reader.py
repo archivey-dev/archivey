@@ -1308,8 +1308,8 @@ class BaseArchiveReader(ArchiveReader):
         """Tell the source that ``[start, end)`` of it is read next.
 
         Offsets are the source's own. Only a remote source acts on it, by fetching the
-        span in one request, up to the maximum fetch (``ArchiveSource.will_read``); it never changes what a read
-        returns.
+        span in one request, up to the maximum fetch (``ArchiveSource.will_read``); it
+        never changes what a read returns.
         """
         source = self._source
         if source is not None:
