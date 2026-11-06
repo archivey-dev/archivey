@@ -212,6 +212,52 @@ def test_fetch_shrinks_when_more_runs_than_the_pool_holds_at_max_fetch():
     assert pool.held_bytes <= constants.pool_bytes
 
 
+def test_a_run_started_after_the_pool_filled_still_gets_a_window():
+    """An exactly full pool below the window limit trims the other windows, so a new
+    run is buffered, not one request per read."""
+    constants = PlannerConstants(
+        min_fetch=16 * KIB, max_fetch=128 * KIB, pool_bytes=256 * KIB
+    )
+    pool = WindowPool(constants)
+    src, fs = _source(DATA, constants=constants, pool=pool)
+    positions = [0, 512 * KIB]
+    while pool.held_bytes < constants.pool_bytes:
+        for i in range(2):
+            src.seek(positions[i])
+            src.read(16 * KIB)
+            positions[i] += 16 * KIB
+    assert pool.held_bytes == constants.pool_bytes
+    before = len(fs.fetches)
+    third = 900 * KIB
+    for step in range(6):
+        src.seek(third + step * KIB)
+        assert src.read(KIB) == DATA[third + step * KIB : third + (step + 1) * KIB]
+    assert pool.run_count == 3
+    assert len(fs.fetches) - before == 1
+    assert pool.held_bytes <= constants.pool_bytes
+
+
+class RangeIgnoringFS(RecordingFS):
+    """Answers every range request with the whole object, as an HTTP server that
+    ignores ``Range`` does."""
+
+    def cat_file(self, path: str, start: int, end: int) -> bytes:
+        super().cat_file(path, start, end)
+        return self.data
+
+
+@pytest.mark.parametrize("read", [10, 6000])
+def test_a_file_system_that_ignores_ranges_is_refused(read: int):
+    constants = PlannerConstants(min_fetch=1024, max_fetch=4096, pool_bytes=8192)
+    fs = RangeIgnoringFS(DATA)
+    pool = WindowPool(constants)
+    src = RangeSource(fs, "obj", size=len(DATA), pool=pool, max_read_through=0)
+    src.seek(100)
+    with pytest.raises(OSError, match="does not honour range requests"):
+        src.read(read)
+    assert pool.held_bytes == 0
+
+
 def test_an_idle_run_gives_its_window_to_a_new_one():
     pool = WindowPool(SMALL)
     src, _ = _source(DATA, pool=pool)
@@ -353,8 +399,11 @@ def test_ignored_open_file_without_compression_reads_the_gzip(memfs):
         assert reader.read(member) == b"payload"
 
 
-def test_a_url_string_stays_a_local_path():
-    with pytest.raises(FileNotFoundError):
+def test_a_url_string_stays_a_local_path(memfs):
+    # The object exists on memory://, so only a local-path open can fail. The OS
+    # decides how: FileNotFoundError on POSIX, EINVAL for the ':' on Windows.
+    memfs.pipe("/t/a.zip", _zip_bytes(MEMBERS))
+    with pytest.raises(OSError):
         open_archive("memory://t/a.zip")
 
 

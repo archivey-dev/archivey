@@ -290,12 +290,15 @@ class WindowPool:
         # The bytes this window may take: the pool less every other window. A run
         # replacing its own window frees that window first.
         room = c.pool_bytes - (self._held - old)
-        if run is None and len(self._runs) >= c.window_limit:
-            room = 0
-        if 0 < room < need or (room < need and run is not None):
+        # Past the window limit a new run gets no window at all. Below it, a pool
+        # that is short of room (exactly full is the usual case: fetch sizes are
+        # powers of two and the pool a multiple of them) trims the other windows to
+        # the cap now in effect, which leaves room for this one.
+        at_limit = run is None and len(self._runs) >= c.window_limit
+        if not at_limit and room < need:
             self._trim_oversized(cap, keep=run)
             room = c.pool_bytes - (self._held - old)
-        if room < need:
+        if at_limit or room < need:
             # No window to be had: unbuffered (rule 3).
             data = source.fetch(at, at + want)
             view[: len(data)] = data
@@ -381,8 +384,21 @@ class RangeSource(io.RawIOBase):
         return True
 
     def fetch(self, start: int, end: int) -> bytes:
-        """One range request, ``[start, end)``."""
+        """One range request, ``[start, end)``.
+
+        A response longer than the range is refused with ``OSError``: the file system
+        ignored the range (an HTTP server answering ``200`` with the whole body does,
+        and fsspec's HTTP file system passes that body on). Its first bytes are not
+        known to start at ``start``, so they are never served, and keeping them would
+        break the pool's bound.
+        """
         data = self.fs.cat_file(self.path, start=start, end=end)
+        if len(data) > end - start:
+            raise OSError(
+                f"{self.path}: the file system returned {len(data)} bytes for a "
+                f"request of bytes {start}-{end}: it does not honour range requests, "
+                f"which reading an archive remotely needs"
+            )
         return bytes(data)
 
     @override
