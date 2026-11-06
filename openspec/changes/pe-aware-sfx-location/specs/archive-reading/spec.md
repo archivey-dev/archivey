@@ -26,8 +26,10 @@ start offset 0 with no end passed SHALL read its own leading bytes, and when the
 whose layout parses, SHALL derive the payload end from them with the PE layout helper
 detection uses. That reads the backend's own start, not before it. It applies whether or
 not the backend otherwise scans its start: the seekable ZIP reader locates its archive from
-the tail and reads its leading bytes only for this. Forced `format=` and auto-detect then
-see the same end.
+the tail and reads its leading bytes only for this, and only when the end could change its
+answer (the tail search finds no end record, or a non-zero byte follows the archive), so an
+ordinary ZIP pays no read for it. A backend reading a non-seekable source derives no end,
+as detection reports none for it. Forced `format=` and auto-detect then see the same end.
 
 #### Scenario: payload_offset hand-off
 
@@ -38,6 +40,7 @@ see the same end.
 | Explicit `format=` | Detection skipped; backend SFX/start-offset rules apply |
 | Bare seek only (no start-offset / no offset view) | Insufficient for 7z; MUST NOT be the sole hand-off mechanism |
 | Auto-detect, signed PE SFX, `payload_end == E` | Backend reads nothing at or past `E`; the certificate raises no `ARCHIVE_TRAILING_DATA` |
-| Forced `format=` on the same signed SFX (RAR, 7z, or ZIP seekable or streamed) | The backend derives the same `E` from its leading bytes; same listing, same diagnostics |
+| Forced `format=` on the same signed SFX (RAR, 7z, or ZIP from a seekable source) | The backend derives the same `E` from its leading bytes; same listing, same diagnostics |
+| The same SFX from a non-seekable stream, auto-detect or forced | No `E`: the certificate is reported as trailing data, the same both ways |
 | Forced `format=ZIP` on the IRPF installer under `DiagnosticPolicy.STRICT` | Opens, as auto-detect does: the certificate is past `E` |
 | No `payload_end` (unsigned, non-PE, or total size unknown) | Unchanged: the archive is read to the end of the source |

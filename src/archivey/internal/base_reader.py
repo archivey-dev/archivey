@@ -355,9 +355,13 @@ def pass_has_data(member: ArchiveMember) -> bool:
 
 
 def reject_start_offset(
-    start_offset: int, fmt: ArchiveFormat, archive_name: str | None
+    start_offset: int,
+    fmt: ArchiveFormat,
+    archive_name: str | None,
+    end_offset: int | None = None,
 ) -> None:
-    """Refuse a nonzero ``open_read(start_offset=…)`` for a format that cannot honour it.
+    """Refuse a nonzero ``open_read(start_offset=…)``, or any ``end_offset``, for a
+    format that cannot honour it.
 
     Only the self-extracting formats (RAR / 7z / ZIP) are ever handed a nonzero offset,
     because only they can carry an executable stub and only they are scanned for one by
@@ -368,6 +372,13 @@ def reject_start_offset(
         raise UnsupportedFeatureError(
             f"{fmt.display_name} cannot be opened at a nonzero start offset "
             f"({start_offset}): the format carries no self-extracting stub.",
+            source_format=fmt,
+            archive_name=archive_name,
+        )
+    if end_offset is not None:
+        raise UnsupportedFeatureError(
+            f"{fmt.display_name} cannot be opened with an end offset "
+            f"({end_offset}): the format carries no self-extracting stub.",
             source_format=fmt,
             archive_name=archive_name,
         )
@@ -514,6 +525,7 @@ class ReadBackend(ABC):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> BaseArchiveReader:
         """Open ``source`` as ``format`` (the resolved format the registry selected this
         backend for — either detected by ``open_archive`` or supplied by the caller).
@@ -535,6 +547,16 @@ class ReadBackend(ABC):
         backend may still use the original path for an external tool that finds the
         payload itself — ``unrar`` on an SFX file.) Backends whose formats never carry a
         stub reject a nonzero value rather than silently reading from byte 0.
+
+        ``end_offset`` is where the archive's region ends, when detection identified
+        what follows it (``FormatInfo.payload_end``: a signed executable's certificate
+        table). With it the promise is a view of ``[start_offset, end_offset)``:
+        nothing at or past it is read, and it is not reported as data after the
+        archive. A backend never reads before ``start_offset`` to find an end for
+        itself. Opened at 0 with no end, a RAR, 7z or ZIP backend reads its own
+        leading bytes and derives the end with
+        :func:`~archivey.internal.sfx.pe_payload_end`, so forced ``format=`` sees the
+        end detection reports. Backends whose formats never carry a stub reject it.
         """
         ...
 

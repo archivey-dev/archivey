@@ -1775,9 +1775,20 @@ class ZipForwardReader(ZipReader):
     _REVISES_YIELDED_MEMBERS = True
 
     @override
-    def _open_index(self, source: ArchiveSource, start_offset: int) -> None:
+    def _open_index(
+        self, source: ArchiveSource, start_offset: int, end_offset: int | None
+    ) -> None:
         self._fp = None
         self._walker = LocalHeaderWalk(source, offset=0, find_start=True)
+        # How many bytes at the end of the stream are a signed executable's certificate
+        # table: not data after the archive (``_end_walk``). Detection reports none for
+        # a source that cannot seek, because it cannot tell where such a stream starts
+        # in the object a size counts from, so this reader derives none either: forced
+        # ``format=ZIP`` and auto-detect agree.
+        size = source.size_hint
+        self._identified_tail = (
+            0 if end_offset is None or size is None else max(0, size - end_offset)
+        )
         if start_offset:
             # The detector found a stub: read past it, so the walk starts at the
             # first local header and its offsets stay those of the file.
@@ -2275,8 +2286,10 @@ class ZipForwardReader(ZipReader):
         for finding in () if damage is not None else walk.findings:
             self._emit_walk_finding(finding)
         # The kept bytes end where the stream does, so the last ``trailing`` of them
-        # follow the end record and its declared comment.
+        # follow the end record and its declared comment. A signed executable's
+        # certificate table at the very end is identified, not data after the archive.
         trailing = tail.data[len(tail.data) - end.trailing :]
+        trailing = trailing[: max(0, len(trailing) - self._identified_tail)]
         found = first_nonzero_offset(io.BytesIO(trailing))
         if found is not None:
             self._emit_trailing_data(found)

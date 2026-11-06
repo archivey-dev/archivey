@@ -174,6 +174,7 @@ from archivey.internal.password_confirm import (
     run_password_confirm_plan,
 )
 from archivey.internal.registry import register_reader
+from archivey.internal.sfx import read_payload_end
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
 from archivey.internal.streams.archive_stream import (
@@ -1520,6 +1521,7 @@ class RarReader(BaseArchiveReader):
         *,
         volume_count: int = 1,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> None:
         super().__init__(
             ArchiveFormat.RAR,
@@ -1624,6 +1626,22 @@ class RarReader(BaseArchiveReader):
         if self._origin and self._volume_set_size() > 1:
             self._volume0_parse_origin = self._origin
             self._origin = 0
+        # Where a lone archive's region ends: a signed executable's certificate table
+        # follows it. Detection passes it; opened at 0 with none, it is read from the
+        # leading bytes, so forced ``format=RAR`` sees the same end. The header walk
+        # reads a view that stops there, so its trailing-data check never reaches the
+        # table and its SFX scan never takes a signature inside it. ``unrar`` reads
+        # the real file: the end bounds archivey's own checks only. A volume set is
+        # left as it is: its parts are joined, and no part's table ends the join.
+        self._end: int | None = None
+        if self._volume_set_size() <= 1:
+            if end_offset is None and not start_offset:
+                head = self._shared.view(0)
+                try:
+                    end_offset = read_payload_end(head, self._shared.size)
+                finally:
+                    head.close()
+            self._end = end_offset
         # Open-time caveat from source shape, not from later materialization
         # (CostReceipt is a static snapshot; see access-mode-and-cost). With no
         # program nothing is ever copied, so there is no copy to warn about.
@@ -2207,7 +2225,12 @@ class RarReader(BaseArchiveReader):
             # on this path any more — a stream volume *set* is handled above, from
             # views over the originals, and the copy waits for a member read.
             if self._volume_paths:
-                with self._volume_paths[0].open("rb") as handle:
+                with self._volume_paths[0].open("rb") as file:
+                    handle: BinaryIO = (
+                        file
+                        if self._end is None
+                        else SlicingStream(file, start=0, length=self._end)
+                    )
                     handle.seek(self._origin)
                     try:
                         archive = parse_rar_archive(
@@ -2238,7 +2261,7 @@ class RarReader(BaseArchiveReader):
                         )
                     return archive
 
-            view = self._shared.view(0)
+            view = self._shared.view(0, self._end)
             try:
                 view.seek(self._origin)
                 archive = parse_rar_archive(
@@ -5881,6 +5904,7 @@ class RarReadBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> RarReader:
         del format
         return RarReader(
@@ -5894,6 +5918,7 @@ class RarReadBackend(ReadBackend):
             member_streams=member_streams,
             open_site=open_site,
             start_offset=start_offset,
+            end_offset=end_offset,
         )
 
 

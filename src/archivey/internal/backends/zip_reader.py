@@ -172,6 +172,7 @@ from archivey.internal.password_confirm import (
     run_password_confirm_plan,
 )
 from archivey.internal.registry import register_reader
+from archivey.internal.sfx import read_payload_end
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
@@ -1397,6 +1398,15 @@ def _central_from_local(entry: LocalEntry) -> CentralEntry:
     )
 
 
+class _CertificateFound(Exception):
+    """The tail search met a signed executable's certificate table: search again
+    before ``end``, where the table starts."""
+
+    def __init__(self, end: int) -> None:
+        super().__init__(end)
+        self.end = end
+
+
 class ZipReader(BaseArchiveReader):
     """Reads a ZIP archive: the central directory and local headers through
     ``zip_parser``, member data through archivey's decrypt stages and codec layer."""
@@ -1416,6 +1426,7 @@ class ZipReader(BaseArchiveReader):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> None:
         super().__init__(
             ArchiveFormat.ZIP,
@@ -1475,7 +1486,7 @@ class ZipReader(BaseArchiveReader):
         # The same for a local header naming another method (``_report_local_method``).
         self._local_methods_reported: set[int] = set()
         self._refuse_lone_split_segment()
-        self._open_index(source, start_offset)
+        self._open_index(source, start_offset, end_offset)
 
     def _refuse_lone_split_segment(self) -> None:
         """Refuse a split-set segment read alone."""
@@ -1491,7 +1502,9 @@ class ZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.ZIP,
             )
 
-    def _open_index(self, source: ArchiveSource, start_offset: int) -> None:
+    def _open_index(
+        self, source: ArchiveSource, start_offset: int, end_offset: int | None
+    ) -> None:
         """Find the end record and get ready to walk the central directory.
 
         :class:`~archivey.internal.backends.zip_forward_reader.ZipForwardReader`
@@ -1506,13 +1519,15 @@ class ZipReader(BaseArchiveReader):
         # The counter and the slice over the source close nothing of the caller's;
         # the base closes the source itself after ``_close_archive``.
         handle = self._track_source_seeks(source)
-        if start_offset:
-            # The parser adjusts past a stub on its own (``EndRecord.base``), but
-            # "adjust past whatever precedes the end record" is not the same promise
-            # as "the archive starts here": a stub carrying its own record-shaped
-            # bytes would move the answer. Slicing makes the payload the whole world,
-            # which is what start_offset means.
-            handle = SlicingStream(handle, start=start_offset)
+        # Opened at its start with no end, the reader finds a signed executable's
+        # certificate table itself, so forced ``format=ZIP`` sees the end detection
+        # reports (``ReadBackend.open_read``). Lazily: the first bytes are read only
+        # when the tail search finds no end record, or something non-zero follows
+        # the archive, so an ordinary ZIP costs no read for it.
+        self._derive_end = end_offset is None and not start_offset
+        self._payload_end = end_offset
+        if start_offset or end_offset is not None:
+            handle = self._region(handle, start_offset, end_offset)
         self._fp = handle
         file_size = handle.seek(0, io.SEEK_END)
         # Every header offset the listing walk has read, for the overlap guard; then
@@ -1522,9 +1537,18 @@ class ZipReader(BaseArchiveReader):
         self._member_count: int | None = None
         self._count_known = False
         try:
-            found, stopped = locate_end_record(
-                self._read_at, file_size, members_end=self._walk_past_members
-            )
+            try:
+                found, stopped = locate_end_record(
+                    self._read_at, file_size, members_end=self._end_or_walk
+                )
+            except _CertificateFound as signed:
+                # A signed executable whose certificate table hid the end record from
+                # the search: search again before the table, before any walk.
+                self._fp = self._region(handle, 0, signed.end)
+                file_size = signed.end
+                found, stopped = locate_end_record(
+                    self._read_at, file_size, members_end=self._walk_past_members
+                )
             walked = self._local_walk
             if found is None and walked is not None:
                 if walked.error is None:
@@ -1613,6 +1637,40 @@ class ZipReader(BaseArchiveReader):
         )
         self._bounds = _DataBounds(walked.offsets, cd_start=members_end)
         self._count_known = True
+
+    @staticmethod
+    def _region(handle: BinaryIO, start: int, end: int | None) -> BinaryIO:
+        """``handle`` cut to ``[start, end)``.
+
+        The parser adjusts past a stub on its own (``EndRecord.base``), but "adjust
+        past whatever precedes the end record" is not the same promise as "the archive
+        starts here": a stub carrying its own record-shaped bytes would move the
+        answer. Slicing makes the payload the whole world, which is what the start
+        offset means. The end does the same at the other side: the end-record search
+        and the trailing-data check stop before a signed executable's certificate
+        table.
+        """
+        return SlicingStream(
+            handle, start=start, length=None if end is None else end - start
+        )
+
+    def _signed_payload_end(self) -> int | None:
+        """Where a signed executable's certificate table starts in a source opened at
+        its start with no end, read once from its first bytes; ``None`` otherwise."""
+        if not self._derive_end:
+            return self._payload_end
+        self._derive_end = False
+        fp = cast("BinaryIO", self._fp)
+        with self._lock:
+            self._payload_end = read_payload_end(fp, fp.seek(0, io.SEEK_END))
+        return self._payload_end
+
+    def _end_or_walk(self) -> int | None:
+        """The tail search's step when it found no end record: first look for a
+        certificate table that hides it (``_CertificateFound``), then walk."""
+        if self._signed_payload_end() is not None:
+            raise _CertificateFound(cast("int", self._payload_end))
+        return self._walk_past_members()
 
     def _walk_past_members(self) -> int | None:
         """Where the members end, found by walking their local headers from the start
@@ -1751,18 +1809,27 @@ class ZipReader(BaseArchiveReader):
         end = self._end
         if end.trailing == 0:
             return
-        tail = SharedView(
-            cast("BinaryIO", self._fp),
-            start=end.eocd_offset + EOCD_SIZE + end.comment_declared,
-            length=end.trailing,
-            lock=self._lock,
-        )
-        try:
-            found = first_nonzero_offset(tail)
-        finally:
-            tail.close()
+        start = end.eocd_offset + EOCD_SIZE + end.comment_declared
+        found = self._first_nonzero_after(start, end.trailing)
+        if found is not None and self._derive_end:
+            # Before reporting it, ask whether the bytes are a signed executable's
+            # certificate table, which is identified, not data after the archive. A
+            # ZIP whose offsets count from the start of the file has a stub at 0.
+            payload_end = self._signed_payload_end()
+            if payload_end is not None and start + found >= payload_end:
+                found = self._first_nonzero_after(start, max(0, payload_end - start))
         if found is not None:
             self._emit_trailing_data(found)
+
+    def _first_nonzero_after(self, start: int, length: int) -> int | None:
+        """How far past ``start`` the first non-zero byte of ``length`` bytes lies."""
+        tail = SharedView(
+            cast("BinaryIO", self._fp), start=start, length=length, lock=self._lock
+        )
+        try:
+            return first_nonzero_offset(tail)
+        finally:
+            tail.close()
 
     def _emit_trailing_data(self, found: int) -> None:
         """Report a non-zero byte ``found`` bytes past the end record's comment; the
@@ -4584,6 +4651,7 @@ class ZipReadBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> ZipReader:
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.
@@ -4607,6 +4675,7 @@ class ZipReadBackend(ReadBackend):
             member_streams=member_streams,
             open_site=open_site,
             start_offset=start_offset,
+            end_offset=end_offset,
         )
 
 

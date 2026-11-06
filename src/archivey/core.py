@@ -749,7 +749,7 @@ def _open_resolved(
             _refuse_for_replacement(
                 replacement, "a multi-volume set", resolved_format, archive_name
             )
-        if detected is not None and detected.payload_offset > 0:
+        if detected is not None and detected.prefixed:
             _refuse_for_replacement(
                 replacement,
                 "an archive behind a prefix (a self-extracting stub or other leading "
@@ -878,6 +878,9 @@ def _open_resolved(
     # archive to a temp file for every compressed member (`_ensure_archive_path`). The
     # argument carries the same promise a slice would — see `ReadBackend.open_read`.
     payload_offset = detected.payload_offset if detected is not None else 0
+    # Where the archive's region ends: a signed executable's certificate table follows
+    # it. Passed beside the start, with the same promise (``ReadBackend.open_read``).
+    payload_end = detected.payload_end if detected is not None else None
 
     # An empty listing is only interesting when the bytes never confirmed the format.
     # That is known here and the listing is not, so carry it to the reader rather than
@@ -904,6 +907,7 @@ def _open_resolved(
             member_streams=member_streams,
             open_site=open_site,
             start_offset=payload_offset,
+            end_offset=payload_end,
         )
     except ArchiveyError as exc:
         # A backend that reads its first headers while it is built (7z, RAR, ZIP)

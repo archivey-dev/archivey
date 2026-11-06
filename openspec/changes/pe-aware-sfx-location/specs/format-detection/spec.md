@@ -43,9 +43,11 @@ the start of the file starts at byte 0 by its own numbers, so it SHALL report
 `payload_end` is where the archive's region of the source ends
 when detection identified something after it: today the start of a PE's Authenticode
 certificate table (*Self-extracting (SFX) archives are detected behind an executable
-stub*), whatever tier found the archive and whether or not the source can seek. It needs
-the PE layout from the prefix and a known total size, because the table counts only when
-it runs to the end of the source; a source whose size is unknown reports `None`. `None`,
+stub*), whatever tier found the archive. It needs the PE layout from the prefix and a
+known remaining length, because the table counts only when it runs to the end of the
+source; a source whose remaining length is unknown reports `None`. That includes a
+non-seekable source that states a size: the size counts from the object's offset 0, and
+detection cannot tell where such a stream starts in it. `None`,
 the common case, means the region runs to the end of the source. `open_archive` passes both bounds to the reader
 (`archive-reading`). `cost_receipt` and
 `unavailable_tiers` are part of this contract; `detection-cost` defines what they hold.
@@ -86,8 +88,8 @@ format its bytes show; `open_archive` refuses it as an incomplete set.
 | RAR, 7z or ZIP found by the SFX scan at offset N | `detected_by="sfx_scan"`, `prefixed=True`, `payload_offset == N` |
 | ZIP found from its end record behind a PE stub, offsets counted from the ZIP's start | `prefixed=True`, `payload_offset` = the ZIP's first byte |
 | The same, offsets counted from the start of the file | `prefixed=True`, `payload_offset` 0 |
-| Signed PE SFX, any tier, total size known (a path, a seekable stream, or a sized non-seekable source) | `payload_end` = the certificate table's start |
-| Unsigned PE SFX, no PE layout, or total size unknown | `payload_end` is `None` |
+| Signed PE SFX, any tier, remaining length known (a path or a seekable stream) | `payload_end` = the certificate table's start |
+| Unsigned PE SFX, no PE layout, or remaining length unknown (a non-seekable stream, sized or not) | `payload_end` is `None` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
 | Empty string `""` | `ValueError`; the current directory is not detected |

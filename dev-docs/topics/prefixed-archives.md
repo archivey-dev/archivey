@@ -196,7 +196,7 @@ compressed stream is a real shape for script launchers and not for executable on
 | --- | --- | --- |
 | A prefixed archive behind bytes that fire no cue (a JPEG polyglot, a plain concatenation) is detected only when it starts within the window, and only when the name has no known extension; `open_archive(..., format=ZIP)` reads one further in | **archivey** | The uncued scan (§2, §3); the tail probe is the tier that would find a ZIP at any distance |
 | An unrecognised extension-less file of 2 MiB of `PK\x03\x04` decoys takes about 2.4 s to reject | **archivey** | The uncued scan with ZIP uncapped (§3, §7) |
-| `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped. Resolved 2026-09-25: kept, not renamed; `detected_by` is documented as an open set and `sfx_scan` as covering every prefixed hit |
+| `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped; `FormatInfo.prefixed` (`pe-aware-sfx-location`) ships its yes-or-no part. Resolved 2026-09-25: kept, not renamed; `detected_by` is documented as an open set and `sfx_scan` as covering every prefixed hit |
 | A prefixed archive on a non-seekable source may be missed entirely | **format** | The tail probe needs a seek; the cued scan needs a cue in the first bytes, and the uncued one sees only the bytes detection already read |
 
 A defect worth remembering because it shows what the cue gate is really protecting: before
@@ -277,7 +277,9 @@ the full stub matrix is task 4.3 of `prefixed-archive-detection`.
 - Specs: [`format-detection`](../../openspec/specs/format-detection/spec.md) ·
   [`detection-cost`](../../openspec/specs/detection-cost/spec.md)
 - Archived undone: `openspec/changes/archive/2026-11-05-prefixed-archive-detection/` (the four implementation blocks;
-  Block 1 ships today; Block 2 and `prefix_kind` were struck on 2026-09-25) · decided against:
+  Block 1 ships today; Block 2 and `prefix_kind` were struck on 2026-09-25) · in flight:
+  `openspec/changes/pe-aware-sfx-location/` (a PE's layout: `prefixed`, `payload_end`, then a
+  PE-gated ZIP tail probe and the overlay start first) · decided against:
   `openspec/changes/archive/2026-09-25-detection-evidence-ledger/`
 - Archived: `openspec/changes/archive/2026-08-21-sfx-format-detection/` ·
   `2026-08-31-detection-prefix-workspace/` · `2026-08-30-detection-format-gaps/`

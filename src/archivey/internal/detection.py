@@ -138,6 +138,7 @@ from archivey.internal.sfx import (
     ScanNeedle,
     executable_cue,
     iter_magic_in_prefix,
+    pe_payload_end,
 )
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs.brotli_framing import (
@@ -970,6 +971,7 @@ def _scan_for_sfx_payload(
     capped_formats: frozenset[ArchiveFormat],
     restrict_to_validated: bool,
     cut_reason: TierSkipReason = TierSkipReason.BUDGET_EXHAUSTED,
+    leading: bytes = b"",
 ) -> FormatInfo | None:
     """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
 
@@ -1015,6 +1017,12 @@ def _scan_for_sfx_payload(
     ``cut_reason`` is what a window shorter than ``SFX_MAX`` is recorded as: the budget
     by default, ``CAPABILITY_UNAVAILABLE`` when the caller cut the window to the bytes a
     forward-only source already holds.
+
+    ``leading`` is the prefix detection holds. When it is a signed PE
+    (:func:`~archivey.internal.sfx.pe_layout`), a candidate at or past its
+    certificate table is not judged, and the answer carries the table's start as
+    ``payload_end``: the table is not parsed, so a needle inside it could pass a
+    validator, and the readers stop there (``archive-reading``).
     """
     # A zero ``max_scan_bytes`` turns the tier off, as a zero field does for the others.
     if _record_tier_limit(workspace, "sfx_scan", enabled=scan_limit > 0):
@@ -1050,11 +1058,16 @@ def _scan_for_sfx_payload(
     # The window bounds where a magic may start, not how far its validator reads: a
     # candidate inside it is judged on its whole header, as far as the budget allows.
     view_limit = scan_limit + peek_allowance
+    payload_end = pe_payload_end(leading, workspace.remaining_known())
     for hit in iter_magic_in_prefix(
         peek_more, needles, limit=scan_limit, dropped=dropped
     ):
         key, validator = by_needle[hit.needle]
         origin = hit.candidate_origin
+        if payload_end is not None and origin >= payload_end:
+            # Inside the certificate table: no payload starts there, and every later
+            # needle is further in.
+            break
         outcome = HitOutcome.VALID
         if validator is not None:
             view = workspace.candidate_view(origin, limit=view_limit)
@@ -1074,6 +1087,8 @@ def _scan_for_sfx_payload(
             DetectionConfidence.PROBABLE,
             "sfx_scan",
             payload_offset=chosen[1],
+            prefixed=True,
+            payload_end=payload_end,
         )
     )
     # Charge the window actually examined — a miss is the expensive case.
@@ -1505,6 +1520,7 @@ def _detect_format_body(
                 capped_formats=registry.sfx_parser_scanned_formats(),
                 # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
                 restrict_to_validated=data.startswith(b"#!"),
+                leading=data,
             )
             if sfx_info is not None:
                 return conclude(sfx_info, _ConflictEvidence.SFX_SCAN)

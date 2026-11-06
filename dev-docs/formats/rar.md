@@ -291,7 +291,9 @@ data area it declares, as for every other block, and past its AES padding under 
 as the walk's `data_offset` is a ciphertext offset) and keeps the first non-zero byte's
 offset in `RarArchive.trailing_data_volumes`. The reader reports each volume's as
 `ARCHIVE_TRAILING_DATA` (`expected_marker="zeros_to_eof"`) after the members, DR-3.
-Zeros pass. An end block declaring a data area past the seekable range is
+Zeros pass. The walk reads a single volume through a view that ends at the payload end,
+so a signed PE self-extractor's certificate table is not reported ([`7z.md`](7z.md) §6);
+`unrar` still reads the real file. An end block declaring a data area past the seekable range is
 `CorruptionError`, as a FILE header's is. `unrar t` 7.00 exits 0 on such a file; 7-Zip
 warns, for zeros too. Measured on the committed `rar` 7.00 sets
 (`tests/fixtures/rar/README.md`): a volume that comes out at exactly the `-v` size is

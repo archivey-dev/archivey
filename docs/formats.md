@@ -742,7 +742,9 @@ On a compressed tar, the stream's own checksum adds three cases:
 - **Bytes after the archive's end** (its next header or its last packed stream, whichever is later)
   are `ARCHIVE_TRAILING_DATA` with `format="7z"`. Zero padding passes, although 7-Zip warns "There
   are data after the end of archive" for zeros too. A code-signed self-extracting `.exe` carries
-  its signature after the archive, so it gets the warning, and `STRICT` refuses it.
+  its signature after the archive. archivey reads the signature's position from the program's
+  header and does not report it, so `STRICT` opens a signed self-extractor. Other bytes between
+  the archive and the signature are still reported.
 - A device, FIFO or socket that 7-Zip or p7zip stored on Unix follows
   [the shared rule](#device-files-fifos-and-sockets). The mode is trusted for this only when the
   attribute's `0x8000` Unix-extension bit is set.
@@ -1435,7 +1437,9 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
 - **Self-extracting (SFX) stubs** are detected when the archive sits behind an executable header
   (Windows `MZ`/PE, Linux ELF, or a macOS Mach-O header that parses) or a `#!` launcher line (a
   zipapp `.pyz`, a Spring Boot jar). The 2 MiB scan behind the stub reports where the archive starts
-  as `payload_offset`. A launcher is text, so behind `#!` only formats with a structural check
+  as `payload_offset`, and sets `prefixed`. For a code-signed Windows program, `payload_end` is
+  where its signature starts: the ZIP, 7z and RAR readers stop there, so the signature is not
+  reported as data after the archive. A launcher is text, so behind `#!` only formats with a structural check
   (ZIP, 7z, RAR) are searched for. Among several 7z candidates, one that ends exactly at the end of
   the file is preferred over an earlier one that ends short of it.
 - **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`
