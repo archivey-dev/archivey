@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z) are exposed
+Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z, LZOP, mozlz4) are exposed
 as one-member pseudo-archives through the unified `ArchiveReader`
 interface. Each source contains exactly one file member whose
 name is inferred from the source filename.
@@ -29,15 +29,16 @@ checksum trailer.
 ### Requirement: Present each compressor as a one-member archive
 
 The system SHALL present any GZ, BZ2, XZ, ZST, LZ4, LZIP, LZMA Alone, ZLIB, BR,
-or Z source as an archive containing exactly one `ArchiveMember` of type
+Z, LZOP or mozlz4 source as an archive containing exactly one `ArchiveMember` of type
 `MemberType.FILE`. No directory members SHALL be synthesized.
 
 The member name SHALL be inferred from the source filename:
 
 | Source filename | Member name |
 | --- | --- |
-| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, or `.Z` (case-insensitive) | Strip exactly that recognized compression extension |
-| Ends in `.tgz`, `.tbz2`, `.tbz`, `.txz`, `.tzst` or `.tlz` (case-insensitive) | Replace that suffix with `.tar`, as `gzip -d` and `xz -d` do |
+| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, `.Z`, `.lzo` or `.mozlz4` (case-insensitive) | Strip exactly that recognized compression extension |
+| Ends in `.tgz`, `.tbz2`, `.tbz`, `.txz`, `.tzst`, `.tlz` or `.tzo` (case-insensitive) | Replace that suffix with `.tar`, as `gzip -d` and `xz -d` do |
+| Ends in `.jsonlz4` or `.baklz4` (case-insensitive), Firefox's mozlz4 names | Replace that suffix with `.json` or `.bak` |
 | Ends in a recognized extension, but the remaining stem is entirely dots and spaces (`..gz`, `....gz`, ` .gz`) | Append `.uncompressed` instead; `.` and `..` are not member names, and an all-dots segment is refused under `STRICT` and `STANDARD` |
 | Has a filename but no recognized compressor extension | Append `.uncompressed`; do not strip arbitrary extensions |
 | Anonymous stream | `data` |
@@ -56,6 +57,7 @@ is a framed standalone stream and is in scope here.
 | Open `data.txt.gz` | One file member named `data.txt` |
 | Open `data.txt.lzma` | One file member named `data.txt` |
 | Open `data.tgz` with `format=ArchiveFormat.GZ` | One file member named `data.tar` |
+| Open `sessionstore.jsonlz4` | One file member named `sessionstore.json` |
 | Open compressed `mystery.bin` detected by content | One file member named `mystery.bin.uncompressed` |
 | Open `....gz` | One file member named `....gz.uncompressed`, under every extraction policy |
 | Open anonymous non-seekable stream with `streaming=True` | One file member named `data` |

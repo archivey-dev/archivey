@@ -45,6 +45,7 @@ from archivey.internal.streams.codecs.lzma_codec import (
     XzCodec,
 )
 from archivey.internal.streams.codecs.lzo_codec import Lzo1xCodec, LzopCodec
+from archivey.internal.streams.codecs.mozlz4_codec import MozLz4Codec
 from archivey.internal.streams.codecs.ppmd_codec import PpmdCodec
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_codec import UnixCompressCodec
@@ -95,6 +96,7 @@ _STREAM_CODECS: list[StreamCodec] = [
     ShrinkCodec(),
     ImplodeCodec(),
     LzopCodec(),
+    MozLz4Codec(),
     Lzo1xCodec(),
 ]
 

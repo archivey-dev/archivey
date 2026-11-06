@@ -165,6 +165,10 @@ class StreamFormat(StrEnum):
     """The ``.lzo`` file format ``lzop`` writes: LZO1X blocks behind a header.
     archivey decodes LZO1X with ``python-lzo`` when it is installed, else in Python,
     more than 25 times slower on text."""
+    MOZLZ4 = "mozlz4"
+    """Firefox's ``mozLz40`` files (``.jsonlz4``, ``.mozlz4``, ``.baklz4``, and
+    ``addonStartup.json.lz4``): one raw LZ4 block behind a magic and the decoded size.
+    Needs ``lz4``, as LZ4 does."""
 
 
 @dataclass(frozen=True)
@@ -240,6 +244,7 @@ class ArchiveFormat:
     BROTLI: ClassVar[ArchiveFormat]
     Z: ClassVar[ArchiveFormat]
     LZOP: ClassVar[ArchiveFormat]
+    MOZLZ4: ClassVar[ArchiveFormat]
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
@@ -320,6 +325,7 @@ ArchiveFormat.ZLIB = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB
 ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BROTLI)
 ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
 ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)
+ArchiveFormat.MOZLZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.MOZLZ4)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(
     ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED
 )

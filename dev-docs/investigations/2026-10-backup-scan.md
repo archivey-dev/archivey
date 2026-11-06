@@ -223,7 +223,8 @@ The others, checked on the files:
   as unsupported would be clearer.
 - **mozlz4.** Firefox `addonStartup.json.lz4` is Mozilla's `mozLz40\0` framing around a
   raw LZ4 block, not an LZ4 frame. Archivey detects it by extension only and fails it as
-  unconfirmed. Reading it would be a small feature.
+  unconfirmed. Reading it would be a small feature. Read since 2026-11-05
+  (`codecs/mozlz4_codec.py`).
 - **ZIP methods 1 (Shrink) and 6 (Implode).** Two old DOS-era archives use them. `unzip`
   and 7-Zip read both; archivey did not support either method. Read since 2026-10-30
   (`codecs/zip_legacy_decoder.py`).
