@@ -28,6 +28,7 @@ from archivey.exceptions import ArchiveyError, UnsupportedFeatureError
 from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_reader import RarReader
 from archivey.internal.backends.rar_unrar import (
+    UnrarSelectionUnknown,
     _member_include_switch,
     _unrar_env,
     find_rarlab_unrar,
@@ -233,6 +234,114 @@ def test_rar5_mask_selection_is_the_one_unrar_makes(tmp_path: Path) -> None:
     ]
     masks += ["ab.", "ab...", "a?", "?", "??", "a?b", "d/ab", "é", "x/../ab"]
     _check_masks(archive, views, masks)
+
+
+# Names whose case fold differs between Python's ``str.upper`` and Windows'
+# ``CharUpperW``, or that Windows' linguistic ``CompareStringW`` calls equal although
+# their folds differ (``ß`` and ``SS``, a precomposed and a decomposed ``é``).
+_CASE_NAMES: list[tuple[bytes, int]] = [
+    ("e\u0301.txt".encode(), 1),
+    ("é.txt".encode(), 1),
+    ("É.TXT".encode(), 1),
+    ("ı.txt".encode(), 1),
+    (b"I.txt", 1),
+    ("straße".encode(), 1),
+    (b"STRASSE", 1),
+    ("Ω.txt".encode(), 1),
+    ("ω.txt".encode(), 1),
+    ("d/straße/f".encode(), 1),
+    (b"D/STRASSE/F", 1),
+    # Above U+FFFF: two UTF-16 units each on Windows.
+    ("\U0001f600\U0001f600.txt".encode(), 1),
+    ("\U0001f600.txt".encode(), 1),
+]
+# On Windows, the masks that compare equal to a shorter name, and those names.
+_CASE_UNKNOWN_ON_WINDOWS = {
+    "STRASSE": [5],
+    "D\\STRASSE\\F": [9],
+    "d/STRASSE/f": [9],
+    "E\u0301.TXT": [0, 1, 2],
+}
+
+
+@requires_binary("unrar")
+def test_case_fold_selection_is_the_one_unrar_makes_on_this_os(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model's selection for non-ASCII case matches unrar's on every OS.
+
+    On Linux and macOS unrar matches case-sensitively. On Windows it folds with
+    ``CharUpperW`` and compares a mask with a name's start through ``CompareStringW``,
+    which archivey calls too; a mask longer than the name it equals there is
+    reported as unknown, since unrar then reads past the name.
+    """
+    archive = _build_rar5(tmp_path, _CASE_NAMES)
+    views = [
+        unrar_member_view(
+            rar5=True,
+            stored=name,
+            rar3_unicode_name=None,
+            host_os=3,
+            file_version=None,
+        )
+        for name, _host in _CASE_NAMES
+    ]
+    dot_rule = unrar_dot_rule()
+    assert dot_rule is not None
+    masks = [view for view in views if view is not None]
+    masks += ["E\u0301.TXT", "STRASSE", "i.txt", "?.txt", "d/STRASSE/f", "d/straße"]
+    mismatches = []
+    for mask in masks:
+        mask_view = unrar_mask_view(mask)
+        assert mask_view is not None
+        actual = _unrar_selects(archive, mask, len(views))
+        expected: list[int] = []
+        unknown: list[int] = []
+        for index, view in enumerate(views):
+            assert view is not None
+            try:
+                if unrar_mask_selects(mask_view, view, dot_rule=dot_rule):
+                    expected.append(index)
+            except UnrarSelectionUnknown:
+                unknown.append(index)
+        if unknown != (
+            _CASE_UNKNOWN_ON_WINDOWS.get(mask, []) if sys.platform == "win32" else []
+        ):
+            mismatches.append((mask, "unknown", unknown))
+        if [i for i in actual if i not in unknown] != expected:
+            mismatches.append((mask, expected, unknown, actual))
+    assert not mismatches
+
+    # Whatever the model cannot answer is refused; every other read is the member's.
+    # On Windows that is STRASSE after straße, and D/STRASSE/F after d/straße/f.
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    refused = []
+    with open_archive(archive, config=_UNRAR_SHARED) as reader:
+        for index, member in enumerate(reader.members()):
+            try:
+                data = reader.read(member)
+            except UnsupportedFeatureError:
+                refused.append(index)
+                continue
+            assert data == _payload(index), member.name
+    assert refused == ([6, 10] if sys.platform == "win32" else [])
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_selection_keys_grow_linearly_with_the_name(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """A name with many separators gets one fixed-size key per separator.
+
+    The keys were the prefixes themselves, so ``"a/" * 30000`` cost about 1.7 GB.
+    """
+    monkeypatch.setattr(rar_unrar.sys, "platform", platform)
+    keys = rar_unrar.unrar_selection_keys("a/" * 30000 + "f")
+    assert len(keys) <= 2 * 30000 + 3
+    assert max(len(key) for key in keys) < 200
+    mask_keys = rar_unrar.unrar_mask_keys("./" + "a/" * 29999 + "a")
+    assert mask_keys is not None
+    assert set(mask_keys) & set(keys)
 
 
 @requires_binary("unrar")

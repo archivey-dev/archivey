@@ -1493,14 +1493,27 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   threat-model C1), a stream or prefixed source (`unar` would need a copy), or an
   archive `unar` refuses (§3); those still raise `UnsupportedFeatureError`, naming the
   tool that refused. Whether any of them earns a route of its own is open.
-- **Open: the name model on Windows and macOS is unmeasured.** The selection tests run
-  on Linux only.
-  - Windows: the case fold is Python's per-character `.upper()` where `unrar` uses
-    `CharUpperW`; the mask and the name both get `/` turned into `\` (the mask in
-    `CheckArgs`, a change the source dates 2025-09-11, so older Windows builds may
-    differ; the name in `ConvertFileHeader`), so the model converts both sides; an
-    8-bit name is read through the OEM then ANSI code page, which is
-    modelled only for a single-byte OEM, so a DBCS OEM (cp932) can mis-size the skip.
+- **Open: the name model on Windows and macOS is only partly measured.** The tests
+  that compare the full name sets with `unrar` run on Linux only.
+  `test_case_fold_selection_is_the_one_unrar_makes_on_this_os` runs on every OS, so
+  the Windows case fold and `CompareStringW` are measured for its names under the
+  CI runner's en-US locale; other locales, `FoldStringW` and the rest of macOS are
+  not.
+  - Windows: `unrar` folds a character with `CharUpperW` in `match()` and compares
+    a mask with a name's start, and an exact mask's directory with the name's, with
+    `CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE|SORT_STRINGSORT)`
+    (`wcsnicomp`), which is linguistic: `STRASSE` equals `straße`, and a decomposed
+    `é` the precomposed one. The model makes the same calls (the index adds their
+    sort keys from `LCMapStringW`); Python's `.upper()`, used before, folded `ı` to
+    `I` and missed `ß`, so a read failed with a truncated or oversized pipe (Windows
+    CI, unrar 7.23). A mask the comparison finds equal to a shorter name makes
+    `unrar` read `Name[WildLength]` past that name's NUL; the reader refuses when
+    that member is at or before the target, and counts it after. The mask and the
+    name both get `/` turned into `\` (the mask in `CheckArgs`, a change the
+    source dates 2025-09-11, so older Windows builds may differ; the name in
+    `ConvertFileHeader`), so the model converts both sides; an 8-bit name is read
+    through the OEM then ANSI code page, which is modelled only for a single-byte
+    OEM, so a DBCS OEM (cp932) can mis-size the skip.
     Precomposition (`FoldStringW`) for a Unix-host name is modelled but unmeasured.
   - macOS: `unrar` reads 8-bit names, and the argv mask, with its own `UtfToWide`
     (`CharToWide` under `_APPLE`), which stops at the first byte that is not UTF-8.

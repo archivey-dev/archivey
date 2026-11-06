@@ -1205,7 +1205,9 @@ file of empty members, costs about 70-95 ns a byte, about 1.5 minutes a GB: a 4,
 Memory stays bounded, because the seek-point table is thinned at `MAX_SEEK_POINTS`
 ([seekable-decompressor-streams](../openspec/specs/seekable-decompressor-streams/spec.md)
 §"zstd reads the Seekable Zstandard seek table", §"BGZF members are walked without
-decoding"). A ZIP read from a pipe
+decoding"). A zlib snapshot point holds about 40 KiB, so those entries alone could reach
+about 10 GiB under that cap; they are thinned at `MAX_SNAPSHOT_BYTES`, 32 MiB a stream,
+instead (§"Snapshot points have a memory cap"). A ZIP read from a pipe
 consumes the stream once, and the entries its directory places in the bytes kept after
 its members consume those at most twice more, however many it names there
 ([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit

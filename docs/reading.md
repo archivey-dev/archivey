@@ -95,8 +95,9 @@ raises from the read after it, not from the seek. If you install the `seekable` 
 reads bzip2 data, and large DEFLATE data, through an
 [accelerator](security.md#where-the-guarantees-stop) that marks places it can restart from as it
 reads, and every seek resumes from the nearest marked place before its target. DEFLATE is the
-compression in gzip files and in most ZIP members. Without the extra, a gzip file made of several
-members, such as one `bgzip` writes, resumes from the nearest member start. A zstd file made of
+compression in gzip files and in most ZIP members. Without the extra, DEFLATE data resumes from the
+nearest place a read has passed: one of the places archivey marks about every MiB, each holding
+about 40 KiB of memory, or in gzip a member start. A zstd file made of
 several frames, such as one in the Seekable Zstandard format, always resumes from the nearest frame
 start. For a `bgzip` file or a Seekable Zstandard file, archivey finds those starts without
 decompressing anything. A forward seek keeps the checksum check when reaching the target means
@@ -171,8 +172,9 @@ with archivey.open_archive("data.zip", config=config) as archive:
     ...
 ```
 
-The standard library then decodes everything. A backward seek in gzip or bzip2 data decompresses
-again from the start of the member, and a large gzip file is read on one core.
+The standard library then decodes everything. A backward seek in bzip2 data decompresses again from
+the start of the member, one in DEFLATE data from the nearest place a read has passed (above), and a
+large gzip file is read on one core.
 
 ## Why these aren't on by default
 
