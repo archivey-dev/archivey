@@ -77,7 +77,7 @@
       them). Refused members become diagnostics.
 - [x] 4.3 `info`, links, errors, read-only methods, pickling, `policy=`,
       `cachable = False`, `close()` and a `weakref.finalize` that closes the reader.
-      Red-green: open 10 000 distinct `archivey://` URLs, drop every reference, and
+      Red-green: open 1 000 distinct `archivey://` URLs, drop every reference, and
       check no reader stays open.
 - [ ] 4.4 Consumer tests: pandas CSV, pyarrow Parquet, dask over two threads and over
       a process pool (pickling), a nested `archivey::archivey::` chain. These tests

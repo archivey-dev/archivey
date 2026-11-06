@@ -1130,7 +1130,7 @@ function archivey.terminal.escape_control_chars(text: str) -> str
 function archivey.terminal.quoted(text: str) -> str
 module archivey.fsspec
 class archivey.fsspec.ArchiveyFileSystem(AbstractArchiveFileSystem)
-init archivey.fsspec.ArchiveyFileSystem(*args, **kwargs)
+init archivey.fsspec.ArchiveyFileSystem(fo: str | os.PathLike[str] | OpenFile | BinaryIO = '', *, target_protocol: str | None = None, target_options: dict[str, Any] | None = None, format: ArchiveFormat | str | None = None, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, **kwargs: Any) -> None
 attribute archivey.fsspec.ArchiveyFileSystem.cachable = False
 method archivey.fsspec.ArchiveyFileSystem.close(self) -> None
 method archivey.fsspec.ArchiveyFileSystem.cp_file(self, *args: Any, **kwargs: Any) -> Any

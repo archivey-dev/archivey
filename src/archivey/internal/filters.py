@@ -422,8 +422,8 @@ def check_name_shape(member: ArchiveMember) -> None:
     # one. An absolute name reaching here was not re-rooted: STRICT, or a filter that
     # returned one (see reroot_absolute).
     # A name the platform filesystem encoding cannot represent can never be
-    # materialized under dest, and it would otherwise crash the parent-resolution
-    # below with a raw UnicodeEncodeError. The extraction coordinator passes the
+    # materialized under dest, and it would otherwise crash the parent resolution in
+    # ``check_universal`` with a raw UnicodeEncodeError. The extraction coordinator passes the
     # member through ``disk_spelled`` first, so a lone surrogate reaches here as
     # bytes on POSIX; a caller of this function that does not still gets a
     # rejection. (Windows' surrogatepass encoding represents lone surrogates.)

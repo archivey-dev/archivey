@@ -15,10 +15,13 @@ installs fsspec; every package that reads a remote store (``s3fs``, ``gcsfs``,
 from __future__ import annotations
 
 import os
+import posixpath
 import tempfile
+import threading
 import weakref
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Self, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal, Self, cast
 
 import fsspec
 from fsspec.archive import AbstractArchiveFileSystem
@@ -47,6 +50,121 @@ if TYPE_CHECKING:
 
 __all__ = ["ArchiveyFileSystem"]
 
+# What a path resolves through before it counts as a loop: Linux's ``SYMLOOP_MAX``.
+_MAX_SYMLINK_HOPS = 40
+
+_Kind = Literal["dir", "file", "link"]
+
+
+@dataclass(frozen=True)
+class _Refusal:
+    reason: str
+
+
+class _Tree:
+    """The paths extraction writes into an empty destination, member by member.
+
+    Keys are ``collision_key``s, as extraction's are, and the first member to claim a
+    key keeps it and its spelling. A path is resolved as the destination resolves it
+    once the members before it are written: a component that is a symlink the
+    archive made is followed, so ``l/y`` under ``l -> d`` is written as ``d/y``.
+    """
+
+    def __init__(self, policy: ExtractionPolicy) -> None:
+        self._policy = policy
+        self._kinds: dict[str, _Kind] = {}
+        self._targets: dict[str, str] = {}  # a link's key -> its target text
+        self._spelled: dict[str, str] = {}  # a key -> the path it is listed under
+
+    def place(self, name: str, view: ArchiveMember) -> str | _Refusal:
+        """Claim ``name`` and return the path it is written at, or say why extraction
+        would not write it."""
+        parent_name, _, last = name.rpartition("/")
+        parent = self._resolve(parent_name)
+        if isinstance(parent, _Refusal):
+            return parent
+        path = f"{parent}/{last}" if parent else last
+        key = collision_key(path, self._policy)
+        kind: _Kind = (
+            "dir"
+            if view.type is MemberType.DIRECTORY
+            else "link"
+            if view.type is MemberType.SYMLINK
+            else "file"
+        )
+        claimed = self._kinds.get(key)
+        if claimed is not None:
+            if kind == "dir" and claimed == "dir":
+                return self._spelled[key]  # a directory listed again
+            return _Refusal("its name collides with a member written before it")
+        self._kinds[key] = kind
+        self._spelled[key] = path
+        # The parents extraction creates on the way, resolved already.
+        parts = parent.split("/") if parent else []
+        for depth in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:depth])
+            prefix_key = collision_key(prefix, self._policy)
+            if prefix_key not in self._kinds:
+                self._kinds[prefix_key] = "dir"
+                self._spelled[prefix_key] = prefix
+        if kind == "link":
+            target = view.link_target or ""
+            self._targets[key] = target
+            # Extraction resolves a link once it is made and removes it if it loops
+            # or leads out through a link made before it.
+            problem = self._resolve(posixpath.join(parent, target), final=True)
+            if isinstance(problem, _Refusal):
+                del self._kinds[key], self._spelled[key], self._targets[key]
+                return problem
+        return path
+
+    def _resolve(self, name: str, *, final: bool = False) -> str | _Refusal:
+        """The path the directory ``name`` resolves to, as it is listed.
+
+        A missing component of the name is a directory extraction creates. A file, or
+        a link that leads to no directory, ends the walk: extraction cannot create a
+        path under it. With ``final``, ``name`` is a link's target, which may lead
+        anywhere inside the destination: only a loop and a way out are refused.
+        """
+        # Each component, and whether it came from a link's target.
+        pending = [(part, False) for part in name.split("/")]
+        out: list[str] = []
+        hops = 0
+        while pending:
+            part, from_link = pending.pop(0)
+            if part in ("", "."):
+                continue
+            if part == "..":
+                # ``check_universal`` refused a ``..`` name and a target whose text
+                # leaves the destination; this is a way out through a link.
+                if not out:
+                    return _Refusal("it resolves outside the destination")
+                out.pop()
+                continue
+            out.append(part)
+            key = collision_key("/".join(out), self._policy)
+            kind = self._kinds.get(key)
+            if kind is not None:
+                out[-1] = posixpath.basename(self._spelled[key])
+            if kind == "link":
+                hops += 1
+                if hops > _MAX_SYMLINK_HOPS:
+                    return _Refusal("it resolves through a symlink loop")
+                out.pop()
+                # The target is relative to the link's parent, which ``out`` now is.
+                target = self._targets[key]
+                pending[:0] = [(p, True) for p in target.split("/")]
+                continue
+            if final:
+                continue
+            if kind == "file":
+                return _Refusal("a parent of it is a file")
+            if kind is None and from_link:
+                return _Refusal(
+                    "a parent of it is a symlink that leads to no directory"
+                )
+        return "/".join(out)
+
 
 class ArchiveyFileSystem(AbstractArchiveFileSystem):
     """A read-only ``fsspec`` file system over one archive, protocol ``archivey``.
@@ -71,10 +189,15 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     policy will not write, a symlink whose target leaves the destination), a hard link
     to a refused member, a member whose name collides with one before it (the
     policy's collision key: ``README`` and ``readme`` collide under ``STRICT`` and
-    ``STANDARD``), and a path under a file. Each is a ``MEMBER_PATH_REFUSED``
-    diagnostic on ``fs.reader.diagnostics``. A duplicate name shows its current entry.
-    What a non-empty destination decides (``overwrite=``, existing files) and
-    ``filter=`` are not modelled.
+    ``STANDARD``), a path under a file, and a symlink that loops or leads out through
+    another link. Each is a ``MEMBER_PATH_REFUSED`` diagnostic on
+    ``fs.reader.diagnostics``. A duplicate name shows its current entry. A member
+    under one of the archive's own symlinks is listed where extraction writes it,
+    through the link: ``l/y`` under ``l -> d`` is ``d/y``, and a path under a link that
+    leads to no directory is refused. What a non-empty destination decides
+    (``overwrite=``, existing files), what the destination's file system cannot hold
+    (a reserved name under ``TRUSTED`` on Windows, case folded by the disk), a link
+    that a later member makes lead out, and ``filter=`` are not modelled.
 
     A link whose target is a member is listed as the target's type, with
     ``"islink": True`` and ``"destination"`` in its ``info()``, and opens the target.
@@ -137,6 +260,7 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         # reader, never ``self``, so it does not keep the instance alive.
         self._finalizer = weakref.finalize(self, reader.close)
         self.dir_cache: dict[str, dict[str, Any]] | None = None
+        self._dirs_lock = threading.Lock()
 
     @classmethod
     @override
@@ -168,15 +292,19 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     def _get_dirs(self) -> None:
         if self.dir_cache is not None:
             return
+        # Two threads can list at once (``concurrent_operations=True``): one builds the
+        # tree and reports each refusal once.
+        with self._dirs_lock:
+            if self.dir_cache is None:
+                self.dir_cache = self._build_tree()
+
+    def _build_tree(self) -> dict[str, dict[str, Any]]:
         files: dict[str, dict[str, Any]] = {}
-        # What extraction decides from the members written before one, in its order:
-        # the first member to claim a collision key keeps it, a path under a file or a
-        # file over a directory is refused, and a hard link whose source is refused is
-        # refused too. Keys are ``collision_key``s, as extraction's are.
-        claimed: dict[str, bool] = {}  # key -> whether it is a file
+        tree = _Tree(self.policy)
         refused_ids: set[int] = set()
         # An empty directory as the destination: nothing is written to it, so the
         # symlink checks of ``check_universal`` resolve every path by its name alone.
+        # A path through a link the archive made is resolved by ``_Tree``.
         with tempfile.TemporaryDirectory(prefix="archivey-fsspec-") as tmp:
             root = resolve_or_raise_on_loop(Path(tmp))
             for member in self.reader.members():
@@ -191,17 +319,22 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                 name = view.name.rstrip("/")
                 if not name or name == ".":
                     continue
-                conflict = self._claim(name, view, claimed)
-                if conflict is not None:
-                    self._report_refused(member, conflict)
+                placed = tree.place(name, view)
+                if isinstance(placed, _Refusal):
+                    refused_ids.add(member.member_id)
+                    self._report_refused(member, placed.reason)
                     continue
-                files[name] = self._entry(name, member)
-        dir_cache = {
-            name: {"name": name, "size": 0, "type": "directory"}
-            for name in self._all_dirnames(files)
-        }
+                files[placed] = self._entry(placed, member)
+        dir_cache: dict[str, dict[str, Any]] = {}
+        # Every parent of every path, built in a loop: a name nested a thousand deep
+        # is within the metadata budget, and a recursive walk would overflow the stack.
+        for name in files:
+            parent = posixpath.dirname(name)
+            while parent and parent not in dir_cache:
+                dir_cache[parent] = {"name": parent, "size": 0, "type": "directory"}
+                parent = posixpath.dirname(parent)
         dir_cache.update(files)
-        self.dir_cache = dir_cache
+        return dir_cache
 
     def _view(
         self, member: ArchiveMember, root: Path, refused_ids: set[int]
@@ -225,26 +358,6 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                     link_target=member.link_target,
                 )
         return view
-
-    def _claim(
-        self, name: str, view: ArchiveMember, claimed: dict[str, bool]
-    ) -> str | None:
-        """Claim ``name`` and its parents, or say why extraction would not write it."""
-        policy = self.policy
-        key = collision_key(name, policy)
-        is_dir = view.type is MemberType.DIRECTORY
-        parts = key.split("/")
-        for depth in range(1, len(parts)):
-            if claimed.get("/".join(parts[:depth])):
-                return "a parent of it is a file"
-        if key in claimed:
-            if is_dir and not claimed[key]:
-                return None  # a directory listed again
-            return "its name collides with a member written before it"
-        claimed[key] = not is_dir
-        for depth in range(1, len(parts)):
-            claimed.setdefault("/".join(parts[:depth]), False)
-        return None
 
     def _entry(self, name: str, member: ArchiveMember) -> dict[str, Any]:
         islink = member.type in (MemberType.SYMLINK, MemberType.HARDLINK)

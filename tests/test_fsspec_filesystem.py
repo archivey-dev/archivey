@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gc
 import io
+import os
 import pickle
 import subprocess
 import sys
@@ -137,6 +138,15 @@ def test_tree_matches_what_extract_all_writes(
         for p in dest.rglob("*")
         if p.is_file()
     }
+    if os.name == "nt" and policy is ExtractionPolicy.TRUSTED:
+        # TRUSTED keeps names Windows treats otherwise: a colon names a stream of the
+        # file, and a reserved name or a backslash depends on the Windows version.
+        # What becomes of them depends on the destination, which the tree does not
+        # model, so each is left out of both sides.
+        assert tree.pop("dir/ok:name") == b"colon"
+        for name in ("dir/CON.txt", "x\\back", "x/back"):
+            tree.pop(name, None)
+            written.pop(name, None)
     assert tree == written
 
 
@@ -178,6 +188,24 @@ LINKS_AND_COLLISIONS = [
     ("sym", "dl", "d"),  # a symlink to a directory
     ("file", "p", b"file p"),
     ("file", "p/q", b"under a file"),
+    # Paths through the archive's own symlinks, written where the link leads.
+    ("file", "dl/y", b"through dl"),  # written as d/y
+    ("dir", "dl/sub", ""),  # d/sub
+    ("file", "dl/new/z", b"new dir"),  # d/new/z: a directory made through the link
+    ("sym", "chain", "dl"),
+    ("file", "chain/w", b"two links"),  # d/w
+    ("dir", "s2", ""),
+    ("sym", "s2/up", "../d"),
+    ("file", "s2/up/v", b"up and over"),  # d/v
+    ("file", "d/y", b"collides"),  # d/y was written through dl
+    ("sym", "dead", "nothere"),
+    ("file", "dead/u", b"dangling"),  # refused: the link leads to no directory
+    ("sym", "tofile", "x"),
+    ("file", "tofile/u", b"under a file"),  # refused
+    ("sym", "loop1", "loop2"),
+    ("sym", "loop2", "loop1"),  # refused: a loop
+    ("sym", "dot", "."),
+    ("sym", "s2/out", "../dot/.."),  # refused: leaves through a link
 ]
 
 
@@ -210,9 +238,10 @@ def _listed(fs: ArchiveyFileSystem) -> dict[str, tuple[Any, ...]]:
 def test_tree_matches_extraction_on_links_and_collisions(
     memfs: Any, tmp_path: Path, policy: ExtractionPolicy
 ) -> None:
-    """Red with any of the four rules removed: the collision key (the plain name in
-    its place), the hard-link source check, the symlink target check, or the refusal
-    of a path under a file."""
+    """Red with any of these rules removed: the collision key (the plain name in its
+    place), the hard-link source check, the symlink target check, the refusal of a
+    path under a file, or following the archive's own links (a link treated as a
+    file, or its loop and way-out checks)."""
     data = _tar_entries(LINKS_AND_COLLISIONS)
     memfs.pipe("/d/lc.tar", data)
     dest = tmp_path / "out"
@@ -220,11 +249,30 @@ def test_tree_matches_extraction_on_links_and_collisions(
         reader.extract_all(dest, policy=policy, on_error="continue")
     with ArchiveyFileSystem("memory://d/lc.tar", policy=policy) as fs:
         written = _written(dest)
-        assert _listed(fs) == written
+        listed = _listed(fs)
+        assert fs.dir_cache is not None
+        cached = set(fs.dir_cache)
+        if os.name == "nt" and policy is ExtractionPolicy.TRUSTED:
+            # TRUSTED keys on the exact name, and a Windows disk folds case and trims
+            # a trailing dot, so it writes each of these over the member before it.
+            # The tree does not model the disk.
+            for name in ("a.txt", "f."):
+                assert name in listed
+                del listed[name]
+                cached.discard(name)
+        assert listed == written
         # Every path ``info`` answers, not only those ``find`` walks to: ``find``
         # does not descend into a file, so it alone misses ``p/q``.
-        assert fs.dir_cache is not None
-        assert set(fs.dir_cache) == set(written)
+        assert cached == set(written)
+
+
+def test_a_name_nested_far_past_the_recursion_limit_is_listed(memfs: Any) -> None:
+    name = "a/" * 1200 + "f"
+    memfs.pipe("/d/deep.tar", _tar_entries([("file", name, b"deep")]))
+    with ArchiveyFileSystem("memory://d/deep.tar") as fs:
+        assert fs.info(name)["size"] == 4
+        assert fs.cat(name) == b"deep"
+        assert fs.ls("a/a", detail=False) == ["a/a/a"]
 
 
 def test_info_carries_size_mtime_and_member(memfs: Any) -> None:

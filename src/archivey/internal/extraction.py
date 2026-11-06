@@ -64,7 +64,6 @@ from archivey.internal.filters import (
     collision_key,
     disk_spelled,
     policy_transform,
-    reroot_absolute,
     resolve_or_raise_on_loop,
 )
 from archivey.internal.link_watch import LinkWatch
@@ -1996,9 +1995,9 @@ class ExtractionCoordinator:
         through ``_check_universal``, so a dry run copies in what dest holds along
         the very name it checks, which a link's own target does not name when the
         link names another link."""
-        candidate = member
-        if self._policy is not ExtractionPolicy.STRICT:
-            candidate = reroot_absolute(candidate)
+        # The transform's permission rewrite does not change what is refused: only
+        # its name, re-rooted as every written name is, matters here.
+        candidate, _ = policy_transform(member, self._policy)
         try:
             self._check_universal(candidate)
             apply_name_policy(candidate, self._policy)
