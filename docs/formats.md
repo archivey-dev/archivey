@@ -889,8 +889,9 @@ A few reads use the original archive instead, with the member's name as an inclu
   no 64-bit size fields. An archive opened from a stream source is then copied whole.
 
 These reads take the mask only for a *plain* name, one the mask selects alone. Every name in the
-archive has to decode cleanly (valid UTF-8 for RAR5, ASCII for an older 8-bit name) with no `\`,
-NUL, `:`, leading `/`, or empty, `.` or `..` part. The member's own name has no `*` or `?`, no
+archive has to decode cleanly (valid UTF-8 for RAR5, ASCII for an older 8-bit name) with no NUL,
+`:`, leading `/`, or empty, `.` or `..` part, and no `\` in a RAR5 name (in an older archive `\`
+is a separator and reads as `/`). The member's own name has no `*` or `?`, no
 part ending in `.`, is ASCII unless `unrar` can be given a UTF-8 name (on Windows, or where a
 UTF-8 locale is installed), and no other name equal to it or below it, ignoring case. A large
 member without a plain name is copied to a temporary file like a small one, within

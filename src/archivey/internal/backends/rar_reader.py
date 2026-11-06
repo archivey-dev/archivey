@@ -952,8 +952,9 @@ def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool) -> str | None:
     an 8-bit RAR 1.5-4 name that is not ASCII, a Unicode name with a lone surrogate)
     or when ``unrar`` would change it before comparing it with a mask: a ``\\``
     (RAR5), a NUL or ``:``, a leading ``/``, or an empty, ``.`` or ``..`` component.
-    A RAR 1.5-4 ``\\`` is a separator and reads as ``/``. A history row gets its
-    ``;n`` suffix, as ``unrar -ver`` names it.
+    A RAR 1.5-4 ``\\`` is a separator and reads as ``/``. A RAR5 history row gets
+    its ``;n`` suffix, as ``unrar -ver`` names it; a RAR 1.5-4 one already stores it
+    in the name (as :func:`rar_synthetic.placeholder_mask` assumes).
     """
     stored = raw.orig_filename
     if stored is None:
@@ -975,7 +976,7 @@ def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool) -> str | None:
         return None
     if any(part in ("", ".", "..") for part in text.rstrip("/").split("/")):
         return None
-    if raw.is_file_version_history():
+    if rar5 and raw.is_file_version_history():
         text = f"{text};{raw.file_version}"
     return text
 

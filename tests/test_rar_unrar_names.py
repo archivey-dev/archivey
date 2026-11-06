@@ -226,6 +226,17 @@ def test_a_large_member_without_a_plain_name_is_copied(
     assert spawned == [None, "aXb", "plain.txt"]
 
 
+def test_a_rar4_history_row_keeps_the_suffix_its_name_stores() -> None:
+    """A RAR 1.5-4 history row stores ``;n`` in its name; the mask must not add a
+    second one (``file.txt;1;1`` selects nothing)."""
+    with open_archive(_fixture("file_version__rar4.rar"), config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        masks = [reader._plain_mask(m) for m in reader.members()]
+        names = [m.name for m in reader.members()]
+    assert masks == names
+    assert any(";" in mask for mask in masks if mask)
+
+
 def test_a_history_row_is_masked_with_its_version_suffix() -> None:
     """``unrar -ver`` names a history row ``name;n``; the live row keeps the bare
     name. Fails if the ``;n`` suffix is dropped (two rows would share ``file.txt``)
@@ -237,12 +248,13 @@ def test_a_history_row_is_masked_with_its_version_suffix() -> None:
 
 
 @requires_binary("unrar")
+@pytest.mark.parametrize("fixture", ["file_version__.rar", "file_version__rar4.rar"])
 def test_a_history_row_reads_in_place_by_its_versioned_name(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, fixture: str
 ) -> None:
     """An in-place read of a history row passes ``-n./file.txt;1`` with ``-ver``
     and gets that row alone, the same bytes as the synthetic read."""
-    path = _fixture("file_version__.rar")
+    path = _fixture(fixture)
     monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
     with open_archive(path, config=_UNRAR_ONLY) as reader:
         expected = [reader.read(member) for member in reader.members()]
