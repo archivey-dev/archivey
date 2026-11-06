@@ -93,6 +93,7 @@ class Codec(Enum):
     SHRINK = "shrink"  # ZIP method 1 (LZW)
     IMPLODE = "implode"  # ZIP method 6 (LZ77 + Shannon-Fano)
     LZOP = "lzop"  # the .lzo file format
+    MOZLZ4 = "mozlz4"  # Firefox's mozLz40 files: one raw LZ4 block
     LZO = "lzo"  # raw LZO1X (a SquashFS block)
     # Filter-only (composed with raw LZMA; see LZMA_FILTER_IDS).
     DELTA = "delta"
