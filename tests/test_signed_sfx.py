@@ -19,9 +19,13 @@ import pytest
 from archivey import detect_format, open_archive
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, DiagnosticPolicy
-from archivey.exceptions import DiagnosticRaisedError, FormatDetectionError
+from archivey.exceptions import (
+    CorruptionError,
+    DiagnosticRaisedError,
+    FormatDetectionError,
+)
 from archivey.types import ArchiveFormat
-from tests.pe_build import FILE_ALIGNMENT, pe_file
+from tests.pe_build import FILE_ALIGNMENT, pe_file, pe_headers
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_sevenzip_trailing_data import _stored_7z
 
@@ -197,3 +201,37 @@ def test_zip_from_a_sized_pipe_agrees_with_detection(forced: bool) -> None:
             for d in reader.diagnostics.retained
             if d.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
         ] == [DiagnosticCode.ARCHIVE_TRAILING_DATA]
+
+
+def _named_zip(name: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(name, b"hello\n")
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_end_record_inside_the_certificate_is_not_the_archive(forced: bool) -> None:
+    # The table is not covered by the signature, so bytes can be added to it: a whole
+    # second ZIP after its 8-byte header. Its end record is the last one in the file,
+    # and it says bytes precede its archive, so the reader asks where the table starts.
+    inside = _named_zip("inside.txt")
+    data = pe_file(_IMAGE, payload=_zip(), certificate_size=8 + len(inside))
+    data = data[: len(data) - len(inside)] + inside
+    with open_archive(
+        io.BytesIO(data), format=ArchiveFormat.ZIP if forced else None
+    ) as reader:
+        assert [member.name for member in reader.members()] == ["f.txt"]
+
+
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_certificate_entry_inside_the_archive_fails_both_ways(forced: bool) -> None:
+    # The header the file's author writes can name a table that starts inside the
+    # archive: the end is never before the overlay start the same header declares,
+    # but it can cut the archive. Auto-detect and a forced ``format=`` both refuse it.
+    payload = _zip()
+    total = FILE_ALIGNMENT + len(payload)
+    start = FILE_ALIGNMENT + 0x10
+    data = pe_headers([], certificate=(start, total - start)) + payload
+    with pytest.raises(CorruptionError):
+        open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP if forced else None)

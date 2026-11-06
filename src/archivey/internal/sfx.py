@@ -433,10 +433,12 @@ def _is_pe(prefix: bytes) -> bool:
     return prefix[e_lfanew : e_lfanew + len(_PE)] == _PE
 
 
-#: How many leading bytes the PE layout is read from. Detection and every backend
-#: read the layout from the same span, so forced ``format=`` and auto-detect derive
-#: the same payload end. The headers a linker writes end well inside it; it equals
-#: the presets' ``max_prefix_bytes``, so detection reads nothing extra for it.
+#: How many leading bytes the PE layout is read from. Every backend reads this span,
+#: and detection reads its prefix, which is the same span when ``max_prefix_bytes``
+#: is at least this long, as in every preset: forced ``format=`` and auto-detect then
+#: derive the same payload end. A custom budget shorter than the headers leaves
+#: detection with no layout, and it answers as for an unparsed stub. The headers a
+#: linker writes end well inside the span, so detection reads nothing extra for it.
 PE_LAYOUT_PREFIX = 4096
 
 # Offsets in the COFF file header (after ``PE\0\0``) and the optional header.
@@ -476,7 +478,9 @@ def pe_layout(prefix: bytes, total_size: int | None) -> PeLayout | None:
     ends past ``total_size``: a layout that does not parse means "scan as before",
     never an error. The certificate entry (data directory 4) holds a file offset,
     not an RVA; it counts only when it starts at or past the overlay start and ends
-    at ``total_size``, so a crafted entry can never cut the archive short.
+    at ``total_size``. So the end is never before the overlay start, as the same
+    headers declare it; nothing checks that a table starts there, so headers that
+    name one inside the archive cut it, and the archive then fails to open.
     """
     head = bytes(prefix[:PE_LAYOUT_PREFIX])
     if not head.startswith(_MZ) or not _is_pe(head):

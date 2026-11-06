@@ -132,6 +132,7 @@ from archivey.internal.backends.zip_parser import (
     locate_end_record,
     read_end_record,
     read_local_header,
+    record_implies_prefix,
     written_by_archive_utility,
 )
 from archivey.internal.backends.zipcrypto import (
@@ -1522,8 +1523,9 @@ class ZipReader(BaseArchiveReader):
         # Opened at its start with no end, the reader finds a signed executable's
         # certificate table itself, so forced ``format=ZIP`` sees the end detection
         # reports (``ReadBackend.open_read``). Lazily: the first bytes are read only
-        # when the tail search finds no end record, or something non-zero follows
-        # the archive, so an ordinary ZIP costs no read for it.
+        # when the tail search finds no end record, the record it finds says bytes
+        # precede the archive, or something non-zero follows the archive, so an
+        # ordinary ZIP costs no read for it (``_locate_end_record``).
         self._derive_end = end_offset is None and not start_offset
         self._payload_end = end_offset
         if start_offset or end_offset is not None:
@@ -1537,18 +1539,7 @@ class ZipReader(BaseArchiveReader):
         self._member_count: int | None = None
         self._count_known = False
         try:
-            try:
-                found, stopped = locate_end_record(
-                    self._read_at, file_size, members_end=self._end_or_walk
-                )
-            except _CertificateFound as signed:
-                # A signed executable whose certificate table hid the end record from
-                # the search: search again before the table, before any walk.
-                self._fp = self._region(handle, 0, signed.end)
-                file_size = signed.end
-                found, stopped = locate_end_record(
-                    self._read_at, file_size, members_end=self._walk_past_members
-                )
+            found, stopped, file_size = self._locate_end_record(handle, file_size)
             walked = self._local_walk
             if found is None and walked is not None:
                 if walked.error is None:
@@ -1582,6 +1573,41 @@ class ZipReader(BaseArchiveReader):
         self._refuse_declared_count_over_limit()
         self._report_zip64_damage()
         self._report_trailing_data()
+
+    def _locate_end_record(
+        self, handle: BinaryIO, file_size: int
+    ) -> tuple[tuple[int, bytes, bytes] | None, int | None, int]:
+        """:func:`locate_end_record` on the source, and the size it searched.
+
+        In a source opened at its start with no end, a signed executable's
+        certificate table is found here and the search runs again before it: when
+        the search meets no end record (``_CertificateFound``), and when the record
+        it meets says bytes precede its archive (``record_implies_prefix``), since
+        a table can hold record-shaped bytes of its own. An ordinary ZIP's record
+        implies none, so it costs no read of the first bytes.
+        """
+        try:
+            found, stopped = locate_end_record(
+                self._read_at, file_size, members_end=self._end_or_walk
+            )
+        except _CertificateFound as signed:
+            payload_end = signed.end
+        else:
+            if (
+                found is None
+                or not self._derive_end
+                or not record_implies_prefix(found[0], found[1])
+            ):
+                return found, stopped, file_size
+            payload_end = self._signed_payload_end()
+            if payload_end is None or payload_end >= file_size:
+                return found, stopped, file_size
+        # Search again before the table, before any walk.
+        self._fp = self._region(handle, 0, payload_end)
+        found, stopped = locate_end_record(
+            self._read_at, payload_end, members_end=self._walk_past_members
+        )
+        return found, stopped, payload_end
 
     def _list_after_bad_end_records(
         self, error: CorruptionError, walked: _WalkedMembers | None
