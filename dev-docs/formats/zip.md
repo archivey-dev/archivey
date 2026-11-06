@@ -80,8 +80,8 @@ silent and `STRICT` refuses (DR-3). Bytes inside the declared comment are the co
 whatever they look like. A signed PE self-extractor's certificate table is not reported
 ([`7z.md`](7z.md) §6): with a payload end, from detection or read lazily from the first
 bytes when the search misses, the record found says bytes precede its archive (an end
-record inside the table would), or a non-zero byte follows the archive, the search and the
-scan stop before the table. A tail longer than the search window hides the end record from
+record inside the table would, unless its offsets count from the file's start), or a
+non-zero byte follows the archive, the search and the scan stop before the table. A tail longer than the search window hides the end record from
 the search; the reader then walks the local headers from the start (the pipe's walk,
 seeking over sized members and scanning bit-3 ones for their descriptor, decoding
 nothing) and steps over the directory and the records after it to the end record
