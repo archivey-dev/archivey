@@ -146,3 +146,23 @@ be read one at a time.
 optimization was the same single-member temporary RAR. Benchmarks now justify it, and it
 serves reads of every size, with the size rule in `Keep the original archive for a large
 plainly named member of a path source`.
+
+### Requirement: Return a named member's own bytes when its mask selects others
+
+**Reason**: No read passes `unrar` a mask that selects more than one member any more.
+A synthetic file names its members `m<i>`, and a read of the original archive uses a
+plain name that selects exactly one member (`Keep the original archive for a large
+plainly named member of a path source`). The name model and the skip it fed are gone.
+
+### Requirement: Refuse a member name whose mask also selects earlier members
+
+**Reason**: The refusal guarded the extra decode a shared mask cost `unrar`. A synthetic
+read never builds a mask from a stored name, so a glob, a duplicate or a name `unrar`
+reads like another one reads its own bytes with no extra decode. A member that can only
+be read in place with a name that is not plain raises `UnsupportedFeatureError` instead.
+`rar_allow_glob_member_concatenation` is deprecated and has no effect.
+
+### Requirement: Under auto, read a member unrar cannot name with unar
+
+**Reason**: Every member `unrar` could not name now reads through a synthetic file, so
+`auto` never needs `unar` beside a RARLAB binary.
