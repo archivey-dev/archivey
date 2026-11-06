@@ -80,9 +80,11 @@ def _source(
     data: bytes,
     *,
     constants: PlannerConstants = SMALL,
-    gap: int = 0,
+    gap: int = 1,
     pool: WindowPool | None = None,
 ) -> tuple[RangeSource, RecordingFS]:
+    # A gap of 1, not 0: ``max_read_through=0`` turns the minimum fetch and the
+    # doubling off, and these tests are about them.
     fs = RecordingFS(data)
     pool = WindowPool(constants) if pool is None else pool
     return RangeSource(fs, "obj", size=len(data), pool=pool, max_read_through=gap), fs
@@ -148,12 +150,19 @@ def test_long_forward_gap_and_backward_jump_start_new_runs():
     ]
 
 
-def test_zero_read_through_fetches_only_from_the_read():
+def test_zero_read_through_fetches_only_what_each_read_needs():
     src, fs = _source(DATA, gap=0)
-    src.read(100)
+    assert src.read(100) == DATA[:100]
     src.seek(16 * KIB + 1)
-    src.read(10)
-    assert fs.fetches[1][0] == 16 * KIB + 1
+    assert src.read(10) == DATA[16 * KIB + 1 : 16 * KIB + 11]
+    for _ in range(4):
+        src.read(50)
+    # No minimum fetch and no doubling: each fetch is exactly its read.
+    assert fs.fetches == [
+        (0, 100),
+        (16 * KIB + 1, 16 * KIB + 11),
+        *[(16 * KIB + 11 + 50 * i, 16 * KIB + 61 + 50 * i) for i in range(4)],
+    ]
 
 
 def test_a_read_longer_than_the_max_fetch_is_not_kept():

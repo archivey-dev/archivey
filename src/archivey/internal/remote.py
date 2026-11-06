@@ -59,7 +59,13 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class PlannerConstants:
-    """The planner's fixed internal sizes, in bytes (design D2)."""
+    """The planner's fixed internal sizes, in bytes (design D2).
+
+    They are constants, not :class:`~archivey.ArchiveyConfig` fields, because none of
+    them grows with the archive, the number of volumes or the number of open streams:
+    the pool bound is the same for every reader (DR-9), which is what the spec
+    promises. ``planner_constants`` swaps them for tests and the benchmark only.
+    """
 
     min_fetch: int = 64 * 1024
     max_fetch: int = 8 * 1024 * 1024
@@ -272,7 +278,12 @@ class WindowPool:
             runs = len(self._runs) + 1
             old = 0
         need = at - start + want
-        length = max(need, self._fetch_size(fetches, runs))
+        # ``max_read_through=0`` asks for only the bytes each read needs: no minimum
+        # fetch and no doubling either (``ArchiveyConfig.max_read_through``).
+        if source.max_read_through == 0:
+            length = need
+        else:
+            length = max(need, self._fetch_size(fetches, runs))
         length = min(length, source.size - start)
         cap = self._max_fetch(runs)
         if need > cap:
@@ -399,6 +410,12 @@ class RangeSource(io.RawIOBase):
         and fsspec's HTTP file system passes that body on). Its first bytes are not
         known to start at ``start``, so they are never served, and keeping them would
         break the pool's bound.
+
+        The bound starts when ``cat_file`` returns: a file system that reads a whole
+        response body into memory (fsspec's HTTP one does) has already allocated it by
+        then. archivey reads through ``cat_file`` and opens no file object (design D1),
+        so a server that ignores ``Range`` costs that one allocation before the read
+        is refused; an accepted residual, listed for the maintainer.
 
         A response shorter than the range has seen an object shorter than the size read
         at open: it was cut or replaced since (design D7, tier 3), so this raises
