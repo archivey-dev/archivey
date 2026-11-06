@@ -466,7 +466,7 @@ class RangeSource(io.RawIOBase):
         response body into memory (fsspec's HTTP one does) has already allocated it by
         then. archivey reads through ``cat_file`` and opens no file object (design D1),
         so a server that ignores ``Range`` costs that one allocation before the read
-        is refused; an accepted residual, listed for the maintainer.
+        is refused. That cost is accepted.
 
         A response shorter than the range has seen an object shorter than the size read
         at open: it was cut or replaced since (design D7, tier 3), so this raises

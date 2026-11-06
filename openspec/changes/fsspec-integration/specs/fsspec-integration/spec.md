@@ -65,9 +65,10 @@ SHALL record `SOURCE_CHANGE_UNDETECTABLE` (`diagnostics`) at open, saying that a
 replacement of the same length, or a longer one, cannot be detected, and the planner SHALL
 raise on each fetch that returns fewer bytes than the range it asked for, inside the size
 read at open. A fetch that returns more bytes than it asked for SHALL raise `OSError`: the
-file system ignores range requests, which is not a change of the object. A file system for which archivey does not
-implement version pinning or header forwarding SHALL be treated as offering neither. A change that is detected SHALL raise; it MUST NOT return bytes of the new
-object as bytes of the archive.
+file system ignores range requests, which is not a change of the object. A file system for
+which archivey does not implement version pinning or header forwarding SHALL be treated as
+offering neither. A change that is detected SHALL raise; it MUST NOT return bytes of the
+new object as bytes of the archive.
 
 #### Scenario: changed object
 
