@@ -35,6 +35,7 @@ from archivey.internal.backends.rar_parser import (
     RAR5_ID,
     RAR_ID,
     RarArchive,
+    RarKdfCache,
     RarMemberInfo,
     _parse_rar3_ext_time,
     load_vint,
@@ -174,6 +175,22 @@ def _read_exact(read_at: Callable[[int, int], bytes], offset: int, size: int) ->
     return data
 
 
+@dataclass(frozen=True)
+class HeaderKeys:
+    """The header keys of an ``-hp`` archive: its header password, derived through
+    the reader's KDF cache, so a key the listing derived is not derived again."""
+
+    cache: RarKdfCache
+    password: str
+
+    def rar5(self, salt: bytes, kdf_count: int) -> bytes:
+        return self.cache.rar5(self.password, salt, 1 << kdf_count)
+
+    def rar3(self, salt: bytes) -> tuple[bytes, bytes]:
+        """RAR 1.5-4 ``(key, iv)``."""
+        return self.cache.rar3(self.password, salt)
+
+
 def read_stored_header(
     read_at: Callable[[int, int], bytes],
     archive: RarArchive,
@@ -181,8 +198,7 @@ def read_stored_header(
     volume_index: int,
     offset: int,
     size: int,
-    header_key: Callable[[bytes, int | None], bytes | tuple[bytes, bytes]]
-    | None = None,
+    header_keys: HeaderKeys | None = None,
     excluded: frozenset[OptionalLibrary],
 ) -> StoredHeader:
     """Read the header at ``offset`` (``size`` bytes, the walk's ``header_size``) again
@@ -191,14 +207,13 @@ def read_stored_header(
     ``read_at(offset, n)`` reads ``n`` bytes of the concatenated volume space.
     For a header-encrypted archive ``offset`` is the first ciphertext byte, right after
     the header's RAR 1.5-4 salt or RAR5 IV, as the walk records it, and
-    ``header_key(salt, kdf_count)`` derives the key: ``(key, iv)`` for RAR 1.5-4,
-    ``key`` for RAR5 (``kdf_count`` is the volume's, from
+    ``header_keys`` derives the key (RAR5 with the volume's KDF count, from
     :attr:`RarArchive.rar5_header_crypt`). A header whose own CRC fails raises
     :class:`CorruptionError`.
     """
     if archive.has_header_encryption:
-        if header_key is None:
-            raise ValueError("an encrypted header needs header_key")
+        if header_keys is None:
+            raise ValueError("an encrypted header needs header_keys")
         padded = -(-size // _AES_BLOCK) * _AES_BLOCK
         if archive.version == 5:
             crypt = archive.rar5_header_crypt.get(volume_index)
@@ -208,13 +223,10 @@ def read_stored_header(
                 )
             salt, kdf_count = crypt
             iv = _read_exact(read_at, offset - _AES_BLOCK, _AES_BLOCK)
-            key = header_key(salt, kdf_count)
-            assert isinstance(key, bytes)
+            key = header_keys.rar5(salt, kdf_count)
         else:
             salt = _read_exact(read_at, offset - 8, 8)
-            pair = header_key(salt, None)
-            assert isinstance(pair, tuple)
-            key, iv = pair
+            key, iv = header_keys.rar3(salt)
         raw = _decrypt(_read_exact(read_at, offset, padded), key, iv, excluded)[:size]
     else:
         raw = _read_exact(read_at, offset, size)

@@ -25,6 +25,7 @@ from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
 from archivey.internal.backends import rar_synthetic as rs
 from archivey.internal.backends.rar_parser import (
     RarArchive,
+    RarKdfCache,
     RarMemberInfo,
     parse_rar_archive,
 )
@@ -91,11 +92,7 @@ def _synthetic_read(
         finally:
             view.close()
 
-    def header_key(salt: bytes, kdf_count: int | None) -> bytes | tuple[bytes, bytes]:
-        assert password is not None
-        if kdf_count is None:
-            return reader._kdf_cache.rar3(password, salt)
-        return reader._kdf_cache.rar5(password, salt, 1 << kdf_count)
+    keys = rs.HeaderKeys(reader._kdf_cache, password) if password is not None else None
 
     indices = rs.solid_chain(raws, target) if archive.is_solid else [target]
     chain = [i for i in indices if _has_data(raws[i])]
@@ -109,7 +106,7 @@ def _synthetic_read(
             volume_index=volume,
             offset=offset,
             size=size,
-            header_key=header_key if archive.has_header_encryption else None,
+            header_keys=keys if archive.has_header_encryption else None,
             excluded=reader._excluded,
         )
         rs.check_against_listing(header, raw, part_size=part_size)
@@ -275,7 +272,7 @@ def _reader_of(path: Path):
 def test_encrypted_header_needs_a_key() -> None:
     archive = _fixture_archive("encrypted_header__.rar", "header_password")
     member = archive.members[0]
-    with pytest.raises(ValueError, match="header_key"):
+    with pytest.raises(ValueError, match="header_keys"):
         rs.read_stored_header(
             _reader_of(_FIXTURES / "encrypted_header__.rar"),
             archive,
@@ -297,7 +294,7 @@ def test_rar5_volume_without_its_crypt_record_is_corrupt() -> None:
             volume_index=1,
             offset=member.header_offset,
             size=member.header_size,
-            header_key=lambda salt, count: b"k" * 32,
+            header_keys=rs.HeaderKeys(RarKdfCache(), "header_password"),
             excluded=frozenset(),
         )
 
