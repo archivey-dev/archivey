@@ -376,6 +376,13 @@ class RangeSource(io.RawIOBase):
         return self.path
 
     @property
+    def url(self) -> str:
+        """The object as a URL (``s3://bucket/a.zip``), for messages. An fsspec path
+        is ``/``-separated on every OS, so it needs no ``display_path``."""
+        unstrip = getattr(self.fs, "unstrip_protocol", None)
+        return unstrip(self.path) if callable(unstrip) else self.path
+
+    @property
     def seek_is_expensive(self) -> bool:
         """A seek may cost a request: detection and the tail probes stay off it, as
         they do for a member stream (``archivey.internal.source.seek_is_expensive``).
@@ -395,7 +402,7 @@ class RangeSource(io.RawIOBase):
         data = self.fs.cat_file(self.path, start=start, end=end)
         if len(data) != end - start:
             raise SourceChangedError(
-                f"{self.path}: the object changed while it was read: fetching bytes "
+                f"{self.url}: the object changed while it was read: fetching bytes "
                 f"{start}-{end} of the {self.size} bytes seen at open returned "
                 f"{len(data)} bytes"
             )
@@ -490,7 +497,7 @@ def emit_source_change_undetectable(
     collector.emit(
         code=DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
         message=(
-            f"{archive_name or ranges[0].path} is read by range requests over "
+            f"{archive_name or ranges[0].url} is read by range requests over "
             f"{protocol or 'fsspec'}, and archivey cannot pin one version of the "
             f"object: a replacement of the same length while it is read would not "
             f"be detected"
