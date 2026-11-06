@@ -554,3 +554,4 @@ def unrar_mask_route(monkeypatch: pytest.MonkeyPatch) -> None:
     from archivey.internal.backends.rar_reader import RarReader
 
     monkeypatch.setattr(RarReader, "_synthetic_file", lambda self, member, raw: None)
+    monkeypatch.setattr(RarReader, "_nonsolid_pass_batches", lambda self: [])

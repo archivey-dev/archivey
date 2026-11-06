@@ -790,6 +790,15 @@ On a compressed tar, the stream's own checksum adds three cases:
   that packs more than 64 MiB is read in place instead. For a header-encrypted (`-hp`) archive the
   temporary file holds the member's header decrypted: its sizes, times and checksum, but not its
   name.
+- **A pass over an archive that is not solid reads members in batches.** `stream_members()` and
+  `extract_all()` put the compressed, unencrypted members that have a CRC32 into batches of up to
+  64 MiB of packed bytes, one temporary RAR file and one `unrar` run per batch, and split its
+  output by size. Each member's bytes are checked against its CRC32 as they pass, so if a damaged
+  member makes the output stop lining up, the members after it in the batch are read one at a
+  time instead. A batch runs only when one of its members is read, and reading one decodes the
+  members before it in that batch. A batch that doesn't fit `SpoolLimits.max_bytes` is read one
+  member at a time too. Encrypted members, members that pack more than 64 MiB, and members whose
+  dictionary is over `DecoderLimits.max_decoder_memory`, are read one at a time.
 - **A solid member is read from a copy of its solid stream.** `unrar` has to decode a solid
   stream from its start, so the temporary file holds the stream's members from the start up to
   the member read. There is one such file per solid stream, kept until the reader closes and

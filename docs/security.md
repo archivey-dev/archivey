@@ -90,10 +90,11 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   of it. So is what a format handler's walk decodes by itself: a compressed payload it opens
   part-way through the archive, and a member's decoded data. When `unrar` reads a member of a RAR
   archive, archivey copies that member's packed bytes to a temporary file, or for a solid archive
-  its solid stream up to that member, once per stream; a pass copies whole solid streams a few at a
-  time, or the whole archive when that would be one run, a member has an unknown compression
-  version, a volume is missing, or a RAR 1.5-4 member passes 4 GiB.
-  A RAR archive opened from a file object rather than a path is copied whole for `unar`. `spool_limits.max_bytes` caps those copies, along with the few other
+  its solid stream up to that member, once per stream; a pass copies members in batches, or whole
+  solid streams a few at a time, or the whole archive when that would be one run, a member has an
+  unknown compression version, a volume is missing, or a RAR 1.5-4 member passes 4 GiB. A RAR
+  archive opened from a file object rather than a path is copied whole for `unar`.
+  `spool_limits.max_bytes` caps those copies, along with the few other
   temporary files archivey makes for RAR archives, listed in the table below. When the archive
   records a member's size in `member.size`, archivey never decodes more than that, and a member
   holding more raises `CorruptionError`.
@@ -270,7 +271,10 @@ in the repository measures what each limit costs in time and memory on your mach
   `unrar` and `unar` need the archive as a file. Each `unrar` read of a member of an archive that
   is not solid copies that member's packed bytes into a small RAR file (mode 0600, removed when
   the member stream closes; for a header-encrypted archive it holds the member's decrypted header,
-  but not its name). A solid member's read copies its solid stream up to it into one such file
+  but not its name). A pass over such an archive copies its compressed members in batches of up
+  to 64 MiB of packed bytes, one file per batch, made when one of its members is read and removed when the pass
+  moves to the next batch; reading one member of a batch decodes the members before it in that batch. A solid
+  member's read copies its solid stream up to it into one such file
   per stream, grown by later reads and removed when the reader closes, and a pass over a solid
   RAR copies whole solid streams a few at a time, up to 64 MiB of packed bytes or one larger
   stream, or the whole archive when that would be one run, a member has an unknown compression
