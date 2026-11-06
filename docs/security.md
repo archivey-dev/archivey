@@ -90,7 +90,9 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   of it. So is what a format handler's walk decodes by itself: a compressed payload it opens
   part-way through the archive, and a member's decoded data. When `unrar` reads a member of a RAR
   archive, archivey copies that member's packed bytes to a temporary file, or for a solid archive
-  its solid stream up to that member, once per stream; a pass copies whole solid streams a few at a time.
+  its solid stream up to that member, once per stream; a pass copies whole solid streams a few at a
+  time, or the whole archive when that would be one run, a member has an unknown compression
+  version, a volume is missing, or a RAR 1.5-4 member passes 4 GiB.
   A RAR archive opened from a file object rather than a path is copied whole for `unar`. `spool_limits.max_bytes` caps those copies, along with the few other
   temporary files archivey makes for RAR archives, listed in the table below. When the archive
   records a member's size in `member.size`, archivey never decodes more than that, and a member
@@ -271,8 +273,9 @@ in the repository measures what each limit costs in time and memory on your mach
   but not its name). A solid member's read copies its solid stream up to it into one such file
   per stream, grown by later reads and removed when the reader closes, and a pass over a solid
   RAR copies whole solid streams a few at a time, up to 64 MiB of packed bytes or one larger
-  stream. A RAR opened from a file object is copied whole for
-  `unar`, and so are volumes archivey can't link into its temporary folder and, for `unar`, an
+  stream, or the whole archive when that would be one run, a member has an unknown compression
+  version, a volume is missing, or a RAR 1.5-4 member passes 4 GiB. A RAR opened from a file
+  object is copied whole for `unar`, and so are volumes archivey can't link into its temporary folder and, for `unar`, an
   archive with data before it. A pass over a solid RAR also keeps the members that later file copies repeat. It costs
   the disk space itself.
 

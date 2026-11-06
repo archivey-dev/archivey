@@ -162,8 +162,8 @@ what `unrar` with a positional name does, and what a solid format costs any read
 The file counts against `SpoolLimits.max_bytes` as it grows. For a path source, when the
 next extension would pass the limit or the threshold of D1, the reader drops back to the
 original archive with the mask for that stream (the plain-name test permitting), as
-today. A pass over a solid archive writes the same per-stream file once and reads it
-with one `unrar` run, with no mask.
+today. A pass over a solid archive opened from a stream source does not use these
+per-stream files: it builds its own run files (§"A pass"), with no mask.
 
 ### Where the file lives
 
@@ -267,7 +267,7 @@ source.
 | `extract_all()`, nonsolid, 4,000 small members | 49.5 s | about 20 s per-member (no D3), under 1 s plus file writing with D3 | measured spawn and batch rows |
 | A small member from a 200 MiB stream source | 1,350 ms and 200 MiB on disk | about 5 ms and the member's packed bytes on disk | estimate from the rows above |
 | A pass over a stream source, nonsolid | the whole archive on disk | one member or one batch on disk at a time | design |
-| A pass over a stream source, solid | the whole archive on disk | one solid group on disk at a time | design; no gain for a single-group `rar -s` archive |
+| A pass over a stream source, solid | the whole archive on disk | one run of solid streams (up to 64 MiB packed) on disk at a time | measured (PR 3b); an archive that would be one run keeps the whole copy |
 | Last member of a single-group solid archive | whole decode | the same whole decode, plus the copy | the chain is the archive |
 
 ## Integrity and matching `unrar`
@@ -330,8 +330,16 @@ current synthetic file:
 
 - nonsolid: one member per file, or a batch (D3); the file is removed when the batch is
   read;
-- solid: one solid stream per file; `unrar` runs when the stream is complete, and the
-  file is removed after.
+- solid, stream source: one *run* of whole solid streams per file, up to 64 MiB of packed
+  bytes (one larger stream runs alone; under a spool limit below 128 MiB every stream runs
+  alone); `unrar` runs when the run is complete, and the file is removed after. An archive
+  that would be one run takes the whole-archive copy and one pipe instead: that run holds
+  every packed member, so it saves no disk, and re-reading each header made it slower
+  (measured, 4,000 members of 250 B from a `BytesIO`: 502 ms against 414 ms). The pass
+  builds run files rather than reusing the random reads' per-stream files: those grow
+  only while no read holds them, and joining small streams into one run saves an
+  `unrar` start per stream (50 streams: 854 ms one per stream, 484 ms in runs).
+- solid, path source: the original archive with one pipe, as today.
 
 `unrar` cannot read a file that is still being written: it reads to EOF and stops. A
 solid stream therefore has to be complete on disk before its `unrar` run starts. For a
