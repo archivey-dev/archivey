@@ -89,10 +89,9 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   `.cpio.xz`) is held to it whenever it's decoded, listing included, since listing one decodes all
   of it. So is what a format handler's walk decodes by itself: a compressed payload it opens
   part-way through the archive, and a member's decoded data. When `unrar` reads a member of a RAR
-  archive that is not solid, archivey copies that member's packed bytes to a temporary file.
-  Otherwise (a solid archive, or any archive read with `unar`), a RAR archive opened from a file
-  object rather than a path is copied whole to a temporary file the first time a member needs
-  `unrar` or `unar`. `spool_limits.max_bytes` caps those copies, along with the few other
+  archive, archivey copies that member's packed bytes to a temporary file, or for a solid archive
+  its solid stream up to that member, once per stream. A RAR archive opened from a file object
+  rather than a path is copied whole for `unar`, and for a pass over a solid archive. `spool_limits.max_bytes` caps those copies, along with the few other
   temporary files archivey makes for RAR archives, listed in the table below. When the archive
   records a member's size in `member.size`, archivey never decodes more than that, and a member
   holding more raises `CorruptionError`.
@@ -269,7 +268,9 @@ in the repository measures what each limit costs in time and memory on your mach
   `unrar` and `unar` need the archive as a file. Each `unrar` read of a member of an archive that
   is not solid copies that member's packed bytes into a small RAR file (mode 0600, removed when
   the member stream closes; for a header-encrypted archive it holds the member's decrypted header,
-  but not its name). Otherwise a RAR opened from a file object is copied, and
+  but not its name). A solid member's read copies its solid stream up to it into one such file
+  per stream, grown by later reads and removed when the reader closes. A RAR opened from a file
+  object is copied whole for `unar` and for a pass over a solid archive, and
   so are volumes archivey can't link into its temporary folder and, for `unar`, an archive with data
   before it. A pass over a solid RAR also keeps the members that later file copies repeat. It costs
   the disk space itself.
