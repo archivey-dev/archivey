@@ -1134,6 +1134,7 @@ init archivey.fsspec.ArchiveyFileSystem(fo: str | os.PathLike[str] | OpenFile | 
 attribute archivey.fsspec.ArchiveyFileSystem.cachable = False
 method archivey.fsspec.ArchiveyFileSystem.close(self) -> None
 method archivey.fsspec.ArchiveyFileSystem.cp_file(self, *args: Any, **kwargs: Any) -> Any
+method archivey.fsspec.ArchiveyFileSystem.ls(self, path: str, detail: bool = True, **kwargs: Any) -> list[Any]
 method archivey.fsspec.ArchiveyFileSystem.makedirs(self, *args: Any, **kwargs: Any) -> Any
 method archivey.fsspec.ArchiveyFileSystem.mkdir(self, *args: Any, **kwargs: Any) -> Any
 method archivey.fsspec.ArchiveyFileSystem.mv(self, *args: Any, **kwargs: Any) -> Any
@@ -1145,6 +1146,7 @@ method archivey.fsspec.ArchiveyFileSystem.rm_file(self, *args: Any, **kwargs: An
 method archivey.fsspec.ArchiveyFileSystem.rmdir(self, *args: Any, **kwargs: Any) -> Any
 attribute archivey.fsspec.ArchiveyFileSystem.root_marker = ''
 method archivey.fsspec.ArchiveyFileSystem.touch(self, *args: Any, **kwargs: Any) -> Any
+method archivey.fsspec.ArchiveyFileSystem.walk(self, path: str, maxdepth: int | None = None, topdown: bool = True, on_error: Any = 'omit', **kwargs: Any) -> Iterator[tuple[str, Any, Any]]
 cli-exit EXIT_BROKEN_PIPE = 141
 cli-exit EXIT_FAIL = 1
 cli-exit EXIT_INTERRUPTED = 130

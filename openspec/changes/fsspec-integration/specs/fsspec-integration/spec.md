@@ -145,7 +145,8 @@ makes lead out, and `filter=` are outside the tree.
 | `ls`, `find`, `glob`, `walk` | From the tree above; no member data read |
 | `open(path, "rb")` | A seekable member stream; backward seeks MAY re-decode (loud-slow-rewind) |
 | A link that resolves to a member | Listed as the target's type with `islink: True` and `destination`; opens the target |
-| A link that resolves to nothing | Listed as `"other"`; `open` raises `FileNotFoundError` |
+| A symlink that resolves to nothing | Listed as `"other"`; `open` raises `FileNotFoundError` |
+| A hard link with no file listed before it as its source | Absent, as extraction does not make it; a hard link to a symlink is listed as that symlink |
 | Missing path | `FileNotFoundError` |
 | `open` on a directory | `IsADirectoryError` |
 | Any write method, or a mode other than `"rb"` | `NotImplementedError` |

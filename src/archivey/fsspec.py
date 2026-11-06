@@ -19,6 +19,7 @@ import posixpath
 import tempfile
 import threading
 import weakref
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Literal, Self, cast
@@ -31,6 +32,7 @@ from archivey.core import open_archive
 from archivey.diagnostics import DiagnosticCode, PathRefusedContext
 from archivey.exceptions import FilterRejectionError
 from archivey.internal.enum_args import coerce_enum
+from archivey.internal.extraction import hardlink_chain_end
 from archivey.internal.filters import (
     check_universal,
     collision_key,
@@ -201,8 +203,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
 
     A link whose target is a member is listed as the target's type, with
     ``"islink": True`` and ``"destination"`` in its ``info()``, and opens the target.
-    A link that resolves to nothing is listed as ``"other"``, and opening it raises
-    ``FileNotFoundError``.
+    A symlink that resolves to nothing is listed as ``"other"``, and opening it raises
+    ``FileNotFoundError``. A hard link is listed only when extraction makes it: its
+    source is a file listed before it. A hard link to a symlink is that symlink, with
+    the symlink's target as its ``"destination"``.
 
     The instance owns its reader: :meth:`close`, or leaving a ``with`` block, closes it,
     and so does collecting the instance. A member stream from ``open()`` keeps the
@@ -261,6 +265,7 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         self._finalizer = weakref.finalize(self, reader.close)
         self.dir_cache: dict[str, dict[str, Any]] | None = None
         self._dirs_lock = threading.Lock()
+        self._children: dict[str, list[str]] = {}
 
     @classmethod
     @override
@@ -298,10 +303,94 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             if self.dir_cache is None:
                 self.dir_cache = self._build_tree()
 
+    @override
+    def ls(self, path: str, detail: bool = True, **kwargs: Any) -> list[Any]:
+        """fsspec's archive ``ls``, from an index of each directory's entries."""
+        self._get_dirs()
+        dir_cache = cast("dict[str, dict[str, Any]]", self.dir_cache)
+        path = self._strip_protocol(path).rstrip("/")
+        names = self._children.get(path)
+        if names is not None:
+            entries = [dir_cache[name] for name in names]
+        elif not path:
+            entries = []  # an archive with nothing in its tree
+        else:
+            # Nothing is under ``path``: a file lists as itself, an empty directory
+            # as nothing, and ``info`` raises FileNotFoundError for a missing one.
+            info = self.info(path)
+            entries = [] if info["type"] == "directory" else [info]
+        entries.sort(key=lambda entry: entry["name"])
+        return entries if detail else [entry["name"] for entry in entries]
+
+    @override
+    def walk(  # pyrefly: ignore[bad-override]
+        self,
+        path: str,
+        maxdepth: int | None = None,
+        topdown: bool = True,
+        on_error: Any = "omit",
+        **kwargs: Any,
+    ) -> Iterator[tuple[str, Any, Any]]:
+        """fsspec's ``walk``, with a stack in place of recursion.
+
+        One member name sets the tree's depth, and fsspec's ``walk`` recurses once a
+        level, so ``find``, ``glob`` and ``du`` would raise ``RecursionError`` on an
+        archive with a deeply nested name. The order, ``maxdepth``, ``topdown`` (a
+        caller may prune ``dirs`` in place) and ``on_error`` are fsspec's.
+        """
+        if maxdepth is not None and maxdepth < 1:
+            raise ValueError("maxdepth must be at least 1")
+        detail = kwargs.pop("detail", False)
+        # Each entry: a directory still to list with the depth it has left, or, for a
+        # bottom-up walk, a listed one to yield once everything under it has been.
+        stack: list[tuple[str, int | None, tuple[str, Any, Any] | None]] = [
+            (self._strip_protocol(path), maxdepth, None)
+        ]
+        while stack:
+            top, depth, ready = stack.pop()
+            if ready is not None:
+                yield ready
+                continue
+            try:
+                listing = self.ls(top, detail=True, **kwargs)
+            except OSError as exc:
+                if on_error == "raise":
+                    raise
+                if callable(on_error):
+                    on_error(exc)
+                continue
+            full_dirs: dict[str, str] = {}
+            dirs: dict[str, Any] = {}
+            files: dict[str, Any] = {}
+            for info in listing:
+                pathname = info["name"].rstrip("/")
+                name = pathname.rsplit("/", 1)[-1]
+                if info["type"] == "directory" and pathname != top:
+                    full_dirs[name] = pathname
+                    dirs[name] = info
+                elif pathname == top:
+                    files[""] = info
+                else:
+                    files[name] = info
+            shown_dirs: Any = dirs if detail else list(dirs)
+            shown_files: Any = files if detail else list(files)
+            if topdown:
+                yield top, shown_dirs, shown_files
+            else:
+                stack.append((top, None, (top, shown_dirs, shown_files)))
+            if depth is not None:
+                depth -= 1
+                if depth < 1:
+                    continue
+            # Reversed, so the first directory is listed next, as recursion would.
+            for name in reversed(list(shown_dirs)):
+                stack.append((full_dirs[name], depth, None))
+
     def _build_tree(self) -> dict[str, dict[str, Any]]:
         files: dict[str, dict[str, Any]] = {}
         tree = _Tree(self.policy)
         refused_ids: set[int] = set()
+        hardlink_ends: dict[int, ArchiveMember | None] = {}
         # An empty directory as the destination: nothing is written to it, so the
         # symlink checks of ``check_universal`` resolve every path by its name alone.
         # A path through a link the archive made is resolved by ``_Tree``.
@@ -311,7 +400,7 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                 if not member.is_current:
                     continue
                 try:
-                    view = self._view(member, root, refused_ids)
+                    view = self._view(member, root, refused_ids, hardlink_ends)
                 except FilterRejectionError as exc:
                     refused_ids.add(member.member_id)
                     self._report_refused(member, exc.raw_message)
@@ -324,7 +413,7 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                     refused_ids.add(member.member_id)
                     self._report_refused(member, placed.reason)
                     continue
-                files[placed] = self._entry(placed, member)
+                files[placed] = self._entry(placed, member, view)
         dir_cache: dict[str, dict[str, Any]] = {}
         # Every parent of every path, built in a loop: a name nested a thousand deep
         # is within the metadata budget, and a recursive walk would overflow the stack.
@@ -334,24 +423,59 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                 dir_cache[parent] = {"name": parent, "size": 0, "type": "directory"}
                 parent = posixpath.dirname(parent)
         dir_cache.update(files)
+        # Each directory's entries, so ``ls`` reads one directory's worth, not the
+        # whole tree: fsspec's own ``ls`` scans every path, which makes a full walk
+        # quadratic in the member count. Set before ``dir_cache``, which marks the
+        # tree as built.
+        children: dict[str, list[str]] = {}
+        for name in dir_cache:
+            children.setdefault(posixpath.dirname(name), []).append(name)
+        self._children = children
         return dir_cache
 
     def _view(
-        self, member: ArchiveMember, root: Path, refused_ids: set[int]
+        self,
+        member: ArchiveMember,
+        root: Path,
+        refused_ids: set[int],
+        hardlink_ends: dict[int, ArchiveMember | None],
     ) -> ArchiveMember:
         """``member`` as extraction writes it, or ``FilterRejectionError``."""
         view = extraction_view(member, self.policy)
+        if view.type is MemberType.HARDLINK:
+            # A hard link to a symlink is a second name for the symlink, written as a
+            # symlink with its target, as extraction's ``_as_written`` does.
+            direct = hardlink_chain_end(
+                cast("BaseArchiveReader", self.reader), member, hardlink_ends
+            )
+            if (
+                direct is not None
+                and direct.type is MemberType.SYMLINK
+                and direct.link_target is not None
+            ):
+                view = view.replace(
+                    type=MemberType.SYMLINK,
+                    link_target=direct.link_target,
+                    link_target_member=direct.link_target_member,
+                )
         if view.type is MemberType.SYMLINK:
             # Where its target points: a target that leaves the destination is refused
             # whatever the destination is.
             check_universal(view, root, dest_resolved=True)
-        elif member.type is MemberType.HARDLINK:
+        elif view.type is MemberType.HARDLINK:
+            # Extraction links to the file an earlier member was written to: with no
+            # such member (none of that name, or only a later one, as hard links point
+            # backward) or one that is not a file, it writes nothing.
             source = member.link_target_member
-            if (
-                source is not None
-                and source.type is not MemberType.SYMLINK
-                and source.member_id in refused_ids
-            ):
+            if source is None or source.type is not MemberType.FILE:
+                raise FilterRejectionError(
+                    "Hardlink target not found"
+                    if source is None
+                    else "Hardlink target is not a file",
+                    member_name=member.name,
+                    link_target=member.link_target,
+                )
+            if source.member_id in refused_ids:
                 raise FilterRejectionError(
                     "Hardlink target was refused",
                     member_name=member.name,
@@ -359,12 +483,15 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                 )
         return view
 
-    def _entry(self, name: str, member: ArchiveMember) -> dict[str, Any]:
+    def _entry(
+        self, name: str, member: ArchiveMember, view: ArchiveMember
+    ) -> dict[str, Any]:
         islink = member.type in (MemberType.SYMLINK, MemberType.HARDLINK)
         # ``link_target_member`` is the end of the link chain; a cycle or a target
         # that is no member leaves it ``None``, and a chain that ends at a symlink
-        # with no target ends at that symlink.
-        target = member.link_target_member if islink else member
+        # with no target ends at that symlink. ``view`` is the member as written: a
+        # hard link to a symlink is that symlink, with its target.
+        target = view.link_target_member if islink else member
         entry: dict[str, Any] = {"name": name}
         if target is None or target.type in (
             MemberType.OTHER,
@@ -377,7 +504,7 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         else:
             entry.update(type="file", size=target.size)
         if islink:
-            entry.update(islink=True, destination=member.link_target)
+            entry.update(islink=True, destination=view.link_target)
         modified = member.modified_utc()
         if modified is not None:
             entry["mtime"] = modified.timestamp()

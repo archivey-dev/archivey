@@ -699,6 +699,52 @@ class _MemberState:
     rename_base: Path | None = None
 
 
+def hardlink_chain_end(
+    reader: BaseArchiveReader,
+    member: ArchiveMember,
+    ends: dict[int, ArchiveMember | None],
+) -> ArchiveMember | None:
+    """The first member that is not a HARDLINK on ``member``'s hard-link chain, or
+    ``None`` for a cycle or a dead end.
+
+    Memoized in ``ends`` by ``_member_id`` for every link on the walked path, as
+    ``BaseArchiveReader._resolve_link`` does, so a chain of N hard links costs O(N)
+    lookups in total rather than O(N²). A lookup depends only on the node it starts
+    at, so the links on one path share its end, and no answer changes during a run:
+    ``_hardlink_direct_target`` only looks backward. Extraction and the
+    ``archivey://`` file system's tree both use it, so they agree on what a hard
+    link is written as (DR-23a).
+    """
+    path: list[int] = []
+    on_path: set[int] = set()
+    end: ArchiveMember | None
+    current = member
+    while True:
+        if current.type is not MemberType.HARDLINK:
+            end = current
+            break
+        member_id = current._member_id
+        if member_id is None:
+            end = None
+            break
+        if member_id in ends:
+            end = ends[member_id]
+            break
+        if member_id in on_path:
+            end = None
+            break
+        path.append(member_id)
+        on_path.add(member_id)
+        target = reader._hardlink_direct_target(current)
+        if target is None:
+            end = None
+            break
+        current = target
+    for member_id in path:
+        ends[member_id] = end
+    return end
+
+
 class ExtractionCoordinator:
     """Drives a single forward pass over a reader's members, writing them safely to disk."""
 
@@ -1774,44 +1820,8 @@ class ExtractionCoordinator:
     def _hardlink_chain_end(
         self, reader: BaseArchiveReader, member: ArchiveMember
     ) -> ArchiveMember | None:
-        """The first member that is not a HARDLINK on ``member``'s hard-link chain, or
-        ``None`` for a cycle or a dead end.
-
-        Memoized by ``_member_id`` for every link on the walked path, as
-        ``BaseArchiveReader._resolve_link`` does, so a chain of N hard links costs O(N)
-        lookups in total rather than O(N²). A lookup depends only on the node it starts
-        at, so the links on one path share its end, and no answer changes during the
-        run: ``_hardlink_direct_target`` only looks backward.
-        """
-        ends = self._state.hardlink_ends
-        path: list[int] = []
-        on_path: set[int] = set()
-        end: ArchiveMember | None
-        current = member
-        while True:
-            if current.type is not MemberType.HARDLINK:
-                end = current
-                break
-            member_id = current._member_id
-            if member_id is None:
-                end = None
-                break
-            if member_id in ends:
-                end = ends[member_id]
-                break
-            if member_id in on_path:
-                end = None
-                break
-            path.append(member_id)
-            on_path.add(member_id)
-            target = reader._hardlink_direct_target(current)
-            if target is None:
-                end = None
-                break
-            current = target
-        for member_id in path:
-            ends[member_id] = end
-        return end
+        """:func:`hardlink_chain_end`, memoized for this run."""
+        return hardlink_chain_end(reader, member, self._state.hardlink_ends)
 
     def _transform(
         self, original: ArchiveMember

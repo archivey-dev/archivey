@@ -210,6 +210,12 @@ LINKS_AND_COLLISIONS = [
     ("sym", "loop2", "loop1"),  # refused: a loop
     ("sym", "dot", "."),
     ("sym", "s2/out", "../dot/.."),  # refused: leaves through a link
+    # Hard links extraction does not make: no source, a later one, a directory.
+    ("hard", "hmissing", "nothere"),
+    ("hard", "hforward", "later"),
+    ("file", "later", b"after its link"),
+    ("hard", "hdir", "d"),
+    ("hard", "hsym", "ok"),  # a hard link to a symlink is written as that symlink
 ]
 
 
@@ -229,7 +235,12 @@ def _written(dest: Path) -> dict[str, tuple[Any, ...]]:
 def _listed(fs: ArchiveyFileSystem) -> dict[str, tuple[Any, ...]]:
     out: dict[str, tuple[Any, ...]] = {}
     for path, info in fs.find("", withdirs=True, detail=True).items():
-        if info.get("islink") and info["member"].type.value == "symlink":
+        # Written as a symlink: a symlink, or a hard link to one, whose destination
+        # is then the symlink's target rather than the hard link's source name.
+        if info.get("islink") and (
+            info["member"].type.value == "symlink"
+            or info["destination"] != info["member"].link_target
+        ):
             out[path] = ("link",)
         elif info["type"] == "directory":
             out[path] = ("dir",)
@@ -277,6 +288,38 @@ def test_a_name_nested_far_past_the_recursion_limit_is_listed(memfs: Any) -> Non
         assert fs.info(name)["size"] == 4
         assert fs.cat(name) == b"deep"
         assert fs.ls("a/a", detail=False) == ["a/a/a"]
+        assert fs.find("") == [name]
+        assert fs.du("") == 4
+
+
+def test_walk_matches_fsspecs_own(memfs: Any) -> None:
+    """The stack-based ``walk`` yields what fsspec's recursive one does."""
+    from fsspec.archive import AbstractArchiveFileSystem
+    from fsspec.spec import AbstractFileSystem
+
+    names = {"a/b/c.txt": b"1", "a/d.txt": b"2", "e/f/g/h.txt": b"3", "i.txt": b"4"}
+    memfs.pipe("/d/w.tar", _tar_bytes(names))
+    with ArchiveyFileSystem("memory://d/w.tar") as fs:
+        for kwargs in (
+            {},
+            {"maxdepth": 1},
+            {"maxdepth": 2},
+            {"topdown": False},
+            {"topdown": False, "maxdepth": 2},
+            {"detail": True},
+        ):
+            ours = list(fs.walk("", **kwargs))
+            theirs = list(AbstractFileSystem.walk(fs, "", **kwargs))
+            assert ours == theirs, kwargs
+        assert list(fs.walk("a")) == list(AbstractFileSystem.walk(fs, "a"))
+        # ``ls`` from the index matches fsspec's scan of the whole cache.
+        for path in ("", "a", "a/", "a/b", "a/b/c.txt", "e/f", "i.txt"):
+            for detail in (True, False):
+                assert fs.ls(path, detail=detail) == AbstractArchiveFileSystem.ls(
+                    fs, path, detail=detail
+                )
+        with pytest.raises(FileNotFoundError):
+            fs.ls("missing")
 
 
 def test_info_carries_size_mtime_and_member(memfs: Any) -> None:
