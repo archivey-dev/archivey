@@ -266,7 +266,7 @@ _CASE_UNKNOWN_ON_WINDOWS = {
 
 @requires_binary("unrar")
 def test_case_fold_selection_is_the_one_unrar_makes_on_this_os(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The model's selection for non-ASCII case matches unrar's on every OS.
 
@@ -325,6 +325,13 @@ def test_case_fold_selection_is_the_one_unrar_makes_on_this_os(
                 continue
             assert data == _payload(index), member.name
     assert refused == ([6, 10] if sys.platform == "win32" else [])
+
+    # A synthetic archive names no member, so every read is the member's on any OS.
+    monkeypatch.undo()
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    with open_archive(archive, config=_UNRAR_SHARED) as reader:
+        for index, member in enumerate(reader.members()):
+            assert reader.read(member) == _payload(index), member.name
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
