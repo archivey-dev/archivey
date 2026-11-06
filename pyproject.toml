@@ -50,6 +50,11 @@ Issues = "https://github.com/archivey-dev/archivey/issues"
 [project.scripts]
 archivey = "archivey.cli.main:main"
 
+# fsspec finds the archivey:// protocol here without an import of archivey. fsspec is
+# not a dependency: archivey.fsspec imports it, and nothing else does.
+[project.entry-points."fsspec.specs"]
+archivey = "archivey.fsspec:ArchiveyFileSystem"
+
 # Four extras, each answering a question a user asks about their own environment
 # ("will it just work?", "do I need fast seeking?", "am I on free-threaded Python?",
 # "give me everything") rather than naming an internal dependency group. The previous

@@ -56,6 +56,7 @@ PUBLIC_MODULES = (
     "archivey.paths",
     "archivey.formats",
     "archivey.terminal",
+    "archivey.fsspec",
 )
 
 #: The enums a patch release may add values to: the diagnostic codes, and the enums

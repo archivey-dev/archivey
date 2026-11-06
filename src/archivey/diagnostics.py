@@ -196,6 +196,12 @@ class DiagnosticCode(StrEnum):
     length while it reads would go unseen. A replacement of a different length that a
     fetch can see raises :class:`~archivey.SourceChangedError`. Advisory: it describes
     how the archive arrives, not its bytes."""
+    MEMBER_PATH_REFUSED = "member_path_refused"
+    """A member is left out of an ``archivey://`` file system's tree
+    (:class:`~archivey.fsspec.ArchiveyFileSystem`) because the file system's extraction
+    policy refuses its name: ``extract_all(dest, policy=policy)`` would not write it
+    either. Advisory: the archive is read as before, and the member stays reachable
+    through ``fs.reader``."""
     MEMBER_READERS_DISAGREE = "member_readers_disagree"
     """A member takes a shape that real writers produce but readers make different
     trees of: a TAR regular file named like a directory, a link name on a TAR regular
@@ -286,6 +292,8 @@ DiagnosticCodeStr = Literal[
     "member-readers-disagree",
     "source_change_undetectable",
     "source-change-undetectable",
+    "member_path_refused",
+    "member-path-refused",
 ]
 
 
@@ -960,6 +968,21 @@ class SourceChangeContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class PathRefusedContext(_JsonSafeContext):
+    """Why an ``archivey://`` file system's tree leaves a member out. ``policy`` is the
+    file system's :class:`~archivey.ExtractionPolicy` value and ``reason`` the refusal
+    the extraction checks give (``"Path traversal ('..') in member name"``).
+    """
+
+    kind: Literal["path_refused"] = "path_refused"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    policy: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class UnknownMemberTypeContext(_JsonSafeContext):
     """A member header has a type archivey does not know: a TAR typeflag, a RAR5
     redirect type, or the file-type bits of another format's mode, from a format plugin.
@@ -1093,6 +1116,7 @@ DiagnosticContext = (
     | SizeWrapContext
     | UnknownMemberTypeContext
     | SourceChangeContext
+    | PathRefusedContext
     | NameDuplicateContext
     | ReaderDisagreementContext
 )
@@ -1137,6 +1161,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_NAME_DUPLICATE: "name_duplicate",
         DiagnosticCode.MEMBER_READERS_DISAGREE: "reader_disagreement",
         DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE: "source_change",
+        DiagnosticCode.MEMBER_PATH_REFUSED: "path_refused",
     }
 )
 
@@ -1167,7 +1192,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Eighteen codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nineteen codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -1227,6 +1252,11 @@ and the reasons are part of the contract rather than an oversight:
 - ``SOURCE_CHANGE_UNDETECTABLE`` — describes the transport an ``fsspec`` source
   arrives through, not the archive's bytes, and holds for every read from such a
   store. ``STRICT`` would refuse every remote archive.
+- ``MEMBER_PATH_REFUSED`` — reports what an extraction policy chose for the
+  ``archivey://`` tree, not a new finding about the bytes: a name with hidden
+  characters is already reported (``MEMBER_NAME_BIDI_CONTROL``), and an absolute name
+  is ordinary. ``STRICT`` would refuse a whole archive for one name it can still
+  read.
 - ``MEMBER_NAME_DUPLICATE`` and ``MEMBER_READERS_DISAGREE`` — shapes real archives
   have (``tar -r`` appends, cabal sdists, v7 directories, star and GNU incremental
   headers), which archivey reads as the format's own tool does. ``STRICT`` would refuse
@@ -1659,6 +1689,7 @@ __all__ = [
     "NameNormalizationContext",
     "OffsetWrapContext",
     "OnDiagnostic",
+    "PathRefusedContext",
     "ReaderDisagreementContext",
     "ScanRaceContext",
     "SeekIndexContext",

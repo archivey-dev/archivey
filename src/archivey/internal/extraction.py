@@ -57,13 +57,13 @@ from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.dry_run import DryRun, scratch_for
 from archivey.internal.file_copy_pass import FileCopyPass
 from archivey.internal.filters import (
-    POLICY_TRANSFORMS,
     SYMLINK_ESCAPES,
     SYMLINK_LOOPS,
     apply_name_policy,
     check_universal,
     collision_key,
     disk_spelled,
+    policy_transform,
     reroot_absolute,
     resolve_or_raise_on_loop,
 )
@@ -1417,13 +1417,7 @@ class ExtractionCoordinator:
         """The checks of ``_check_local_name`` on one name: raise its refusal, or
         return the error ``AbortOn.NAME_SANITIZED`` would stop on (``None`` when it
         would not), as ``_transform`` decides them without a filter."""
-        transformed = POLICY_TRANSFORMS[self._policy](member)
-        rerooted_from: str | None = None
-        if self._policy is not ExtractionPolicy.STRICT:
-            rerooted = reroot_absolute(transformed)
-            if rerooted.name != transformed.name:
-                rerooted_from = transformed.name
-            transformed = rerooted
+        transformed, rerooted_from = policy_transform(member, self._policy)
         self._check_universal(transformed)
         portable = apply_name_policy(transformed, self._policy)
         if portable is not transformed:
@@ -1832,18 +1826,12 @@ class ExtractionCoordinator:
         reaches disk, else ``None``, and ``rewrites`` names each safety rewrite that
         reached disk (empty exactly when ``presented_name`` is ``None``). Raises a
         ``FilterRejectionError`` on a universal violation."""
-        transformed = POLICY_TRANSFORMS[self._policy](original)
         # The re-root comes before the filter so the filter sees the name that would be
         # written, as it already sees the policy's permission changes, and a filter
         # need not strip roots itself under STANDARD or TRUSTED. Whether the re-root
         # counts as a rewrite is decided after the filter, like the portable one: a
         # member the filter drops or renames never reaches disk under the re-rooted name.
-        rerooted_from: str | None = None
-        if self._policy is not ExtractionPolicy.STRICT:
-            rerooted = reroot_absolute(transformed)
-            if rerooted.name != transformed.name:
-                rerooted_from = transformed.name
-            transformed = rerooted
+        transformed, rerooted_from = policy_transform(original, self._policy)
         rerooted_name = transformed.name
         # The filter runs before the universal check, so it sees every member, the
         # unsafe ones included, and can rename one to something safe. Whatever it
