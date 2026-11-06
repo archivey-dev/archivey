@@ -27,7 +27,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
 )
-from archivey.internal.backends import rar_synthetic as rs
+from archivey.internal.backends import rar_reader as rr, rar_synthetic as rs
 from archivey.internal.backends.rar_parser import (
     RarArchive,
     RarKdfCache,
@@ -731,3 +731,139 @@ def test_the_chain_dictionary_counts_the_stream_alone() -> None:
         cost = _chain_dictionary_cost(members, span)
         assert cost.count <= sum(members[i].file_size for i in span)
         assert cost.declarer >= span.start
+
+
+# --------------------------------------------------------------- solid pass
+
+
+class _LiveFiles:
+    """Synthetic archives made and removed; the most on disk at once."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.made = 0
+        self.live = 0
+        self.peak = 0
+        real_init = rs.SyntheticArchive.__init__
+        real_close = rs.SyntheticArchive.close
+
+        def init(synthetic: rs.SyntheticArchive, *args: object, **kw: object) -> None:
+            real_init(synthetic, *args, **kw)  # type: ignore[arg-type]
+            self.made += 1
+            self.live += 1
+            self.peak = max(self.peak, self.live)
+
+        def close(synthetic: rs.SyntheticArchive) -> None:
+            if synthetic.path.exists():
+                self.live -= 1
+            real_close(synthetic)
+
+        monkeypatch.setattr(rs.SyntheticArchive, "__init__", init)
+        monkeypatch.setattr(rs.SyntheticArchive, "close", close)
+
+
+def _pass_bytes(source: object, **kwargs: object) -> dict[str, bytes]:
+    with open_archive(source, **kwargs) as reader:  # type: ignore[arg-type]
+        return {
+            member.name: stream.read()
+            for member, stream in reader.stream_members()
+            if stream is not None and member.is_file
+        }
+
+
+# Below twice the run cap, so every solid stream runs on its own.
+_ONE_STREAM_PER_RUN = 2 * rr._SYNTHETIC_IN_PLACE_THRESHOLD - 1
+
+
+@requires_unrar_cli()
+@pytest.mark.parametrize("per_stream", [False, True], ids=["batched", "per_stream"])
+@pytest.mark.parametrize(
+    ("fixture", "streams", "password"),
+    [
+        ("solid_groups__.rar", 2, None),
+        ("basic_solid__.rar", 1, None),
+        ("basic_solid__rar4.rar", 1, None),
+        ("encryption_solid__.rar", 1, "password"),
+    ],
+)
+def test_a_solid_pass_over_a_stream_reads_one_run_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+    fixture: str,
+    streams: int,
+    password: str | None,
+    per_stream: bool,
+) -> None:
+    """Each run of solid streams gets one unrar run on its own synthetic archive,
+    removed when its output ends; the archive is never copied whole. Small streams
+    share a run; under a small spool limit each stream runs alone."""
+    path = _FIXTURES / fixture
+    expected = _pass_bytes(path, password=password)
+    live = _LiveFiles(monkeypatch)
+
+    def refuse(self: RarReader) -> Path:
+        raise AssertionError("the whole archive was copied")
+
+    monkeypatch.setattr(RarReader, "_ensure_archive_path", refuse)
+    kwargs: dict[str, object] = {"password": password}
+    if per_stream:
+        kwargs["config"] = _limited(_ONE_STREAM_PER_RUN)
+    got = _pass_bytes(BytesIO(path.read_bytes()), **kwargs)
+    assert got == expected
+    assert live.made == (streams if per_stream else 1)
+    assert live.peak == 1
+    assert live.live == 0
+
+
+@requires_unrar_cli()
+def test_a_solid_pass_on_disk_reads_the_original_archive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live = _LiveFiles(monkeypatch)
+    assert _pass_bytes(_FIXTURES / "solid_groups__.rar")
+    assert live.made == 0
+
+
+@requires_unrar_cli()
+def test_a_solid_pass_fits_a_limit_below_the_archive() -> None:
+    """Under a small limit each stream runs alone, so a limit that holds the
+    larger stream but not the archive lets the pass through."""
+    raw = (_FIXTURES / "solid_groups__.rar").read_bytes()
+    expected = _pass_bytes(_FIXTURES / "solid_groups__.rar")
+    limit = len(raw) - 1
+    assert _pass_bytes(BytesIO(raw), config=_limited(limit)) == expected
+
+
+@requires_unrar_cli()
+def test_a_solid_pass_closed_early_removes_its_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live = _LiveFiles(monkeypatch)
+    raw = (_FIXTURES / "solid_groups__.rar").read_bytes()
+    with open_archive(BytesIO(raw)) as reader:
+        for member, stream in reader.stream_members():
+            if stream is not None and member.is_file:
+                assert stream.read(1)
+                break
+    assert live.made == 1
+    assert live.live == 0
+
+
+def test_a_stream_pass_charges_each_member_its_own_run() -> None:
+    """One stream per run: a member pays for its solid chain alone. One run over
+    both streams: the whole archive's walk, as unrar keeps the window across."""
+    raw = (_FIXTURES / "solid_groups__.rar").read_bytes()
+    with open_archive(BytesIO(raw), config=_limited(_ONE_STREAM_PER_RUN)) as reader:
+        assert isinstance(reader, RarReader)
+        members = reader._archive.members
+        runs = reader._solid_pass_groups()
+        assert runs is not None and len(runs) == 2
+        costs = reader._stream_pass_costs(runs)
+        last = reader._members[-1]
+        assert costs[id(last)].declarer >= runs[1].start > 0
+        for index, member in enumerate(reader._members):
+            chain = rs.solid_chain(members, index)
+            assert costs[id(member)] == rr._chain_dictionary_cost(members, chain)
+    with open_archive(BytesIO(raw)) as reader:
+        assert isinstance(reader, RarReader)
+        runs = reader._solid_pass_groups()
+        assert runs is not None and len(runs) == 1
+        assert reader._stream_pass_costs(runs) == reader._pass_dictionary_costs()
