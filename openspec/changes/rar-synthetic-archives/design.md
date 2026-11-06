@@ -132,7 +132,10 @@ unrar p -inul -cfg- -ver (-p | -p-) [-n./m<k>] -- <synthetic>.rar
   come up.
 - A batch (D3) has no mask: `unrar` prints every member in order and the pipe is
   demultiplexed by unpacked size. Every member in a batch is a regular file with data,
-  so the sizes are exact.
+  so the sizes are exact. Each batch has its own run and block, started when one of its
+  members is opened, so a batch whose members are all skipped runs nothing. A member whose
+  dictionary is over `max_decoder_memory` stays out of batches: `unrar` decodes past the
+  member read, so every member in the run must fit before it starts.
 
 ### Solid streams: one file per stream, grown as reads go further
 

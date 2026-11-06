@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, SpoolLimits, open_archive
+from archivey import ArchiveyConfig, DecoderLimits, SpoolLimits, open_archive
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -1087,14 +1087,131 @@ def test_a_checked_run_holds_the_output_to_the_plan() -> None:
     a, b = b"hello", b"world!"
     crcs = [zlib.crc32(a), zlib.crc32(b)]
     assert _checked(a + b, [5, 6], crcs) == (a + b, None)
-    # Extra output is dropped; the last member still checks.
-    assert _checked(a + b + b"tail", [5, 6], crcs) == (a + b, None)
-    # One byte short in the first member: everything after is off by one.
+    # Output past the last member: the read that completes it raises.
+    with pytest.raises(CorruptionError, match="exceeds its declared size of 6"):
+        _checked(a + b + b"tail", [5, 6], crcs)
+    # One byte short in the first member: it fails its CRC32, the second reads
+    # short, and nothing is made up.
     data, tainted = _checked(a[:4] + b, [5, 6], crcs)
-    assert len(data) == 11 and tainted == 0
-    # Ends early: padded with zeros, marked where it ended.
-    assert _checked(a, [5, 6], crcs) == (a + bytes(6), 1)
+    assert data == a[:4] + b[:6] and len(data) == 10 and tainted == 0
+    # Ends early: short, marked where it ended.
+    assert _checked(a, [5, 6], crcs) == (a, 1)
     # No run at all.
-    assert _checked(None, [5, 6], crcs) == (bytes(11), 0)
+    assert _checked(None, [5, 6], crcs) == (b"", 0)
     # An empty member checks at once.
     assert _checked(a, [0, 5], [0, zlib.crc32(a)]) == (a, None)
+
+
+def test_a_member_whose_run_ends_early_reads_short() -> None:
+    """The member being read when the run ends sees the real end, so its own
+    size check raises, even when its CRC32 matches zero-padded bytes."""
+    a, b = b"hello", b"world!"
+    padded = b[:2] + bytes(4)
+    batch = rr._NonsolidBatch([0, 1], [5, 6], [zlib.crc32(a), zlib.crc32(padded)], 0)
+    block = SolidBlockReader(rr._CheckedRun(BytesIO(a + b[:2]), batch))
+    view = block.open_member(5, 6)
+    assert view.read() == b[:2]
+    assert view.read() == b""
+    assert batch.tainted == 1
+    block.close()
+
+
+# Small enough that wildcard_names__.rar's six compressed members (47-50 packed
+# bytes each) make three batches of two: [0, 2], [3, 4] and [5, 6].
+_THREE_BATCHES = 101
+
+
+@requires_unrar_cli()
+@pytest.mark.parametrize("stream_source", [False, True], ids=["path", "stream"])
+def test_a_nonsolid_pass_reads_several_batches(
+    monkeypatch: pytest.MonkeyPatch, stream_source: bool
+) -> None:
+    path = _FIXTURES / "wildcard_names__.rar"
+    expected = _nonsolid_expected(path)
+    monkeypatch.setattr(rr, "_SYNTHETIC_IN_PLACE_THRESHOLD", _THREE_BATCHES)
+    with open_archive(path) as reader:
+        assert isinstance(reader, RarReader)
+        assert [b.indices for b in reader._nonsolid_pass_batches()] == [
+            [0, 2],
+            [3, 4],
+            [5, 6],
+        ]
+    spawns = _Spawns(monkeypatch)
+    live = _LiveFiles(monkeypatch)
+    source: object = BytesIO(path.read_bytes()) if stream_source else path
+    assert _pass_bytes(source) == expected
+    assert len(spawns.calls) == 3
+    assert live.live == 0
+
+
+@requires_unrar_cli()
+def test_a_batch_whose_members_are_all_skipped_runs_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _FIXTURES / "wildcard_names__.rar"
+    expected = _nonsolid_expected(path)
+    monkeypatch.setattr(rr, "_SYNTHETIC_IN_PLACE_THRESHOLD", _THREE_BATCHES)
+    spawns = _Spawns(monkeypatch)
+    with open_archive(path) as reader:
+        last = reader._members[-1].name  # type: ignore[attr-defined]
+        got = {
+            member.name: stream.read()
+            for member, stream in reader.stream_members()
+            if stream is not None and member.name == last
+        }
+    assert got == {last: expected[last]}
+    assert len(spawns.calls) == 1
+
+
+@requires_unrar_cli()
+def test_a_tainted_batch_leaves_the_next_batch_on_its_own_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _FIXTURES / "wildcard_names__.rar"
+    expected = _nonsolid_expected(path)
+    monkeypatch.setattr(rr, "_SYNTHETIC_IN_PLACE_THRESHOLD", _THREE_BATCHES)
+    real = RarReader._nonsolid_pass_batches
+
+    def misplanned(self: RarReader) -> list[rr._NonsolidBatch]:
+        batches = real(self)
+        batches[0].crcs[0] ^= 1
+        return batches
+
+    monkeypatch.setattr(RarReader, "_nonsolid_pass_batches", misplanned)
+    spawns = _Spawns(monkeypatch)
+    assert _pass_bytes(path) == expected
+    # Three runs, and member 2 read on its own after batch 0 stopped lining up.
+    assert len(spawns.calls) == 4
+
+
+@requires_unrar_cli()
+def test_a_member_over_the_dictionary_limit_is_left_out_of_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``unrar`` decodes a batch past the member read, so a member whose
+    dictionary is over the limit is never in a batch: it is refused alone, and
+    the rest of the pass still reads."""
+    path = _FIXTURES / "wildcard_names__.rar"
+    expected = _nonsolid_expected(path)
+    monkeypatch.setattr(rr, "_SYNTHETIC_IN_PLACE_THRESHOLD", _THREE_BATCHES)
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=8203))
+    with open_archive(path, config=config) as reader:
+        assert isinstance(reader, RarReader)
+        over = [
+            index
+            for index, member in enumerate(reader._members)
+            if reader._dictionary_costs[id(member)].count > 8203
+        ]
+        assert over == [2]
+        batches = reader._nonsolid_pass_batches()
+        assert batches and all(2 not in b.indices for b in batches)
+        got: dict[str, bytes] = {}
+        for member, stream in reader.stream_members():
+            if stream is None:
+                continue
+            if member is reader._members[2]:
+                with pytest.raises(ResourceLimitError):
+                    stream.read()
+                continue
+            got[member.name] = stream.read()
+    assert got == {k: v for k, v in expected.items() if k != "a*.txt"}

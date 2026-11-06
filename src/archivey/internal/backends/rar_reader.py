@@ -299,7 +299,8 @@ def _rar_member_copy_notes(
             "Reading a member that RARLAB unrar has to read, such as a compressed one, "
             "will copy that member's packed bytes to disk so unrar can read them. A "
             "pass (stream_members(), extract_all()) copies such members in batches of "
-            "up to 64 MiB of packed bytes. "
+            "up to 64 MiB of packed bytes, and reading one member of a batch decodes "
+            "the members before it in that batch. "
             "(A RAR 1.5-4 member split past 4 GiB with no 64-bit size fields copies "
             "the whole archive instead.)"
         )
@@ -1279,14 +1280,18 @@ class _NonsolidBatch:
 
 
 class _CheckedRun(ReadOnlyIOStream):
-    """One batch's ``unrar`` output, held to exactly the bytes the batch plans.
+    """One batch's ``unrar`` output, checked member by member against the plan.
 
     Each member's bytes are checked against its CRC32 as they pass, whether a
-    member stream reads them or the demultiplexer skips them, and the first member
-    that does not match (or a run that ends early) marks the batch
-    (:attr:`_NonsolidBatch.tainted`). Short output is padded with zeros and extra
-    output dropped, so the next batch's offsets never move. ``inner`` is ``None``
-    for a run that could not be made: all zeros, tainted from the start.
+    member stream reads them or the block skips them, and the first member that
+    does not match, or a run that ends early, marks the batch
+    (:attr:`_NonsolidBatch.tainted`): the members after it are then read on their
+    own. Nothing is made up: a run that ends early reads short, so the member
+    being read raises :class:`TruncatedError` as its own ``open()`` does, and output
+    past the last member raises :class:`CorruptionError` on the read that
+    completes it. Output past an earlier member moves the ones after it, which then
+    fail their CRC32. ``inner`` is ``None`` for a run that could not be made: it
+    reads nothing, tainted from the start.
     """
 
     def __init__(self, inner: BinaryIO | None, batch: _NonsolidBatch) -> None:
@@ -1313,31 +1318,40 @@ class _CheckedRun(ReadOnlyIOStream):
             if self._position < len(batch.sizes):
                 self._left = batch.sizes[self._position]
 
+    def _read_inner(self, n: int) -> bytes:
+        assert self._inner is not None
+        try:
+            return self._inner.read(n)
+        except Exception:  # noqa: BLE001 - the members read alone report it
+            # A run that fails part-way (unrar died, a bad exit) ends here; the
+            # member being read comes up short, the rest are read one at a time.
+            return b""
+
     @override
     def read(self, n: int = -1, /) -> bytes:
         batch = self._batch
-        if n == 0 or self._position >= len(batch.sizes):
+        if n == 0 or self._ended or self._position >= len(batch.sizes):
             return b""
         want = self._left if n is None or n < 0 else min(n, self._left)
-        data = b""
-        if not self._ended:
-            assert self._inner is not None
-            try:
-                data = self._inner.read(want)
-            except Exception:  # noqa: BLE001 - the members read alone report it
-                # A run that fails part-way (unrar died, a bad exit) ends here;
-                # the members from this one on are read one at a time.
-                data = b""
-            if not data:
-                self._ended = True
+        data = self._read_inner(want)
         if not data:
             # Ended early: this member is short, so nothing after it lines up.
+            self._ended = True
             if batch.tainted is None:
                 batch.tainted = self._position
-            data = bytes(want)
+            return b""
         self._crc = zlib.crc32(data, self._crc)
         self._left -= len(data)
+        last = self._position == len(batch.sizes) - 1
         self._settle()
+        if last and self._left == 0 and self._read_inner(1):
+            self._ended = True
+            if batch.tainted is None:
+                batch.tainted = len(batch.sizes) - 1
+            raise CorruptionError(
+                "Decompressed content exceeds its declared size of "
+                f"{batch.sizes[-1]} bytes."
+            )
         return data
 
     @override
@@ -3681,13 +3695,17 @@ class RarReader(BaseArchiveReader):
         A batch holds consecutive members ``unrar`` would read one at a time
         (compressed, plaintext, with a CRC32 and their data in reach), up to
         :data:`_SYNTHETIC_IN_PLACE_THRESHOLD` packed bytes; a member larger than
-        that, and a batch of one, keep their own read. Every other member is read as
-        ``open()`` reads it and takes no place in a batch's output.
+        that, and a batch of one, keep their own read. So does a member whose
+        dictionary is over ``max_decoder_memory``: ``unrar`` decodes a batch's
+        members past the one read, so each must fit before the run starts, and the
+        member read alone is refused as ``open()`` refuses it. Every other member is
+        read as ``open()`` reads it and takes no place in a batch's output.
         """
         if self._unar_policy is not None:
             return []
+        # Under 64 MiB packed, so a RAR 1.5-4 header always holds the sizes.
         cap = _SYNTHETIC_IN_PLACE_THRESHOLD
-        rar5 = self._archive.version == 5
+        limit = self._config.decoder_limits.max_decoder_memory
         batches: list[_NonsolidBatch] = []
         current = _NonsolidBatch([], [], [], 0)
         for index, member in enumerate(self._members):
@@ -3705,7 +3723,7 @@ class RarReader(BaseArchiveReader):
                 and not self._can_direct_read(info)
                 and _data_is_reachable(info)
                 and info.compress_size <= cap
-                and (rar5 or info.compress_size < 1 << 32)
+                and (limit is None or self._dictionary_costs[id(member)].count <= limit)
                 and self._missing_data_error(member, info) is None
                 and self._cut_data_error(member, info) is None
             ):
@@ -3724,12 +3742,11 @@ class RarReader(BaseArchiveReader):
         self, batch: _NonsolidBatch
     ) -> tuple[BinaryIO, Callable[[], None]]:
         """Start ``unrar`` on ``batch``'s synthetic archive, its output held to the
-        batch's planned bytes by :class:`_CheckedRun`. A batch whose file does not
-        fit the spool limit, or whose headers cannot be written, runs as all zeros,
-        tainted: its members are then read one at a time, each as ``open()`` reads
-        it. So does one whose file or ``unrar`` fails to start: each member read
-        alone then raises what it raises, and the batches after it still line up
-        (:class:`_SolidPassPipe` ends for good on a run that raises)."""
+        batch's plan by :class:`_CheckedRun`. A batch whose file does not fit the
+        spool limit, or whose headers cannot be written, gets a run that reads
+        nothing, tainted: its members are then read one at a time, each as
+        ``open()`` reads it. So does one whose file or ``unrar`` fails to start:
+        each member read alone then raises what it raises."""
         try:
             return self._start_nonsolid_batch_run(batch)
         except Exception:  # noqa: BLE001 - the members read alone report it
@@ -3786,62 +3803,81 @@ class RarReader(BaseArchiveReader):
         batch's output instead, demultiplexed by size as a solid pass is, unless
         its batch's output stopped lining up before it (:class:`_CheckedRun`): then
         it, and the rest of that batch, are read on their own.
+
+        A batch's run starts when one of its members is opened, and ends when a
+        member of a later batch is: a batch whose members are all skipped costs
+        nothing. Within a batch, opening a member decodes the ones before it.
         """
         batches = self._nonsolid_pass_batches()
         if not batches:
             yield from super()._iter_with_data(copies)
             return
         slots: dict[int, tuple[_NonsolidBatch, int, int, _DictionaryCost]] = {}
-        offset = 0
         for batch in batches:
-            peak = _NO_DICTIONARY
+            offset = 0
             for position, index in enumerate(batch.indices):
                 member = self._members[index]
-                peak = _larger_cost(peak, self._dictionary_costs[id(member)])
-                slots[id(member)] = (batch, position, offset, peak)
+                slots[id(member)] = (
+                    batch,
+                    position,
+                    offset,
+                    self._dictionary_costs[id(member)],
+                )
                 offset += batch.sizes[position]
-        block: SolidBlockReader | None = None
-        pending = iter(batches)
-        # Runs started ahead of the pipe reaching them (``start``), by batch.
-        started: dict[int, tuple[BinaryIO, Callable[[], None]]] = {}
-        begun: set[int] = set()
+        # The batch whose run is open, its block, and the run's cleanup.
+        current: tuple[_NonsolidBatch, SolidBlockReader, Callable[[], None]] | None
+        current = None
 
-        def start(batch: _NonsolidBatch) -> None:
-            if id(batch) not in begun:
-                begun.add(id(batch))
-                started[id(batch)] = self._nonsolid_batch_run(batch)
+        def end_run() -> None:
+            nonlocal current
+            if current is None:
+                return
+            _, block, cleanup = current
+            current = None
+            try:
+                block.close()
+            finally:
+                cleanup()
 
-        def next_run() -> tuple[BinaryIO, Callable[[], None]] | None:
-            batch = next(pending, None)
-            if batch is None:
-                return None
-            start(batch)
-            return started.pop(id(batch))
-
-        def pipe() -> SolidBlockReader:
-            nonlocal block
-            if block is None:
-                owned = _SolidPassPipe(next_run)
-                with _close_on_error(owned):
-                    tracked = self._track_decompressed(owned)
+        def block_for(batch: _NonsolidBatch) -> SolidBlockReader:
+            nonlocal current
+            if current is not None and current[0] is batch:
+                return current[1]
+            end_run()
+            run, cleanup = self._nonsolid_batch_run(batch)
+            try:
+                tracked = self._track_decompressed(run)
                 with _close_on_error(tracked):
                     block = SolidBlockReader(tracked)
+            except BaseException:
+                try:
+                    run.close()
+                finally:
+                    cleanup()
+                raise
+            current = (batch, block, cleanup)
             return block
 
         def batched_open(member: ArchiveMember) -> MemberStreamParts:
             batch, position, offset, cost = slots[id(member)]
             if batch.tainted is None:
+                # Every member of the batch fits the limit (the plan leaves out
+                # those that do not), so this run never needs more than that.
                 self._check_dictionary_memory(member, cost)
-                # Positioned now, so the members before it in the batch have passed
-                # their checks before this one is trusted; and the batch's run is
-                # started, so one that could not be made is known.
-                view = pipe().open_member(offset, batch.sizes[position])
-                with _close_on_error(view):
-                    start(batch)
+                block = block_for(batch)
+                view: BinaryIO | None = None
                 if batch.tainted is None:
-                    with _close_on_error(view):
-                        return self._payload_parts(view, member, track_output=False)
-                view.close()
+                    # Positioning passes the members before it through their
+                    # checks, so it is trusted only if the batch is still clean.
+                    try:
+                        view = block.open_member(offset, batch.sizes[position])
+                    except EOFError:
+                        view = None  # the run ended early: tainted
+                if view is not None:
+                    if batch.tainted is None:
+                        with _close_on_error(view):
+                            return self._payload_parts(view, member, track_output=False)
+                    view.close()
             return self._open_member(member)
 
         previous: ArchiveStreamImpl | None = None
@@ -3864,15 +3900,7 @@ class RarReader(BaseArchiveReader):
                 if previous is not None:
                     previous.close()
             finally:
-                try:
-                    if block is not None:
-                        block.close()
-                finally:
-                    for stream, cleanup in started.values():
-                        try:
-                            stream.close()
-                        finally:
-                            cleanup()
+                end_run()
 
     def _solid_pass_run_plan(self) -> list[_PassRun] | None:
         """The runs of solid streams a pass over a stream source reads one at a time.

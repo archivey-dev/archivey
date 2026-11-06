@@ -272,7 +272,8 @@ in the repository measures what each limit costs in time and memory on your mach
   is not solid copies that member's packed bytes into a small RAR file (mode 0600, removed when
   the member stream closes; for a header-encrypted archive it holds the member's decrypted header,
   but not its name). A pass over such an archive copies its compressed members in batches of up
-  to 64 MiB of packed bytes, one file per batch, removed when the batch's output ends. A solid
+  to 64 MiB of packed bytes, one file per batch, made when one of its members is read and removed when the pass
+  moves to the next batch; reading one member of a batch decodes the members before it in that batch. A solid
   member's read copies its solid stream up to it into one such file
   per stream, grown by later reads and removed when the reader closes, and a pass over a solid
   RAR copies whole solid streams a few at a time, up to 64 MiB of packed bytes or one larger

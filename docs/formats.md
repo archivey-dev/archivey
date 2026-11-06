@@ -795,8 +795,10 @@ On a compressed tar, the stream's own checksum adds three cases:
   64 MiB of packed bytes, one temporary RAR file and one `unrar` run per batch, and split its
   output by size. Each member's bytes are checked against its CRC32 as they pass, so if a damaged
   member makes the output stop lining up, the members after it in the batch are read one at a
-  time instead. A batch that doesn't fit `SpoolLimits.max_bytes` is read one member at a time
-  too. Encrypted members, and members that pack more than 64 MiB, are read one at a time.
+  time instead. A batch runs only when one of its members is read, and reading one decodes the
+  members before it in that batch. A batch that doesn't fit `SpoolLimits.max_bytes` is read one
+  member at a time too. Encrypted members, members that pack more than 64 MiB, and members whose
+  dictionary is over `DecoderLimits.max_decoder_memory`, are read one at a time.
 - **A solid member is read from a copy of its solid stream.** `unrar` has to decode a solid
   stream from its start, so the temporary file holds the stream's members from the start up to
   the member read. There is one such file per solid stream, kept until the reader closes and
