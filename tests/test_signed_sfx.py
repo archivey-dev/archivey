@@ -224,6 +224,26 @@ def test_end_record_inside_the_certificate_is_not_the_archive(forced: bool) -> N
         assert [member.name for member in reader.members()] == ["f.txt"]
 
 
+def test_absolute_offset_zip_inside_the_certificate() -> None:
+    # The same planted ZIP, its offsets counted from the start of the file: its
+    # record implies no prefix and nothing follows it, so a forced open takes it as
+    # found without reading the leading bytes (``archive-reading``). Auto-detect
+    # passes the end and lists the archive before the table.
+    head = pe_file(_IMAGE, payload=_zip(), certificate_size=8)[:-8]
+    buffer = io.BytesIO()
+    buffer.write(head + b"\0" * 8)
+    # Written from the buffer's position on: offsets count from its byte 0.
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("inside.txt", b"hello\n")
+    planted = buffer.getvalue()[len(head) + 8 :]
+    data = pe_file(_IMAGE, payload=_zip(), certificate_size=8 + len(planted))
+    data = data[: len(head) + 8] + planted
+    with open_archive(io.BytesIO(data)) as reader:
+        assert [member.name for member in reader.members()] == ["f.txt"]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader:
+        assert [member.name for member in reader.members()] == ["inside.txt"]
+
+
 @pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
 def test_certificate_entry_inside_the_archive_fails_both_ways(forced: bool) -> None:
     # The header the file's author writes can name a table that starts inside the

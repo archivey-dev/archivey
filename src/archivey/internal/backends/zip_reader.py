@@ -1584,7 +1584,11 @@ class ZipReader(BaseArchiveReader):
         the search meets no end record (``_CertificateFound``), and when the record
         it meets says bytes precede its archive (``record_implies_prefix``), since
         a table can hold record-shaped bytes of its own. An ordinary ZIP's record
-        implies none, so it costs no read of the first bytes.
+        implies none, so it costs no read of the first bytes. Nor does a ZIP planted
+        at the end of a table with offsets counted from the start of the file, which
+        is then the one listed: telling it apart would cost every ZIP opened at 0 that
+        read, and auto-detect, which passes the end, lists the archive before the
+        table.
         """
         try:
             found, stopped = locate_end_record(
