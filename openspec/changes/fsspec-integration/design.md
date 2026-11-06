@@ -422,12 +422,11 @@ only for data that has a checksum. In order of strength:
    other bytes.
 3. **Otherwise nothing can see a same-length replacement.** A fetch that comes back
    shorter than its range catches a replacement that is shorter. `cat_file` reports no
-   total size, so a longer replacement returns full ranges and is not caught either
-   (found in review of the stage 2 PR; detecting it would cost a size request per
-   fetch). This is an accepted
-   non-guarantee, recorded in the threat model beside the others, and the reader says so
-   at open with the advisory diagnostic `SOURCE_CHANGE_UNDETECTABLE` (§Decisions 3), so
-   that silence never reads as "checked".
+   total size, so a longer replacement returns full ranges and is not caught either (found
+   in review of the stage 2 PR; detecting it would cost a size request per fetch). This is
+   an accepted non-guarantee, recorded in the threat model beside the others, and the
+   reader says so at open with the advisory diagnostic `SOURCE_CHANGE_UNDETECTABLE`
+   (§Decisions 3), so that silence never reads as "checked".
 
 A change that is caught raises `SourceChangedError` (§Decisions 3).
 
