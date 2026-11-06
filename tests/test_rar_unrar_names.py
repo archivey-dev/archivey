@@ -126,7 +126,11 @@ def test_every_rar5_member_reads_its_own_bytes(
             assert reader.read(member) == _payload(index), (index, member.name)
 
 
-def test_only_a_plain_name_selects_its_member_alone(tmp_path: Path) -> None:
+@pytest.mark.parametrize("non_ascii", [True, False], ids=["utf8", "ascii-only"])
+def test_only_a_plain_name_selects_its_member_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, non_ascii: bool
+) -> None:
+    monkeypatch.setattr(rar_reader, "unrar_mask_carries_non_ascii", lambda: non_ascii)
     path = _nocrc_rar5(tmp_path, _RAR5_NAMES)
     with open_archive(path, config=_UNRAR_ONLY) as reader:
         assert isinstance(reader, RarReader)
@@ -151,7 +155,8 @@ def test_only_a_plain_name_selects_its_member_alone(tmp_path: Path) -> None:
         assert isinstance(reader, RarReader)
         masks = {m.name: reader._plain_mask(m) for m in reader.members()}
     # "ab" has "ab/x" below it; "AB.txt" and "ab.txt" fold together; "note." has
-    # a trailing dot; "a?b" is a glob; "café.txt" is not ASCII.
+    # a trailing dot; "a?b" is a glob; "café.txt" is plain only where unrar reads
+    # a non-ASCII mask back as the same text.
     assert masks == {
         "ab": None,
         "ab/x": "ab/x",
@@ -161,9 +166,35 @@ def test_only_a_plain_name_selects_its_member_alone(tmp_path: Path) -> None:
         "a?b": None,
         "aXb": "aXb",
         "d/ab": "d/ab",
-        "café.txt": None,
+        "café.txt": "café.txt" if non_ascii else None,
         "plain.txt": "plain.txt",
     }
+
+
+@requires_binary("unrar")
+def test_a_large_member_with_a_utf8_name_reads_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-ASCII name reaches ``unrar`` as its own mask and selects that member
+    alone, on Windows (Unicode argv) and under a UTF-8 locale on POSIX."""
+    if not rar_reader.unrar_mask_carries_non_ascii():
+        pytest.skip("no UTF-8 locale for unrar on this system")
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    names = [("café.txt".encode(), 1), ("日本/ß.txt".encode(), 1), (b"plain.txt", 1)]
+    path = _nocrc_rar5(tmp_path, names)
+    spawned: list[str | None] = []
+    real = rar_reader.open_unrar_p
+
+    def spawn(archive: object, *args: object, **kwargs: object) -> object:
+        spawned.append(kwargs.get("member"))  # type: ignore[arg-type]
+        return real(archive, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spawn)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        got = [reader.read(member) for member in reader.members()]
+    assert got == [_payload(i) for i in range(3)]
+    assert spawned == ["café.txt", "日本/ß.txt", "plain.txt"]
 
 
 @requires_binary("unrar")

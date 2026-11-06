@@ -396,7 +396,7 @@ full header walk per read, and all the name modelling.
   streams"), which grows once per stream, not the chain copied again for each read. "Plain" has two parts. Once per reader: every
   name in the archive decodes cleanly (valid UTF-8 for RAR5, ASCII for an 8-bit RAR3
   name) and has no `\`, NUL, leading `/`, or empty, `.` or `..` component, so `unrar`
-  reads each name as archivey does. Per member: the name is ASCII (no locale question),
+  reads each name as archivey does. Per member: the name is ASCII, or valid UTF-8 where `unrar` reads it back (Windows, or a UTF-8 locale on POSIX; widened in implementation so a large accented name on disk still reads in place),
   has no `*` or `?` and no component ending in `.` (no dot rule), and no other name
   equals it or starts with it plus `/`, compared without case (Windows `unrar` folds
   case). Such a read keeps today's mask, which then selects the target alone. Real

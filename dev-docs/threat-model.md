@@ -837,14 +837,15 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 name (`m0`, and `m<k>` for the k-th member of a solid chain), so no stored name selects
 anything. The original archive is read through a mask only for a plain name, one that
 selects the member alone (`_plain_unrar_masks` in `internal/backends/rar_reader.py`):
-every name decodes cleanly, and the target is ASCII with no `*`, `?` or trailing `.`, and
-no other name equals it or lies below it, ignoring case. Anything else reads through a
+every name decodes cleanly, and the target has no `*`, `?` or trailing `.`, is ASCII unless
+`unrar` reads a UTF-8 mask back (Windows, or a UTF-8 locale), and no other name equals it or
+lies below it, ignoring case. Anything else reads through a
 synthetic archive, or is refused where none can be made. A solid read still decodes its
 stream before the member; that is the cost `AccessCost.SOLID` announces, not a name's.
 
 **Residual.** None from names. A listing whose walk stopped at a damaged header may miss
-headers `unrar` finds past it, so such an archive reads no member in place by name. `rar_allow_glob_member_concatenation` is deprecated and
-does nothing.
+headers `unrar` finds past it, so such an archive reads no member in place by name.
+`rar_allow_glob_member_concatenation` is deprecated and does nothing.
 
 **Tests.** `tests/test_rar_unrar_names.py::test_only_a_plain_name_selects_its_member_alone`,
 `::test_every_rar5_member_reads_its_own_bytes`,
@@ -1133,7 +1134,7 @@ stored member) are invisible to the caller. A non-RARLAB `unrar` raises
 `PackageNotInstalledError`. Both paths use a banner probe with a timeout and a
 stat-keyed cache. `internal/backends/rar_unrar.py` passes a member name only inside a
 `-n./<name>` include-mask switch, so a leading `-` cannot become an option. The name is a
-placeholder or a plain ASCII name with no `*` or `?`, so `unrar`'s matcher, which
+placeholder or a plain name with no `*` or `?`, so `unrar`'s matcher, which
 backtracks exponentially on a hostile mask, never sees a glob (`unrar_member_refusal`
 refuses anything else before spawning). The password goes to stdin. `internal/external/unar.py` ends
 argv with `--` and the absolute archive path, names members by entry index, and puts the

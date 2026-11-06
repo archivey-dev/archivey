@@ -521,14 +521,31 @@ _NUL_REFUSAL = (
 )
 
 
+def unrar_mask_carries_non_ascii() -> bool:
+    """Whether a non-ASCII mask reaches ``unrar`` as the text it was built from.
+
+    On Windows argv is Unicode. On POSIX the mask goes out as UTF-8 and ``unrar``
+    reads it through the C locale, so it needs a UTF-8 locale (:func:`_unrar_env`);
+    without one a non-ASCII mask never matches its own member.
+    """
+    return sys.platform == "win32" or _utf8_locale_name() is not None
+
+
 def unrar_member_refusal(member: str) -> str | None:
     """Why ``member`` is not a mask the reader sends, or ``None`` when it is one.
 
-    The reader sends only ASCII names with no NUL, ``*`` or ``?``: a placeholder
-    in a synthetic archive, or a plain name of the original archive. Anything else
-    is a bug upstream, refused here rather than handed to ``unrar``.
+    The reader sends only names with no NUL, ``*`` or ``?`` that encode as UTF-8,
+    and non-ASCII ones only where :func:`unrar_mask_carries_non_ascii`: a
+    placeholder in a synthetic archive, or a plain name of the original archive.
+    Anything else is a bug upstream, refused here rather than handed to ``unrar``.
     """
-    if not member.isascii() or any(char in member for char in "\0*?"):
+    try:
+        member.encode("utf-8")
+    except UnicodeEncodeError:
+        return "its name is not one archivey passes to unrar as a mask"
+    if any(char in member for char in "\0*?") or (
+        not member.isascii() and not unrar_mask_carries_non_ascii()
+    ):
         return "its name is not one archivey passes to unrar as a mask"
     return None
 

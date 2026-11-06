@@ -970,8 +970,9 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   (`_plain_unrar_masks`): every name in the archive decodes cleanly (valid UTF-8 for RAR5,
   ASCII for an 8-bit RAR 1.5-4 name, no lone surrogate in a Unicode one) with no `\` (RAR5;
   a RAR 1.5-4 `\` is a separator), NUL, `:`, leading `/`, or empty, `.` or `..` component,
-  so `unrar`'s reading of each name is archivey's; and the target is ASCII with no `*` or
-  `?`, no component ending in `.`, and no other name equal to it or starting with it plus
+  so `unrar`'s reading of each name is archivey's; and the target has no `*` or `?`,
+  no component ending in `.`, is ASCII unless `unrar_mask_carries_non_ascii()` (Windows,
+  or a UTF-8 locale for the child on POSIX), and no other name equal to it or starting with it plus
   `/`, compared with `casefold()` (Windows `unrar` folds case). Such a mask selects the
   target alone, with no wildcard and no dot rule, so the pipe holds the member and nothing
   else. History rows count only against the rows `-ver` lists. Every other read gets a
@@ -1005,7 +1006,8 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   (asked once per process with `newlocale`, which touches no global state), so a
   non-ASCII archive path reaches it intact. Windows keeps its environment.
 - **Only placeholders and plain names are sent.** `unrar_member_refusal` refuses any mask
-  that is not ASCII or holds a NUL, `*` or `?`, before the spawn; no read builds one.
+  that holds a NUL, `*` or `?`, does not encode as UTF-8, or is not ASCII where no UTF-8
+  locale reaches the child, before the spawn; no read builds one.
 
 **A path is required, and a stream source pays for it.** The requirement is stronger than
 "prefers a file": `unrar` *seeks* the archive and refuses every non-seekable input. Worth
@@ -1619,7 +1621,7 @@ python3 scripts/investigations/exploration/rar_decompressor_matrix.py      # §3
 | A wildcard member name reads its own bytes, including the solid prefix-skip case |
 | Listing a stream-volume set writes nothing; the first compressed read writes the whole set once and close removes it |
 | A glob name, a duplicate name, a directory-component glob and a backslash each read their own bytes through a synthetic archive, in random access and in a pass |
-| Hostile prefixes become a `-n./` mask value; only placeholders and plain ASCII names with no glob reach it |
+| Hostile prefixes become a `-n./` mask value; only placeholders and plain names with no glob reach it |
 | `seekable_members=True` respawns named `unrar` on a backward seek; stored direct-slice does not; default route stays a pipe |
 | A solid later-member rewind is loud without lowering the global threshold; a live `unrar` survives close+respawn |
 | The password reaches `unrar` on stdin, not in argv |

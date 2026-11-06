@@ -106,9 +106,10 @@ member.
 
 | Case | Plain |
 | --- | --- |
-| Every name in the archive decodes cleanly (valid UTF-8 for RAR5, ASCII for an 8-bit RAR 1.5-4 name) and has no `\`, NUL, leading `/`, or empty, `.` or `..` component; the target is ASCII with no `*` or `?` and no component ending in `.`; no other name equals it or starts with it plus `/`, compared without case | Yes |
+| Every name in the archive decodes cleanly (valid UTF-8 for RAR5, ASCII for an 8-bit RAR 1.5-4 name) and has no `\`, NUL, leading `/`, or empty, `.` or `..` component; the target has no `*` or `?` and no component ending in `.`, and is ASCII unless `unrar` reads a non-ASCII mask back as the same text (Windows, or a UTF-8 locale on POSIX); no other name equals it or starts with it plus `/`, compared without case | Yes |
 | Any name in the archive that fails the archive-wide part | No, for every member |
-| Target named `a*.txt`, `café.txt` or `notes.` | No |
+| Target named `a*.txt` or `notes.` | No |
+| Target named `café.txt` | Yes on Windows and under a UTF-8 locale; No on POSIX with none |
 
 #### Scenario: route matrix
 

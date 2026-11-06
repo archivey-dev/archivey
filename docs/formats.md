@@ -890,8 +890,9 @@ A few reads use the original archive instead, with the member's name as an inclu
 
 These reads take the mask only for a *plain* name, one the mask selects alone. Every name in the
 archive has to decode cleanly (valid UTF-8 for RAR5, ASCII for an older 8-bit name) with no `\`,
-NUL, `:`, leading `/`, or empty, `.` or `..` part. The member's own name has to be ASCII, with no
-`*` or `?`, no part ending in `.`, and no other name equal to it or below it, ignoring case. A large
+NUL, `:`, leading `/`, or empty, `.` or `..` part. The member's own name has no `*` or `?`, no
+part ending in `.`, is ASCII unless `unrar` can be given a UTF-8 name (on Windows, or where a
+UTF-8 locale is installed), and no other name equal to it or below it, ignoring case. A large
 member without a plain name is copied to a temporary file like a small one, within
 `SpoolLimits.max_bytes`. In the last two cases, which have no copy to fall back on, a member
 without a plain name raises `UnsupportedFeatureError`. `rar_decompressor="unar"` reads every member

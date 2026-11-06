@@ -127,6 +127,7 @@ from archivey.internal.backends.rar_unrar import (
     find_rarlab_unrar,
     open_unrar_p,
     rarlab_unrar_missing,
+    unrar_mask_carries_non_ascii,
 )
 from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
@@ -979,17 +980,21 @@ def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool) -> str | None:
     return text
 
 
-def _plain_unrar_masks(members: list[ArchiveMember], *, rar5: bool) -> dict[int, str]:
+def _plain_unrar_masks(
+    members: list[ArchiveMember], *, rar5: bool, non_ascii: bool
+) -> dict[int, str]:
     """The members an ``-n`` mask on the original archive selects alone, by
     ``id(member)``, with the mask text for each.
 
     Empty when any name in the archive is not plain (:func:`_plain_unrar_text`):
     then ``unrar``'s reading of some name is not archivey's, and no mask is trusted
-    to select one member. Otherwise a member is listed when its name is ASCII with
-    no ``*`` or ``?`` and no component ending in ``.`` (so no wildcard and no dot
-    rule), and no other name equals it or starts with it plus ``/``, compared
-    without case (Windows ``unrar`` folds case). History rows count only against
-    each other, as ``unrar`` lists them only under ``-ver``.
+    to select one member. Otherwise a member is listed when its name has no ``*``
+    or ``?`` and no component ending in ``.`` (so no wildcard and no dot rule), is
+    ASCII unless ``non_ascii`` (:func:`unrar_mask_carries_non_ascii`), and no other
+    name equals it or starts with it plus ``/``, compared with ``str.casefold``
+    (Windows ``unrar`` folds case; ``casefold`` folds at least as much). History
+    rows count against every row, as ``unrar -ver`` lists them all; a current row
+    counts against the current rows, which ``unrar`` lists without ``-ver``.
     """
     texts: list[tuple[ArchiveMember, RarMemberInfo, str]] = []
     for member in members:
@@ -1018,7 +1023,7 @@ def _plain_unrar_masks(members: list[ArchiveMember], *, rar5: bool) -> dict[int,
     for member, raw, text in texts:
         found = every if raw.is_file_version_history() else current
         if (
-            text.isascii()
+            (non_ascii or text.isascii())
             and "*" not in text
             and "?" not in text
             and not any(part.endswith(".") for part in text.split("/"))
@@ -5169,7 +5174,11 @@ class RarReader(BaseArchiveReader):
             masks = (
                 {}
                 if self._archive.damaged is not None
-                else _plain_unrar_masks(self._members, rar5=self._archive.version == 5)
+                else _plain_unrar_masks(
+                    self._members,
+                    rar5=self._archive.version == 5,
+                    non_ascii=unrar_mask_carries_non_ascii(),
+                )
             )
             self._plain_masks = masks
         return masks.get(id(member))

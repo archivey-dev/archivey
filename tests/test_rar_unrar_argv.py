@@ -246,7 +246,7 @@ def test_a_mask_is_passed_inside_the_include_switch() -> None:
     assert switch == (expected if sys.platform == "win32" else expected.encode())
 
 
-@pytest.mark.parametrize("name", ["a*.txt", "a?.txt", "café.txt", "a\0b"])
+@pytest.mark.parametrize("name", ["a*.txt", "a?.txt", "a\0b", "hi\ud800.txt"])
 def test_a_mask_the_reader_never_sends_is_refused_before_spawning(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
@@ -261,6 +261,19 @@ def test_a_mask_the_reader_never_sends_is_refused_before_spawning(
     assert rar_unrar.unrar_member_refusal("plain.txt") is None
     with pytest.raises(UnsupportedFeatureError, match="not one archivey passes"):
         rar_unrar.open_unrar_p("a.rar", member=name)
+
+
+def test_a_non_ascii_mask_is_sent_only_where_unrar_reads_it_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``café.txt`` is a mask on Windows and under a UTF-8 locale; on POSIX with no
+    UTF-8 locale ``unrar`` would never match it, so it is refused."""
+    monkeypatch.setattr(rar_unrar, "_utf8_locale_name", lambda: "C.UTF-8")
+    assert rar_unrar.unrar_member_refusal("café.txt") is None
+    monkeypatch.setattr(rar_unrar, "_utf8_locale_name", lambda: None)
+    refused = rar_unrar.unrar_member_refusal("café.txt")
+    assert (refused is None) == (sys.platform == "win32")
+    assert rar_unrar.unrar_mask_carries_non_ascii() == (sys.platform == "win32")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX locale behaviour")
