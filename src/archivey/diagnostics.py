@@ -193,9 +193,9 @@ class DiagnosticCode(StrEnum):
     SOURCE_CHANGE_UNDETECTABLE = "source_change_undetectable"
     """The archive is read by range requests from an ``fsspec`` file system that
     archivey cannot pin to one version of the object, so a replacement of the same
-    length while it reads would go unseen. A replacement of a different length that a
-    fetch can see raises :class:`~archivey.SourceChangedError`. Advisory: it describes
-    how the archive arrives, not its bytes."""
+    length, or a longer one, while it reads would go unseen. A shorter one raises
+    :class:`~archivey.SourceChangedError` on the first fetch past its end. Advisory: it
+    describes how the archive arrives, not its bytes."""
     MEMBER_READERS_DISAGREE = "member_readers_disagree"
     """A member takes a shape that real writers produce but readers make different
     trees of: a TAR regular file named like a directory, a link name on a TAR regular
