@@ -541,3 +541,18 @@ def named_fifo_with_writer() -> Iterator[Callable[[Path, bytes], None]]:
             finally:
                 os.close(fd)
         assert not thread.is_alive(), f"FIFO writer for {path} is still blocked"
+
+
+@pytest.fixture
+def unrar_mask_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read RAR members as when no synthetic archive can hold them.
+
+    That is the route of a RAR 1.5-4 member joined past 4 GiB with no 64-bit size
+    fields: the original archive through a mask (a plain name only), copied whole
+    for a stream source. The tests of that route and of the whole-archive copy use
+    this, since no small fixture has such a member.
+    """
+    from archivey.internal.backends.rar_reader import RarReader
+
+    monkeypatch.setattr(RarReader, "_synthetic_entry", lambda self, *args: None)
+    monkeypatch.setattr(RarReader, "_nonsolid_pass_batches", lambda self: [])

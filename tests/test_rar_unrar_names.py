@@ -1,12 +1,12 @@
-"""How ``unrar`` reads member names, and which members an ``-n`` mask selects.
+"""Member names ``unrar`` would read differently from archivey, and the reads of them.
 
-A named ``unrar p`` pipes every payload member its mask selects, in archive order,
-so archivey sizes a skip past the ones before the target. That skip is only right
-if archivey computes the same selection ``unrar`` does. These tests build archives
-whose names exercise each step of ``unrar``'s reading (a RAR5 name cut at a bad
-byte, overlong UTF-8, an 8-bit RAR3 name mapped to private-use characters, leading
-``../``, a mask that names a directory prefix, a trailing dot) and compare the
-selection archivey predicts with what ``unrar`` actually emits.
+``unrar`` is given a synthetic archive whose members have placeholder names, so no
+stored name reaches it, or the original archive with a mask only for a name plain
+enough to select its member alone (``RarReader._plain_mask``). These tests build
+archives whose names ``unrar`` reads in surprising ways (a RAR5 name cut at a bad
+byte, overlong UTF-8, a leading ``../``, a mask that names a directory prefix, a
+trailing dot, a glob) and check that each member reads its own bytes, by either
+route, and that only plain names take the mask.
 
 The archives are derived from committed fixtures by rewriting headers, so only
 ``unrar`` is needed at runtime.
@@ -14,30 +14,16 @@ The archives are derived from committed fixtures by rewriting headers, so only
 
 from __future__ import annotations
 
+import dataclasses
 import struct
-import subprocess
-import sys
 import zlib
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
-from archivey.exceptions import ArchiveyError, UnsupportedFeatureError
-from archivey.internal.backends import rar_reader, rar_unrar
+from archivey.internal.backends import rar_reader
 from archivey.internal.backends.rar_reader import RarReader
-from archivey.internal.backends.rar_unrar import (
-    UnrarSelectionUnknown,
-    _member_include_switch,
-    _unrar_env,
-    find_rarlab_unrar,
-    unrar_dot_rule,
-    unrar_mask_is_usable,
-    unrar_mask_selects,
-    unrar_mask_view,
-    unrar_member_view,
-)
 from tests.conftest import requires_binary
 from tests.test_audit_rar_iso_dir import (
     _fixture,
@@ -48,15 +34,6 @@ from tests.test_audit_rar_iso_dir import (
 )
 
 _UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
-# A name that selects earlier members too is refused by default; these tests read
-# through the shared mask on purpose.
-_UNRAR_SHARED = ArchiveyConfig(
-    rar_decompressor="unrar", rar_allow_glob_member_concatenation=True
-)
-_LINUX_ONLY = pytest.mark.skipif(
-    not sys.platform.startswith("linux"),
-    reason="the expected selections are measured against unrar on Linux",
-)
 
 # RAR5: (stored name, host OS as stored: 0 Windows, 1 Unix).
 _RAR5_NAMES: list[tuple[bytes, int]] = [
@@ -69,7 +46,7 @@ _RAR5_NAMES: list[tuple[bytes, int]] = [
     (b"AB", 1),
     (b"a", 1),
     (b"\xff", 1),  # unrar reads ""
-    ("�".encode(), 1),
+    ("\ufffd".encode(), 1),
     (b"\xc1\x81", 1),  # overlong "A"
     (b"A", 1),
     (b"\xc0\x80zz", 1),  # overlong NUL: ""
@@ -85,22 +62,7 @@ _RAR5_NAMES: list[tuple[bytes, int]] = [
     (b"a?b", 1),
     (b"aXb", 1),
     (b"d/ab", 1),
-    ("é/ab".encode(), 1),
-]
-
-# RAR 1.5-4 names without the Unicode flag.
-_RAR3_NAMES: list[bytes] = [
-    b"caf\xe9.txt",
-    b"caf\xe9.txt",  # a duplicate
-    "café.txt".encode(),  # valid UTF-8: a different name to unrar
-    b"caf\xc3.txt",  # a cut-off UTF-8 sequence: mapped
-    b"caf",
-    b"caf\xe9",
-    b"d\\caf\xe9.txt",  # RAR3 backslash is a separator
-    b"d/caf\xe9.txt",
-    b"caf?.txt",
-    b"cafX.txt",
-    b"caf\xf8\x80\x80\x80\x80.txt",  # an overlong five-byte form: mapped
+    ("\u00e9/ab".encode(), 1),
 ]
 
 
@@ -132,278 +94,235 @@ def _build_rar5(tmp_path: Path, names: list[tuple[bytes, int]]) -> Path:
     return path
 
 
-def _build_rar3(tmp_path: Path, names: list[bytes]) -> Path:
-    """A nonsolid RAR 2.9 archive of stored members with 8-bit names."""
-    blocks = _rar3_parse(_fixture("hostile_argv__rar4.rar").read_bytes())
-    template = next(block for block in blocks if block["type"] == 0x74)
-    head = [block for block in blocks if block["type"] == 0x73]
-    tail = [block for block in blocks if block["type"] == 0x7B]
-    files = []
-    for index, name in enumerate(names):
-        data = _payload(index)
-        header = bytearray(template["header"])
-        flags = struct.unpack_from("<H", header, 3)[0]
-        old_len = struct.unpack_from("<H", header, 26)[0]
-        offset = 32 + (8 if flags & 0x100 else 0)
-        header[offset : offset + old_len] = name
-        struct.pack_into("<H", header, 26, len(name))
-        # No Unicode flag, not solid, not a directory; stored.
-        struct.pack_into("<H", header, 3, flags & ~0x02F0)
-        struct.pack_into("<II", header, 7, len(data), len(data))
-        struct.pack_into("<I", header, 16, zlib.crc32(data))
-        header[25] = 0x30
-        struct.pack_into("<H", header, 5, len(header))
-        files.append({"type": 0x74, "header": header, "data": data})
-    path = tmp_path / "names3.rar"
-    path.write_bytes(_rar3_build(head + files + tail))
-    return path
-
-
-def _unrar_selects(archive: Path, mask: str | bytes, count: int) -> list[int]:
-    """Indexes of the members ``unrar p -n./<mask>`` emits, in pipe order."""
-    completed = subprocess.run(
-        [
-            find_rarlab_unrar(),
-            "p",
-            "-inul",
-            "-cfg-",
-            _member_include_switch(mask),
-            "--",
-            str(archive),
-        ],
-        capture_output=True,
-        env=_unrar_env(),
-        timeout=30,
-        check=False,
-    )
-    out = completed.stdout
-    assert len(out) % 5 == 0, out
-    indexes = [int(out[at + 1 : at + 4]) for at in range(0, len(out), 5)]
-    assert all(0 <= index < count for index in indexes)
-    return indexes
-
-
-def _check_masks(
-    archive: Path, views: list[str | None], masks: list[str | bytes]
-) -> None:
-    mismatches: list[tuple[Any, list[int], list[int]]] = []
-    dot_rule = unrar_dot_rule()
-    assert dot_rule is not None
-    for mask in masks:
-        mask_view = unrar_mask_view(mask)
-        assert mask_view is not None
-        if not unrar_mask_is_usable(mask_view):
-            continue
-        expected = [
-            index
-            for index, view in enumerate(views)
-            if view is not None
-            and unrar_mask_selects(mask_view, view, dot_rule=dot_rule)
-        ]
-        actual = _unrar_selects(archive, mask, len(views))
-        if actual != expected:
-            mismatches.append((mask, expected, actual))
-    assert not mismatches
-
-
-@requires_binary("unrar")
-@_LINUX_ONLY
-def test_rar5_mask_selection_is_the_one_unrar_makes(tmp_path: Path) -> None:
-    archive = _build_rar5(tmp_path, _RAR5_NAMES)
-    views = [
-        unrar_member_view(
-            rar5=True,
-            stored=name,
-            rar3_unicode_name=None,
-            host_os=2 if host == 0 else 3,
-            file_version=None,
-        )
-        for name, host in _RAR5_NAMES
-    ]
-    assert views[1] == "ab"
-    assert views[8] == ""
-    assert views[10] == "A"
-    assert views[12] == ""
-    assert views[16] == "\ud800q"
-    assert views[17] == "q"
-    assert views[20] == "w_v"
-    masks: list[str | bytes] = [
-        view.rstrip("/")
-        for view in views
-        if view is not None and not any(0xD800 <= ord(c) <= 0xDFFF for c in view)
-    ]
-    masks += ["ab.", "ab...", "a?", "?", "??", "a?b", "d/ab", "é", "x/../ab"]
-    _check_masks(archive, views, masks)
-
-
-# Names whose case fold differs between Python's ``str.upper`` and Windows'
-# ``CharUpperW``, or that Windows' linguistic ``CompareStringW`` calls equal although
-# their folds differ (``ß`` and ``SS``, a precomposed and a decomposed ``é``).
-_CASE_NAMES: list[tuple[bytes, int]] = [
-    ("e\u0301.txt".encode(), 1),
-    ("é.txt".encode(), 1),
-    ("É.TXT".encode(), 1),
-    ("ı.txt".encode(), 1),
-    (b"I.txt", 1),
-    ("straße".encode(), 1),
-    (b"STRASSE", 1),
-    ("Ω.txt".encode(), 1),
-    ("ω.txt".encode(), 1),
-    ("d/straße/f".encode(), 1),
-    (b"D/STRASSE/F", 1),
-    # Above U+FFFF: two UTF-16 units each on Windows.
-    ("\U0001f600\U0001f600.txt".encode(), 1),
-    ("\U0001f600.txt".encode(), 1),
-]
-# On Windows, the masks that compare equal to a shorter name, and those names.
-_CASE_UNKNOWN_ON_WINDOWS = {
-    "STRASSE": [5],
-    "D\\STRASSE\\F": [9],
-    "d/STRASSE/f": [9],
-    "E\u0301.TXT": [0, 1, 2],
-}
-
-
-@requires_binary("unrar")
-def test_case_fold_selection_is_the_one_unrar_makes_on_this_os(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The model's selection for non-ASCII case matches unrar's on every OS.
-
-    On Linux and macOS unrar matches case-sensitively. On Windows it folds with
-    ``CharUpperW`` and compares a mask with a name's start through ``CompareStringW``,
-    which archivey calls too; a mask longer than the name it equals there is
-    reported as unknown, since unrar then reads past the name.
-    """
-    archive = _build_rar5(tmp_path, _CASE_NAMES)
-    views = [
-        unrar_member_view(
-            rar5=True,
-            stored=name,
-            rar3_unicode_name=None,
-            host_os=3,
-            file_version=None,
-        )
-        for name, _host in _CASE_NAMES
-    ]
-    dot_rule = unrar_dot_rule()
-    assert dot_rule is not None
-    masks = [view for view in views if view is not None]
-    masks += ["E\u0301.TXT", "STRASSE", "i.txt", "?.txt", "d/STRASSE/f", "d/straße"]
-    mismatches = []
-    for mask in masks:
-        mask_view = unrar_mask_view(mask)
-        assert mask_view is not None
-        actual = _unrar_selects(archive, mask, len(views))
-        expected: list[int] = []
-        unknown: list[int] = []
-        for index, view in enumerate(views):
-            assert view is not None
-            try:
-                if unrar_mask_selects(mask_view, view, dot_rule=dot_rule):
-                    expected.append(index)
-            except UnrarSelectionUnknown:
-                unknown.append(index)
-        if unknown != (
-            _CASE_UNKNOWN_ON_WINDOWS.get(mask, []) if sys.platform == "win32" else []
-        ):
-            mismatches.append((mask, "unknown", unknown))
-        if [i for i in actual if i not in unknown] != expected:
-            mismatches.append((mask, expected, unknown, actual))
-    assert not mismatches
-
-    # Whatever the model cannot answer is refused; every other read is the member's.
-    # On Windows that is STRASSE after straße, and D/STRASSE/F after d/straße/f.
-    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
-    refused = []
-    with open_archive(archive, config=_UNRAR_SHARED) as reader:
-        for index, member in enumerate(reader.members()):
-            try:
-                data = reader.read(member)
-            except UnsupportedFeatureError:
-                refused.append(index)
-                continue
-            assert data == _payload(index), member.name
-    assert refused == ([6, 10] if sys.platform == "win32" else [])
-
-
-@pytest.mark.parametrize("platform", ["linux", "win32"])
-def test_selection_keys_grow_linearly_with_the_name(
-    monkeypatch: pytest.MonkeyPatch, platform: str
-) -> None:
-    """A name with many separators gets one fixed-size key per separator.
-
-    The keys were the prefixes themselves, so ``"a/" * 30000`` cost about 1.7 GB.
-    """
-    monkeypatch.setattr(rar_unrar.sys, "platform", platform)
-    keys = rar_unrar.unrar_selection_keys("a/" * 30000 + "f")
-    assert len(keys) <= 2 * 30000 + 3
-    assert max(len(key) for key in keys) < 200
-    mask_keys = rar_unrar.unrar_mask_keys("./" + "a/" * 29999 + "a")
-    assert mask_keys is not None
-    assert set(mask_keys) & set(keys)
-
-
-@requires_binary("unrar")
-@_LINUX_ONLY
-def test_rar3_8bit_mask_selection_is_the_one_unrar_makes(tmp_path: Path) -> None:
-    archive = _build_rar3(tmp_path, _RAR3_NAMES)
-    views = [
-        unrar_member_view(
-            rar5=False,
-            stored=name,
-            rar3_unicode_name=None,
-            host_os=3,
-            file_version=None,
-        )
-        for name in _RAR3_NAMES
-    ]
-    # ``unrar lb`` shows the same private-use mapping.
-    assert views[0] == "caf￾.txt"
-    assert views[2] == "café.txt"
-    masks: list[str | bytes] = [
-        name.replace(b"\\", b"/").rstrip(b"/") for name in _RAR3_NAMES
-    ]
-    masks += ["café.txt", "caf￾.txt", "caf", b"caf\xe9.txt.", b"d"]
-    _check_masks(archive, views, masks)
-
-
-@requires_binary("unrar")
-def test_every_rar5_member_reads_its_own_bytes_or_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Whatever unrar selects alongside a member, the bytes returned are its own.
-
-    No member has a CRC, so no digest check can catch a wrong member. The members
-    are stored, which the reader would slice itself, so slicing is turned off to send
-    each read through a named ``unrar p``.
-    """
-    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
-    blocks = _rar5_parse(_build_rar5(tmp_path, _RAR5_NAMES).read_bytes())
+def _nocrc_rar5(tmp_path: Path, names: list[tuple[bytes, int]]) -> Path:
+    """:func:`_build_rar5` with no CRCs, so no digest check can catch a wrong member."""
+    blocks = _rar5_parse(_build_rar5(tmp_path, names).read_bytes())
     for block in blocks:
         if block["type"] == 2:
             block["crc"] = None
     path = tmp_path / "nocrc.rar"
     path.write_bytes(_rar5_build(blocks))
-    outcomes: dict[int, str] = {}
-    with open_archive(path, config=_UNRAR_SHARED) as reader:
+    return path
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("in_place", [False, True], ids=["synthetic", "in-place"])
+def test_every_rar5_member_reads_its_own_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, in_place: bool
+) -> None:
+    """Whatever ``unrar`` would make of a name, each read returns the member's own
+    bytes. The members are stored, which the reader would slice itself, so slicing
+    is turned off to send each read through ``unrar``. With the in-place threshold
+    at 0 every member is "large": the plain names read the original archive
+    through a mask, the rest a synthetic archive."""
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    if in_place:
+        monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    path = _nocrc_rar5(tmp_path, _RAR5_NAMES)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
         for index, member in enumerate(reader.members()):
             assert not member.hashes
-            try:
-                data = reader.read(member)
-            except UnsupportedFeatureError as exc:
-                outcomes[index] = f"refused: {exc}"
-                continue
-            assert data == _payload(index), (index, member.name)
-            outcomes[index] = "read"
-    refused = {index for index, outcome in outcomes.items() if outcome != "read"}
-    # "\xff" and the overlong NUL read as empty; the encoded surrogate cannot be
-    # passed back; unrar reads "ab\\x" with its backslash. "w\\v" has a
-    # Windows host, so POSIX unrar reads it as "w_v" and it reads by position
-    # beside the "w_v" after it; Windows still refuses a stored backslash. "a?b"
-    # is a glob that also selects "aXb"... after it, so it reads.
-    expected = {3, 8, 12, 16, 20} if sys.platform == "win32" else {3, 8, 12, 16}
-    assert refused == expected, outcomes
+            assert reader.read(member) == _payload(index), (index, member.name)
+
+
+@pytest.mark.parametrize("non_ascii", [True, False], ids=["utf8", "ascii-only"])
+def test_only_a_plain_name_selects_its_member_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, non_ascii: bool
+) -> None:
+    monkeypatch.setattr(rar_reader, "unrar_mask_carries_non_ascii", lambda: non_ascii)
+    path = _nocrc_rar5(tmp_path, _RAR5_NAMES)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        # Several names here do not decode cleanly, so no mask is trusted at all.
+        assert [reader._plain_mask(m) for m in reader.members()] == [None] * len(
+            _RAR5_NAMES
+        )
+    clean: list[tuple[bytes, int]] = [
+        (b"ab", 1),
+        (b"ab/x", 1),
+        (b"AB.txt", 1),
+        (b"ab.txt", 1),
+        (b"note.", 1),
+        (b"a?b", 1),
+        (b"aXb", 1),
+        (b"d/ab", 1),
+        ("caf\u00e9.txt".encode(), 1),
+        ("\u0131.bin".encode(), 1),
+        (b"i.bin", 1),
+        (b"plain.txt", 1),
+    ]
+    path = _nocrc_rar5(tmp_path, clean)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        masks = {m.name: reader._plain_mask(m) for m in reader.members()}
+    # "ab" has "ab/x" below it; "AB.txt" and "ab.txt" fold together; "note." has
+    # a trailing dot; "a?b" is a glob; "café.txt" is plain only where unrar reads
+    # a non-ASCII mask back as the same text.
+    assert masks == {
+        "ab": None,
+        "ab/x": "ab/x",
+        "AB.txt": None,
+        "ab.txt": None,
+        "note.": None,
+        "a?b": None,
+        "aXb": "aXb",
+        "d/ab": "d/ab",
+        "café.txt": "café.txt" if non_ascii else None,
+        # Dotless ``ı`` upper-cases to ``I`` as ``i`` does, so neither is plain.
+        "\u0131.bin": None,
+        "i.bin": None,
+        "plain.txt": "plain.txt",
+    }
+
+
+@requires_binary("unrar")
+def test_a_large_member_with_a_utf8_name_reads_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-ASCII name reaches ``unrar`` as its own mask and selects that member
+    alone, on Windows (Unicode argv) and under a UTF-8 locale on POSIX."""
+    if not rar_reader.unrar_mask_carries_non_ascii():
+        pytest.skip("no UTF-8 locale for unrar on this system")
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    names = [("café.txt".encode(), 1), ("日本/ß.txt".encode(), 1), (b"plain.txt", 1)]
+    path = _nocrc_rar5(tmp_path, names)
+    spawned: list[str | None] = []
+    real = rar_reader.open_unrar_p
+
+    def spawn(archive: object, *args: object, **kwargs: object) -> object:
+        spawned.append(kwargs.get("member"))  # type: ignore[arg-type]
+        return real(archive, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spawn)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        got = [reader.read(member) for member in reader.members()]
+    assert got == [_payload(i) for i in range(3)]
+    assert spawned == ["café.txt", "日本/ß.txt", "plain.txt"]
+
+
+@requires_binary("unrar")
+def test_a_large_member_without_a_plain_name_is_copied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a source on disk, a "large" member reads in place only through a plain
+    name; the glob ``a?b`` is copied to a synthetic archive like a small one."""
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    names = [(b"a?b", 1), (b"aXb", 1), (b"plain.txt", 1)]
+    path = _nocrc_rar5(tmp_path, names)
+    spawned: list[str | None] = []
+    real = rar_reader.open_unrar_p
+
+    def spawn(archive: object, *args: object, **kwargs: object) -> object:
+        spawned.append(kwargs.get("member"))  # type: ignore[arg-type]
+        return real(archive, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spawn)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        got = [reader.read(member) for member in reader.members()]
+    assert got == [_payload(i) for i in range(3)]
+    assert spawned == [None, "aXb", "plain.txt"]
+
+
+def test_a_rar4_history_row_keeps_the_suffix_its_name_stores() -> None:
+    """A RAR 1.5-4 history row stores ``;n`` in its name; the mask must not add a
+    second one (``file.txt;1;1`` selects nothing)."""
+    with open_archive(_fixture("file_version__rar4.rar"), config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        masks = [reader._plain_mask(m) for m in reader.members()]
+        names = [m.name for m in reader.members()]
+    assert masks == names
+    assert any(";" in mask for mask in masks if mask)
+
+
+def test_a_history_row_is_masked_with_its_version_suffix() -> None:
+    """``unrar -ver`` names a history row ``name;n``; the live row keeps the bare
+    name. Fails if the ``;n`` suffix is dropped (two rows would share ``file.txt``)
+    or if history rows were counted against the current rows only (KeyError)."""
+    with open_archive(_fixture("file_version__.rar"), config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        masks = [reader._plain_mask(m) for m in reader.members()]
+    assert masks == ["file.txt;1", "file.txt;2", "file.txt"]
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("fixture", ["file_version__.rar", "file_version__rar4.rar"])
+def test_a_history_row_reads_in_place_by_its_versioned_name(
+    monkeypatch: pytest.MonkeyPatch, fixture: str
+) -> None:
+    """An in-place read of a history row passes ``-n./file.txt;1`` with ``-ver``
+    and gets that row alone, the same bytes as the synthetic read."""
+    path = _fixture(fixture)
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        expected = [reader.read(member) for member in reader.members()]
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    spawned: list[str | None] = []
+    real = rar_reader.open_unrar_p
+
+    def spawn(archive: object, *args: object, **kwargs: object) -> object:
+        spawned.append(kwargs.get("member"))  # type: ignore[arg-type]
+        return real(archive, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spawn)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        got = [reader.read(member) for member in reader.members()]
+    assert got == expected
+    assert len(set(expected)) == len(expected)
+    assert spawned == ["file.txt;1", "file.txt;2", "file.txt"]
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        # An ASCII 8-bit name is plain.
+        (b"plain.txt", "plain.txt"),
+        # A RAR 1.5-4 backslash is a separator, and the mask uses ``/``.
+        (b"d\\x.txt", "d/x.txt"),
+        # A non-ASCII 8-bit name has no code page unrar is known to share.
+        (b"caf\xe9.txt", None),
+    ],
+)
+def test_rar4_8bit_names_and_the_plain_rule(
+    tmp_path: Path, name: bytes, expected: str | None
+) -> None:
+    """Fails if 8-bit names were decoded with a code page for the mask, or if a
+    ``\\`` were kept (or refused) instead of read as ``/``."""
+    path = _rar4_with_name(tmp_path, name)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        masks = [reader._plain_mask(m) for m in reader.members()]
+    others = ["-inul", "@atfile"] if expected is not None else [None, None]
+    assert masks == [expected, *others]
+
+
+def test_a_rar4_unicode_name_with_a_lone_surrogate_is_not_plain(
+    tmp_path: Path,
+) -> None:
+    """A UTF-16 field with a lone surrogate makes no name in the archive plain.
+    Fails if the surrogate check were dropped."""
+    path = _rar4_with_name(tmp_path, b"plain.txt")
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        raw = reader.members()[0]._raw
+        assert rar_reader._plain_unrar_text(raw, rar5=False) == "plain.txt"
+        lone = dataclasses.replace(raw, rar3_unicode_name="hi\ud800.txt")
+        assert rar_reader._plain_unrar_text(lone, rar5=False) is None
+        pair = dataclasses.replace(raw, rar3_unicode_name="hi\U0001f600.txt")
+        assert rar_reader._plain_unrar_text(pair, rar5=False) == "hi\U0001f600.txt"
+
+
+def test_a_damaged_listing_reads_no_member_in_place(tmp_path: Path) -> None:
+    """When a volume's walk stopped at a damaged header, ``unrar`` may find headers
+    past it that the listing lacks, so no name is trusted to select one member."""
+    path = _nocrc_rar5(tmp_path, [(b"plain.txt", 1), (b"other.txt", 1)])
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        members = reader.members()
+        reader._archive.damaged = "a damaged header"
+        assert [reader._plain_mask(m) for m in members] == [None, None]
 
 
 def _duplicate_names(tmp_path: Path, *, solid: bool) -> Path:
@@ -428,232 +347,12 @@ def test_duplicate_names_read_by_position(tmp_path: Path, solid: bool) -> None:
     path = _duplicate_names(tmp_path, solid=solid)
     with open_archive(_fixture("hostile_argv__.rar"), config=_UNRAR_ONLY) as reader:
         expected = [reader.read(member) for member in reader.members()]
-    with open_archive(path, config=_UNRAR_SHARED) as reader:
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
         members = reader.members()
         assert [member.name for member in members] == ["same.txt"] * 3
         assert [reader.read(member) for member in reversed(members)] == list(
             reversed(expected)
         )
-
-
-@requires_binary("unrar")
-@pytest.mark.parametrize("solid", [False, True], ids=["nonsolid", "solid"])
-def test_a_name_that_selects_earlier_members_is_refused_by_default(
-    tmp_path: Path, solid: bool
-) -> None:
-    """A duplicate name costs unrar the same decode of earlier members as a glob, and
-    is refused the same way. The first member selects nothing before it and reads."""
-    with open_archive(_duplicate_names(tmp_path, solid=solid), config=_UNRAR_ONLY) as r:
-        members = r.members()
-        assert r.read(members[0])
-        match = (
-            "is refused: its name, as unrar is given it, also selects earlier"
-            if solid
-            else r"would decompress \d+ bytes of earlier members first"
-        )
-        with pytest.raises(
-            UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
-        ) as refused:
-            r.read(members[2])
-        assert refused.match(match)
-
-
-@requires_binary("unrar")
-def test_a_name_that_selects_only_empty_earlier_members_reads(tmp_path: Path) -> None:
-    """The refusal counts the bytes unrar would decode first: earlier members with the
-    same name and no data cost nothing, so the last one reads with no flag."""
-    with open_archive(_fixture("hostile_argv__.rar"), config=_UNRAR_ONLY) as reader:
-        expected = reader.read(reader.members()[2])
-    blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
-    files = [block for block in blocks if block["type"] == 2]
-    for block in files:
-        block["name"] = b"same.txt"
-    for block in files[:2]:
-        block["data"] = b""
-        block["unpacked"] = 0
-        block["crc"] = struct.pack("<I", 0)
-        block["cinfo"] &= ~(7 << 7)  # stored
-    path = tmp_path / "empty-dup.rar"
-    path.write_bytes(_rar5_build(blocks))
-    with open_archive(path, config=_UNRAR_ONLY) as reader:
-        members = reader.members()
-        assert [m.size for m in members] == [0, 0, len(expected)]
-        assert reader.read(members[2]) == expected
-
-
-@requires_binary("unrar", "unar")
-def test_auto_reads_a_name_that_selects_earlier_members_with_unar(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """unar names entries by index, so under AUTO a shared name needs no flag: the
-    refused members go to unar, with no password on its command line, and the first,
-    which selects nothing before it, still goes to unrar."""
-    with open_archive(_fixture("hostile_argv__.rar"), config=_UNRAR_ONLY) as reader:
-        expected = [reader.read(member) for member in reader.members()]
-    unar_indexes: list[list[int]] = []
-    unar_passwords: list[object] = []
-    original = rar_reader.open_unar_stdout
-
-    def spy(path: Path, indexes: list[int], **kwargs: object) -> Any:
-        unar_indexes.append(list(indexes))
-        unar_passwords.append(kwargs.get("password"))
-        return original(path, indexes, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(rar_reader, "open_unar_stdout", spy)
-    with open_archive(_duplicate_names(tmp_path, solid=False)) as reader:
-        assert [reader.read(member) for member in reader.members()] == expected
-    assert unar_indexes, "no read went to unar"
-    assert {i for indexes in unar_indexes for i in indexes} == {1, 2}
-    assert unar_passwords == [None] * len(unar_indexes)
-
-
-@requires_binary("unrar")
-def test_invalid_utf8_name_reads_through_the_prefix_unrar_sees(tmp_path: Path) -> None:
-    """``ab\\xffcd.txt`` is ``ab`` to unrar; earlier members named ``ab`` are skipped."""
-    source = _fixture("hostile_argv__.rar")
-    with open_archive(source, config=_UNRAR_ONLY) as reader:
-        expected = [reader.read(member) for member in reader.members()]
-    blocks = _rar5_parse(source.read_bytes())
-    files = [block for block in blocks if block["type"] == 2]
-    files[0]["name"] = b"ab"
-    files[1]["name"] = b"ab\xfe"
-    files[2]["name"] = b"ab\xffcd.txt"
-    for block in files:
-        block["crc"] = None
-    path = tmp_path / "prefix.rar"
-    path.write_bytes(_rar5_build(blocks))
-    with open_archive(path, config=_UNRAR_SHARED) as reader:
-        members = reader.members()
-        assert [reader.read(member) for member in reversed(members)] == list(
-            reversed(expected)
-        )
-
-
-@requires_binary("unrar")
-def test_name_unrar_reads_as_empty_is_refused(tmp_path: Path) -> None:
-    source = _fixture("hostile_argv__.rar")
-    blocks = _rar5_parse(source.read_bytes())
-    files = [block for block in blocks if block["type"] == 2]
-    files[1]["name"] = b"\xc0\x80x"
-    path = tmp_path / "empty.rar"
-    path.write_bytes(_rar5_build(blocks))
-    with open_archive(path, config=_UNRAR_ONLY) as reader:
-        member = reader.members()[1]
-        with pytest.raises(UnsupportedFeatureError, match="unrar reads its name"):
-            reader.read(member)
-        # The other members still read.
-        assert reader.read(reader.members()[2])
-
-
-@requires_binary("unrar")
-@_LINUX_ONLY
-def test_earlier_name_unrar_cannot_be_modelled_refuses_later_reads(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """With no UTF-8 locale, an 8-bit name's reading by unrar is unknown."""
-    path = _rar4_with_name(tmp_path, b"caf\xe9")
-    monkeypatch.setattr(rar_unrar, "_utf8_locale_name", lambda: None)
-    with open_archive(path, config=_UNRAR_ONLY) as reader:
-        later = reader.members()[2]
-        with pytest.raises(ArchiveyError, match="earlier member's name"):
-            reader.read(later)
-
-
-@requires_binary("unrar", "unar")
-@_LINUX_ONLY
-def test_auto_reads_with_unar_after_an_earlier_name_unrar_cannot_be_modelled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The host's ``unrar`` is the trouble, not the archive, so ``AUTO`` falls back."""
-    with open_archive(_fixture("hostile_argv__rar4.rar"), config=_UNRAR_ONLY) as ar:
-        expected = ar.read(ar.members()[2])
-    path = _rar4_with_name(tmp_path, b"caf\xe9")
-    monkeypatch.setattr(rar_unrar, "_utf8_locale_name", lambda: None)
-    with open_archive(path) as reader:
-        assert reader.read(reader.members()[2]) == expected
-
-
-def _mask_selects_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """A RAR5 archive whose masks, as modelled, select no member at all."""
-    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
-    monkeypatch.setattr(
-        "archivey.internal.backends.rar_reader.unrar_mask_selects",
-        lambda mask_view, name_view, *, dot_rule: False,
-    )
-    return _build_rar5(tmp_path, [(b"a.txt", 1), (b"b.txt", 1)])
-
-
-@requires_binary("unrar")
-def test_mask_that_does_not_select_its_member_is_refused_under_unrar(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = _mask_selects_nothing(monkeypatch, tmp_path)
-    with (
-        open_archive(path, config=_UNRAR_ONLY) as reader,
-        pytest.raises(UnsupportedFeatureError, match="cannot be given back"),
-    ):
-        reader.read(reader.members()[1])
-
-
-@requires_binary("unrar", "unar")
-def test_auto_reads_with_unar_a_member_its_mask_does_not_select(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """unar names entries by index, so the mask is not needed (DR-11)."""
-    path = _mask_selects_nothing(monkeypatch, tmp_path)
-    with open_archive(path) as reader:
-        assert [reader.read(member) for member in reader.members()] == [
-            _payload(0),
-            _payload(1),
-        ]
-
-
-def test_five_and_six_byte_forms_are_modelled_as_glibc_reads_them() -> None:
-    """glibc's ``mbrtowc`` decodes five- and six-byte forms above U+10FFFF and
-    rejects their overlong spellings. A rejected form is mapped byte by byte like
-    any invalid byte, which is modelled; an accepted one is not."""
-    if not sys.platform.startswith("linux") or rar_unrar._utf8_locale_name() is None:
-        pytest.skip("the glibc reading needs Linux and a UTF-8 locale")
-
-    def view(stored: bytes) -> str | None:
-        return unrar_member_view(
-            rar5=False,
-            stored=stored,
-            rar3_unicode_name=None,
-            host_os=3,
-            file_version=None,
-        )
-
-    assert view(b"caf\xf8\x80\x80\x80\x80.txt") == (
-        "caf\ufffe" + "".join(chr(0xE000 + b) for b in b"\xf8\x80\x80\x80\x80") + ".txt"
-    )
-    assert view(b"caf\xfc\x80\x80\x80\x80\x80.txt") is not None
-    assert view(b"caf\xf8\x88\x80\x80\x80.txt") is None  # U+200000
-    assert view(b"caf\xfc\x84\x80\x80\x80\x80.txt") is None  # U+4000000
-
-
-@requires_binary("unrar")
-@_LINUX_ONLY
-def test_overlong_five_byte_name_does_not_refuse_later_reads(tmp_path: Path) -> None:
-    """unrar maps an overlong form, so the earlier name is known and later
-    members read; the accepted form is not modelled and refuses them."""
-    with open_archive(_fixture("hostile_argv__rar4.rar"), config=_UNRAR_ONLY) as ar:
-        expected = {m.name: ar.read(m) for m in ar.members()[1:] if m.is_file}
-    path = _rar4_with_name(tmp_path, b"caf\xf8\x80\x80\x80\x80")
-    with open_archive(path, config=_UNRAR_ONLY) as reader:
-        later = [m for m in reader.members()[1:] if m.is_file]
-        assert later
-        for member in later:
-            assert reader.read(member) == expected[member.name]
-    path = _rar4_with_name(tmp_path, b"caf\xf8\x88\x80\x80\x80")
-    with (
-        open_archive(path, config=_UNRAR_ONLY) as reader,
-        pytest.raises(ArchiveyError, match="earlier member's name"),
-    ):
-        reader.read(next(m for m in reader.members()[1:] if m.is_file))
-
-
-# --- listing an 8-bit RAR 1.5-4 name -------------------------------------------
 
 
 def _rar4_with_name(
@@ -745,53 +444,13 @@ def test_valid_utf8_rar3_name_wins_over_the_encoding_argument(
 
 @requires_binary("unrar")
 def test_8bit_rar3_name_decoded_with_encoding_still_reads(tmp_path: Path) -> None:
-    """The mask is the stored bytes, whatever the name was decoded with."""
+    """No stored name reaches ``unrar``, so a name it would read differently (on
+    macOS, cp1251 ``привет.txt`` reads as empty) still reads on every OS."""
     with open_archive(_fixture("hostile_argv__rar4.rar"), config=_UNRAR_ONLY) as ar:
         expected = ar.read("canary.txt")
     path = _rar4_with_name(tmp_path, "привет.txt".encode("cp1251"))
     with open_archive(path, encoding="cp1251", config=_UNRAR_ONLY) as reader:
-        if sys.platform == "darwin":
-            # macOS unrar reads this name as empty; see the test below.
-            with pytest.raises(UnsupportedFeatureError, match="unar"):
-                reader.read(reader.members()[0])
-        else:
-            assert reader.read(reader.members()[0]) == expected
-
-
-@requires_binary("unrar")
-def test_8bit_name_macos_unrar_reads_as_empty_is_refused_before_spawning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """macOS ``unrar`` converts an 8-bit name, and the argv mask, with ``UtfToWide``
-    (``unicode.cpp``, ``CharToWide`` under ``_APPLE``), which stops at the first
-    byte that is not UTF-8. cp1251 ``привет.txt`` starts with such a byte, so the
-    name ``unrar`` reads is empty and no mask can select only this member. The read
-    is refused before ``unrar`` is spawned. A name cut later (``caf\\xe9.txt`` is
-    ``caf``) still has a mask and reads through it.
-    """
-    from archivey.internal.backends import rar_unrar
-
-    path = _rar4_with_name(tmp_path, "привет.txt".encode("cp1251"))
-    with open_archive(path, encoding="cp1251", config=_UNRAR_ONLY) as reader:
-        member = reader.members()[0]
-        monkeypatch.setattr(rar_unrar.sys, "platform", "darwin")
-
-        def no_spawn(*args: Any, **kwargs: Any) -> Any:
-            raise AssertionError("unrar was spawned")
-
-        monkeypatch.setattr(rar_unrar.subprocess, "Popen", no_spawn)
-        with pytest.raises(UnsupportedFeatureError, match="unar"):
-            reader.read(member)
-    assert (
-        unrar_member_view(
-            rar5=False,
-            stored=b"caf\xe9.txt",
-            rar3_unicode_name=None,
-            host_os=3,
-            file_version=None,
-        )
-        == "caf"
-    )
+        assert reader.read(reader.members()[0]) == expected
 
 
 def test_unicode_flagged_rar3_name_without_a_utf16_field(tmp_path: Path) -> None:
@@ -813,161 +472,3 @@ def test_encoding_argument_leaves_rar5_names_alone() -> None:
         names = [member.name for member in reader.members()]
     with open_archive(path, encoding="cp500") as reader:
         assert [member.name for member in reader.members()] == names
-
-
-def test_dot_rule_probe_archive_is_the_one_the_tests_build(tmp_path: Path) -> None:
-    """The embedded probe archive is ``ab`` (``A``) then ``ab.`` (``D``), stored."""
-    blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
-    template = next(block for block in blocks if block["type"] == 2)
-    head = [block for block in blocks if block["type"] == 1]
-    tail = [block for block in blocks if block["type"] == 5]
-    files = []
-    for name, data in ((b"ab", b"A"), (b"ab.", b"D")):
-        block = dict(template)
-        block.update(
-            name=name,
-            host_os=1,
-            cinfo=0,
-            unpacked=len(data),
-            crc=struct.pack("<I", zlib.crc32(data)),
-            data=data,
-        )
-        files.append(block)
-    assert _rar5_build(head + files + tail) == rar_unrar._DOT_RULE_PROBE_ARCHIVE
-
-
-def test_the_dot_rule_decides_whether_a_trailing_dot_matches_nothing() -> None:
-    assert unrar_mask_selects("./ab.", "ab", dot_rule=True)
-    assert not unrar_mask_selects("./ab.", "ab", dot_rule=False)
-    assert unrar_mask_selects("./ab.", "ab.", dot_rule=False)
-    assert not unrar_mask_selects("./ab.", "ab..", dot_rule=False)
-    assert unrar_mask_selects("./a?.", "ab.", dot_rule=False)
-    assert not unrar_mask_selects("./a?.", "ab", dot_rule=False)
-    assert rar_unrar.unrar_dot_rule_can_matter("./ab.")
-    assert rar_unrar.unrar_dot_rule_can_matter("./d/x.txt")
-    assert not rar_unrar.unrar_dot_rule_can_matter("./ab")
-    assert not rar_unrar.unrar_dot_rule_can_matter("./../ab")
-
-
-@requires_binary("unrar")
-def test_dot_rule_probe_answers_for_the_installed_unrar(tmp_path: Path) -> None:
-    """The probe's answer is the selection this unrar makes for ``ab.``.
-
-    Every pinned CI unrar has the rule; 7.30 beta 2 does not.
-    """
-    rar_unrar._cached_dot_rule.clear()
-    answer = unrar_dot_rule()
-    assert answer is not None
-    assert find_rarlab_unrar() in rar_unrar._cached_dot_rule
-    archive = _build_rar5(tmp_path, [(b"ab", 1), (b"ab.", 1)])
-    assert _unrar_selects(archive, "ab.", 2) == ([0, 1] if answer else [1])
-
-
-@pytest.mark.parametrize(
-    ("stdout", "expected"), [(b"AD", True), (b"D", False), (b"", None), (b"A", None)]
-)
-def test_dot_rule_probe_reads_the_pipe(
-    monkeypatch: pytest.MonkeyPatch, stdout: bytes, expected: bool | None
-) -> None:
-    calls: list[list[Any]] = []
-
-    def run(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        calls.append(argv)
-        archive = Path(argv[-1])
-        assert archive.read_bytes() == rar_unrar._DOT_RULE_PROBE_ARCHIVE
-        return subprocess.CompletedProcess(argv, 0, stdout, b"")
-
-    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/fake/unrar")
-    monkeypatch.setattr(rar_unrar, "_stat_identity", lambda path: (1, 2, 3, 4))
-    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
-    monkeypatch.setattr(rar_unrar, "_cached_dot_rule", {})
-    assert unrar_dot_rule() is expected
-    assert unrar_dot_rule() is expected
-    assert len(calls) == 1, "an unchanged binary is asked once"
-    assert calls[0][:3] == ["/fake/unrar", "p", "-inul"]
-    assert _member_include_switch("ab.") in calls[0]
-    monkeypatch.setattr(rar_unrar, "_stat_identity", lambda path: (1, 2, 3, 5))
-    unrar_dot_rule()
-    assert len(calls) == 2, "a replaced binary is asked again"
-
-
-def test_dot_rule_probe_that_cannot_run_is_not_stored(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def run(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        raise OSError("EMFILE")
-
-    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/fake/unrar")
-    monkeypatch.setattr(rar_unrar, "_stat_identity", lambda path: (1, 2, 3, 4))
-    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
-    monkeypatch.setattr(rar_unrar, "_cached_dot_rule", {})
-    assert unrar_dot_rule() is None
-    assert rar_unrar._cached_dot_rule == {}
-
-
-@requires_binary("unrar")
-@pytest.mark.parametrize("answer", [True, False, None])
-def test_reader_asks_for_the_dot_rule_only_when_it_changes_the_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: bool | None
-) -> None:
-    """``ab`` and ``ab.``: only the read of ``ab.`` depends on the rule.
-
-    Under the rule the mask ``ab.`` also selects the ``ab`` before it, so the read
-    skips that member's bytes; without it, nothing is skipped. An unknown answer
-    refuses that read and no other.
-    """
-    asked: list[bool | None] = []
-
-    def probe() -> bool | None:
-        asked.append(answer)
-        return answer
-
-    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
-    monkeypatch.setattr("archivey.internal.backends.rar_reader.unrar_dot_rule", probe)
-    blocks = _rar5_parse(_build_rar5(tmp_path, [(b"ab", 1), (b"ab.", 1)]).read_bytes())
-    path = tmp_path / "dot.rar"
-    path.write_bytes(_rar5_build(blocks))
-    original = RarReader._unrar_selection
-    prefixes: list[int] = []
-
-    def spy(self: RarReader, *args: Any, **kwargs: Any) -> Any:
-        result = original(self, *args, **kwargs)
-        prefixes.append(result[0])
-        return result
-
-    monkeypatch.setattr(RarReader, "_unrar_selection", spy)
-    real = unrar_dot_rule()
-    with open_archive(path, config=_UNRAR_SHARED) as reader:
-        first, second = reader.members()
-        assert reader.read(first) == _payload(0)
-        assert asked == [], "the mask ab selects the same members under both rules"
-        if answer is None:
-            with pytest.raises(UnsupportedFeatureError, match="probe"):
-                reader.read(second)
-        elif answer == real:
-            assert reader.read(second) == _payload(1)
-        else:
-            # A wrong answer plans the wrong skip for what this unrar sends.
-            with pytest.raises(ArchiveyError):
-                reader.read(second)
-    assert asked == [answer]
-    # The read of ab plans no skip; the read of ab. skips ab only under the rule,
-    # and an unknown answer plans nothing.
-    assert prefixes == {True: [0, len(_payload(0))], False: [0, 0], None: [0]}[answer]
-
-
-@requires_binary("unrar", "unar")
-def test_auto_reads_with_unar_when_the_dot_rule_probe_has_no_answer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The binary on PATH is the trouble, not the archive, so ``AUTO`` falls back."""
-    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
-    monkeypatch.setattr(
-        "archivey.internal.backends.rar_reader.unrar_dot_rule", lambda: None
-    )
-    path = _build_rar5(tmp_path, [(b"ab", 1), (b"ab.", 1)])
-    with open_archive(path) as reader:
-        assert [reader.read(member) for member in reader.members()] == [
-            _payload(0),
-            _payload(1),
-        ]

@@ -8,8 +8,8 @@
 - [ ] 2.1 MODIFIED `Serve random access and extraction with bounded explicit temp use`: stream sources copy one member, chain or batch, not the archive; the open-time `CostReceipt.notes` caveat says so; path sources are bounded by the spool limit for synthetic copies
 - [ ] 2.2 MODIFIED `Constrain unrar argv by call site`: the synthetic-file argv, `-ver` on every synthetic read, the placeholder mask
 - [ ] 2.3 MODIFIED `Stream solid RAR archives through one unrar pipe`: one `unrar` run per solid stream, from a synthetic file
-- [ ] 2.4 Under D1 = A or B: REMOVED `Return a named member's own bytes when its mask selects others`, `Refuse a glob member name whose mask also matches earlier members` and `Under auto, read a member unrar cannot name with unar`
-- [ ] 2.5 Under D4: MODIFIED `archive-reading` config schema to mark `rar_allow_glob_member_concatenation` deprecated
+- [x] 2.4 Under D1 = A or B: REMOVED `Return a named member's own bytes when its mask selects others`, `Refuse a glob member name whose mask also matches earlier members` and `Under auto, read a member unrar cannot name with unar`
+- [x] 2.5 Under D4: MODIFIED `archive-reading` config schema to mark `rar_allow_glob_member_concatenation` deprecated
 - [ ] 2.6 MODIFIED `Count the RAR dictionary against the decoder memory cap` and the `RewindWarning` floor: count the chain, not the archive prefix
 
 ## 3. Writer
@@ -23,10 +23,10 @@
 
 - [ ] 4.1 `_open_member_with_program`: route per D1; spool budget per copy; temp file lifetime tied to the member stream and respawn
 - [ ] 4.2 Solid chains: chain start from the per-member solid flag; dictionary cost and `_solid_prefix` per chain
-- [ ] 4.3 Solid streams: one synthetic file per stream for the reader's lifetime, extended by appending (rewrite ENDARC); a solid pass reads it with one `unrar` run
+- [ ] 4.3 Solid streams: one synthetic file per stream for the reader's lifetime, extended by appending (rewrite ENDARC); a solid pass over a stream source reads runs of whole streams (up to 64 MiB packed, one per stream under a limit below 128 MiB), one `unrar` run each, and the whole-archive copy when that would be one run
 - [ ] 4.4 Nonsolid pass batching (D3) with the per-member fallback
-- [ ] 4.5 Remove `_ensure_archive_path`'s whole-archive copy where no route needs it any more; keep it for `unar`
-- [ ] 4.6 Under D1 = A or B: remove the mask model, the dot-rule probe, the glob refusal and the `unar` fallback for unaddressable names; deprecate the config flag (D4)
+- [x] 4.5 Remove `_ensure_archive_path`'s whole-archive copy where no route needs it any more; keep it for `unar`
+- [x] 4.6 Under D1 = A or B: remove the mask model, the dot-rule probe, the glob refusal and the `unar` fallback for unaddressable names; deprecate the config flag (D4)
 
 ## 5. Measurement and compatibility
 

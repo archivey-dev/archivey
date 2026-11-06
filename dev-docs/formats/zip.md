@@ -92,7 +92,8 @@ there is no solid-block cost model. A solid 7z or RAR block gives you none of th
 
 Seeking *within* a member is a different question and the answer is no: a compressed member
 decodes sequentially, so a backward seek re-decodes from the start of the member, or from the
-nearest seek point when the deflate accelerator is in play. Only STORED members are random
+nearest seek point: the deflate accelerator's, or for DEFLATE on the standard library, a zlib
+snapshot a read has passed (`gzip.md` §2.3 "zlib snapshots"). Only STORED members are random
 access in the real sense. Past a megabyte of re-decoding the stream says so, with
 `STREAM_REWIND_REDECOMPRESSES`. **Seekable member streams** and **concurrent member streams**
 are both off by default even here — see §6.

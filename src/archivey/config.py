@@ -23,6 +23,7 @@ from archivey.internal.arg_checks import (
     check_limit,
     check_limit_fields,
 )
+from archivey.internal.config_copy import copying_config
 from archivey.internal.enum_args import coerce_enum
 from archivey.types import ArchiveMember, OptionalLibrary
 
@@ -168,13 +169,8 @@ class RarDecompressor(Enum):
     """The default: ``unrar`` when a usable one is on ``PATH``, otherwise ``unar``.
 
     The choice is made once per opened archive, when it is opened, and holds for every
-    read of it: a read that ``unar`` refuses is not retried with ``unrar``. One exception
-    goes the other way: a member whose name ``unrar`` cannot be given, or whose name also
-    selects earlier members (``rar_allow_glob_member_concatenation``), is read with
-    ``unar`` when an accepted one is installed, because ``unar`` selects members by
-    index. That applies only to a read that needs no password, from a file with nothing
-    before the RAR (so ``unar`` gets no password and no copy), and to a member ``unar``
-    reads correctly; otherwise the ``unrar`` refusal stands.
+    read of it: a read that ``unar`` refuses is not retried with ``unrar``, and a read that
+    ``unrar`` refuses is not retried with ``unar``.
 
     With neither installed, a read raises :class:`~archivey.PackageNotInstalledError`
     naming ``unrar``. On a machine with ``unar`` and no RARLAB program, a password is
@@ -828,20 +824,12 @@ class ArchiveyConfig:
     """
 
     rar_allow_glob_member_concatenation: bool = False
-    """Read a RAR member whose name also selects earlier members, through ``unrar``.
+    """Deprecated, and has no effect: setting it ``True`` warns.
 
-    ``unrar`` selects members by an include mask, so a name with ``*`` or ``?`` can
-    match other members as well, and so does a name shared with an earlier member (a
-    duplicate, or two names ``unrar`` reads as the same text). ``unrar`` then decodes
-    every earlier match before the member. Names like this are almost always
-    constructed, so the read is refused by default. On a nonsolid archive the extra
-    decode is also unbounded and not reported (:class:`ExtractionLimits` does not cover
-    ``open()`` or ``read()``); on a solid archive those bytes are already inside
-    ``AccessCost.SOLID``. Set ``True`` to read it anyway. A name that selects no earlier
-    member with data is unaffected either way.
-    Under ``rar_decompressor=AUTO``, an installed ``unar`` reads such a member by index
-    instead of the refusal (see :class:`RarDecompressor`), so this flag matters only
-    when ``unrar`` must read it.
+    ``unrar`` reads a member from a temporary RAR file that holds it under a placeholder
+    name, or from the original archive only when the member's name selects it alone. No
+    read decodes other members because of a member's name, so there is nothing left for
+    this flag to allow. It will be removed in a future release.
     """
 
     rar_decompressor: RarDecompressor = RarDecompressor.AUTO
@@ -1022,6 +1010,16 @@ class ArchiveyConfig:
                 bool,
                 call=f"ArchiveyConfig({field_name}=…)",
                 allow_none=False,
+            )
+        # Archivey's own copies of a caller's config (``copy_config_quietly``) pass
+        # the field on as if it were set again; only the caller's construction warns.
+        if self.rar_allow_glob_member_concatenation and not copying_config():
+            warnings.warn(
+                "ArchiveyConfig.rar_allow_glob_member_concatenation is deprecated and "
+                "has no effect: no RAR read decodes other members because of a "
+                "member's name any more. It will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=3,
             )
         check_callable(self.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
         check_encoding(

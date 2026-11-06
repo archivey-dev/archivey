@@ -44,11 +44,6 @@ from tests.conftest import requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 _UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
-# A name that selects earlier members too is refused by default; these tests read
-# through the shared mask on purpose.
-_UNRAR_SHARED = ArchiveyConfig(
-    rar_decompressor="unrar", rar_allow_glob_member_concatenation=True
-)
 
 
 def _fixture(name: str) -> Path:
@@ -289,7 +284,7 @@ def test_duplicate_named_compressed_rar5_members_read_their_own_bytes(
     path = tmp_path / "dup.rar"
     path.write_bytes(_rar5_build(blocks))
 
-    with open_archive(path, config=_UNRAR_SHARED) as archive:
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
         members = archive.members()
         assert [m.name for m in members] == ["canary.txt", "-inul", "-inul"]
         assert archive.read(members[2]) == payloads["@atfile"]
@@ -585,7 +580,9 @@ def test_rar3_version_suffix_is_parsed_without_a_bare_value_error(
 
 
 @requires_binary("unrar")
-def test_nul_in_member_name_read_raises_an_archivey_error(tmp_path: Path) -> None:
+def test_nul_in_member_name_read_raises_an_archivey_error(
+    unrar_mask_route: None, tmp_path: Path
+) -> None:
     blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
     _rar5_file_blocks(blocks)[0]["name"] = b"nul\x00x.txt"
     path = tmp_path / "nul.rar"
@@ -903,15 +900,15 @@ def test_unrar_counts_the_window_ahead_of_an_encrypted_stored_solid_member(
 
 
 @requires_binary("unrar")
-def test_unrar_counts_an_earlier_member_its_shared_mask_decodes(
-    tmp_path: Path, no_spawn: None
-) -> None:
-    """A duplicate name makes unrar decode the earlier entry before the target.
+def test_unrar_counts_only_the_member_a_duplicate_name_reads(tmp_path: Path) -> None:
+    """A duplicate name no longer makes unrar decode the earlier entry first: the
+    read gets a synthetic archive of the target alone.
 
-    The archive is not solid, so the earlier entry sizes its own window: 4 GiB
-    declared and 3 GiB unpacked. The target itself is 1216 bytes, well under the
-    default, and reading it is still refused.
+    The archive is not solid, and the earlier entry declares a 4 GiB window with
+    3 GiB unpacked. Its own read is refused; the target's, 1216 bytes, reads.
     """
+    with open_archive(_fixture("hostile_argv__.rar"), config=_UNRAR_ONLY) as archive:
+        expected = archive.read(archive.members()[2])
     blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
     files = _rar5_file_blocks(blocks)
     _declare_dictionary(files[1], _RAR5_DICT_4GIB, unpacked=_3_GIB)
@@ -919,20 +916,15 @@ def test_unrar_counts_an_earlier_member_its_shared_mask_decodes(
     path = tmp_path / "dup_dict.rar"
     path.write_bytes(_rar5_build(blocks))
 
-    with open_archive(path, config=_UNRAR_SHARED) as archive:
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
         members = archive.members()
         assert [m.name for m in members] == ["canary.txt", "-inul", "-inul"]
         assert members[2].size == 1216
+        assert archive.read(members[2]) == expected
         with pytest.raises(
             ResourceLimitError, match=f"max_decoder_memory={_DEFAULT_LIMIT}"
-        ) as excinfo:
-            archive.read(members[2])
-    # Both entries are named "-inul", so the declarer is named by its index.
-    assert (
-        f"member '-inul' is {_3_GIB} bytes, counted from the {4 * 2**30}-byte "
-        "dictionary the header of an earlier entry with the same name (archive index "
-        "1, counting from 0) declares, capped at the unpacked bytes the read decodes"
-    ) in str(excinfo.value)
+        ):
+            archive.read(members[1])
 
 
 @requires_binary("unrar")

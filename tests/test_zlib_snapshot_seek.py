@@ -1,8 +1,9 @@
-"""Random access inside a gzip member without ``rapidgzip``: zlib snapshot points.
+"""Random access inside DEFLATE data without ``rapidgzip``: zlib snapshot points.
 
 On declared seek demand the standard-library engine records ``decompressobj.copy()``
-about every MiB of output (``GzipDecoder``, ``ZlibSnapshot``), so a backward seek
-decodes from the nearest snapshot instead of from the start of the member.
+about every MiB of output (``GzipDecoder``, ``ZlibDecoder``, ``ZlibSnapshot``), so a
+backward seek decodes from the nearest snapshot instead of from the start of the gzip
+member, zlib stream or raw DEFLATE stream.
 """
 
 from __future__ import annotations
@@ -13,16 +14,22 @@ import io
 import itertools
 import random
 import struct
+import zipfile
+import zlib
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from archivey import ArchiveyConfig, open_archive
 from archivey.exceptions import CorruptionError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import decompressor_stream
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.codecs.deflate_decoder import (
     SNAPSHOT_SPACING,
+    GzipDecoder,
+    ZlibDecoder,
     ZlibSnapshot,
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream, SeekPoint
@@ -157,3 +164,109 @@ def test_snapshots_past_the_memory_cap_are_thinned(
         for target in (5_500_000, 100):
             stream.seek(target)
             assert stream.read(1000) == payload[target : target + 1000]
+
+
+def _open_codec(codec: Codec, data: bytes) -> Any:
+    config = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.OFF)
+    return open_codec_stream(codec, io.BytesIO(data), config=config)
+
+
+@pytest.mark.parametrize(
+    ("codec", "wbits"), [(Codec.ZLIB, zlib.MAX_WBITS), (Codec.DEFLATE, -15)]
+)
+def test_zlib_and_raw_deflate_seek_from_snapshots(codec: Codec, wbits: int) -> None:
+    payload = _payload()
+    packer = zlib.compressobj(6, zlib.DEFLATED, wbits)
+    data = packer.compress(payload) + packer.flush()
+    with _open_codec(codec, data) as stream:
+        while stream.read(1 << 20):
+            pass
+        offsets = _snapshots(stream)
+        assert len(offsets) >= len(payload) // SNAPSHOT_SPACING - 1
+        for target in (5_000_000, 1_234_567, 10):
+            stream.seek(target)
+            assert stream.read(70_000) == payload[target : target + 70_000]
+        assert _engine(stream)._find_best_seek_point(5_000_000).decompressed_offset > (
+            4_000_000
+        )
+
+
+def test_a_zlib_decode_resumed_from_a_snapshot_still_checks_the_adler() -> None:
+    payload = _payload()
+    data = bytearray(zlib.compress(payload, 6))
+    data[-1] ^= 1
+    with _open_codec(Codec.ZLIB, bytes(data)) as stream:
+        while len(stream.read(1 << 20)) and stream.tell() < 4 << 20:
+            pass
+        assert _snapshots(stream)
+        stream.seek(3 << 20)
+        with pytest.raises(CorruptionError):
+            stream.read()
+
+
+def test_a_zip_member_seeks_from_snapshots(tmp_path: Path) -> None:
+    payload = _payload()
+    path = tmp_path / "a.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("a.txt", payload)
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
+    with (
+        open_archive(path, seekable_members=True, config=config) as archive,
+        archive.open("a.txt") as member,
+    ):
+        while member.read(1 << 20):
+            pass
+        assert _snapshots(member)
+        member.seek(4_000_000)
+        assert member.read(1000) == payload[4_000_000:4_001_000]
+
+
+def _compressed(wbits: int) -> bytes:
+    packer = zlib.compressobj(6, zlib.DEFLATED, wbits)
+    return packer.compress(_payload()) + packer.flush()
+
+
+@pytest.mark.parametrize(
+    ("make", "wbits"),
+    [
+        (lambda: GzipDecoder(index=True), 31),
+        (lambda: ZlibDecoder(zlib.MAX_WBITS, index=True), zlib.MAX_WBITS),
+        (lambda: ZlibDecoder(-15, index=True), -15),
+    ],
+    ids=["gzip", "zlib", "deflate"],
+)
+def test_every_snapshot_resumes_at_its_own_offsets(make: Any, wbits: int) -> None:
+    """Fails when a snapshot's compressed offset counts the chunk its feed brings (the
+    ``_fed_end`` update moved above the snapshot). Unbounded feeds of fixed chunks put
+    every snapshot on a feed with new input, which the stream's bounded reads do not."""
+    payload = _payload()
+    data = _compressed(wbits)
+    decoder = make()
+    points = []
+    for at in range(0, len(data), 64 << 10):
+        points += decoder.feed(data[at : at + (64 << 10)]).points
+    snapshots = [p for p in points if isinstance(p.state, ZlibSnapshot)]
+    assert len(snapshots) >= 2
+    for point in snapshots:
+        resumed = decoder.recreate(point, io.BytesIO())
+        out = resumed.feed(data[point.compressed_offset :]).data
+        start = point.decompressed_offset
+        assert out[:100_000] == payload[start : start + 100_000]
+
+
+def test_snapshots_a_resumed_decode_records_are_at_their_true_offsets() -> None:
+    """Fails when a decoder resumed from a snapshot counts its output from 0: the points
+    it records past the first pass's end then carry wrong output offsets."""
+    payload = _payload()
+    with _open_codec(Codec.ZLIB, _compressed(zlib.MAX_WBITS)) as stream:
+        while stream.tell() < 2_500_000:
+            stream.read(1 << 20)
+        first = _snapshots(stream)
+        stream.seek(first[0] + 10)
+        while stream.read(1 << 20):
+            pass
+        later = [p for p in _snapshots(stream) if p > 3_500_000]
+        assert later
+        for target in later:
+            stream.seek(target + 1000)
+            assert stream.read(5000) == payload[target + 1000 : target + 6000]

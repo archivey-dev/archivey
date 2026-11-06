@@ -470,6 +470,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         sevenzip_reader._FolderChecks,  # the folder decode's offsets
         sevenzip_reader._FolderEndCheck,  # the member slice's offsets
         tar_reader._DecodeThroughSkips,  # the codec stream's offsets
+        rar_reader._ClosesSyntheticFile,  # the member stream's offsets
         slice_mod.SlicingStream,  # translates remapped offset space; clamp at 0
         verify.VerifyingStream,
     }
@@ -519,6 +520,12 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         detection._BoundedPeekReader,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
+        # The same pass's output from several unrar runs back to back: subprocess
+        # stdout, with nothing below it that has a table.
+        rar_reader._SolidPassPipe,
+        # One batch's unrar stdout held to its planned bytes, for a nonsolid pass:
+        # subprocess output, with nothing below it that has a table.
+        rar_reader._CheckedRun,
         # A member's stored bytes, read forward from the walk's stream (for .tar.gz,
         # the decompressed stream) in one pass. TAR stores member data as is, so no
         # codec above it has a table, and a pass's member streams are forward-only.
@@ -721,6 +728,7 @@ def test_delegating_stream_close_inventory() -> None:
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
         rar_copy_sources._TeeBlock,
+        rar_reader._ClosesSyntheticFile,
         sparse.SparseStream,
         readahead.ReadAheadStream,
         walk_handoff.MemberDataView,

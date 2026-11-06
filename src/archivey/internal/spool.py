@@ -86,6 +86,18 @@ class SpoolBudget:
         ):
             raise self._refuse(f"{total} bytes")
 
+    def check_fits(self, total: int) -> None:
+        """Refuse a copy of ``total`` bytes that does not fit, without recording it.
+
+        For a copy sized before anything is written, one of several the reader may
+        make (a single member's): its refusal says nothing about the others, so
+        later copies that fit still go ahead. A refusal already recorded still
+        refuses.
+        """
+        self._check_not_refused()
+        if self._limit is not None and self._written + total > self._limit:
+            raise self._error(self._size_text(f"{total} bytes"))
+
     def describe(self, what: str) -> None:
         """Name the copy that refusals describe, unless an earlier copy named it."""
         if self._what is None:
@@ -155,13 +167,17 @@ class SpoolBudget:
         Bytes already charged are named, so the sentence stays true when an earlier
         attempt that failed part-way spent some of the allowance.
         """
-        if self._written:
-            size += f" on top of {self._written} bytes this reader already spooled"
+        size = self._size_text(size)
         self._refused = size
         return self._error(size)
 
+    def _size_text(self, size: str) -> str:
+        if self._written:
+            size += f" on top of {self._written} bytes this reader already spooled"
+        return size
+
     def _error(self, size: str) -> ResourceLimitError:
-        # Only check_total and copy refuse, and every caller of those names its copy
+        # Only check_total, check_fits and copy refuse, and every caller of those names its copy
         # with describe first; try_reserve never refuses.
         assert self._what is not None, "describe() must come before a refusing call"
         return ResourceLimitError(

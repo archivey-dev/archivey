@@ -132,7 +132,10 @@ unrar p -inul -cfg- -ver (-p | -p-) [-n./m<k>] -- <synthetic>.rar
   come up.
 - A batch (D3) has no mask: `unrar` prints every member in order and the pipe is
   demultiplexed by unpacked size. Every member in a batch is a regular file with data,
-  so the sizes are exact.
+  so the sizes are exact. Each batch has its own run and block, started when one of its
+  members is opened, so a batch whose members are all skipped runs nothing. A member whose
+  dictionary is over `max_decoder_memory` stays out of batches: `unrar` decodes past the
+  member read, so every member in the run must fit before it starts.
 
 ### Solid streams: one file per stream, grown as reads go further
 
@@ -162,8 +165,8 @@ what `unrar` with a positional name does, and what a solid format costs any read
 The file counts against `SpoolLimits.max_bytes` as it grows. For a path source, when the
 next extension would pass the limit or the threshold of D1, the reader drops back to the
 original archive with the mask for that stream (the plain-name test permitting), as
-today. A pass over a solid archive writes the same per-stream file once and reads it
-with one `unrar` run, with no mask.
+today. A pass over a solid archive opened from a stream source does not use these
+per-stream files: it builds its own run files (§"A pass"), with no mask.
 
 ### Where the file lives
 
@@ -267,7 +270,7 @@ source.
 | `extract_all()`, nonsolid, 4,000 small members | 49.5 s | about 20 s per-member (no D3), under 1 s plus file writing with D3 | measured spawn and batch rows |
 | A small member from a 200 MiB stream source | 1,350 ms and 200 MiB on disk | about 5 ms and the member's packed bytes on disk | estimate from the rows above |
 | A pass over a stream source, nonsolid | the whole archive on disk | one member or one batch on disk at a time | design |
-| A pass over a stream source, solid | the whole archive on disk | one solid group on disk at a time | design; no gain for a single-group `rar -s` archive |
+| A pass over a stream source, solid | the whole archive on disk | one run of solid streams (up to 64 MiB packed) on disk at a time | measured (PR 3b); an archive that would be one run keeps the whole copy |
 | Last member of a single-group solid archive | whole decode | the same whole decode, plus the copy | the chain is the archive |
 
 ## Integrity and matching `unrar`
@@ -330,8 +333,19 @@ current synthetic file:
 
 - nonsolid: one member per file, or a batch (D3); the file is removed when the batch is
   read;
-- solid: one solid stream per file; `unrar` runs when the stream is complete, and the
-  file is removed after.
+- solid, stream source: one *run* of whole solid streams per file, up to 64 MiB of packed
+  bytes (one larger stream runs alone; under a spool limit below 128 MiB every stream runs
+  alone); `unrar` runs when the run is complete, and the file is removed after. An archive
+  that would be one run takes the whole-archive copy and one pipe instead: that run holds
+  every packed member, so it saves no disk, and re-reading each header made it slower
+  (measured, 4,000 members of 250 B from a `BytesIO`: 502 ms against 414 ms). The pass
+  builds run files rather than reusing the random reads' per-stream files: those grow
+  only while no read holds them, and joining small streams into one run saves an
+  `unrar` start per stream. Measured on 50 streams of 80 members of 250 B from a
+  `BytesIO`, median of five: 790-830 ms one run per stream, about 510 ms in two to
+  four runs, and about 405 ms for the whole copy that the default limits take, since
+  the archive fits one run.
+- solid, path source: the original archive with one pipe, as today.
 
 `unrar` cannot read a file that is still being written: it reads to EOF and stops. A
 solid stream therefore has to be complete on disk before its `unrar` run starts. For a
@@ -379,14 +393,17 @@ full header walk per read, and all the name modelling.
 - **B. Every `unrar` read, except a large member of a path source whose name is plain
   (recommended).** "Large" is packed bytes over an implementation threshold, starting at
   64 MiB. For a solid member it is the total size of its stream's file (§"Solid
-  streams"), which grows once per stream, not the chain copied again for each read. "Plain" has two parts. Once per reader: every
-  name in the archive decodes cleanly (valid UTF-8 for RAR5, ASCII for an 8-bit RAR3
-  name) and has no `\`, NUL, leading `/`, or empty, `.` or `..` component, so `unrar`
-  reads each name as archivey does. Per member: the name is ASCII (no locale question),
-  has no `*` or `?` and no component ending in `.` (no dot rule), and no other name
-  equals it or starts with it plus `/`, compared without case (Windows `unrar` folds
-  case). Such a read keeps today's mask, which then selects the target alone. Real
-  archives pass; a crafted one fails and gets the synthetic route. Every other read is synthetic, whatever its size,
+  streams"), which grows once per stream, not the chain copied again for each read.
+  "Plain" has two parts. Once per reader: every name in the archive decodes cleanly
+  (valid UTF-8 for RAR5, ASCII for an 8-bit RAR3 name) and has no NUL, `:`, leading `/`,
+  RAR5 `\` (a RAR3 `\` reads as `/`), or empty, `.` or `..` component, so `unrar` reads
+  each name as archivey does. Per member: the name is ASCII, or valid UTF-8 where
+  `unrar` reads it back (Windows, or a UTF-8 locale on POSIX; widened in implementation
+  so a large accented name on disk still reads in place), has no `*` or `?` and no
+  component ending in `.` (no dot rule), and no other name equals it or starts with it
+  plus `/`, compared without case (Windows `unrar` folds case). Such a read keeps
+  today's mask, which then selects the target alone. Real archives pass; a crafted one
+  fails and gets the synthetic route. Every other read is synthetic, whatever its size,
   within the spool limit. The name model, dot-rule probe, glob refusal and `unar`
   fallback still go, because no read that needs them takes the mask route.
 - **C. Only stream sources and names refused today.** The smallest change. All mask

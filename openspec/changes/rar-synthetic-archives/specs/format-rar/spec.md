@@ -106,9 +106,10 @@ member.
 
 | Case | Plain |
 | --- | --- |
-| Every name in the archive decodes cleanly (valid UTF-8 for RAR5, ASCII for an 8-bit RAR 1.5-4 name) and has no `\`, NUL, leading `/`, or empty, `.` or `..` component; the target is ASCII with no `*` or `?` and no component ending in `.`; no other name equals it or starts with it plus `/`, compared without case | Yes |
+| Every name in the archive decodes cleanly (valid UTF-8 for RAR5, ASCII for an 8-bit RAR 1.5-4 name, no lone surrogate in a RAR 1.5-4 Unicode name) and has no NUL, `:`, leading `/`, `\` in a RAR5 name (a RAR 1.5-4 `\` is a separator and reads as `/`), or empty, `.` or `..` component; the target has no `*` or `?` and no component ending in `.`, and is ASCII unless `unrar` reads a non-ASCII mask back as the same text (Windows, or a UTF-8 locale on POSIX); no other name equals it or starts with it plus `/`, compared without case | Yes |
 | Any name in the archive that fails the archive-wide part | No, for every member |
-| Target named `a*.txt`, `café.txt` or `notes.` | No |
+| Target named `a*.txt` or `notes.` | No |
+| Target named `café.txt` | Yes on Windows and under a UTF-8 locale; No on POSIX with none |
 
 #### Scenario: route matrix
 
@@ -138,6 +139,50 @@ be read one at a time.
 | A damaged member inside a batch | Its error is raised for it; the later members of the batch read one at a time |
 | Members with different passwords | Different batches |
 
+## MODIFIED Requirements
+
+### Requirement: Decode RAR member names
+
+A RAR5 name, and a RAR 1.5-4 name whose UTF-16 field decodes, SHALL be listed as that
+text. A RAR5 name or redirect target that is not valid UTF-8 SHALL decode with
+`surrogateescape`, so two names that differ only in such bytes stay two members and
+extraction escapes the bytes by the portable-name rule, as for a TAR name. A RAR 1.5-4
+name stored only as 8-bit bytes records no code page. The system SHALL try strict UTF-8
+first, with or without the Unicode flag. When the bytes are not valid UTF-8 it SHALL
+decode them with the caller's `encoding=` when one was passed, and without one with
+cp437 (the OEM code page WinRAR writes) for a member whose host is MS-DOS, OS/2 or
+Win32, and windows-1252 for any other host, with `surrogateescape` for the bytes the
+codec leaves undefined. When a name without the Unicode flag decodes as UTF-8 and the
+caller's `encoding=` would have given a different name, the system SHALL emit
+`MEMBER_NAME_ENCODING_INFERRED` with `inferred_encoding="utf-8"` and `declared_encoding`
+set to the caller's encoding, as ZIP does; the Unicode flag declares UTF-8, so a flagged
+name emits none. The system MUST NOT decode an 8-bit name as UTF-16LE. `raw_name` SHALL be the
+stored bytes in every case, and RAR SHALL NOT emit `ENCODING_ARGUMENT_UNUSED`. How a
+name is decoded SHALL NOT change which member a read returns: a read gives `unrar` the
+member through a synthetic archive under a placeholder name, or the stored name itself
+only when it is plain (`Keep the original archive for a large plainly named member of a
+path source`), never a mask built from the decoded text. A RAR 1.5-4
+UTF-16 field SHALL decode with `surrogatepass`: a surrogate without its partner stays in
+`name` as that code unit, and a valid pair decodes as one character. Extraction writes
+such a name by `safe-extraction` "Lone surrogates in a member name". A name with a lone
+surrogate is not plain, so the member reads through a synthetic archive like any other
+name that is not plain.
+
+#### Scenario: RAR name decoding matrix
+
+| Case | Expected |
+| --- | --- |
+| 8-bit `caf\x82.txt` written on Windows or DOS | `café.txt` (cp437) |
+| 8-bit `caf\xe9.txt` written on Unix | `café.txt` (windows-1252) |
+| 8-bit name whose bytes are valid UTF-8 | Decoded as UTF-8 |
+| 8-bit name that is not valid UTF-8, with `encoding="cp1251"` | Decoded with cp1251; still reads |
+| 8-bit name whose bytes are valid UTF-8, `encoding=` passed, with or without the Unicode flag | UTF-8; one `MEMBER_NAME_ENCODING_INFERRED` without the flag, none with it |
+| RAR5 name with `encoding=` passed | Unchanged; no `ENCODING_ARGUMENT_UNUSED` |
+| Any 8-bit name | `raw_name` is the stored bytes |
+| UTF-16 field holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`; `raw_name` is the 8-bit field; the member reads |
+| RAR5 `a\xffq.txt` and `a\xfeq.txt` | Two members, `a\udcffq.txt` and `a\udcfeq.txt`; each reads its own bytes through `unrar` |
+| 8-bit `b\x81.txt` and `b\x8d.txt` written on Unix | `b\udc81.txt` and `b\udc8d.txt` |
+
 ## REMOVED Requirements
 
 ### Requirement: Support benchmark-gated small-member optimization
@@ -146,3 +191,23 @@ be read one at a time.
 optimization was the same single-member temporary RAR. Benchmarks now justify it, and it
 serves reads of every size, with the size rule in `Keep the original archive for a large
 plainly named member of a path source`.
+
+### Requirement: Return a named member's own bytes when its mask selects others
+
+**Reason**: No read passes `unrar` a mask that selects more than one member any more.
+A synthetic file names its members `m<i>`, and a read of the original archive uses a
+plain name that selects exactly one member (`Keep the original archive for a large
+plainly named member of a path source`). The name model and the skip it fed are gone.
+
+### Requirement: Refuse a member name whose mask also selects earlier members
+
+**Reason**: The refusal guarded the extra decode a shared mask cost `unrar`. A synthetic
+read never builds a mask from a stored name, so a glob, a duplicate or a name `unrar`
+reads like another one reads its own bytes with no extra decode. A member that can only
+be read in place with a name that is not plain raises `UnsupportedFeatureError` instead.
+`rar_allow_glob_member_concatenation` is deprecated and has no effect.
+
+### Requirement: Under auto, read a member unrar cannot name with unar
+
+**Reason**: Every member `unrar` could not name now reads through a synthetic file, so
+`auto` never needs `unar` beside a RARLAB binary.

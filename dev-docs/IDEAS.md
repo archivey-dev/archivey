@@ -69,12 +69,6 @@ Each idea carries a status:
   through a system binary (`zstd`, `xz`, `brotli`, `lz4`), for environments where C
   extensions will not install but the CLI tools are on `PATH`. Forward-only, the same
   pattern archivey already uses for `unrar`.
-- **Lift the directory-glob and backslash refusals on the `unrar` path.** *Open idea (low
-  priority).* A RAR member name is passed to `unrar` as a mask, so archivey predicts which
-  other members it matches. A glob in a directory component and a literal backslash are
-  still refused ([`formats/rar.md`](formats/rar.md) §2.3). Lifting them means measuring
-  those shapes in `tests/test_rar_unrar_names.py`, on Windows too. The names involved are
-  adversarial, and a wrong model returns the wrong member's bytes.
 
 ## Detection
 
