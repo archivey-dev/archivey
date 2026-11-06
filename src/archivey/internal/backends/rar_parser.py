@@ -512,6 +512,12 @@ class RarMemberInfo:
     # RAR 1.5-4 from the ``UOW`` service header after the file, which the walk
     # attaches to the member before it. ``None`` when there is no owner record.
     owner: RarOwner | None = None
+    # A member merged across volumes: where its last part's header is, as
+    # ``(volume_index, header_offset, header_size)``, offsets in the concatenated
+    # volume space like ``header_offset``. That header carries the whole member's
+    # digest, and a synthetic archive for ``unrar`` copies it
+    # (``rar_synthetic.py``). ``None`` for a member in one part.
+    last_part_header: tuple[int, int, int] | None = None
 
     @property
     def skipped_header_records_truncated(self) -> bool:
@@ -722,6 +728,11 @@ class RarArchive:
     #: one password, and merges it like the other fields: on the merged archive it
     #: is set when any volume proved the password.
     password_proven: bool = False
+    #: RAR5 only: 0-based volume index -> ``(salt, kdf_count)`` of that volume's
+    #: header-encryption record, for each volume whose headers are encrypted. Each
+    #: volume of a set carries its own record. A synthetic archive for ``unrar``
+    #: decrypts a member's stored header again with it (``rar_synthetic.py``).
+    rar5_header_crypt: dict[int, tuple[bytes, int]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -908,6 +919,7 @@ def parse_rar_volumes(
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
             merged.end_block_damaged_volumes.update(part.end_block_damaged_volumes)
             merged.trailing_data_volumes.update(part.trailing_data_volumes)
+            merged.rar5_header_crypt.update(part.rar5_header_crypt)
             for position, member in enumerate(part.members):
                 if gap and position == 0:
                     # Its earlier parts are in the missing volume: listed on its
@@ -1950,6 +1962,7 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     if not old.data_parts:
         old.data_parts.append((old.data_offset, old.compress_size))
     old.data_parts.append((new.data_offset, new.compress_size))
+    old.last_part_header = (new.volume_index, new.header_offset, new.header_size)
     old.compress_size += new.compress_size
     if new.crc32 is not None:
         old.crc32 = new.crc32
@@ -3777,6 +3790,11 @@ def _parse_rar5(
         version=5,
         is_solid=is_solid,
         has_header_encryption=hdr_enc is not None,
+        rar5_header_crypt=(
+            {volume_index: (hdr_enc.salt, hdr_enc.kdf_count)}
+            if hdr_enc is not None
+            else {}
+        ),
         comment=comment,
         members=members,
         sfx_offset=sfx_offset,
