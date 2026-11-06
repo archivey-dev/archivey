@@ -140,6 +140,93 @@ def test_tree_matches_what_extract_all_writes(
     assert tree == written
 
 
+def _tar_entries(entries: list[tuple[str, str, bytes | str]]) -> bytes:
+    """A TAR of ``(kind, name, data or link target)`` entries, in order."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
+        for kind, name, payload in entries:
+            info = tarfile.TarInfo(name)
+            if kind == "file":
+                assert isinstance(payload, bytes)
+                info.size = len(payload)
+                tf.addfile(info, io.BytesIO(payload))
+                continue
+            assert isinstance(payload, str)
+            info.type = {"dir": tarfile.DIRTYPE, "sym": tarfile.SYMTYPE}.get(
+                kind, tarfile.LNKTYPE
+            )
+            info.linkname = payload
+            tf.addfile(info)
+    return buf.getvalue()
+
+
+# Every case where extraction decides from the members before one, or from a link.
+LINKS_AND_COLLISIONS = [
+    ("file", "A.txt", b"upper"),
+    ("file", "a.txt", b"lower"),  # collides with A.txt under STRICT and STANDARD
+    ("file", "x", b"plain"),
+    ("file", "/x", b"abs"),  # its re-root collides with x
+    ("file", "f", b"plain f"),
+    ("file", "f.", b"dot"),  # its portable spelling collides with f
+    ("file", "dup", b"first"),
+    ("file", "dup", b"second"),  # the current entry wins
+    ("file", "/etc/y", b"SECRET"),
+    ("hard", "h", "/etc/y"),  # a hard link to a member STRICT refuses
+    ("sym", "s", "/etc/y"),  # a symlink with an absolute target
+    ("sym", "ok", "x"),
+    ("dir", "d", ""),
+    ("sym", "dl", "d"),  # a symlink to a directory
+    ("file", "p", b"file p"),
+    ("file", "p/q", b"under a file"),
+]
+
+
+def _written(dest: Path) -> dict[str, tuple[Any, ...]]:
+    out: dict[str, tuple[Any, ...]] = {}
+    for path in dest.rglob("*"):
+        rel = path.relative_to(dest).as_posix()
+        if path.is_symlink():
+            out[rel] = ("link",)
+        elif path.is_dir():
+            out[rel] = ("dir",)
+        else:
+            out[rel] = ("file", path.read_bytes())
+    return out
+
+
+def _listed(fs: ArchiveyFileSystem) -> dict[str, tuple[Any, ...]]:
+    out: dict[str, tuple[Any, ...]] = {}
+    for path, info in fs.find("", withdirs=True, detail=True).items():
+        if info.get("islink") and info["member"].type.value == "symlink":
+            out[path] = ("link",)
+        elif info["type"] == "directory":
+            out[path] = ("dir",)
+        else:
+            out[path] = ("file", fs.cat(path))
+    return out
+
+
+@pytest.mark.parametrize("policy", list(ExtractionPolicy))
+def test_tree_matches_extraction_on_links_and_collisions(
+    memfs: Any, tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """Red with any of the four rules removed: the collision key (the plain name in
+    its place), the hard-link source check, the symlink target check, or the refusal
+    of a path under a file."""
+    data = _tar_entries(LINKS_AND_COLLISIONS)
+    memfs.pipe("/d/lc.tar", data)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.extract_all(dest, policy=policy, on_error="continue")
+    with ArchiveyFileSystem("memory://d/lc.tar", policy=policy) as fs:
+        written = _written(dest)
+        assert _listed(fs) == written
+        # Every path ``info`` answers, not only those ``find`` walks to: ``find``
+        # does not descend into a file, so it alone misses ``p/q``.
+        assert fs.dir_cache is not None
+        assert set(fs.dir_cache) == set(written)
+
+
 def test_info_carries_size_mtime_and_member(memfs: Any) -> None:
     memfs.pipe("/d/t.tar", _tar_bytes({"f.txt": b"hello"}))
     with ArchiveyFileSystem("memory://d/t.tar") as fs:

@@ -15,7 +15,9 @@ installs fsspec; every package that reads a remote store (``s3fs``, ``gcsfs``,
 from __future__ import annotations
 
 import os
+import tempfile
 import weakref
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Self, cast
 
 import fsspec
@@ -26,7 +28,12 @@ from archivey.core import open_archive
 from archivey.diagnostics import DiagnosticCode, PathRefusedContext
 from archivey.exceptions import FilterRejectionError
 from archivey.internal.enum_args import coerce_enum
-from archivey.internal.filters import extraction_view_name
+from archivey.internal.filters import (
+    check_universal,
+    collision_key,
+    extraction_view,
+    resolve_or_raise_on_loop,
+)
 from archivey.internal.overrides import override
 from archivey.terminal import quoted
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
@@ -39,11 +46,6 @@ if TYPE_CHECKING:
     from archivey.types import ExtractionPolicyStr
 
 __all__ = ["ArchiveyFileSystem"]
-
-# How many links one path may pass through before it counts as unresolved. A cycle
-# never reaches here (the reader leaves a cyclic link without a target member); this
-# bounds a long chain.
-_MAX_LINK_HOPS = 40
 
 
 class ArchiveyFileSystem(AbstractArchiveFileSystem):
@@ -63,12 +65,16 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     ``password``, ``encoding`` and ``config`` are :func:`~archivey.open_archive`'s.
 
     **The tree is what extraction writes.** Each path is the relative path
-    ``reader.extract_all(dest, policy=policy)`` gives the member, and a duplicate name
-    shows its current entry. A member the policy refuses (a ``..`` segment, an absolute
-    name under ``STRICT``, a name the policy will not write) is left out, and the
-    refusal is a ``MEMBER_PATH_REFUSED`` diagnostic on ``fs.reader.diagnostics``. What
-    a destination decides (``overwrite=``, existing files, collisions on a
-    case-insensitive disk) and ``filter=`` are not modelled.
+    ``reader.extract_all(dest, policy=policy)`` gives the member, into an empty
+    ``dest``, and the tree leaves out what that extraction would not write: a member
+    the policy refuses (a ``..`` segment, an absolute name under ``STRICT``, a name the
+    policy will not write, a symlink whose target leaves the destination), a hard link
+    to a refused member, a member whose name collides with one before it (the
+    policy's collision key: ``README`` and ``readme`` collide under ``STRICT`` and
+    ``STANDARD``), and a path under a file. Each is a ``MEMBER_PATH_REFUSED``
+    diagnostic on ``fs.reader.diagnostics``. A duplicate name shows its current entry.
+    What a non-empty destination decides (``overwrite=``, existing files) and
+    ``filter=`` are not modelled.
 
     A link whose target is a member is listed as the target's type, with
     ``"islink": True`` and ``"destination"`` in its ``info()``, and opens the target.
@@ -162,19 +168,34 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     def _get_dirs(self) -> None:
         if self.dir_cache is not None:
             return
-        reader = self.reader
         files: dict[str, dict[str, Any]] = {}
-        for member in reader.members():
-            if not member.is_current:
-                continue
-            try:
-                name = extraction_view_name(member, self.policy)
-            except FilterRejectionError as exc:
-                self._report_refused(member, exc)
-                continue
-            if not name or name == ".":
-                continue
-            files[name] = self._entry(name, member)
+        # What extraction decides from the members written before one, in its order:
+        # the first member to claim a collision key keeps it, a path under a file or a
+        # file over a directory is refused, and a hard link whose source is refused is
+        # refused too. Keys are ``collision_key``s, as extraction's are.
+        claimed: dict[str, bool] = {}  # key -> whether it is a file
+        refused_ids: set[int] = set()
+        # An empty directory as the destination: nothing is written to it, so the
+        # symlink checks of ``check_universal`` resolve every path by its name alone.
+        with tempfile.TemporaryDirectory(prefix="archivey-fsspec-") as tmp:
+            root = resolve_or_raise_on_loop(Path(tmp))
+            for member in self.reader.members():
+                if not member.is_current:
+                    continue
+                try:
+                    view = self._view(member, root, refused_ids)
+                except FilterRejectionError as exc:
+                    refused_ids.add(member.member_id)
+                    self._report_refused(member, exc.raw_message)
+                    continue
+                name = view.name.rstrip("/")
+                if not name or name == ".":
+                    continue
+                conflict = self._claim(name, view, claimed)
+                if conflict is not None:
+                    self._report_refused(member, conflict)
+                    continue
+                files[name] = self._entry(name, member)
         dir_cache = {
             name: {"name": name, "size": 0, "type": "directory"}
             for name in self._all_dirnames(files)
@@ -182,20 +203,61 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         dir_cache.update(files)
         self.dir_cache = dir_cache
 
-    def _entry(self, name: str, member: ArchiveMember) -> dict[str, Any]:
-        target = member
-        islink = member.type in (MemberType.SYMLINK, MemberType.HARDLINK)
-        for _ in range(_MAX_LINK_HOPS):
-            if target is None or target.type not in (
-                MemberType.SYMLINK,
-                MemberType.HARDLINK,
+    def _view(
+        self, member: ArchiveMember, root: Path, refused_ids: set[int]
+    ) -> ArchiveMember:
+        """``member`` as extraction writes it, or ``FilterRejectionError``."""
+        view = extraction_view(member, self.policy)
+        if view.type is MemberType.SYMLINK:
+            # Where its target points: a target that leaves the destination is refused
+            # whatever the destination is.
+            check_universal(view, root, dest_resolved=True)
+        elif member.type is MemberType.HARDLINK:
+            source = member.link_target_member
+            if (
+                source is not None
+                and source.type is not MemberType.SYMLINK
+                and source.member_id in refused_ids
             ):
-                break
-            target = target.link_target_member
-        else:
-            target = None
+                raise FilterRejectionError(
+                    "Hardlink target was refused",
+                    member_name=member.name,
+                    link_target=member.link_target,
+                )
+        return view
+
+    def _claim(
+        self, name: str, view: ArchiveMember, claimed: dict[str, bool]
+    ) -> str | None:
+        """Claim ``name`` and its parents, or say why extraction would not write it."""
+        policy = self.policy
+        key = collision_key(name, policy)
+        is_dir = view.type is MemberType.DIRECTORY
+        parts = key.split("/")
+        for depth in range(1, len(parts)):
+            if claimed.get("/".join(parts[:depth])):
+                return "a parent of it is a file"
+        if key in claimed:
+            if is_dir and not claimed[key]:
+                return None  # a directory listed again
+            return "its name collides with a member written before it"
+        claimed[key] = not is_dir
+        for depth in range(1, len(parts)):
+            claimed.setdefault("/".join(parts[:depth]), False)
+        return None
+
+    def _entry(self, name: str, member: ArchiveMember) -> dict[str, Any]:
+        islink = member.type in (MemberType.SYMLINK, MemberType.HARDLINK)
+        # ``link_target_member`` is the end of the link chain; a cycle or a target
+        # that is no member leaves it ``None``, and a chain that ends at a symlink
+        # with no target ends at that symlink.
+        target = member.link_target_member if islink else member
         entry: dict[str, Any] = {"name": name}
-        if target is None or target.type is MemberType.OTHER:
+        if target is None or target.type in (
+            MemberType.OTHER,
+            MemberType.SYMLINK,
+            MemberType.HARDLINK,
+        ):
             entry.update(type="other", size=None)
         elif target.type is MemberType.DIRECTORY:
             entry.update(type="directory", size=0)
@@ -209,14 +271,13 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         entry["member"] = member
         return entry
 
-    def _report_refused(self, member: ArchiveMember, exc: FilterRejectionError) -> None:
+    def _report_refused(self, member: ArchiveMember, reason: str) -> None:
         reader = cast("BaseArchiveReader", self.reader)
-        reason = exc.raw_message
         reader._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_PATH_REFUSED,
             message=(
-                f"{quoted(member.name)} is not in the archivey:// tree: the "
-                f"{self.policy.value} extraction policy refuses it ({reason})"
+                f"{quoted(member.name)} is not in the archivey:// tree: extraction "
+                f"under the {self.policy.value} policy would not write it ({reason})"
             ),
             context=PathRefusedContext(
                 archive_name=reader._archive_name,
@@ -253,7 +314,7 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         stream = self.reader.open(info["member"])
         # The stream keeps this file system, and through it the reader, alive while
         # the caller holds only the stream (``fsspec.open(url).open()``).
-        stream._archivey_fs = self  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+        stream._archivey_fs = self  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
         return stream
 
     # Every write method of AbstractFileSystem, refused as fsspec's other read-only

@@ -411,7 +411,7 @@ def check_name_shape(member: ArchiveMember) -> None:
     an absolute name, a ``..`` segment, a name that is the root itself, and a special
     file. Raises :class:`FilterRejectionError` on the first. :func:`check_universal`
     runs these first; the ``archivey://`` file system's tree runs them alone, as it
-    has no destination (:func:`extraction_view_name`).
+    has no destination (:func:`extraction_view`).
     """
     name = member.name
 
@@ -650,7 +650,7 @@ def policy_transform(
 
     Returns the transformed copy and the name before the re-root, or ``None`` when no
     re-root changed it. ``extract_all`` runs it before the caller's filter; the
-    ``archivey://`` file system's tree runs it too (:func:`extraction_view_name`), so
+    ``archivey://`` file system's tree runs it too (:func:`extraction_view`), so
     both see one name (DR-23a).
     """
     transformed = POLICY_TRANSFORMS[policy](member)
@@ -662,23 +662,24 @@ def policy_transform(
     return rerooted, transformed.name
 
 
-def extraction_view_name(member: ArchiveMember, policy: ExtractionPolicy) -> str:
-    """The relative path ``extract_all(dest, policy=policy)`` writes ``member`` to,
-    with no filter and before anything that depends on ``dest``.
+def extraction_view(member: ArchiveMember, policy: ExtractionPolicy) -> ArchiveMember:
+    """``member`` as ``extract_all(dest, policy=policy)`` writes it, with no filter and
+    before anything that depends on ``dest``: its ``name`` is the relative path, in the
+    disk spelling, and a symlink keeps the target the policy gives it.
 
     The steps extraction runs, in its order: :func:`policy_transform`, the
     destination-free checks (:func:`check_name_shape`) on the name that reaches disk,
     :func:`apply_name_policy`, and the checks again on a rewritten name. Raises
-    :class:`FilterRejectionError` for a member the policy refuses. What a destination
-    decides (a parent that is a symlink out of it, a link target that leaves it, an
-    existing file, a name collision) is not modelled. The path has no trailing ``/``.
+    :class:`FilterRejectionError` for a member the policy refuses. What depends on the
+    members written before it (a name collision, a link to a refused member) is the
+    caller's to decide, as the coordinator does.
     """
     transformed, _ = policy_transform(member, policy)
     check_name_shape(disk_spelled(transformed))
     portable = apply_name_policy(transformed, policy)
     if portable is not transformed:
         check_name_shape(disk_spelled(portable))
-    return portable.name.rstrip("/")
+    return disk_spelled(portable)
 
 
 # --- Cross-platform portable-name policy (safe-extraction O3/O4/O7) ------------------
