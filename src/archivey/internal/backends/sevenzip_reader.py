@@ -1558,7 +1558,14 @@ class SevenZipReader(BaseArchiveReader):
             pack_offset = (
                 self._archive.pack_pos + self._archive.pack_positions[pack_index]
             )
-            views.append(self._view(pack_offset, self._archive.pack_sizes[pack_index]))
+            size = self._archive.pack_sizes[pack_index]
+            if pack_index == first:
+                # The folder's first pack stream, from its start: one request on a
+                # remote source (a solid folder decodes from there whatever the
+                # member).
+                origin = self._origin + pack_offset
+                self._will_read(origin, origin + size)
+            views.append(self._view(pack_offset, size))
         return views
 
     def _open_folder_stream(

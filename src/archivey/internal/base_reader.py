@@ -1304,6 +1304,17 @@ class BaseArchiveReader(ArchiveReader):
             return None
         return lambda handle: SeekCountingStream(handle, counter)
 
+    def _will_read(self, start: int, end: int) -> None:
+        """Tell the source that ``[start, end)`` of it is read next.
+
+        Offsets are the source's own. Only a remote source acts on it, by fetching the
+        span in one request (``ArchiveSource.will_read``); it never changes what a read
+        returns.
+        """
+        source = self._source
+        if source is not None:
+            source.will_read(start, end)
+
     def _track_source_seeks(self, source: BinaryIO) -> BinaryIO:
         """Wrap the source to count seeks when measurement is on; identity otherwise.
 

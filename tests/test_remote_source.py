@@ -510,3 +510,68 @@ def test_a_local_source_records_no_source_change(tmp_path: Path):
         assert (
             DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE not in reader.diagnostics.counts
         )
+
+
+# --- backend range hints (design D2 rule 3) ----------------------------------------------
+
+
+def test_a_hint_fetches_its_span_in_one_request_from_its_start():
+    src, fs = _source(DATA)
+    src.will_read(1000, 60_000)
+    src.seek(50_000)  # a backend may read the span's end first
+    assert src.read(100) == DATA[50_000:50_100]
+    src.seek(1000)
+    assert src.read(100) == DATA[1000:1100]
+    assert fs.fetches == [(1000, 60_000)]
+
+
+def test_a_hint_inside_a_window_fetches_nothing():
+    src, fs = _source(DATA)
+    src.read(10)
+    src.will_read(100, 200)
+    assert src.pending_hint is None
+    src.seek(150)
+    src.read(10)
+    assert fs.fetches == [(0, 16 * KIB)]
+
+
+def test_a_hint_past_the_max_fetch_keeps_the_part_that_ends_with_the_read():
+    src, fs = _source(DATA)
+    src.will_read(0, 400 * KIB)
+    src.seek(300 * KIB)
+    assert src.read(10) == DATA[300 * KIB : 300 * KIB + 10]
+    ((start, end),) = fs.fetches
+    assert end - start <= SMALL.max_fetch
+    assert start <= 300 * KIB < 300 * KIB + 10 <= end
+
+
+def test_a_hint_never_changes_the_bytes():
+    src, _ = _source(DATA)
+    for start in range(0, len(DATA), 37 * KIB):
+        src.will_read(start, start + 50 * KIB)
+        src.seek(start + 7)
+        assert src.read(3000) == DATA[start + 7 : start + 3007]
+
+
+def test_a_local_source_ignores_hints(tmp_path: Path):
+    from archivey.internal.source import ArchiveSource
+
+    path = tmp_path / "x"
+    path.write_bytes(b"abc")
+    with ArchiveSource.for_path(path) as source:
+        source.will_read(0, 3)  # no remote source: nothing happens
+        assert source.read() == b"abc"
+
+
+def test_zip_lists_in_two_requests_and_reads_a_member_in_one_more():
+    """The spec ceiling: the detection head, then the tail with the whole directory."""
+    data = _zip_bytes(MEMBERS)
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, "/a.zip", mode="rb")) as reader:
+        members = [m for m in reader.members() if m.is_file]
+        assert len(fs.fetches) <= 2
+        assert (
+            reader.read(members[len(members) // 2])
+            == MEMBERS[members[len(members) // 2].name]
+        )
+        assert len(fs.fetches) <= 3

@@ -22,7 +22,11 @@ The fetch planner (design D2) decides each fetch's start and length:
    ``max_read_through`` bytes past a run's end continues that run: the fetch starts at
    the run's end and reads through the gap. A longer forward jump, or a backward one
    outside every window, starts a new run.
-3. **Bounded memory, per pool.** Each run keeps one *window*, the bytes of its last
+3. **Range hints from the backend.** ``will_read(start, end)`` records a span the
+   backend reads next; the first read in it that no window holds fetches the whole span
+   (up to the maximum fetch) in one request, and the run continues from there. A hint
+   changes how bytes are fetched, never which bytes a read returns.
+4. **Bounded memory, per pool.** Each run keeps one *window*, the bytes of its last
    fetch. One :class:`WindowPool` holds the windows of every source one reader opens
    (each volume of a set included), at most ``pool_bytes`` in total. When more runs are
    active than the pool holds at ``max_fetch``, the maximum fetch in effect shrinks to
@@ -272,10 +276,28 @@ class WindowPool:
             fetches = 1
             runs = len(self._runs) + 1
             old = 0
+        hint = source.pending_hint
+        hinted = hint is not None and hint[0] <= at < hint[1]
+        if hinted:
+            assert hint is not None
+            source.pending_hint = None
+            # Rule 3: the declared span in one request (up to the cap below), from its
+            # start: a backend may read the span's end first (a ZIP end record).
+            # Short of a run's end it starts there, as the read-through would.
+            start = hint[0] if run is None else max(min(run.end, at), hint[0])
+        cap = self._max_fetch(runs)
+        if hinted and at - start + want > cap:
+            # A span longer than the cap whose read lies past the cap: keep the part
+            # that ends with the read, so the window still holds it.
+            start = max(start, min(at, at + want - cap))
         need = at - start + want
         length = max(need, self._fetch_size(fetches, runs))
+        if hinted:
+            assert hint is not None
+            length = max(length, hint[1] - start)
+            # The run continues from the span as if it had doubled to that size.
+            fetches = max(fetches, 2 + (length // c.min_fetch).bit_length())
         length = min(length, source.size - start)
-        cap = self._max_fetch(runs)
         if need > cap:
             # A read longer than any window: fetch exactly it, keep nothing. The run
             # (if any) still ends where this read ends, so the next read continues it.
@@ -317,6 +339,22 @@ class WindowPool:
         view[:take] = data[off : off + take]
         return take
 
+    def hint(self, source: RangeSource, start: int, end: int) -> None:
+        """Record that ``source`` will read ``[start, end)`` next (design D2 rule 3).
+
+        Nothing is fetched here: the next read that lands in the span and finds no
+        window fetches the span in one request. A span a window already holds needs
+        nothing. One pending hint per source; a later one replaces it.
+        """
+        with self._lock:
+            end = min(end, source.size)
+            if start < 0 or end <= start:
+                return
+            for run in self._runs:
+                if run.source is source and run.start <= start and end <= run.end:
+                    return
+            source.pending_hint = (start, end)
+
     def _trim_oversized(self, cap: int, keep: _Run | None) -> None:
         """Cut every other window down to ``cap``, dropping its head.
 
@@ -357,6 +395,9 @@ class RangeSource(io.RawIOBase):
         self.pool = pool
         self.max_read_through = max_read_through
         self._pos = 0
+        # The span a backend declared it reads next (``will_read``), until a fetch
+        # uses it.
+        self.pending_hint: tuple[int, int] | None = None
 
     @classmethod
     def from_open_file(
@@ -374,6 +415,11 @@ class RangeSource(io.RawIOBase):
     @property
     def name(self) -> str:
         return self.path
+
+    def will_read(self, start: int, end: int) -> None:
+        """The backend reads ``[start, end)`` next: fetch it in one request when the
+        read comes (design D2 rule 3). It never changes the bytes a read returns."""
+        self.pool.hint(self, start, end)
 
     @property
     def url(self) -> str:
