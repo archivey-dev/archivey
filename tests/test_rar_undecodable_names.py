@@ -138,7 +138,9 @@ def test_rar3_bytes_undefined_in_windows_1252_stay_distinct(tmp_path: Path) -> N
 
 
 @requires_binary("unrar")
-def test_rar3_undefined_bytes_extract_escaped(tmp_path: Path) -> None:
+def test_rar3_undefined_bytes_extract_escaped(
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     expected = _original_payloads()
     dest = tmp_path / "out"
     source = _rar3_with_undefined_cp1252_bytes(tmp_path)
@@ -157,3 +159,10 @@ def test_rar3_undefined_bytes_extract_escaped(tmp_path: Path) -> None:
         archive.extract_all(dest, policy=ExtractionPolicy.STANDARD)
     assert (dest / "b%81.txt").read_bytes() == expected[0]
     assert (dest / "b%8D.txt").read_bytes() == expected[1]
+    # A synthetic archive names no member, so no OS's name reading matters.
+    monkeypatch.undo()
+    synthetic = tmp_path / "synthetic"
+    with open_archive(source, config=_UNRAR_ONLY) as archive:
+        archive.extract_all(synthetic, policy=ExtractionPolicy.STANDARD)
+    assert (synthetic / "b%81.txt").read_bytes() == expected[0]
+    assert (synthetic / "b%8D.txt").read_bytes() == expected[1]

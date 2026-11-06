@@ -755,7 +755,9 @@ def test_valid_utf8_rar3_name_wins_over_the_encoding_argument(
 
 
 @requires_binary("unrar")
-def test_8bit_rar3_name_decoded_with_encoding_still_reads(tmp_path: Path) -> None:
+def test_8bit_rar3_name_decoded_with_encoding_still_reads(
+    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The mask is the stored bytes, whatever the name was decoded with."""
     with open_archive(_fixture("hostile_argv__rar4.rar"), config=_UNRAR_ONLY) as ar:
         expected = ar.read("canary.txt")
@@ -767,6 +769,10 @@ def test_8bit_rar3_name_decoded_with_encoding_still_reads(tmp_path: Path) -> Non
                 reader.read(reader.members()[0])
         else:
             assert reader.read(reader.members()[0]) == expected
+    # A synthetic archive names no member: it reads on every OS.
+    monkeypatch.undo()
+    with open_archive(path, encoding="cp1251", config=_UNRAR_ONLY) as reader:
+        assert reader.read(reader.members()[0]) == expected
 
 
 @requires_binary("unrar")
