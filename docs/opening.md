@@ -39,10 +39,11 @@ signature matched where the format puts it, `PROBABLE` when a test of its conten
 `GUESS` when the evidence is weak, such as only the file name. `prefixed` is `True` for a
 self-extracting archive, where the archive starts after a program, and for any other archive found
 behind leading bytes; `payload_offset` says where reading starts. Test `prefixed`, not
-`payload_offset > 0`, to ask whether the archive came after something else. For a signed Windows program, `payload_end` is where its signature starts, and
-archivey reads the archive only up to there. A file in no format archivey
-knows raises `FormatDetectionError`. The confidence grade is for a person reading it and may change
-between releases, so decide what to do from the format, not the grade.
+`payload_offset > 0`, to ask whether the archive came after something else. For a signed Windows
+program, `payload_end` is where its signature starts, and archivey reads the archive only up to
+there. A file in no format archivey knows raises `FormatDetectionError`. The confidence grade is
+for a person reading it and may change between releases, so decide what to do from the format,
+not the grade.
 
 ## Single compressed files
 

@@ -28,8 +28,13 @@ detection uses. That reads the backend's own start, not before it. It applies wh
 not the backend otherwise scans its start: the seekable ZIP reader locates its archive from
 the tail and reads its leading bytes only for this, and only when the end could change its
 answer (the tail search finds no end record, the record it finds says bytes precede its
-archive, or a non-zero byte follows the archive), so an ordinary ZIP pays no read for it. A backend reading a non-seekable source derives no end,
-as detection reports none for it. Forced `format=` and auto-detect then see the same end.
+archive, or a non-zero byte follows the archive), so an ordinary ZIP pays no read for it.
+A record that says no bytes precede its archive and has nothing after it is taken as
+found, without the read: a ZIP planted at the end of a certificate table with offsets
+counted from the start of the file is then what a forced `format=ZIP` lists, while
+auto-detect, which passes the end, lists the archive before the table. A backend reading
+a non-seekable source derives no end, as detection reports none for it. Otherwise forced
+`format=` and auto-detect see the same end.
 
 #### Scenario: payload_offset hand-off
 
@@ -43,5 +48,6 @@ as detection reports none for it. Forced `format=` and auto-detect then see the 
 | Forced `format=` on the same signed SFX (RAR, 7z, or ZIP from a seekable source) | The backend derives the same `E` from its leading bytes; same listing, same diagnostics, whenever `max_prefix_bytes` holds the 4096 bytes the layout is read from (every preset) |
 | The same SFX from a non-seekable stream, auto-detect or forced | No `E`: the certificate is reported as trailing data, the same both ways |
 | Forced `format=ZIP` on the IRPF installer under `DiagnosticPolicy.STRICT` | Opens, as auto-detect does: the certificate is past `E` |
-| Forced `format=ZIP` on a signed SFX whose certificate holds a second whole ZIP | The archive before `E` is listed, as auto-detect lists it; the ZIP inside the certificate is not |
+| Forced `format=ZIP` on a signed SFX whose certificate holds a second whole ZIP with offsets counted from its own start | The archive before `E` is listed, as auto-detect lists it; the ZIP inside the certificate is not |
+| The same, the second ZIP's offsets counted from the start of the file | Auto-detect lists the archive before `E`; forced `format=ZIP` lists the second ZIP (no read of the leading bytes) |
 | No `payload_end` (unsigned, non-PE, or total size unknown) | Unchanged: the archive is read to the end of the source |
