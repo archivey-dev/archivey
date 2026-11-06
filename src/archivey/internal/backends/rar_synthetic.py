@@ -602,6 +602,28 @@ def member_headers(
     )
 
 
+def placeholder_mask(position: int, info: RarMemberInfo, version: int) -> str:
+    """The ``-n`` mask that selects the ``position``-th member of a synthetic archive.
+
+    With ``-ver``, ``unrar`` names a RAR5 history row ``m<k>;<n>`` from its version
+    record, so the mask carries the suffix. A RAR 1.5-4 row keeps its ``;n`` in the
+    stored name, which the placeholder replaces, so it is plain ``m<k>`` there.
+    """
+    name = placeholder_name(position)
+    if version == 5 and info.is_file_version_history():
+        return f"{name};{info.file_version}"
+    return name
+
+
+def has_packed_data(info: RarMemberInfo) -> bool:
+    """Whether ``info`` goes into a synthetic archive: a member with packed data.
+
+    A RAR 1.5-4 symlink counts: its target is compressed data, and in a solid stream
+    later members depend on it. A directory and a file copy do not.
+    """
+    return info.compress_size > 0 and not info.is_directory and not info.is_file_copy()
+
+
 def solid_chain(members: list[RarMemberInfo], target: int) -> range:
     """Indices of ``members`` a solid read of ``members[target]`` must decode.
 

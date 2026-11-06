@@ -700,9 +700,11 @@ def test_solid_symlink_demux_and_link_targets(
                 # Stored M0. Fails if a regeneration starts compressing targets.
                 assert raw.compress_size == raw.file_size
 
-        # Follow the link: named ``unrar p`` is the target file, not the symlink.
+        # Follow the link: one named ``unrar p`` for the target file, not the
+        # symlink. The name is the target's placeholder in its synthetic archive.
         assert archive.read("symlink_to_file1.txt") == b"Hello, world!"
-        assert spawns == ["file1.txt"]
+        assert len(spawns) == 1
+        assert spawns[0] is not None
 
         payload_names: list[str] = []
         pipe_bytes = 0
@@ -723,7 +725,9 @@ def test_solid_symlink_demux_and_link_targets(
         # None is the unnamed solid ALL-pipe the sequential pass takes.
         assert payload_names == ["file1.txt"]
         assert pipe_bytes == 13
-        assert spawns == ["file1.txt", None]
+        assert len(spawns) == 2
+        assert spawns[0] is not None
+        assert spawns[1] is None
 
 
 @requires_binary("unrar")
@@ -769,8 +773,11 @@ def test_solid_hardlink_demux_and_targets(monkeypatch: pytest.MonkeyPatch) -> No
             "subdir/file2.txt": b"Hello 2!",
         }
         assert archive.read("subdir/hardlink_to_file1.txt") == b"Hello 1!"
-        # None is the unnamed solid ALL-pipe; file1.txt is the followed target.
-        assert spawns == [None, "file1.txt"]
+        # None is the unnamed solid ALL-pipe; then one named read of the followed
+        # target (its placeholder in its synthetic archive).
+        assert len(spawns) == 2
+        assert spawns[0] is None
+        assert spawns[1] is not None
 
 
 @requires("cryptography")
@@ -4905,7 +4912,9 @@ def test_auto_reads_with_unar_a_member_unrar_cannot_name(
 
 
 @requires_binary("unrar", "unar")
-def test_auto_keeps_the_unrar_refusal_when_unar_refuses_the_archive() -> None:
+def test_auto_keeps_the_unrar_refusal_when_unar_refuses_the_archive(
+    unrar_mask_route: None,
+) -> None:
     """unar 1.10 misreads a RAR5 solid archive with data after a directory, so it is
     not used there, and the unrar refusal stands."""
     with (
@@ -5006,7 +5015,9 @@ def test_glob_concatenation_flag_names_itself_in_the_refusal(
 
 
 @requires_binary("unrar")
-def test_solid_glob_refusal_does_not_claim_an_avoidable_decode() -> None:
+def test_solid_glob_refusal_does_not_claim_an_avoidable_decode(
+    unrar_mask_route: None,
+) -> None:
     """On a solid archive the glob prefix is already inside ``AccessCost.SOLID``.
 
     The refusal still fires — the names are constructed — but the message must
@@ -5070,6 +5081,7 @@ def test_wildcard_nonsolid_stream_members_hits_the_refusal(
 
 @requires_binary("unrar")
 def test_seekable_wildcard_respawn_still_skips_glob_prefix(
+    unrar_mask_route: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A backward seek on a glob name must respawn *and* re-skip the prefix.

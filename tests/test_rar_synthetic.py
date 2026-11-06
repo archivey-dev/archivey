@@ -74,15 +74,6 @@ def _password(path: Path) -> str | None:
     return None
 
 
-def _has_data(raw: RarMemberInfo) -> bool:
-    return (
-        raw.compress_size > 0
-        and not raw.is_directory
-        and not raw.is_file_copy()
-        and not raw.is_symlink
-    )
-
-
 def _synthetic_read(
     reader: RarReader, raws: list[RarMemberInfo], target: int, password: str | None
 ) -> bytes:
@@ -100,7 +91,7 @@ def _synthetic_read(
     keys = rs.HeaderKeys(reader._kdf_cache, password) if password is not None else None
 
     indices = rs.solid_chain(raws, target) if archive.is_solid else [target]
-    chain = [i for i in indices if _has_data(raws[i])]
+    chain = [i for i in indices if rs.has_packed_data(raws[i])]
     members = []
     for position, index in enumerate(chain):
         raw = raws[index]
@@ -134,7 +125,12 @@ def _synthetic_read(
         proc, stdout = open_unrar_p(
             synthetic.path,
             password=password,
-            member=rs.placeholder_name(len(chain) - 1) if len(chain) > 1 else None,
+            # A solid read always names its target, as the reader does.
+            member=(
+                rs.placeholder_mask(len(chain) - 1, raws[target], archive.version)
+                if archive.is_solid
+                else None
+            ),
             version_control=True,
             rar5=archive.version == 5,
         )
@@ -158,7 +154,10 @@ def test_synthetic_read_matches_the_original(volumes: list[Path]) -> None:
         assert all(isinstance(raw, RarMemberInfo) for raw in raws)
         compared = 0
         for index, member in enumerate(members):
-            if not _has_data(raws[index]):
+            if not rs.has_packed_data(raws[index]):
+                continue
+            if raws[index].is_symlink:
+                # In a chain only: open() of a link reads its target's bytes.
                 continue
             try:
                 with reader.open(member) as stream:
@@ -170,7 +169,7 @@ def test_synthetic_read_matches_the_original(volumes: list[Path]) -> None:
                 continue
             assert _synthetic_read(reader, raws, index, password) == want, member.name
             compared += 1
-        if any(_has_data(raw) for raw in raws):
+        if any(rs.has_packed_data(raw) for raw in raws):
             assert compared, "no member compared"
 
 
@@ -562,3 +561,183 @@ def test_password_probe_removes_its_copy_before_the_read(
         assert len(reader.read(member)) == member.size
         assert len(synthetic_spy.paths) >= 2
         assert not any(path.exists() for path in synthetic_spy.paths)
+
+
+# ------------------------------------------------------------------ solid streams
+
+
+class _AppendSpy:
+    """Each append to a synthetic archive: which file, and how many members."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.appends: list[tuple[Path, int]] = []
+        real = rs.SyntheticArchive.append
+
+        def append(synthetic: rs.SyntheticArchive, members: object) -> None:
+            members = list(members)  # type: ignore[call-overload]
+            real(synthetic, members)
+            self.appends.append((synthetic.path, len(members)))
+
+        monkeypatch.setattr(rs.SyntheticArchive, "append", append)
+
+    def files(self) -> set[Path]:
+        return {path for path, _ in self.appends}
+
+
+@pytest.fixture
+def append_spy(monkeypatch: pytest.MonkeyPatch) -> _AppendSpy:
+    return _AppendSpy(monkeypatch)
+
+
+_SOLID_FILES = ["file1.txt", "subdir/file2.txt", "implicit_subdir/file3.txt"]
+
+
+def _expected(fixture: str) -> dict[str, bytes]:
+    with open_archive(_FIXTURES / fixture) as reader:
+        return {
+            m.name: reader.read(m)
+            for m in reader.members()
+            if m.is_file and m.name in _SOLID_FILES
+        }
+
+
+@requires_unrar_cli()
+@pytest.mark.parametrize("fixture", ["basic_solid__.rar", "basic_solid__rar4.rar"])
+def test_a_solid_stream_grows_and_is_copied_once(
+    fixture: str, append_spy: _AppendSpy
+) -> None:
+    """Reads further into the stream append only the members between; a read of a
+    member already in the file copies nothing. One file for the reader."""
+    expected = _expected(fixture)
+    append_spy.appends.clear()
+    with open_archive(_FIXTURES / fixture) as reader:
+        assert reader.read("subdir/file2.txt") == expected["subdir/file2.txt"]
+        # The stream start (an empty file with packed bytes), file1, file2.
+        first = append_spy.appends[-1][1]
+        assert reader.read("file1.txt") == expected["file1.txt"]
+        assert len(append_spy.appends) == 1
+        last = "implicit_subdir/file3.txt"
+        assert reader.read(last) == expected[last]
+        assert [n for _, n in append_spy.appends] == [first, 1]
+        (path,) = append_spy.files()
+        assert path.exists()
+    assert not path.exists()
+
+
+@requires_unrar_cli()
+def test_a_solid_stream_source_is_not_copied_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(self: RarReader) -> Path:
+        raise AssertionError("the whole archive was copied")
+
+    monkeypatch.setattr(RarReader, "_ensure_archive_path", refuse)
+    expected = _expected("basic_solid__.rar")
+    raw = (_FIXTURES / "basic_solid__.rar").read_bytes()
+    with open_archive(BytesIO(raw)) as reader:
+        for name in reversed(_SOLID_FILES):
+            assert reader.read(name) == expected[name]
+
+
+@requires_unrar_cli()
+def test_a_read_further_in_while_the_stream_is_held_starts_a_new_generation(
+    append_spy: _AppendSpy,
+) -> None:
+    """``unrar`` may still be reading the stream's file (and on Windows holds it
+    with read sharing only), so it is not appended to. A read further in starts a
+    new file for the stream, which later reads extend; the held one is removed
+    when its read closes."""
+    expected = _expected("basic_solid__.rar")
+    append_spy.appends.clear()
+    with open_archive(
+        _FIXTURES / "basic_solid__.rar", concurrent_operations=True
+    ) as reader:
+        assert isinstance(reader, RarReader)
+        with reader.open("file1.txt") as held:
+            assert held.read(1) == expected["file1.txt"][:1]
+            (old,) = append_spy.files()
+            assert reader.read("subdir/file2.txt") == expected["subdir/file2.txt"]
+            (new,) = append_spy.files() - {old}
+            last = "implicit_subdir/file3.txt"
+            assert reader.read(last) == expected[last]
+            # The new file grew by the one member; the held one is untouched.
+            assert [path for path, _ in append_spy.appends] == [old, new, new]
+            assert append_spy.appends[-1][1] == 1
+            assert old.exists()
+            assert held.read() == expected["file1.txt"][1:]
+        assert not old.exists()
+        assert reader._retired_streams == set()
+        budget = reader._spool_budget(None)
+        assert budget._written == reader._solid_streams[0].charge
+        # Already in the new file: nothing is copied.
+        assert reader.read(last) == expected[last]
+        assert len(append_spy.appends) == 3
+        assert new.exists()
+    assert not new.exists()
+
+
+def test_a_solid_stream_copy_over_the_spool_limit_is_refused_and_not_recorded() -> None:
+    """A stream source cannot fall back: the copy up to the member raises, and a
+    read nearer the stream start that fits still copies (nothing is spawned here)."""
+    raw = (_FIXTURES / "basic_solid__.rar").read_bytes()
+    with open_archive(BytesIO(raw), config=_limited(0)) as reader:
+        assert isinstance(reader, RarReader)
+        member = reader.get("file1.txt")
+        assert isinstance(member._raw, RarMemberInfo)
+        with pytest.raises(ResourceLimitError, match="solid stream"):
+            reader._synthetic_file(member, member._raw)
+    overhead = rs.SyntheticArchive.overhead(5)
+    with open_archive(BytesIO(raw)) as reader:
+        assert isinstance(reader, RarReader)
+        sizes = {}
+        for name in ("file1.txt", "implicit_subdir/file3.txt"):
+            member = reader.get(name)
+            assert isinstance(member._raw, RarMemberInfo)
+            read = reader._synthetic_file(member, member._raw)
+            assert read is not None
+            read.close()
+            sizes[name] = reader._solid_streams[0].charge
+    limit = sizes["file1.txt"] + 1
+    assert limit < sizes["implicit_subdir/file3.txt"]
+    assert sizes["file1.txt"] > overhead
+    with open_archive(BytesIO(raw), config=_limited(limit)) as reader:
+        assert isinstance(reader, RarReader)
+        far = reader.get("implicit_subdir/file3.txt")
+        near = reader.get("file1.txt")
+        assert isinstance(far._raw, RarMemberInfo)
+        assert isinstance(near._raw, RarMemberInfo)
+        with pytest.raises(ResourceLimitError):
+            reader._synthetic_file(far, far._raw)
+        read = reader._synthetic_file(near, near._raw)
+        assert read is not None
+        read.close()
+
+
+def test_a_solid_member_of_a_large_stream_on_disk_keeps_the_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey.internal.backends import rar_reader
+
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    with open_archive(_FIXTURES / "basic_solid__.rar") as reader:
+        assert isinstance(reader, RarReader)
+        member = reader.get("file1.txt")
+        assert isinstance(member._raw, RarMemberInfo)
+        assert reader._synthetic_file(member, member._raw) is None
+        assert reader._solid_streams[0].file is None
+
+
+def test_the_chain_dictionary_counts_the_stream_alone() -> None:
+    """In ``solid_groups__.rar`` a member of a later group is charged its own
+    group's window and bytes, not the archive's from its start."""
+    with open_archive(_FIXTURES / "solid_groups__.rar") as reader:
+        assert isinstance(reader, RarReader)
+        from archivey.internal.backends.rar_reader import _chain_dictionary_cost
+
+        members = reader._archive.members
+        last = len(members) - 1
+        span = rs.solid_chain(members, last)
+        assert span.start > 0, "the fixture's last member starts a later group"
+        cost = _chain_dictionary_cost(members, span)
+        assert cost.count <= sum(members[i].file_size for i in span)
+        assert cost.declarer >= span.start

@@ -29,7 +29,8 @@ from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
-# Solid, so every member goes through unrar and needs the copy.
+# Solid, so every member goes through unrar. A read on the mask route
+# (``unrar_mask_route``) copies the whole archive; a synthetic one copies its stream.
 _SOLID = _FIXTURES / "basic_solid__.rar"
 # Compressed, so unrar reads it and needs the volumes on disk; a stored member split
 # across volumes is joined natively and copies nothing.
@@ -300,7 +301,7 @@ def test_stream_within_the_limit_reads(temp_artifacts: list[Path]) -> None:
 
 
 def test_stream_over_the_limit_refuses_before_writing_or_spawning(
-    temp_artifacts: list[Path], no_unrar: None
+    unrar_mask_route: None, temp_artifacts: list[Path], no_unrar: None
 ) -> None:
     blob = _SOLID.read_bytes()
     with open_archive(io.BytesIO(blob), config=_config(len(blob) - 1)) as archive:
@@ -318,7 +319,7 @@ def test_stream_over_the_limit_refuses_before_writing_or_spawning(
 
 
 def test_stream_of_unknown_size_stops_at_the_limit_and_removes_the_copy(
-    temp_artifacts: list[Path], no_unrar: None
+    unrar_mask_route: None, temp_artifacts: list[Path], no_unrar: None
 ) -> None:
     blob = _SOLID.read_bytes()
     source = _UnsizedStream(blob)
@@ -431,7 +432,7 @@ def test_cost_note_for_an_unknown_size_names_the_limit() -> None:
 
 
 def test_over_default_limit_is_refused(
-    tmp_path: Path, temp_artifacts: list[Path], no_unrar: None
+    unrar_mask_route: None, tmp_path: Path, temp_artifacts: list[Path], no_unrar: None
 ) -> None:
     """The 1 GiB default itself, driven with a sparse file one byte over it.
 
@@ -669,7 +670,7 @@ def test_prefixed_path_within_the_limit_reads_under_unar(
 
 
 def test_refusal_is_remembered_so_a_retry_writes_nothing(
-    temp_artifacts: list[Path], no_unrar: None
+    unrar_mask_route: None, temp_artifacts: list[Path], no_unrar: None
 ) -> None:
     """One reader's limit holds across retries, not per attempt.
 

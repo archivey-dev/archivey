@@ -758,10 +758,10 @@ On a compressed tar, the stream's own checksum adds three cases:
   when the decoded text fails its CRC, `comment` is `None`.
 - **Reading members:** archivey reads uncompressed members itself. Everything else goes through
   the program. In a solid archive, `stream_members()` uses one `unrar p` run for the whole pass. A
-  random `open()` out of order is a separate run that decodes from the start of the archive each
-  time, so reading *n* members that way costs *n* full decodes. With `seekable_members=True`, a
-  backward `seek()` on a compressed member costs the same: a new run from the start.
-  `CostReceipt.access_cost` is `SOLID` to say so.
+  random `open()` out of order is a separate run that decodes from the start of the member's
+  solid stream each time, so reading *n* members of one stream that way costs *n* decodes of the
+  stream up to each. With `seekable_members=True`, a backward `seek()` on a compressed member
+  costs the same: a new run from the stream start. `CostReceipt.access_cost` is `SOLID` to say so.
 - **From a pipe:** no; RAR needs a source that can seek.
 - Read only: archivey writes no RAR.
 
@@ -782,18 +782,27 @@ On a compressed tar, the stream's own checksum adds three cases:
 - An uncompressed encrypted member split across volumes, and any member encrypted with the RAR 2.0
   cipher (archives from RAR 2.0 to 2.8), still need the program: each part of a split member has its
   own encryption record, and archivey does not implement the old cipher.
-- **`unrar` reads a member of an archive that is not solid from a small copy.** For each read it
-  needs, archivey writes a temporary RAR file that holds only that member's header and its packed
+- **`unrar` reads a member from a small copy.** For each read it needs in an archive that is not
+  solid, archivey writes a temporary RAR file that holds only that member's header and its packed
   (still compressed, still encrypted) bytes, and gives `unrar` that file. This means a read does
   not slow down as the archive grows, and a member split across volumes is joined into one file.
   The file is removed when the member stream closes. A member of an archive opened from a path
   that packs more than 64 MiB is read in place instead. For a header-encrypted (`-hp`) archive the
   temporary file holds the member's header decrypted: its sizes, times and checksum, but not its
   name.
-- **A stream source of a solid archive is copied to disk for `unrar`.** `unrar` reads only files,
-  so a solid RAR opened from a `BytesIO` or a file object is copied whole to a temporary file (a
-  volume set, to a temporary directory) on the first member read that needs the program, and
-  removed on close. Members archivey reads itself are read in place and need no copy.
+- **A solid member is read from a copy of its solid stream.** `unrar` has to decode a solid
+  stream from its start, so the temporary file holds the stream's members from the start up to
+  the member read. There is one such file per solid stream, kept until the reader closes and
+  grown as reads reach further into the stream, so each packed byte is copied once. A member
+  stream still open holds the file, which then can't grow: a read further in starts a new file
+  for the stream, which later reads grow, and the held one is removed when it closes. So reads
+  that each go further in while every earlier one is still open copy the stream's start each
+  time. For an archive opened from a path, a stream whose copy would pass 64 MiB is read in place
+  instead.
+- **A pass over a solid archive opened from a stream source copies the archive.**
+  `stream_members()` and `extract_all()` on a solid RAR opened from a `BytesIO` or a file object
+  copy it whole to a temporary file (a volume set, to a temporary directory), removed on close.
+  Members archivey reads itself are read in place and need no copy.
 - `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB) bounds every copy: over
   it, the read raises `ResourceLimitError` before anything is written. A member of an archive
   opened from a path is read in place instead.
@@ -851,10 +860,17 @@ raises `UnsupportedFeatureError` before anything runs, and `archive.cost.notes` 
 
 ### Names unrar cannot select
 
-In an archive that is not solid, a member's name never reaches `unrar` (except for a member over
-64 MiB of an archive opened from a path), so none of what follows applies to it. Otherwise,
-`unrar` is told which member to write with an include *mask* built from its name. Some names make
-that mask select the wrong members, or none:
+Usually a member's name never reaches `unrar`, so none of what follows applies to it. The
+exceptions read the original archive, with an include *mask* built from the name telling
+`unrar` which member to write:
+
+- an archive opened from a path read in place: a member that packs more than 64 MiB, or a solid
+  stream whose copy would pass 64 MiB;
+- a solid stream with a member whose data is out of reach (a volume missing);
+- a member whose header a synthetic archive can't hold: a RAR 1.5-4 member split past 4 GiB with
+  no 64-bit size fields. An archive opened from a stream source is then copied whole.
+
+Some names make that mask select the wrong members, or none:
 
 - **`*` or `?` in a name** also matches the member's siblings. Names like this are almost always
   constructed, so reading such a member raises `UnsupportedFeatureError`. On an archive that is not

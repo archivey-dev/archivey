@@ -344,9 +344,27 @@ def _read_outcomes(
     return outcomes, messages
 
 
+@requires_unrar_cli()
+@pytest.mark.parametrize("in_pass", [False, True], ids=["open", "pass"])
+def test_unrar_reads_a_later_solid_group(tmp_path: Path, in_pass: bool) -> None:
+    """A synthetic archive starts at the member's solid stream, so ``unrar`` decodes
+    ``c.txt``'s group without ``a.txt``, as ``unar`` does: only ``b.txt``, which
+    shares ``a.txt``'s stream, is refused (a pass reads the rest one at a time)."""
+    outcomes, messages = _read_outcomes(
+        _solid_groups_first_member_v2(tmp_path), _config("unrar"), in_pass=in_pass
+    )
+    assert outcomes == {
+        "a.txt": UnsupportedFeatureError,
+        "b.txt": UnsupportedFeatureError,
+        "c.txt": 840,
+        "d.txt": 840,
+    }
+    assert "'a.txt' in its solid stream" in messages["b.txt"], messages
+
+
 @pytest.mark.parametrize("in_pass", [False, True], ids=["open", "pass"])
 def test_unrar_refuses_a_later_solid_group_for_its_include_mask(
-    tmp_path: Path, in_pass: bool
+    unrar_mask_route: None, tmp_path: Path, in_pass: bool
 ) -> None:
     """``c.txt`` starts a new solid group (solid flag clear), but archivey asks
     ``unrar`` for a member through an include mask, and with a mask ``unrar``
