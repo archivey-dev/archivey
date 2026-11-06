@@ -393,14 +393,17 @@ full header walk per read, and all the name modelling.
 - **B. Every `unrar` read, except a large member of a path source whose name is plain
   (recommended).** "Large" is packed bytes over an implementation threshold, starting at
   64 MiB. For a solid member it is the total size of its stream's file (§"Solid
-  streams"), which grows once per stream, not the chain copied again for each read. "Plain" has two parts. Once per reader: every
-  name in the archive decodes cleanly (valid UTF-8 for RAR5, ASCII for an 8-bit RAR3
-  name) and has no `\`, NUL, leading `/`, or empty, `.` or `..` component, so `unrar`
-  reads each name as archivey does. Per member: the name is ASCII (no locale question),
-  has no `*` or `?` and no component ending in `.` (no dot rule), and no other name
-  equals it or starts with it plus `/`, compared without case (Windows `unrar` folds
-  case). Such a read keeps today's mask, which then selects the target alone. Real
-  archives pass; a crafted one fails and gets the synthetic route. Every other read is synthetic, whatever its size,
+  streams"), which grows once per stream, not the chain copied again for each read.
+  "Plain" has two parts. Once per reader: every name in the archive decodes cleanly
+  (valid UTF-8 for RAR5, ASCII for an 8-bit RAR3 name) and has no NUL, `:`, leading `/`,
+  RAR5 `\` (a RAR3 `\` reads as `/`), or empty, `.` or `..` component, so `unrar` reads
+  each name as archivey does. Per member: the name is ASCII, or valid UTF-8 where
+  `unrar` reads it back (Windows, or a UTF-8 locale on POSIX; widened in implementation
+  so a large accented name on disk still reads in place), has no `*` or `?` and no
+  component ending in `.` (no dot rule), and no other name equals it or starts with it
+  plus `/`, compared without case (Windows `unrar` folds case). Such a read keeps
+  today's mask, which then selects the target alone. Real archives pass; a crafted one
+  fails and gets the synthetic route. Every other read is synthetic, whatever its size,
   within the spool limit. The name model, dot-rule probe, glob refusal and `unar`
   fallback still go, because no read that needs them takes the mask route.
 - **C. Only stream sources and names refused today.** The smallest change. All mask

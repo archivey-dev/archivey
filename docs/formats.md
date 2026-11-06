@@ -830,10 +830,8 @@ On a compressed tar, the stream's own checksum adds three cases:
 ### `unar` instead of `unrar`
 
 Under `"auto"`, the program is chosen once, when the archive is opened, and a read `unar` refuses
-is not retried with `unrar`. When `"auto"` picks `unar`, `archive.cost.notes` says so at open. With
-`unrar` chosen, `"auto"` still reads a member that `unrar` cannot be pointed at by name with an
-accepted `unar` ([Names unrar cannot select](#names-unrar-cannot-select)). With `"unrar"` or
-`"unar"`, archivey never switches programs; with `"unar"` and no usable `unar`, a read raises
+is not retried with `unrar`, nor one `unrar` refuses with `unar`. When `"auto"` picks `unar`,
+`archive.cost.notes` says so at open. With `"unar"` and no usable `unar`, a read raises
 `PackageNotInstalledError`.
 
 Archivey runs each `unar` once on a small RAR5 archive and does not use one that decodes it wrong,
@@ -874,59 +872,35 @@ and in one part (that one needs `cryptography`, and raises `PackageNotInstalledE
 A compressed member, an encrypted one split across volumes, or a split one with a volume missing
 raises `UnsupportedFeatureError` before anything runs, and `archive.cost.notes` says so at open.
 
-### Names unrar cannot select
+### Member names and `unrar`
 
-Usually a member's name never reaches `unrar`, so none of what follows applies to it. The
-exceptions read the original archive, with an include *mask* built from the name telling
+Usually a member's name never reaches `unrar`: it gets a temporary RAR file in which the member has
+a placeholder name. So a name with `*` or `?`, a duplicate name, or a name `unrar` would read
+differently from archivey (one that is not valid UTF-8, has a backslash, or ends in `.`) reads like
+any other.
+
+A few reads use the original archive instead, with the member's name as an include *mask* telling
 `unrar` which member to write:
 
 - an archive opened from a path read in place: a member that packs more than 64 MiB, or a solid
   stream whose copy would pass 64 MiB;
 - a solid stream with a member whose data is out of reach (a volume missing);
-- a member whose header a synthetic archive can't hold: a RAR 1.5-4 member split past 4 GiB with
+- a member whose header a temporary RAR file can't hold: a RAR 1.5-4 member split past 4 GiB with
   no 64-bit size fields. An archive opened from a stream source is then copied whole.
 
-Some names make that mask select the wrong members, or none:
+These reads take the mask only for a *plain* name, one the mask selects alone. Every name in the
+archive has to decode cleanly (valid UTF-8 for RAR5, ASCII for an older 8-bit name) with no NUL,
+`:`, leading `/`, or empty, `.` or `..` part, and no `\` in a RAR5 name (in an older archive `\`
+is a separator and reads as `/`). The member's own name has no `*` or `?`, no
+part ending in `.`, is ASCII unless `unrar` can be given a UTF-8 name (on Windows, or where a
+UTF-8 locale is installed), and no other name equal to it or below it, ignoring case. A large
+member without a plain name is copied to a temporary file like a small one, within
+`SpoolLimits.max_bytes`. In the last two cases, which have no copy to fall back on, a member
+without a plain name raises `UnsupportedFeatureError`. `rar_decompressor="unar"` reads every member
+by position.
 
-- **`*` or `?` in a name** also matches the member's siblings. Names like this are almost always
-  constructed, so reading such a member raises `UnsupportedFeatureError`. On an archive that is not
-  solid, the extra decode would also be unbounded: `ExtractionLimits` apply to extraction, not to
-  `open()` or `read()`, and the error says how many bytes it would have cost. On a solid archive
-  those bytes are already part of `AccessCost.SOLID`, so the error names the flag instead. Setting
-  `ArchiveyConfig.rar_allow_glob_member_concatenation=True` reads it anyway. Two cases are not
-  affected: a name that matches no earlier member with data (an accidental `report*.pdf` stored
-  before `report1.pdf`) reads with no flag, and a solid `stream_members()` pass reads everything,
-  because it builds no mask at all.
-- **`*` or `?` in a directory part of the name, or a backslash in it:** `unrar` cannot read the
-  member, and the flag does not change that. The one exception is a backslash in a RAR5 name
-  written on Windows, which `unrar` on Linux and macOS reads as `_`.
-- **Several members under one name** (two members with the same name, or two names `unrar` reads
-  the same way): `unrar` would decode every earlier member with that name first, as for a `*` name,
-  so reading a later one raises `UnsupportedFeatureError` naming the same flag, unless every
-  earlier one is empty. With
-  `rar_allow_glob_member_concatenation=True`, archivey skips the earlier members' bytes, so each
-  read returns that member's own bytes. A RAR5 name that is not valid UTF-8 is cut by `unrar` at
-  its first invalid byte, and is handled through that shorter name the same way.
-- **A name `unrar` reads as empty** raises `UnsupportedFeatureError`, and so does a name `unrar`
-  reads but that cannot be handed back to it as a mask.
-- **A name ending in `.`, or with a `.` before a `\`:** `unrar` up to 7.30 beta 1 lets the mask
-  `notes.` also select a member named `notes`, and 7.30 beta 2 does not. When that changes which
-  members come before the one you asked for, archivey asks the `unrar` on `PATH` once, with a
-  small test archive, which way it matches. If it gives no usable answer, the read raises
-  `UnsupportedFeatureError`.
-- **A non-ASCII name in an older RAR (1.5-4) archive on a system with no UTF-8 locale:** `unrar`
-  reads such a name through the locale, so archivey cannot tell which bytes `unrar` sends before
-  any later member, and a read of a later member raises `UnsupportedFeatureError`.
-- **An unpaired surrogate in a RAR 1.5-4 name:** archivey selects the member with `?` in place of
-  each such unit, and when that pattern also matches an earlier member, the read raises
-  `UnsupportedFeatureError` unless you set `rar_allow_glob_member_concatenation`.
-
-`unar` selects members by position, so none of these apply to it. Under the default `"auto"`,
-archivey reads such a member with `unar` when one it accepts is installed. It does not use `unar`
-when the read needs a password (`unar` takes it on its command line), when the archive is a stream
-or has data before the RAR (`unar` would need its own copy of it), or when `unar` is known to
-misread the archive.
-`rar_decompressor="unar"` reads every member by position.
+`ArchiveyConfig.rar_allow_glob_member_concatenation` is deprecated and does nothing: no read decodes
+other members because of a member's name any more. Setting it to `True` warns.
 
 ### Damage and endings
 

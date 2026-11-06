@@ -545,13 +545,14 @@ def named_fifo_with_writer() -> Iterator[Callable[[Path, bytes], None]]:
 
 @pytest.fixture
 def unrar_mask_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Read RAR members as before synthetic archives: the original archive and a mask.
+    """Read RAR members as when no synthetic archive can hold them.
 
-    For the tests of that route (the name model, its refusals, the whole-archive
-    copy of a stream source), which still serves solid archives, large members of
-    an archive on disk, and ``unar``. Removed with the route.
+    That is the route of a RAR 1.5-4 member joined past 4 GiB with no 64-bit size
+    fields: the original archive through a mask (a plain name only), copied whole
+    for a stream source. The tests of that route and of the whole-archive copy use
+    this, since no small fixture has such a member.
     """
     from archivey.internal.backends.rar_reader import RarReader
 
-    monkeypatch.setattr(RarReader, "_synthetic_file", lambda self, member, raw: None)
+    monkeypatch.setattr(RarReader, "_synthetic_entry", lambda self, *args: None)
     monkeypatch.setattr(RarReader, "_nonsolid_pass_batches", lambda self: [])

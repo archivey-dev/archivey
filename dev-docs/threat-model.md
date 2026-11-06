@@ -833,25 +833,24 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 
 **Property.** Reading one RAR member never quietly decodes other members first.
 
-**Mechanism.** `unrar` selects members by mask, and a member whose mask selects earlier
-entries (a glob, a duplicate name, two names `unrar` reads alike) would make `unrar -n`
-decompress every earlier match first. The
-read is refused by default when that skip is nonzero (`internal/backends/rar_reader.py`,
-`rar_allow_glob_member_concatenation` as the escape hatch). The refusal is narrower
-than it looks: on a solid archive an out-of-order `open()` decodes everything ahead of
-the member anyway, with no glob involved, so the glob adds only a bounded transfer cost
-there. Whether the refusal earns its keep is parked with the general unbounded-read
-question ([`formats/rar.md`](formats/rar.md) §5 to §7).
+**Mechanism.** `unrar` gets a synthetic archive holding the member under a placeholder
+name (`m0`, and `m<k>` for the k-th member of a solid chain), so no stored name selects
+anything. The original archive is read through a mask only for a plain name, one that
+selects the member alone (`_plain_unrar_masks` in `internal/backends/rar_reader.py`):
+every name decodes cleanly, and the target has no `*`, `?` or trailing `.`, is ASCII unless
+`unrar` reads a UTF-8 mask back (Windows, or a UTF-8 locale), and no other name equals it or
+lies below it, ignoring case. Anything else reads through a
+synthetic archive, or is refused where none can be made. A solid read still decodes its
+stream before the member; that is the cost `AccessCost.SOLID` announces, not a name's.
 
-**Residual.** A mask with no glob that still selects earlier members (a duplicate name,
-or two names `unrar` reads the same way) is refused the same way since 2026-10-29. With
-the flag set, `unrar` decodes those members first: their dictionaries count against
-`DecoderLimits.max_decoder_memory` ([Decoder memory](#decoder-memory)); the bytes they
-decode count against no limit.
+**Residual.** None from names. A listing whose walk stopped at a damaged header may miss
+headers `unrar` finds past it, so such an archive reads no member in place by name.
+`rar_allow_glob_member_concatenation` is deprecated and does nothing.
 
-**Tests.** `tests/test_rar_reader.py::test_glob_member_with_earlier_matches_is_refused`,
-`::test_solid_glob_refusal_does_not_claim_an_avoidable_decode`,
-`tests/test_audit_rar_iso_dir.py::test_unrar_counts_an_earlier_member_its_shared_mask_decodes`.
+**Tests.** `tests/test_rar_unrar_names.py::test_only_a_plain_name_selects_its_member_alone`,
+`::test_every_rar5_member_reads_its_own_bytes`,
+`tests/test_rar_reader.py::test_wildcard_member_name_reads_its_own_bytes`,
+`tests/test_audit_rar_iso_dir.py::test_unrar_counts_only_the_member_a_duplicate_name_reads`.
 
 ### Integrity verdicts come from reads
 
@@ -1128,19 +1127,16 @@ the program that runs is one whose behaviour we have characterized.
 **Mechanism.** `rar_decompressor="auto"` (the default; maintainer 2026-09-26, "auto is
 default") takes RARLAB `unrar` or `rar` when installed and `unar` otherwise, decided once
 at open. A read `unar` refuses is not retried with `unrar`, and reads `unar` gets wrong
-are refused before it runs. The other direction has one exception: a member `unrar`
-cannot address by name (any refusal `_UnrarCannotAddress` carries, such as a glob mask
-that also matches earlier members, a glob in a directory component, a backslash, or an
-earlier name whose reading by this host's `unrar` cannot be modelled) is read with an
-accepted `unar` by index, unless the read needs a password, the archive is a stream or has
-a prefix (a copy), or `unar` refuses it (`_unar_for_unaddressable`). `unrar-free`, `7z` and `bsdtar` are never used: their
+are refused before it runs; a read `unrar` refuses is not retried with `unar` either.
+`unrar-free`, `7z` and `bsdtar` are never used: their
 failures (empty files with a success exit, a missing plugin, gigabytes written for a
 stored member) are invisible to the caller. A non-RARLAB `unrar` raises
 `PackageNotInstalledError`. Both paths use a banner probe with a timeout and a
 stat-keyed cache. `internal/backends/rar_unrar.py` passes a member name only inside a
-`-n./<name>` include-mask switch, so a leading `-` cannot become an option, narrows
-every `*` to `?` (`_unrar_mask_for`) because `unrar`'s matcher backtracks exponentially
-on a hostile mask, and writes the password to stdin. `internal/external/unar.py` ends
+`-n./<name>` include-mask switch, so a leading `-` cannot become an option. The name is a
+placeholder or a plain name with no `*` or `?`, so `unrar`'s matcher, which
+backtracks exponentially on a hostile mask, never sees a glob (`unrar_member_refusal`
+refuses anything else before spawning). The password goes to stdin. `internal/external/unar.py` ends
 argv with `--` and the absolute archive path, names members by entry index, and puts the
 password as its own item after `-p`. ADR
 [0002](decisions/0002-native-rar-metadata-unrar-data.md),
@@ -1408,9 +1404,8 @@ returned before the raise. It is never a silent success, and it carries
 in `ps` and `/proc/<pid>/cmdline` while the process runs. Accepted by the maintainer
 (2026-09-26, "fine in most cases"). Because `"auto"` is the default, a caller without
 RARLAB installed gets this without choosing it. `RarDecompressor.UNRAR` rules it out. A
-caller *with* RARLAB never gets it: the one place `"auto"` reaches for `unar` beside
-`unrar` (a member `unrar` cannot name, `_unar_for_unaddressable`) is refused for any
-read that needs a password. A read that needs none gets none, from `unrar` or `unar`
+caller *with* RARLAB never gets it: since 0.4.0 `"auto"` never reads with `unar` when a
+RARLAB binary is found. A read that needs no password passes none
 (`_member_needs_password`): the member and the headers are plaintext, and in a solid
 archive no encrypted member comes before it.
 Public: [hardening](../docs/security.md#hardening).

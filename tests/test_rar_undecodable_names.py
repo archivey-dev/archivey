@@ -9,7 +9,7 @@ it the shared way (``%FF`` under ``STRICT``/``STANDARD``, the raw byte under
 
 ``unrar`` 7.00 reads a RAR5 name only up to its first invalid byte, so both of those
 names are ``a`` to it. A read through ``unrar`` must still return each member's own
-bytes; the mask is built from the stored bytes (``rar_unrar.unrar_member_view``).
+bytes; each reads through a synthetic archive, under a placeholder name.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, ExtractionPolicy, open_archive
-from archivey.exceptions import UnsupportedFeatureError
 from tests.conftest import requires_binary
 from tests.test_audit_rar_iso_dir import (
     _fixture,
@@ -35,11 +34,6 @@ from tests.test_audit_rar_iso_dir import (
 )
 
 _UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
-# A name that selects earlier members too is refused by default; these tests read
-# through the shared mask on purpose.
-_UNRAR_SHARED = ArchiveyConfig(
-    rar_decompressor="unrar", rar_allow_glob_member_concatenation=True
-)
 _NAMES = [b"a\xffq.txt", b"a\xfeq.txt"]
 
 
@@ -87,7 +81,7 @@ def test_rar5_undecodable_names_each_read_their_own_bytes(
     """``unrar`` reads both names as ``a``; each read still returns its own member."""
     expected = _original_payloads()
     path = _rar5_with_undecodable_names(tmp_path, solid=solid)
-    with open_archive(path, config=_UNRAR_SHARED) as archive:
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
         members = archive.members()
         # Reversed, so the second read has to skip what the shared mask selects first.
         got = [archive.read(member) for member in reversed(members)]
@@ -112,7 +106,7 @@ def test_rar5_undecodable_names_extract_as_two_files(
     expected = _original_payloads()
     path = _rar5_with_undecodable_names(tmp_path, solid=False)
     dest = tmp_path / "out"
-    with open_archive(path, config=_UNRAR_SHARED) as archive:
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
         archive.extract_all(dest, policy=policy)
     for name, payload in zip(written, expected):
         assert (dest / name).read_bytes() == payload
@@ -138,31 +132,13 @@ def test_rar3_bytes_undefined_in_windows_1252_stay_distinct(tmp_path: Path) -> N
 
 
 @requires_binary("unrar")
-def test_rar3_undefined_bytes_extract_escaped(
-    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_rar3_undefined_bytes_extract_escaped(tmp_path: Path) -> None:
+    """A synthetic archive names no member, so no OS's reading of the name matters:
+    macOS ``unrar`` would read both names as ``b``, and both still extract."""
     expected = _original_payloads()
     dest = tmp_path / "out"
     source = _rar3_with_undefined_cp1252_bytes(tmp_path)
-    config = _UNRAR_ONLY
-    if sys.platform == "darwin":
-        # unrar's macOS build reads an 8-bit name as UTF-8 and stops at the first
-        # bad byte, so both names reach it as "b": the second one's mask selects
-        # the first, which is refused unless the caller allows it.
-        with (
-            open_archive(source, config=_UNRAR_ONLY) as archive,
-            pytest.raises(UnsupportedFeatureError, match="also selects them"),
-        ):
-            archive.extract_all(tmp_path / "refused", policy=ExtractionPolicy.STANDARD)
-        config = _UNRAR_SHARED
-    with open_archive(source, config=config) as archive:
+    with open_archive(source, config=_UNRAR_ONLY) as archive:
         archive.extract_all(dest, policy=ExtractionPolicy.STANDARD)
     assert (dest / "b%81.txt").read_bytes() == expected[0]
     assert (dest / "b%8D.txt").read_bytes() == expected[1]
-    # A synthetic archive names no member, so no OS's name reading matters.
-    monkeypatch.undo()
-    synthetic = tmp_path / "synthetic"
-    with open_archive(source, config=_UNRAR_ONLY) as archive:
-        archive.extract_all(synthetic, policy=ExtractionPolicy.STANDARD)
-    assert (synthetic / "b%81.txt").read_bytes() == expected[0]
-    assert (synthetic / "b%8D.txt").read_bytes() == expected[1]

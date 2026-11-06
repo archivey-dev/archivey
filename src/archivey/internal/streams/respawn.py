@@ -49,8 +49,8 @@ class RespawnStream(ReadOnlyIOStream):
     nothing.
 
     ``spawn`` must return a stream that owns what it opened, so close/respawn
-    releases it: for RAR, the process (``_UnrarOwnedStream``,
-    ``_bounded_member_pipe`` wrapping one, or a ``UnarOutputStream``); for a
+    releases it: for RAR, the process (``_UnrarOwnedStream`` or a
+    ``UnarOutputStream``); for a
     plugin, the stream its ``open_member`` returned.
 
     ``what`` names the producer in the ``TruncatedError`` raised when it ends before

@@ -7,10 +7,10 @@ import errno
 import hashlib
 import io
 import os
+import re
 import shutil
 import struct
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -76,7 +76,6 @@ from tests.conftest import (
     requires_unrar_cli,
 )
 from tests.corruption_util import raises_corruption_not_truncation
-from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -108,7 +107,6 @@ _WILDCARD_FIXTURES = (
 # default (see ``test_glob_member_with_earlier_matches_is_refused``). The skip that
 # makes such a read correct is still live behind this flag, and these tests are what
 # pin it, so they opt in explicitly.
-_ALLOW_GLOB_CONCAT = ArchiveyConfig(rar_allow_glob_member_concatenation=True)
 # Under ``AUTO`` a member unrar cannot name goes to an accepted unar when one is
 # installed (``test_auto_reads_with_unar_a_member_unrar_cannot_name``). The refusal
 # tests pin the unrar side, so they choose unrar explicitly.
@@ -490,39 +488,6 @@ def test_unrar_respawn_seek_end_does_not_drain_or_respawn() -> None:
     assert spawns == 1
     assert stream.read() == payload
     assert spawns == 1
-
-
-def test_bounded_member_pipe_drain_coalesces_short_reads() -> None:
-    """``read(-1)`` must gather the declared size, not stop on a short inner read.
-
-    ``_BoundedMemberPipe.read`` did one ``inner.read(remaining)``. A short-returning
-    pipe then left ``tell()`` mid-member and leaked the rest to the next ``read``.
-    ``SlicingStream.read(-1)`` with a declared length uses ``read_exact``.
-    """
-    payload = b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWX"
-    assert len(payload) == 60
-    inner = ShortReadNonSeekable(payload, max_chunk=7)
-    pipe = rar_reader._bounded_member_pipe(inner, prefix=0, size=60)
-    assert pipe.read() == payload
-    assert pipe.tell() == 60
-    assert pipe.read() == b""
-    assert pipe.read(1) == b""
-    pipe.close()
-    assert inner.closed  # owns_inner=True: the factory owns the unrar pipe
-
-
-def test_bounded_member_pipe_skips_prefix_and_translates_eof() -> None:
-    inner = NonSeekableBytesIO(b"PREFpayload-body")
-    pipe = rar_reader._bounded_member_pipe(inner, prefix=4, size=12)
-    assert pipe.read() == b"payload-body"
-    assert pipe.tell() == 12
-    pipe.close()
-    assert inner.closed  # owns_inner=True: the factory owns the unrar pipe
-
-    short = NonSeekableBytesIO(b"xx")
-    with pytest.raises(TruncatedError, match="glob-matched member"):
-        rar_reader._bounded_member_pipe(short, prefix=10, size=4)
-    assert short.closed
 
 
 @requires_binary("unrar")
@@ -4522,434 +4487,56 @@ def test_load_vint_single_and_multi_byte() -> None:
         load_vint(b"\x80" * 11, 0)
 
 
-def test_unrar_member_include_switch_builds_n_mask() -> None:
-    """Every member name becomes a ``-n./`` include mask, with ``*`` narrowed to
-    ``?`` (see :func:`_unrar_mask_for`), including names that would be switches or
-    an ``@listfile`` if passed positionally."""
-    from archivey.internal.backends.rar_unrar import _member_include_switch
-
-    def switch(text: str) -> str | bytes:
-        # UTF-8 bytes on POSIX, whatever the filesystem encoding; text on Windows.
-        return text if sys.platform == "win32" else text.encode()
-
-    assert _member_include_switch("-inul") == switch("-n./-inul")
-    assert _member_include_switch("@atfile") == switch("-n./@atfile")
-    assert _member_include_switch("dir/normal.txt") == switch("-n./dir/normal.txt")
-    assert _member_include_switch("weird*.txt") == switch("-n./weird?.txt")
-    assert _member_include_switch("a?b.txt") == switch("-n./a?b.txt")
-    assert _member_include_switch("café.txt") == switch("-n./café.txt")
-
-
-def test_unrar_mask_for_narrows_stars_to_question_marks() -> None:
-    """The mask never carries a ``*``, and never stops matching its own member.
-
-    ``?`` is one character, so substituting it for ``*`` keeps the mask the same
-    length as the name and leaves a ``?`` exactly where the name has its literal
-    ``*`` — the member still matches. Everything else is untouched.
-    """
-    from archivey.internal.backends.rar_unrar import _unrar_mask_for
-
-    assert _unrar_mask_for("plain.txt") == "plain.txt"
-    assert _unrar_mask_for("a?b.txt") == "a?b.txt"
-    assert _unrar_mask_for("a*b.txt") == "a?b.txt"
-    assert _unrar_mask_for("*") == "?"
-    assert _unrar_mask_for("a*a*a*b") == "a?a?a?b"
-    assert _unrar_mask_for("dir/a*.txt") == "dir/a?.txt"
-    for name in ("a*b", "*", "**", "a*?b", "only*.dat"):
-        assert "*" not in _unrar_mask_for(name)
-        assert len(_unrar_mask_for(name)) == len(name)
-
-
-def test_unrar_mask_selection_treats_brackets_as_literal() -> None:
-    """``unrar -n`` does not treat ``[]`` as a character class; the skip must not
-    either, or a name with both brackets and a glob would desync from the pipe."""
-    from archivey.internal.backends.rar_unrar import unrar_mask_selects
-
-    def selects(name: str, mask: str) -> bool:
-        return unrar_mask_selects("./" + mask, name, dot_rule=True)
-
-    assert selects("a*.txt", "a?.txt")
-    assert selects("aX.txt", "a?.txt")
-    assert selects("subdir/aY.txt", "a?.txt")
-    assert not selects("b1.txt", "a?.txt")
-    # Fixed length: what a ``*`` mask would have swallowed, a ``?`` mask does not.
-    assert not selects("aXX.txt", "a?.txt")
-    assert not selects("a.txt", "a?.txt")
-    assert selects("b?.txt", "b?.txt")
-    assert selects("b1.txt", "b?.txt")
-    assert selects("foo[a].txt", "foo[a].txt")
-    assert not selects("fooa.txt", "foo[a].txt")
-    assert selects("foo[a]X.txt", "foo[a]?.txt")
-    assert not selects("fooaX.txt", "foo[a]?.txt")
-    assert selects("subdir/aY.txt", "subdir/a?.txt")
-    assert not selects("aX.txt", "subdir/a?.txt")
-    assert not selects("other/aY.txt", "subdir/a?.txt")
-    assert selects("aY.txt", "aY.txt")
-    assert not selects("subdir/aY.txt", "aY.txt")
-    # A glob in a directory component matches the whole path, so it does not
-    # select a longer directory (these names are still refused before a read).
-    assert not selects("aaa/x.txt", "d?/x.txt")
-    assert selects("dX/x.txt", "d?/x.txt")
-
-
-def test_unrar_mask_selection_follows_unrar_path_rules() -> None:
-    """The rules measured against ``unrar`` 7.00 in ``test_rar_unrar_names.py``."""
-    from archivey.internal.backends.rar_unrar import unrar_mask_selects
-
-    def selects(name: str, mask: str) -> bool:
-        return unrar_mask_selects("./" + mask, name, dot_rule=True)
-
-    # A mask selects everything below the path it names.
-    assert selects("ab/x.txt", "ab")
-    assert not selects("abc", "ab")
-    # A trailing dot in the mask may stand for nothing, not the other way round.
-    assert selects("ab", "ab.")
-    assert selects("ab.", "ab..")
-    assert not selects("ab.", "ab")
-    # Leading ``./`` and ``../`` parts are dropped from the name as well.
-    assert selects("../ab", "ab")
-    assert selects("x/../ab", "ab")
-
-
-def test_unrar_mask_selection_on_windows_takes_either_separator_in_the_name(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Windows ``unrar`` turns ``/`` into ``\\`` in the name (``ConvertFileHeader``)
-    and in the mask (``CheckArgs``), so a directory part compares equal whichever
-    separator either side was written with. The index keys must agree, or an exact
-    mask would not find its member. Linux keeps ``\\`` as a name character.
-    """
-    from archivey.internal.backends import rar_unrar
-    from archivey.internal.backends.rar_unrar import (
-        unrar_mask_keys,
-        unrar_mask_selects,
-        unrar_selection_keys,
-    )
-
-    monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
-    for name in ("subdir/aY.txt", "subdir\\aY.txt"):
-        assert unrar_mask_selects("./subdir/a?.txt", name, dot_rule=True)
-        assert unrar_mask_selects("./subdir/aY.txt", name, dot_rule=True)
-        assert unrar_mask_selects("./subdir", name, dot_rule=True)
-        assert not unrar_mask_selects("./other/a?.txt", name, dot_rule=True)
-        keys = unrar_mask_keys("./subdir/aY.txt")
-        assert keys is not None
-        assert set(keys) & set(unrar_selection_keys(name))
-    monkeypatch.setattr(rar_unrar.sys, "platform", "linux")
-    assert unrar_mask_selects("./subdir/a?.txt", "subdir/aY.txt", dot_rule=True)
-    assert not unrar_mask_selects("./subdir/a?.txt", "subdir\\aY.txt", dot_rule=True)
-
-
-def test_unrar_name_pos_takes_a_drive_only_after_an_ascii_letter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``GetNamePos`` falls back to 2 only for ``IsDriveLetter``: A-Z, then ``:``."""
-    from archivey.internal.backends import rar_unrar
-    from archivey.internal.backends.rar_unrar import _unrar_name_pos
-
-    monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
-    assert _unrar_name_pos("c:ab") == 2
-    assert _unrar_name_pos("Z:ab") == 2
-    for name in ("1:ab", ":x", "é:ab", "ı:ab"):
-        assert _unrar_name_pos(name) == 0, name
-    monkeypatch.setattr(rar_unrar.sys, "platform", "linux")
-    assert _unrar_name_pos("c:ab") == 0
-
-
-def test_unrar_mask_selection_windows_fold_does_not_change_wildcard_length(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``?`` is length-sensitive; ``str.casefold()`` is not length-preserving.
-
-    ``ß`` casefolds to ``ss``. Whole-string folding then makes ``aßb.txt``
-    (7) miss mask ``a?b.txt`` (7) on Windows, while Windows ``unrar`` folds
-    per character via ``toupperw`` and still emits the member. The skip
-    would land one member short. Folding one character at a time keeps
-    the lengths aligned.
-
-    The ``AXB.TXT`` assertions pin the fold itself: literals that differ only
-    in case. The three ``ß`` checks stay green if ``.upper()`` is deleted.
-    """
-    from archivey.internal.backends import rar_unrar
-    from archivey.internal.backends.rar_unrar import unrar_mask_selects
-
-    monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
-    assert unrar_mask_selects("./a?b.txt", "aßb.txt", dot_rule=True)
-    assert unrar_mask_selects("./aßb.txt", "aßb.txt", dot_rule=True)
-    assert not unrar_mask_selects("./a??b.txt", "aßb.txt", dot_rule=True)
-    # Literals that differ only in case: the per-character fold, not the
-    # length check. Deleting ``.upper()`` leaves the three assertions above
-    # green and fails these.
-    assert unrar_mask_selects("./a?b.txt", "AXB.TXT", dot_rule=True)
-    assert not unrar_mask_selects("./a?c.txt", "AXB.TXT", dot_rule=True)
-    # An exact name folds too: Windows unrar would pipe both.
-    assert unrar_mask_selects("./same.txt", "SAME.TXT", dot_rule=True)
-
-
-def test_unrar_glob_mask_is_linear_on_a_hostile_member_name() -> None:
-    """A hostile member name must not make either matcher backtrack.
-
-    Both operands come from the archive: ``_unrar_selection`` matches every
-    earlier member's name against the mask built from the target's. Two matchers
-    used to backtrack on it. Archivey's regex spelled ``*`` as ``.*`` and cost ~8x
-    per added ``*`` — 18.2 s at eight of them. ``unrar`` 7.00's own mask matcher
-    has the same defect and took 15.6 s on the same name, which no archivey-side
-    matcher could reach. Narrowing ``*`` to ``?`` in the mask removes the ``*``
-    both of them were backtracking on, and took the subprocess to 0.009 s.
-
-    The bound here is wall clock rather than a call count because the defect was
-    the shape of the search, not how often it ran.
-    """
-    from archivey.internal.backends.rar_unrar import _unrar_mask_for, _unrar_match
-
-    name = "a" * 60 + ".txt"
-    for stars in (8, 64, 256):
-        hostile = "a" + "*a" * stars + "b.txt"
-        mask = _unrar_mask_for(hostile)
-        started = time.perf_counter()
-        assert not _unrar_match(mask, name, dot_rule=True)
-        elapsed = time.perf_counter() - started
-        # Microseconds in practice; the old form needed 18 s at stars=8 alone.
-        assert elapsed < 1.0, f"{stars} wildcards took {elapsed:.3f}s"
-
-
-def test_unrar_match_is_a_single_walk() -> None:
-    """Pin the ``?``-only grammar, including where it differs from ``fnmatch``:
-    ``[]`` literal, ``\\`` literal, ``?`` matching a newline, and a pattern dot
-    that may stand for nothing at the end of the name."""
-    from archivey.internal.backends.rar_unrar import _unrar_match
-
-    assert _unrar_match("", "", dot_rule=True)
-    assert not _unrar_match("?", "", dot_rule=True)
-    assert not _unrar_match("", "a", dot_rule=True)
-    assert _unrar_match("a?c", "a.c", dot_rule=True)
-    assert _unrar_match("a?c", "a\nc", dot_rule=True)
-    assert _unrar_match("a?c", "abc", dot_rule=True)
-    assert not _unrar_match("a?c", "ac", dot_rule=True)
-    assert not _unrar_match("a?c", "abbc", dot_rule=True)
-    assert _unrar_match("a[b]c", "a[b]c", dot_rule=True)
-    assert not _unrar_match("a[b]c", "abc", dot_rule=True)
-    assert _unrar_match(r"a\bc", r"a\bc", dot_rule=True)
-    assert not _unrar_match(r"a\bc", "abc", dot_rule=True)
-    assert _unrar_match("a+c", "a+c", dot_rule=True)
-    assert not _unrar_match("a+c", "aac", dot_rule=True)
-    assert _unrar_match("a.", "a", dot_rule=True)
-    assert _unrar_match("a..", "a", dot_rule=True)
-    assert not _unrar_match("a", "a.", dot_rule=True)
-    assert not _unrar_match("a.b", "a", dot_rule=True)
-    assert _unrar_match("a.\\bc", "a\\bc", dot_rule=True)
-    # unrar 7.30 beta 2 has no such dot: the mask a. selects a. and nothing else.
-    assert not _unrar_match("a.\\bc", "a\\bc", dot_rule=False)
-    assert not _unrar_match("a.", "a", dot_rule=False)
-    assert not _unrar_match("a..", "a.", dot_rule=False)
-    assert _unrar_match("a.", "a.", dot_rule=False)
-    assert _unrar_match("a?c", "a.c", dot_rule=False)
-    # A ``*`` here means the mask was not built by ``_unrar_mask_for`` and the
-    # skip is about to be sized against a mask unrar never saw.
-    with pytest.raises(AssertionError):
-        _unrar_match("a*c", "abc", dot_rule=True)
-
-
-def test_unrar_mask_narrowing_keeps_the_member() -> None:
-    """The mask built from a name always still selects that name.
-
-    A glob member name is matched against its siblings, so wildcards appear on
-    the *name* side too — an alphabet of plain characters cannot show it. If a
-    mask stopped selecting its own member, the member would go unreadable.
-    Which siblings the narrowed mask selects besides is computed from that mask
-    itself (``unrar_mask_selects``), so it need not be a subset of what the
-    ``*`` mask selected, and under unrar's DOS extension rules it is not always.
-    """
-    import itertools
-
-    from archivey.internal.backends.rar_unrar import _unrar_mask_for, _unrar_match
-
-    alphabet = "a*?."
-    words = [
-        "".join(w) for n in range(5) for w in itertools.product(alphabet, repeat=n)
-    ]
-    unreachable = [
-        (w, dot_rule)
-        for w in words
-        for dot_rule in (True, False)
-        if not _unrar_match(_unrar_mask_for(w), w, dot_rule=dot_rule)
-    ]
-    assert not unreachable, f"mask stopped matching its own member: {unreachable[:5]}"
-
-
-def test_unrar_glob_demux_ok_basename_only() -> None:
-    """Demux is offered only for a glob confined to the basename, no backslash."""
-    from archivey.internal.backends.rar_unrar import _unrar_glob_demux_ok
-
-    assert _unrar_glob_demux_ok("a*.txt")
-    assert _unrar_glob_demux_ok("subdir/a*.txt")
-    assert _unrar_glob_demux_ok("b?.txt")
-    assert not _unrar_glob_demux_ok("d*/x.txt")
-    assert not _unrar_glob_demux_ok("*/x.txt")
-    assert not _unrar_glob_demux_ok(r"a\b*.txt")
-    assert not _unrar_glob_demux_ok(r"subdir\a*.txt")
-
-
 @requires_binary("unrar")
 @pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
 def test_wildcard_member_name_reads_its_own_bytes(
-    unrar_mask_route: None, name: str, monkeypatch: pytest.MonkeyPatch
+    name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``unrar -n./a*.txt`` concatenates every match; we skip to the named member.
-
-    ``subdir/aY.txt`` is an earlier basename match, so ``a*.txt`` is the prefix-skip
-    case. The size bound still drops ``aX.txt`` after it. Nonsolid fixtures must
-    actually compress (tiny ``-m3`` members store as M0 and never reach this path).
-    """
-    spawns: list[object] = []
+    """``a*.txt`` reads its own bytes, though as an ``-n`` mask it would select
+    ``subdir/aY.txt`` and ``aX.txt`` too: ``unrar`` gets a synthetic archive, and no
+    stored name reaches its command line. Nonsolid fixtures must actually compress
+    (tiny ``-m3`` members store as M0 and never reach ``unrar``)."""
+    masks: list[object] = []
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        member = kwargs.get("member")
-        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
-        spawns.append(member.decode() if isinstance(member, bytes) else member)
+        masks.append(kwargs.get("member"))
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
 
-    with open_archive(_fixture(name), config=_ALLOW_GLOB_CONCAT) as archive:
+    with open_archive(_fixture(name), config=_UNRAR_ONLY) as archive:
         files = [m for m in archive.members() if m.is_file]
         assert {m.name for m in files} == set(_WILDCARD_CONTENTS)
         names = [m.name for m in files]
         assert names.index("subdir/aY.txt") < names.index("a*.txt")
-        assert archive.read("a*.txt") == _WILDCARD_CONTENTS["a*.txt"]
-        assert "a*.txt" in spawns
         for member_name, expected in _WILDCARD_CONTENTS.items():
             assert archive.read(member_name) == expected
-
-
-@requires_binary("unrar")
-@pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
-def test_glob_member_with_earlier_matches_is_refused(
-    unrar_mask_route: None, name: str
-) -> None:
-    """A glob name whose mask also matches earlier members is refused by default.
-
-    ``unrar -n./a*.txt`` decompresses every match and emits them concatenated, so
-    reading ``a*.txt`` pays for ``subdir/aY.txt`` first. The skip returns the right
-    bytes, but the decode already happened and nothing bounds it: ``ExtractionLimits``
-    do not reach ``open()``/``read()``. Names like this are almost always constructed,
-    so they are refused on solid archives too, where those bytes are already inside
-    ``AccessCost.SOLID``. Maintainer (davitf, 2026-09-19): refuse, with the config
-    flag as the escape hatch.
-    """
-    with (
-        open_archive(_fixture(name), config=_UNRAR_ONLY) as archive,
-        pytest.raises(
-            UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
-        ),
-    ):
-        archive.read("a*.txt")
+    assert masks
+    assert all(mask is None or re.fullmatch(r"m\d+", str(mask)) for mask in masks)
 
 
 @requires_binary("unrar")
 @pytest.mark.parametrize("name", list(_WILDCARD_FIXTURES))
 def test_glob_member_matching_nothing_else_still_reads(name: str) -> None:
-    """A glob name that matches no other member has no prefix, so it is not refused.
+    """A glob name that matches no other member reads its own bytes.
 
-    ``only*.dat`` is the accidental ``report*.pdf`` case: the mask matches only
-    itself, the skip ``_unrar_selection`` sizes is 0, and the refusal never triggers. This is the
-    boundary the refusal must not overshoot, so it is pinned without the flag.
+    ``only*.dat`` is the accidental ``report*.pdf`` case. The name never reaches
+    ``unrar``: the member reads through a synthetic archive under a placeholder.
     """
     with open_archive(_fixture(name)) as archive:
         assert archive.read("only*.dat") == _WILDCARD_CONTENTS["only*.dat"]
 
 
 @requires_binary("unrar", "unar")
-@pytest.mark.parametrize(
-    ("name", "contents"),
-    [
-        ("wildcard_names__.rar", _WILDCARD_CONTENTS),
-        ("wildcard_names__rar4.rar", _WILDCARD_CONTENTS),
-        ("wildcard_dirglob__.rar", _WILDCARD_DIRGLOB_CONTENTS),
-    ],
-)
-def test_auto_reads_with_unar_a_member_unrar_cannot_name(
-    unrar_mask_route: None,
-    name: str,
-    contents: dict[str, bytes],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Under ``AUTO``, a member whose name unrar refuses goes to an accepted unar.
-
-    unar names entries by index, so neither a glob mask that also matches earlier
-    members nor a glob in a directory component costs it anything. Only those members
-    take it; every other member still goes to unrar.
-    """
-    unar_indexes: list[list[int]] = []
-    unar_passwords: list[object] = []
-    original = rar_reader.open_unar_stdout
-
-    def spy(path: Path, indexes: list[int], **kwargs: object):
-        unar_indexes.append(list(indexes))
-        unar_passwords.append(kwargs.get("password"))
-        return original(path, indexes, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(rar_reader, "open_unar_stdout", spy)
-    # A caller's password never reaches unar's command line on this path.
-    with open_archive(_fixture(name), password="s3cret") as archive:
-        for member_name, expected in contents.items():
-            assert archive.read(member_name) == expected
-        streamed = {
-            member.name: stream.read()
-            for member, stream in archive.stream_members()
-            if stream is not None
-        }
-    assert {k: v for k, v in streamed.items() if k in contents} == contents
-    refused = {"a*.txt"} if name != "wildcard_dirglob__.rar" else {"d*/x.txt"}
-    # One unar run per read of a refused member: the read above and the pass.
-    assert len(unar_indexes) == 2 * len(refused)
-    assert unar_passwords == [None] * len(unar_indexes)
-
-
-@requires_binary("unrar", "unar")
-def test_auto_keeps_the_unrar_refusal_when_unar_refuses_the_archive(
-    unrar_mask_route: None,
-) -> None:
-    """unar 1.10 misreads a RAR5 solid archive with data after a directory, so it is
-    not used there, and the unrar refusal stands."""
-    with (
-        open_archive(_fixture("wildcard_names_solid__.rar")) as archive,
-        pytest.raises(
-            UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
-        ),
-    ):
-        archive.read("a*.txt")
-
-
-@requires_binary("unrar")
-def test_auto_keeps_the_unrar_refusal_without_an_accepted_unar(
-    unrar_mask_route: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def no_unar(*, purpose: str) -> str:
-        raise PackageNotInstalledError(f"no unar {purpose}")
-
-    monkeypatch.setattr(rar_reader, "find_unar", no_unar)
-    with (
-        open_archive(_fixture("wildcard_names__.rar")) as archive,
-        pytest.raises(
-            UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
-        ),
-    ):
-        archive.read("a*.txt")
-
-
-@requires_binary("unrar", "unar")
 def test_plaintext_members_of_an_encrypted_archive_get_no_password(
-    unrar_mask_route: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A spawn that reads one member gets a password only when that member needs one.
 
     The archive is non-solid and its one encrypted member comes last, so the
-    plaintext members are read with no password, by unrar and, for the glob name
-    unrar cannot address, by unar. Only the encrypted member's read carries it.
+    plaintext members are read with no password, the glob name among them. Only the
+    encrypted member's read carries it.
     """
     passwords: list[tuple[str, object]] = []
     original_unar = rar_reader.open_unar_stdout
@@ -4971,64 +4558,7 @@ def test_plaintext_members_of_an_encrypted_archive_get_no_password(
         assert archive.read("aX.txt").startswith(b"other-aX\n")
         assert archive.read("a*.txt").startswith(b"target-star\n")
         assert archive.read("secret.txt").startswith(b"secret\n")
-    assert passwords == [("unrar", None), ("unar", None), ("unrar", "password")]
-
-
-@requires_binary("unrar", "unar")
-def test_auto_keeps_the_unrar_refusal_when_unar_would_need_a_copy(
-    unrar_mask_route: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A prefix before the RAR means unar reads a copy, which the open-time cost
-    notes under unrar do not announce, so the unrar refusal stands."""
-    created = _rar_temp_artifacts(monkeypatch)
-    path = tmp_path / "prefixed.rar"
-    path.write_bytes(
-        b"MZ" + bytes(4094) + _fixture("wildcard_names__.rar").read_bytes()
-    )
-    with (
-        open_archive(path) as archive,
-        pytest.raises(
-            UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
-        ),
-    ):
-        archive.read("a*.txt")
-    assert created == []
-
-
-@requires_binary("unrar")
-def test_glob_concatenation_flag_names_itself_in_the_refusal(
-    unrar_mask_route: None,
-) -> None:
-    """The refusal tells the caller the byte count and the exact flag to set."""
-    with (
-        open_archive(_fixture("wildcard_names__.rar"), config=_UNRAR_ONLY) as archive,
-        pytest.raises(UnsupportedFeatureError) as excinfo,
-    ):
-        archive.read("a*.txt")
-    message = str(excinfo.value)
-    assert "rar_allow_glob_member_concatenation" in message
-    assert str(len(_WILDCARD_CONTENTS["subdir/aY.txt"])) in message
-
-
-@requires_binary("unrar")
-def test_solid_glob_refusal_does_not_claim_an_avoidable_decode(
-    unrar_mask_route: None,
-) -> None:
-    """On a solid archive the glob prefix is already inside ``AccessCost.SOLID``.
-
-    The refusal still fires — the names are constructed — but the message must
-    not describe those bytes as an avoidable extra decode.
-    """
-    with (
-        open_archive(
-            _fixture("wildcard_names_solid__.rar"), config=_UNRAR_ONLY
-        ) as archive,
-        pytest.raises(UnsupportedFeatureError) as excinfo,
-    ):
-        archive.read("a*.txt")
-    message = str(excinfo.value)
-    assert "rar_allow_glob_member_concatenation" in message
-    assert "would decompress" not in message
+    assert passwords == [("unrar", None), ("unrar", None), ("unrar", "password")]
 
 
 @requires_binary("unrar")
@@ -5050,156 +4580,51 @@ def test_wildcard_solid_stream_members_reads_all() -> None:
 
 
 @requires_binary("unrar")
-def test_wildcard_nonsolid_stream_members_hits_the_refusal(
-    unrar_mask_route: None,
-) -> None:
-    """A nonsolid streaming pass takes the named route, so the refusal reaches it.
-
-    ``_iter_with_data`` falls through to per-member named opens for nonsolid archives,
-    so ``stream_members()`` builds the same ``-n`` mask a random ``open()`` does and
-    carries the same concatenation — worse, in fact, since the pass decodes the prefix
-    member once as itself and again inside the target's pipe. The solid pass above is
-    exempt only because it builds no mask at all.
-
-    Maintainer (davitf, 2026-09-19), asked whether iteration should be exempted:
-    "right now don't exempt iteration, it can fail as the other modes." So this is
-    the decided behaviour, not a placeholder.
-    """
-    with (
-        open_archive(_fixture("wildcard_names__.rar"), config=_UNRAR_ONLY) as archive,
-        pytest.raises(UnsupportedFeatureError, match="would decompress") as excinfo,
-    ):
-        for member, stream in archive.stream_members():
-            if stream is not None:
-                stream.read()
-    assert str(len(_WILDCARD_CONTENTS["subdir/aY.txt"])) in str(excinfo.value)
+def test_wildcard_nonsolid_stream_members_reads_all() -> None:
+    """A nonsolid pass reads glob names as a random ``open()`` does, through
+    synthetic archives, so they need no refusal and no flag."""
+    with open_archive(_fixture("wildcard_names__.rar"), config=_UNRAR_ONLY) as archive:
+        got = {
+            member.name: stream.read()
+            for member, stream in archive.stream_members()
+            if member.is_file and stream is not None
+        }
+    assert got == _WILDCARD_CONTENTS
 
 
 @requires_binary("unrar")
-def test_seekable_wildcard_respawn_still_skips_glob_prefix(
-    unrar_mask_route: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A backward seek on a glob name must respawn *and* re-skip the prefix.
-
-    ``a*.txt`` is not first among matches (``subdir/aY.txt`` is), so a respawn
-    that forgot the skip would return the nested file after ``seek(0)``.
-    """
-    spawns: list[object] = []
-    original = rar_reader.open_unrar_p
-
-    def spy(path: Path, **kwargs: object):
-        member = kwargs.get("member")
-        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
-        spawns.append(member.decode() if isinstance(member, bytes) else member)
-        return original(path, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
-
-    expected = _WILDCARD_CONTENTS["a*.txt"]
-    with (
-        open_archive(
-            _fixture("wildcard_names_solid__.rar"),
-            seekable_members=True,
-            config=_ALLOW_GLOB_CONCAT,
-        ) as archive,
-        archive.open("a*.txt") as stream,
-    ):
-        assert stream.seekable() is True
-        # Prefix skip is eager at pipe construction, which for a respawn is
-        # the following read — not seek(). A no-byte seek must not spawn.
-        stream.seek(0, io.SEEK_END)
-        stream.seek(0)
-        assert spawns == ["a*.txt"]
-        assert stream.read(6) == expected[:6]
-        assert spawns == ["a*.txt"]
-        stream.seek(0)
-        assert spawns == ["a*.txt"]
-        assert stream.read() == expected
-        assert spawns == ["a*.txt", "a*.txt"]
-
-
-_SEPARATOR_OR_DIR_GLOB = (
-    "unrar reads with a backslash, or with a glob in a directory component, "
-    "cannot be read through unrar"
-)
-
-
-@requires_binary("unrar")
-def test_wildcard_dirglob_and_backslash_names_are_refused(
-    unrar_mask_route: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A glob in a directory component, or a backslash in the stored name, stays a
-    typed refusal — otherwise unrar's mask (and our skip) desyncs, including on
-    Windows where ``\\`` is a separator and a non-glob ``a\\b_TGT.txt`` emits nothing."""
-    spawns: list[object] = []
-    original = rar_reader.open_unrar_p
-
-    def spy(path: Path, **kwargs: object):
-        member = kwargs.get("member")
-        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
-        spawns.append(member.decode() if isinstance(member, bytes) else member)
-        return original(path, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
-
-    with open_archive(
-        _fixture("wildcard_dirglob__.rar"), config=_UNRAR_ONLY
-    ) as archive:
-        files = {m.name: m for m in archive.members() if m.is_file}
-        assert "d*/x.txt" in files
+def test_wildcard_dirglob_and_backslash_names_read_their_own_bytes() -> None:
+    """A glob in a directory component, or a backslash in the stored name, used to
+    be refused: ``unrar``'s mask would select members archivey could not size. A
+    synthetic archive names no member, so they read like any other."""
+    with open_archive(_fixture("wildcard_dirglob__.rar"), config=_UNRAR_ONLY) as ar:
         for name, expected in _WILDCARD_DIRGLOB_CONTENTS.items():
-            if name == "d*/x.txt":
-                continue
-            assert archive.read(name) == expected
-        before = list(spawns)
-        with pytest.raises(UnsupportedFeatureError, match=_SEPARATOR_OR_DIR_GLOB):
-            archive.read("d*/x.txt")
-        assert spawns == before
-
-    with open_archive(
-        _fixture("wildcard_backslash__.rar"), config=_UNRAR_ONLY
-    ) as archive:
-        files = {m.name: m for m in archive.members() if m.is_file}
-        assert archive.read("a/b1.txt") == _WILDCARD_BACKSLASH_SLASH
-        before = list(spawns)
+            assert ar.read(name) == expected
+    with open_archive(_fixture("wildcard_backslash__.rar"), config=_UNRAR_ONLY) as ar:
+        files = {m.name for m in ar.members() if m.is_file}
+        assert ar.read("a/b1.txt") == _WILDCARD_BACKSLASH_SLASH
         for name in _WILDCARD_BACKSLASH_REFUSED:
             assert name in files
-            with pytest.raises(UnsupportedFeatureError, match=_SEPARATOR_OR_DIR_GLOB):
-                archive.read(name)
-        assert spawns == before
+            assert ar.read(name)
 
 
 @requires_binary("unrar")
-@pytest.mark.parametrize("config", [_UNRAR_ONLY, None], ids=["unrar", "auto"])
 def test_refused_glob_open_of_a_stream_source_writes_nothing(
-    unrar_mask_route: None,
-    config: ArchiveyConfig | None,
-    monkeypatch: pytest.MonkeyPatch,
+    unrar_mask_route: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A refused ``open()`` must not spool the source to disk on its way to the raise.
-
-    Both refusals in ``_open_member`` — the backslash / directory-glob one and the
-    glob-concatenation one — are decided entirely from the parsed member table, and
-    neither spawns ``unrar``. ``_ensure_archive_path()`` therefore has no reason to
-    run first, and when the source is a stream, running it first copies the whole
-    archive (the whole *set*, for volumes) for a read that never happens. That also
-    put the two halves of this PR at odds: the concatenation refusal exists to stop
-    an unbounded decode, and it was paying an unbounded disk copy to reach the raise.
-    Under ``AUTO`` the unar fallback is not taken for a stream source, since unar
-    would need its own copy, so the refusal stands there too.
-    """
+    """When no synthetic archive can hold a member, only a plain name can be read
+    from the original. A glob name is refused, before the stream source is copied
+    to disk for a read that never happens."""
     for fixture, member in (
         ("wildcard_names__.rar", "a*.txt"),
         ("wildcard_dirglob__.rar", "d*/x.txt"),
     ):
         created = _rar_temp_artifacts(monkeypatch)
         data = _fixture(fixture).read_bytes()
-        with open_archive(io.BytesIO(data), config=config) as archive:
+        with open_archive(io.BytesIO(data), config=_UNRAR_ONLY) as archive:
             assert member in {m.name for m in archive.members()}
             assert created == []
-            with pytest.raises(UnsupportedFeatureError):
+            with pytest.raises(UnsupportedFeatureError, match="not plain enough"):
                 archive.read(member)
             assert created == []
 
@@ -5207,9 +4632,7 @@ def test_refused_glob_open_of_a_stream_source_writes_nothing(
 @requires_binary("unrar")
 def test_wildcard_ver_live_glob_skips_history_rows() -> None:
     """``unrar p -n./data*`` without ``-ver`` omits history; the skip must too."""
-    with open_archive(
-        _fixture("wildcard_ver__.rar"), config=_ALLOW_GLOB_CONCAT
-    ) as archive:
+    with open_archive(_fixture("wildcard_ver__.rar")) as archive:
         files = {m.name: m for m in archive.members() if m.is_file}
         assert set(files) == set(_WILDCARD_VER_CONTENTS)
         for member_name, expected in _WILDCARD_VER_CONTENTS.items():
