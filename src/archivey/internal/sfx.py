@@ -898,12 +898,15 @@ def scan_for_magic(
                 return MagicScan(MagicHit(first_at, needle.magic, 0), None, 0)
             break
 
-    while consumed < limit:
-        chunk = source.read(min(_SCAN_CHUNK, limit - consumed))
-        if not chunk:
+    while True:
+        if consumed < limit:
+            chunk = source.read(min(_SCAN_CHUNK, limit - consumed))
+            consumed += len(chunk)
+            window.extend(chunk)
+        # A pass per chunk, and one more for bytes a peek already pulled in: judging
+        # ``first_at`` can read up to ``limit`` before any pass ran.
+        if len(window) <= searched:
             break
-        consumed += len(chunk)
-        window.extend(chunk)
 
         # Rebuilt per chunk: the finder's remembered positions are window-relative,
         # and the trim below shifts them. Validator peeks inside the loop only append.

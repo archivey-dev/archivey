@@ -100,12 +100,13 @@ Each idea carries a status:
   replace a 2 MiB scan with one seek and would name compressors archivey does not read.
   It needs a corpus of current and old installers first
   ([`topics/prefixed-archives.md`](topics/prefixed-archives.md)).
-- **Bound the SFX search at the overlay of a stub with no PE layout.** *Open idea.*
+- **Bound the SFX search when the overlay start holds no archive.** *Open idea.*
   A PE whose layout parses is judged at its overlay start first
-  (`pe-aware-sfx-location`), so a 7z SFX with a certificate after it stops there. A stub
-  with no PE layout (a bare `MZ`, an ELF or a Mach-O stub) still reads the whole window
-  for a 7z with data after the archive; an ELF or Mach-O layout would bound it the same
-  way. The current cost for a bare stub is pinned by
+  (`pe-aware-sfx-location`), so a 7z SFX with a certificate after it stops there when the
+  7z starts exactly at the overlay start. A PE with something before the archive (a
+  `7zS.sfx` config block) and a stub with no PE layout (a bare `MZ`, an ELF or a Mach-O
+  stub) still read the whole window for a 7z with data after the archive. Parsing the
+  `7zS` config block, or an ELF or Mach-O layout, would bound them the same way. The current cost for a bare stub is pinned by
   `test_short_7z_hit_scan_cost_is_bounded_by_the_window`
   ([`topics/detection.md`](topics/detection.md) §2.2).
 - **Price detection in round trips, not bytes.** *Needs design.* A range-request source

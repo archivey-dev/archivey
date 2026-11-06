@@ -1210,7 +1210,10 @@ class LocalHeaderWalk:
         # A PE's overlay start first, as detection and the RAR and 7z scans judge it:
         # a decoy header in the program's own sections never competes with the payload.
         layout = pe_layout(peek_at(0)(PE_LAYOUT_PREFIX), None)
-        if layout is not None and layout.overlay_start + 4 <= SFX_MAX:
+        if (
+            layout is not None
+            and layout.overlay_start + len(LOCAL_HEADER_SIGNATURE) <= SFX_MAX
+        ):
             first = peek_at(layout.overlay_start)
             if (
                 first(len(LOCAL_HEADER_SIGNATURE)) == LOCAL_HEADER_SIGNATURE

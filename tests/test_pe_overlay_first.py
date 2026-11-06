@@ -14,6 +14,7 @@ import zipfile
 from pathlib import Path
 
 from archivey import detect_format, open_archive
+from archivey.internal.sfx import SFX_MAX
 from archivey.types import ArchiveFormat
 from tests.pe_build import FILE_ALIGNMENT, pe_file, pe_headers
 from tests.streams_util import NonSeekableBytesIO
@@ -129,3 +130,42 @@ def test_section_table_past_the_prefix_is_scanned_as_today() -> None:
     head = pe_headers([(0x200, 0x10)] * 120, headers_size=8192)
     data = head + first + b"\x55" * 1024 + second
     assert detect_format(io.BytesIO(data)).payload_offset == len(data) - len(second)
+
+
+def test_rejected_overlay_candidate_near_the_window_end_hides_nothing() -> None:
+    # Judging the overlay start reads up to the window end; a candidate there that its
+    # validator declines must leave the whole window to the forward scan.
+    from archivey.internal.backends.sevenzip_detect import (
+        validate_sevenzip_signature_header,
+    )
+    from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
+    from archivey.internal.sfx import scan_for_magic
+
+    limit = 4096
+    data = bytearray(b"\x90" * limit)
+    data[100 : 100 + 32] = _stored_7z()[:32]
+    first_at = limit - len(MAGIC_7Z)
+    data[first_at:] = MAGIC_7Z
+    data += _stored_7z()[32:]
+    scan = scan_for_magic(
+        io.BytesIO(bytes(data)),
+        (MAGIC_7Z,),
+        limit=limit,
+        validator=validate_sevenzip_signature_header,
+        first_at=first_at,
+    )
+    assert scan.hit is not None
+    assert scan.hit.candidate_origin == 100
+
+
+def test_forced_7z_finds_a_section_archive_behind_a_bad_overlay_start() -> None:
+    # The overlay starts 6 bytes before the window end and holds only 7z magic; the
+    # real 7z sits in the program's section, where detection finds it too.
+    image = SFX_MAX - 6 - FILE_ALIGNMENT
+    real = _stored_7z(name="real.txt")
+    section = (b"\0" * 512 + real).ljust(image, b"\xcc")
+    overlay = b"7z\xbc\xaf'\x1c" + b"\x55" * 64
+    data = pe_headers([(FILE_ALIGNMENT, image)]) + section + overlay
+    assert detect_format(io.BytesIO(data)).payload_offset == FILE_ALIGNMENT + 512
+    assert _names(data) == ["real.txt"]
+    assert _names(data, ArchiveFormat.SEVEN_Z) == ["real.txt"]
