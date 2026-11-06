@@ -217,6 +217,13 @@ LINKS_AND_COLLISIONS = [
     ("file", "later", b"after its link"),
     ("hard", "hdir", "d"),
     ("hard", "hsym", "ok"),  # a hard link to a symlink is written as that symlink
+    # Case: directories and link targets are exact names, as on a case-sensitive
+    # disk; only files and links collide by the policy's key.
+    ("file", "c", b"lower c"),
+    ("dir", "C", ""),  # written beside c
+    ("sym", "Q", "q"),  # dangling, not a loop through itself
+    ("hard", "hc", "c"),
+    ("file", "HC", b"collides"),  # refused under STRICT and STANDARD: hc has its key
 ]
 
 
@@ -236,10 +243,12 @@ def _written(dest: Path) -> dict[str, tuple[Any, ...]]:
 def _listed(fs: ArchiveyFileSystem) -> dict[str, tuple[Any, ...]]:
     out: dict[str, tuple[Any, ...]] = {}
     for path, info in fs.find("", withdirs=True, detail=True).items():
-        # Written as a symlink: a symlink, or a hard link to one, whose destination
-        # is then the symlink's target rather than the hard link's source name.
+        # Written as a symlink: a symlink, or a hard link to one. A hard link that
+        # stays one has a file as its source, so a hard link that is not a file, or
+        # whose destination is not its source's name, is a symlink's second name.
         if info.get("islink") and (
             info["member"].type.value == "symlink"
+            or info["type"] != "file"
             or info["destination"] != info["member"].link_target
         ):
             out[path] = ("link",)
@@ -268,14 +277,19 @@ def test_tree_matches_extraction_on_links_and_collisions(
         listed = _listed(fs)
         assert fs.dir_cache is not None
         cached = set(fs.dir_cache)
-        if os.name == "nt" and policy is ExtractionPolicy.TRUSTED:
-            # TRUSTED keys on the exact name, and a Windows disk folds case and trims
-            # a trailing dot, so it writes each of these over the member before it.
-            # The tree does not model the disk.
-            for name in ("a.txt", "f."):
+        if os.name == "nt":
+            # A Windows disk folds case and trims a trailing dot, so it cannot hold
+            # these beside the member before them: the directory C beside the file
+            # c under every policy, and under TRUSTED, which keys on the exact name,
+            # the files too. The tree does not model the disk.
+            folded = ["C"]
+            if policy is ExtractionPolicy.TRUSTED:
+                folded += ["a.txt", "f.", "HC"]
+            for name in folded:
                 assert name in listed
                 del listed[name]
                 cached.discard(name)
+                written.pop(name, None)
         assert listed == written
         # Every path ``info`` answers, not only those ``find`` walks to: ``find``
         # does not descend into a file, so it alone misses ``p/q``.

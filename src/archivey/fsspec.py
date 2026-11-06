@@ -69,17 +69,19 @@ _LOOP = _Refusal("it resolves through a symlink loop")
 class _Tree:
     """The paths extraction writes into an empty destination, member by member.
 
-    Keys are ``collision_key``s, as extraction's are, and the first member to claim a
-    key keeps it and its spelling. A path is resolved as the destination resolves it
-    once the members before it are written: a component that is a symlink the
-    archive made is followed, so ``l/y`` under ``l -> d`` is written as ``d/y``.
+    Paths are exact, as on a case-sensitive disk: a directory, a parent and a link's
+    target are found by name. Only files and links also claim the policy's
+    ``collision_key``, as extraction's collision map does, and the first to claim a
+    key keeps it. A path is resolved as the destination resolves it once the members
+    before it are written: a component that is a symlink the archive made is
+    followed, so ``l/y`` under ``l -> d`` is written as ``d/y``.
     """
 
     def __init__(self, policy: ExtractionPolicy) -> None:
         self._policy = policy
-        self._kinds: dict[str, _Kind] = {}
-        self._targets: dict[str, str] = {}  # a link's key -> its target text
-        self._spelled: dict[str, str] = {}  # a key -> the path it is listed under
+        self._kinds: dict[str, _Kind] = {}  # a path -> what is written there
+        self._targets: dict[str, str] = {}  # a link's path -> its target text
+        self._claimed: set[str] = set()  # the collision keys of files and links
 
     def place(self, name: str, view: ArchiveMember) -> str | _Refusal:
         """Claim ``name`` and return the path it is written at, or say why extraction
@@ -89,7 +91,6 @@ class _Tree:
         if isinstance(parent, _Refusal):
             return parent
         path = f"{parent}/{last}" if parent else last
-        key = collision_key(path, self._policy)
         kind: _Kind = (
             "dir"
             if view.type is MemberType.DIRECTORY
@@ -97,25 +98,30 @@ class _Tree:
             if view.type is MemberType.SYMLINK
             else "file"
         )
-        claimed = self._kinds.get(key)
-        if claimed is not None:
-            if kind == "dir" and claimed == "dir":
-                return self._spelled[key]  # a directory listed again
+        existing = self._kinds.get(path)
+        key = collision_key(path, self._policy)
+        if kind == "dir":
+            if existing == "dir":
+                return path  # a directory listed again
+            if existing is not None:
+                return _Refusal("its name collides with a member written before it")
+        elif existing is not None or key in self._claimed:
             return _Refusal("its name collides with a member written before it")
-        self._kinds[key] = kind
-        self._spelled[key] = path
+        self._kinds[path] = kind
         if kind == "link":
             target = view.link_target or ""
-            self._targets[key] = target
+            self._targets[path] = target
             # A link that leads out through a link made before it is refused before
             # anything is written. One that loops is found only once it is made, so
             # it is removed, and the parents made for it stay.
             problem = self._resolve(posixpath.join(parent, target), final=True)
             if isinstance(problem, _Refusal):
-                del self._kinds[key], self._spelled[key], self._targets[key]
+                del self._kinds[path], self._targets[path]
                 if problem is _LOOP:
                     self._make_parents(parent)
                 return problem
+        if kind != "dir":
+            self._claimed.add(key)
         self._make_parents(parent)
         return path
 
@@ -124,22 +130,16 @@ class _Tree:
         already."""
         parts = parent.split("/") if parent else []
         for depth in range(1, len(parts) + 1):
-            prefix = "/".join(parts[:depth])
-            prefix_key = collision_key(prefix, self._policy)
-            if prefix_key not in self._kinds:
-                self._kinds[prefix_key] = "dir"
-                self._spelled[prefix_key] = prefix
+            self._kinds.setdefault("/".join(parts[:depth]), "dir")
 
     def directories(self) -> list[str]:
-        """Every directory extraction makes, as listed: those a member names and
-        those made as parents, including a looping link's, which extraction makes
-        before it removes the link."""
-        return [
-            self._spelled[key] for key, kind in self._kinds.items() if kind == "dir"
-        ]
+        """Every directory extraction makes: those a member names and those made as
+        parents, including a looping link's, which extraction makes before it
+        removes the link."""
+        return [path for path, kind in self._kinds.items() if kind == "dir"]
 
     def _resolve(self, name: str, *, final: bool = False) -> str | _Refusal:
-        """The path the directory ``name`` resolves to, as it is listed.
+        """The path the directory ``name`` resolves to.
 
         A missing component of the name is a directory extraction creates. A file, or
         a link that leads to no directory, ends the walk: extraction cannot create a
@@ -162,17 +162,15 @@ class _Tree:
                 out.pop()
                 continue
             out.append(part)
-            key = collision_key("/".join(out), self._policy)
-            kind = self._kinds.get(key)
-            if kind is not None:
-                out[-1] = posixpath.basename(self._spelled[key])
+            current = "/".join(out)
+            kind = self._kinds.get(current)
             if kind == "link":
                 hops += 1
                 if hops > _MAX_SYMLINK_HOPS:
                     return _LOOP
                 out.pop()
                 # The target is relative to the link's parent, which ``out`` now is.
-                target = self._targets[key]
+                target = self._targets[current]
                 pending[:0] = [(p, True) for p in target.split("/")]
                 continue
             if final:
@@ -214,10 +212,15 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     ``fs.reader.diagnostics``. A duplicate name shows its current entry. A member
     under one of the archive's own symlinks is listed where extraction writes it,
     through the link: ``l/y`` under ``l -> d`` is ``d/y``, and a path under a link that
-    leads to no directory is refused. What a non-empty destination decides
-    (``overwrite=``, existing files), what the destination's file system cannot hold
-    (a reserved name under ``TRUSTED`` on Windows, case folded by the disk), a link
-    that a later member makes lead out, and ``filter=`` are not modelled.
+    leads to no directory is refused. Paths are compared as on a case-sensitive
+    disk; only files and links collide by the policy's key. Not modelled: what a
+    non-empty destination decides (``overwrite=``, existing files), what the
+    destination's file system cannot hold (a reserved name under ``TRUSTED`` on
+    Windows, case folded by the disk), a link that a later member makes lead out, the
+    order of the hard links extraction makes in a second pass (one whose source it
+    did not write in order), a hard link to a symlink in another directory (written
+    with the symlink's target, read from the hard link's own directory), and
+    ``filter=``.
 
     A link whose target is a member is listed as the target's type, with
     ``"islink": True`` and ``"destination"`` in its ``info()``, and opens the target.
@@ -428,7 +431,9 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                     continue
                 placed = tree.place(name, view)
                 if isinstance(placed, _Refusal):
-                    refused_ids.add(member.member_id)
+                    # Not a refused source: extraction refuses a hard link only for
+                    # a source the policy refused, and makes one whose source lost
+                    # its name to a member before it from that source's bytes.
                     self._report_refused(member, placed.reason)
                     continue
                 files[placed] = self._entry(placed, member, view)
