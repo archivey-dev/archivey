@@ -281,11 +281,13 @@ def _rar_member_copy_notes(
         note = (
             "Reading a member that RARLAB unrar has to read, such as a compressed one, "
             "will copy the packed bytes of its solid stream, from the stream start up "
-            "to that member, to disk so unrar can read them; each stream is copied at "
-            "most once and kept until the archive closes. A pass (stream_members(), "
+            "to that member, to disk so unrar can read them. Each stream is copied "
+            "once, and again from its start when a read goes further in while an "
+            "earlier read still holds the copy. A pass (stream_members(), "
             "extract_all()) copies whole solid streams a few at a time, up to 64 MiB "
-            "of packed bytes or one larger stream, or the whole archive when a member "
-            "has an unknown compression version or a volume is missing."
+            "of packed bytes or one larger stream, or the whole archive when that "
+            "would be one run, a member has an unknown compression version, a volume "
+            "is missing, or a RAR 1.5-4 member passes 4 GiB."
         )
         what = "a solid stream"
         refused = (
@@ -1191,11 +1193,16 @@ class _SyntheticFile:
 
 
 class _SolidPassPipe(ReadOnlyIOStream):
-    """A solid pass's output for a stream source: one ``unrar`` run per solid
-    stream, each on a synthetic archive of that stream alone, read back to back.
+    """A pass's output from several ``unrar`` runs, read back to back: for a solid
+    pass over a stream source, one run per run of whole solid streams
+    (:class:`_PassRun`), each on a synthetic archive of that run alone.
 
     ``next_run`` starts the next run, or returns ``None`` after the last. A run's
-    file is removed as soon as its output ends, so one stream is on disk at a time.
+    file is removed as soon as its output ends, so one run is on disk at a time.
+    A run that fails to start, or whose read raises, ends the pipe for good:
+    starting the run after it would hand its bytes to the failed run's offsets.
+    Later reads return ``b""``, so the members after it come up short, as they do
+    when the single pipe over the original archive fails.
     """
 
     def __init__(
@@ -1213,19 +1220,24 @@ class _SolidPassPipe(ReadOnlyIOStream):
         if n == 0:
             return b""
         while True:
-            if self._current is None:
-                if self._done:
-                    return b""
-                run = self._next_run()
-                if run is None:
-                    self._done = True
-                    return b""
-                self._current, self._cleanup = run
-            data = self._current.read(n)
-            if data:
-                return data
-            # The run's end: its exit code is mapped on that empty read.
-            self._finish()
+            if self._done:
+                return b""
+            try:
+                if self._current is None:
+                    run = self._next_run()
+                    if run is None:
+                        self._done = True
+                        return b""
+                    self._current, self._cleanup = run
+                data = self._current.read(n)
+                if data:
+                    return data
+                # The run's end: its exit code is mapped on that empty read.
+                self._finish()
+            except BaseException:
+                self._done = True
+                self._finish()
+                raise
 
     def _finish(self) -> None:
         current, cleanup = self._current, self._cleanup
@@ -1310,7 +1322,12 @@ class _CheckedRun(ReadOnlyIOStream):
         data = b""
         if not self._ended:
             assert self._inner is not None
-            data = self._inner.read(want)
+            try:
+                data = self._inner.read(want)
+            except Exception:  # noqa: BLE001 - the members read alone report it
+                # A run that fails part-way (unrar died, a bad exit) ends here;
+                # the members from this one on are read one at a time.
+                data = b""
             if not data:
                 self._ended = True
         if not data:
@@ -3577,12 +3594,12 @@ class RarReader(BaseArchiveReader):
             for m in self._members
         )
 
-        groups = self._solid_pass_groups()
+        runs = self._solid_pass_run_plan()
 
         def _spawn() -> BinaryIO:
             password = self._archive_data_password()
-            if groups is not None:
-                return _SolidPassPipe(self._solid_pass_runs(groups, password))
+            if runs is not None:
+                return _SolidPassPipe(self._solid_pass_runs(runs, password))
             path = self._ensure_archive_path()
             proc, stdout = open_unrar_p(
                 path,
@@ -3631,7 +3648,7 @@ class RarReader(BaseArchiveReader):
             copies,
             _spawn,
             _plan,
-            costs=None if groups is None else self._stream_pass_costs(groups),
+            costs=None if runs is None else self._stream_pass_costs(runs),
         )
 
     def _stream_pass_costs(self, runs: list[_PassRun]) -> dict[int, _DictionaryCost]:
@@ -3710,7 +3727,17 @@ class RarReader(BaseArchiveReader):
         batch's planned bytes by :class:`_CheckedRun`. A batch whose file does not
         fit the spool limit, or whose headers cannot be written, runs as all zeros,
         tainted: its members are then read one at a time, each as ``open()`` reads
-        it."""
+        it. So does one whose file or ``unrar`` fails to start: each member read
+        alone then raises what it raises, and the batches after it still line up
+        (:class:`_SolidPassPipe` ends for good on a run that raises)."""
+        try:
+            return self._start_nonsolid_batch_run(batch)
+        except Exception:  # noqa: BLE001 - the members read alone report it
+            return _CheckedRun(None, batch), _no_cleanup
+
+    def _start_nonsolid_batch_run(
+        self, batch: _NonsolidBatch
+    ) -> tuple[BinaryIO, Callable[[], None]]:
         members = self._archive.members
         version = self._archive.version
         name = self._members[batch.indices[0]].name
@@ -3847,7 +3874,7 @@ class RarReader(BaseArchiveReader):
                         finally:
                             cleanup()
 
-    def _solid_pass_groups(self) -> list[_PassRun] | None:
+    def _solid_pass_run_plan(self) -> list[_PassRun] | None:
         """The runs of solid streams a pass over a stream source reads one at a time.
 
         Each run is whole solid streams, the archive indices of their members with
@@ -3856,10 +3883,16 @@ class RarReader(BaseArchiveReader):
         demultiplexing offsets do not change. A run takes the next stream while its
         packed bytes stay within :func:`_pass_run_bytes`, so an archive of many
         small streams does not start one ``unrar`` per stream; a larger stream runs
-        alone. ``None`` reads the original archive through one pipe: a source on
-        disk, which that costs no copy, and the shapes whose pipe stops early (a
-        member of an unknown compression version, data out of reach) or that a
-        synthetic header cannot hold (a RAR 1.5-4 member past 4 GiB).
+        alone. (Here a *group* is one stream, before streams are joined into runs.)
+
+        ``None`` reads the original archive through one pipe: a source on disk,
+        which needs no copy; the shapes whose pipe stops early (a member of an
+        unknown compression version, data out of reach) or that a synthetic header
+        cannot hold (a RAR 1.5-4 member past 4 GiB), copied whole for a stream
+        source; and an archive that would be one run. That run would hold every
+        packed member, so it saves no disk over the whole-archive copy, and it
+        reads each header again: measured on 4,000 members of 250 B from a
+        ``BytesIO``, 502 ms against 414 ms for the whole copy.
         """
         if self._volume_paths or self._solid_after_unknown:
             return None
@@ -3891,14 +3924,14 @@ class RarReader(BaseArchiveReader):
                 runs[-1].packed += group.packed
             else:
                 runs.append(group)
-        return runs
+        return runs if len(runs) > 1 else None
 
     def _solid_pass_runs(
-        self, groups: list[_PassRun], password: str | None
+        self, runs: list[_PassRun], password: str | None
     ) -> Callable[[], tuple[BinaryIO, Callable[[], None]] | None]:
         """Start ``unrar`` on the next run's synthetic archive, or ``None`` after
         the last: the output stream and the cleanup that removes the file."""
-        pending = iter(groups)
+        pending = iter(runs)
         members = self._archive.members
         version = self._archive.version
 
@@ -3906,13 +3939,13 @@ class RarReader(BaseArchiveReader):
             run = next(pending, None)
             if run is None:
                 return None
-            group = run.indices
-            name = self._members[group[0]].name
+            indices = run.indices
+            name = self._members[indices[0]].name
             entries = []
-            for position, index in enumerate(group):
+            for position, index in enumerate(indices):
                 entry = self._synthetic_entry(name, members[index], position)
                 if entry is None:
-                    # Ruled out by _solid_pass_groups: only a join past 4 GiB fails.
+                    # Ruled out by _solid_pass_run_plan: only a join past 4 GiB fails.
                     raise AssertionError("a synthetic header the pass cannot write")
                 entries.append(entry)
             charge = SyntheticArchive.overhead(version) + sum(e.size for e in entries)
@@ -3964,7 +3997,7 @@ class RarReader(BaseArchiveReader):
         """The solid pass over one process's output, demultiplexed by offset.
 
         ``costs`` replaces :meth:`_pass_dictionary_costs` when the output comes
-        from one process per solid stream.
+        from one process per run of solid streams (:class:`_SolidPassPipe`).
 
         ``spawn`` starts the process and returns its output stream. ``plan`` gets each
         payload member, its stream size and whether it has a digest to check, and
