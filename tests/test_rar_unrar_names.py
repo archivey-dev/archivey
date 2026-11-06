@@ -148,6 +148,8 @@ def test_only_a_plain_name_selects_its_member_alone(
         (b"aXb", 1),
         (b"d/ab", 1),
         ("caf\u00e9.txt".encode(), 1),
+        ("\u0131.bin".encode(), 1),
+        (b"i.bin", 1),
         (b"plain.txt", 1),
     ]
     path = _nocrc_rar5(tmp_path, clean)
@@ -167,6 +169,9 @@ def test_only_a_plain_name_selects_its_member_alone(
         "aXb": "aXb",
         "d/ab": "d/ab",
         "café.txt": "café.txt" if non_ascii else None,
+        # Dotless ``ı`` upper-cases to ``I`` as ``i`` does, so neither is plain.
+        "\u0131.bin": None,
+        "i.bin": None,
         "plain.txt": "plain.txt",
     }
 

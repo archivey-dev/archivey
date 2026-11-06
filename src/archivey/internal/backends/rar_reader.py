@@ -980,6 +980,13 @@ def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool) -> str | None:
     return text
 
 
+def _fold(text: str) -> str:
+    """``text`` folded both ways, ``upper()`` then ``casefold()``: two names Windows
+    ``unrar`` upper-cases alike (``ı`` and ``i`` both become ``I``) fold alike, and so
+    do two that only ``casefold`` joins (``ß`` and ``ss``)."""
+    return text.upper().casefold()
+
+
 def _plain_unrar_masks(
     members: list[ArchiveMember], *, rar5: bool, non_ascii: bool
 ) -> dict[int, str]:
@@ -991,8 +998,8 @@ def _plain_unrar_masks(
     to select one member. Otherwise a member is listed when its name has no ``*``
     or ``?`` and no component ending in ``.`` (so no wildcard and no dot rule), is
     ASCII unless ``non_ascii`` (:func:`unrar_mask_carries_non_ascii`), and no other
-    name equals it or starts with it plus ``/``, compared with ``str.casefold``
-    (Windows ``unrar`` folds case; ``casefold`` folds at least as much). History
+    name equals it or starts with it plus ``/``, compared after :func:`_fold`
+    (Windows ``unrar`` folds case with ``towupper``). History
     rows count against every row, as ``unrar -ver`` lists them all; a current row
     counts against the current rows, which ``unrar`` lists without ``-ver``.
     """
@@ -1010,7 +1017,7 @@ def _plain_unrar_masks(
         # Each name, and each directory prefix of one, as a mask would see it.
         found: dict[str, int] = {}
         for text in rows:
-            parts = text.casefold().split("/")
+            parts = _fold(text).split("/")
             for end in range(1, len(parts) + 1):
                 key = "/".join(parts[:end])
                 found[key] = found.get(key, 0) + 1
@@ -1027,7 +1034,7 @@ def _plain_unrar_masks(
             and "*" not in text
             and "?" not in text
             and not any(part.endswith(".") for part in text.split("/"))
-            and found[text.casefold()] == 1
+            and found[_fold(text)] == 1
         ):
             plain[id(member)] = text
     return plain

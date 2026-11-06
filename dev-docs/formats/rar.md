@@ -973,7 +973,8 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   so `unrar`'s reading of each name is archivey's; and the target has no `*` or `?`,
   no component ending in `.`, is ASCII unless `unrar_mask_carries_non_ascii()` (Windows,
   or a UTF-8 locale for the child on POSIX), and no other name equal to it or starting with it plus
-  `/`, compared with `casefold()` (Windows `unrar` folds case). Such a mask selects the
+  `/`, compared after `upper().casefold()` (Windows `unrar` folds case with `towupper`, under
+  which `ı` and `i` are equal though `casefold()` keeps them apart). Such a mask selects the
   target alone, with no wildcard and no dot rule, so the pipe holds the member and nothing
   else. History rows count only against the rows `-ver` lists. Every other read gets a
   synthetic archive whatever its size, within the spool limit; where none can be made (a
