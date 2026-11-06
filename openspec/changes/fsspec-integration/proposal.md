@@ -85,10 +85,13 @@ so they land as their own change after this one.
 - **Public surface:** one more accepted `source` type for `open_archive()`,
   `open_stream()` and `detect_format()`; one new public module (`archivey.fsspec`)
   holding `ArchiveyFileSystem`; one config field, `ArchiveyConfig.max_read_through`; one
-  exception, `SourceChangedError`; and one diagnostic code, `SOURCE_CHANGE_UNDETECTABLE`.
-  No new function and no new keyword argument.
+  exception, `SourceChangedError`; one diagnostic code, `SOURCE_CHANGE_UNDETECTABLE`;
+  and, for format plugins, one method, `ReaderSource.will_read(start, end)`. No new
+  function and no new keyword argument.
 - **Internal:** a fetch-planning layer in `ArchiveSource` for remote sources, and a
-  small hint call that the ZIP, 7z, ISO and RAR backends make before they read.
+  small hint call that the ZIP, 7z and ISO backends make before they read. RAR's
+  header walk is not hinted: measured, a hint per header cost more requests than it
+  saved.
 - **Benchmarks:** a new structural baseline file for the remote axis.
 - **Docs:** a "Remote archives and fsspec" page in `docs/`, and the cache advice for
   callers who keep passing their own fsspec file.
