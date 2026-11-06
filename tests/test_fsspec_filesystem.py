@@ -210,6 +210,7 @@ LINKS_AND_COLLISIONS = [
     ("sym", "loop2", "loop1"),  # refused: a loop
     ("sym", "dot", "."),
     ("sym", "s2/out", "../dot/.."),  # refused: leaves through a link
+    ("sym", "m/n/self", "self"),  # refused: a loop; its parents m and m/n stay
     # Hard links extraction does not make: no source, a later one, a directory.
     ("hard", "hmissing", "nothere"),
     ("hard", "hforward", "later"),

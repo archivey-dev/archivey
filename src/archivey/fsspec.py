@@ -63,6 +63,9 @@ class _Refusal:
     reason: str
 
 
+_LOOP = _Refusal("it resolves through a symlink loop")
+
+
 class _Tree:
     """The paths extraction writes into an empty destination, member by member.
 
@@ -101,7 +104,24 @@ class _Tree:
             return _Refusal("its name collides with a member written before it")
         self._kinds[key] = kind
         self._spelled[key] = path
-        # The parents extraction creates on the way, resolved already.
+        if kind == "link":
+            target = view.link_target or ""
+            self._targets[key] = target
+            # A link that leads out through a link made before it is refused before
+            # anything is written. One that loops is found only once it is made, so
+            # it is removed, and the parents made for it stay.
+            problem = self._resolve(posixpath.join(parent, target), final=True)
+            if isinstance(problem, _Refusal):
+                del self._kinds[key], self._spelled[key], self._targets[key]
+                if problem is _LOOP:
+                    self._make_parents(parent)
+                return problem
+        self._make_parents(parent)
+        return path
+
+    def _make_parents(self, parent: str) -> None:
+        """Claim the directories extraction makes on the way to a member, resolved
+        already."""
         parts = parent.split("/") if parent else []
         for depth in range(1, len(parts) + 1):
             prefix = "/".join(parts[:depth])
@@ -109,16 +129,14 @@ class _Tree:
             if prefix_key not in self._kinds:
                 self._kinds[prefix_key] = "dir"
                 self._spelled[prefix_key] = prefix
-        if kind == "link":
-            target = view.link_target or ""
-            self._targets[key] = target
-            # Extraction resolves a link once it is made and removes it if it loops
-            # or leads out through a link made before it.
-            problem = self._resolve(posixpath.join(parent, target), final=True)
-            if isinstance(problem, _Refusal):
-                del self._kinds[key], self._spelled[key], self._targets[key]
-                return problem
-        return path
+
+    def directories(self) -> list[str]:
+        """Every directory extraction makes, as listed: those a member names and
+        those made as parents, including a looping link's, which extraction makes
+        before it removes the link."""
+        return [
+            self._spelled[key] for key, kind in self._kinds.items() if kind == "dir"
+        ]
 
     def _resolve(self, name: str, *, final: bool = False) -> str | _Refusal:
         """The path the directory ``name`` resolves to, as it is listed.
@@ -151,7 +169,7 @@ class _Tree:
             if kind == "link":
                 hops += 1
                 if hops > _MAX_SYMLINK_HOPS:
-                    return _Refusal("it resolves through a symlink loop")
+                    return _LOOP
                 out.pop()
                 # The target is relative to the link's parent, which ``out`` now is.
                 target = self._targets[key]
@@ -414,7 +432,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                     self._report_refused(member, placed.reason)
                     continue
                 files[placed] = self._entry(placed, member, view)
-        dir_cache: dict[str, dict[str, Any]] = {}
+        dir_cache: dict[str, dict[str, Any]] = {
+            name: {"name": name, "size": 0, "type": "directory"}
+            for name in tree.directories()
+        }
         # Every parent of every path, built in a loop: a name nested a thousand deep
         # is within the metadata budget, and a recursive walk would overflow the stack.
         for name in files:
