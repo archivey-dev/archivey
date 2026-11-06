@@ -338,7 +338,8 @@ current synthetic file:
   (measured, 4,000 members of 250 B from a `BytesIO`: 502 ms against 414 ms). The pass
   builds run files rather than reusing the random reads' per-stream files: those grow
   only while no read holds them, and joining small streams into one run saves an
-  `unrar` start per stream (50 streams: 854 ms one per stream, 484 ms in runs).
+  `unrar` start per stream (a pass over 50 streams of 80 members from a `BytesIO`, median of five: 787 ms one per
+  stream, 409 ms in runs).
 - solid, path source: the original archive with one pipe, as today.
 
 `unrar` cannot read a file that is still being written: it reads to EOF and stops. A
