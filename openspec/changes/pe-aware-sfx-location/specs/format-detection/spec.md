@@ -219,10 +219,11 @@ origin. Bytes already in the prefix buffer SHALL NOT be fetched again. The trail
 when it runs, SHALL add one seek towards the end, one read of its block, and one seek
 back to the end of the prefix. Those bytes are not kept, so a later tier that reads
 them as part of the prefix fetches them again. The PE tail probe (*A ZIP in a PE's overlay
-is found from its end record*), when it runs, SHALL add one seek towards the end and one
-read of its span, at most two reads of fixed record parts the span does not already hold
-(the first central header and the local header it names), and one seek back to the end of
-the prefix. The probe runs before far magic, so a probe hit ends detection before the
+is found from its end record*), when it runs, SHALL add one seek towards the end, one
+read of its span and one seek back to the end of the prefix, then at most two reads of
+fixed record parts the span does not already hold (the first central header and the local
+header it names), each a seek to the record and one back to the end of the prefix, as
+every read off the prefix restores the handle. The probe runs before far magic, so a probe hit ends detection before the
 trailer tier: the two tails are both read only when the probe declines. No other backward
 seek re-reads the prefix. The exit restore of a seekable caller stream is the
 non-consumption contract.
@@ -251,9 +252,10 @@ from its end record reports the EOCD-derived base, which needs no walk.
 | ISO far magic, seekable stream | 1 pass | 0 | **0** |
 | Seekable bzip2 or xz larger than the prefix, no `koly` block | 1 pass, then the rest of the file for the inner-TAR probe, which fetches the trailer bytes again | 1 | 1, back to the end of the prefix |
 | `koly` hit on a seekable image larger than the prefix | 1 prefix pass; the trailer bytes are fetched once | 1 | 1, back to the end of the prefix |
-| Gated PE, ZIP found from its end record, directory inside the span | 1 prefix pass, the span, the local header | 1 | 2: to the local header, back to the end of the prefix |
-| Gated PE, directory and local header both before the span | 1 prefix pass, the span, two fixed record parts | 1 | 3: to the central header, to the local header, back to the end of the prefix |
-| Gated PE, probe declines, then the trailer step runs | 1 prefix pass, the span, up to two fixed record parts, the trailer block | 2 | Up to 4: up to two record reads, and one back to the end of the prefix after each tail read |
+| Gated PE, ZIP found from its end record, directory and local header inside the span | 1 prefix pass, the span | 1 | 1, back to the end of the prefix |
+| Gated PE, local header before the span | 1 prefix pass, the span, one fixed record part | 2 | 2, back to the end of the prefix after each read |
+| Gated PE, directory and local header both before the span | 1 prefix pass, the span, two fixed record parts | 3 | 3, back to the end of the prefix after each read |
+| Gated PE, probe declines, then the trailer step runs | 1 prefix pass, the span, up to two fixed record parts, the trailer block | Up to 4 | Up to 4, back to the end of the prefix after each read |
 | Non-seekable source, any tier | 1 pass | 0 | **0** |
 | Member stream (`ArchiveStream`), bare, buffered, through `open_archive`, or one volume of a list, any tier | 1 pass | 0 | **0** |
 

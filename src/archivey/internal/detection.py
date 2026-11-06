@@ -138,6 +138,7 @@ from archivey.internal.sfx import (
     ScanNeedle,
     executable_cue,
     iter_magic_in_prefix,
+    pe_layout,
     pe_payload_end,
 )
 from archivey.internal.source import ArchiveSource
@@ -1112,6 +1113,79 @@ def _scan_for_sfx_payload(
     return result
 
 
+#: The PE tail probe's reads (``detection-cost``, the *tail allowance*): the end-record
+#: search span, as long as the ZIP reader's, and the fixed parts of the two records
+#: that confirm it.
+TAIL_PROBE_SPAN = 65_558
+TAIL_PROBE_ALLOWANCE = TAIL_PROBE_SPAN + 46 + 30
+
+
+def _probe_pe_tail(
+    workspace: PrefixWorkspace,
+    leading: bytes,
+    *,
+    scan_limit: int,
+    enabled: bool,
+) -> FormatInfo | None:
+    """A ZIP end record before a PE's payload end, after the SFX scan missed.
+
+    Runs only for a PE whose layout parses (:func:`~archivey.internal.sfx.pe_layout`)
+    on a source of known length, whose payload end (the certificate table's start, or
+    the end of the source) lies past both the overlay start and the scanned window: an
+    ordinary program, signed or not, has no such overlay and never pays for the read.
+    The search covers the :data:`TAIL_PROBE_SPAN` bytes ending at the payload end, with
+    the ZIP reader's own locator, so the reader then finds the same record. The record
+    is confirmed (``zip_parser.confirm_tail_record``) before answering ``ZIP`` /
+    ``PROBABLE`` / ``sfx_scan`` with the base the record implies as
+    ``payload_offset``, which is never after any member. ZIP64 records are declined.
+
+    Records ``sfx_tail`` as *not enabled by policy* when the scan tier is off, and as
+    *capability unavailable* when the source does not allow a cheap tail read; nothing
+    for a source the gate excludes.
+    """
+    total = workspace.remaining_known()
+    layout = pe_layout(leading, total)
+    if layout is None or total is None:
+        return None
+    end = total if layout.payload_end is None else layout.payload_end
+    if end <= layout.overlay_start or end <= scan_limit:
+        return None
+    if not enabled:
+        workspace.record_skip("sfx_tail", TierSkipReason.NOT_ENABLED_BY_POLICY)
+        return None
+    span = workspace.read_tail(TAIL_PROBE_SPAN, end=end, tier="sfx_tail")
+    if span is None:
+        return None
+    # Imported here: detection reads no backend module on any other path.
+    from archivey.internal.backends.zip_parser import (
+        confirm_tail_record,
+        locate_classic_record,
+    )
+
+    span_start = end - len(span)
+
+    def read_at(offset: int, length: int) -> bytes:
+        if span_start <= offset and offset + length <= end:
+            return span[offset - span_start : offset - span_start + length]
+        return workspace.read_at(offset, length) or b""
+
+    found = locate_classic_record(read_at, end)
+    if found is None:
+        return None
+    eocd_offset, record, _comment = found
+    base = confirm_tail_record(read_at, eocd_offset, record, layout.overlay_start)
+    if base is None:
+        return None
+    return FormatInfo(
+        ArchiveFormat.ZIP,
+        DetectionConfidence.PROBABLE,
+        "sfx_scan",
+        payload_offset=base,
+        prefixed=True,
+        payload_end=layout.payload_end,
+    )
+
+
 def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
     """The library default config carrying only ``config``'s detection settings
     (``detection_budget``, ``always_probe_content``, ``process_isolation``, which
@@ -1524,6 +1598,17 @@ def _detect_format_body(
             )
             if sfx_info is not None:
                 return conclude(sfx_info, _ConflictEvidence.SFX_SCAN)
+            # 2b. A ZIP far behind a PE stub, found from its end record (the install4j
+            # shape). Gated on the PE's own layout, so only a large installer whose
+            # overlay runs past the window pays for the tail read.
+            tail_info = _probe_pe_tail(
+                workspace,
+                data,
+                scan_limit=min(SFX_MAX, budget.max_scan_bytes),
+                enabled=budget.max_scan_bytes > 0,
+            )
+            if tail_info is not None:
+                return conclude(tail_info, _ConflictEvidence.SFX_SCAN)
 
         # 3. Far magic (ISO's CD001 at offset 32 769). A signature that ends past
         # ``max_far_bytes`` cannot match in the clamped window, so it is dropped and the
