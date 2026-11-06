@@ -29,6 +29,7 @@ from archivey.internal.sfx import SFX_MAX, VALIDATOR_PEEK_MAX
 from archivey.types import ArchiveFormat
 from tests.detection_cost_util import within_budget
 from tests.pe_build import FILE_ALIGNMENT, pe_file, pe_headers
+from tests.streams_util import NonSeekableBytesIO
 from tests.test_detection_workspace import InstrumentedBytesIO
 
 _IMAGE = 0x1000
@@ -178,9 +179,11 @@ def test_ordinary_signed_program_makes_no_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tiers = _tail_reads(monkeypatch)
+    recorded = _recorded_skips(monkeypatch)
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(pe_file(len(_FILLER), certificate_size=0x2900)))
     assert "sfx_tail" not in tiers
+    assert all(skip.tier != "sfx_tail" for skip in recorded)
 
 
 def test_elf_stub_with_a_zip_past_the_window_is_not_found(
@@ -240,11 +243,54 @@ def test_probe_stays_within_budget(budget: DetectionBudget) -> None:
     assert info.cost_receipt.scanned_bytes <= budget.max_scan_bytes
 
 
-def test_probe_is_off_with_the_scan() -> None:
+def _recorded_skips(monkeypatch: pytest.MonkeyPatch) -> list[TierSkip]:
+    """Every skip the workspace records, from now on."""
+    recorded: list[TierSkip] = []
+    real = PrefixWorkspace.record_skip
+
+    def spy(self: PrefixWorkspace, tier: str, reason: TierSkipReason) -> None:
+        recorded.append(TierSkip(tier, reason))
+        real(self, tier, reason)
+
+    monkeypatch.setattr(PrefixWorkspace, "record_skip", spy)
+    return recorded
+
+
+def test_probe_is_off_with_the_scan(monkeypatch: pytest.MonkeyPatch) -> None:
     budget = replace(BALANCED_BUDGET, max_scan_bytes=0)
     data = _installer(_zip())
+    recorded = _recorded_skips(monkeypatch)
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(data), config=ArchiveyConfig(detection_budget=budget))
+    assert TierSkip("sfx_tail", TierSkipReason.NOT_ENABLED_BY_POLICY) in recorded
+
+
+def test_pipe_records_sfx_tail_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A pipe states no length, so the payload end is not known: the probe cannot look,
+    # and says so under its own tier.
+    recorded = _recorded_skips(monkeypatch)
+    with pytest.raises(FormatDetectionError):
+        detect_format(NonSeekableBytesIO(_installer(_zip())))
+    assert _TAIL_SKIP in recorded
+
+
+def test_short_pipe_records_no_sfx_tail(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A pipe that ends inside the window has a known length and no overlay past it.
+    recorded = _recorded_skips(monkeypatch)
+    with pytest.raises(FormatDetectionError):
+        detect_format(NonSeekableBytesIO(pe_file(_IMAGE, payload=b"\x88" * 1000)))
+    assert all(skip.tier != "sfx_tail" for skip in recorded)
+
+
+def test_probe_constants_mirror_the_zip_parser() -> None:
+    # Detection keeps literals so it imports no backend module off the probe's path.
+    from archivey.internal import detection
+    from archivey.internal.backends import zip_parser
+
+    assert detection.TAIL_PROBE_SPAN == zip_parser.EOCD_SEARCH_WINDOW
+    assert detection.TAIL_PROBE_ALLOWANCE == (
+        detection.TAIL_PROBE_SPAN + zip_parser.TAIL_CONFIRM_READS
+    )
 
 
 def test_member_stream_records_sfx_tail_not_trailer(
@@ -257,14 +303,7 @@ def test_member_stream_records_sfx_tail_not_trailer(
     with zipfile.ZipFile(outer, "w", zipfile.ZIP_STORED) as archive:
         archive.writestr("setup.exe", data)
     outer.seek(0)
-    recorded: list[TierSkip] = []
-    real = PrefixWorkspace.record_skip
-
-    def spy(self: PrefixWorkspace, tier: str, reason: TierSkipReason) -> None:
-        recorded.append(TierSkip(tier, reason))
-        real(self, tier, reason)
-
-    monkeypatch.setattr(PrefixWorkspace, "record_skip", spy)
+    recorded = _recorded_skips(monkeypatch)
     with (
         open_archive(outer, seekable_members=True) as reader,
         reader.open("setup.exe") as member,

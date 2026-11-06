@@ -72,8 +72,9 @@ class FormatInfo:
     text the archive was appended to. It is never after the archive's first member.
 
     To ask whether the archive is behind a prefix, test :attr:`prefixed`, not
-    ``payload_offset > 0``: the offset says where reading starts, and it can be 0
-    behind a prefix."""
+    ``payload_offset > 0``: the offset says where reading starts, and it is 0 behind
+    a stub for a ZIP found from its end record whose stored offsets count from the
+    start of the file."""
 
     diagnostics: DiagnosticSummary = field(default_factory=DiagnosticSummary.empty)
     """What detection reported on its way to the answer."""
