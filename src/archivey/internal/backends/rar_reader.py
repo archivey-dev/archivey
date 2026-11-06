@@ -99,6 +99,7 @@ from archivey.internal.backends.rar_parser import (
     rar5_hash_key,
 )
 from archivey.internal.backends.rar_synthetic import (
+    HeaderKeys,
     SyntheticArchive,
     SyntheticMember,
     SyntheticUnsupported,
@@ -4893,8 +4894,8 @@ class RarReader(BaseArchiveReader):
                 volume_index=volume,
                 offset=offset,
                 size=size,
-                header_key=(
-                    self._header_key if self._archive.has_header_encryption else None
+                header_keys=(
+                    self._header_keys() if self._archive.has_header_encryption else None
                 ),
                 excluded=self._excluded,
             )
@@ -4944,19 +4945,15 @@ class RarReader(BaseArchiveReader):
         finally:
             view.close()
 
-    def _header_key(
-        self, salt: bytes, kdf_count: int | None
-    ) -> bytes | tuple[bytes, bytes]:
-        """The header key for ``salt``: RAR5 ``key`` or RAR 1.5-4 ``(key, iv)``.
+    def _header_keys(self) -> HeaderKeys:
+        """The header keys of this ``-hp`` archive.
 
         The header password is the one the listing decrypted with; the KDF cache
         already holds its derivation.
         """
         password = self._unrar_password
         assert password is not None, "an -hp archive lists only with its password"
-        if kdf_count is None:
-            return self._kdf_cache.rar3(password, salt)
-        return self._kdf_cache.rar5(password, salt, 1 << kdf_count)
+        return HeaderKeys(self._kdf_cache, password)
 
     def _synthetic_spawner(
         self, raw: RarMemberInfo, synthetic: _SyntheticFile
