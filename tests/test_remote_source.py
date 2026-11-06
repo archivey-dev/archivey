@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import random
 import subprocess
 import sys
 import threading
@@ -689,3 +690,56 @@ def test_zip_lists_in_two_requests_and_reads_a_member_in_one_more():
             == MEMBERS[members[len(members) // 2].name]
         )
         assert len(fs.fetches) <= 3
+
+
+def _py7zr_bytes(members: dict[str, bytes], tmp_path: Path, **kwargs: Any) -> bytes:
+    py7zr = pytest.importorskip("py7zr")
+    path = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(path, "w", **kwargs) as archive:
+        for name, data in members.items():
+            archive.writestr(data, name)
+    return path.read_bytes()
+
+
+def test_7z_with_an_encoded_header_lists_in_two_requests(tmp_path: Path):
+    """py7zr, like 7-Zip, writes an encoded header: a short record after a packed
+    header stream. The next-header hint fetches both with the detection head's
+    follow-up, so the listing is the spec's 2 requests."""
+    rng = random.Random(7)
+    members = {f"m{i}.bin": rng.randbytes(40_000) for i in range(12)}
+    data = _py7zr_bytes(members, tmp_path)
+    fs = RecordingFS(data)
+    with (
+        planner_constants(SMALL),
+        open_archive(OpenFile(fs, "/a.7z", mode="rb")) as reader,
+    ):
+        assert len([m for m in reader.members() if m.is_file]) == 12
+    assert len(fs.fetches) <= 2
+
+
+def test_7z_hints_the_folder_pack_stream_before_a_member_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The pack-stream hint names the folder's pack span in source offsets: from 32
+    (right after the signature header on a plain py7zr archive) for the pack size.
+    Red with the hint call removed, or its origin off by one."""
+    py7zr = pytest.importorskip("py7zr")
+    rng = random.Random(8)
+    payload = rng.randbytes(300_000)
+    data = _py7zr_bytes(
+        {"big.bin": payload}, tmp_path, filters=[{"id": py7zr.FILTER_COPY}]
+    )
+    hints: list[tuple[int, int]] = []
+    original = RangeSource.will_read
+
+    def spy(self: RangeSource, start: int, end: int) -> None:
+        hints.append((start, end))
+        original(self, start, end)
+
+    monkeypatch.setattr(RangeSource, "will_read", spy)
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, "/a.7z", mode="rb")) as reader:
+        (member,) = [m for m in reader.members() if m.is_file]
+        listed = list(hints)
+        assert reader.read(member) == payload
+    assert hints[len(listed) :] == [(32, 32 + 300_000)]

@@ -264,26 +264,30 @@ class WindowPool:
         """
         c = self.constants
         want = len(view)
-        if run is not None:
-            # Continue the run from its end, reading through the gap (rule 2).
-            start = run.end
-            fetches = run.fetches + 1
-            runs = len(self._runs)
-            old = len(run.data)
-        else:
-            start = at
-            fetches = 1
-            runs = len(self._runs) + 1
-            old = 0
         hint = source.pending_hint
         hinted = hint is not None and hint[0] <= at < hint[1]
         if hinted:
             assert hint is not None
             source.pending_hint = None
-            # Rule 3: the declared span in one request (up to the cap below), from its
-            # start: a backend may read the span's end first (a ZIP end record).
-            # Short of a run's end it starts there, as the read-through would.
-            start = hint[0] if run is None else max(min(run.end, at), hint[0])
+            if run is not None and hint[0] > run.end:
+                # The span starts past this run's window, which another stream on
+                # the source may still be reading: the span gets a run of its own
+                # rather than taking that window over.
+                run = None
+        if run is not None:
+            # Continue the run from its end, reading through the gap (rule 2). A
+            # hint that starts inside the window continues it the same way.
+            start = run.end
+            fetches = run.fetches + 1
+            runs = len(self._runs)
+            old = len(run.data)
+        else:
+            # Rule 3: a hinted span is fetched from its start, which may lie before
+            # the read (a backend may read a span's end first: a ZIP end record).
+            start = hint[0] if hinted and hint is not None else at
+            fetches = 1
+            runs = len(self._runs) + 1
+            old = 0
         cap = self._max_fetch(runs)
         if hinted and at - start + want > cap:
             # A span longer than the cap whose read lies past the cap: keep the part
@@ -345,7 +349,7 @@ class WindowPool:
         """Record that ``source`` will read ``[start, end)`` next (design D2 rule 3).
 
         Nothing is fetched here: the next read that lands in the span and finds no
-        window fetches the span in one request. A span a window already holds needs
+        window fetches the span in one request, up to the maximum fetch. A span a window already holds needs
         nothing. One pending hint per source; a later one replaces it.
         """
         with self._lock:
@@ -419,8 +423,8 @@ class RangeSource(io.RawIOBase):
         return self.path
 
     def will_read(self, start: int, end: int) -> None:
-        """The backend reads ``[start, end)`` next: fetch it in one request when the
-        read comes (design D2 rule 3). It never changes the bytes a read returns."""
+        """The backend reads ``[start, end)`` next: fetch it in one request, up to the
+        maximum fetch, when the read comes (design D2 rule 3). It never changes the bytes a read returns."""
         self.pool.hint(self, start, end)
 
     @property

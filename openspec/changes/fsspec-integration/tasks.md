@@ -57,9 +57,10 @@
 - [x] 3.2 ZIP: tail hint at open, central-directory hint when larger, member span hint
       `[local header, next header or directory)`.
 - [x] 3.3 7z: next-header hint at open; pack-stream hint per member, folder start for
-      solid folders. The next header needs no hint: the parser reads it in one read of
-      its declared size, which is one fetch. The pack-stream hint covers the folder's
-      first pack stream from its start.
+      solid folders. The next-header hint covers the 64 KiB ending with the next
+      header: an encoded header (the 7-Zip and py7zr default) is a short record after a
+      packed header stream, and one fetch takes both. The pack-stream hint covers the
+      folder's first pack stream from its start.
 - [ ] 3.4 ISO extent hints; RAR header-position hints during the listing walk.
 - [ ] 3.5 Batched span fetches for `extract_all()` and `stream_members()` over
       non-solid ZIP and 7z: `merge_offset_ranges` then one `cat_ranges` per batch,
