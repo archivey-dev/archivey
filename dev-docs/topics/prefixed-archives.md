@@ -131,8 +131,10 @@ unmeasured, and that is the open question. Which entry point the caller used is 
 **A PE cues it after all.** A Windows executable's own header says where its image ends
 (the *overlay start*) and where its certificate table starts. So the probe runs only when
 the cued scan missed and the overlay runs past the window: a large installer that already
-paid for a 2 MiB scan, for one more 64 KiB read and two small record reads. An ordinary
-program or DLL, signed or not, has no such overlay and never pays. The six `PK\x05\x06`
+paid for a 2 MiB scan, for one more 64 KiB read and two small record reads. A program or
+DLL with nothing appended past its sections other than a certificate never pays; one with
+other bytes there (an unstripped MinGW build's symbol table, padding, debug data) pays the
+read and is declined. The six `PK\x05\x06`
 false positives of §4 are ELF, so the gate excludes them, and the record checks
 (`zip_parser.confirm_tail_record`) reject them anyway. A remote source pays one more round
 trip on a gated file. The hit reports the base the end record implies as

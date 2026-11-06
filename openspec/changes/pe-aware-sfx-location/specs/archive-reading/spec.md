@@ -27,8 +27,8 @@ whose layout parses, SHALL derive the payload end from them with the PE layout h
 detection uses. That reads the backend's own start, not before it. It applies whether or
 not the backend otherwise scans its start: the seekable ZIP reader locates its archive from
 the tail and reads its leading bytes only for this, and only when the end could change its
-answer (the tail search finds no end record, or a non-zero byte follows the archive), so an
-ordinary ZIP pays no read for it. A backend reading a non-seekable source derives no end,
+answer (the tail search finds no end record, the record it finds says bytes precede its
+archive, or a non-zero byte follows the archive), so an ordinary ZIP pays no read for it. A backend reading a non-seekable source derives no end,
 as detection reports none for it. Forced `format=` and auto-detect then see the same end.
 
 #### Scenario: payload_offset hand-off
@@ -40,7 +40,8 @@ as detection reports none for it. Forced `format=` and auto-detect then see the 
 | Explicit `format=` | Detection skipped; backend SFX/start-offset rules apply |
 | Bare seek only (no start-offset / no offset view) | Insufficient for 7z; MUST NOT be the sole hand-off mechanism |
 | Auto-detect, signed PE SFX, `payload_end == E` | Backend reads nothing at or past `E`; the certificate raises no `ARCHIVE_TRAILING_DATA` |
-| Forced `format=` on the same signed SFX (RAR, 7z, or ZIP from a seekable source) | The backend derives the same `E` from its leading bytes; same listing, same diagnostics |
+| Forced `format=` on the same signed SFX (RAR, 7z, or ZIP from a seekable source) | The backend derives the same `E` from its leading bytes; same listing, same diagnostics, whenever `max_prefix_bytes` holds the 4096 bytes the layout is read from (every preset) |
 | The same SFX from a non-seekable stream, auto-detect or forced | No `E`: the certificate is reported as trailing data, the same both ways |
 | Forced `format=ZIP` on the IRPF installer under `DiagnosticPolicy.STRICT` | Opens, as auto-detect does: the certificate is past `E` |
+| Forced `format=ZIP` on a signed SFX whose certificate holds a second whole ZIP | The archive before `E` is listed, as auto-detect lists it; the ZIP inside the certificate is not |
 | No `payload_end` (unsigned, non-PE, or total size unknown) | Unchanged: the archive is read to the end of the source |

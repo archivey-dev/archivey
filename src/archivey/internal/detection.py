@@ -1122,7 +1122,9 @@ def _scan_for_sfx_payload(
 
 #: The PE tail probe's reads (``detection-cost``, the *tail allowance*): the end-record
 #: search span, as long as the ZIP reader's, and the fixed parts of the two records
-#: that confirm it.
+#: that confirm it. Literals that mirror ``zip_parser.EOCD_SEARCH_WINDOW`` and
+#: ``zip_parser.TAIL_CONFIRM_READS``, since detection imports that module only when
+#: the probe runs; ``tests/test_pe_tail_probe.py`` pins them together.
 TAIL_PROBE_SPAN = 65_558
 TAIL_PROBE_ALLOWANCE = TAIL_PROBE_SPAN + 46 + 30
 
@@ -1138,8 +1140,9 @@ def _probe_pe_tail(
 
     Runs only for a PE whose layout parses (:func:`~archivey.internal.sfx.pe_layout`)
     on a source of known length, whose payload end (the certificate table's start, or
-    the end of the source) lies past both the overlay start and the scanned window: an
-    ordinary program, signed or not, has no such overlay and never pays for the read.
+    the end of the source) lies past both the overlay start and the scanned window: a
+    program with nothing appended past its sections other than a certificate never
+    pays for the read.
     The search covers the :data:`TAIL_PROBE_SPAN` bytes ending at the payload end, with
     the ZIP reader's own locator, so the reader then finds the same record. The record
     is confirmed (``zip_parser.confirm_tail_record``) before answering ``ZIP`` /
@@ -1147,12 +1150,24 @@ def _probe_pe_tail(
     ``payload_offset``, which is never after any member. ZIP64 records are declined.
 
     Records ``sfx_tail`` as *not enabled by policy* when the scan tier is off, and as
-    *capability unavailable* when the source does not allow a cheap tail read; nothing
-    for a source the gate excludes.
+    *capability unavailable* when the source does not allow a cheap tail read: a
+    stream of unknown length that runs past the window and the overlay start, whose
+    end only reading all of it would find, or one whose tail cannot be read without
+    re-decoding (``read_tail``). Nothing for a source the gate excludes.
     """
     total = workspace.remaining_known()
     layout = pe_layout(leading, total)
-    if layout is None or total is None:
+    if layout is None:
+        return None
+    if total is None:
+        # Not ended yet, so the stream runs past the bytes it delivered.
+        if workspace.buffered_length >= max(scan_limit, layout.overlay_start):
+            workspace.record_skip(
+                "sfx_tail",
+                TierSkipReason.CAPABILITY_UNAVAILABLE
+                if enabled
+                else TierSkipReason.NOT_ENABLED_BY_POLICY,
+            )
         return None
     end = total if layout.payload_end is None else layout.payload_end
     if end <= layout.overlay_start or end <= scan_limit:

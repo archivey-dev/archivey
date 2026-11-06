@@ -275,7 +275,9 @@ the prefix. The search SHALL cover the 65 558 bytes ending at the payload end, t
 span the ZIP reader searches, with the same locator. That span ends at the payload end, not
 necessarily at end of source, and the part of it the prefix already holds SHALL be taken
 from the prefix. A source that does not allow the read SHALL be recorded under `sfx_tail`,
-never under `trailer`, so the two tiers' records cannot be confused.
+never under `trailer`, so the two tiers' records cannot be confused. So SHALL a source of
+unknown length whose bytes already run past both the overlay start and the scan window:
+only reading all of it would find its end.
 
 A record found there SHALL be accepted only when all of these hold: both disk numbers are
 0 and its two entry counts are equal and above 0; `cd_start = eocd − cd_size` and
@@ -311,5 +313,5 @@ continues with far magic, as after a scan miss today.
 | End record with ZIP64 placeholders | Declined |
 | End record declaring no entries (`PK\x05\x06` and 18 zero bytes, or a real empty ZIP) | Declined |
 | ELF or Mach-O stub with an appended ZIP past the window | Not found, as today |
-| Pipe or member stream | No tail read; `sfx_tail` recorded *capability unavailable* |
+| Pipe running past the window, or member stream | No tail read; `sfx_tail` recorded *capability unavailable* |
 | `max_scan_bytes` 0 | No tail read; `sfx_tail` recorded *not enabled by policy* |
