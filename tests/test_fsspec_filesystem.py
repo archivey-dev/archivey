@@ -166,6 +166,10 @@ def _tar_entries(entries: list[tuple[str, str, bytes | str]]) -> bytes:
                 kind, tarfile.LNKTYPE
             )
             info.linkname = payload
+            if kind == "dir":
+                # TarInfo's default 0o644 leaves a directory unsearchable to anyone
+                # but root once extraction applies the mode.
+                info.mode = 0o755
             tf.addfile(info)
     return buf.getvalue()
 
