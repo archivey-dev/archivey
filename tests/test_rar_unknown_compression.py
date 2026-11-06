@@ -344,6 +344,7 @@ def _read_outcomes(
     return outcomes, messages
 
 
+@requires_unrar_cli()
 @pytest.mark.parametrize("in_pass", [False, True], ids=["open", "pass"])
 def test_unrar_reads_a_later_solid_group(tmp_path: Path, in_pass: bool) -> None:
     """A synthetic archive starts at the member's solid stream, so ``unrar`` decodes

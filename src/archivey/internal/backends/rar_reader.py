@@ -1142,8 +1142,7 @@ def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO
 class _SyntheticFile:
     """The synthetic archive one read's ``unrar`` runs share, and its spool charge.
 
-    It holds one member, or a solid chain whose last member is the target
-    (``mask`` then names it). Made on the first spawn and kept for the respawns
+    It holds one member. Made on the first spawn and kept for the respawns
     after a backward seek, so the bytes are copied once. :meth:`close` removes the
     file and gives back the charge; the member stream calls it when it closes, and
     the reader at its own close for any left (a password probe's).
@@ -1154,13 +1153,12 @@ class _SyntheticFile:
         reader: RarReader,
         members: list[SyntheticMember],
         charge: int,
-        *,
-        mask: str | None = None,
     ) -> None:
         self._reader = reader
         self._members = members
         self._charge = charge
-        self.mask = mask
+        # One member: unrar prints it with no mask.
+        self.mask: str | None = None
         self._file: SyntheticArchive | None = None
         self._closed = False
         self._lock = threading.Lock()
@@ -1170,9 +1168,7 @@ class _SyntheticFile:
             if self._closed:
                 raise ValueError("synthetic RAR archive is closed")
             if self._file is None:
-                synthetic = SyntheticArchive(
-                    self._reader._archive.version, solid=len(self._members) > 1
-                )
+                synthetic = SyntheticArchive(self._reader._archive.version)
                 try:
                     synthetic.append(self._members)
                 except BaseException:
@@ -1255,21 +1251,29 @@ class _SolidStream:
 
     It holds the stream's members with packed data, from the stream start, as far
     as reads have reached: a read further in appends the members between, and a
-    read of a member already in it copies nothing. So each byte of the stream is
-    copied at most once per reader. ``unrar`` gets the target's placeholder name as
-    its mask and decodes from the stream start. The reader changes it only under
-    its ``_materialize_lock``, and appends only while no read holds it
-    (:attr:`readers`): ``unrar`` may still be reading past its target, and on
-    Windows it opens the file with read sharing only.
+    read of a member already in it copies nothing. ``unrar`` gets the target's
+    placeholder name as its mask and decodes from the stream start. The reader
+    changes it only under its ``_materialize_lock``, and appends only while no read
+    holds it (:attr:`readers`): ``unrar`` may still be reading past its target, and
+    on Windows it opens the file with read sharing only.
+
+    A read further in while another read holds the file starts a new generation:
+    a new :class:`_SolidStream` for the same stream start, which later reads
+    extend. The old one is :attr:`retired`, and removed, its charge given back,
+    when its last read closes. So each packed byte is copied once per generation;
+    only reads that each go further in while every earlier one is still open copy
+    the stream's start again each time.
     """
 
     def __init__(self, version: int) -> None:
         self.version = version
         # Archive indices of the members in the file, in order; position = mask.
         self.indices: list[int] = []
+        # The spool bytes charged for the file, given back when it is removed.
         self.charge = 0
         self.file: SyntheticArchive | None = None
         self.readers = 0
+        self.retired = False
 
     def size(self) -> int:
         return self.file.size if self.file is not None else 0
@@ -1293,11 +1297,20 @@ class _SolidRead:
         return file.path
 
     def close(self) -> None:
+        stream = self._stream
         with self._reader._materialize_lock:
             if self._closed:
                 return
             self._closed = True
-            self._stream.readers -= 1
+            stream.readers -= 1
+            if not stream.retired or stream.readers:
+                return
+            self._reader._retired_streams.discard(stream)
+            file, stream.file = stream.file, None
+            self._reader._spool_budget(None).release(stream.charge)
+            stream.charge = 0
+        if file is not None:
+            file.close()
 
 
 # What one read's ``unrar`` runs use: ``path()``, ``mask`` and ``close()``.
@@ -1438,6 +1451,8 @@ class RarReader(BaseArchiveReader):
         # One synthetic archive per solid stream, by the archive index of its first
         # member with data; removed at reader close.
         self._solid_streams: dict[int, _SolidStream] = {}
+        # Older generations still held by a read (:class:`_SolidStream`).
+        self._retired_streams: set[_SolidStream] = set()
         self._member_positions: dict[int, int] | None = None
         self._volume_paths: list[Path] = []
         # Each discovered volume's 1-based number in its set, read from its name,
@@ -5003,11 +5018,8 @@ class RarReader(BaseArchiveReader):
         if self._unar_policy is not None:
             return self._open_member_with_unar(member, raw, self._unar_policy)
 
-        # Within its solid stream, a member behind one of an unknown version is
-        # refused on either route, before a probe or a copy.
-        same_stream = self._solid_after_unknown_error(member, raw, masked_unrar=False)
-        if same_stream is not None:
-            raise same_stream
+        # Both callers have already refused a member behind one of an unknown
+        # version in its solid stream, on either route, before a probe or a copy.
         # Picked before the member's copy is reserved: a RAR3/4 candidate list is
         # judged by reading the member through a synthetic archive, which is removed
         # (nonsolid) or reused (a solid stream's) before this read reserves one, so
@@ -5350,15 +5362,13 @@ class RarReader(BaseArchiveReader):
         The chain runs from the member's solid stream start to it
         (:func:`solid_chain`); ``unrar`` decodes the chain and prints the target,
         which the mask names. Only what the stream's file lacks is copied. While
-        another read holds that file, the chain goes to a file of this read's own,
-        removed when the read closes. ``None`` when a member of the chain has data
-        out of reach (a volume missing), or for the fallbacks of
+        another read holds that file, a read further in starts a new generation
+        (:class:`_SolidStream`). ``None`` when a member of the chain has data out
+        of reach (a volume missing), or for the fallbacks of
         :meth:`_synthetic_file`.
         """
         target = self._member_position(member)
-        # ``raw`` for the target: the read's own record of it.
-        members = list(self._archive.members)
-        members[target] = raw
+        members = self._archive.members
         span = solid_chain(members, target)
         chain = [i for i in span if has_packed_data(members[i])]
         if not chain or chain[-1] != target:
@@ -5382,9 +5392,10 @@ class RarReader(BaseArchiveReader):
                 stream.readers += 1
                 return _SolidRead(self, stream, mask)
             if stream.readers:
-                return self._own_chain_file(
-                    member.name, [members[i] for i in chain], in_place, what
-                )
+                # The held file cannot grow: the chain starts a new generation.
+                # The old one is removed when its last read closes.
+                stream = _SolidStream(self._archive.version)
+                have = 0
             entries = []
             for position in range(have, len(chain)):
                 entry = self._synthetic_entry(
@@ -5400,43 +5411,27 @@ class RarReader(BaseArchiveReader):
                 return None
             if not self._reserve_synthetic(charge, in_place, member.name, what):
                 return None
+            created = stream.file is None
             try:
                 if stream.file is None:
                     stream.file = SyntheticArchive(self._archive.version, solid=True)
                 stream.file.append(entries)
             except BaseException:
                 self._spool_budget(None).release(charge)
+                if created and stream.file is not None:
+                    # Nothing else holds the new file: remove it with its charge.
+                    stream.file.close()
+                    stream.file = None
                 raise
+            current = self._solid_streams[chain[0]]
+            if current is not stream:
+                current.retired = True
+                self._retired_streams.add(current)
+                self._solid_streams[chain[0]] = stream
             stream.indices.extend(chain[have:])
             stream.charge += charge
             stream.readers += 1
             return _SolidRead(self, stream, mask)
-
-    def _own_chain_file(
-        self, name: str, chain: list[RarMemberInfo], in_place: bool, what: str
-    ) -> _SyntheticFile | None:
-        """A file holding ``chain`` for one read; under ``_materialize_lock``."""
-        entries = []
-        for position, info in enumerate(chain):
-            entry = self._synthetic_entry(name, info, position)
-            if entry is None:
-                return None
-            entries.append(entry)
-        charge = SyntheticArchive.overhead(self._archive.version) + sum(
-            entry.size for entry in entries
-        )
-        if in_place and charge > _SYNTHETIC_IN_PLACE_THRESHOLD:
-            return None
-        if not self._reserve_synthetic(charge, in_place, name, what):
-            return None
-        synthetic = _SyntheticFile(
-            self,
-            entries,
-            charge,
-            mask=placeholder_mask(len(chain) - 1, chain[-1], self._archive.version),
-        )
-        self._synthetic_files.add(synthetic)
-        return synthetic
 
     def _drop_synthetic(self, synthetic: _SyntheticFile, charge: int) -> None:
         """Forget a removed synthetic archive and give back its spool charge."""
@@ -5828,8 +5823,9 @@ class RarReader(BaseArchiveReader):
     def _close_archive(self) -> None:
         with self._materialize_lock:
             left = list(self._synthetic_files)
-            streams = list(self._solid_streams.values())
+            streams = [*self._solid_streams.values(), *self._retired_streams]
             self._solid_streams.clear()
+            self._retired_streams.clear()
         for synthetic in left:
             synthetic.close()
         for stream in streams:

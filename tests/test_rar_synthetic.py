@@ -640,30 +640,40 @@ def test_a_solid_stream_source_is_not_copied_whole(
 
 
 @requires_unrar_cli()
-def test_a_read_further_in_while_the_stream_is_held_gets_its_own_file(
+def test_a_read_further_in_while_the_stream_is_held_starts_a_new_generation(
     append_spy: _AppendSpy,
 ) -> None:
     """``unrar`` may still be reading the stream's file (and on Windows holds it
-    with read sharing only), so it is not appended to; the read gets a chain file
-    of its own, removed when it closes."""
+    with read sharing only), so it is not appended to. A read further in starts a
+    new file for the stream, which later reads extend; the held one is removed
+    when its read closes."""
     expected = _expected("basic_solid__.rar")
     append_spy.appends.clear()
     with open_archive(
         _FIXTURES / "basic_solid__.rar", concurrent_operations=True
     ) as reader:
+        assert isinstance(reader, RarReader)
         with reader.open("file1.txt") as held:
             assert held.read(1) == expected["file1.txt"][:1]
-            (stream_file,) = append_spy.files()
+            (old,) = append_spy.files()
+            assert reader.read("subdir/file2.txt") == expected["subdir/file2.txt"]
+            (new,) = append_spy.files() - {old}
             last = "implicit_subdir/file3.txt"
             assert reader.read(last) == expected[last]
-            own = append_spy.files() - {stream_file}
-            assert len(own) == 1
-            assert not next(iter(own)).exists()
-            assert append_spy.appends[0][0] == stream_file
-            assert len(append_spy.appends) == 2
-        # Free again: the stream grows.
+            # The new file grew by the one member; the held one is untouched.
+            assert [path for path, _ in append_spy.appends] == [old, new, new]
+            assert append_spy.appends[-1][1] == 1
+            assert old.exists()
+            assert held.read() == expected["file1.txt"][1:]
+        assert not old.exists()
+        assert reader._retired_streams == set()
+        budget = reader._spool_budget(None)
+        assert budget._written == reader._solid_streams[0].charge
+        # Already in the new file: nothing is copied.
         assert reader.read(last) == expected[last]
-        assert append_spy.appends[-1][0] == stream_file
+        assert len(append_spy.appends) == 3
+        assert new.exists()
+    assert not new.exists()
 
 
 def test_a_solid_stream_copy_over_the_spool_limit_is_refused_and_not_recorded() -> None:

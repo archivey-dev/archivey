@@ -4908,7 +4908,9 @@ def test_auto_reads_with_unar_a_member_unrar_cannot_name(
 
 
 @requires_binary("unrar", "unar")
-def test_auto_keeps_the_unrar_refusal_when_unar_refuses_the_archive() -> None:
+def test_auto_keeps_the_unrar_refusal_when_unar_refuses_the_archive(
+    unrar_mask_route: None,
+) -> None:
     """unar 1.10 misreads a RAR5 solid archive with data after a directory, so it is
     not used there, and the unrar refusal stands."""
     with (

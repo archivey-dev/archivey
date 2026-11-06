@@ -793,17 +793,21 @@ On a compressed tar, the stream's own checksum adds three cases:
 - **A solid member is read from a copy of its solid stream.** `unrar` has to decode a solid
   stream from its start, so the temporary file holds the stream's members from the start up to
   the member read. There is one such file per solid stream, kept until the reader closes and
-  grown as reads reach further into the stream, so each packed byte is copied at most once. For an
-  archive opened from a path, a stream whose copy would pass 64 MiB is read in place instead.
+  grown as reads reach further into the stream, so each packed byte is copied once. A member
+  stream still open holds the file, which then can't grow: a read further in starts a new file
+  for the stream, which later reads grow, and the held one is removed when it closes. So reads
+  that each go further in while every earlier one is still open copy the stream's start each
+  time. For an archive opened from a path, a stream whose copy would pass 64 MiB is read in place
+  instead.
 - **A pass over a solid archive opened from a stream source copies a few solid streams at a time.**
   `stream_members()` and `extract_all()` on a solid RAR opened from a `BytesIO` or a file object
   run one `unrar` per run of whole solid streams, each on a temporary file holding that run alone,
   removed when its output ends. A run takes streams until it holds 64 MiB of packed bytes, so many
   small streams share one `unrar` start; a larger stream runs alone, and so does every stream when
-  `SpoolLimits.max_bytes` is under 128 MiB. An archive with a member of an unknown compression version, or with a
-  volume missing, is still copied whole (a volume set, to a temporary directory) and removed on
-  close. A pass over an archive opened from a path reads it in place, with one `unrar` run.
-  Members archivey reads itself are read in place and need no copy.
+  `SpoolLimits.max_bytes` is under 128 MiB. An archive with a member of an unknown compression
+  version, or with a volume missing, is still copied whole (a volume set, to a temporary
+  directory) and removed on close. A pass over an archive opened from a path reads it in place,
+  with one `unrar` run. Members archivey reads itself are read in place and need no copy.
 - `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB) bounds every copy: over
   it, the read raises `ResourceLimitError` before anything is written. A member of an archive
   opened from a path is read in place instead.
@@ -861,11 +865,17 @@ raises `UnsupportedFeatureError` before anything runs, and `archive.cost.notes` 
 
 ### Names unrar cannot select
 
-A member's name never reaches `unrar`, so none of what follows applies to it, except when an
-archive opened from a path is read in place: a member that packs more than 64 MiB, or a solid
-stream whose copy would pass 64 MiB. Then `unrar` is told which member to write with an include
-*mask* built from its name. Some names make
-that mask select the wrong members, or none:
+Usually a member's name never reaches `unrar`, so none of what follows applies to it. The
+exceptions read the original archive, with an include *mask* built from the name telling
+`unrar` which member to write:
+
+- an archive opened from a path read in place: a member that packs more than 64 MiB, or a solid
+  stream whose copy would pass 64 MiB;
+- a solid stream with a member whose data is out of reach (a volume missing);
+- a member whose header a synthetic archive can't hold: a RAR 1.5-4 member split past 4 GiB with
+  no 64-bit size fields. An archive opened from a stream source is then copied whole.
+
+Some names make that mask select the wrong members, or none:
 
 - **`*` or `?` in a name** also matches the member's siblings. Names like this are almost always
   constructed, so reading such a member raises `UnsupportedFeatureError`. On an archive that is not
