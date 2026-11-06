@@ -242,3 +242,14 @@ def test_config_is_hashable() -> None:
     strict = ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STRICT)
     assert strict != ArchiveyConfig()
     assert len({strict, ArchiveyConfig(), archivey.DEFAULT_ARCHIVEY_CONFIG}) == 2
+
+
+def test_glob_concatenation_flag_is_deprecated_and_warns_only_when_set() -> None:
+    import warnings
+
+    with pytest.warns(DeprecationWarning, match="rar_allow_glob_member_concatenation"):
+        archivey.ArchiveyConfig(rar_allow_glob_member_concatenation=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        archivey.ArchiveyConfig()
+        archivey.ArchiveyConfig(rar_allow_glob_member_concatenation=False)
