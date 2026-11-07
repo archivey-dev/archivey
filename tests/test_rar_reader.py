@@ -695,6 +695,74 @@ def test_solid_symlink_demux_and_link_targets(
         assert spawns[1] is None
 
 
+# What ``probe_rar_windows_links.py`` wrote into the Windows-built fixture
+# ``winlinks_solid__.rar``.
+_WINLINKS_TEXT = {
+    "a_first.txt": b"first " * 400,
+    "sub/b_inside.txt": b"inside " * 300,
+    "z_last.txt": b"last " * 500,
+    "zz_after.txt": b"after " * 450,
+}
+
+
+@requires_binary("unrar")
+def test_solid_windows_link_and_junction_demux() -> None:
+    """Windows symlinks and junctions take no bytes in a solid ``unrar p`` pass.
+
+    Built on Windows by WinRAR 7.23 ``rar -ol`` (``probe_rar_windows_links.py``):
+    a relative and an absolute file symlink between regular files, then a directory
+    symlink and a junction (redirect types 2 and 3). Measured with ``unrar`` 7.23 on
+    Windows, Linux and macOS: each link prints nothing alone, and the whole pass
+    prints exactly the regular files. ``rar`` stores directories, directory links and
+    junctions after the files of a run, so in these archives only the file links have
+    data after them; the per-link check covers the other two.
+    """
+    path = _fixture("winlinks_solid__.rar")
+    with open_archive(path) as archive:
+        assert archive.info.is_solid is True
+        by_name = {m.name: m for m in archive.members()}
+        links = {n: m for n, m in by_name.items() if m.type is MemberType.SYMLINK}
+        assert set(links) == {
+            "l_file_link.txt",
+            "n_abs_file_link.txt",
+            "m_dir_link",
+            "o_junction",
+        }
+        assert links["l_file_link.txt"].link_target == "a_first.txt"
+        assert links["m_dir_link"].link_target == "sub"
+        assert links["o_junction"].extra.get("is_junction") is True
+        # Absolute targets carry the build runner's path; check the drive and tail.
+        for name, tail in (
+            ("n_abs_file_link.txt", "/a_first.txt"),
+            ("o_junction", "/sub"),
+        ):
+            target = links[name].link_target
+            assert target is not None
+            assert re.match(r"[A-Za-z]:/", target) and target.endswith(tail), target
+        for member in links.values():
+            # Unlike a Unix link, a Windows link lists with no size.
+            assert member.size == 0
+            assert member.compressed_size == 0
+            assert member.extra.get("is_reparse_point") is True
+            raw = member._raw
+            assert isinstance(raw, RarMemberInfo)
+            assert raw.is_payload_file() is False
+            assert _named_unrar_p_bytes(path, member.name) == b""
+        streamed = {
+            m.name: stream.read()
+            for m, stream in archive.stream_members()
+            if stream is not None and m.type is MemberType.FILE
+        }
+    assert streamed == _WINLINKS_TEXT
+    whole = subprocess.run(
+        ["unrar", "p", "-inul", "-cfg-", "-p-", str(path)],
+        capture_output=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    assert len(whole) == sum(len(v) for v in _WINLINKS_TEXT.values())
+
+
 @requires_binary("unrar")
 def test_solid_hardlink_demux_and_targets(monkeypatch: pytest.MonkeyPatch) -> None:
     """RAR5 solid hardlinks match RAR5 symlinks: packed 0 / unpacked > 0 / emit 0."""
