@@ -73,6 +73,7 @@ class UdifBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> BaseArchiveReader:
         # ``open_archive`` refuses before it asks the registry. This is the same
         # answer for a caller that reaches the backend anyway. The unused
