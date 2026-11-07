@@ -37,8 +37,8 @@ volume sequence, and in `open_stream()`, which reads a compressed stream and wou
 the decoded bytes, an `OpenFile` with a `compression` SHALL be refused with an
 `ArchiveyUsageError` before any read. A `FormatDetectionError` from a compressed
 `OpenFile` SHALL carry a note that the bytes were decoded by fsspec and that
-`compression=None` reads the compressed file itself. Its `encoding`, `errors` and `newline` SHALL be ignored, as binary
-mode ignores them.
+`compression=None` reads the compressed file itself. Its `encoding`, `errors` and
+`newline` SHALL be ignored, as binary mode ignores them.
 
 #### Scenario: OpenFile fields
 
