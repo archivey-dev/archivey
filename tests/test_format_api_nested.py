@@ -28,6 +28,7 @@ from archivey import (
     FormatPolicy,
     MemberType,
     PluginContainer,
+    PluginStream,
     StreamFormat,
     TruncatedError,
     UnsupportedFeatureError,
@@ -449,26 +450,40 @@ def test_an_inner_symlink_with_no_target_does_not_end_the_inner_walk() -> None:
     assert len(empty) == 1
 
 
+class NestedCodec(PluginStream):
+    NESTED = "nested-codec"
+
+
 @pytest.mark.usefixtures("boxes")
+@pytest.mark.parametrize(
+    ("inner", "what"),
+    [
+        (BoxesHandler.format, "plugin format"),
+        # Refused before the reader lookup, so the codec need not be registered.
+        (ArchiveFormat(ContainerFormat.TAR, NestedCodec.NESTED), "plugin codec"),
+    ],
+    ids=["container", "codec"],
+)
 def test_a_plugin_format_inside_is_refused_under_plugins_false(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, inner: ArchiveFormat, what: str
 ) -> None:
     """plugins=False holds for nested archives. No built-in reader calls open_nested
     yet, so the outer BOXES stands in for one: the open's own check passes it, and the
-    plugin format inside it is refused."""
+    plugin format or codec inside it is refused."""
     refusal = FormatPolicy._refusal
 
     def outer_allowed(self: FormatPolicy, fmt: ArchiveFormat) -> str | None:
         return None if fmt == BoxesHandler.format else refusal(self, fmt)
 
     monkeypatch.setattr(FormatPolicy, "_refusal", outer_allowed)
-    monkeypatch.setitem(_KINDS, b"B", BoxesHandler.format)
+    monkeypatch.setitem(_KINDS, b"B", inner)
     data = _boxes((b"B", _boxes((b"T", _tar([("a", b"a")])))))
-    with open_archive(io.BytesIO(data), format=BoxesHandler.format) as reader:
-        assert [m.name for m in reader.members()] == ["0/0/a"]
+    if inner == BoxesHandler.format:
+        with open_archive(io.BytesIO(data), format=BoxesHandler.format) as reader:
+            assert [m.name for m in reader.members()] == ["0/0/a"]
     config = ArchiveyConfig(formats=FormatPolicy(plugins=False))
     with (
-        pytest.raises(UnsupportedFeatureError, match="plugins=False turns off"),
+        pytest.raises(UnsupportedFeatureError, match=f"turns off every {what}"),
         open_archive(io.BytesIO(data), format=BoxesHandler.format, config=config) as r,
     ):
         r.members()

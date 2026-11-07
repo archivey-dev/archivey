@@ -924,7 +924,8 @@ can turn plugin formats and plugin codecs off for a call with
 `ArchiveyConfig(formats=FormatPolicy(plugins=False))`; a format turned off is not detected
 either, so its code does not run. A plugin codec is off inside an archive too: a
 `ReaderContext.decompress` or `ForwardStream.decompress` call that asks for it raises
-`UnsupportedFeatureError`. A
+`UnsupportedFeatureError`, and so does a `ReaderContext.open_nested` call for a plugin
+format. A
 [replacement](#replacing-a-built-in-reader) is not a plugin format, so `plugins=False` does not
 turn it off: a replacement runs only in a call whose config names it in `replace=`.
 

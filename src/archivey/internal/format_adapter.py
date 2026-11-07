@@ -488,20 +488,9 @@ class _PluginAdapter(BaseArchiveReader):
             )
         registry = get_registry()
         policy = self._config.formats
-        if not policy.plugins:
-            # plugins=False holds for every member and nested archive, as in
-            # decompress(): a plugin format inside a built-in one does not run.
-            reasons = []
-            if isinstance(fmt.container, PluginContainer):
-                reasons.append("plugins=False turns off every plugin format")
-            if isinstance(fmt.stream, PluginStream):
-                reasons.append("plugins=False turns off every plugin codec")
-            if reasons:
-                raise UnsupportedFeatureError(
-                    f"{fmt.display_name} cannot be read inside another archive: "
-                    + "; ".join(reasons),
-                    source_format=fmt,
-                )
+        refusal = policy._nested_refusal(fmt)
+        if refusal is not None:
+            raise UnsupportedFeatureError(refusal, source_format=fmt)
         backend_cls = registry.reader_for_format(
             fmt,
             replacement=policy._replacement_for(fmt),
@@ -1845,10 +1834,6 @@ class SequentialReaderAdapter(_PluginAdapter):
                     )
             elif length > MAX_LINK_TARGET_BYTES:
                 self._emit_link_target_too_long(member, member_id=index)
-            elif not length:
-                # No stored bytes: an empty target, which the listing reports. A
-                # read of 0 bytes is not made, since it moves nothing.
-                member.link_target = ""
             else:
                 with self._translated_errors(member.name), self._handle_guard():
                     target = forward.read_exact(length)
