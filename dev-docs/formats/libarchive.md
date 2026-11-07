@@ -59,8 +59,9 @@ children. One that cannot start raises `ResourceUnavailableError` naming
   would refuse every record as longer than its size.
 - **`DecoderLimits`** do not reach inside libarchive. The child has no memory limit of its
   own yet.
-- **Release and publish.** `scripts/release/release.py` and `publish.yml` do not bump or
-  upload the package yet; the first upload needs a PyPI pending publisher for the new name.
+- **Publish.** `scripts/release/release.py` moves the package's version and its
+  `archivey==` pin with archivey's at every release, but `publish.yml` does not build or
+  upload it yet; the first upload needs a PyPI pending publisher for the new name.
   The user docs (`docs/`) do not mention it until it is on PyPI.
 
 ## What libarchive converts or makes up

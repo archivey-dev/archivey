@@ -60,7 +60,7 @@ def test_next_dev_version_refuses_a_dev_version() -> None:
 
 
 def test_set_project_version_on_both_real_files() -> None:
-    for path in (release.ROOT_PYPROJECT, release.CLI_PYPROJECT):
+    for path in release.versioned_pyprojects():
         text = path.read_text(encoding="utf-8")
         new = release.set_project_version(text, "9.8.7")
         assert release.project_version(new) == "9.8.7"
@@ -75,6 +75,10 @@ def test_set_project_version_on_both_real_files() -> None:
         release.CLI_PYPROJECT.read_text(encoding="utf-8"), "9.8.7"
     )
     assert '"archivey[recommended]==9.8.7"' in cli
+    plugin = release.set_project_version(
+        release.LIBARCHIVE_PYPROJECT.read_text(encoding="utf-8"), "9.8.7"
+    )
+    assert '"archivey==9.8.7"' in plugin
 
 
 def test_set_project_version_leaves_dependency_floors_alone() -> None:
@@ -172,7 +176,7 @@ def test_real_changelog_can_release_0_2_0() -> None:
 
 def test_dry_run_changes_nothing(capsys: pytest.CaptureFixture[str]) -> None:
     before = {
-        p: p.read_bytes() for p in (release.ROOT_PYPROJECT, release.CLI_PYPROJECT)
+        p: p.read_bytes() for p in release.versioned_pyprojects()
     }
     assert release.main(["--dry-run", "finish", "0.9.9.dev0"]) == 0
     assert {p: p.read_bytes() for p in before} == before
@@ -265,7 +269,11 @@ def test_finish_refuses_a_release_version(capsys: pytest.CaptureFixture[str]) ->
 @pytest.fixture
 def fake_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A copy of the three files the script edits, outside git, so dry runs can succeed."""
-    for name in ("pyproject.toml", "packages/archivey-cli/pyproject.toml"):
+    for name in (
+        "pyproject.toml",
+        "packages/archivey-cli/pyproject.toml",
+        "packages/archivey-libarchive/pyproject.toml",
+    ):
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_text(
             (ROOT / name).read_text(encoding="utf-8"), encoding="utf-8"
@@ -275,6 +283,11 @@ def fake_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(release, "ROOT_PYPROJECT", tmp_path / "pyproject.toml")
     monkeypatch.setattr(
         release, "CLI_PYPROJECT", tmp_path / "packages/archivey-cli/pyproject.toml"
+    )
+    monkeypatch.setattr(
+        release,
+        "LIBARCHIVE_PYPROJECT",
+        tmp_path / "packages/archivey-libarchive/pyproject.toml",
     )
     monkeypatch.setattr(release, "CHANGELOG", tmp_path / "CHANGELOG.md")
     return tmp_path
@@ -298,6 +311,7 @@ def test_dry_run_start_prints_the_steps_in_order(
         ["git", "switch"],
         ["write", "pyproject.toml"],
         ["write", "packages/archivey-cli/pyproject.toml"],
+        ["write", "packages/archivey-libarchive/pyproject.toml"],
         ["uv", "lock"],
         ["write", "CHANGELOG.md"],
         ["git", "add"],
@@ -313,7 +327,7 @@ def test_dry_run_start_prints_the_steps_in_order(
 def test_dry_run_tag_checks_both_packages(
     fake_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    for path in (release.ROOT_PYPROJECT, release.CLI_PYPROJECT):
+    for path in release.versioned_pyprojects():
         path.write_text(
             release.set_project_version(path.read_text(encoding="utf-8"), "0.2.1"),
             encoding="utf-8",
@@ -366,7 +380,7 @@ def _run(sha: str, status: str = "completed", conclusion: str = "success") -> di
 @pytest.fixture
 def released_root(fake_root: Path) -> Path:
     """``fake_root`` after the release PR for 0.2.1 merged."""
-    for path in (release.ROOT_PYPROJECT, release.CLI_PYPROJECT):
+    for path in release.versioned_pyprojects():
         path.write_text(
             release.set_project_version(path.read_text(encoding="utf-8"), "0.2.1"),
             encoding="utf-8",
