@@ -221,10 +221,15 @@ def test_stored_blocks_before_a_member_are_not_read(
         return real(self, number)
 
     monkeypatch.setattr(cab_reader._FolderStream, "_payload", recording)
+    first = (len(TEXT) + len(BLOB)) // FRAME
     with open_archive(io.BytesIO(_case("stored"))) as reader:
         assert reader.read("bin/code.exe") == CODE
-    first = (len(TEXT) + len(BLOB)) // FRAME
-    assert min(payloads) == first
+        assert min(payloads) == first
+        # Going on from the first member's stream skips the blocks between.
+        assert reader.read("docs/text.txt") == TEXT
+        payloads.clear()
+        assert reader.read("bin/code.exe") == CODE
+        assert min(payloads) == first
 
 
 def test_reserve_areas_are_skipped() -> None:
