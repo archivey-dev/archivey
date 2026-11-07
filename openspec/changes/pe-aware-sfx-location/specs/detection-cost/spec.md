@@ -104,7 +104,8 @@ is 0.
 A receipt is within its budget when each bounded counter is at most `passes` times its
 limit: `far_bytes`, `scanned_bytes`, `decode_input` and `decode_output` against the field
 of the same name, and `unique_bytes_read` against the largest of `max_prefix_bytes`,
-`max_far_bytes` and `max_scan_bytes` plus the probe-seek allowance, the trailer allowance,
+`max_far_bytes`, `max_scan_bytes` and the 4096-byte executable header span (read under
+any prefix budget, so the layout matches a forced `format=`'s) plus the probe-seek allowance, the trailer allowance,
 and, when `scanned_bytes` is positive, the SFX validator allowance and the tail allowance.
 The validator allowance is the smaller of `VALIDATOR_PEEK_MAX` and `max_scan_bytes`, the
 bytes a hit validator may read past the window end to judge a candidate that starts inside

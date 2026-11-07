@@ -68,17 +68,17 @@ Block 3 is the overlay-start rule. Each reuses Block 1's PE layout helper.
 
 ## 3. Overlay start first (Block 3)
 
-- [ ] 3.1 `internal/detection.py`: judge the candidate at the overlay start before the
+- [x] 3.1 `internal/detection.py`: judge the candidate at the overlay start before the
       forward scan; `VALID` and `VALID_SHORT` there both answer (design §3).
-- [ ] 3.2 `rar_parser._find_sfx_header`, the 7z signature search and
+- [x] 3.2 `rar_parser._find_sfx_header`, the 7z signature search and
       `ZipForwardReader._scan_for_local_header`: take the same layout and apply the same
       rule, so forced `format=`, seekable or streaming, agrees.
-- [ ] 3.3 Tests for every row of the overlay-start scenario, each checked through both
+- [x] 3.3 Tests for every row of the overlay-start scenario, each checked through both
       `detect_format` and forced `format=` (streaming too for the ZIP row).
-- [ ] 3.4 `IDEAS.md` "Bound the SFX search at the PE overlay": 3.1 covers every PE whose
+- [x] 3.4 `IDEAS.md` "Bound the SFX search at the PE overlay": 3.1 covers every PE whose
       layout parses; narrow the entry to stubs without one (bare `MZ`, ELF, Mach-O), and
       keep `test_short_7z_hit_scan_cost_is_bounded_by_the_window` as it is.
-- [ ] 3.5 Docs: `prefixed-archives.md` §2 and `docs/formats.md` SFX bullet.
+- [x] 3.5 Docs: `prefixed-archives.md` §2 and `docs/formats.md` SFX bullet.
 
 ## 4. Verify
 

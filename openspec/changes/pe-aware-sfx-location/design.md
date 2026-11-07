@@ -74,7 +74,9 @@ the cost work; a field can come later as an additive change).
 
 ### 2. Read the layout from the prefix only
 The DOS header, PE header, optional header data directories and section table normally
-end within the first 1 KiB, inside `max_prefix_bytes`. The helper takes the prefix bytes
+end within the first 1 KiB. The helper reads the first 4096 bytes, which detection holds
+even under a `max_prefix_bytes` below that (it then reads them for this), so its answer
+matches the one a forced `format=` reads from the same bytes. It takes those bytes
 and returns `PeLayout(overlay_start, payload_end | None)`, or `None` when anything is out
 of range or past the prefix. The certificate entry (data directory 4) holds a file offset,
 not an RVA. It counts only when it starts at or past the overlay start and runs to the end
