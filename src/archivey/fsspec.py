@@ -216,7 +216,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     disk; only files and links collide by the policy's key. Not modelled: what a
     non-empty destination decides (``overwrite=``, existing files), what the
     destination's file system cannot hold (a reserved name under ``TRUSTED`` on
-    Windows, case folded by the disk), a link that a later member makes lead out, the
+    Windows, case folded by the disk, a link Windows keeps because it collapses
+    ``..`` before following links), a link that a later member makes lead out, the
     order of the hard links extraction makes in a second pass (one whose source it
     did not write in order), a hard link to a symlink in another directory (written
     with the symlink's target, read from the hard link's own directory), and

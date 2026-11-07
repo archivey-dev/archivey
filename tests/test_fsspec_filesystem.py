@@ -290,6 +290,11 @@ def test_tree_matches_extraction_on_links_and_collisions(
                 del listed[name]
                 cached.discard(name)
                 written.pop(name, None)
+            # Windows collapses ``..`` before following links, so ``../dot/..`` from
+            # s2 names the destination itself and extraction keeps the link. The
+            # tree follows links as POSIX does and refuses it.
+            assert "s2/out" not in listed
+            written.pop("s2/out", None)
         assert listed == written
         # Every path ``info`` answers, not only those ``find`` walks to: ``find``
         # does not descend into a file, so it alone misses ``p/q``.
