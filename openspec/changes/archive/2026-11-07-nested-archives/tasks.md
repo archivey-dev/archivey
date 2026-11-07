@@ -12,4 +12,5 @@
 
 ## 2. First user
 
-- [ ] 2.1 The deb reader (its own pull request).
+- [x] 2.1 The deb reader (its own pull request): `deb_reader.py`, `tests/test_deb.py`,
+      `dev-docs/formats/deb.md`, spec `format-deb`.

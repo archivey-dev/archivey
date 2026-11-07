@@ -45,6 +45,7 @@ attribute archivey.ArchiveFormat.AR = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BROTLI = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZ2 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.CPIO = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.DEB = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DIRECTORY = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DMG = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.GZ = ArchiveFormat(...)
@@ -222,6 +223,7 @@ value archivey.ContainerFormat.RAR = 'rar'
 value archivey.ContainerFormat.SEVEN_Z = '7z'
 value archivey.ContainerFormat.ISO = 'iso'
 value archivey.ContainerFormat.AR = 'ar'
+value archivey.ContainerFormat.DEB = 'deb'
 value archivey.ContainerFormat.CPIO = 'cpio'
 value archivey.ContainerFormat.SQUASHFS = 'squashfs'
 value archivey.ContainerFormat.DMG = 'dmg'
@@ -440,6 +442,7 @@ class archivey.HashAlgorithm(StrEnum)
 enum archivey.HashAlgorithm
 value archivey.HashAlgorithm.CRC32 = 'crc32'
 value archivey.HashAlgorithm.BLAKE2SP = 'blake2sp'
+value archivey.HashAlgorithm.MD5 = 'md5'
 class archivey.LinkTargetNotFoundError(ReadError)
 init archivey.LinkTargetNotFoundError(message: str, *, reason: LinkTargetNotFoundReason, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 field archivey.LinkTargetNotFoundError.reason: LinkTargetNotFoundReason
