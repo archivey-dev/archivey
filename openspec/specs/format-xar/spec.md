@@ -46,6 +46,7 @@ refused with `StreamNotSeekableError`.
 | A hard link written before the entry holding its data | Listed after it; reads that entry's data |
 | A base64 name of Latin-1 bytes with `encoding="latin-1"` | The decoded name; `raw_name` the bytes |
 | A file checked with MD5, SHA-1, SHA-256 or SHA-512 | `member.hashes` holds that digest |
+| A file checksum of another style (`sha224`), or with no style | No hash; `DIGEST_UNVERIFIABLE` (`reason="unknown_algorithm_or_backend"`) |
 | A time with no `Z`, or not a date | `None`; `MEMBER_TIMESTAMP_INVALID` |
 | A data encoding archivey does not know | Listed with `CompressionAlgorithm.UNKNOWN`; `UnsupportedFeatureError` on read |
 
