@@ -1108,13 +1108,20 @@ def _mozlz4_compress(data: bytes) -> bytes:
     return b"mozLz40\0" + size + lz4.block.compress(data, store_size=False)
 
 
+def _bzip3_compress(data: bytes) -> bytes:
+    from bz3.backends import BZ3Compressor
+
+    compressor = BZ3Compressor(1 << 20)
+    return compressor.compress(data) + compressor.flush()
+
+
 def _lz4_compress(data: bytes) -> bytes:
     import lz4.frame
 
     return lz4.frame.compress(data)
 
 
-# suffix -> (compressor, skip marks). The twelve single-file codecs.
+# suffix -> (compressor, skip marks). The thirteen single-file codecs.
 _SINGLE_FILE_CODECS = {
     ".gz": (gzip.compress, ()),
     ".bz2": (bz2.compress, ()),
@@ -1128,6 +1135,7 @@ _SINGLE_FILE_CODECS = {
     ".Z": (make_unix_compress, (requires("ncompress"),)),
     ".lzo": (make_lzop, ()),
     ".mozlz4": (_mozlz4_compress, (requires("lz4"),)),
+    ".bz3": (_bzip3_compress, (requires("bz3"),)),
 }
 
 _NOT_A_STREAM = {"zeros": b"\x00" * 40_000, "zero-byte": b""}

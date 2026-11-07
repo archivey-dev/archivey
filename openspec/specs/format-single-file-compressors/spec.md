@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z, LZOP, mozlz4) are exposed
+Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z, LZOP, mozlz4, BZ3) are exposed
 as one-member pseudo-archives through the unified `ArchiveReader`
 interface. Each source contains exactly one file member whose
 name is inferred from the source filename.
@@ -29,14 +29,14 @@ checksum trailer.
 ### Requirement: Present each compressor as a one-member archive
 
 The system SHALL present any GZ, BZ2, XZ, ZST, LZ4, LZIP, LZMA Alone, ZLIB, BR,
-Z, LZOP or mozlz4 source as an archive containing exactly one `ArchiveMember` of type
+Z, LZOP, mozlz4 or BZ3 source as an archive containing exactly one `ArchiveMember` of type
 `MemberType.FILE`. No directory members SHALL be synthesized.
 
 The member name SHALL be inferred from the source filename:
 
 | Source filename | Member name |
 | --- | --- |
-| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, `.Z`, `.lzo` or `.mozlz4` (case-insensitive) | Strip exactly that recognized compression extension |
+| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, `.Z`, `.lzo`, `.mozlz4` or `.bz3` (case-insensitive) | Strip exactly that recognized compression extension |
 | Ends in `.tgz`, `.tbz2`, `.tbz`, `.txz`, `.tzst`, `.tlz` or `.tzo` (case-insensitive) | Replace that suffix with `.tar`, as `gzip -d` and `xz -d` do |
 | Ends in `.jsonlz4` or `.baklz4` (case-insensitive), Firefox's mozlz4 names | Replace that suffix with `.json` or `.bak` |
 | Ends in a recognized extension, but the remaining stem is entirely dots and spaces (`..gz`, `....gz`, ` .gz`) | Append `.uncompressed` instead; `.` and `..` are not member names, and an all-dots segment is refused under `STRICT` and `STANDARD` |
@@ -518,3 +518,49 @@ split carries the general rule).
 | `.Z` with maximum code width 17 or 31 | `UnsupportedFeatureError` |
 | gzip header CRC mismatch | `CorruptionError` |
 | zlib stream whose CM is 7 (zlib: "unknown compression method") | `CorruptionError` |
+
+### Requirement: bzip3 blocks are framed and checked before libbzip3 sees them
+
+A `.bz3` source SHALL be read as the `bzip3` tool writes it: the `BZ3v1` magic, a
+little-endian block size from 65 KiB to 511 MiB, then blocks to the end of the source,
+each a compressed size and a decoded size followed by the block. archivey SHALL split the
+blocks itself and hand libbzip3 one whole block at a time, and SHALL refuse with
+`CorruptionError`, before the block reaches the decoder:
+
+- a block size outside 65 KiB to 511 MiB;
+- a compressed size below 0 or above what a block of the declared size compresses to at
+  most (`n + n/50 + 32`), or a decoded size below 0 or above the block size;
+- a literal block (BWT index -1) longer than 64 bytes, or whose decoded size is not its own
+  length;
+- a block shorter than its own header (9 bytes, plus 4 for each of the LZP and RLE sizes
+  its model byte names).
+
+A block that decodes to a size other than the one its header declares SHALL be refused
+with `CorruptionError` too: libbzip3's CRC-32 covers the declared size, and archivey
+checks the length of what the decoder returns.
+
+The block size SHALL be checked against `DecoderLimits.max_decoder_memory` at what
+libbzip3 allocates for it, before the decoder is built, and refused with
+`ResourceLimitError`. A detection probe, which runs without the caller's cap as every
+detection probe does, SHALL NOT build a decoder for blocks over 16 MiB nor wait for a
+first block over 1 MiB compressed; it reports "can't tell".
+
+The format has no end mark: a source cut between blocks SHALL read short with no error,
+a cut inside the header or a block SHALL raise `TruncatedError`, and bytes after the last
+block SHALL be read as a further block, not as trailing data. libbzip3 SHALL run in a child
+process unless `process_isolation` is `NONE`.
+
+#### Scenario: bzip3 framing
+
+| Source | Expected |
+| --- | --- |
+| A `.bz3` the `bzip3` tool wrote, under every `process_isolation` | Reads the original bytes |
+| A byte flipped inside a block | `CorruptionError` (block CRC) |
+| Block header declaring -8 compressed bytes | `CorruptionError`, nothing passed to libbzip3 |
+| Literal block whose header declares 100 decoded bytes | `CorruptionError` |
+| Header block size of 64 KiB or 512 MiB | `CorruptionError` |
+| Block size whose decoder needs more than `max_decoder_memory` | `ResourceLimitError` |
+| Source cut at a block boundary | Reads the blocks before the cut, no error |
+| Source cut inside the header or a block | `TruncatedError` |
+| A second `.bz3` file after the first | `CorruptionError` |
+| `.tar.bz3` whose first block is over 1 MiB compressed | Detected as `.bz3` with the inner TAR test skipped; `format=` TAR+BZIP3 reads the TAR |

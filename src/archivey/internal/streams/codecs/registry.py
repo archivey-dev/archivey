@@ -34,6 +34,7 @@ from archivey.internal.streams.codecs.base import (
 )
 from archivey.internal.streams.codecs.brotli_codec import BrotliCodec
 from archivey.internal.streams.codecs.bzip2_codec import Bzip2Codec
+from archivey.internal.streams.codecs.bzip3_codec import Bzip3Codec
 from archivey.internal.streams.codecs.deflate64_codec import Deflate64Codec
 from archivey.internal.streams.codecs.gzip_codec import GzipCodec
 from archivey.internal.streams.codecs.lz4_codec import Lz4Codec
@@ -97,6 +98,7 @@ _STREAM_CODECS: list[StreamCodec] = [
     ImplodeCodec(),
     LzopCodec(),
     MozLz4Codec(),
+    Bzip3Codec(),
     Lzo1xCodec(),
 ]
 
