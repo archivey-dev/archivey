@@ -197,6 +197,16 @@ class MemberData(NamedTuple):
     more than ``size`` bytes either way, but a stream that breaks the promise has
     its extra bytes go unreported, where they would raise ``CorruptionError``."""
 
+    ranges: tuple[tuple[int, int], ...] = ()
+    """The spans ``(start, end)`` of the archive the stream reads, in archive
+    offsets, end exclusive: the member's stored or compressed bytes. An archive read
+    by range from an ``fsspec`` file system then fetches each span in one request (up
+    to the largest fetch archivey makes) when the stream first reads it, not in steps
+    that start small; any other source ignores them. They never change what a read
+    returns, and a wrong one costs only a fetch. archivey learns them when
+    ``open_member`` returns, so a read the plugin makes inside ``open_member`` is not
+    covered."""
+
 
 class MemberSpan(NamedTuple):
     """One member, as :meth:`SequentialReader.walk` yields it: the member, and either
@@ -274,13 +284,11 @@ class ReaderSource:
         size: int | None,
         path: Path | None,
         read_at: Callable[[int, int], bytes],
-        will_read: Callable[[int, int], None] | None = None,
     ) -> None:
         self._view = view
         self._size = size
         self._path = path
         self._read_at = read_at
-        self._will_read = will_read
 
     @property
     def size(self) -> int | None:
@@ -323,19 +331,6 @@ class ReaderSource:
         if isinstance(fmt, struct.Struct):
             return fmt.unpack(self.read_exact(offset, fmt.size))
         return struct.unpack(fmt, self.read_exact(offset, struct.calcsize(fmt)))
-
-    def will_read(self, start: int, end: int) -> None:
-        """Say that ``[start, end)`` of the archive is read next, before reading it.
-
-        An archive read by range from an ``fsspec`` file system then fetches that span
-        in one request (up to the largest fetch archivey makes), not in steps that
-        start small; every other source ignores it. A hint never changes the bytes a
-        read returns, and a wrong one costs only a fetch. Call it before opening a
-        member's :meth:`view`, with the member's stored span. One hint is kept at a
-        time: a later one replaces it.
-        """
-        if self._will_read is not None:
-            self._will_read(start, end)
 
 
 class ForwardStream:

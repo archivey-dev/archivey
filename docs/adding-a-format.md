@@ -138,8 +138,9 @@ class ToyReader(IndexedReader[Locator]):
 
     def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
         offset, size = locator
-        self._source.will_read(offset, offset + size)
-        return MemberData(self._source.view(offset, size))
+        return MemberData(
+            self._source.view(offset, size), ranges=((offset, offset + size),)
+        )
 
 
 class ToyHandler(FormatHandler):
@@ -214,12 +215,12 @@ other fields say how archivey can check those bytes, as described in
 
 There are four ways to build the stream. Pick the first one that fits your format.
 
-Whichever you pick, when the member's bytes are a span of the archive, stored or
-compressed, call `ReaderSource.will_read(start, end)` with that span before opening a
-view over it. An archive read by range from an `fsspec` file system then fetches the
-span in one request rather than in steps that start small; on a local file it does
-nothing, and it never changes what a read returns. TOYA's `open_member` shows the call;
-the shorter examples below leave it out.
+Whichever you pick, when the member's bytes are spans of the archive, stored or
+compressed, name them in `MemberData.ranges` as `(start, end)` pairs. An archive read by
+range from an `fsspec` file system then fetches each span in one request rather than in
+steps that start small; on a local file they do nothing, and they never change what a
+read returns. TOYA's `open_member` shows the field; the shorter examples below leave it
+out.
 
 **Stored bytes.** `ReaderSource.view(start, length)` is a stream over part of the archive
 with its own position, so two members open at the same time do not move each other. A

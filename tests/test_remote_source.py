@@ -653,7 +653,7 @@ def test_a_hint_inside_a_window_fetches_nothing():
     src, fs = _source(DATA)
     src.read(10)
     src.will_read(100, 200)
-    assert src.pending_hint is None
+    assert src.pending_hints == []
     src.seek(150)
     src.read(10)
     assert fs.fetches == [(0, 16 * KIB)]
@@ -683,6 +683,29 @@ def test_a_hint_past_a_runs_window_starts_its_own_run():
     first, second = fs.fetches
     assert first == (0, 16 * KIB)
     assert second[0] == 20 * KIB
+
+
+def test_members_read_side_by_side_each_keep_their_hint():
+    # Two streams hint their members before either reads: the second hint does not
+    # replace the first, so each member comes in one request.
+    src, fs = _source(DATA)
+    src.will_read(100 * KIB, 150 * KIB)
+    src.will_read(300 * KIB, 350 * KIB)
+    src.seek(100 * KIB)
+    assert src.read(50 * KIB) == DATA[100 * KIB : 150 * KIB]
+    src.seek(300 * KIB)
+    assert src.read(50 * KIB) == DATA[300 * KIB : 350 * KIB]
+    assert fs.fetches == [(100 * KIB, 150 * KIB), (300 * KIB, 350 * KIB)]
+
+
+def test_a_source_keeps_only_its_latest_hints():
+    from archivey.internal.remote import MAX_PENDING_HINTS
+
+    src, _ = _source(DATA)
+    for i in range(MAX_PENDING_HINTS + 2):
+        src.will_read(i * 20 * KIB, i * 20 * KIB + 10)
+    assert len(src.pending_hints) == MAX_PENDING_HINTS
+    assert src.pending_hints[0][0] == 2 * 20 * KIB
 
 
 def test_a_hint_never_changes_the_bytes():
@@ -783,9 +806,9 @@ def _iso_bytes(members: dict[str, bytes]) -> bytes:
 
 
 def test_iso_reads_a_member_within_the_max_fetch_in_one_request():
-    """The spec ceiling: list + 1. The ISO reader hints the member's extent through
-    ``ReaderSource.will_read``, so the read is one fetch from the extent's start rather
-    than a ramp from the minimum fetch. Red with the hint call removed (3 fetches)."""
+    """The spec ceiling: list + 1. The ISO reader names the member's extent in
+    ``MemberData.ranges``, so the read is one fetch from the extent's start rather than
+    a ramp from the minimum fetch. Red with the ranges removed (3 fetches)."""
     rng = random.Random(9)
     # The default constants: under SMALL the cap shrinks with the listing's windows.
     payload = rng.randbytes(400_000)
@@ -802,8 +825,8 @@ def test_iso_reads_a_member_within_the_max_fetch_in_one_request():
     assert fs.fetches[listed:] == [(extent, extent + len(payload))]
 
 
-def test_a_plugin_hint_reaches_the_range_source(monkeypatch: pytest.MonkeyPatch):
-    """``ReaderSource.will_read`` passes the plugin's offsets on unchanged."""
+def test_a_plugins_ranges_reach_the_range_source(monkeypatch: pytest.MonkeyPatch):
+    """``MemberData.ranges`` reach the range source as hints, offsets unchanged."""
     rng = random.Random(10)
     payload = rng.randbytes(20_000)
     data = _iso_bytes({"b.bin": payload})
@@ -819,3 +842,21 @@ def test_a_plugin_hint_reaches_the_range_source(monkeypatch: pytest.MonkeyPatch)
         assert reader.read(reader.get("B.BIN")) == payload
     extent = data.index(payload[:64])
     assert hints == [(extent, extent + len(payload))]
+
+
+def test_ranges_that_are_not_offset_pairs_are_a_plugin_bug(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from archivey.internal.backends.iso_reader import IsoReader
+
+    data = _iso_bytes({"b.bin": b"x" * 100})
+    original = IsoReader.open_member
+
+    def bad(self: IsoReader, member: Any, locator: Any) -> Any:
+        return original(self, member, locator)._replace(ranges=[(0, "10")])
+
+    monkeypatch.setattr(IsoReader, "open_member", bad)
+    with open_archive(OpenFile(RecordingFS(data), "/a.iso", mode="rb")) as reader:
+        member = reader.get("B.BIN")
+        with pytest.raises(TypeError, match=r"MemberData\.ranges"):
+            reader.read(member)

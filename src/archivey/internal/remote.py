@@ -270,11 +270,10 @@ class WindowPool:
         """
         c = self.constants
         want = len(view)
-        hint = source.pending_hint
-        hinted = hint is not None and hint[0] <= at < hint[1]
+        hint = source.take_hint(at)
+        hinted = hint is not None
         if hinted:
             assert hint is not None
-            source.pending_hint = None
             if run is not None and hint[0] > run.end:
                 # The span starts past this run's window, which another stream on
                 # the source may still be reading: the span gets a run of its own
@@ -362,8 +361,8 @@ class WindowPool:
 
         Nothing is fetched here: the next read that lands in the span and finds no
         window fetches the span in one request, up to the maximum fetch. A span a
-        window already holds needs nothing. One pending hint per source; a later one
-        replaces it.
+        window already holds needs nothing. A source keeps its latest
+        ``MAX_PENDING_HINTS`` hints, so members read side by side each keep theirs.
         """
         with self._lock:
             end = min(end, source.size)
@@ -372,7 +371,7 @@ class WindowPool:
             for run in self._runs:
                 if run.source is source and run.start <= start and end <= run.end:
                     return
-            source.pending_hint = (start, end)
+            source.add_hint(start, end)
 
     def _trim_oversized(self, cap: int, keep: _Run | None) -> None:
         """Cut every other window down to ``cap``, dropping its head.
@@ -388,6 +387,11 @@ class WindowPool:
             run.data = run.data[excess:]
             run.start += excess
             self._held -= excess
+
+
+MAX_PENDING_HINTS = 8
+"""Hints a range source keeps at once: one per member stream read side by side, for
+up to this many streams. A hint lost past it costs only the fetch it would have saved."""
 
 
 class RangeSource(io.RawIOBase):
@@ -414,9 +418,9 @@ class RangeSource(io.RawIOBase):
         self.pool = pool
         self.max_read_through = max_read_through
         self._pos = 0
-        # The span a backend declared it reads next (``will_read``), until a fetch
-        # uses it.
-        self.pending_hint: tuple[int, int] | None = None
+        # The spans backends declared they read next (``will_read``), newest last,
+        # each until a fetch uses it. Several, so streams side by side each keep one.
+        self.pending_hints: list[tuple[int, int]] = []
 
     @classmethod
     def from_open_file(
@@ -434,6 +438,22 @@ class RangeSource(io.RawIOBase):
     @property
     def name(self) -> str:
         return self.path
+
+    def add_hint(self, start: int, end: int) -> None:
+        """Keep ``[start, end)`` as pending, dropping the oldest past the limit."""
+        hints = self.pending_hints
+        if (start, end) in hints:
+            hints.remove((start, end))
+        hints.append((start, end))
+        del hints[:-MAX_PENDING_HINTS]
+
+    def take_hint(self, at: int) -> tuple[int, int] | None:
+        """Remove and return the newest pending hint that covers ``at``, if any."""
+        hints = self.pending_hints
+        for i in range(len(hints) - 1, -1, -1):
+            if hints[i][0] <= at < hints[i][1]:
+                return hints.pop(i)
+        return None
 
     def will_read(self, start: int, end: int) -> None:
         """The backend reads ``[start, end)`` next (design D2 rule 3).

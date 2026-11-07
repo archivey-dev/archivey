@@ -1052,6 +1052,7 @@ class archivey.formats.MemberData(tuple)
 field archivey.formats.MemberData.bounded: bool
 field archivey.formats.MemberData.checked: bool
 field archivey.formats.MemberData.digests: tuple[MemberDigest, ...]
+field archivey.formats.MemberData.ranges: tuple[tuple[int, int], ...]
 field archivey.formats.MemberData.stream: BinaryIO | io.RawIOBase
 class archivey.formats.MemberDigest(tuple)
 field archivey.formats.MemberDigest.expected: bytes
@@ -1092,7 +1093,6 @@ method archivey.formats.ReaderSource.read_exact(self, offset: int, n: int) -> by
 method archivey.formats.ReaderSource.read_struct(self, offset: int, fmt: str | struct.Struct) -> tuple[Any, ...]
 property archivey.formats.ReaderSource.size: int | None
 method archivey.formats.ReaderSource.view(self, start: int, length: int | None = None) -> BinaryIO
-method archivey.formats.ReaderSource.will_read(self, start: int, end: int) -> None
 class archivey.formats.SequentialFormatHandler(FormatHandler)
 attribute archivey.formats.SequentialFormatHandler.extensions = ()
 attribute archivey.formats.SequentialFormatHandler.install_hint = None
