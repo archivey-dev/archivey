@@ -52,6 +52,7 @@ import struct
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Literal
 
 from archivey.diagnostics import (
     ArchiveEofContext,
@@ -197,7 +198,9 @@ class Header:
     def _bad(self, tag: int, why: str) -> CorruptionError:
         return CorruptionError(f"RPM {self._what}: tag {tag} {why}")
 
-    def _entry(self, tag: int, kind: str) -> _Entry | None:
+    def _entry(
+        self, tag: int, kind: Literal["an integer", "a string"]
+    ) -> _Entry | None:
         """The tag's entry, checked to be ``kind`` ("an integer" or "a string")."""
         entry = self._entries.get(tag)
         if entry is None:
@@ -275,10 +278,11 @@ class Header:
         entry = self._entry(tag, "a string")
         if entry is None:
             return None
-        end = self._data.find(b"\0", entry.offset)
-        if end < 0:
+        # The whole array must fit, as strings() and rpm require: one NUL per value
+        # after the offset. Counting them builds nothing.
+        if self._data.count(b"\0", entry.offset) < entry.count:
             raise self._bad(tag, "has a string with no NUL before the data's end")
-        return self._data[entry.offset : end]
+        return self._data[entry.offset : self._data.index(b"\0", entry.offset)]
 
 
 def _read_header(

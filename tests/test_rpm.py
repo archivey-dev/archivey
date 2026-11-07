@@ -836,3 +836,30 @@ def test_a_scalar_tag_reads_only_its_first_value(
     # The package is 2 MiB, held about twice (the read and the store). Unpacked,
     # the array alone was 16 MiB of list.
     assert peak < 3 * len(data)
+
+
+def _store(entries: dict[int, tuple[int, int, int]], data: bytes) -> rpm_reader.Header:
+    """A parsed header over ``data``, its entries as tag: (type, count, offset)."""
+    index = {
+        tag: rpm_reader._Entry(kind, count, offset)
+        for tag, (kind, count, offset) in entries.items()
+    }
+    return rpm_reader.Header(index, data, "header")
+
+
+def test_a_scalar_string_array_with_no_final_nul_is_damage() -> None:
+    """string() reads only the first value, but refuses an array that the store
+    cannot hold, as strings() and rpm do."""
+    header = _store({1000: (_STRING_ARRAY, 2, 0)}, b"abc\0def")
+    with pytest.raises(CorruptionError, match="no NUL"):
+        header.string(1000)
+    with pytest.raises(CorruptionError, match="no NUL"):
+        header.strings(1000)
+    assert _store({1000: (_STRING_ARRAY, 2, 0)}, b"abc\0def\0").string(1000) == b"abc"
+
+
+def test_a_scalar_integer_array_past_the_store_is_damage() -> None:
+    header = _store({1003: (_INT32, 3, 0)}, b"\0\0\0\x07" * 2)
+    with pytest.raises(CorruptionError, match="runs past the end"):
+        header.number(1003)
+    assert _store({1003: (_INT32, 2, 0)}, b"\0\0\0\x07" * 2).number(1003) == 7
