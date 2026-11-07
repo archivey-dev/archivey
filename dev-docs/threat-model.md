@@ -1436,10 +1436,10 @@ several candidates: a 7z Copy, PPMd, Brotli or filter-only chain whose only CRC 
 folder end; any ZIP, 7z or RAR3/4 unit where more than one candidate survives the bounded
 probe, which then walks to the end anchor once per survivor; and a stored RAR3/4 member,
 decrypted in full once per candidate. Each costs time proportional to the unit, once per
-candidate, and only when the caller passes a list. For 7z, the OpenSpec change
-`sevenzip-aes-tail-key-check` adds an O(1) check on the AES padding at the end of the
-packed stream, which settles it for the archives with at least 4 padding bytes. Not
-implemented (its tasks are open).
+candidate, and only when the caller passes a list. For 7z, an O(1) check on the AES
+padding at the end of the packed stream settles it for a folder with 4 or more zero
+padding bytes, about three folders in four from 7-Zip or py7zr
+([7z handbook](formats/7z.md)). The rest still walk once per candidate.
 
 ### Detection decoding scan candidates
 

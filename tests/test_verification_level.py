@@ -272,9 +272,21 @@ def test_rar5_password_check_is_password_before_the_crc() -> None:
         assert stream.verified is CHECKSUM
 
 
+def _without_the_aes_tail_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep a 7-Zip-written folder unconfirmed. 7-Zip pads AES with zeros, so most of
+    its folders confirm on the tail padding (tests/test_sevenzip_aes_tail.py); these
+    tests are about one that does not."""
+    import archivey.internal.backends.sevenzip_reader as reader_mod
+
+    monkeypatch.setattr(reader_mod, "aes_tail_confirms", lambda *a, **k: False)
+
+
 @requires("cryptography")
 @requires_binary("7z")
-def test_sevenzip_unconfirmed_folder_partial_read_is_none(tmp_path: Path) -> None:
+def test_sevenzip_unconfirmed_folder_partial_read_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _without_the_aes_tail_check(monkeypatch)
     source = tmp_path / "a.txt"
     source.write_bytes(_DATA)
     archive = tmp_path / "a.7z"
@@ -324,8 +336,9 @@ def test_winzip_aes_ae2_reaches_checksum_from_its_hmac(tmp_path: Path) -> None:
 @requires("cryptography")
 @requires_binary("7z")
 def test_sevenzip_unconfirmed_folder_stream_members_partial_read_is_none(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _without_the_aes_tail_check(monkeypatch)
     source = tmp_path / "a.txt"
     source.write_bytes(_DATA)
     archive = tmp_path / "a.7z"
