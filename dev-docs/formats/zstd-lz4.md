@@ -214,10 +214,11 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   `LZ4_COMPRESSBOUND(8 MiB)` ends the stream instead, so the input held for one block
   stays under about 8 MiB and each block decodes into an 8 MiB buffer. Both numbers are
   the format's, so `DecoderLimits` has nothing to cap here.
-- **Detection lifts the cap, not the window.** The inner-TAR probe decodes with
-  `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG` in `codecs/base.py`, the same rule as
-  liblzma's dictionary), but with `window_log_max` at libzstd's default 27 (128 MiB),
-  what `zstd -d` decodes without `--long`. libzstd reserves the declared window of a
+- **Detection keeps the cap and lowers the window.** The inner-TAR probe decodes under
+  the caller's `DecoderLimits`, with `window_log_max` at the smaller of the cap's and
+  libzstd's default 27 (128 MiB), what `zstd -d` decodes without `--long`. A frame over
+  the cap is "can't tell" with an INFO log naming `max_decoder_memory`; the read of the
+  bare `.zst` that follows refuses the same window. libzstd reserves the declared window of a
   frame without a content size when it reads the header (measured: a 2 GiB window under
   a 256 MiB `RLIMIT_AS` fails with "Allocation error"), and a window cannot be shrunk to
   what the read needs the way an LZMA dictionary can. A frame over 128 MiB is "can't

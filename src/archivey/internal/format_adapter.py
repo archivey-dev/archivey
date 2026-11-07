@@ -26,7 +26,7 @@ from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import fields, replace
 from typing import Any, BinaryIO, ClassVar, NoReturn, TypeVar, cast
 
-from archivey.config import ArchiveyConfig, ProcessIsolation
+from archivey.config import ArchiveyConfig, DecoderLimits, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -2389,6 +2389,7 @@ def prefix_probe(probe: object) -> ContentProbe:
         read_at: Callable[[int, int], bytes | None] | None = None,
         charge_decode: Callable[[int], bool] | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
         nonlocal warned
         # A probe that raises (a struct.unpack past a short prefix, say) is no match:

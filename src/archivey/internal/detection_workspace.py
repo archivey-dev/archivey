@@ -24,7 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO, Protocol, Self
 
-from archivey.config import ProcessIsolation
+from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.detection_cost import (
     DetectionBudget,
     DetectionCostReceipt,
@@ -80,10 +80,13 @@ class PrefixWorkspace:
         *,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> None:
         self._budget = budget
         # The caller's ``process_isolation``: where the probes' trial decodes run.
         self.isolation = isolation
+        # The caller's ``DecoderLimits``: what the probes' trial decoders may reserve.
+        self.decoder_limits = decoder_limits
         # The caller's ``FormatPolicy.exclude_libraries``: a probe does not decode with
         # a package it names.
         self.excluded_libraries = excluded_libraries

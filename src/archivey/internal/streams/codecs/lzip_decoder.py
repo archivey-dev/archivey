@@ -496,16 +496,21 @@ class _LzipState:
                 f"Invalid lzip dict_size exponent {exp}: valid range is 12-29"
             )
         dict_size = 1 << exp
+        # A detection probe decodes with only the dictionary its read needs, and that
+        # is what the cap is checked against: the dictionary liblzma reserves.
+        decode_dict = probe_lzma_dictionary(dict_size, self._read_bound)
         # The format's own ceiling is 512 MiB (exponent 29), under the default cap, so
         # this refuses only for a caller who set a smaller one.
         check_decoder_memory(
-            dict_size,
+            decode_dict,
             limits=self._limits,
-            what="lzip dictionary size",
+            what=(
+                "lzip dictionary size"
+                if self._read_bound is None
+                else "the lzip dictionary a detection probe reserves"
+            ),
             usage=self._usage,
         )
-        # A detection probe decodes with only the dictionary its read needs.
-        decode_dict = probe_lzma_dictionary(dict_size, self._read_bound)
         lzma_alone_header = _PROPS_BYTE + struct.pack("<I", decode_dict) + _UNKNOWN_SIZE
         try:
             self._dec = self._natives.lzma_decompressor(format=lzma.FORMAT_ALONE)
