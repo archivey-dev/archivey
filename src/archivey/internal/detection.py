@@ -128,6 +128,7 @@ from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.sfx import (
+    LAYOUT_PREFIX,
     MAX_VALIDATED_CANDIDATES,
     SFX_MAX,
     VALIDATOR_PEEK_MAX,
@@ -962,6 +963,24 @@ def validator_allowance(budget: DetectionBudget) -> int:
     return min(VALIDATOR_PEEK_MAX, budget.max_scan_bytes)
 
 
+def _executable_head(
+    data: bytes, peek_more: Callable[[int], bytes], workspace: PrefixWorkspace
+) -> bytes:
+    """The leading bytes an executable's layout is read from: ``data``, grown to
+    :data:`~archivey.internal.sfx.LAYOUT_PREFIX` bytes when it is shorter.
+
+    A ``max_prefix_bytes`` below that span would hide the headers, and the end and
+    start detection reports would then differ from the ones a forced ``format=``
+    reads from the same span (``open_archive``): what an archive holds never depends
+    on whether its format was named. The scan that follows reads past this span
+    anyway, on a pipe too, so growing it waits for no byte the scan would not.
+    """
+    total = workspace.remaining_known()
+    if len(data) >= (LAYOUT_PREFIX if total is None else min(LAYOUT_PREFIX, total)):
+        return data
+    return peek_more(LAYOUT_PREFIX)
+
+
 def _scan_for_sfx_payload(
     entries: list[MagicSignature],
     peek_more: Callable[[int], bytes],
@@ -1662,6 +1681,7 @@ def _detect_format_body(
         non_archive = _non_archive_signature(data)
         cue = executable_cue(data)
         if cue is not ExecutableCue.NONE and non_archive is None:
+            head = _executable_head(data, peek_more, workspace)
             sfx_info = _scan_for_sfx_payload(
                 registry.sfx_magic_entries(),
                 peek_more,
@@ -1672,7 +1692,7 @@ def _detect_format_body(
                 capped_formats=registry.sfx_parser_scanned_formats(),
                 # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
                 restrict_to_validated=data.startswith(b"#!"),
-                leading=data,
+                leading=head,
             )
             if sfx_info is not None:
                 return conclude(sfx_info, _ConflictEvidence.SFX_SCAN)
@@ -1681,7 +1701,7 @@ def _detect_format_body(
             # overlay runs past the window pays for the tail read.
             tail_info = _probe_pe_tail(
                 workspace,
-                data,
+                head,
                 scan_limit=min(SFX_MAX, budget.max_scan_bytes),
                 enabled=budget.max_scan_bytes > 0,
             )

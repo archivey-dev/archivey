@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from archivey.detection_cost import DetectionBudget, DetectionCostReceipt
 from archivey.internal.detection import TAIL_PROBE_ALLOWANCE, validator_allowance
+from archivey.internal.sfx import LAYOUT_PREFIX
 from archivey.internal.streams.codecs.brotli_framing import (
     CHAIN_HEADER_READ,
     CHAIN_MAX_LINKS,
@@ -53,8 +54,13 @@ def within_budget(receipt: DetectionCostReceipt, budget: DetectionBudget) -> boo
     # anything, and fewer than one pass is judged as one.
     n = max(1, receipt.passes)
     probe_allowance = CHAIN_MAX_LINKS * CHAIN_HEADER_READ
+    # An executable's headers are read from their whole span under any prefix
+    # budget, so the layout matches the one a forced ``format=`` reads.
     read_ceiling = max(
-        budget.max_prefix_bytes, budget.max_far_bytes, budget.max_scan_bytes
+        budget.max_prefix_bytes,
+        budget.max_far_bytes,
+        budget.max_scan_bytes,
+        LAYOUT_PREFIX,
     )
     # The PE tail probe runs only after an SFX scan, as the validator reads do; a
     # receipt cannot show that it ran, so a scan earns both allowances.

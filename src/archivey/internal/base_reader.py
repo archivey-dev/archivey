@@ -548,15 +548,14 @@ class ReadBackend(ABC):
         payload itself — ``unrar`` on an SFX file.) Backends whose formats never carry a
         stub reject a nonzero value rather than silently reading from byte 0.
 
-        ``end_offset`` is where the archive's region ends, when detection identified
-        what follows it (``FormatInfo.payload_end``: a signed executable's certificate
-        table). With it the promise is a view of ``[start_offset, end_offset)``:
-        nothing at or past it is read, and it is not reported as data after the
-        archive. A backend never reads before ``start_offset`` to find an end for
-        itself. Opened at 0 with no end, a RAR, 7z or ZIP backend reads its own
-        leading bytes and derives the end with
-        :func:`~archivey.internal.sfx.pe_payload_end`, so forced ``format=`` sees the
-        end detection reports. Backends whose formats never carry a stub reject it.
+        ``end_offset`` is where the archive's region ends, when a signed executable's
+        certificate table follows it. Detection reads it from the executable's headers
+        (``FormatInfo.payload_end``); under a forced ``format=``, ``open_archive``
+        reads it from the same headers, so both open the same region. With it the
+        promise is a view of ``[start_offset, end_offset)``: nothing at or past it is
+        read, and it is not reported as data after the archive. A backend never looks
+        for an end itself. Backends whose formats never carry a stub (no
+        ``SFX_MAGIC``) are never passed one, and reject it.
         """
         ...
 

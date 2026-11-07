@@ -11,9 +11,13 @@ from __future__ import annotations
 
 import io
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from archivey import detect_format, open_archive
+from archivey.config import BALANCED_BUDGET, ArchiveyConfig
 from archivey.internal.sfx import SFX_MAX
 from archivey.types import ArchiveFormat
 from tests.pe_build import FILE_ALIGNMENT, pe_file, pe_headers
@@ -72,6 +76,27 @@ def test_forward_zip_walk_takes_the_zip_at_the_overlay_start() -> None:
     assert info.payload_offset == _OVERLAY
     assert _names(data, ArchiveFormat.ZIP, pipe=True) == ["real.txt"]
     assert _names(data, pipe=True) == ["real.txt"]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["seekable", "pipe"])
+def test_a_short_prefix_budget_still_judges_the_overlay_start_first(
+    pipe: bool,
+) -> None:
+    # A ``max_prefix_bytes`` below the PE headers' span: detection reads the headers
+    # anyway, so it takes the archive the forced walk takes, not the decoy before it.
+    data = _with_image(b"\0" * 512 + _zip("decoy.txt"), _zip("real.txt"))
+    config = ArchiveyConfig(
+        detection_budget=replace(BALANCED_BUDGET, max_prefix_bytes=64)
+    )
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+    assert detect_format(source, config=config).payload_offset == _OVERLAY
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+    with open_archive(source, config=config, streaming=pipe) as reader:
+        if pipe:
+            names = [member.name for member, _ in reader.stream_members()]
+        else:
+            names = [member.name for member in reader.members()]
+    assert names == ["real.txt"] == _names(data, ArchiveFormat.ZIP, pipe=pipe)
 
 
 def test_short_7z_at_the_overlay_start_is_accepted_at_once() -> None:

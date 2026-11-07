@@ -1782,9 +1782,9 @@ class ZipForwardReader(ZipReader):
         self._walker = LocalHeaderWalk(source, offset=0, find_start=True)
         # ``end_offset`` is not used: detection reports no payload end for a source
         # that cannot seek, because it cannot tell where such a stream starts in the
-        # object a size counts from, and a seekable source goes to ``ZipReader``. So
-        # this reader derives none either, and forced ``format=ZIP`` and auto-detect
-        # agree: a certificate after the archive is reported as trailing data.
+        # object a size counts from, and a seekable source goes to ``ZipReader``.
+        # ``open_archive`` reads none for a forced ``format=ZIP`` on it either, so the
+        # two agree: a certificate after the archive is reported as trailing data.
         if start_offset:
             # The detector found a stub: read past it, so the walk starts at the
             # first local header and its offsets stay those of the file.

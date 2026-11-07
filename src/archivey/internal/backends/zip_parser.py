@@ -203,15 +203,6 @@ def locate_end_record(
     return found, None
 
 
-def record_implies_prefix(eocd_offset: int, record: bytes) -> bool:
-    """Whether a classic end record at ``eocd_offset`` says bytes precede its
-    archive: its directory, as stored, does not end where the record starts. A
-    record whose fields are saturated (ZIP64) counts as saying so, since only the
-    ZIP64 records hold its directory's place."""
-    _sig, _d, _c, _n, _total, cd_size, cd_offset, _len = _EOCD.unpack(record)
-    return cd_offset + cd_size != eocd_offset
-
-
 def read_end_record(
     read_at: ReadAt, file_size: int, found: tuple[int, bytes, bytes]
 ) -> EndRecord:
