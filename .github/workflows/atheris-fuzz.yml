@@ -135,8 +135,10 @@ jobs:
             export ARCHIVEY_FUZZ_BUDGET_TAR=1
             export ARCHIVEY_FUZZ_BUDGET_ISO=1
             export ARCHIVEY_FUZZ_BUDGET_SQUASHFS=1
+            export ARCHIVEY_FUZZ_BUDGET_CAB=1
             export ARCHIVEY_FUZZ_BUDGET_AR=1
             export ARCHIVEY_FUZZ_BUDGET_CPIO=1
+            export ARCHIVEY_FUZZ_BUDGET_RPM=1
             export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=2
             export ARCHIVEY_FUZZ_BUDGET_RAR=1
             export ARCHIVEY_FUZZ_BUDGET_OPEN_DETECTED=2
@@ -165,8 +167,10 @@ jobs:
             export ARCHIVEY_FUZZ_BUDGET_TAR=$((10 * scale))
             export ARCHIVEY_FUZZ_BUDGET_ISO=$((8 * scale))
             export ARCHIVEY_FUZZ_BUDGET_SQUASHFS=$((8 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_CAB=$((8 * scale))
             export ARCHIVEY_FUZZ_BUDGET_AR=$((6 * scale))
             export ARCHIVEY_FUZZ_BUDGET_CPIO=$((8 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_RPM=$((8 * scale))
             export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=$((30 * scale))
             export ARCHIVEY_FUZZ_BUDGET_RAR=$((15 * scale))
             export ARCHIVEY_FUZZ_BUDGET_OPEN_DETECTED=$((20 * scale))
