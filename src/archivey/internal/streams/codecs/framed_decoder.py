@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -89,6 +89,22 @@ class FrameCheck:
 
     head: int
     judge: Callable[[bytes], bool | None]
+
+
+class BlockResumable(Protocol):
+    """A decompressor whose stream is a run of blocks it can resume at (bzip3).
+
+    Internal: plugin codecs do not implement it. :class:`FramedDecoder` asks it, after
+    each ``decompress``, for the blocks it began: each as the block's compressed and
+    output offsets from the start of the stream, and the state a decompressor needs to
+    resume there. Only blocks with output are listed. ``resume`` is called on a new
+    decompressor before any input, with such a state, and the input then starts at that
+    block.
+    """
+
+    def take_block_starts(self) -> list[tuple[int, int, object]]: ...
+
+    def resume(self, state: object) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -169,7 +185,9 @@ class FramedDecoder(BaseDecoder):
     One exception: a run of zeros shorter than the magic is judged with the bytes after
     it as the start of a damaged stream, since the damaged byte can be a zero.
     With an ``index`` (:class:`StreamIndex`), each further stream's start is a seek
-    point, and ``start`` is the point this decoder resumes from.
+    point, and ``start`` is the point this decoder resumes from. A decompressor whose
+    stream is a run of independent blocks (bzip3) can add a point at each block, through
+    :class:`BlockResumable`; a ``start`` with a ``state`` resumes it inside its stream.
     Each codec's own tool stops at zeros between streams too: ``bzip2``, ``zstd``,
     ``lz4`` and ``xz --format=lzma``, and 7-Zip for bzip2 and LZMA Alone. ``zstd``,
     ``lz4`` and ``xz --format=lzma`` also refuse zeros at the end of the file, which
@@ -216,6 +234,12 @@ class FramedDecoder(BaseDecoder):
         # the wrong source offset, which serves wrong bytes rather than raising.
         self._fed_end = start.compressed_offset if start is not None else 0
         self._produced = start.decompressed_offset if start is not None else 0
+        # Where the current stream's decompressor started, in the source and in the
+        # output: a :class:`BlockResumable` counts its blocks from there.
+        self._stream_comp = self._fed_end
+        self._stream_dec = self._produced
+        # A block that starts here or before is the point this decoder started from.
+        self._start_dec = self._produced
         # The current stream's start, recorded once the stream has output: a stream
         # with none shares its offset with the next one, and the point is the next's,
         # as in an index that lists both.
@@ -225,6 +249,10 @@ class FramedDecoder(BaseDecoder):
         self._magic_start = magic if isinstance(magic, MagicStart) else None
         self._zero_padding = zero_padding
         self._decomp = new_decompressor()
+        if start is not None and start.state is not None:
+            # Only a BlockResumable's points carry a state here (bzip2's takeover
+            # points go to their own decoder in ``recreate``).
+            cast("BlockResumable", self._decomp).resume(start.state)
         self._fed = False
         # Past a stream's end, looking for the next one.
         self._between = False
@@ -359,6 +387,8 @@ class FramedDecoder(BaseDecoder):
                 data = self._next_stream(data)
                 if self._between or self._done:
                     break
+                self._stream_comp = self._fed_end - len(data)
+                self._stream_dec = self._produced + len(output)
                 if self._index is not None and self._index.resumes_at(data):
                     self._pending_point = SeekPoint(
                         self._produced + len(output), self._fed_end - len(data)
@@ -378,6 +408,7 @@ class FramedDecoder(BaseDecoder):
             if produced and self._pending_point is not None:
                 points.append(self._pending_point)
                 self._pending_point = None
+            points += self._block_points()
             output.extend(produced)
             data = b""
             if self._decomp.eof:
@@ -411,6 +442,7 @@ class FramedDecoder(BaseDecoder):
         if not self._told_end:
             self._end_input()
         output = self._drain() if self._told_end else b""
+        points = self._block_points()
         self._draining = False
         if self._decomp.eof:
             # A stream with no end mark ended with its input, so no stream follows
@@ -425,7 +457,22 @@ class FramedDecoder(BaseDecoder):
                 "File is truncated" if self._fed else "File is empty"
             )
         self._produced += len(output)
-        return DecodeOut(output)
+        return DecodeOut(output, points)
+
+    def _block_points(self) -> list[SeekPoint]:
+        """Seek points at the blocks a :class:`BlockResumable` decompressor began since
+        the last call, when the stream keeps seek points (an ``index``)."""
+        take = getattr(self._decomp, "take_block_starts", None)
+        if take is None:
+            return []
+        starts = take()
+        if self._index is None:
+            return []
+        return [
+            SeekPoint(self._stream_dec + decoded, self._stream_comp + compressed, state)
+            for compressed, decoded, state in starts
+            if self._stream_dec + decoded > self._start_dec
+        ]
 
     def _end_input(self) -> None:
         """Tell the decompressor, when it has an ``end_input()``, that the input ended.

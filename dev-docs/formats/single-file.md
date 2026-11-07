@@ -252,6 +252,7 @@ Where resume points come from, per codec:
 | zlib, raw DEFLATE | None natively. With `rapidgzip` engaged, its own index, built as it decodes; without it, on declared seek demand, zlib snapshots a read has passed (`gzip.md` §2.3) |
 | bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
 | zstd | On declared seek demand: every regular frame after the first, recorded as a forward read reaches it, and every frame the seekable format's seek table lists ([`zstd-lz4.md`](zstd-lz4.md) §2.3) |
+| bzip3 | On declared seek demand: every block after the first, recorded as a forward read reaches it, and every block from a walk of the block headers, without decoding ([`bzip3.md`](bzip3.md) §2.1) |
 | LZMA Alone, LZ4, Brotli | None |
 
 **The rewind report.** A backward seek emits `STREAM_REWIND_REDECOMPRESSES`, once per
