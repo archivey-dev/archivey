@@ -1384,7 +1384,10 @@ class _CheckedRun(ReadOnlyIOStream):
 
 
 class _SolidStream:
-    """The synthetic archive of one solid stream, kept for the reader's lifetime.
+    """The synthetic archive of one solid stream, kept until the reader closes.
+
+    A stream no read holds is removed earlier, its charge given back, when another
+    copy does not fit the spool limit (:meth:`RarReader._drop_idle_solid_stream`).
 
     It holds the stream's members with packed data, from the stream start, as far
     as reads have reached: a read further in appends the members between, and a
@@ -3744,14 +3747,18 @@ class RarReader(BaseArchiveReader):
         with self._materialize_lock:
             if not self._spool_budget(None).try_reserve(charge):
                 return _CheckedRun(None, batch), _no_cleanup
-        synthetic = SyntheticArchive(version)
+        synthetic: SyntheticArchive | None = None
 
         def cleanup() -> None:
-            synthetic.close()
+            if synthetic is not None:
+                synthetic.close()
             with self._materialize_lock:
                 self._spool_budget(None).release(charge)
 
+        # The file is made inside the ``try``: a temporary file that cannot be
+        # made must give the charge back too.
         try:
+            synthetic = SyntheticArchive(version)
             synthetic.append(entries)
             proc, stdout = open_unrar_p(
                 synthetic.path,
@@ -3957,14 +3964,18 @@ class RarReader(BaseArchiveReader):
                 self._reserve_synthetic(
                     charge, False, name, "the packed bytes of one run of solid streams"
                 )
-            synthetic = SyntheticArchive(version, solid=True)
+            synthetic: SyntheticArchive | None = None
 
             def cleanup() -> None:
-                synthetic.close()
+                if synthetic is not None:
+                    synthetic.close()
                 with self._materialize_lock:
                     self._spool_budget(None).release(charge)
 
+            # The file is made inside the ``try``: a temporary file that cannot be
+            # made must give the charge back too.
             try:
+                synthetic = SyntheticArchive(version, solid=True)
                 synthetic.append(entries)
                 proc, stdout = open_unrar_p(
                     synthetic.path,
@@ -5337,22 +5348,52 @@ class RarReader(BaseArchiveReader):
         )
 
     def _reserve_synthetic(
-        self, charge: int, in_place: bool, name: str, what: str
+        self,
+        charge: int,
+        in_place: bool,
+        name: str,
+        what: str,
+        *,
+        keep: _SolidStream | None = None,
     ) -> bool:
         """Charge a synthetic copy to the spool budget; under ``_materialize_lock``.
 
-        ``False`` sends a source on disk back to the original archive. A stream
-        source has no such fallback: the refusal raises, naming ``what``, and is not
-        recorded, so a smaller copy later still fits.
+        When the charge does not fit, the solid streams no read holds are removed,
+        oldest first, until it fits (:meth:`_drop_idle_solid_stream`); ``keep`` is
+        the stream the copy extends, never removed. A read of a removed stream later
+        copies it again. Without that, earlier reads would refuse a copy that fits
+        the limit on its own. ``False`` sends a source on disk back to the original
+        archive. A stream source has no such fallback: the refusal raises, naming
+        ``what``, and is not recorded, so a smaller copy later still fits.
         """
         # Named only when this copy refuses: a fallback's own copy names itself.
         budget = self._spool_budget(None)
-        if budget.try_reserve(charge):
+        while not budget.try_reserve(charge):
+            if not self._drop_idle_solid_stream(keep):
+                break
+        else:
             return True
         if not in_place:
             budget = self._spool_budget(what)
             with self._translated_errors(name):
                 budget.check_fits(charge)
+        return False
+
+    def _drop_idle_solid_stream(self, keep: _SolidStream | None) -> bool:
+        """Remove the oldest solid stream file no read holds, other than ``keep``,
+        and give back its charge; under ``_materialize_lock``. ``False`` when there
+        is none. A retired generation is never idle: it is removed when its last
+        read closes."""
+        for start, stream in self._solid_streams.items():
+            if stream.readers or stream is keep:
+                continue
+            del self._solid_streams[start]
+            file, stream.file = stream.file, None
+            self._spool_budget(None).release(stream.charge)
+            stream.charge = 0
+            if file is not None:
+                file.close()
+            return True
         return False
 
     def _member_position(self, member: ArchiveMember) -> int:
@@ -5418,7 +5459,9 @@ class RarReader(BaseArchiveReader):
                 charge += overhead
             if in_place and stream.size() + charge > _SYNTHETIC_IN_PLACE_THRESHOLD:
                 return None
-            if not self._reserve_synthetic(charge, in_place, member.name, what):
+            if not self._reserve_synthetic(
+                charge, in_place, member.name, what, keep=stream
+            ):
                 return None
             created = stream.file is None
             try:

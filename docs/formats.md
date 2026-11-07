@@ -818,8 +818,10 @@ On a compressed tar, the stream's own checksum adds three cases:
   stream still open holds the file, which then can't grow: a read further in starts a new file
   for the stream, which later reads grow, and the held one is removed when it closes. So reads
   that each go further in while every earlier one is still open copy the stream's start each
-  time. For an archive opened from a path, a stream whose copy would pass 64 MiB is read in place
-  instead.
+  time. When a copy would pass `SpoolLimits.max_bytes`, the files of other streams that no open
+  member stream holds are removed first, oldest first, and a later read of such a stream copies
+  it again. For an archive opened from a path, a stream whose copy would pass 64 MiB is read in
+  place instead.
 - **A pass over a solid archive opened from a stream source copies a few solid streams at a time.**
   `stream_members()` and `extract_all()` on a solid RAR opened from a `BytesIO` or a file object
   run one `unrar` per run of whole solid streams, each on a temporary file holding that run alone,
