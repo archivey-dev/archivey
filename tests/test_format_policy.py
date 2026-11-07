@@ -694,6 +694,7 @@ def test_the_containers_a_plugin_can_replace() -> None:
         C.RAR,
         C.ISO,
         C.SQUASHFS,
+        C.XAR,
         C.CAB,
     }
 

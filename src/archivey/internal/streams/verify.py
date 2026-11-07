@@ -157,7 +157,9 @@ def hasher_factory(
         # RAR5 BLAKE2sp — not in hashlib; zero-dep tree hash on blake2s (see hashing/).
         return Blake2sp
     if name in hashlib.algorithms_available:
-        return lambda: hashlib.new(name)
+        # These digests check integrity, not security: an OpenSSL in FIPS mode
+        # refuses MD5 and SHA-1 unless the call says so.
+        return lambda: hashlib.new(name, usedforsecurity=False)
     return None
 
 
