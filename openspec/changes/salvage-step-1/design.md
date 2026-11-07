@@ -255,7 +255,9 @@ the base reader, shared with the built-ins (DR-23a).
     salvage mode. This departs from DR-6 on purpose: when the size field is the damaged
     one, the default lists fewer members than GNU tar. The reasons are the consistency
     with RAR, a TAR checksum that is a plain byte sum, and a scan that can take a nested
-    `.tar`'s headers for the outer archive's.
+    `.tar`'s headers for the outer archive's. Cost is not the reason: a TAR scan tests only 512-byte
+    block boundaries, so it is cheap; the maintainer kept it in salvage mode anyway
+    (2026-11-07).
   - **ZIP.** From a file, the central directory gives each member's offset, so a damaged
     local header costs only its own member (already shipped). From a pipe, the walk
     follows the damaged local header's sizes and confirms with the next signature and,
