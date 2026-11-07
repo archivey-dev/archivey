@@ -720,12 +720,16 @@ On a compressed tar, the stream's own checksum adds three cases:
 - **AES with stored data, and neither a block digest nor a member CRC:** 7z has no password check
   value, so a wrong password can give garbage, as in 7-Zip. Archivey reports `DIGEST_UNVERIFIABLE`
   (`reason="no_integrity_anchor"`). Treat the data as unchecked.
-- **Confirming a password on an encrypted block** decodes only until it can decide: the first
-  member CRC covering at least 4 bytes, or 64 KiB of output for a compressed block, whose codec
-  rejects a wrong key within a few bytes. Peak memory is one 64 KiB chunk. Time grows with the
-  block's size only for stored-plus-AES (or PPMd) blocks whose only CRC is at the end, with several
-  candidates, since nothing rejects a wrong key before that CRC. Give a single known password there
-  when you can. `ExtractionLimits` do not apply to this step.
+- **Confirming a password on an encrypted block** first decrypts the block's last 32 bytes. 7-Zip
+  and `py7zr` pad the encrypted data with zeros, and when the padding is 4 bytes or more (about three
+  blocks in four), zero padding confirms the password without decoding anything. It proves the
+  password, not the data: a block with no CRC still reports `DIGEST_UNVERIFIABLE`. Padding that is
+  shorter or not zero proves nothing and rejects no password. Then archivey decodes only until it can
+  decide: the first member CRC covering at least 4 bytes, or 64 KiB of output for a compressed block,
+  whose codec rejects a wrong key within a few bytes. Peak memory is one 64 KiB chunk. Time grows
+  with the block's size only for stored-plus-AES (or PPMd) blocks whose only CRC is at the end, with
+  several candidates, and whose padding confirmed nothing. Give a single known password there when
+  you can. `ExtractionLimits` do not apply to this step.
 - **Partial reads after an unconfirmed password** report `ENCRYPTED_MEMBER_UNVERIFIED`. When
   confirmation stopped at its 64 KiB budget without reaching a CRC, the member's own CRC at its end
   is the only check, and a stream closed before the end skips it.
