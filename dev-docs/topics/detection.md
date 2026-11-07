@@ -7,7 +7,7 @@ same budget, so everything here applies to them too.
 Three other pages own parts of this, and this page links them rather than repeating them:
 
 - [`prefixed-archives.md`](prefixed-archives.md) owns the SFX scan: the cue, the window,
-  the hit validators, and the tail probe that is not shipped.
+  the hit validators, and the PE-gated ZIP tail probe.
 - [`formats/single-file.md`](../formats/single-file.md) §2.1 owns the codec side of
   content probing: what each probe checks, its lifted memory limits, and the inner-TAR
   probe's per-codec detail. [`formats/brotli.md`](../formats/brotli.md) owns the Brotli
@@ -22,9 +22,11 @@ Three other pages own parts of this, and this page links them rather than repeat
   `_detect_format_body` in `internal/detection.py`.
 - **Detection reads the front of the source, and one fixed block at the end.** The block
   is the last 512 bytes, and only to look for a UDIF `koly` signature on a cheap seek
-  (§2.4). No ZIP tail probe is shipped, and the budget has no field for one. A ZIP
-  appended to a JPEG is found from the front by the leading-bytes scan (step 7) when it
-  starts within the 2 MiB window; one that starts further in is not detected, and
+  (§2.4). The one other tail read is the ZIP tail probe after the SFX scan, run only
+  for a PE whose overlay runs past the window
+  ([`prefixed-archives.md`](prefixed-archives.md) §3); the budget has no field for it. A
+  ZIP appended to a JPEG is found from the front by the leading-bytes scan (step 7) when
+  it starts within the 2 MiB window; one that starts further in is not detected, and
   `format=ZIP` still opens it.
 - **Detection never consumes bytes the backend needs.** A path gets its own handle. A
   seekable stream is put back where the caller left it. A non-seekable stream is peeked
@@ -192,7 +194,8 @@ A hit is `DMG` / `CERTAIN` / `magic`. Nothing reads the image. `open_archive` ra
 empty `missing`: there is nothing to install. The `.dmg` suffix is not registered, so a
 zip with that name stays a zip.
 
-The step is not a ZIP tail probe. It looks at one fixed block for one signature. A ZIP
+The step is not the ZIP tail probe, which runs only behind a PE and is part of the SFX
+step. It looks at one fixed block for one signature. A ZIP
 appended to a JPEG is found from the front by step 7, within its window (§5).
 
 ### 2.5 Self-checking headers
@@ -541,7 +544,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | What you see | Where | More |
 | --- | --- | --- |
 | A two-byte file `1f 8b` detects as `GZ` / `CERTAIN`, then fails at open with `TruncatedError` | **archivey** | Magic hits are not graded by length (§2.1, §3.2). The open still fails loudly |
-| A ZIP appended to a JPEG, or behind any prefix that raises no cue, is detected only when it starts within the 2 MiB window (256 KiB under `FAST`), and only for a source with no known extension | **archivey** | Step 7 scans from the front; there is no ZIP tail probe (§2.4). On a pipe it scans only the bytes already read. `format=ZIP` reads one further in. [`prefixed-archives.md`](prefixed-archives.md) §6 |
+| A ZIP appended to a JPEG, or behind any prefix that raises no cue, is detected only when it starts within the 2 MiB window (256 KiB under `FAST`), and only for a source with no known extension | **archivey** | Step 7 scans from the front; the ZIP tail probe runs only behind a PE (§2.4). On a pipe it scans only the bytes already read. `format=ZIP` reads one further in. [`prefixed-archives.md`](prefixed-archives.md) §6 |
 | An uncompressed `.dmg` whose disk is ISO 9660 opens as `ISO` | **archivey** | Far magic runs before the trailer (§2.4). [`formats/dmg.md`](../formats/dmg.md) §2.1 |
 | Some binary files (COFF) detect as LZMA Alone or Brotli and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.6). Threat-model O10 |
 | A zero-filled `backup.gz` detects as `GZ` / `GUESS`; the read raises `CorruptionError` with `format_unconfirmed=True` | **format** | Extension was the only evidence (§2.7) |

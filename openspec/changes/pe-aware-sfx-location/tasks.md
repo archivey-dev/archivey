@@ -46,39 +46,55 @@ Block 3 is the overlay-start rule. Each reuses Block 1's PE layout helper.
 
 ## 2. The ZIP tail probe (Block 2)
 
-- [ ] 2.1 `zip_parser`: expose the end-record checks of design §5 as one function taking
+- [x] 2.1 `zip_parser`: expose the end-record checks of design §5 as one function taking
       `read_at`, the end-record offset and the overlay start; reuse
       `locate_classic_record` for the search.
-- [ ] 2.2 `PrefixWorkspace.read_tail`: take an end offset and the tier name a decline is
+- [x] 2.2 `PrefixWorkspace.read_tail`: take an end offset and the tier name a decline is
       recorded under (design §7); the trailer step passes `trailer`. Receipt and records:
       tail bytes in `unique_bytes_read`, not `scanned_bytes`; prefix-held bytes not fetched
       again; `sfx_tail` *not enabled by policy* / *capability unavailable*; nothing
       recorded for an excluded source. Add the tail allowance to `within_budget`
       (`tests/detection_cost_util.py`) on the condition the validator allowance uses,
       `scanned_bytes > 0`; no new receipt field.
-- [ ] 2.3 `internal/detection.py`: the tail probe after a scan miss, gated as in the spec,
+- [x] 2.3 `internal/detection.py`: the tail probe after a scan miss, gated as in the spec,
       answering `ZIP` / `PROBABLE` / `sfx_scan` with `payload_offset` = the EOCD-derived
       base (design §10, maintainer decision), `prefixed=True`, and `payload_end`.
-- [ ] 2.4 Tests for every row of the tail-probe matrix, the receipt scenario and the
+- [x] 2.4 Tests for every row of the tail-probe matrix, the receipt scenario and the
       access-shape rows, including both ZIP write conventions and a certificate larger than
       64 KiB.
-- [ ] 2.5 Docs: `prefixed-archives.md` (§2 tier table, §3 cost, §7 decisions), `detection.md` (tier list and the "no ZIP tail probe" lines),
+- [x] 2.5 Docs: `prefixed-archives.md` (§2 tier table, §3 cost, §7 decisions), `detection.md` (tier list and the "no ZIP tail probe" lines),
       `docs/formats.md` (SFX bullet), and a pointer from the struck Block 2 note in
       `archive/2026-11-05-prefixed-archive-detection/tasks.md`.
 
 ## 3. Overlay start first (Block 3)
 
-- [ ] 3.1 `internal/detection.py`: judge the candidate at the overlay start before the
+- [x] 3.1 `internal/detection.py`: judge the candidate at the overlay start before the
       forward scan; `VALID` and `VALID_SHORT` there both answer (design §3).
-- [ ] 3.2 `rar_parser._find_sfx_header`, the 7z signature search and
+- [x] 3.2 `rar_parser._find_sfx_header`, the 7z signature search and
       `ZipForwardReader._scan_for_local_header`: take the same layout and apply the same
       rule, so forced `format=`, seekable or streaming, agrees.
-- [ ] 3.3 Tests for every row of the overlay-start scenario, each checked through both
+- [x] 3.3 Tests for every row of the overlay-start scenario, each checked through both
       `detect_format` and forced `format=` (streaming too for the ZIP row).
-- [ ] 3.4 `IDEAS.md` "Bound the SFX search at the PE overlay": 3.1 covers every PE whose
+- [x] 3.4 `IDEAS.md` "Bound the SFX search at the PE overlay": 3.1 covers every PE whose
       layout parses; narrow the entry to stubs without one (bare `MZ`, ELF, Mach-O), and
       keep `test_short_7z_hit_scan_cost_is_bounded_by_the_window` as it is.
-- [ ] 3.5 Docs: `prefixed-archives.md` §2 and `docs/formats.md` SFX bullet.
+- [x] 3.5 Docs: `prefixed-archives.md` §2 and `docs/formats.md` SFX bullet.
+
+## 5. ELF and Mach-O overlay start (maintainer decision 2026-11-07)
+
+- [x] 5.1 `internal/sfx.py`: `executable_layout` returns the overlay start of an ELF
+      (header, program headers, segments, section header table, and each section when
+      that table is in the prefix, as the Go linker writes it), a thin Mach-O (load
+      commands, segments) or a fat Mach-O (last slice), with no payload end; `PeLayout`
+      becomes `ExecutableLayout`. Headers that do not fit the prefix give no layout.
+- [x] 5.2 Detection's overlay-start judgement, `overlay_start_of` (RAR and 7z parser
+      scans) and the forward ZIP walk use it; the tail probe keeps `pe_layout`.
+- [x] 5.3 Tests: the layouts (ELF32/64, both byte orders, no section table, extended
+      numbering, headers past the prefix; thin 32/64 and fat Mach-O; a Java class
+      file), and the overlay-start rows through detection and forced `format=`,
+      streaming too for ZIP (`tests/test_executable_overlay.py`).
+- [x] 5.4 Docs: `docs/formats.md` SFX bullet, `prefixed-archives.md` §2, `7z.md` §6,
+      `IDEAS.md`.
 
 ## 4. Verify
 
