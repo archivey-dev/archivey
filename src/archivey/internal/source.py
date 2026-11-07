@@ -494,6 +494,15 @@ class ArchiveSource(ReadOnlyIOStream):
         )
 
     @classmethod
+    def for_opened_stream(cls, stream: BinaryIO) -> ArchiveSource:
+        """Own a stream archivey opened itself (an fsspec ``OpenFile``'s decompressed
+        file): read as :meth:`for_stream` reads a caller's, and closed with this
+        source."""
+        source = cls.for_stream(stream)
+        source._owned = stream
+        return source
+
+    @classmethod
     def for_range_source(cls, ranged: RangeSource) -> ArchiveSource:
         """Own a :class:`~archivey.internal.remote.RangeSource` built from an fsspec
         ``OpenFile``.
@@ -1039,18 +1048,19 @@ class ArchiveSource(ReadOnlyIOStream):
         for callback in callbacks:
             callback()
         try:
-            owned = self._owned
-            self._owned = None
-            if owned is not None:
-                owned.close()
+            buffer = self._buffer
+            self._buffer = None
+            if buffer is not None:
+                # A ``_NonClosingBufferedReader``: it detaches, so the caller's raw
+                # stays open. Before the owned stream closes, as detaching a buffer
+                # whose raw is closed raises.
+                buffer.close()
         finally:
             try:
-                buffer = self._buffer
-                self._buffer = None
-                if buffer is not None:
-                    # A ``_NonClosingBufferedReader``: it detaches, so the caller's raw
-                    # stays open.
-                    buffer.close()
+                owned = self._owned
+                self._owned = None
+                if owned is not None:
+                    owned.close()
             finally:
                 if self._replay is not None:
                     self._replay.clear()
