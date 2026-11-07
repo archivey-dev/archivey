@@ -281,8 +281,9 @@ def test_tree_matches_extraction_on_links_and_collisions(
             # A Windows disk folds case and trims a trailing dot, so it cannot hold
             # these beside the member before them: the directory C beside the file
             # c under every policy, and under TRUSTED, which keys on the exact name,
-            # the files too. The tree does not model the disk.
-            folded = ["C"]
+            # the files too. Q -> q names itself there, a loop extraction refuses.
+            # The tree does not model the disk.
+            folded = ["C", "Q"]
             if policy is ExtractionPolicy.TRUSTED:
                 folded += ["a.txt", "f.", "HC"]
             for name in folded:
