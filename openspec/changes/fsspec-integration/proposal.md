@@ -86,8 +86,8 @@ so they land as their own change after this one.
   `open_stream()` and `detect_format()`; one new public module (`archivey.fsspec`)
   holding `ArchiveyFileSystem`; one config field, `ArchiveyConfig.max_read_through`; one
   exception, `SourceChangedError`; one diagnostic code, `SOURCE_CHANGE_UNDETECTABLE`;
-  and, for format plugins, one method, `ReaderSource.will_read(start, end)`. No new
-  function and no new keyword argument.
+  and, for format plugins, one `MemberData` field, `ranges`. No new function and no new
+  keyword argument.
 - **Internal:** a fetch-planning layer in `ArchiveSource` for remote sources, and a
   small hint call that the ZIP, 7z and ISO backends make before they read. RAR's
   header walk is not hinted: measured, a hint per header cost more requests than it

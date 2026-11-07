@@ -62,9 +62,11 @@
       packed header stream, and one fetch takes both. The pack-stream hint covers the
       folder's first pack stream from its start.
 - [x] 3.4 ISO extent hints; RAR header-position hints during the listing walk.
-      ISO reads through the plugin API, so the hint is a public
-      `ReaderSource.will_read(start, end)` that any plugin can call; ISO hints a
-      member's first extent. The RAR header hint is not added: measured on stored
+      ISO reads through the plugin API, so a plugin names a member's spans in the
+      public `MemberData.ranges` field, which the adapter hints when `open_member`
+      returns: data the plugin returns, not a call it must time. ISO names every
+      extent. A source keeps up to 8 pending hints, so members read side by side no
+      longer replace each other's. The RAR header hint is not added: measured on stored
       RAR5 archives, it turns the walk's read-through into one request per header
       (20 x 200 KB members: 7 requests and 4.0 MB become 21 and 1.3 MB; 200 x 2 KB: 4
       become 7), a loss under the design's cost model. The walk keeps rule 2.

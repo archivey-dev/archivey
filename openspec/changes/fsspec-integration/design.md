@@ -190,6 +190,10 @@ a thin planner that decides each fetch's start and length:
    so: `source.will_read(start, end)`. The planner fetches that span in one request, up
    to `_MAX_FETCH`, and then continues it as a sequential run. The hint never changes
    what bytes are returned, only how they are fetched. On a local source it does nothing.
+   A format plugin does not call it: it names the spans a member's stream reads in
+   `MemberData.ranges`, and archivey passes them to the source when `open_member`
+   returns. A source keeps its latest 8 pending hints, and a read takes the newest one
+   that covers it, so members read side by side each keep their own.
 
    | Backend | Hint |
    | --- | --- |
@@ -198,7 +202,7 @@ a thin planner that decides each fetch's start and length:
    | ZIP, member | `[local header, next local header or central directory)`: header, data and data descriptor in one request |
    | 7z, open | The next-header span named by the signature header |
    | 7z, member | The pack stream span, from pack info; for a solid folder, from the folder start |
-   | ISO, member | The member's first extent, through the plugin API's `ReaderSource.will_read` |
+   | ISO, member | Each of the member's extents, named in the plugin API's `MemberData.ranges` |
    | RAR, listing | None. A hint at each next header turned the walk's read-through into one request per header (measured in stage 3); rule 2 covers it |
    | TAR | None; rule 2 covers it |
 

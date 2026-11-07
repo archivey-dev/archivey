@@ -31,8 +31,11 @@ facts of an OpenFile".
 
 The ZIP and 7z backends SHALL hint the index they read at open, and the ZIP, 7z and ISO
 backends SHALL hint each member's stored span before reading it. A format plugin SHALL be
-able to hint through `ReaderSource.will_read(start, end)`, which does nothing on a local
-source. The RAR listing walk SHALL NOT be hinted: it reads through by the planner's rules.
+able to name the spans a member's stream reads in `MemberData.ranges`, which archivey
+SHALL pass to the source as hints when `open_member` returns and which do nothing on a
+local source. A remote source SHALL keep several pending hints, so members read side by
+side each keep their own. The RAR listing walk SHALL NOT be hinted: it reads through by
+the planner's rules.
 
 #### Scenario: ceilings that follow from the format
 
