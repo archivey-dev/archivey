@@ -925,7 +925,7 @@ class MemberExtra(dict[str, object]):
     * ``gzip.original_filename`` (``str``)
     * ``gzip.isize`` (``int``) — the gzip trailer's ISIZE field: the last four
       bytes of the file, read only when its end is cheap to reach (not from a
-      pipe or another archive's member). For a file of one gzip member with
+      pipe or a deflated member of another archive). For a file of one gzip member with
       nothing after it, this is the uncompressed size modulo 2**32. It is not the
       size for a file of several members (it covers only the last; a bgzip file
       ends with an empty member and reads 0) or with bytes after the last one.
