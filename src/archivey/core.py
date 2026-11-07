@@ -81,6 +81,7 @@ from archivey.internal.registry import (
     list_supported_formats,
 )
 from archivey.internal.remote import (
+    emit_source_change_undetectable,
     is_open_file,
     noting_fsspec_decoding,
     refuse_compressed_open_file_stream,
@@ -391,10 +392,10 @@ def open_archive(
 
     ``encoding`` names the codec for member names whose encoding the archive does not
     declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO, RAR 1.5-4, CPIO, ar,
-    RPM, SquashFS and CAB). A name whose bytes are valid UTF-8 is decoded as UTF-8 in every format,
+    RPM, SquashFS, CAB and XAR). A name whose bytes are valid UTF-8 is decoded as UTF-8 in every format,
     with or without ``encoding``, and ``encoding`` replaces only the format's fallback
     (cp437 or ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code
-    page for RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar, RPM, SquashFS and CAB).
+    page for RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar, RPM, SquashFS, CAB and XAR).
     ``member.raw_name`` keeps the stored bytes. A ZIP comment without the UTF-8 flag
     (the archive comment always) and an 8-bit RAR 1.5-4 comment decode the same way as
     a name without a declared encoding, and a byte the codec does not define survives
@@ -779,6 +780,12 @@ def _open_resolved(
             resolved = _follow_stub_volume(slot, resolved_format, config) or resolved
     archive_source = slot.current
     archive_name = resolved.archive_name
+    if detected is None:
+        # ``format=`` skipped detection, which records it otherwise
+        # (``detect_format_into``).
+        emit_source_change_undetectable(
+            archive_source.remote_sources, collector, archive_name
+        )
 
     # The caller's format policy first: a format it turns off is refused whatever else
     # would be said about the file, so the caller is not told to install a package or
@@ -1078,6 +1085,15 @@ def open_stream(
         codec_input = resolve_source(
             source, max_read_through=effective_config.max_read_through
         ).source
+        if format is not None:
+            # ``format=`` skips detection, which records it otherwise.
+            try:
+                emit_source_change_undetectable(
+                    codec_input.remote_sources, collector, codec_input.name
+                )
+            except BaseException:
+                codec_input.close()
+                raise
     elif isinstance(source, (str, Path)):
         check_path_not_empty(source, call="open_stream()")
         path = Path(source)

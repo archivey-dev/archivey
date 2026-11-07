@@ -371,6 +371,10 @@ data its pass keeps for link targets beside it.
   disables it. ZIP, 7z, RAR and ISO also check `max_members` while parsing, at
   `open_archive` (ZIP, as it walks the directory when the end record understates the
   count; 7z and RAR weigh their header names against `max_metadata_bytes` there too).
+  XAR checks `max_members` while it parses the table of contents, and weighs against
+  `max_metadata_bytes` both the decoded table's size (from the header, before
+  decoding) and every full path it builds there, since nested directories make the
+  paths grow with the square of the depth before any member exists (`xar_reader.py`).
   CAB weighs the block tables it keeps, one per folder read, against
   `max_metadata_bytes` as they are read, at 256 bytes a block: folders may all name one
   run of block headers, so the tables are not bounded by the file (`cab_reader.py`).

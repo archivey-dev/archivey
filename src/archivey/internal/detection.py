@@ -127,7 +127,11 @@ from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
 from archivey.internal.registry import ContentProbe, get_registry
-from archivey.internal.remote import is_open_file, noting_fsspec_decoding
+from archivey.internal.remote import (
+    emit_source_change_undetectable,
+    is_open_file,
+    noting_fsspec_decoding,
+)
 from archivey.internal.sfx import (
     LAYOUT_PREFIX,
     MAX_VALIDATED_CANDIDATES,
@@ -1463,6 +1467,13 @@ def _detect_source_into(
         detection_wm = None
     else:
         detection_wm = collector.watermark()
+    # Recorded by detection, so ``detect_format(of)`` and ``open_archive(of)``'s
+    # ``format_info`` carry it alike; open_archive records it itself only when
+    # ``format=`` skips detection.
+    if isinstance(source, ArchiveSource):
+        emit_source_change_undetectable(
+            source.remote_sources, collector, getattr(source, "name", None)
+        )
 
     resolved_budget = effective_config.detection_budget
     always_probe = effective_config.always_probe_content

@@ -1420,6 +1420,7 @@ def resolve_source(
         archive_source = ArchiveSource.for_volumes(joined, name=name)
         if ranges.opened:
             archive_source.on_close(ranges.close_all)
+            archive_source.adopt_remote(tuple(ranges.opened))
         return ResolvedSource(archive_source, name, len(items))
     return _resolve_single(
         source, discover_volumes=discover_volumes, max_read_through=max_read_through
