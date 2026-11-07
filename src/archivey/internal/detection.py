@@ -92,6 +92,7 @@ from typing import TYPE_CHECKING, BinaryIO, cast
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
+    DecoderLimits,
     ProcessIsolation,
 )
 from archivey.detection import DetectedBy, DetectionConfidence, FormatInfo
@@ -467,16 +468,17 @@ def _probe_inner_container(
     compressed input as it needs to decode those 512 bytes and no more.
 
     Accelerators are forced ``OFF`` on both paths: a declared seek demand must not flip
-    AUTO rapidgzip / IndexedBzip2File on for a short detection peek. Decoder limits are
-    lifted for the same reason the codec content probes lift them
-    (``_PROBE_STREAM_CONFIG`` in ``codecs/base.py``): a capped probe would call a
-    ``.tar.xz`` with a large dictionary a bare ``.xz`` even for a caller who opened it
-    with ``DecoderLimits.UNLIMITED``. The
-    open that follows applies the caller's limits. ``probe_read_bound`` keeps the probe
-    from reserving what the archive declares: the LZMA family (``.xz``, ``.lzma``,
-    ``.lz``) decodes the 512 bytes with a 4 KiB dictionary, which gives the same bytes,
-    and a zstd frame whose window is over libzstd's default 128 MiB is "can't tell".
-    A ``MemoryError`` from a decoder no bound shrinks is "can't tell" too.
+    AUTO rapidgzip / IndexedBzip2File on for a short detection peek. The decoder is held
+    to the caller's ``DecoderLimits`` (the workspace's ``decoder_limits``), as the codec
+    content probes are (``StreamCodec._decodes_sample``): detection reserves no more
+    than the read that follows may. ``probe_read_bound`` keeps the probe from reserving
+    what the archive declares where the codec allows it: the LZMA family (``.xz``,
+    ``.lzma``, ``.lz``) decodes the 512 bytes with a 4 KiB dictionary, which gives the
+    same bytes, and the cap is checked against that dictionary. A zstd frame whose
+    window is over the cap, or over libzstd's default 128 MiB, is "can't tell", and so
+    is any other decoder the cap refuses. The open that follows then reads the source
+    as the bare compressed stream, and an INFO log on ``archivey.detection`` names the
+    limit. A ``MemoryError`` from a decoder no bound shrinks is "can't tell" too.
 
     With a workspace, the compressed input is bounded by what is left of the budget's
     ``max_decode_input`` (and the workspace's read ceiling) as well as by
@@ -509,7 +511,6 @@ def _probe_inner_container(
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
     from archivey.internal.config import (
-        DecoderLimits,
         StreamConfig,
         without_accelerators,
     )
@@ -607,7 +608,11 @@ def _probe_inner_container(
                 StreamConfig(
                     streaming=True,
                     seekable=not view_arrived,
-                    decoder_limits=DecoderLimits.UNLIMITED,
+                    decoder_limits=(
+                        workspace.decoder_limits
+                        if workspace is not None
+                        else DecoderLimits()
+                    ),
                     probe_read_bound=INNER_CONTAINER_PROBE_BYTES,
                     excluded_libraries=excluded,
                     process_isolation=(
@@ -619,7 +624,18 @@ def _probe_inner_container(
             ),
         ) as stream:
             head = stream.read(INNER_CONTAINER_PROBE_BYTES)
-    except (UnsupportedFeatureError, ResourceLimitError, MemoryError):
+    except ResourceLimitError as exc:
+        # The decoder is over the caller's ``max_decoder_memory`` (or a probe ceiling),
+        # or its child could not run: "can't tell". Said in a log, since the open that
+        # follows reads the source as the bare compressed stream, and a caller who
+        # lowered the cap learns why.
+        unavailable = True
+        _log_probe_refused(
+            f"look inside the {stream_format.name} stream for an archive (it is read "
+            "as the bare compressed stream; pass format= to name the container)",
+            exc,
+        )
+    except (UnsupportedFeatureError, MemoryError):
         # The decoder could not be built within the probe's reservation: a zstd window
         # over the probe's limit, an xz filter chain it cannot decode raw, or an
         # allocation refused. "Can't tell", and the receipt says so.
@@ -687,6 +703,21 @@ def _probe_inner_container(
         elif found is None and source.hit_limit:
             workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
     return found
+
+
+def _log_probe_refused(what: str, exc: ResourceLimitError) -> None:
+    """Log at INFO that a probe could not build its decoder, so detection could not tell.
+
+    ``exc`` says why: ``DecoderLimits.max_decoder_memory`` with its value when the
+    caller's cap refused it, a probe's own ceiling (an lzop or mozlz4 block), or, as a
+    ``ResourceUnavailableError``, a decoder child that could not run. The receipt
+    records the tier as ``CAPABILITY_UNAVAILABLE``.
+    """
+    logger.info(
+        "Detection could not %s: it could not build the decoder it needs. %s",
+        what,
+        exc,
+    )
 
 
 def _record_tier_limit(
@@ -769,13 +800,23 @@ def _probe_completes(
         return True
     whole = workspace.peek_prefix(length)
     workspace.charge_decode(input_bytes=len(whole))
-    return probe(
-        whole,
-        source_length=length,
-        read_at=read_at,
-        charge_decode=charge_decode,
-        isolation=workspace.isolation,
-    )
+    try:
+        return probe(
+            whole,
+            source_length=length,
+            read_at=read_at,
+            charge_decode=charge_decode,
+            isolation=workspace.isolation,
+            decoder_limits=workspace.decoder_limits,
+        )
+    except ResourceLimitError as exc:
+        # The whole-source decode reads up to 64 KiB, so a probe's clamped LZMA
+        # dictionary is larger here than for the window, and a cap between the two
+        # refuses only this decode. The hit stands on the window alone, as when the
+        # allowance cannot cover the source.
+        workspace.record_skip("probe_completion", TierSkipReason.CAPABILITY_UNAVAILABLE)
+        _log_probe_refused("decode the whole source to confirm its format", exc)
+        return True
 
 
 # Short aliases that name a probe-only codec besides the one the extension map gives.
@@ -1292,8 +1333,9 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
     """The library default config carrying only ``config``'s detection settings
     (``detection_budget``, ``always_probe_content``, ``process_isolation``, which
     says where the probes' trial decodes run, ``formats``, so a plugin the caller
-    turned off runs no code here either, and ``discover_volumes``, so a probe that
-    resolves a path opens no file the caller ruled out).
+    turned off runs no code here either, ``discover_volumes``, so a probe that
+    resolves a path opens no file the caller ruled out, and ``decoder_limits``, so a
+    probe's trial decoder reserves no more than the caller allows).
 
     For a detection whose result is internal (a stub check, the rescan that words an
     empty-listing advisory): it spends what the caller allowed, but its diagnostics
@@ -1308,6 +1350,7 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
         and config.process_isolation is DEFAULT_ARCHIVEY_CONFIG.process_isolation
         and config.formats == DEFAULT_ARCHIVEY_CONFIG.formats
         and config.discover_volumes == DEFAULT_ARCHIVEY_CONFIG.discover_volumes
+        and config.decoder_limits == DEFAULT_ARCHIVEY_CONFIG.decoder_limits
     ):
         return DEFAULT_ARCHIVEY_CONFIG
     return replace(
@@ -1317,6 +1360,7 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
         process_isolation=config.process_isolation,
         formats=config.formats,
         discover_volumes=config.discover_volumes,
+        decoder_limits=config.decoder_limits,
     )
 
 
@@ -1490,6 +1534,7 @@ def _detect_source_into(
             always_probe=always_probe,
             isolation=effective_config.process_isolation,
             formats=effective_config.formats,
+            decoder_limits=effective_config.decoder_limits,
         )
     except FormatDetectionError:
         alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
@@ -1507,6 +1552,7 @@ def _detect_source_into(
                 always_probe=always_probe,
                 isolation=effective_config.process_isolation,
                 formats=effective_config.formats,
+                decoder_limits=effective_config.decoder_limits,
             )
     diagnostics = (
         collector.snapshot()
@@ -1539,6 +1585,7 @@ def _detect_format_body(
     always_probe: bool = False,
     isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     formats: FormatPolicy,
+    decoder_limits: DecoderLimits = DecoderLimits(),
 ) -> FormatInfo:
     registry = get_registry()
     magic_entries = registry.magic_entries()
@@ -1610,7 +1657,12 @@ def _detect_format_body(
     ext_fmt = ext_match[0] if ext_match is not None else None
 
     with PrefixWorkspace(
-        source, budget, receipt, isolation=isolation, excluded_libraries=excluded
+        source,
+        budget,
+        receipt,
+        isolation=isolation,
+        excluded_libraries=excluded,
+        decoder_limits=decoder_limits,
     ) as workspace:
 
         def conclude(info: FormatInfo, evidence: _ConflictEvidence) -> FormatInfo:
@@ -1869,13 +1921,25 @@ def _detect_format_body(
                 # (4 KiB, 64 KiB with the whole source in hand, or the sample length,
                 # up to 1 MiB, for Brotli's chain decode).
                 workspace.charge_decode(input_bytes=len(data))
-                if probe(
-                    data,
-                    source_length=length,
-                    read_at=read_at,
-                    charge_decode=charge_decode,
-                    isolation=workspace.isolation,
-                ) and _probe_completes(
+                try:
+                    hit = probe(
+                        data,
+                        source_length=length,
+                        read_at=read_at,
+                        charge_decode=charge_decode,
+                        isolation=workspace.isolation,
+                        decoder_limits=workspace.decoder_limits,
+                    )
+                except ResourceLimitError as exc:
+                    # Its decoder is over the caller's ``max_decoder_memory``, or its
+                    # child could not run: "can't tell", not "not this format". The
+                    # next probe still runs.
+                    workspace.record_skip(
+                        "content_probe", TierSkipReason.CAPABILITY_UNAVAILABLE
+                    )
+                    _log_probe_refused(f"try the {probe_fmt} content probe", exc)
+                    hit = False
+                if hit and _probe_completes(
                     probe, data, length, read_at, charge_decode, workspace
                 ):
                     confidence = DetectionConfidence.PROBABLE

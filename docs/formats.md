@@ -1457,8 +1457,10 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   `zstd --long=31` reading standard input reads. A window over the cap raises `ResourceLimitError`.
   The cap is rounded down to a power of two for zstd. A window over 2 GiB is beyond what libzstd
   decodes at any setting, and raises `UnsupportedFeatureError`. Detection decodes its sample with
-  the window capped at 128 MiB, what `zstd -d` decodes without `--long`. Detection never
-  reserves more than that, whatever the frame declares.
+  the window capped at 128 MiB (what `zstd -d` decodes without `--long`) or at
+  `max_decoder_memory`, whichever is smaller. It does not look inside a frame over that, so a
+  `.tar.zst` is reported as a bare `.zst`. When your cap is the reason, an INFO log on
+  `archivey.detection` names it, and reading the file raises the same `ResourceLimitError`.
 - A mozlz4 header declares the decoded size, and the decode holds twice that at its
   peak (the decode buffer and the copy returned). `DecoderLimits.max_decoder_memory` caps
   twice the size, and a size over the cap raises `ResourceLimitError`.

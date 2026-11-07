@@ -503,16 +503,18 @@ class DecoderLimits:
     allocation, in its own process, and going over the cap raises nothing to the
     caller. The child is stopped and the standard library continues the stream.
 
-    **Detection is not capped.** Formats without magic (``.lzma``, and the
+    **Detection is capped too.** Formats without magic (``.lzma``, and the
     compressed tar inside ``.tar.xz`` and its siblings) are recognised by
-    decoding a small sample, and that sample is decoded with no decoder limit,
-    because a capped probe would report a different format for a caller who
-    passed :attr:`UNLIMITED`. It does not need one: a probe builds its LZMA
-    decoder with only the dictionary its sample needs (4 to 64 KiB, whatever the
-    header declares), which decodes the sample to the same bytes, and lowers
-    zstd's window limit to libzstd's default 128 MiB, treating a frame over it
-    as unrecognised. The open that follows detection is capped as described
-    here.
+    decoding a small sample, and that decoder is held to
+    :attr:`max_decoder_memory`. A probe builds its LZMA decoder with only the
+    dictionary its sample needs (4 to 64 KiB, whatever the header declares),
+    which decodes the sample to the same bytes, and the cap is checked against
+    that dictionary, so a ``.tar.xz`` whose declared dictionary is over the cap
+    is still found as one and then refused on open. A zstd window cannot be
+    shrunk, so a frame whose window is over the cap (or over libzstd's default
+    128 MiB, whatever the cap) is not looked inside: a ``.tar.zst`` is then
+    reported as a bare ``.zst``, which the read refuses for the same window. An
+    INFO log on ``archivey.detection`` names the limit when this happens.
 
     Under a memory cap (a container limit, ``RLIMIT_AS``, a small machine) a
     refused native allocation does not always surface as ``MemoryError`` —

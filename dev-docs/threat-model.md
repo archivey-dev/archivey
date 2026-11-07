@@ -679,13 +679,19 @@ grown by more than the cap since the source was opened. The cap travels in the c
 data: the standard library reads the rest of the stream from the last index point, so
 the caller gets the same bytes and no error.
 
-**Residual.** Detection decodes an LZMA or compressed-tar sample uncapped, so under a
-memory cap an oversized declaration can surface as `MemoryError` from `open_archive`
-(public in extracting.md §Limits). The RAR counts rest on measurements of `unrar` 7.00
-and `unar` 1.10.1; another version that allocates differently is not measured. The
-rapidgzip child's peak can pass the cap by what it allocates between two checks (about
-17 MB measured on four cores; a check delayed on a busy machine is caught by the one
-before the next read). Where the platform does not report a process's peak memory
+Detection decodes under the same cap. Its probes reserve only what their bounded read
+needs where the codec allows it (an LZMA dictionary of 4 to 64 KiB), and the cap is
+checked against that reservation; a decoder that cannot shrink (a zstd window) and is
+over the cap is "can't tell", recorded as `CAPABILITY_UNAVAILABLE` and logged at INFO
+with the limit (`internal/detection.py` `_log_probe_refused`). A `.tar.zst` is then
+reported as a bare `.zst`, and the read refuses the same window.
+
+**Residual.** Codecs whose memory their format bounds at 16 MiB or less (gzip, bzip2,
+Brotli, LZ4 frames) are not checked against the cap, in detection or on read. The RAR
+counts rest on measurements of `unrar` 7.00 and `unar` 1.10.1; another version that
+allocates differently is not measured. The rapidgzip child's peak can pass the cap by
+what it allocates between two checks (about 17 MB measured on four cores; a check
+delayed on a busy machine is caught by the one before the next read). Where the platform does not report a process's peak memory
 (`VmHWM` on Linux, `getrusage` on macOS and the BSDs, `GetProcessMemoryInfo` on
 Windows), the child is not capped.
 
