@@ -926,6 +926,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "no corpus builder; tests/test_cpio.py seeks inside members, plain and gzip",
     ),
     (
+        "xar",
+        "no corpus builder (needs bsdtar); tests/test_xar.py seeks inside members",
+    ),
+    (
         "cab",
         (
             "no corpus builder: a cabinet holds no directories; tests/test_cab.py "
@@ -949,6 +953,7 @@ _UNTESTED_FORMATS = {
     **{ArchiveFormat(ContainerFormat.AR, stream): "ar" for stream in StreamFormat},
     **{ArchiveFormat(ContainerFormat.CPIO, s): "cpio" for s in StreamFormat},
     ArchiveFormat.SQUASHFS: "squashfs",
+    ArchiveFormat.XAR: "xar",
     ArchiveFormat.CAB: "cab",
     **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},
 }

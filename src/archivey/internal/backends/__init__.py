@@ -14,6 +14,7 @@ Module map:
 - :mod:`.rpm_reader` — RPM packages (headers, then the CPIO payload), the same way
 - :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio), the same way
 - :mod:`.squashfs_reader` — SquashFS 4.0, the same way
+- :mod:`.xar_reader` — XAR (``.xar``, macOS ``.pkg`` and ``.xip``), the same way
 - :mod:`.cab_reader` — Microsoft cabinets (stored, MSZIP, LZX), the same way
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
@@ -48,5 +49,6 @@ from archivey.internal.backends import (
     squashfs_reader as _squashfs_reader,  # noqa: F401
     tar_reader as _tar_reader,  # noqa: F401
     udif as _udif,  # noqa: F401
+    xar_reader as _xar_reader,  # noqa: F401
     zip_reader as _zip_reader,  # noqa: F401
 )
