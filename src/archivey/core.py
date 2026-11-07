@@ -80,6 +80,11 @@ from archivey.internal.registry import (
     list_known_formats,
     list_supported_formats,
 )
+from archivey.internal.remote import (
+    is_open_file,
+    noting_fsspec_decoding,
+    refuse_compressed_open_file_stream,
+)
 from archivey.internal.sfx import read_payload_end
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs import (
@@ -95,6 +100,7 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.volumes import (
     OpenSourceInput,
     ResolvedSource,
+    SourceItem,
     first_volume_for_stub,
     incomplete_lone_numbered_volume_error,
     is_sfx_stub_name,
@@ -400,6 +406,16 @@ def open_archive(
     a multi-volume archive (7z concatenates volumes; RAR opens volume 1 and lets
     ``unrar`` resolve siblings). A length-1 sequence is treated as a single source.
 
+    ``source`` may also be an ``fsspec.core.OpenFile``, the object
+    ``fsspec.open(url, **options)`` returns, alone or in a volume sequence. archivey does
+    not enter it: it reads the archive by range requests on the ``OpenFile``'s file
+    system, and plans their sizes itself, so listing an archive or reading one member
+    fetches little more than the bytes it needs. An ``OpenFile`` opened with a mode
+    other than ``"rb"`` raises :class:`ArchiveyUsageError`. One opened with a
+    ``compression=`` is read through fsspec's decompressing stream, with no range
+    requests, and logs a warning: pass ``compression=None`` for a codec archivey decodes
+    itself, and it reads by range. A ``str`` is always a local path, never a URL.
+
     ``password`` accepts a single value, an ordered sequence of candidate passwords, or
     a provider callable. List the most likely password first — especially for 7z, where
     each wrong candidate pays an expensive key derivation.
@@ -503,22 +519,25 @@ def open_archive(
     # occurrence order, and reader.diagnostics covers both.
     collector = collector_from_config(effective_config)
     resolved = resolve_source(
-        source, discover_volumes=effective_config.discover_volumes
+        source,
+        discover_volumes=effective_config.discover_volumes,
+        max_read_through=effective_config.max_read_through,
     )
     slot = _SourceSlot(resolved.source)
     try:
-        return _open_resolved(
-            slot,
-            resolved,
-            format=format,
-            streaming=streaming,
-            passwords=passwords,
-            encoding=encoding,
-            config=effective_config,
-            collector=collector,
-            member_streams=member_streams,
-            open_site=open_site,
-        )
+        with noting_fsspec_decoding(source):
+            return _open_resolved(
+                slot,
+                resolved,
+                format=format,
+                streaming=streaming,
+                passwords=passwords,
+                encoding=encoding,
+                config=effective_config,
+                collector=collector,
+                member_streams=member_streams,
+                open_site=open_site,
+            )
     except BaseException:
         # Once a reader exists it closes its source; until then nobody else will.
         slot.current.close()
@@ -965,7 +984,7 @@ def _open_resolved(
 
 
 def open_stream(
-    source: str | Path | BinaryIO,
+    source: SourceItem,
     *,
     format: StreamFormat | PluginStream | ArchiveFormat | str | None = None,
     seekable: bool = False,
@@ -978,6 +997,11 @@ def open_stream(
     :func:`open_archive` spells ``seekable_members``; concurrency is not a concept here
     — the call returns exactly one stream — so there is no counterpart to
     ``concurrent_operations``.
+
+    ``source`` is a path, a binary stream, or an ``fsspec.core.OpenFile`` read by range
+    requests, as for :func:`open_archive`. An ``OpenFile`` opened with a
+    ``compression=`` raises :class:`ArchiveyUsageError`: fsspec would hand over the
+    bytes already decoded, so open it with ``compression=None``.
 
     ``seekable=False`` (the default) returns a forward-only stream: ``seekable()`` is
     ``False``, ``seek()`` raises ``io.UnsupportedOperation``, and no seek index or
@@ -1046,7 +1070,15 @@ def open_stream(
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     collector = collector_from_config(effective_config)
 
-    if isinstance(source, (str, Path)):
+    if is_open_file(source):
+        refuse_compressed_open_file_stream(source)
+        # Read by range through the fetch planner, as open_archive reads it. It has no
+        # caller position to rebase to: archivey opened nothing, so offset 0 is the
+        # object's start.
+        codec_input = resolve_source(
+            source, max_read_through=effective_config.max_read_through
+        ).source
+    elif isinstance(source, (str, Path)):
         check_path_not_empty(source, call="open_stream()")
         path = Path(source)
         if path.is_dir():

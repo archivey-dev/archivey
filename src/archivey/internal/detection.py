@@ -88,7 +88,7 @@ from contextlib import closing
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, BinaryIO, cast
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -127,6 +127,7 @@ from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
 from archivey.internal.registry import ContentProbe, get_registry
+from archivey.internal.remote import is_open_file, noting_fsspec_decoding
 from archivey.internal.sfx import (
     LAYOUT_PREFIX,
     MAX_VALIDATED_CANDIDATES,
@@ -153,7 +154,7 @@ from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     source_name,
 )
-from archivey.internal.volumes import first_volume_for_stub, resolve_source
+from archivey.internal.volumes import SourceItem, first_volume_for_stub, resolve_source
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
@@ -1331,12 +1332,15 @@ def directory_format_info() -> FormatInfo:
 
 
 def detect_format(
-    source: str | Path | BinaryIO,
+    source: SourceItem,
     *,
     config: ArchiveyConfig | None = None,
     follow_stub_volumes: bool = True,
 ) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.
+
+    ``source`` takes what :func:`~archivey.open_archive` takes for one archive: a path,
+    a binary stream, or an ``fsspec.core.OpenFile`` read by range requests.
 
     Returns a :class:`FormatInfo`. Raises :class:`FormatDetectionError` when no magic
     pattern matches and no extension guess is available. A non-blocking stream with
@@ -1396,7 +1400,7 @@ def detect_format(
 
 
 def detect_format_into(
-    source: str | Path | BinaryIO,
+    source: SourceItem,
     *,
     config: ArchiveyConfig | None,
     collector: DiagnosticCollector | None,
@@ -1418,8 +1422,21 @@ def detect_format_into(
     check_config(config, call="detect_format(config=…)")
     discover = (config or DEFAULT_ARCHIVEY_CONFIG).discover_volumes
     follow_stub_volumes = follow_stub_volumes and discover
+    if is_open_file(source):
+        # Resolved as open_archive resolves it, through the fetch planner.
+        max_read_through = (config or DEFAULT_ARCHIVEY_CONFIG).max_read_through
+        with (
+            noting_fsspec_decoding(source),
+            closing(
+                resolve_source(source, max_read_through=max_read_through).source
+            ) as resolved,
+        ):
+            return _detect_source_into(resolved, config, collector, follow_stub_volumes)
     if not isinstance(source, (str, Path)):
-        return _detect_source_into(source, config, collector, follow_stub_volumes)
+        # ``is_open_file`` cannot narrow the union, so the stream is named here.
+        return _detect_source_into(
+            cast("BinaryIO", source), config, collector, follow_stub_volumes
+        )
     # A path is resolved once, as ``open_archive`` resolves it: any part of a numbered
     # split set (``set.zip.002``) becomes the joined set, and a RAR continuation its
     # volume 1. A middle part has no magic of its own, so detecting the named file
