@@ -35,6 +35,16 @@ from tests.corruption_util import raises_corruption_not_truncation
 
 pytestmark = [requires("cryptography"), requires_binary("7z")]
 
+
+@pytest.fixture(autouse=True)
+def _without_the_aes_tail_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test here is about the confirm decode after the AES tail check. 7-Zip pads
+    AES with zeros, so whether the tail confirms a folder it writes depends on the
+    padding its compressed size leaves (4 or more bytes), which moves with the 7-Zip
+    version; tests/test_sevenzip_aes_tail.py covers the tail check itself."""
+    monkeypatch.setattr(sevenzip_reader_mod, "aes_tail_confirms", lambda *a, **k: False)
+
+
 _SMALL = 4096
 _BIG = 4 * 1024 * 1024
 _PASSWORD = "secret"
@@ -435,9 +445,6 @@ def test_input_cap_bounds_the_packed_bytes_and_running_out_is_inconclusive(
     monkeypatch.setattr(
         sevenzip_reader_mod, "PASSWORD_CONFIRM_MAX_INPUT_BYTES", _SMALL_CAP
     )
-    # 7-Zip pads AES with zeros, so the tail check may confirm this folder before the
-    # capped decode runs; this test is about the decode.
-    monkeypatch.setattr(sevenzip_reader_mod, "aes_tail_confirms", lambda *a, **k: False)
     counters = _count_pack_reads(monkeypatch)
     with open_archive(archive, password=_PASSWORD) as reader:
         member = next(m for m in reader.members() if m.is_file)
