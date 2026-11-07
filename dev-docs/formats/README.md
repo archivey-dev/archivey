@@ -26,6 +26,8 @@ Formats:
 - [`ar.md`](ar.md) — static libraries and `.deb`, a built-in written against
   `archivey.formats`.
 - [`dmg.md`](dmg.md) — a UDIF image, recognised by the `koly` block and refused.
+- [`libarchive.md`](libarchive.md) — `archivey-libarchive`, the separate package that reads
+  LHA through the system libarchive in a child process.
 - [`single-file.md`](single-file.md) — the stream codecs as one-member archives, with a
   page per codec: [gzip](gzip.md), [bzip2](bzip2.md), [xz, lzip and LZMA Alone](xz.md),
   [zstd and LZ4](zstd-lz4.md), [Brotli](brotli.md), [`.Z`](unix-compress.md).

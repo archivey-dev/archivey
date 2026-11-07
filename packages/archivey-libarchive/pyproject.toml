@@ -1,0 +1,43 @@
+# Formats archivey reads through the system libarchive, in a child process. A separate
+# distribution because it depends on a C library the user installs, and because
+# libarchive reads with weaker guarantees than archivey's own readers
+# (dev-docs/formats/libarchive.md). Its version moves in lockstep with the root
+# pyproject.toml, and the dependency pins that same version, as archivey-cli's does:
+# it uses archivey.formats, which any release may change.
+
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "archivey-libarchive"
+version = "0.3.1.dev0"
+description = "LHA archives for archivey, read through the system libarchive in a child process"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Davi Figueiredo", email = "archivey@davitf.com" }
+]
+keywords = ["archive", "lha", "lzh", "libarchive", "archivey"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: System :: Archiving",
+]
+dependencies = [
+    "archivey==0.3.1.dev0",
+]
+
+[project.urls]
+Homepage = "https://archivey-dev.github.io/archivey/"
+Source = "https://github.com/archivey-dev/archivey"
+Issues = "https://github.com/archivey-dev/archivey/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/archivey_libarchive"]
