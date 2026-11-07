@@ -1359,15 +1359,19 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 - **`.xz` size and `.lz` CRC-32** come from the stream's index or the lzip trailer whenever the
   source can seek: a file path and an in-memory stream both qualify, a pipe does not.
   `seekable_members=True` makes no difference, since reading the trailer is a bounded backward peek
-  at open. For a `.xz` or `.lz` opened from another archive's member stream, archivey reads
-  neither, seekable or not: it never reports the CRC-32, and its size arrives only from a full
-  read.
+  at open. A `.xz` or `.lz` opened from another archive's member stream gets both when the
+  member stream is seekable and is a stored ZIP entry or an uncompressed TAR member, whose end is
+  as cheap to reach as a file's. From a deflated member, a member of a compressed TAR whose decoder
+  cannot resume near it, a member that cannot seek, or a standard-library `GzipFile`, `BZ2File`,
+  `LZMAFile` or `ZipExtFile`, archivey reads neither: it does not report the CRC-32, and the size
+  arrives only from a full read.
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries a name (`FNAME`).
 - `.lzo` exposes `extra["lzop.original_filename"]` when its header stores a name, and the
   modification time and permission bits the header stores.
 - mozlz4 sets `member.size` at listing, from its header.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is cheap to
-  reach (a path or an in-memory stream; not a pipe or another archive's member). It is the size
+  reach (a path, an in-memory stream, a seekable stored ZIP entry or uncompressed TAR member; not a
+  pipe, a deflated member or a standard-library decompressor). It is the size
   modulo 2^32 only for a file of one gzip member with nothing after it. A file of several members
   stores the last member's size there (a bgzip file stores 0), so it never becomes `member.size`.
 - `.gz` has no `member.hashes` entry, before or after a read. The trailer's CRC-32 covers the whole

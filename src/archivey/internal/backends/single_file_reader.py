@@ -51,7 +51,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
-from archivey.internal.source import ArchiveSource
+from archivey.internal.source import ArchiveSource, seeks_to_end_are_cheap
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.codecs import (
     Codec,
@@ -398,16 +398,16 @@ class SingleFileReader(BaseArchiveReader):
         """:meth:`_on_seekable_source` for a metadata probe that reads the source's tail.
 
         ``OSError`` gives ``None``. So does a source whose seek may re-decode
-        (``seek_is_expensive``, any member stream): the xz index and the lzip trailer sit
-        at the end, and on a member that decompresses, reaching them decompresses the
-        whole member, then the restore decompresses it again. The test covers member
-        streams as a group, so a stored ZIP entry or a TAR member, whose seek is a slice,
-        is skipped too. Those probes only fill metadata (``size``, the lzip CRC-32); the
-        decoder still checks its own index and trailers on read.
+        (``seeks_to_end_are_cheap``): the xz index and the lzip trailer sit at the end, and
+        on a member that decompresses, reaching them decompresses the whole member, then
+        the restore decompresses it again. A stored ZIP entry or an uncompressed TAR member, whose
+        seek is a slice of its archive, is probed like a file. Those probes only fill
+        metadata (``size``, the lzip CRC-32, ``gzip.isize``); the decoder still checks
+        its own index and trailers on read.
         """
         src = self._source
         assert src is not None  # always set in __init__
-        if src.seek_is_expensive:
+        if not seeks_to_end_are_cheap(src):
             return None
         try:
             return self._on_seekable_source(fn)
@@ -456,13 +456,14 @@ class SingleFileReader(BaseArchiveReader):
         if not src.seekable():
             # No ``SEEK_END`` here to measure the end, so only a declared length can
             # answer. A member stream's is its container's header (``seek_is_expensive``
-            # is true exactly when the source borrows an ``ArchiveStream``; a joined set
-            # with one is seekable and never reaches here). A caller's pipe reports
-            # ``None`` even with a ``size`` attribute.
+            # is true when the source borrows an ``ArchiveStream``, and for a standard-
+            # library decompressing file object, which has no cheap size, so its hint
+            # is ``None``; a joined set with one is seekable and never reaches here). A
+            # caller's pipe reports ``None`` even with a ``size`` attribute.
             return src.size_hint if src.seek_is_expensive else None
         if src.size_hint is not None:
             return src.size_hint
-        # ``_try_on_seekable_source`` gives ``None`` for an expensive seek.
+        # ``_try_on_seekable_source`` gives ``None`` unless the seek is cheap.
         return self._try_on_seekable_source(lambda f: f.seek(0, io.SEEK_END))
 
     def _read_source_prefix(self, length: int) -> bytes:
