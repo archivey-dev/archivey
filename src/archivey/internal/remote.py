@@ -53,6 +53,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from archivey.exceptions import SourceChangedError, _UsageValueError
+from archivey.internal.logs import streams as streams_logger
 from archivey.internal.overrides import override
 
 if TYPE_CHECKING:
@@ -127,12 +128,12 @@ def is_open_file(obj: object) -> bool:
 
 
 def check_open_file(of: Any) -> None:
-    """Refuse the ``OpenFile`` fields a raw range read cannot honour (design D1).
+    """Refuse the ``OpenFile`` fields archivey cannot honour (design D1).
 
-    ``mode`` other than ``"rb"`` and a resolved ``compression`` change the bytes the
-    ``OpenFile`` would deliver; reading by range would drop them in silence.
+    ``mode`` other than ``"rb"`` changes the bytes the ``OpenFile`` would deliver.
     ``encoding``, ``errors`` and ``newline`` mean nothing in binary mode and are
-    ignored, as fsspec ignores them for ``"rb"``.
+    ignored, as fsspec ignores them for ``"rb"``. A resolved ``compression`` is
+    honoured, by :func:`open_decompressed`, not by range reads.
     """
     mode = getattr(of, "mode", "rb")
     if mode != "rb":
@@ -140,12 +141,53 @@ def check_open_file(of: Any) -> None:
             f"fsspec OpenFile mode={mode!r} is not supported: archivey reads archives "
             f"as bytes; open it with mode='rb' (the default)"
         )
-    compression = getattr(of, "compression", None)
-    if compression is not None:
-        raise _UsageValueError(
-            f"fsspec OpenFile compression={compression!r} is not supported: open it "
-            f"without compression=, and archivey reads the compressed stream itself"
-        )
+
+
+def open_file_name(of: Any) -> str:
+    """The name archivey gives an ``OpenFile``: its path on its file system."""
+    return str(of.path)
+
+
+def open_file_compression(of: Any) -> str | None:
+    """The compression fsspec resolved for ``of`` (``"infer"`` already resolved), or
+    ``None``."""
+    return getattr(of, "compression", None)
+
+
+def open_decompressed(of: Any) -> Any:
+    """Open ``of`` as fsspec delivers it: its file, decompressed by fsspec.
+
+    For an ``OpenFile`` with a ``compression``, the archive is the decompressed bytes,
+    so archivey reads that stream as it reads any caller stream: forward, a seek back
+    re-decoding, and without range requests. One WARNING says so, with the faster way
+    when archivey can decode the compression itself.
+    """
+    check_open_file(of)
+    compression = open_file_compression(of)
+    streams_logger.warning(
+        "%r is opened with fsspec compression=%r, so archivey reads fsspec's "
+        "decompressed stream: no range requests, and a seek back decodes again. %s",
+        of.path,
+        compression,
+        _COMPRESSION_HINT.get(
+            compression or "",
+            "archivey cannot decode this compression itself, so this is the only way "
+            "to read it.",
+        ),
+    )
+    return of.open()
+
+
+_ARCHIVEY_DECODES = (
+    "Pass compression=None and archivey decodes it itself and reads by range: a "
+    "compressed TAR lists the same, and a single compressed file becomes a one-member "
+    "archive."
+)
+# fsspec's compression names (``fsspec.compression.compr``) that archivey reads as a
+# stream format of its own.
+_COMPRESSION_HINT = dict.fromkeys(
+    ("gzip", "bz2", "lzma", "xz", "zstd", "lz4"), _ARCHIVEY_DECODES
+)
 
 
 # --- the pool and the planner -----------------------------------------------------------
@@ -450,6 +492,15 @@ class RangeSource(io.RawIOBase):
     ) -> RangeSource:
         """Check ``of`` and learn its size, with one ``fs.size`` call."""
         check_open_file(of)
+        compression = open_file_compression(of)
+        if compression is not None:
+            # Range reads see the compressed bytes, not what the OpenFile delivers.
+            # A single source is read through ``open_decompressed`` instead; a volume
+            # list, whose parts are joined by offset, cannot be.
+            raise _UsageValueError(
+                f"fsspec OpenFile compression={compression!r} is not supported in a "
+                f"volume list: open each part without compression="
+            )
         fs = of.fs
         path = of.path
         size = fs.size(path)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import logging
 import random
 import subprocess
 import sys
@@ -404,13 +405,57 @@ def test_mode_other_than_rb_is_refused(memfs):
     assert isinstance(info.value, ValueError)
 
 
-def test_resolved_compression_is_refused_before_any_read(memfs):
-    memfs.pipe("/t/x.zip.gz", b"not read")
+@pytest.mark.parametrize(
+    ("suffix", "compress"),
+    [(".gz", "gzip"), (".bz2", "bz2"), (".xz", "lzma")],
+)
+def test_a_compressed_open_file_reads_the_archive_inside(
+    memfs, caplog, suffix, compress
+):
+    import importlib
+
+    module = importlib.import_module(compress)
+    memfs.pipe(f"/t/x.zip{suffix}", module.compress(_zip_bytes(MEMBERS)))
+    of = fsspec.open(f"memory://t/x.zip{suffix}", compression="infer")
+    with caplog.at_level(logging.WARNING, logger="archivey.streams"):
+        assert detect_format(of).format == ArchiveFormat.ZIP
+        with open_archive(of) as reader:
+            files = {m.name: reader.read(m) for m in reader.members() if m.is_file}
+            assert files == MEMBERS
+    warnings = [r for r in caplog.records if "compression=" in r.getMessage()]
+    assert len(warnings) == 2
+    assert "compression=None" in warnings[0].getMessage()
+
+
+def test_a_compressed_open_file_closes_with_the_reader(memfs, monkeypatch):
+    import gzip
+
+    memfs.pipe("/t/x.zip.gz", gzip.compress(_zip_bytes(MEMBERS)))
     of = fsspec.open("memory://t/x.zip.gz", compression="infer")
+    opened = []
+    real_open = type(of).open
+
+    def spy(self):
+        stream = real_open(self)
+        opened.append(stream)
+        return stream
+
+    monkeypatch.setattr(type(of), "open", spy)
+    with open_archive(of) as reader:
+        reader.members()
+    assert len(opened) == 1
+    assert opened[0].closed
+
+
+def test_a_compressed_open_file_in_a_volume_list_is_refused(memfs):
+    memfs.pipe("/t/a.001", b"not read")
+    memfs.pipe("/t/a.002", b"not read")
+    parts = [
+        fsspec.open("memory://t/a.001", compression="gzip"),
+        fsspec.open("memory://t/a.002"),
+    ]
     with pytest.raises(ArchiveyUsageError, match="compression='gzip'"):
-        open_archive(of)
-    with pytest.raises(ArchiveyUsageError, match="compression='gzip'"):
-        detect_format(of)
+        open_archive(parts)
 
 
 def test_ignored_open_file_without_compression_reads_the_gzip(memfs):

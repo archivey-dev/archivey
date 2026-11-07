@@ -31,7 +31,8 @@
 
 - [x] 2.1 `open_archive()`, `open_stream()` and `detect_format()` accept
       `fsspec.core.OpenFile`, alone and in sequences; the check runs only when `fsspec`
-      is in `sys.modules`. Refuse a non-`"rb"` mode and a resolved compression. `name`
+      is in `sys.modules`. Refuse a non-`"rb"` mode; read a resolved compression through `of.open()` with a
+      WARNING (refused in a volume sequence). `name`
       is `of.path`; `size` is `fs.size()` as a fact. Test that a `str` that looks
       like a URL makes no request and that `import archivey` imports no fsspec.
 - [x] 2.2 `RangeSource`: size once, `cat_file` fetches, doubling from the third

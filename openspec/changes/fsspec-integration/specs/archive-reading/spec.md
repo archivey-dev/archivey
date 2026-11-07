@@ -24,18 +24,25 @@ stay a local path whatever it contains, and the `OpenFile` check SHALL run only 
 | `open_archive(fs.open("a.zip"))`, an already-open fsspec file | Read as any seekable `BinaryIO`, through the caller's object; not closed by the reader |
 | `import archivey; archivey.open_archive(path)` without fsspec imported | `fsspec` is not in `sys.modules` afterwards |
 
-### Requirement: OpenFile fields archivey cannot honour are refused
+### Requirement: How archivey honours the OpenFile fields
 
-An `OpenFile` whose `mode` is not `"rb"`, or whose `compression` is not `None` after
-fsspec resolves it, SHALL be refused with an `ArchiveyUsageError` that is a `ValueError`,
-naming the field and its value, before any range is read. Its `encoding`, `errors` and
-`newline` SHALL be ignored, as binary mode ignores them.
+An `OpenFile` whose `mode` is not `"rb"` SHALL be refused with an `ArchiveyUsageError`
+that is a `ValueError`, naming the mode, before any range is read. An `OpenFile` whose
+`compression` is not `None` after fsspec resolves it SHALL be read through `of.open()`,
+fsspec's decompressing stream, as a stream archivey opened and closes, with one WARNING
+on the `archivey.streams` logger saying it reads no ranges; for a codec archivey decodes
+itself, the warning SHALL say that `compression=None` reads by range. Its `compression`
+SHALL NOT become a `format=`: the archive is what the decompressed bytes hold. In a
+volume sequence, an `OpenFile` with a `compression` SHALL be refused with an
+`ArchiveyUsageError`. Its `encoding`, `errors` and `newline` SHALL be ignored, as binary
+mode ignores them.
 
-#### Scenario: refused OpenFile fields
+#### Scenario: OpenFile fields
 
 | Case | Expected |
 | --- | --- |
-| `fsspec.open("memory://x.zip.gz", compression="infer")` | `ArchiveyUsageError` naming `compression='gzip'`; no read |
+| `fsspec.open("memory://x.zip.gz", compression="infer")` | Opens the ZIP inside; one WARNING suggesting `compression=None`; closing the reader closes fsspec's stream |
+| `[fsspec.open("memory://a.7z.001", compression="gzip"), ...]` | `ArchiveyUsageError` naming the compression; no read |
 | `fsspec.open("memory://x.zip.gz")` | Opens the gzip stream (single-file reader with one member) |
 | `fsspec.open("memory://x.zip", mode="rt")` | `ArchiveyUsageError` naming the mode |
 
