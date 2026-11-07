@@ -5340,3 +5340,23 @@ def test_without_probe_content_the_refusal_names_the_flag(
     src = _raw_lzma(tmp_path / "data.bi5", b"payload")
     assert main(["list", str(src)]) == EXIT_FAIL
     assert "on the command line, pass --probe-content" in capsys.readouterr().err
+
+
+def test_info_prints_prefixed_and_payload_end(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tests.pe_build import FILE_ALIGNMENT, pe_file
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("f.txt", b"hello\n")
+    path = tmp_path / "setup.exe"
+    path.write_bytes(
+        pe_file(0x1000, payload=payload.getvalue(), certificate_size=0x800)
+    )
+    assert main(["info", str(path)]) == EXIT_OK
+    lines = [line.split() for line in capsys.readouterr().out.splitlines()]
+    overlay = FILE_ALIGNMENT + 0x1000
+    assert ["sfx_offset:", str(overlay)] in lines
+    assert ["prefixed:", "True"] in lines
+    assert ["payload_end:", str(overlay + len(payload.getvalue()))] in lines

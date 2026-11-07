@@ -130,6 +130,7 @@ from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import is_open_file
 from archivey.internal.sfx import (
     MAX_VALIDATED_CANDIDATES,
+    PE_LAYOUT_PREFIX,
     SFX_MAX,
     VALIDATOR_PEEK_MAX,
     ExecutableCue,
@@ -139,6 +140,7 @@ from archivey.internal.sfx import (
     ScanNeedle,
     executable_cue,
     iter_magic_in_prefix,
+    pe_payload_end,
 )
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs.brotli_framing import (
@@ -960,6 +962,26 @@ def validator_allowance(budget: DetectionBudget) -> int:
     return min(VALIDATOR_PEEK_MAX, budget.max_scan_bytes)
 
 
+def _executable_head(
+    data: bytes, peek_more: Callable[[int], bytes], workspace: PrefixWorkspace
+) -> bytes:
+    """The leading bytes an executable's layout is read from: ``data``, grown to
+    :data:`~archivey.internal.sfx.PE_LAYOUT_PREFIX` bytes when it is shorter.
+
+    A ``max_prefix_bytes`` below that span would hide the headers, and the end and
+    start detection reports would then differ from the ones a forced ``format=``
+    reads from the same span (``open_archive``): what an archive holds never depends
+    on whether its format was named. The scan that follows reads past this span
+    anyway, on a pipe too, so growing it waits for no byte the scan would not.
+    """
+    total = workspace.remaining_known()
+    if len(data) >= (
+        PE_LAYOUT_PREFIX if total is None else min(PE_LAYOUT_PREFIX, total)
+    ):
+        return data
+    return peek_more(PE_LAYOUT_PREFIX)
+
+
 def _scan_for_sfx_payload(
     entries: list[MagicSignature],
     peek_more: Callable[[int], bytes],
@@ -971,6 +993,7 @@ def _scan_for_sfx_payload(
     capped_formats: frozenset[ArchiveFormat],
     restrict_to_validated: bool,
     cut_reason: TierSkipReason = TierSkipReason.BUDGET_EXHAUSTED,
+    leading: bytes = b"",
 ) -> FormatInfo | None:
     """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
 
@@ -1016,6 +1039,12 @@ def _scan_for_sfx_payload(
     ``cut_reason`` is what a window shorter than ``SFX_MAX`` is recorded as: the budget
     by default, ``CAPABILITY_UNAVAILABLE`` when the caller cut the window to the bytes a
     forward-only source already holds.
+
+    ``leading`` is the prefix detection holds. When it is a signed PE
+    (:func:`~archivey.internal.sfx.pe_layout`), a candidate at or past its
+    certificate table is not judged, and the answer carries the table's start as
+    ``payload_end``: the table is not parsed, so a needle inside it could pass a
+    validator, and the readers stop there (``archive-reading``).
     """
     # A zero ``max_scan_bytes`` turns the tier off, as a zero field does for the others.
     if _record_tier_limit(workspace, "sfx_scan", enabled=scan_limit > 0):
@@ -1051,11 +1080,16 @@ def _scan_for_sfx_payload(
     # The window bounds where a magic may start, not how far its validator reads: a
     # candidate inside it is judged on its whole header, as far as the budget allows.
     view_limit = scan_limit + peek_allowance
+    payload_end = pe_payload_end(leading, workspace.remaining_known())
     for hit in iter_magic_in_prefix(
         peek_more, needles, limit=scan_limit, dropped=dropped
     ):
         key, validator = by_needle[hit.needle]
         origin = hit.candidate_origin
+        if payload_end is not None and origin >= payload_end:
+            # Inside the certificate table: no payload starts there, and every later
+            # needle is further in.
+            break
         outcome = HitOutcome.VALID
         if validator is not None:
             view = workspace.candidate_view(origin, limit=view_limit)
@@ -1075,6 +1109,8 @@ def _scan_for_sfx_payload(
             DetectionConfidence.PROBABLE,
             "sfx_scan",
             payload_offset=chosen[1],
+            prefixed=True,
+            payload_end=payload_end,
         )
     )
     # Charge the window actually examined — a miss is the expensive case.
@@ -1519,6 +1555,7 @@ def _detect_format_body(
                 capped_formats=registry.sfx_parser_scanned_formats(),
                 # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
                 restrict_to_validated=data.startswith(b"#!"),
+                leading=_executable_head(data, peek_more, workspace),
             )
             if sfx_info is not None:
                 return conclude(sfx_info, _ConflictEvidence.SFX_SCAN)
