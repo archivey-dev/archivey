@@ -32,9 +32,9 @@ size the header declares, before any block: a swap buffer and a suffix array of 
 bytes per byte, both of ``bz3_bound(block size)``, and a 1 MiB LZP table. The binding
 adds a buffer of the same bound and three copies of a decoded block (its buffer slice,
 the ``bytearray`` it gathers, the ``bytes`` it returns), and this module holds one
-compressed block. :func:`decoder_memory` counts all of them, about eleven times the
+compressed block. :func:`decoder_memory` counts all of them, about ten times the
 block size, and ``DecoderLimits.max_decoder_memory`` is checked against it before
-the decoder is built: under the default 2 GiB cap a block size up to about 180 MiB
+the decoder is built: under the default 2 GiB cap a block size up to about 200 MiB
 reads (the ``bzip3`` tool's default is 16 MiB).
 """
 
@@ -48,7 +48,6 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     ResourceLimitError,
-    ResourceUnavailableError,
     exception_detail,
 )
 from archivey.internal.config import StreamConfig, check_decoder_memory
@@ -231,6 +230,9 @@ class Bzip3Decompressor:
             self._native = self._open_native()
             self._call_native(BZIP3_MAGIC + self._block_size.to_bytes(4, "little"))
         out = self._call_native(block)
+        # bzip3 0.1.10's binding returns exactly the header's decoded size, and
+        # libbzip3's CRC-32 over that many bytes is what refuses a wrong one. This
+        # check holds if a later binding stops slicing to the header's size.
         if len(out) != decoded:
             raise CorruptionError(
                 f"bzip3 block decoded to {len(out)} bytes, not the {decoded} its header "
@@ -244,11 +246,6 @@ class Bzip3Decompressor:
         except ValueError as exc:
             raise CorruptionError(
                 f"bzip3 block does not decode: {exception_detail(exc)}"
-            ) from None
-        except MemoryError as exc:
-            raise ResourceUnavailableError(
-                "bzip3 decoder could not allocate its state for a "
-                f"{self._block_size}-byte block: {exception_detail(exc)}"
             ) from None
 
 
@@ -285,23 +282,18 @@ _PROBE_COMPRESSED_MAX = 1 << 20
 
 
 def _block_size_check(config: StreamConfig) -> Callable[[int], None]:
-    """What refuses the header's block size before the decoder is built: the decoder
-    memory cap, or for a detection probe 16 MiB, as ``ResourceLimitError``, which a
-    probe reads as "can't tell"."""
-    if config.probe_read_bound is not None:
-        ceiling = _PROBE_BLOCK_SIZE_MAX
-
-        def check_probe(block_size: int) -> None:
-            if block_size > ceiling:
-                raise ResourceLimitError(
-                    f"a bzip3 header declares {block_size}-byte blocks, over the "
-                    f"{ceiling} a detection probe decodes"
-                )
-
-        return check_probe
+    """What refuses the header's block size before the decoder is built, as
+    ``ResourceLimitError``, which a probe reads as "can't tell": the decoder memory
+    cap, and for a detection probe also 16 MiB."""
     limits, usage = config.decoder_limits, config.usage
+    probe = config.probe_read_bound is not None
 
     def check(block_size: int) -> None:
+        if probe and block_size > _PROBE_BLOCK_SIZE_MAX:
+            raise ResourceLimitError(
+                f"a bzip3 header declares {block_size}-byte blocks, over the "
+                f"{_PROBE_BLOCK_SIZE_MAX} a detection probe decodes"
+            )
         check_decoder_memory(
             decoder_memory(block_size),
             limits=limits,
@@ -348,7 +340,7 @@ class Bzip3Codec(StreamCodec):
 
     @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
-        # The decompressor turns the binding's ValueError and MemoryError into
-        # archivey errors itself, so nothing else reaches here from bzip3.
+        # The decompressor turns the binding's ValueError into CorruptionError itself.
+        # MemoryError propagates unchanged, as the error-handling spec asks.
         del exc
         return None

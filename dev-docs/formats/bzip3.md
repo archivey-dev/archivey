@@ -56,7 +56,10 @@ blocks it has already been checked against.
 2. **Each block, before decoding.** The compressed size is in `0..bz3_bound(block_size)`, the
    decoded size in `0..block_size`. A literal block holds at most 64 bytes and decodes to its
    own length. Any other block is at least 9 bytes plus 4 for each size its model byte names.
-3. **After decoding.** The output length must match the block header's decoded size.
+3. **After decoding.** The output length must match the block header's decoded size. The
+   0.1.10 binding always returns exactly that size, so what refuses a forged decoded size
+   today is libbzip3's CRC-32, which covers that many bytes; the length check holds if a
+   later binding stops slicing to it.
 4. **End of input.** Inside the header or a block is `TruncatedError` (the decompressor's
    `end_input` raises `EOFError`, which the stream layer turns into it).
 
@@ -65,8 +68,9 @@ negative compressed size to `memcpy` as a huge length, and for a literal block r
 bytes of its buffer as the header declares, whatever the block held (stale data from the
 previous block). Both are refused at step 2 before the binding sees them.
 
-`ValueError` from libbzip3 (a CRC mismatch, a damaged block) becomes `CorruptionError`;
-`MemoryError` becomes `ResourceUnavailableError`.
+`ValueError` from libbzip3 (a CRC mismatch, a damaged block) becomes `CorruptionError`.
+`MemoryError` propagates unchanged, as everywhere in archivey: running out of memory is
+never a damaged archive.
 
 **Detection.** `BZ3v1` is an exact magic, so a `.bz3` is found by content, whatever its name.
 The inner-TAR probe does not build a decoder for blocks over 16 MiB (the tool's default) and

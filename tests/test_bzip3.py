@@ -417,7 +417,7 @@ def test_the_package_is_imported_here_only_under_none() -> None:
 
 
 @needs_bzip3
-def test_a_decoder_that_cannot_allocate_is_resource_unavailable(
+def test_a_decoder_that_cannot_allocate_raises_memory_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from archivey.internal.streams.codecs.isolated import Natives
@@ -430,8 +430,9 @@ def test_a_decoder_that_cannot_allocate_is_resource_unavailable(
         Natives, "bzip3_decompressor", lambda self, setting: _NoMemory()
     )
     raw = (FIXTURES / "tiny.txt.bz3").read_bytes()
-    with pytest.raises(ResourceUnavailableError, match="16777216-byte block"):
-        _read(io.BytesIO(raw))
+    # Not translated: running out of memory is never a damaged archive.
+    with pytest.raises(MemoryError):
+        _read(io.BytesIO(raw), format=ArchiveFormat.BZIP3)
 
 
 @needs_bzip3

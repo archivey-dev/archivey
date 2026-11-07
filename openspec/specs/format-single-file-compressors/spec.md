@@ -520,13 +520,17 @@ blocks itself and hand libbzip3 one whole block at a time, and SHALL refuse with
 - a literal block (BWT index -1) longer than 64 bytes, or whose decoded size is not its own
   length;
 - a block shorter than its own header (9 bytes, plus 4 for each of the LZP and RLE sizes
-  its model byte names);
-- a block that decodes to a size other than the one its header declares.
+  its model byte names).
+
+A block that decodes to a size other than the one its header declares SHALL be refused
+with `CorruptionError` too: libbzip3's CRC-32 covers the declared size, and archivey
+checks the length of what the decoder returns.
 
 The block size SHALL be checked against `DecoderLimits.max_decoder_memory` at what
 libbzip3 allocates for it, before the decoder is built, and refused with
-`ResourceLimitError`. A detection probe SHALL NOT build a decoder for blocks over 16 MiB
-nor wait for a first block over 1 MiB compressed; it reports "can't tell".
+`ResourceLimitError`. A detection probe, which runs without the caller's cap as every
+detection probe does, SHALL NOT build a decoder for blocks over 16 MiB nor wait for a
+first block over 1 MiB compressed; it reports "can't tell".
 
 The format has no end mark: a source cut between blocks SHALL read short with no error,
 a cut inside the header or a block SHALL raise `TruncatedError`, and bytes after the last
