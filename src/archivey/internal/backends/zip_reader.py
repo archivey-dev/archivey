@@ -1416,6 +1416,7 @@ class ZipReader(BaseArchiveReader):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> None:
         super().__init__(
             ArchiveFormat.ZIP,
@@ -1475,7 +1476,7 @@ class ZipReader(BaseArchiveReader):
         # The same for a local header naming another method (``_report_local_method``).
         self._local_methods_reported: set[int] = set()
         self._refuse_lone_split_segment()
-        self._open_index(source, start_offset)
+        self._open_index(source, start_offset, end_offset)
 
     def _refuse_lone_split_segment(self) -> None:
         """Refuse a split-set segment read alone."""
@@ -1491,7 +1492,9 @@ class ZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.ZIP,
             )
 
-    def _open_index(self, source: ArchiveSource, start_offset: int) -> None:
+    def _open_index(
+        self, source: ArchiveSource, start_offset: int, end_offset: int | None
+    ) -> None:
         """Find the end record and get ready to walk the central directory.
 
         :class:`~archivey.internal.backends.zip_forward_reader.ZipForwardReader`
@@ -1506,13 +1509,10 @@ class ZipReader(BaseArchiveReader):
         # The counter and the slice over the source close nothing of the caller's;
         # the base closes the source itself after ``_close_archive``.
         handle = self._track_source_seeks(source)
-        if start_offset:
-            # The parser adjusts past a stub on its own (``EndRecord.base``), but
-            # "adjust past whatever precedes the end record" is not the same promise
-            # as "the archive starts here": a stub carrying its own record-shaped
-            # bytes would move the answer. Slicing makes the payload the whole world,
-            # which is what start_offset means.
-            handle = SlicingStream(handle, start=start_offset)
+        # A self-extractor's stub starts the region and a signed executable's
+        # certificate table ends it (``_region``).
+        if start_offset or end_offset is not None:
+            handle = self._region(handle, start_offset, end_offset)
         self._fp = handle
         file_size = handle.seek(0, io.SEEK_END)
         # Every header offset the listing walk has read, for the overlap guard; then
@@ -1613,6 +1613,22 @@ class ZipReader(BaseArchiveReader):
         )
         self._bounds = _DataBounds(walked.offsets, cd_start=members_end)
         self._count_known = True
+
+    @staticmethod
+    def _region(handle: BinaryIO, start: int, end: int | None) -> BinaryIO:
+        """``handle`` cut to ``[start, end)``.
+
+        The parser adjusts past a stub on its own (``EndRecord.base``), but "adjust
+        past whatever precedes the end record" is not the same promise as "the archive
+        starts here": a stub carrying its own record-shaped bytes would move the
+        answer. Slicing makes the payload the whole world, which is what the start
+        offset means. The end does the same at the other side: the end-record search
+        and the trailing-data check stop before a signed executable's certificate
+        table.
+        """
+        return SlicingStream(
+            handle, start=start, length=None if end is None else end - start
+        )
 
     def _walk_past_members(self) -> int | None:
         """Where the members end, found by walking their local headers from the start
@@ -4584,6 +4600,7 @@ class ZipReadBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> ZipReader:
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.
@@ -4607,6 +4624,7 @@ class ZipReadBackend(ReadBackend):
             member_streams=member_streams,
             open_site=open_site,
             start_offset=start_offset,
+            end_offset=end_offset,
         )
 
 

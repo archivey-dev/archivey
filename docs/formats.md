@@ -60,6 +60,10 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **Debian packages** (`.deb`, `.udeb`, `.ddeb`): needs what their tars' compressor needs
   (xz, gzip and bzip2 in core; Zstandard as for a `.zst` file). Listing: needs decompression.
   Members: solid. Readable from a pipe.
+- **RPM** (`.rpm`, binary and source packages): core; the payload needs what its compressor
+  needs (gzip, bzip2, xz and LZMA in core, Zstandard as for a `.zst` file). Listing: needs
+  decompression. Members: solid. Readable from a pipe. A package with an uncompressed
+  payload (rare) lists header by header, and its members are direct.
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
@@ -748,7 +752,9 @@ On a compressed tar, the stream's own checksum adds three cases:
 - **Bytes after the archive's end** (its next header or its last packed stream, whichever is later)
   are `ARCHIVE_TRAILING_DATA` with `format="7z"`. Zero padding passes, although 7-Zip warns "There
   are data after the end of archive" for zeros too. A code-signed self-extracting `.exe` carries
-  its signature after the archive, so it gets the warning, and `STRICT` refuses it.
+  its signature after the archive. archivey reads the signature's position from the program's
+  header and does not report it, so `STRICT` opens a signed self-extractor. Other bytes between
+  the archive and the signature are still reported.
 - A device, FIFO or socket that 7-Zip or p7zip stored on Unix follows
   [the shared rule](#device-files-fifos-and-sockets). The mode is trusted for this only when the
   attribute's `0x8000` Unix-extension bit is set.
@@ -1214,6 +1220,37 @@ other members because of a member's name any more. Setting it to `True` warns.
 - The control file and `md5sums` are held whole while the package is read, and together may be
   no larger than `ListingLimits.max_metadata_bytes`.
 
+## RPM
+
+- **Needs:** nothing for gzip, bzip2, xz and LZMA payloads; a Zstandard payload (Fedora's
+  default) needs what a `.zst` file needs.
+- **Listing:** the file list is in the package header, but listing walks the payload to find
+  each file's data, so it needs decompression.
+- **Reading members:** solid: one compression stream holds every file. A package with an
+  uncompressed payload, which `rpmbuild` writes only when asked, reads as a CPIO archive:
+  listing header by header, members direct.
+- **From a pipe:** yes, with `streaming=True`.
+- Members are named as `rpm2cpio | cpio -i` extracts them: `usr/bin/tool` for the package's
+  `/usr/bin/tool`, which is the member's `raw_name`. A source package's names are relative.
+- Each member's type, mode, size, time and owner names come from the package header, as `rpm`
+  installs them. Owners are names (`uname`, `gname`); `uid` and `gid` are `None`.
+- Both payload forms read: newc CPIO, and the stripped form of RPM 6 packages and of RPM 4
+  packages with a file of 4 GiB or more.
+- Each regular file's digest from the header (SHA-256 in current packages, MD5 in old ones)
+  is checked as its data is read.
+- `%ghost` files are listed in the package but never stored, and are not members.
+- **Hard links.** Files that share an inode are one file. The package stores the data with
+  the last of them, so archivey lists that one as the `FILE` and the others after it as
+  `HARDLINK` members to it.
+- `ArchiveInfo.format_version` is `"6"` for an RPM 6 package, `"4"` for an RPM 4 one, and
+  `"3"` for an old header with no immutable region. `ArchiveInfo.extra` holds `rpm.name`,
+  `rpm.version`, `rpm.release`, `rpm.arch`, `rpm.epoch` (when set), `rpm.source`,
+  `rpm.signed` and `rpm.payload_compressor`. Signatures are reported, not checked: use
+  `rpm -K` for that.
+- Delta RPMs, and payloads compressed with something archivey cannot decode, raise
+  `UnsupportedFeatureError`. A payload that does not match its header (a missing file, a file
+  the header does not list) raises `CorruptionError`.
+
 ## Disk images
 
 A UDIF image (`.dmg`) is recognised by its `koly` block, in its last 512 bytes, or its first 12 when
@@ -1468,8 +1505,15 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
 - **Self-extracting (SFX) stubs** are detected when the archive sits behind an executable header
   (Windows `MZ`/PE, Linux ELF, or a macOS Mach-O header that parses) or a `#!` launcher line (a
   zipapp `.pyz`, a Spring Boot jar). The 2 MiB scan behind the stub reports where the archive starts
-  as `payload_offset`. A launcher is text, so behind `#!` only formats with a structural check
-  (ZIP, 7z, RAR) are searched for. Among several 7z candidates, one that ends exactly at the end of
+  as `payload_offset`, and sets `prefixed`. For a code-signed Windows program, `payload_end` is
+  where its signature starts: the ZIP, 7z and RAR readers stop there, so the signature is not
+  reported as data after the archive. A ZIP further into a Windows installer than the scan
+  reaches is found from its end, when the program's header shows that something was
+  appended past the window. A launcher is text, so behind `#!` only formats with a structural check
+  (ZIP, 7z, RAR) are searched for. Behind a Windows, Linux or macOS program whose header says
+  where its own image ends, an archive that starts exactly there is taken first, ahead of
+  anything else in the window. Otherwise,
+  among several 7z candidates, one that ends exactly at the end of
   the file is preferred over an earlier one that ends short of it.
 - **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`
   and `unzip` find it: when no other step matched, the same 2 MiB scan runs without an executable

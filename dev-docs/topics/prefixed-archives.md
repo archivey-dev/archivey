@@ -29,8 +29,8 @@ The cued forward scan and the uncued scan that runs last are shipped today.
 
 | Tier | How it works | Bound | Status |
 | --- | --- | --- | --- |
-| **Tail probe** | Some formats locate themselves from the end, so no search is needed — only the willingness to look. | Set by the format (ZIP: 65 557 bytes) | **Designed, not shipped.** Held out of the default budget pending a seek-cost measurement |
-| **Cued forward scan** | Leading bytes look like a prefix → search forward for each backend's declared needle. | `min(size, SFX_MAX)`, `SFX_MAX` = 2 MiB | **Shipped** |
+| **Tail probe** | Some formats locate themselves from the end, so no search is needed — only the willingness to look. | Set by the format (ZIP: 65 558 bytes before the payload end) | **Shipped for a PE's overlay only** (`pe-aware-sfx-location`): after a cued scan misses, when the PE's layout says its overlay runs past the window. Not for any other source |
+| **Cued forward scan** | Leading bytes look like a prefix → search forward for each backend's declared needle. For a PE, ELF or Mach-O program whose layout parses (`sfx.executable_layout`), the candidate at its overlay start is judged first, and a `VALID` or `VALID_SHORT` hit there wins over every other needle; the RAR and 7z parsers' scans and the forward ZIP walk do the same. | `min(size, SFX_MAX)`, `SFX_MAX` = 2 MiB | **Shipped** |
 | **Uncued scan, last** | Every other detection step declined, the leading bytes raise no cue and carry no known non-archive signature, and the name has no known extension → the same scan, every needle held to its validator. | Same window; on a forward-only source, only the bytes detection already holds | **Shipped** (2026-10-29) |
 | **Exhaustive scan** | Search the whole source, for a caller who knows they are holding a firmware image. | Caller's `max_scan_bytes` | Designed, not shipped |
 | **Prefix analysis** | Do not search at all: read the stub, which for some families states where the payload begins and what made it. | None — one seek to the stated offset | An idea in [`IDEAS.md`](../IDEAS.md) |
@@ -128,6 +128,20 @@ which is most files. What that wasted seek costs on a cold cache or over a netwo
 unmeasured, and that is the open question. Which entry point the caller used is not:
 `open_archive` and `detect_format()` run the same detection and waste the same read.
 
+**A PE cues it after all.** A Windows executable's own header says where its image ends
+(the *overlay start*) and where its certificate table starts. So the probe runs only when
+the cued scan missed and the overlay runs past the window: a large installer that already
+paid for a 2 MiB scan, for one more 64 KiB read and two small record reads. A program or
+DLL with nothing appended past its sections other than a certificate never pays; one with
+other bytes there (an unstripped MinGW build's symbol table, padding, debug data) pays the
+read and is declined. The six `PK\x05\x06`
+false positives of §4 are ELF, so the gate excludes them, and the record checks
+(`zip_parser.confirm_tail_record`) reject them anyway. A remote source pays one more round
+trip on a gated file. The hit reports the base the end record implies as
+`payload_offset`, which is 0 for a ZIP whose offsets count from the start of the file,
+so `FormatInfo.prefixed` is the test for a prefix. ELF, Mach-O and non-executables (a
+JPEG with a ZIP appended) still get no tail probe.
+
 ## 4. Validate the hit, do not trust the magic
 
 Four bytes in a stub are not an archive. Every format that declares a scan needle also
@@ -196,7 +210,7 @@ compressed stream is a real shape for script launchers and not for executable on
 | --- | --- | --- |
 | A prefixed archive behind bytes that fire no cue (a JPEG polyglot, a plain concatenation) is detected only when it starts within the window, and only when the name has no known extension; `open_archive(..., format=ZIP)` reads one further in | **archivey** | The uncued scan (§2, §3); the tail probe is the tier that would find a ZIP at any distance |
 | An unrecognised extension-less file of 2 MiB of `PK\x03\x04` decoys takes about 2.4 s to reject | **archivey** | The uncued scan with ZIP uncapped (§3, §7) |
-| `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped. Resolved 2026-09-25: kept, not renamed; `detected_by` is documented as an open set and `sfx_scan` as covering every prefixed hit |
+| `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped; `FormatInfo.prefixed` (`pe-aware-sfx-location`) ships its yes-or-no part. Resolved 2026-09-25: kept, not renamed; `detected_by` is documented as an open set and `sfx_scan` as covering every prefixed hit |
 | A prefixed archive on a non-seekable source may be missed entirely | **format** | The tail probe needs a seek; the cued scan needs a cue in the first bytes, and the uncued one sees only the bytes detection already read |
 
 A defect worth remembering because it shows what the cue gate is really protecting: before
@@ -210,6 +224,7 @@ produced a confidently wrong one.
 
 | Choice | Why | Rejected |
 | --- | --- | --- |
+| A ZIP tail probe gated on the PE's layout, with no budget field (`pe-aware-sfx-location` §1, the IRPF 2026 installer: a ZIP at 35 MB behind a 34 MB block) | The PE header says for free whether anything was appended, so only a large installer pays, and the gate does the cost work a budget field would | A probe on every strong cue (pays on every large signed program); an installer allowlist; a `max_tail_bytes` field (can come later, additively) |
 | One shared `SFX_MAX` for the detector and the native parsers' scans | Separate bounds drift into a file that opens under `format=` and fails under auto-detect | A bound per call site |
 | `scan_for_magic` takes an optional `HitValidator` (same `(peek_more, remaining)` shape as the detector), returns earliest VALID, else earliest VALID_SHORT, else earliest identified, and caps rejected candidates at 256 | Parser scans had no hook, so a decoy ahead of the real payload made forced `format=` fail. Peek is served from the scan window (forward-only; source need not be seekable) | Seeking back to the origin to validate |
 | The detector's scan uses the same 256-rejection cap (`MAX_VALIDATED_CANDIDATES`) for RAR and 7z, the formats whose parsers scan (`ReadBackend.SFX_PARSER_SCANS`), counted per format. Once a format is capped the scan stops searching for its needles, and a capped scan records `sfx_scan` as *budget exhausted* even when it answers. ZIP is never capped | Uncapped, a window of RAR decoys each declaring a 60 KB header cost 4-5 s per detection, and a file of decoys meant one thing to detection and another to forced `format=` (DR-23a). Each parser counts only its own format, so a pooled count let 256 ZIP decoys hide a RAR that `format=RAR` opens. The seekable ZIP reader finds the end of central directory from the tail and runs no scan, and the forward walk's scan is bounded by the window alone (its validator reads only the header and computes no CRC), so a ZIP cap refused a file `format=ZIP` lists. The cost: 2 MiB of back-to-back `PK\x03\x04` decoys still takes about 2 s per detection, one validation each, as before the cap existed. Skipping a capped format's hits one by one walked a one-format carpet hit by hit (0.19-0.25 s for 2 MiB of RAR decoys); not searching for its needles takes 0.015 s. A capped scan holding a short 7z hit answers with it, as the 7z parser does, but candidates past the cap were never judged | A budget field charging validator bytes; leaving the detector uncapped because its needle search is linear; one cap pooled across formats; capping ZIP too and accepting that detection refuses what `format=ZIP` opens |
@@ -277,7 +292,9 @@ the full stub matrix is task 4.3 of `prefixed-archive-detection`.
 - Specs: [`format-detection`](../../openspec/specs/format-detection/spec.md) ·
   [`detection-cost`](../../openspec/specs/detection-cost/spec.md)
 - Archived undone: `openspec/changes/archive/2026-11-05-prefixed-archive-detection/` (the four implementation blocks;
-  Block 1 ships today; Block 2 and `prefix_kind` were struck on 2026-09-25) · decided against:
+  Block 1 ships today; Block 2 and `prefix_kind` were struck on 2026-09-25) · in flight:
+  `openspec/changes/pe-aware-sfx-location/` (a PE's layout: `prefixed`, `payload_end`, then a
+  PE-gated ZIP tail probe and the overlay start first) · decided against:
   `openspec/changes/archive/2026-09-25-detection-evidence-ledger/`
 - Archived: `openspec/changes/archive/2026-08-21-sfx-format-detection/` ·
   `2026-08-31-detection-prefix-workspace/` · `2026-08-30-detection-format-gaps/`

@@ -11,6 +11,7 @@ Module map:
 - :mod:`.udif` — UDIF disk images (``.dmg``); recognised and refused, not read
 - :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
 - :mod:`.ar_reader` — Unix ar, written against ``archivey.formats`` like ISO
+- :mod:`.rpm_reader` — RPM packages (headers, then the CPIO payload), the same way
 - :mod:`.deb_reader` — Debian packages, an ar layer whose tars it reads through
   ``ReaderContext.open_nested``
 - :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio), the same way
@@ -47,6 +48,7 @@ from archivey.internal.backends import (
     directory_reader as _directory_reader,  # noqa: F401
     iso_reader as _iso_reader,  # noqa: F401
     rar_reader as _rar_reader,  # noqa: F401
+    rpm_reader as _rpm_reader,  # noqa: F401
     sevenzip_reader as _sevenzip_reader,  # noqa: F401
     single_file_reader as _single_file_reader,  # noqa: F401
     squashfs_reader as _squashfs_reader,  # noqa: F401

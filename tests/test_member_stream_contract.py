@@ -929,6 +929,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "deb",
         "no corpus builder (needs dpkg-deb); tests/test_deb.py seeks inside members",
     ),
+    (
+        "rpm",
+        "no corpus builder (needs rpmbuild); tests/test_rpm.py seeks inside members",
+    ),
 )
 
 _UNTESTED_FORMATS = {
@@ -943,6 +947,7 @@ _UNTESTED_FORMATS = {
     **{ArchiveFormat(ContainerFormat.CPIO, s): "cpio" for s in StreamFormat},
     **{ArchiveFormat(ContainerFormat.DEB, s): "deb" for s in StreamFormat},
     ArchiveFormat.SQUASHFS: "squashfs",
+    **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},
 }
 
 

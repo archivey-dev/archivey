@@ -32,8 +32,9 @@ for every format archivey reads.
 - **`open_archive()`, `open_stream()` and `detect_format()` accept an
   `fsspec.core.OpenFile`**, the object `fsspec.open(url, **options)` returns. archivey
   reads it by range through the `OpenFile`'s file system, with no fsspec file cache in
-  between, and plans its own fetches (below). It refuses an `OpenFile` whose mode or
-  compression it cannot honour. A plain string passed to `open_archive()` stays a local
+  between, and plans its own fetches (below). It refuses an `OpenFile` whose mode is not
+  `"rb"`, and reads one with a `compression=` through fsspec's decompressing stream, with
+  a warning. A plain string passed to `open_archive()` stays a local
   path: archivey still never turns a string into a network request.
 - **New module `archivey.fsspec`**, importable only when fsspec is installed. `import
   archivey` never imports fsspec. There is no new extra: a caller who reads from S3 or
