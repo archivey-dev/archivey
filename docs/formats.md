@@ -56,6 +56,9 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **ar** (`.a`, `.lib`, the outer layer of a `.deb`): core. Listing: header by header. Members:
   direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.a.gz`,
   …); there, as with a compressed TAR, listing needs decompression and members are solid.
+- **RPM** (`.rpm`, binary and source packages): core; the payload needs what its compressor
+  needs (gzip, bzip2, xz and LZMA in core, Zstandard as for a `.zst` file). Listing: needs
+  decompression. Members: solid. Readable from a pipe.
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
@@ -1180,6 +1183,34 @@ other members because of a member's name any more. Setting it to `True` warns.
 - A thin archive (`!<thin>`) only names files kept outside it, and raises
   `UnsupportedFeatureError`.
 - The long-name table may be no larger than `ListingLimits.max_metadata_bytes`.
+
+## RPM
+
+- **Needs:** nothing for gzip, bzip2, xz and LZMA payloads; a Zstandard payload (Fedora's
+  default) needs what a `.zst` file needs.
+- **Listing:** the file list is in the package header, but listing walks the payload to find
+  each file's data, so it needs decompression.
+- **Reading members:** solid: one compression stream holds every file.
+- **From a pipe:** yes, with `streaming=True`.
+- Members are named as `rpm2cpio | cpio -i` extracts them: `usr/bin/tool` for the package's
+  `/usr/bin/tool`, which is the member's `raw_name`. A source package's names are relative.
+- Each member's type, mode, size, time and owner names come from the package header, as `rpm`
+  installs them. Owners are names (`uname`, `gname`); `uid` and `gid` are `None`.
+- Both payload forms read: newc CPIO, and the stripped form of RPM 6 packages and of RPM 4
+  packages with a file of 4 GiB or more.
+- Each regular file's digest from the header (SHA-256 in current packages, MD5 in old ones)
+  is checked as its data is read.
+- `%ghost` files are listed in the package but never stored, and are not members.
+- **Hard links.** Files that share an inode are one file. The package stores the data with
+  the last of them, so archivey lists that one as the `FILE` and the others right after it as
+  `HARDLINK` members to it.
+- `ArchiveInfo.format_version` is `"4"` or `"6"`. `ArchiveInfo.extra` holds `rpm.name`,
+  `rpm.version`, `rpm.release`, `rpm.arch`, `rpm.epoch` (when set), `rpm.source`,
+  `rpm.signed` and `rpm.payload_compressor`. Signatures are reported, not checked: use
+  `rpm -K` for that.
+- Delta RPMs, and payloads compressed with something archivey cannot decode, raise
+  `UnsupportedFeatureError`. A payload that does not match its header (a missing file, a file
+  the header does not list) raises `CorruptionError`.
 
 ## Disk images
 

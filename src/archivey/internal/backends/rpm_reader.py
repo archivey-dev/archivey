@@ -1,0 +1,738 @@
+"""The RPM reader: a package's file list from its header, and its files' data from
+the CPIO payload, read in one forward pass.
+
+On-disk layout (``rpm.org`` *V4 Package format* and *V6 Package format*)::
+
+    [ lead, 96 bytes ][ signature header ][ pad to 8 ][ main header ][ payload ]
+
+The **lead** starts with ``ED AB EE DB``; the rest is historical. Both headers have one
+shape: the magic ``8E AD E8 01``, four reserved bytes, the number of index entries and
+the size of the data store (big-endian), then the entries (tag, type, offset, count;
+16 bytes each) and the store. The **payload** is a CPIO archive inside the compressor
+the main header names (``PAYLOADCOMPRESSOR``), and runs to the end of the file.
+
+The main header holds the file list: names (``DIRNAMES``/``BASENAMES``/``DIRINDEXES``,
+or ``OLDFILENAMES`` in old packages), modes, sizes, times, owners, link targets and
+digests. The payload holds one CPIO entry per file that is not a ``%ghost``, and the
+reader maps each entry to its file the way ``rpm`` does (``lib/rpmfi.c``):
+
+- a **newc** (``070701``) or **crc** (``070702``) entry by its name, ``./usr/bin/x``
+  for the header's ``/usr/bin/x``;
+- a **stripped** entry (``07070X``, then the file's index as 8 hexadecimal digits and
+  nothing else) by that index. RPM 6 packages always use it, and RPM 4 packages that
+  hold a file of 4 GiB or more (``LONGFILESIZES``).
+
+Every member's metadata comes from the header, as ``rpm`` installs it; a newc entry's
+own size is only checked against it. Members are named as the payload stores them,
+``./usr/bin/x``, so ``usr/bin/x`` once normalized: what ``rpm2cpio | cpio -i``
+extracts, relative to the directory it is given. A regular file's data follows its entry, except
+in a hard-link set (regular files that share ``FILEDEVICES`` and ``FILEINODES``):
+there only the set's last file in header order carries the data, the earlier entries
+coming first, empty. As for CPIO, this reader holds those back, yields the last as the
+``FILE`` and the others as ``HARDLINK`` members to it. A symlink's target is its entry's
+data; the reader takes it from ``FILELINKTOS`` and skips those bytes. A ``%ghost`` file
+is listed in the header but never stored, and ``rpm2cpio`` does not give it either: it
+is not a member. The payload ends with a newc ``TRAILER!!!`` entry, and every file
+that is not a ghost must have been found by then.
+
+``FILEDIGESTS`` holds each regular file's digest in the algorithm ``FILEDIGESTALGO``
+names (MD5 when absent): it is checked as the member is read. Signatures are reported
+in the archive info, not checked.
+
+The reader is written against ``archivey.formats`` and archivey's public names only,
+as a format added from outside would be; ``register_builtin_format`` is the one
+internal name it uses (``tests/test_rpm.py`` checks). Handbook page:
+``dev-docs/formats/rpm.md``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import struct
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+
+from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
+from archivey.exceptions import (
+    CorruptionError,
+    ResourceLimitError,
+    UnsupportedFeatureError,
+)
+from archivey.formats import (
+    ForwardStream,
+    Hasher,
+    Magic,
+    MemberDigest,
+    MemberSpan,
+    ReaderArchiveInfo,
+    ReaderContext,
+    SequentialFormatHandler,
+    SequentialReader,
+)
+from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.overrides import override
+from archivey.types import (
+    ArchiveFormat,
+    ArchiveInfoExtra,
+    ArchiveMember,
+    MemberType,
+    StreamFormat,
+)
+
+LEAD_MAGIC = b"\xed\xab\xee\xdb"
+LEAD_SIZE = 96
+HEADER_MAGIC = b"\x8e\xad\xe8\x01"
+# rpm's own bounds on a header (lib/header_internal.h): more is damage.
+MAX_HEADER_TAGS = 0xFFFF
+MAX_HEADER_DATA = 0x0FFFFFFF
+# The longest CPIO name rpm reads (lib/cpio.c).
+MAX_PAYLOAD_NAME = 4096
+TRAILER = b"TRAILER!!!"
+TRAILING_SCAN = 1024 * 1024
+
+# Header data types (rpm.org "Package Header format").
+_CHAR, _INT8, _INT16, _INT32, _INT64 = 1, 2, 3, 4, 5
+_STRING, _BIN, _STRING_ARRAY, _I18NSTRING = 6, 7, 8, 9
+_INT_SIZES = {_CHAR: 1, _INT8: 1, _INT16: 2, _INT32: 4, _INT64: 8, _BIN: 1}
+
+# Tags (rpm.org "RPM Tags").
+TAG_HEADERIMMUTABLE = 63
+TAG_NAME = 1000
+TAG_VERSION = 1001
+TAG_RELEASE = 1002
+TAG_EPOCH = 1003
+TAG_ARCH = 1022
+TAG_OLDFILENAMES = 1027
+TAG_FILESIZES = 1028
+TAG_FILEMODES = 1030
+TAG_FILEMTIMES = 1034
+TAG_FILEDIGESTS = 1035
+TAG_FILELINKTOS = 1036
+TAG_FILEFLAGS = 1037
+TAG_FILEUSERNAME = 1039
+TAG_FILEGROUPNAME = 1040
+TAG_SOURCERPM = 1044
+TAG_FILEDEVICES = 1095
+TAG_FILEINODES = 1096
+TAG_DIRINDEXES = 1116
+TAG_BASENAMES = 1117
+TAG_DIRNAMES = 1118
+TAG_PAYLOADFORMAT = 1124
+TAG_PAYLOADCOMPRESSOR = 1125
+TAG_LONGFILESIZES = 5008
+TAG_FILEDIGESTALGO = 5011
+TAG_RPMFORMAT = 5114
+# Signature-header tags that hold a signature (rather than a digest or a size).
+_SIGNATURE_TAGS = frozenset({259, 262, 267, 268, 278})
+
+RPMFILE_GHOST = 1 << 6
+
+# PAYLOADCOMPRESSOR values, as rpmio names its compressors.
+_COMPRESSORS = {
+    b"gzip": StreamFormat.GZIP,
+    b"bzip2": StreamFormat.BZIP2,
+    b"xz": StreamFormat.XZ,
+    b"lzma": StreamFormat.LZMA_ALONE,
+    b"zstd": StreamFormat.ZSTD,
+}
+# FILEDIGESTALGO values (the OpenPGP hash algorithm ids rpm uses).
+_DIGESTS: dict[int, tuple[str, Callable[[], Hasher]]] = {
+    1: ("md5", hashlib.md5),
+    2: ("sha1", hashlib.sha1),
+    8: ("sha256", hashlib.sha256),
+    9: ("sha384", hashlib.sha384),
+    10: ("sha512", hashlib.sha512),
+    11: ("sha224", hashlib.sha224),
+}
+
+_S_IFMT = 0o170000
+_S_IFREG = 0o100000
+_S_IFDIR = 0o040000
+_S_IFLNK = 0o120000
+_SPECIAL = {
+    0o020000: "char_device",
+    0o060000: "block_device",
+    0o010000: "fifo",
+    0o140000: "socket",
+}
+
+_NEWC = b"070701"
+_CRC = b"070702"
+_STRIPPED = b"07070X"
+_NEWC_FIELDS = 13
+
+# What the held links are, in a limit error (ReaderContext.hold).
+_HELD = "RPM hard links waiting for their data"
+
+
+@dataclass
+class _Entry:
+    type: int
+    count: int
+    offset: int
+
+
+class Header:
+    """One parsed header: the index, and the data store its values are read from."""
+
+    def __init__(self, entries: dict[int, _Entry], data: bytes, what: str) -> None:
+        self._entries = entries
+        self._data = data
+        self._what = what
+
+    def __contains__(self, tag: int) -> bool:
+        return tag in self._entries
+
+    def _bad(self, tag: int, why: str) -> CorruptionError:
+        return CorruptionError(f"RPM {self._what}: tag {tag} {why}")
+
+    def ints(self, tag: int) -> list[int] | None:
+        """An integer array, unsigned, or None when the tag is absent."""
+        entry = self._entries.get(tag)
+        if entry is None:
+            return None
+        size = _INT_SIZES.get(entry.type)
+        if size is None or entry.type == _BIN:
+            raise self._bad(tag, f"has type {entry.type}, not an integer")
+        end = entry.offset + size * entry.count
+        if end > len(self._data):
+            raise self._bad(tag, "runs past the end of the header's data")
+        if size == 1:
+            return list(self._data[entry.offset : end])
+        fmt = {2: "H", 4: "I", 8: "Q"}[size]
+        return list(
+            struct.unpack_from(f">{entry.count}{fmt}", self._data, entry.offset)
+        )
+
+    def number(self, tag: int) -> int | None:
+        values = self.ints(tag)
+        return values[0] if values else None
+
+    def strings(self, tag: int) -> list[bytes] | None:
+        """A string array (a single string as a list of one), or None when absent."""
+        entry = self._entries.get(tag)
+        if entry is None:
+            return None
+        if entry.type not in (_STRING, _STRING_ARRAY, _I18NSTRING):
+            raise self._bad(tag, f"has type {entry.type}, not a string")
+        count = 1 if entry.type == _STRING else entry.count
+        values = []
+        at = entry.offset
+        for _ in range(count):
+            end = self._data.find(b"\0", at)
+            if end < 0:
+                raise self._bad(tag, "has a string with no NUL before the data's end")
+            values.append(self._data[at:end])
+            at = end + 1
+        return values
+
+    def string(self, tag: int) -> bytes | None:
+        values = self.strings(tag)
+        return values[0] if values else None
+
+
+def _read_header(
+    stream: ForwardStream, what: str, budget: int | None
+) -> tuple[Header, int]:
+    """A header at the stream's position, and how many bytes it took."""
+    offset = stream.offset
+    intro = stream.read_exact(16)
+    if intro[:4] != HEADER_MAGIC:
+        raise CorruptionError(f"No RPM {what} at offset {offset}")
+    count, size = struct.unpack(">II", intro[8:])
+    if count > MAX_HEADER_TAGS or size > MAX_HEADER_DATA:
+        raise CorruptionError(
+            f"RPM {what} at offset {offset} declares {count} tags and {size} bytes "
+            "of data, over rpm's own bounds"
+        )
+    total = 16 * count + size
+    if budget is not None and total > budget:
+        raise ResourceLimitError(
+            f"RPM {what} of {total} bytes, over max_metadata_bytes={budget}"
+        )
+    index = stream.read_exact(16 * count)
+    data = stream.read_exact(size)
+    entries: dict[int, _Entry] = {}
+    for tag, kind, at, n in struct.iter_unpack(">IIiI", index):
+        if tag in entries:
+            raise CorruptionError(f"RPM {what}: tag {tag} appears twice")
+        if at < 0 or at > size or n == 0:
+            raise CorruptionError(
+                f"RPM {what}: tag {tag} has offset {at} and count {n} in a store "
+                f"of {size} bytes"
+            )
+        entries[tag] = _Entry(kind, n, at)
+    return Header(entries, data, what), 16 + total
+
+
+@dataclass
+class _File:
+    """One file of the header's list."""
+
+    index: int
+    raw_name: bytes
+    mode: int
+    size: int
+    flags: int
+    links: tuple[int, ...] = ()
+    member: ArchiveMember | None = None
+    stored: str = ""
+    found: bool = False
+
+
+@dataclass
+class _Package:
+    """What the walk learns from the lead and the headers."""
+
+    files: list[_File]
+    by_name: dict[bytes, int]
+    compressor: StreamFormat | None
+    digest: tuple[str, Callable[[], Hasher]] | None
+    digests: list[bytes] | None
+    held: dict[int, list[_File]] = field(default_factory=dict)
+    base: int = 0
+
+
+class RpmReader(SequentialReader):
+    """Walks an RPM package: its headers, then its CPIO payload."""
+
+    def __init__(self, context: ReaderContext) -> None:
+        self._context = context
+        self._extra = ArchiveInfoExtra({})
+        self._version: str | None = None
+
+    @override
+    def archive_info(self) -> ReaderArchiveInfo:
+        # The payload is compressed in practice (rpm's ufdio, no compression, is rare),
+        # and that is known only once the walk reads the header: say solid up front,
+        # so the cost receipt is right from the open.
+        return ReaderArchiveInfo(
+            is_solid=True, format_version=self._version, extra=self._extra
+        )
+
+    # The walk ---------------------------------------------------------------------
+
+    @override
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        package = self._read_package(stream)
+        payload = stream
+        if package.compressor is not None:
+            payload = stream.decompress(package.compressor)
+        # CPIO pads to 4 bytes from the payload's start, which an uncompressed payload
+        # does not share with the file's.
+        package.base = payload.offset
+        files = package.files
+        while True:
+            file, size = self._next_entry(payload, package)
+            if file is None:
+                break
+            if file.flags & RPMFILE_GHOST:
+                # rpm < 4.11 sometimes stored one; rpm skips it, and so does the walk.
+                payload.skip(size)
+                continue
+            if file.found:
+                raise CorruptionError(
+                    f"RPM payload stores {_shown(file.raw_name)} twice"
+                )
+            file.found = True
+            yield from self._entry(payload, package, file)
+        missing = [
+            f.raw_name for f in files if not f.found and not f.flags & RPMFILE_GHOST
+        ]
+        if missing:
+            raise CorruptionError(
+                f"RPM payload ends without {len(missing)} of the header's files, "
+                f"the first {missing[0]!r}"
+            )
+        self._check_end(payload)
+
+    def _read_package(self, stream: ForwardStream) -> _Package:
+        lead = stream.read_exact(LEAD_SIZE)
+        if lead[:4] != LEAD_MAGIC:
+            raise CorruptionError("No RPM lead at offset 0")
+        major = lead[4]
+        if major not in (3, 4):
+            raise UnsupportedFeatureError(f"RPM lead version {major}")
+        budget = self._context.config.listing_limits.max_metadata_bytes
+        signature, used = _read_header(stream, "signature header", budget)
+        stream.skip(-used % 8)
+        if budget is not None:
+            budget -= used
+        header, _ = _read_header(stream, "header", budget)
+        payload_format = header.string(TAG_PAYLOADFORMAT)
+        if payload_format not in (None, b"cpio"):
+            raise UnsupportedFeatureError(
+                f"RPM payload format {payload_format.decode('ascii', 'replace')!r}"
+                + (" (a delta RPM)" if payload_format == b"drpm" else "")
+            )
+        compressor_name = header.string(TAG_PAYLOADCOMPRESSOR)
+        compressor = None
+        if compressor_name is not None:
+            compressor = _COMPRESSORS.get(compressor_name)
+            if compressor is None and compressor_name not in (b"identity", b"ufdio"):
+                raise UnsupportedFeatureError(
+                    f"RPM payload compressor {_shown(compressor_name)} is not supported"
+                )
+        self._describe(signature, header, compressor_name)
+        files = self._files(header)
+        algorithm = header.number(TAG_FILEDIGESTALGO)
+        digest = _DIGESTS.get(1 if algorithm is None else algorithm)
+        digests = header.strings(TAG_FILEDIGESTS)
+        if digests is not None and len(digests) != len(files):
+            raise CorruptionError(
+                f"RPM header lists {len(files)} files and {len(digests)} digests"
+            )
+        by_name = {}
+        for file in files:
+            by_name[file.raw_name] = file.index
+        return _Package(files, by_name, compressor, digest, digests)
+
+    def _describe(
+        self,
+        signature: Header,
+        header: Header,
+        compressor: bytes | None,
+    ) -> None:
+        extra = ArchiveInfoExtra({})
+
+        def text(tag: int) -> str | None:
+            value = header.string(tag)
+            return None if value is None else value.decode("utf-8", "replace")
+
+        if (name := text(TAG_NAME)) is not None:
+            extra["rpm.name"] = name
+        if (version := text(TAG_VERSION)) is not None:
+            extra["rpm.version"] = version
+        if (release := text(TAG_RELEASE)) is not None:
+            extra["rpm.release"] = release
+        if (arch := text(TAG_ARCH)) is not None:
+            extra["rpm.arch"] = arch
+        epoch = header.number(TAG_EPOCH)
+        if epoch is not None:
+            extra["rpm.epoch"] = epoch
+        # A source package has no SOURCERPM; the lead's type field says so too.
+        extra["rpm.source"] = TAG_SOURCERPM not in header
+        extra["rpm.signed"] = any(tag in signature for tag in _SIGNATURE_TAGS)
+        extra["rpm.payload_compressor"] = (
+            "none" if compressor is None else compressor.decode("ascii", "replace")
+        )
+        self._extra = extra
+        # rpm's own detection (RPMTAG_RPMFORMAT): the tag when a v6 package stores
+        # it, else 4 for a header with an immutable region, else 3. The lead's
+        # version field is 3 in v4 packages and 4 in v6 ones, so it says nothing.
+        version = header.number(TAG_RPMFORMAT)
+        if version is None:
+            version = 4 if TAG_HEADERIMMUTABLE in header else 3
+        self._version = str(version)
+
+    def _files(self, header: Header) -> list[_File]:
+        basenames = header.strings(TAG_BASENAMES)
+        if basenames is not None:
+            dirnames = header.strings(TAG_DIRNAMES) or []
+            indexes = header.ints(TAG_DIRINDEXES) or []
+            if len(indexes) != len(basenames):
+                raise CorruptionError(
+                    f"RPM header lists {len(basenames)} base names and "
+                    f"{len(indexes)} directory indexes"
+                )
+            names = []
+            for base, at in zip(basenames, indexes, strict=True):
+                if at >= len(dirnames):
+                    raise CorruptionError(
+                        f"RPM header: directory index {at} of {base!r} is past the "
+                        f"{len(dirnames)} directory names"
+                    )
+                names.append(dirnames[at] + base)
+        else:
+            names = header.strings(TAG_OLDFILENAMES) or []
+        count = len(names)
+
+        def column(tag: int, required: bool = False) -> list[int] | None:
+            values = header.ints(tag)
+            if values is None:
+                if required and count:
+                    raise CorruptionError(f"RPM header lists files with no tag {tag}")
+                return None
+            if len(values) != count:
+                raise CorruptionError(
+                    f"RPM header lists {count} files and {len(values)} values of "
+                    f"tag {tag}"
+                )
+            return values
+
+        modes = column(TAG_FILEMODES, required=True) or []
+        sizes = column(TAG_LONGFILESIZES) if TAG_LONGFILESIZES in header else None
+        if sizes is None:
+            sizes = column(TAG_FILESIZES, required=True) or []
+        flags = column(TAG_FILEFLAGS) or [0] * count
+        mtimes = column(TAG_FILEMTIMES)
+        inodes = column(TAG_FILEINODES)
+        devices = column(TAG_FILEDEVICES)
+        links = self._strings_column(header, TAG_FILELINKTOS, count)
+        users = self._strings_column(header, TAG_FILEUSERNAME, count)
+        groups = self._strings_column(header, TAG_FILEGROUPNAME, count)
+
+        files = [_File(i, names[i], modes[i], sizes[i], flags[i]) for i in range(count)]
+        # Hard-link sets, as rpm builds them (rpmfilesBuildNLink): regular files that
+        # are not ghosts and share a device and a positive inode number.
+        if inodes is not None and devices is not None:
+            sets: dict[tuple[int, int], list[int]] = {}
+            for file in files:
+                if (
+                    file.mode & _S_IFMT == _S_IFREG
+                    and not file.flags & RPMFILE_GHOST
+                    and inodes[file.index] > 0
+                ):
+                    key = (devices[file.index], inodes[file.index])
+                    sets.setdefault(key, []).append(file.index)
+            for members in sets.values():
+                if len(members) > 1:
+                    for i in members:
+                        files[i].links = tuple(members)
+
+        context = self._context
+        for file in files:
+            if file.flags & RPMFILE_GHOST:
+                continue
+            kind = file.mode & _S_IFMT
+            special = _SPECIAL.get(kind)
+            if kind == _S_IFREG:
+                member_type = MemberType.FILE
+            elif kind == _S_IFDIR:
+                member_type = MemberType.DIRECTORY
+            elif kind == _S_IFLNK:
+                member_type = MemberType.SYMLINK
+            elif special is not None:
+                member_type = MemberType.OTHER
+            else:
+                raise CorruptionError(
+                    f"RPM header: {_shown(file.raw_name)} has the unknown file type {kind:#o}"
+                )
+            # The header's names are absolute; the payload stores ``./usr/bin/x``,
+            # which is what rpm2cpio and cpio extract, inside the directory given.
+            stored = context.decode_name(
+                b"." + file.raw_name
+                if file.raw_name.startswith(b"/")
+                else file.raw_name
+            )
+            member = ArchiveMember(
+                type=member_type,
+                name=context.normalize_name(stored, member_type),
+                raw_name=file.raw_name,
+                size=file.size if member_type is MemberType.FILE else None,
+                modified=None if mtimes is None else _time(mtimes[file.index]),
+                mode=file.mode & 0o7777,
+                uname=None
+                if users is None
+                else users[file.index].decode("utf-8", "replace"),
+                gname=None
+                if groups is None
+                else groups[file.index].decode("utf-8", "replace"),
+            )
+            if member_type is MemberType.SYMLINK:
+                if links is None or not links[file.index]:
+                    raise CorruptionError(
+                        f"RPM header: symlink {_shown(file.raw_name)} has no target"
+                    )
+                member.link_target = context.decode_name(links[file.index])
+            if special is not None:
+                member.extra["special_file_type"] = special
+            file.member = member
+            file.stored = stored
+        return files
+
+    @staticmethod
+    def _strings_column(header: Header, tag: int, count: int) -> list[bytes] | None:
+        values = header.strings(tag)
+        if values is not None and len(values) != count:
+            raise CorruptionError(
+                f"RPM header lists {count} files and {len(values)} values of tag {tag}"
+            )
+        return values
+
+    # The payload ------------------------------------------------------------------
+
+    def _next_entry(
+        self, payload: ForwardStream, package: _Package
+    ) -> tuple[_File | None, int]:
+        """The file the next payload entry stores, and the size its entry gives (the
+        header's for a stripped entry); ``(None, 0)`` at the trailer."""
+        payload.skip(-(payload.offset - package.base) % 4)
+        offset = payload.offset
+        magic = payload.read_exact(6)
+        if magic == _STRIPPED:
+            raw = payload.read_exact(8)
+            index = _hex(raw, "file index", offset)
+            payload.skip(-(payload.offset - package.base) % 4)
+            if index == 0xFFFFFFFF:
+                return None, 0
+            if index >= len(package.files):
+                raise CorruptionError(
+                    f"RPM payload entry at offset {offset} names file {index} of "
+                    f"{len(package.files)}"
+                )
+            file = package.files[index]
+            return file, self._expected_size(file)
+        if magic not in (_NEWC, _CRC):
+            raise CorruptionError(f"No RPM payload entry at offset {offset}")
+        raw = payload.read_exact(8 * _NEWC_FIELDS)
+        size = _hex(raw[48:56], "filesize", offset)
+        name_size = _hex(raw[88:96], "namesize", offset)
+        if not 0 < name_size <= MAX_PAYLOAD_NAME:
+            raise CorruptionError(
+                f"RPM payload entry at offset {offset}: a name of {name_size} bytes"
+            )
+        name = payload.read_exact(name_size)
+        if name[-1:] != b"\0":
+            raise CorruptionError(
+                f"RPM payload entry at offset {offset}: the name is not NUL-terminated"
+            )
+        name = name[:-1]
+        payload.skip(-(payload.offset - package.base) % 4)
+        if name == TRAILER:
+            return None, 0
+        # rpm writes "./usr/bin/x" for "/usr/bin/x" (or "usr/bin/x" with
+        # %_noPayloadPrefix); rpmfilesFindOFN looks the header name up.
+        # A source package's names are relative, and stored as they are.
+        rest = name.removeprefix(b"./")
+        index = package.by_name.get(b"/" + rest)
+        if index is None:
+            index = package.by_name.get(rest)
+        if index is None:
+            raise CorruptionError(
+                f"RPM payload entry at offset {offset} stores {_shown(name)}, which the "
+                "header does not list"
+            )
+        file = package.files[index]
+        if file.flags & RPMFILE_GHOST:
+            return file, size
+        expected = self._expected_size(file)
+        if size != expected:
+            raise CorruptionError(
+                f"RPM payload entry at offset {offset} gives {_shown(name)} {size} bytes; "
+                f"the header gives {expected}"
+            )
+        return file, size
+
+    @staticmethod
+    def _expected_size(file: _File) -> int:
+        """The bytes of payload data that follow a file's entry, as rpm reads them."""
+        kind = file.mode & _S_IFMT
+        if kind == _S_IFLNK:
+            return file.size
+        if kind == _S_IFREG and (not file.links or file.links[-1] == file.index):
+            return file.size
+        return 0
+
+    def _entry(
+        self, payload: ForwardStream, package: _Package, file: _File
+    ) -> Iterator[MemberSpan]:
+        member = file.member
+        assert member is not None
+        if member.type is MemberType.SYMLINK:
+            # The target, which the header already gave.
+            yield MemberSpan(member, 0, stored_name=file.stored)
+            payload.skip(file.size)
+            return
+        if member.type is not MemberType.FILE:
+            yield MemberSpan(member, 0, stored_name=file.stored)
+            return
+        if file.links and file.links[-1] != file.index:
+            # An earlier link of a set: empty, its data comes with the set's last.
+            self._context.hold(member, stored_name=file.stored, reason=_HELD)
+            package.held.setdefault(file.links[-1], []).append(file)
+            return
+        yield MemberSpan(member, file.size, self._digests(package, file), file.stored)
+        for link in package.held.pop(file.index, []):
+            held = link.member
+            assert held is not None
+            held.type = MemberType.HARDLINK
+            held.link_target = member.name
+            held.size = None
+            yield MemberSpan(held, 0, stored_name=link.stored)
+
+    @staticmethod
+    def _digests(package: _Package, file: _File) -> tuple[MemberDigest, ...]:
+        if package.digests is None or package.digest is None:
+            return ()
+        text = package.digests[file.index]
+        if not text:
+            return ()
+        try:
+            expected = bytes.fromhex(text.decode("ascii"))
+        except ValueError:
+            raise CorruptionError(
+                f"RPM header: the digest of {_shown(file.raw_name)} is not hexadecimal"
+            ) from None
+        name, new = package.digest
+        return (MemberDigest(name, expected, new),)
+
+    def _check_end(self, payload: ForwardStream) -> None:
+        """After the trailer: zero padding only. rpm writes none, and reads no
+        further."""
+        scanned = 0
+        while scanned < TRAILING_SCAN:
+            chunk = payload.read(min(64 * 1024, TRAILING_SCAN - scanned))
+            if not chunk:
+                return
+            stripped = chunk.lstrip(b"\0")
+            if stripped:
+                at = scanned + len(chunk) - len(stripped)
+                self._context.report(
+                    DiagnosticCode.ARCHIVE_TRAILING_DATA,
+                    f"RPM payload has data {at} bytes after its trailer",
+                    ArchiveEofContext(
+                        format="rpm",
+                        expected_marker="zeros_to_eof",
+                        observed_bytes=at,
+                        observed_kind="nonzero",
+                    ),
+                )
+                return
+            scanned += len(chunk)
+
+
+def _shown(raw: bytes) -> str:
+    """A name from the package, quoted for a message that escapes itself.
+
+    No ``!r``: the exception escapes control characters already, and ``repr`` would
+    have them escaped twice (``archivey.terminal.quoted``, for bytes).
+    """
+    return "'" + raw.decode("utf-8", "backslashreplace") + "'"
+
+
+def _hex(raw: bytes, what: str, offset: int) -> int:
+    try:
+        text = raw.decode("ascii")
+        if not text.isalnum():
+            raise ValueError(text)
+        return int(text, 16)
+    except ValueError:
+        raise CorruptionError(
+            f"RPM payload entry at offset {offset}: the {what} field {raw!r} is not "
+            "a number"
+        ) from None
+
+
+def _time(mtime: int) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(mtime, UTC)
+    except (OverflowError, ValueError, OSError):
+        return None
+
+
+class RpmHandler(SequentialFormatHandler):
+    """RPM packages, binary and source: ``.rpm``."""
+
+    format = ArchiveFormat.RPM
+    extensions = (".rpm",)
+    magic = (Magic(0, LEAD_MAGIC),)
+    uses_encoding = True
+
+    @override
+    def open_sequential(self, context: ReaderContext) -> RpmReader:
+        return RpmReader(context)
+
+
+RpmReadBackend = register_builtin_format(RpmHandler)
