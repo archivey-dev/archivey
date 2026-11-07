@@ -85,7 +85,9 @@
       (Written and passing locally with pandas, pyarrow and dask installed; the process
       pool case runs a worker on the pickled file system without dask. The CI leg is a
       workflow change and waits for the maintainer.)
-- [ ] 4.5 The remote benchmark's file-system case.
+- [x] 4.5 The remote benchmark's file-system case. `file_system` builds an
+      `ArchiveyFileSystem` over the remote file and `cat`s the middle member, under every
+      cache mode; with the planner a ZIP takes 3 requests (list 2, member 1).
 
 ## 5. Volumes over fsspec
 
