@@ -729,7 +729,8 @@ walk over the seek-table cap SHALL report scan `bzip3_blocks`.
 | One-block file | No point but the start |
 | The last block cut | Points for the whole blocks; no size; a read into the cut block raises `TruncatedError` |
 | Bytes after the last block | Points for the blocks; no size; reading past the last block raises `CorruptionError` |
-| A header whose sizes the decoder refuses | Points for the blocks before it; no size |
+| A header whose sizes the decoder refuses (out of range, under 8 bytes, or an empty literal that declares output) | Points for the blocks before it; no size |
+| Walk over the seek-table cap | `SEEK_INDEX_DEGRADED` (scan `bzip3_blocks`, `SeekTableThinned`); exact total kept |
 | Stream opened without seek demand | No walk, no points |
 
 ### Requirement: gzip decodes record zlib snapshot points

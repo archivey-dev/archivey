@@ -436,6 +436,11 @@ def build_bzip3_index(
         end = offset + _BLOCK_HEADER_SIZE + compressed
         if not (0 <= compressed <= bound and 0 <= block_decoded <= block_size):
             break
+        # ``_check_block``'s refusals on the sizes alone: a block shorter than its
+        # CRC and BWT index, and one of exactly those 8 bytes (an empty literal) that
+        # declares output.
+        if compressed < 8 or (compressed == 8 and block_decoded):
+            break
         if end > file_size:
             break
         if block_decoded:

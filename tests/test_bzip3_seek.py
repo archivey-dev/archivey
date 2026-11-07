@@ -57,8 +57,11 @@ def _open(
     *,
     seekable: bool = True,
     isolation: ProcessIsolation = ProcessIsolation.NONE,
+    collector: Any = None,
 ) -> Any:
-    config = StreamConfig(seekable=seekable, process_isolation=isolation)
+    config = StreamConfig(
+        seekable=seekable, process_isolation=isolation, collector=collector
+    )
     return open_codec_stream(Codec.BZIP3, source, config=config)
 
 
@@ -109,9 +112,7 @@ def test_a_seek_decodes_only_the_block_it_lands_in(
             del decoded_blocks[:]
             assert stream.seek(pos) == pos
             assert stream.read(5) == DATA[pos : pos + 5]
-            # The count is taken in this process only.
-            if isolation is ProcessIsolation.NONE:
-                assert len(decoded_blocks) == 1
+            assert len(decoded_blocks) == 1
 
 
 def test_a_forward_read_records_each_block() -> None:
@@ -176,10 +177,19 @@ def test_bytes_after_the_last_block_end_the_walk_and_fail_the_decode() -> None:
             stream.read()
 
 
-def test_the_walk_stops_at_a_header_the_decoder_would_refuse() -> None:
+@pytest.mark.parametrize(
+    ("compressed", "decoded"),
+    [(None, BLOCK + 1), (0, BLOCK), (7, 1), (8, 1)],
+    ids=["decoded-over-block", "empty", "under-8", "empty-literal-with-output"],
+)
+def test_the_walk_stops_at_a_header_the_decoder_would_refuse(
+    compressed: int | None, decoded: int
+) -> None:
     offsets = _block_offsets(_raw())
     raw = bytearray(_raw())
-    struct.pack_into("<i", raw, offsets[3] + 4, BLOCK + 1)
+    if compressed is not None:
+        struct.pack_into("<i", raw, offsets[3], compressed)
+    struct.pack_into("<i", raw, offsets[3] + 4, decoded)
     points, size = bzip3_codec.build_bzip3_index(io.BytesIO(raw), SeekPoint(0, 0), None)
     assert [p.decompressed_offset for p in points] == STARTS[1:3]
     assert size is None
@@ -203,3 +213,33 @@ def test_the_walk_finds_nothing_without_a_valid_header(raw: bytes) -> None:
         [],
         None,
     )
+
+
+def test_headers_that_claim_whole_blocks_for_nothing_add_no_size() -> None:
+    raw = _raw()[:9] + struct.pack("<ii", 0, BLOCK) * 1000
+    assert bzip3_codec.build_bzip3_index(io.BytesIO(raw), SeekPoint(0, 0), None) == (
+        [],
+        None,
+    )
+
+
+def test_a_walk_over_the_cap_is_thinned_and_keeps_the_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.streams import decompressor_stream
+
+    monkeypatch.setattr(decompressor_stream, "MAX_SEEK_POINTS", 4)
+    data = random.Random(5).randbytes(BLOCK * 20 + 500)
+    seen: list[Any] = []
+    collector = DiagnosticCollector(on_diagnostic=seen.append)
+    with _open(io.BytesIO(_bz3(data)), collector=collector) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(data)
+        degraded = [d for d in seen if d.code is DiagnosticCode.SEEK_INDEX_DEGRADED]
+        assert degraded[-1].context.scan == "bzip3_blocks"
+        assert degraded[-1].context.error_type == "SeekTableThinned"
+        assert len(_points(stream)) <= 5
+        for pos in (BLOCK * 13 + 11, BLOCK * 3 + 5, len(data) - 7):
+            stream.seek(pos)
+            assert stream.read(7) == data[pos : pos + 7]
