@@ -53,6 +53,7 @@ from dataclasses import fields
 from typing import TYPE_CHECKING, NoReturn
 
 from archivey.exceptions import _UsageTypeError, _UsageValueError
+from archivey.internal.remote import is_open_file
 from archivey.internal.streams import streamtools
 
 if TYPE_CHECKING:
@@ -224,7 +225,12 @@ def check_encoding(value: object, *, call: str, allow_none: bool = True) -> None
 
 
 def require_source(obj: object) -> None:
-    """:func:`streamtools.require_source`, raising the usage error."""
+    """:func:`streamtools.require_source`, raising the usage error.
+
+    An ``fsspec.core.OpenFile`` is a source too (:mod:`archivey.internal.remote`).
+    """
+    if is_open_file(obj):
+        return
     try:
         streamtools.require_source(obj)
     except TypeError as exc:

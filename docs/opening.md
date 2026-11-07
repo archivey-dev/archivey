@@ -36,11 +36,15 @@ the file isn't in the specified format, it fails like a damaged one.
 `archivey.detect_format(path)` tells you the format without opening the archive. It returns a
 `FormatInfo` with the format and how sure archivey is about it: `CERTAIN` when the format's
 signature matched where the format puts it, `PROBABLE` when a test of its contents matched, and
-`GUESS` when the evidence is weak, such as only the file name. `payload_offset` is more than 0 for a
+`GUESS` when the evidence is weak, such as only the file name. `prefixed` is `True` for a
 self-extracting archive, where the archive starts after a program, and for any other archive found
-behind leading bytes. A file in no format archivey
-knows raises `FormatDetectionError`. The confidence grade is for a person reading it and may change
-between releases, so decide what to do from the format, not the grade.
+behind leading bytes; `payload_offset` says where reading starts. Test `prefixed`, not
+`payload_offset > 0`, to ask whether the archive came after something else: a ZIP whose own
+offsets count from the start of the file starts at 0 even behind a program. For a signed Windows
+program, `payload_end` is where its signature starts, and archivey reads the archive only up to
+there. A file in no format archivey knows raises `FormatDetectionError`. The confidence grade is
+for a person reading it and may change between releases, so decide what to do from the format,
+not the grade.
 
 ## Single compressed files
 
@@ -121,7 +125,7 @@ and U+DCFF.
 
 If you know the encoding, pass it as `encoding=`, and archivey uses it in place of that default for
 names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR is listed as `'caf\udce9.txt'` without it
-and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar, SquashFS and XAR read
+and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar, RPM, SquashFS and XAR read
 `encoding=`. The other formats decode names their own way, and a value passed to them is ignored and
 noted in the diagnostics.
 

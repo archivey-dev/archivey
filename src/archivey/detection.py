@@ -67,10 +67,14 @@ class FormatInfo:
     self-extractor's executable stub."""
 
     payload_offset: int = 0
-    """Where the archive starts in the source: nonzero when other bytes come first, such
-    as a self-extractor's executable stub, a ``#!`` launcher, or an image or text the
-    archive was appended to. So ``payload_offset > 0`` says the archive is behind a
-    prefix, not that the file is a self-extracting archive."""
+    """Where to start reading the archive in the source: nonzero when other bytes come
+    first, such as a self-extractor's executable stub, a ``#!`` launcher, or an image or
+    text the archive was appended to. It is never after the archive's first member.
+
+    To ask whether the archive is behind a prefix, test :attr:`prefixed`, not
+    ``payload_offset > 0``: the offset says where reading starts, and it is 0 behind
+    a stub for a ZIP found from its end record whose stored offsets count from the
+    start of the file."""
 
     diagnostics: DiagnosticSummary = field(default_factory=DiagnosticSummary.empty)
     """What detection reported on its way to the answer."""
@@ -109,6 +113,20 @@ class FormatInfo:
     :class:`~archivey.detection_cost.TierSkip` with its
     :class:`~archivey.detection_cost.TierSkipReason`: not enabled by policy, a
     capability the source lacks, or the budget ran out. Empty when every tier ran."""
+
+    prefixed: bool = False
+    """Whether detection had to recognise or skip leading bytes before the archive: a
+    self-extractor's executable stub, a ``#!`` launcher, or any other prefix. This is
+    the test for a self-extracting or otherwise prefixed archive, whatever
+    :attr:`payload_offset` says."""
+
+    payload_end: int | None = None
+    """Where the archive's region of the source ends, when detection identified what
+    follows it: the start of a signed Windows executable's Authenticode certificate
+    table. :func:`~archivey.open_archive` reads nothing from there on, and the
+    certificate is not reported as data after the archive. ``None``, the common case,
+    means the region runs to the end of the source, and is also the answer when the
+    total size of the source is not known."""
 
     @property
     def from_plugin(self) -> bool:

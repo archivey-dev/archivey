@@ -514,6 +514,47 @@ The compressed stream is taken to run to the end of the archive: bytes after its
 reported with `ARCHIVE_TRAILING_DATA`, not refused. A pass over such an archive decodes
 it once, as one inside a compression stream does (see **Cost** above).
 
+### An archive inside the archive
+
+Some formats store whole archives as members: a `.deb` is an `ar` archive holding
+`control.tar.xz` and `data.tar.xz`, and what a user wants is the files inside them. A
+walk hands such a member to archivey's own reader for the inner format and yields its
+members as its own:
+
+```python
+def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+    size, inner_format = read_box_header(stream)
+    for span in self._context.open_nested(stream.take(size), inner_format):
+        span.member.name = "payload/" + span.member.name
+        yield span
+    read_next_header(stream)  # resumes after the inner archive's bytes
+```
+
+- **`stream.take(n)`** gives the next `n` bytes as a stream of their own, read forward
+  from the archive as they come, from a pipe too. The walk resumes after them: the next
+  `read()`, `skip()`, `take()` or `decompress()` first skips what the inner reader left
+  unread, such as padding after a tar's end.
+- **`context.open_nested(data, format)`** reads `data` with archivey's reader for
+  `format` (`ArchiveFormat.TAR_XZ`, say), in one forward pass, and yields one
+  `MemberSpan` per inner member, its decoded data in `MemberSpan.data`. A format that
+  needs a seekable source (7z, RAR) raises `UnsupportedFeatureError`, and so does an
+  archive nested more than 8 deep, which a format that reads its inner format from its
+  own bytes can be made to reach. Call it from `walk()` only. Stop early by closing the
+  iterator it returns; archivey closes one left open when the archive closes.
+- **One archive to the caller.** The inner reader works for the outer one: its listing
+  limits and decoder limits are the caller's, and what it reports (a TAR header it had
+  to guess at, bytes after its end) goes into the outer reader's diagnostics, naming
+  the member as the caller sees it, and reaches that member's `diagnostics`, while the
+  data is read too. Its errors raise from the walk. Names are checked
+  once, by the outer listing, after the walk renames them.
+- **Yield every span, in order.** The inner reader numbers its members as the outer
+  listing will, so yield each span before taking the next. The walk may change the
+  member first: rename it (and a hard link's `link_target` with it), or add
+  `MemberSpan.digests` from a checksum list the outer archive keeps.
+- **Cost.** Inner members are decoded data, so the rules of the next section hold: a
+  pass reads them once, and `open()` of one afterwards walks the archive again to it.
+  Have `archive_info()` return `ReaderArchiveInfo(is_solid=True)`.
+
 ### Data a library decodes
 
 Some formats compress each member on its own, with a method only a library decodes (LHA,

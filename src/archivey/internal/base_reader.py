@@ -355,9 +355,13 @@ def pass_has_data(member: ArchiveMember) -> bool:
 
 
 def reject_start_offset(
-    start_offset: int, fmt: ArchiveFormat, archive_name: str | None
+    start_offset: int,
+    fmt: ArchiveFormat,
+    archive_name: str | None,
+    end_offset: int | None = None,
 ) -> None:
-    """Refuse a nonzero ``open_read(start_offset=…)`` for a format that cannot honour it.
+    """Refuse a nonzero ``open_read(start_offset=…)``, or any ``end_offset``, for a
+    format that cannot honour it.
 
     Only the self-extracting formats (RAR / 7z / ZIP) are ever handed a nonzero offset,
     because only they can carry an executable stub and only they are scanned for one by
@@ -368,6 +372,13 @@ def reject_start_offset(
         raise UnsupportedFeatureError(
             f"{fmt.display_name} cannot be opened at a nonzero start offset "
             f"({start_offset}): the format carries no self-extracting stub.",
+            source_format=fmt,
+            archive_name=archive_name,
+        )
+    if end_offset is not None:
+        raise UnsupportedFeatureError(
+            f"{fmt.display_name} cannot be opened with an end offset "
+            f"({end_offset}): the format carries no self-extracting stub.",
             source_format=fmt,
             archive_name=archive_name,
         )
@@ -514,6 +525,7 @@ class ReadBackend(ABC):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> BaseArchiveReader:
         """Open ``source`` as ``format`` (the resolved format the registry selected this
         backend for — either detected by ``open_archive`` or supplied by the caller).
@@ -535,6 +547,15 @@ class ReadBackend(ABC):
         backend may still use the original path for an external tool that finds the
         payload itself — ``unrar`` on an SFX file.) Backends whose formats never carry a
         stub reject a nonzero value rather than silently reading from byte 0.
+
+        ``end_offset`` is where the archive's region ends, when a signed executable's
+        certificate table follows it. Detection reads it from the executable's headers
+        (``FormatInfo.payload_end``); under a forced ``format=``, ``open_archive``
+        reads it from the same headers, so both open the same region. With it the
+        promise is a view of ``[start_offset, end_offset)``: nothing at or past it is
+        read, and it is not reported as data after the archive. A backend never looks
+        for an end itself. Backends whose formats never carry a stub (no
+        ``SFX_MAGIC``) are never passed one, and reject it.
         """
         ...
 
@@ -642,6 +663,9 @@ class BaseArchiveReader(ArchiveReader):
     # stages each such member's data and places the members only once the walk has
     # ended (``ExtractionCoordinator._stage_then_place``).
     _REVISES_YIELDED_MEMBERS: bool = False
+    # How deep inside other archives this reader reads (``ReaderContext.open_nested``):
+    # 0 for the archive the caller opened. Above 0, the outer listing checks the names.
+    _nested_depth: int = 0
 
     def __init__(
         self,
@@ -660,6 +684,10 @@ class BaseArchiveReader(ArchiveReader):
         self._diagnostics_collector = (
             collector if collector is not None else collector_from_config(self._config)
         )
+        # A reader made while an outer reader reads its inner archive
+        # (``ReaderContext.open_nested``) knows its depth from the start, so the checks
+        # its open makes already skip what the outer listing checks.
+        self._nested_depth = self._diagnostics_collector.nesting_depth
         self._member_streams = member_streams
         self._open_site = open_site
         self._state = ReaderState(member_streams=member_streams, open_site=open_site)
@@ -2290,7 +2318,9 @@ class BaseArchiveReader(ArchiveReader):
         """
         member._member_id = idx
         member._archive_id = self._archive_id
-        if idx >= self._walk_presented:
+        # A nested reader's members are checked again, by name, as the outer
+        # listing lists them (``ReaderContext.open_nested``): only once, there.
+        if idx >= self._walk_presented and not self._nested_depth:
             # Both lookups read only the members before this one: it is indexed after
             # registration. A hard link is looked up only when it is one, so the
             # common member pays two dict lookups.
