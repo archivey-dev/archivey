@@ -175,9 +175,7 @@ def test_real_changelog_can_release_0_2_0() -> None:
 
 
 def test_dry_run_changes_nothing(capsys: pytest.CaptureFixture[str]) -> None:
-    before = {
-        p: p.read_bytes() for p in release.versioned_pyprojects()
-    }
+    before = {p: p.read_bytes() for p in release.versioned_pyprojects()}
     assert release.main(["--dry-run", "finish", "0.9.9.dev0"]) == 0
     assert {p: p.read_bytes() for p in before} == before
     out = capsys.readouterr().out
