@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import unicodedata
 import zlib
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
@@ -128,6 +129,7 @@ from archivey.internal.backends.rar_unrar import (
     open_unrar_p,
     rarlab_unrar_missing,
     unrar_mask_carries_non_ascii,
+    unrar_matches_names_as_windows,
 )
 from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
@@ -988,8 +990,28 @@ def _fold(text: str) -> str:
     return text.upper().casefold()
 
 
+def _mask_key(text: str) -> str:
+    """``text`` as two names compare for a mask: NFC, then :func:`_fold`. Windows
+    ``unrar`` precomposes a Unix-host name before it compares it, so the NFC and NFD
+    forms of one name select each other's members there."""
+    return _fold(unicodedata.normalize("NFC", text))
+
+
+def _windows_plain(text: str) -> bool:
+    """Whether a mask of ``text`` reaches Windows ``unrar`` as the name it selects.
+
+    A name that is not NFC is not: ``unrar`` compares its NFC form with the mask.
+    A non-ASCII directory component is not either: ``unrar`` compares the
+    directory part with ``CompareStringW``, under which two such directory names
+    can be equal and still differ here (:func:`unrar_matches_names_as_windows`).
+    """
+    if unicodedata.normalize("NFC", text) != text:
+        return False
+    return text.rpartition("/")[0].isascii()
+
+
 def _plain_unrar_masks(
-    members: list[ArchiveMember], *, rar5: bool, non_ascii: bool
+    members: list[ArchiveMember], *, rar5: bool, non_ascii: bool, windows: bool
 ) -> dict[int, str]:
     """The members an ``-n`` mask on the original archive selects alone, by
     ``id(member)``, with the mask text for each.
@@ -999,8 +1021,10 @@ def _plain_unrar_masks(
     to select one member. Otherwise a member is listed when its name has no ``*``
     or ``?`` and no component ending in ``.`` (so no wildcard and no dot rule), is
     ASCII unless ``non_ascii`` (:func:`unrar_mask_carries_non_ascii`), and no other
-    name equals it or starts with it plus ``/``, compared after :func:`_fold`
-    (Windows ``unrar`` folds case with ``towupper``). History
+    name equals it or starts with it plus ``/``, compared after :func:`_mask_key`
+    (Windows ``unrar`` precomposes and folds case with ``towupper``). With
+    ``windows`` (:func:`unrar_matches_names_as_windows`) a member is listed only
+    when :func:`_windows_plain` accepts its name too. History
     rows count against every row, as ``unrar -ver`` lists them all; a current row
     counts against the current rows, which ``unrar`` lists without ``-ver``.
     """
@@ -1018,7 +1042,7 @@ def _plain_unrar_masks(
         # Each name, and each directory prefix of one, as a mask would see it.
         found: dict[str, int] = {}
         for text in rows:
-            parts = _fold(text).split("/")
+            parts = _mask_key(text).split("/")
             for end in range(1, len(parts) + 1):
                 key = "/".join(parts[:end])
                 found[key] = found.get(key, 0) + 1
@@ -1035,7 +1059,8 @@ def _plain_unrar_masks(
             and "*" not in text
             and "?" not in text
             and not any(part.endswith(".") for part in text.split("/"))
-            and found[_fold(text)] == 1
+            and found[_mask_key(text)] == 1
+            and (not windows or _windows_plain(text))
         ):
             plain[id(member)] = text
     return plain
@@ -5201,6 +5226,7 @@ class RarReader(BaseArchiveReader):
                     self._members,
                     rar5=self._archive.version == 5,
                     non_ascii=unrar_mask_carries_non_ascii(),
+                    windows=unrar_matches_names_as_windows(),
                 )
             )
             self._plain_masks = masks

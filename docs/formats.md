@@ -909,7 +909,8 @@ archive has to decode cleanly (valid UTF-8 for RAR5, ASCII for an older 8-bit na
 `:`, leading `/`, or empty, `.` or `..` part, and no `\` in a RAR5 name (in an older archive `\`
 is a separator and reads as `/`). The member's own name has no `*` or `?`, no
 part ending in `.`, is ASCII unless `unrar` can be given a UTF-8 name (on Windows, or where a
-UTF-8 locale is installed), and no other name equal to it or below it, ignoring case. A large
+UTF-8 locale is installed), and no other name equal to it or below it, ignoring case and Unicode
+normalization. On Windows the name also has to be in NFC, with no non-ASCII folder name. A large
 member without a plain name is copied to a temporary file like a small one, within
 `SpoolLimits.max_bytes`. In the last two cases, which have no copy to fall back on, a member
 without a plain name raises `UnsupportedFeatureError`. `rar_decompressor="unar"` reads every member

@@ -176,6 +176,38 @@ def test_only_a_plain_name_selects_its_member_alone(
     }
 
 
+@pytest.mark.parametrize("windows", [True, False], ids=["windows", "posix"])
+def test_a_name_unrar_rewrites_on_windows_is_not_plain_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    """Windows ``unrar`` converts a Unix-host name to NFC before it compares it
+    with a mask, and compares the directory part with ``CompareStringW``. So
+    there a name that is not NFC, or that has a non-ASCII directory, is not
+    plain. The NFC and NFD forms of one name are never both plain."""
+    monkeypatch.setattr(rar_reader, "unrar_mask_carries_non_ascii", lambda: True)
+    monkeypatch.setattr(rar_reader, "unrar_matches_names_as_windows", lambda: windows)
+    names: list[tuple[bytes, int]] = [
+        ("cafe\u0301.txt".encode(), 1),  # NFD, alone
+        ("\u00e9.bin".encode(), 1),  # NFC ...
+        ("e\u0301.bin".encode(), 1),  # ... and its NFD twin
+        ("d\u00e9/x.txt".encode(), 1),  # a non-ASCII directory
+        ("dir/\u00e9t\u00e9.txt".encode(), 1),  # an ASCII directory
+        (b"plain.txt", 1),
+    ]
+    path = _nocrc_rar5(tmp_path, names)
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        masks = [reader._plain_mask(m) for m in reader.members()]
+    assert masks == [
+        None if windows else "cafe\u0301.txt",
+        None,
+        None,
+        None if windows else "d\u00e9/x.txt",
+        "dir/\u00e9t\u00e9.txt",
+        "plain.txt",
+    ]
+
+
 @requires_binary("unrar")
 def test_a_large_member_with_a_utf8_name_reads_in_place(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
