@@ -681,7 +681,9 @@ the caller gets the same bytes and no error.
 
 **Residual.** Detection decodes an LZMA or compressed-tar sample uncapped, so under a
 memory cap an oversized declaration can surface as `MemoryError` from `open_archive`
-(public in extracting.md §Limits). The RAR counts rest on measurements of `unrar` 7.00
+(public in extracting.md §Limits). Two probes carry a fixed ceiling of their own instead
+of the caller's cap: zstd's window at 128 MiB, and a `.tar.bz3`'s block size at 16 MiB,
+about 163 MiB of libbzip3 state (`bzip3_codec.py` `_PROBE_BLOCK_SIZE_MAX`). The RAR counts rest on measurements of `unrar` 7.00
 and `unar` 1.10.1; another version that allocates differently is not measured. The
 rapidgzip child's peak can pass the cap by what it allocates between two checks (about
 17 MB measured on four cores; a check delayed on a busy machine is caught by the one
@@ -927,7 +929,9 @@ the zero-configuration projection. Native
 decoders known to crash on crafted input run in a child process: the rapidgzip
 accelerator for gzip, zlib, raw DEFLATE and bzip2 (`internal/streams/codecs/rapidgzip_child.py`), and
 every PPMd member (`internal/streams/codecs/ppmd_child.py`), unless `process_isolation` is
-`NONE`; `NATIVE_DECODERS` moves every other native decoder there too
+`NONE`. libbzip3 runs there too, as a precaution rather than for a known crash: it had
+seven memory-safety CVEs in 2023, and archivey checks each block's framing before the
+native call (`internal/streams/codecs/bzip3_codec.py`); `NATIVE_DECODERS` moves every other native decoder there too
 (`internal/streams/codecs/decoder_child.py`). A fault signal there becomes
 `CorruptionError` and costs only the member; a crash in a reused child is re-run in a
 fresh one before it is charged. A rapidgzip child stopped at its memory cap
@@ -1232,7 +1236,9 @@ Under the default `process_isolation` the stdlib `zlib`, `bz2` and `lzma`, zstd,
 brotli and inflate64 run in-process (`NATIVE_DECODERS` isolates them too; under `NONE`
 pyppmd decodes in-process as well and rapidgzip is not used). A crash nobody has found yet
 would abort the process. pyppmd runs in a child by default because of a known pyppmd issue
-([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data). Both rapidgzip decoders run in a child process;
+([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data).
+libbzip3 runs in a child by default too, as a precaution: no crash is known, but it had
+seven memory-safety CVEs in 2023 (under `NONE` it decodes in-process). Both rapidgzip decoders run in a child process;
 `scripts/investigations/accelerator_crash_search.py` tells whether they still need to.
 `MemoryError` is not translated, so running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
