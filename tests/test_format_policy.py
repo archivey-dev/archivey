@@ -688,7 +688,15 @@ def test_a_replacement_is_not_given_a_raw_sector_image(tmp_path: Path) -> None:
 
 def test_the_containers_a_plugin_can_replace() -> None:
     """The set ``FormatPolicy.replace`` and the plugin guide name, and no more."""
-    assert REPLACEABLE_CONTAINERS == {C.ZIP, C.SEVEN_Z, C.RAR, C.ISO, C.SQUASHFS}
+    assert REPLACEABLE_CONTAINERS == {
+        C.ZIP,
+        C.SEVEN_Z,
+        C.RAR,
+        C.ISO,
+        C.SQUASHFS,
+        C.XAR,
+        C.CAB,
+    }
 
 
 class _RecordingSquashfsPlugin(FormatHandler):

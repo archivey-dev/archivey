@@ -930,6 +930,17 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "no corpus builder (needs dpkg-deb); tests/test_deb.py seeks inside members",
     ),
     (
+        "xar",
+        "no corpus builder (needs bsdtar); tests/test_xar.py seeks inside members",
+    ),
+    (
+        "cab",
+        (
+            "no corpus builder: a cabinet holds no directories; tests/test_cab.py "
+            "seeks inside members of a solid LZX folder"
+        ),
+    ),
+    (
         "rpm",
         "no corpus builder (needs rpmbuild); tests/test_rpm.py seeks inside members",
     ),
@@ -947,6 +958,8 @@ _UNTESTED_FORMATS = {
     **{ArchiveFormat(ContainerFormat.CPIO, s): "cpio" for s in StreamFormat},
     **{ArchiveFormat(ContainerFormat.DEB, s): "deb" for s in StreamFormat},
     ArchiveFormat.SQUASHFS: "squashfs",
+    ArchiveFormat.XAR: "xar",
+    ArchiveFormat.CAB: "cab",
     **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},
 }
 

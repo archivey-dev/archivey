@@ -46,7 +46,7 @@
       (no file object is ever opened).
 - [x] 2.4 Run the full corpus and the short-returning-source tests through a memory-backed
       `OpenFile`: identical listings and bytes to a path source.
-- [ ] 2.5 Change detection, tier 3 (design D7): `SourceChangedError`, the size
+- [x] 2.5 Change detection, tier 3 (design D7): `SourceChangedError`, the size
       comparison on each fetch, and `SOURCE_CHANGE_UNDETECTABLE` at open, with its
       context type, `DiagnosticCodeStr` spellings and its place outside
       `ARCHIVE_INTEGRITY_CODES`.

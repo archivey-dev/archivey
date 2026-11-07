@@ -51,6 +51,11 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **SquashFS** (`.squashfs`, `.sqfs`, `.snap`): core for gzip, xz, LZMA and LZO images;
   Zstandard images need what a `.zst` file needs; LZ4 images need `[recommended]`. Listing:
   from its index. Members: direct. Needs a source that can seek.
+- **XAR** (`.xar`, macOS `.pkg` and `.xip`): core for stored, gzip, bzip2, LZMA and xz
+  data. Listing: from its index. Members: direct. Needs a source that can seek.
+- **CAB** (`.cab`, Microsoft cabinets): core, for stored, MSZIP and LZX folders. Listing:
+  from its index. Members: solid when a folder is compressed, otherwise direct. Needs a source
+  that can seek.
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
   direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.cpio.gz`,
   …); there, as with a compressed TAR, listing needs decompression and members are solid.
@@ -1142,6 +1147,65 @@ other members because of a member's name any more. Setting it to `True` warns.
 - Big-endian images (SquashFS 3 and older) raise `UnsupportedFeatureError`.
 - SquashFS stores no checksums of its own. A damaged block is found when it does not decode
   to its length, or when its compressor's own check fails (zlib's Adler-32, the xz CRC).
+
+## XAR
+
+The format of macOS installer packages (`.pkg`) and `.xip` files, written by Apple's `xar`,
+`pkgbuild` and `bsdtar --format xar`.
+
+- **Needs:** nothing. Each file's data is stored, or compressed with zlib, bzip2, LZMA or xz,
+  all read with Python's own modules.
+- **Listing:** from the table of contents, an XML document at the start of the archive. It
+  is read whole at open, and refused when its header gives it more than
+  `ListingLimits.max_metadata_bytes`, stored or decoded, or it lists more than
+  `max_members` files.
+- **Reading members:** direct; each file's data is compressed on its own.
+- **From a pipe:** no; the index points at data anywhere after it, so the archive needs a
+  source that can seek.
+- `ArchiveInfo.format_version` is `"1"`, the only version there is. Members carry the mode,
+  owners, and modification, access and change times the index stores, all in UTC.
+- An installer package is listed as the files its XAR layer holds: `Distribution`, and per
+  component `PackageInfo`, `Bom`, `Scripts` and `Payload`. `Payload` is a gzip-compressed
+  CPIO archive (or a `pbzx` stream in newer packages); archivey lists and reads it as one
+  file and does not expand it.
+- The index's own checksum is checked at open, and a damaged index raises
+  `CorruptionError`. Each file's data carries a checksum of its decoded bytes (SHA-1 by
+  default, or MD5, SHA-256 or SHA-512), which is `member.hashes`, so a member read to its end
+  is at `Verification.CHECKSUM`.
+- A name stored base64-encoded, as writers do for bytes that are not UTF-8, is decoded with
+  `encoding=` like a name in any other format.
+- A hard link lists the member that holds the data as its `link_target`. bsdtar can write
+  the link before that member; archivey then lists it after.
+- A file whose data uses an encoding archivey does not know is listed, with
+  `CompressionAlgorithm.UNKNOWN`, and raises `UnsupportedFeatureError` when read.
+
+## CAB
+
+Microsoft cabinets: Windows updates and drivers, the payloads inside many installers, and
+what `makecab` and `gcab` write.
+
+- **Needs:** nothing. MSZIP is deflate, read with Python's `zlib`; LZX is decoded by
+  archivey itself, in Python, at a few megabytes a second.
+- **Listing:** from the file table at the start of the cabinet.
+- **Reading members:** a cabinet groups its files into folders, and each folder is one
+  compressed stream, so a compressed folder is solid: reaching a file decodes the folder from
+  its start. Files read in order decode each folder once. A stored folder is direct.
+- **From a pipe:** no; the file table points at folders anywhere in the file, so the cabinet
+  needs a source that can seek.
+- `ArchiveInfo.format_version` is the cabinet's version, `"1.3"` for every current writer.
+  Members are files: a cabinet stores no directories, only paths. A path's `\` separators
+  become `/`. `member.windows_attrs` holds the stored attributes without the two that only
+  a cabinet defines, `0x40` (executable) and `0x80` (name is UTF-8), which a Windows
+  attribute mask uses for other things; `member.modified` holds the stored local time,
+  with no time zone.
+- Names are UTF-8 when valid, otherwise decoded with `encoding=` (a Japanese cabinet from
+  `makecab` is usually `encoding="cp932"`), as in every format.
+- Each data block stores a checksum of its bytes, which a read checks, so a member read to
+  its end is at `Verification.CHECKSUM` when its blocks carry one (some writers store 0, which
+  means none).
+- Quantum-compressed members, an old method, are listed but raise
+  `UnsupportedFeatureError` when read. A cabinet that is part of a set spanning several files
+  (`file.cab`, `file2.cab`) raises `UnsupportedFeatureError` at open.
 
 ## CPIO
 

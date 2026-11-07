@@ -97,6 +97,13 @@ class ContainerFormat(StrEnum):
     SQUASHFS = "squashfs"
     """A SquashFS 4.0 filesystem image: a snap package or a live system's root, for
     example. Needs a source that can seek."""
+    XAR = "xar"
+    """A XAR archive: a macOS installer package (``.pkg``) or ``.xip``, or a plain
+    ``.xar``. Its files are listed as the archive holds them; a package's ``Payload``
+    is a member, not expanded. Needs a source that can seek."""
+    CAB = "cab"
+    """A Microsoft cabinet (``.cab``): Windows updates, drivers and installer
+    payloads. Stored, MSZIP and LZX folders are read; needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -261,6 +268,8 @@ class ArchiveFormat:
     CPIO: ClassVar[ArchiveFormat]
     RPM: ClassVar[ArchiveFormat]
     SQUASHFS: ClassVar[ArchiveFormat]
+    XAR: ClassVar[ArchiveFormat]
+    CAB: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -348,6 +357,8 @@ ArchiveFormat.RPM = ArchiveFormat(ContainerFormat.RPM, StreamFormat.UNCOMPRESSED
 ArchiveFormat.SQUASHFS = ArchiveFormat(
     ContainerFormat.SQUASHFS, StreamFormat.UNCOMPRESSED
 )
+ArchiveFormat.XAR = ArchiveFormat(ContainerFormat.XAR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.CAB = ArchiveFormat(ContainerFormat.CAB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -590,7 +601,14 @@ class HashAlgorithm(StrEnum):
     BLAKE2SP = "blake2sp"
     """BLAKE2sp, 32 bytes. Only RAR5 stores it."""
     MD5 = "md5"
-    """MD5, 16 bytes. A Debian package's ``md5sums`` lists one per installed file."""
+    """MD5, 16 bytes. A Debian package's ``md5sums`` lists one per installed file, and
+    a XAR archive may check its files with it."""
+    SHA1 = "sha1"
+    """SHA-1, 20 bytes. What a XAR archive checks its files with by default."""
+    SHA256 = "sha256"
+    """SHA-256, 32 bytes. A XAR archive may check its files with it."""
+    SHA512 = "sha512"
+    """SHA-512, 64 bytes. A XAR archive may check its files with it."""
 
 
 class Verification(IntEnum):
@@ -666,6 +684,12 @@ class CompressionAlgorithm(Enum):
     LZO = "lzo"
     """Raw LZO1X with no header, as SquashFS stores a block. Not the ``.lzo`` file
     format, which is ``StreamFormat.LZOP``."""
+    LZX = "lzx"
+    """Microsoft's LZX, as cabinets store it: LZ77 with Huffman codes over a window
+    of 32 KiB to 2 MiB."""
+    QUANTUM = "quantum"
+    """Quantum, an older cabinet method. archivey lists its members but cannot read
+    them."""
     RAR = "rar"
     """RAR's own compression, any version. Not the same as ``ContainerFormat.RAR``,
     which is the archive format."""

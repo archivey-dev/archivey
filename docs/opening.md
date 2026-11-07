@@ -125,7 +125,7 @@ and U+DCFF.
 
 If you know the encoding, pass it as `encoding=`, and archivey uses it in place of that default for
 names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR is listed as `'caf\udce9.txt'` without it
-and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar, RPM and SquashFS read
+and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar, RPM, SquashFS, CAB and XAR read
 `encoding=`. The other formats decode names their own way, and a value passed to them is ignored and
 noted in the diagnostics.
 

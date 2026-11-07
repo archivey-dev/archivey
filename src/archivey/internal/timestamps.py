@@ -114,3 +114,32 @@ def filetime_to_datetime(
             value_repr=repr(value),
             message=f"Invalid NTFS timestamp for {quoted(filename)}: {value!r}",
         )
+
+
+def dos_to_datetime(stamp: int) -> datetime | None:
+    """A DOS date/time word as a naive datetime, or ``None`` when it names no date.
+
+    The date is the high 16 bits and the time the low 16, as RAR stores them; a
+    cabinet stores the two apart and joins them. Zero is the unset value, as in ZIP.
+    Any other word that is not a real date (month 13, day 0, 25 o'clock) is also
+    ``None``, which the caller reports. It is not clamped to a nearby date, because a
+    clamped date is a fabricated one that nothing downstream could tell from a real
+    one.
+    """
+    if stamp == 0:
+        return None
+    sec = (stamp & 0x1F) * 2
+    stamp >>= 5
+    minute = stamp & 0x3F
+    stamp >>= 6
+    hour = stamp & 0x1F
+    stamp >>= 5
+    day = stamp & 0x1F
+    stamp >>= 5
+    month = stamp & 0x0F
+    stamp >>= 4
+    year = (stamp & 0x7F) + 1980
+    try:
+        return datetime(year, month, day, hour, minute, sec)
+    except ValueError:
+        return None
