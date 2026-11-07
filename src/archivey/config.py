@@ -415,7 +415,9 @@ class ListingLimits:
     character, so it is an upper bound rather than an exact size. A TAR sparse member's
     map, which the listing keeps to read the member, counts 24 bytes per entry, and
     each ZIP extra field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its
-    data.
+    data. A cabinet's block tables, read as members of each folder are first opened
+    and kept for the reader's life, count 256 bytes per data block on a running total
+    of their own, so opening a member can raise too.
 
     A ZIP read from a stream that cannot seek also keeps the data of each member
     short enough to be a symlink until its directory says which members are links.
