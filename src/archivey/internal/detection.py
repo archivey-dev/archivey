@@ -1486,7 +1486,7 @@ def _detect_source_into(
     # probe that took the change for bytes that do not decode answers with another
     # format (a ``.tar.gz`` as GZ), or with none.
     ranges = source.remote_sources if isinstance(source, ArchiveSource) else ()
-    with raising_source_change(ranges):
+    with raising_source_change(ranges, archive_name=getattr(source, "name", None)):
         try:
             info = _detect_format_body(
                 source,

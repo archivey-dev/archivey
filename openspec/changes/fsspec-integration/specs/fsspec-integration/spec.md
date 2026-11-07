@@ -70,10 +70,11 @@ which archivey does not implement version pinning or header forwarding SHALL be 
 offering neither. A change that is detected SHALL raise; it MUST NOT return bytes of the
 new object as bytes of the archive. Once detected, every later read of the source SHALL
 raise it again, and detection, the open and a walk over the members SHALL end with
-`SourceChangedError` rather than an answer, a diagnostic or another error, even where a
-handler for damage to the archive caught the first one. An `OpenFile` read through
-fsspec's decompressing file (`compression=`) is not checked for a change at all; the
-reader SHALL record `SOURCE_CHANGE_UNDETECTABLE` for it, naming that file in the reason.
+`SourceChangedError` rather than an answer or another error, even where a handler for
+damage to the archive caught the first one and recorded a diagnostic for it. An
+`OpenFile` read through fsspec's decompressing file (`compression=`) is not checked for a
+change at all; the reader SHALL record `SOURCE_CHANGE_UNDETECTABLE` for it, naming that
+file in the reason.
 
 #### Scenario: changed object
 

@@ -739,18 +739,23 @@ def source_change(
 
 
 @contextlib.contextmanager
-def raising_source_change(ranges: tuple[RangeSource, ...]) -> Generator[None]:
+def raising_source_change(
+    ranges: tuple[RangeSource, ...], *, archive_name: str | None = None
+) -> Generator[None]:
     """End the block with :func:`source_change`'s error, whether the block returns or
-    raises another ``Exception`` (which becomes its cause)."""
+    raises another ``Exception`` (which becomes its cause). The error carries
+    ``archive_name``, as the errors of the call that ends with it do."""
     try:
         yield
     except Exception as exc:
         changed = source_change(ranges, exc)
         if changed is not None:
+            changed.archive_name = archive_name
             raise changed from exc
         raise
     changed = source_change(ranges)
     if changed is not None:
+        changed.archive_name = archive_name
         raise changed
 
 

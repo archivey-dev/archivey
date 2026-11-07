@@ -744,11 +744,45 @@ def test_a_change_while_a_single_compressed_file_opens_raises(memfs, monkeypatch
 
     memfs.pipe("/t/x.bin.gz", gzip.compress(random.randbytes(200_000), 0))
     _cut_on_fetch(monkeypatch, memfs, past=1)
-    with pytest.raises(SourceChangedError):
+    with pytest.raises(SourceChangedError) as info:
         open_archive(
             fsspec.open("memory://t/x.bin.gz"),
             config=ArchiveyConfig(max_read_through=0),
         )
+    # Named as every other open error is, though detection raised it.
+    assert info.value.archive_name == "/t/x.bin.gz"
+
+
+def test_a_change_swallowed_while_the_reader_is_built_is_stamped(memfs, monkeypatch):
+    """A backend that takes the change for damage while it is built: the error that
+    ends the open names the archive and the format, as the open's other errors do."""
+    from archivey.internal.base_reader import BaseArchiveReader
+
+    data = _zip_bytes(MEMBERS)
+    memfs.pipe("/t/a.zip", data)
+
+    def swallowing_validate(self: Any) -> None:
+        # In place of the reader's own check, which would list the members and end
+        # with the change at the walk's end instead.
+        armed["on"] = True
+        source = self._source
+        source.seek(0)
+        try:
+            source.read(len(data))
+        except SourceChangedError:
+            pass  # a handler built for damage
+
+    monkeypatch.setattr(BaseArchiveReader, "_validate_at_open", swallowing_validate)
+    armed = _cut_on_fetch(monkeypatch, memfs, past=1)
+    armed["on"] = False
+    with pytest.raises(SourceChangedError) as info:
+        open_archive(
+            fsspec.open("memory://t/a.zip"),
+            format=ArchiveFormat.ZIP,
+            config=ArchiveyConfig(max_read_through=0),
+        )
+    assert info.value.archive_name == "/t/a.zip"
+    assert info.value.source_format == ArchiveFormat.ZIP
 
 
 @pytest.mark.parametrize(

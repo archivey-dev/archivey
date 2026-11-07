@@ -39,6 +39,7 @@ from archivey.diagnostics import (
 from archivey.exceptions import (
     ArchiveyError,
     FormatDetectionError,
+    SourceChangedError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
     _UsageTypeError,
@@ -956,43 +957,44 @@ def _open_resolved(
         # remote object for damage it salvages or reports; the open ends with the
         # change instead (``fsspec-integration`` design D7).
         with raising_source_change(archive_source.remote_sources):
-            try:
-                reader = backend.open_read(
-                    archive_source,
-                    format=resolved_format,
-                    streaming=streaming,
-                    passwords=passwords,
-                    encoding=encoding,
-                    archive_name=archive_name,
-                    config=config,
-                    collector=collector,
-                    member_streams=member_streams,
-                    open_site=open_site,
-                    start_offset=payload_offset,
-                    end_offset=payload_end,
-                )
-            except ArchiveyError as exc:
-                # A backend that reads its first headers while it is built (7z, RAR,
-                # ZIP) raises before the reader that stamps its errors exists. Stamp
-                # them here, so a cut download names the file and the format, and
-                # says when only the filename chose that format, as every later error
-                # does.
-                stamp_error_context(
-                    exc,
-                    archive_format=resolved_format,
-                    archive_name=archive_name,
-                    provenance=provenance,
-                    collector=collector,
-                )
-                raise
+            reader = backend.open_read(
+                archive_source,
+                format=resolved_format,
+                streaming=streaming,
+                passwords=passwords,
+                encoding=encoding,
+                archive_name=archive_name,
+                config=config,
+                collector=collector,
+                member_streams=member_streams,
+                open_site=open_site,
+                start_offset=payload_offset,
+                end_offset=payload_end,
+            )
             reader._format_provenance = provenance
             reader._format_info = format_info
             # After provenance, so an open-time decode failure carries
             # format_unconfirmed.
             reader._validate_at_open()
-    except BaseException:
+    except BaseException as exc:
         if reader is not None:
             reader.close()
+        if isinstance(exc, ArchiveyError) and (
+            reader is None or isinstance(exc, SourceChangedError)
+        ):
+            # A backend that reads its first headers while it is built (7z, RAR,
+            # ZIP) raises before the reader that stamps its errors exists, and the
+            # change that ends the open is raised past it. Stamp them here, so a cut
+            # download names the file and the format, and says when only the
+            # filename chose that format, as every later error does. An error from
+            # the built reader's own check is the reader's to stamp.
+            stamp_error_context(
+                exc,
+                archive_format=resolved_format,
+                archive_name=archive_name,
+                provenance=provenance,
+                collector=collector,
+            )
         raise
     return reader
 

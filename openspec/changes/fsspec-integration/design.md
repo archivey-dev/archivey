@@ -431,7 +431,9 @@ only for data that has a checksum. In order of strength:
 A change that is caught raises `SourceChangedError` (§Decisions 3). It stays caught: the
 range source keeps it and raises it again on every later read, a read a fetched window
 still holds included, and the points where an operation ends (detection's answer, the
-open, the end of a member walk) raise it in place of whatever the operation concluded.
+open, the end of a member walk) raise it in place of the answer or the other error the
+operation would have ended with. A diagnostic that a handler recorded before the end
+stays recorded.
 `SourceChangedError` is a `ReadError`, so a handler built for damage to the archive
 catches it too and can answer with another format, a diagnostic or a missing size;
 ending the operation with the change is one rule that holds whichever handler took it.
