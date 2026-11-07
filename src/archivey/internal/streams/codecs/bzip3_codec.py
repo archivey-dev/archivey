@@ -128,7 +128,9 @@ class Bzip3Decompressor:
         self._input = bytearray()
         self._block_size: int | None = None
         self._output = memoryview(b"")
-        # Whether a whole block is buffered, as the last ``decompress`` left it.
+        # Whether the next ``decompress`` has work without more input, as the last one
+        # left it: a whole block is buffered, or a buffered block header fails its
+        # checks and the next call raises.
         self._block_buffered = False
         # A block that fails its framing check or its decode after a good block's
         # output went into the same call: that output is returned first, and this
