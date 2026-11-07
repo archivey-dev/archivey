@@ -2707,18 +2707,22 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # the zisofs header read) is covered, and wraps the stream in it after.
         # pycdlib's stream stops at the record's data length and the zisofs decoder at
         # the declared size, so neither returns a byte past ``size``.
-        return MemberData(self._data_stream(record, zisofs, member), bounded=True)
+        spans = self._data_spans(record)
+        return MemberData(
+            self._data_stream(spans, zisofs, member),
+            bounded=True,
+            ranges=tuple((start, start + length) for start, length in spans),
+        )
 
     def _data_stream(
         self,
-        record: DirectoryRecord,
+        spans: list[tuple[int, int]],
         zisofs: _ZisofsEntry | None,
         member: ArchiveMember,
     ) -> BinaryIO:
         # A view of the source per extent (``_data_spans``), joined when there are
         # several; pycdlib's own file object would add a layer that seeks the shared
         # handle on every read.
-        spans = self._data_spans(record)
         stream: BinaryIO
         if len(spans) == 1:
             stream = self._source.view(*spans[0])
