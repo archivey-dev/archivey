@@ -245,11 +245,23 @@ the base reader, shared with the built-ins (DR-23a).
   damaged span and can mistake random bytes for a header, so it is an explicit request
   (DR-10) and everything it finds is flagged. The member whose header was damaged may
   be lost there, since without a trusted size its data has no known end.
-- **TAR, past a damaged header.** GNU tar ignores the damaged header's size and tests
-  each following 512-byte block ("Skipping to next header"), which is a search. Open
-  question for the maintainer (2026-11-07): the damaged size first and GNU tar's block
-  scan as a fallback (recommended), GNU tar's scan alone, or the size only with the scan
-  opt-in.
+- **One rule for every format** (maintainer, 2026-11-07, "for consistency with the rar
+  behavior"): the default follows the damaged header's own sizes and goes on only when
+  a check confirms where they land; anything that searches the bytes belongs to the
+  salvage mode.
+  - **TAR.** The default takes the damaged header's size and confirms the next
+    header's checksum (and magic, where the header has one); a damaged member is listed
+    flagged, as in RAR. GNU tar's block scan ("Skipping to next header") goes to the
+    salvage mode. This departs from DR-6 on purpose: when the size field is the damaged
+    one, the default lists fewer members than GNU tar. The reasons are the consistency
+    with RAR, a TAR checksum that is a plain byte sum, and a scan that can take a nested
+    `.tar`'s headers for the outer archive's.
+  - **ZIP.** From a file, the central directory gives each member's offset, so a damaged
+    local header costs only its own member (already shipped). From a pipe, the walk
+    follows the damaged local header's sizes and confirms with the next signature and,
+    at the end, the central directory: local headers carry no checksum of their own.
+    A scan for `PK` signatures, for a central directory that is missing or destroyed,
+    goes to the salvage mode.
 - **The exact DEFLATE prefix** (a zlib state snapshot), tracked internally.
 
 ## Rejected

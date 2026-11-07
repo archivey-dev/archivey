@@ -53,4 +53,5 @@ Settled by rules: the error after the whole listing (DR-2), on by default (DR-6,
 **Not in this change:** the opt-in salvage mode. It does not trust sizes blindly (a
 wrong size skips the members after it, so blind trust salvages nothing); it *searches*
 for the next header that passes its CRC and the same confirmation, at a CRC per byte of
-the damaged span. TAR is the next format (§Later steps).
+the damaged span. TAR and ZIP follow the same split: the size first, confirmed, by default, and any
+scan in the salvage mode (maintainer, 2026-11-07; §Later steps).
