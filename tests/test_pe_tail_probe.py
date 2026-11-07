@@ -99,6 +99,20 @@ def test_appended_zip_past_the_window_is_found(signed: bool) -> None:
     assert _listed(data) == _MEMBERS
 
 
+def test_a_short_prefix_budget_still_runs_the_probe() -> None:
+    # A ``max_prefix_bytes`` below the PE headers' span: detection reads the headers
+    # anyway, so it finds the ZIP and the end a forced ``format=ZIP`` finds.
+    payload = _zip()
+    data = _installer(payload)
+    config = ArchiveyConfig(
+        detection_budget=replace(BALANCED_BUDGET, max_prefix_bytes=64)
+    )
+    info = detect_format(io.BytesIO(data), config=config)
+    assert info.format is ArchiveFormat.ZIP
+    assert info.payload_offset == _OVERLAY + len(_FILLER)
+    assert info.payload_end == _OVERLAY + len(_FILLER) + len(payload) + 224
+
+
 @pytest.mark.parametrize("certificate", [0x2900, 70_000], ids=["small", "over-64k"])
 def test_zip_written_in_place_reports_base_zero(certificate: int) -> None:
     data = _in_place_installer(certificate)
