@@ -213,6 +213,11 @@ def test_a_toc_checked_with_an_unknown_algorithm_is_unsupported() -> None:
             1,
             "offset",
         ),
+        (
+            '<checksum style="sha1"><offset>-1</offset><size>20</size></checksum>',
+            1,
+            "offset -1, size 20",
+        ),
         ("", 9, "checksum algorithm 9"),
     ],
 )
@@ -247,6 +252,25 @@ def test_a_hard_link_written_before_its_original_waits_for_it() -> None:
 def test_a_hard_link_to_a_missing_entry_is_refused() -> None:
     files = [XarFile("link.txt", type="hardlink", type_attrs=' link="99"')]
     with _open(write_xar(files)) as reader, pytest.raises(CorruptionError, match="99"):
+        reader.members()
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        [XarFile("link.txt", type="hardlink")],
+        # An empty link must not bind to an entry whose id is empty too.
+        [
+            XarFile("link.txt", type="hardlink", type_attrs=' link=""'),
+            XarFile("data.txt", b"x", id=""),
+        ],
+    ],
+)
+def test_a_hard_link_that_names_no_entry_is_refused(files: list[XarFile]) -> None:
+    with (
+        _open(write_xar(files)) as reader,
+        pytest.raises(CorruptionError, match="'link.txt' names no entry"),
+    ):
         reader.members()
 
 
@@ -490,6 +514,25 @@ def test_a_huge_toc_is_refused_before_it_is_decoded() -> None:
     header = HEADER.pack(b"xar!", HEADER.size, 1, 1 << 40, len(xml), 0)
     with pytest.raises(ResourceLimitError, match="1099511627776 bytes stored"):
         _open(header + stored, config=_limits(max_metadata_bytes=1000))
+
+
+def test_deep_paths_are_charged_to_max_metadata_bytes() -> None:
+    # Each nested path repeats its parents: 100 one-letter levels build 2 * 100**2
+    # bytes of names and raw names from a TOC a third that size.
+    tree = XarFile("d", type="directory")
+    for _ in range(99):
+        tree = XarFile("d", type="directory", children=[tree])
+    raw = write_xar([tree])
+    charged = 2 * 100**2
+    # The members' own retained names weigh a little more, checked once they are made.
+    with _open(raw, config=_limits(max_metadata_bytes=charged + 100)) as reader:
+        assert len(reader.members()) == 100
+    # One byte short is refused while the TOC is parsed, before any member exists.
+    with pytest.raises(
+        ResourceLimitError,
+        match=f"max_metadata_bytes={charged - 1} .*{charged} bytes of paths before",
+    ):
+        _open(raw, config=_limits(max_metadata_bytes=charged - 1))
 
 
 def test_a_file_without_data_is_empty() -> None:

@@ -112,8 +112,10 @@ _FIELDS = frozenset(
     {"type", "link", "mode", "uid", "gid", "user", "group", "mtime", "atime", "ctime"}
 )
 _DATA_FIELDS = frozenset({"length", "offset", "size"})
-# A path deeper than this many nested <file> elements is refused, so the parser's
-# stack stays small: PATH_MAX (4096) of one-letter names and slashes.
+# Element nesting deeper than this is refused, so the parser's stack stays small. Real
+# file nesting is bounded by PATH_MAX (4096 bytes: 2048 one-letter names and slashes),
+# which needs far fewer than 2048 elements. The cap does not bound what building the
+# paths costs: each path is charged to ``max_metadata_bytes`` as it is built.
 _MAX_DEPTH = 2048
 
 
@@ -187,6 +189,8 @@ class _TocParser:
         self._text: list[str] = []
         self._name_base64 = False
         self._toc_checksum: dict[str, str] | None = None
+        self._charged = 0
+        self._budget = context.config.listing_limits.max_metadata_bytes
 
     def parse(self, xml: bytes) -> _Toc:
         parser = expat.ParserCreate()
@@ -290,10 +294,25 @@ class _TocParser:
             raise CorruptionError("a XAR file has an empty name")
         enclosing = self._files[-2] if len(self._files) > 1 else None
         if enclosing is None or enclosing.path is None:
-            frame.path, frame.raw_path = name, raw
+            path, raw_path = name, raw
         else:
-            frame.path = f"{enclosing.path}/{name}"
-            frame.raw_path = enclosing.raw_path + b"/" + raw
+            path = f"{enclosing.path}/{name}"
+            raw_path = enclosing.raw_path + b"/" + raw
+        self._charge(len(path) + len(raw_path), path)
+        frame.path, frame.raw_path = path, raw_path
+
+    def _charge(self, nbytes: int, path: str) -> None:
+        """Charge each full path, its name and raw bytes together, to
+        ``max_metadata_bytes`` as it is built: nested directories make the paths grow
+        with the square of the depth, far past the size of the TOC, before any member
+        is made."""
+        self._charged += nbytes
+        if self._budget is not None and self._charged > self._budget:
+            raise ResourceLimitError(
+                f"Listing limit reached: max_metadata_bytes={self._budget} (at least "
+                f"{self._charged} bytes of paths before the members are made, at "
+                f"{quoted(path[:200])})"
+            )
 
     def _set_toc_checksum(self, fields: dict[str, str]) -> None:
         try:
@@ -303,6 +322,10 @@ class _TocParser:
             raise CorruptionError(
                 "the XAR table of contents' checksum has no offset or size"
             ) from None
+        if min(offset, size) < 0:
+            raise CorruptionError(
+                f"the XAR table of contents' checksum is at offset {offset}, size {size}"
+            )
         self.checksum = (fields.get("style", ""), offset, size)
 
     def _finish_file(self, frame: _Frame) -> None:
@@ -458,16 +481,21 @@ class XarReader(IndexedReader[_Location]):
         waiting: dict[str, list[_Entry]] = {}
         for entry in self._entries:
             if self._is_link(entry):
-                original = by_id.get(entry.link or "")
+                if not entry.link:
+                    raise CorruptionError(
+                        f"XAR hard link {quoted(entry.path)} names no entry"
+                    )
+                original = by_id.get(entry.link)
                 if original is None:
-                    waiting.setdefault(entry.link or "", []).append(entry)
+                    waiting.setdefault(entry.link, []).append(entry)
                     continue
                 yield self._record(entry, original.name)
                 continue
             record = self._record(entry, None)
             yield record
-            if entry.id:
-                by_id.setdefault(entry.id, record.member)
+            if not entry.id:
+                continue
+            by_id.setdefault(entry.id, record.member)
             for later in waiting.pop(entry.id, ()):
                 yield self._record(later, record.member.name)
         if waiting:
