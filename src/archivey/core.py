@@ -84,6 +84,7 @@ from archivey.internal.remote import (
     emit_source_change_undetectable,
     is_open_file,
     noting_fsspec_decoding,
+    raising_source_change,
     refuse_compressed_open_file_stream,
 )
 from archivey.internal.sfx import read_payload_end
@@ -783,9 +784,7 @@ def _open_resolved(
     if detected is None:
         # ``format=`` skipped detection, which records it otherwise
         # (``detect_format_into``).
-        emit_source_change_undetectable(
-            archive_source.remote_sources, collector, archive_name
-        )
+        emit_source_change_undetectable(archive_source, collector, archive_name)
 
     # The caller's format policy first: a format it turns off is refused whatever else
     # would be said about the file, so the caller is not told to install a package or
@@ -951,41 +950,49 @@ def _open_resolved(
         is_directory=archive_source.is_directory,
     )
     backend = backend_cls()
+    reader: ArchiveReader | None = None
     try:
-        reader = backend.open_read(
-            archive_source,
-            format=resolved_format,
-            streaming=streaming,
-            passwords=passwords,
-            encoding=encoding,
-            archive_name=archive_name,
-            config=config,
-            collector=collector,
-            member_streams=member_streams,
-            open_site=open_site,
-            start_offset=payload_offset,
-            end_offset=payload_end,
-        )
-    except ArchiveyError as exc:
-        # A backend that reads its first headers while it is built (7z, RAR, ZIP)
-        # raises before the reader that stamps its errors exists. Stamp them here, so a
-        # cut download names the file and the format, and says when only the filename
-        # chose that format, as every later error does.
-        stamp_error_context(
-            exc,
-            archive_format=resolved_format,
-            archive_name=archive_name,
-            provenance=provenance,
-            collector=collector,
-        )
-        raise
-    reader._format_provenance = provenance
-    reader._format_info = format_info
-    # After provenance, so an open-time decode failure carries format_unconfirmed.
-    try:
-        reader._validate_at_open()
+        # A backend that reads its index while it is built can take a change of a
+        # remote object for damage it salvages or reports; the open ends with the
+        # change instead (``fsspec-integration`` design D7).
+        with raising_source_change(archive_source.remote_sources):
+            try:
+                reader = backend.open_read(
+                    archive_source,
+                    format=resolved_format,
+                    streaming=streaming,
+                    passwords=passwords,
+                    encoding=encoding,
+                    archive_name=archive_name,
+                    config=config,
+                    collector=collector,
+                    member_streams=member_streams,
+                    open_site=open_site,
+                    start_offset=payload_offset,
+                    end_offset=payload_end,
+                )
+            except ArchiveyError as exc:
+                # A backend that reads its first headers while it is built (7z, RAR,
+                # ZIP) raises before the reader that stamps its errors exists. Stamp
+                # them here, so a cut download names the file and the format, and
+                # says when only the filename chose that format, as every later error
+                # does.
+                stamp_error_context(
+                    exc,
+                    archive_format=resolved_format,
+                    archive_name=archive_name,
+                    provenance=provenance,
+                    collector=collector,
+                )
+                raise
+            reader._format_provenance = provenance
+            reader._format_info = format_info
+            # After provenance, so an open-time decode failure carries
+            # format_unconfirmed.
+            reader._validate_at_open()
     except BaseException:
-        reader.close()
+        if reader is not None:
+            reader.close()
         raise
     return reader
 
@@ -1089,7 +1096,7 @@ def open_stream(
             # ``format=`` skips detection, which records it otherwise.
             try:
                 emit_source_change_undetectable(
-                    codec_input.remote_sources, collector, codec_input.name
+                    codec_input, collector, codec_input.name
                 )
             except BaseException:
                 codec_input.close()

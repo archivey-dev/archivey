@@ -426,24 +426,64 @@ def test_a_compressed_open_file_reads_the_archive_inside(
     assert "compression=None" in warnings[0].getMessage()
 
 
-def test_a_compressed_open_file_closes_with_the_reader(memfs, monkeypatch):
+@pytest.mark.parametrize("how", ["read", "refused", "detected"])
+def test_a_compressed_open_file_closes_the_file_under_its_decoder(
+    memfs, monkeypatch, how: str
+):
+    """archivey opens fsspec's file and its decompressor, so it closes both: a
+    decompressor handed a file object leaves it open. The caller's ``OpenFile`` is not
+    entered, so its own ``close()`` cannot close a stream archivey is reading."""
+    import gzip
+
+    from archivey import FormatDetectionError
+
+    memfs.pipe("/t/x.zip.gz", gzip.compress(_zip_bytes(MEMBERS)))
+    memfs.pipe("/t/y.txt.gz", gzip.compress(b"no archive"))
+    opened: list[io.BytesIO] = []
+    real_open = type(memfs).open
+
+    def spy(self: Any, *args: Any, **kwargs: Any) -> Any:
+        # A file of its own: the memory file system hands out the object it stores,
+        # whose close() does nothing, so it could not tell a close.
+        f = io.BytesIO(real_open(self, *args, **kwargs).getvalue())
+        opened.append(f)
+        return f
+
+    monkeypatch.setattr(type(memfs), "open", spy)
+    if how == "read":
+        of = fsspec.open("memory://t/x.zip.gz", compression="infer")
+        with open_archive(of) as reader:
+            assert {m.name for m in reader.members() if m.is_file} == set(MEMBERS)
+            assert opened
+            assert not any(f.closed for f in opened)
+    elif how == "refused":
+        of = fsspec.open("memory://t/y.txt.gz", compression="infer")
+        with pytest.raises(FormatDetectionError):
+            open_archive(of)
+    else:
+        of = fsspec.open("memory://t/x.zip.gz", compression="infer")
+        assert detect_format(of).format == ArchiveFormat.ZIP
+    assert opened
+    assert all(f.closed for f in opened)
+    assert of.fobjects == []
+
+
+def test_a_compressed_open_file_records_that_no_change_is_checked(memfs):
     import gzip
 
     memfs.pipe("/t/x.zip.gz", gzip.compress(_zip_bytes(MEMBERS)))
-    of = fsspec.open("memory://t/x.zip.gz", compression="infer")
-    opened = []
-    real_open = type(of).open
-
-    def spy(self):
-        stream = real_open(self)
-        opened.append(stream)
-        return stream
-
-    monkeypatch.setattr(type(of), "open", spy)
+    of = fsspec.open("memory://t/x.zip.gz", compression="gzip")
     with open_archive(of) as reader:
-        reader.members()
-    assert len(opened) == 1
-    assert opened[0].closed
+        (diag,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE
+        ]
+    assert diag.context.protocol == "memory"
+    assert "compression='gzip'" in diag.context.reason
+    assert "compression='gzip'" in diag.message
+    info = detect_format(of)
+    assert info.diagnostics.counts.get(DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE) == 1
 
 
 def test_a_compressed_open_file_holding_no_archive_names_fsspec_decoding(memfs):
@@ -629,6 +669,108 @@ def test_a_planner_fetch_of_another_length_raises():
     fs.data = DATA[:100]
     with pytest.raises(SourceChangedError, match="changed while it was read"):
         src.read(10)
+
+
+def test_a_change_stays_seen_by_every_later_read():
+    """A handler that takes the first ``SourceChangedError`` for damage cannot make the
+    source read on: each later read raises again, a read a window still holds too."""
+    src, fs = _source(DATA)
+    assert src.read(10) == DATA[:10]  # leaves a window over the start
+    fs.data = DATA[:100]
+    src.seek(500_000)
+    with pytest.raises(SourceChangedError):
+        src.read(10)
+    fs.data = DATA
+    src.seek(0)
+    with pytest.raises(SourceChangedError, match="changed while it was read"):
+        src.read(10)
+
+
+def _cut_on_fetch(monkeypatch: pytest.MonkeyPatch, memfs: Any, past: int) -> dict:
+    """The first fetch that starts at or past ``past`` while ``armed["on"]`` finds the
+    object cut to the bytes before it, and the original is back for every later fetch:
+    the object was replaced by a shorter one and then replaced again. So only that one
+    fetch can see the change, and a handler that swallows it leaves later reads with
+    nothing to raise on."""
+    real = type(memfs).cat_file
+    armed = {"on": True}
+
+    def cat_file(self: Any, path: str, start: Any = None, end: Any = None, **kw: Any):
+        if armed["on"] and start is not None and start >= past:
+            armed["on"] = False
+            whole = real(self, path)
+            self.pipe(path, whole[:start])
+            try:
+                return real(self, path, start=start, end=end, **kw)
+            finally:
+                self.pipe(path, whole)
+        return real(self, path, start=start, end=end, **kw)
+
+    monkeypatch.setattr(type(memfs), "cat_file", cat_file)
+    return armed
+
+
+def _stored_tar_gz(payload: bytes, tail: int = 0) -> bytes:
+    import gzip
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo("a")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    # Level 0: the deflate is stored, so offsets in the gzip follow the TAR's.
+    return gzip.compress(buf.getvalue() + b"\0" * tail, 0)
+
+
+def test_a_change_during_detection_raises_rather_than_another_format(
+    memfs, monkeypatch
+):
+    """The gzip inner-container probe reads past the first fetch, and the change it
+    meets must not make the answer GZ instead of TAR_GZ."""
+    memfs.pipe("/t/x.tar.gz", _stored_tar_gz(random.randbytes(200_000)))
+    _cut_on_fetch(monkeypatch, memfs, past=1)
+    with pytest.raises(SourceChangedError):
+        detect_format(
+            fsspec.open("memory://t/x.tar.gz"),
+            config=ArchiveyConfig(max_read_through=0),
+        )
+
+
+def test_a_change_while_a_single_compressed_file_opens_raises(memfs, monkeypatch):
+    """A lone ``.gz``: the change meets detection's inner-container probe, and the
+    open must raise it rather than go on as if the gzip held no archive."""
+    import gzip
+
+    memfs.pipe("/t/x.bin.gz", gzip.compress(random.randbytes(200_000), 0))
+    _cut_on_fetch(monkeypatch, memfs, past=1)
+    with pytest.raises(SourceChangedError):
+        open_archive(
+            fsspec.open("memory://t/x.bin.gz"),
+            config=ArchiveyConfig(max_read_through=0),
+        )
+
+
+@pytest.mark.parametrize(
+    "policy", [DiagnosticPolicy(), DiagnosticPolicy.STRICT], ids=["default", "strict"]
+)
+def test_a_change_during_the_tar_end_scan_raises(memfs, monkeypatch, policy):
+    """The scan past the TAR end-of-archive marker takes a ``ReadError`` from the codec
+    for a tail that fails to decode, and reports ``DIGEST_UNVERIFIABLE``; a change of
+    the object is not that, and the pass ends with it. Under ``STRICT`` that report
+    raises inside the handler, and the change still wins."""
+    payload = random.randbytes(200_000)
+    memfs.pipe("/t/x.tar.gz", _stored_tar_gz(payload, tail=3 * 2**20))
+    config = ArchiveyConfig(diagnostic_policy=policy, max_read_through=0)
+    armed = _cut_on_fetch(monkeypatch, memfs, past=400_000)
+    armed["on"] = False
+    with open_archive(fsspec.open("memory://t/x.tar.gz"), config=config) as reader:
+        armed["on"] = True
+        with pytest.raises(SourceChangedError):
+            for member, stream in reader.stream_members():
+                assert member.name == "a"
+                assert stream is not None
+                assert stream.read() == payload
 
 
 def _volume_bytes(data: bytes, parts: int) -> list[bytes]:

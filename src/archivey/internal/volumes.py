@@ -31,6 +31,7 @@ from archivey.internal.arg_checks import (
 from archivey.internal.overrides import override
 from archivey.internal.remote import (
     DEFAULT_MAX_READ_THROUGH,
+    FsspecDecompressed,
     RangeSource,
     WindowPool,
     is_open_file,
@@ -1432,13 +1433,18 @@ def _resolve_single(
 ) -> ResolvedSource:
     if is_open_file(source):
         if open_file_compression(source) is not None:
-            # fsspec decompresses: the archive is the decompressed stream, which
-            # archivey opened and so closes.
-            stream = cast("BinaryIO", open_decompressed(source))
+            # fsspec decompresses: the archive is the decompressed stream. archivey
+            # opened it and the file under it, and so closes both.
+            decoded, raw = open_decompressed(source)
             try:
-                opened = ArchiveSource.for_opened_stream(stream)
+                opened = ArchiveSource.for_fsspec_decompressed(
+                    decoded, raw, FsspecDecompressed.of(source)
+                )
             except BaseException:
-                stream.close()
+                try:
+                    decoded.close()
+                finally:
+                    raw.close()
                 raise
             return ResolvedSource(opened, open_file_name(source), 1)
         ranged = RangeSource.from_open_file(

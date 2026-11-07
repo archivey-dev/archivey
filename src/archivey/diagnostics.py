@@ -194,7 +194,9 @@ class DiagnosticCode(StrEnum):
     """The archive is read by range requests from an ``fsspec`` file system that
     archivey cannot pin to one version of the object, so a replacement of the same
     length, or a longer one, while it reads would go unseen. A shorter one raises
-    :class:`~archivey.SourceChangedError` on the first fetch past its end. Advisory: it
+    :class:`~archivey.SourceChangedError` on the first fetch past its end. An
+    ``OpenFile`` with ``compression=`` records it too: it is read through fsspec's
+    decompressing file, and archivey checks nothing about the object. Advisory: it
     describes how the archive arrives, not its bytes."""
     MEMBER_READERS_DISAGREE = "member_readers_disagree"
     """A member takes a shape that real writers produce but readers make different
@@ -950,7 +952,9 @@ class SourceChangeContext(_JsonSafeContext):
 
     ``protocol`` is the first protocol of the ``fsspec`` file system the archive is
     read from (``"s3"``, ``"https"``, ``"memory"``). ``reason`` says why neither a
-    pinned version nor a conditional request guards the reads.
+    pinned version nor a conditional request guards the reads, or that the archive is
+    read through fsspec's decompressing file (``compression=``), which archivey cannot
+    check at all.
     """
 
     kind: Literal["source_change"] = "source_change"

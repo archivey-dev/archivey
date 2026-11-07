@@ -68,7 +68,12 @@ read at open. A fetch that returns more bytes than it asked for SHALL raise `OSE
 file system ignores range requests, which is not a change of the object. A file system for
 which archivey does not implement version pinning or header forwarding SHALL be treated as
 offering neither. A change that is detected SHALL raise; it MUST NOT return bytes of the
-new object as bytes of the archive.
+new object as bytes of the archive. Once detected, every later read of the source SHALL
+raise it again, and detection, the open and a walk over the members SHALL end with
+`SourceChangedError` rather than an answer, a diagnostic or another error, even where a
+handler for damage to the archive caught the first one. An `OpenFile` read through
+fsspec's decompressing file (`compression=`) is not checked for a change at all; the
+reader SHALL record `SOURCE_CHANGE_UNDETECTABLE` for it, naming that file in the reason.
 
 #### Scenario: changed object
 
@@ -79,6 +84,8 @@ new object as bytes of the archive.
 | No version, no `ETag` | `SOURCE_CHANGE_UNDETECTABLE` at open; a shorter object raises `SourceChangedError` on the next fetch past its end; a longer one is not detected |
 | A file system that ignores ranges and returns the whole object | `OSError` on the first fetch, not `SourceChangedError` |
 | `DiagnosticPolicy.STRICT`, no version, no `ETag` | Opens; the diagnostic is collected, not raised |
+| A shorter object while detection probes, or while TAR scans past its end marker | The call raises `SourceChangedError`; it does not return another format or end with only a diagnostic |
+| `OpenFile` with `compression=` | `SOURCE_CHANGE_UNDETECTABLE` at open, its reason naming fsspec's decompressing file |
 
 ### Requirement: Multi-volume discovery over fsspec
 
