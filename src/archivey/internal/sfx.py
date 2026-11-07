@@ -434,13 +434,12 @@ def _is_pe(prefix: bytes) -> bool:
 
 
 #: How many leading bytes an executable's layout is read from. Every backend reads
-#: this span,
-#: and detection reads its prefix, which is the same span when ``max_prefix_bytes``
-#: is at least this long, as in every preset: forced ``format=`` and auto-detect then
-#: derive the same payload end. A custom budget shorter than the headers leaves
-#: detection with no layout, and it answers as for an unparsed stub. A PE's or an
-#: ELF's headers end well inside the span; a Mach-O's load commands can run past it,
-#: and then it has no layout. Detection reads nothing extra for it.
+#: this span, and detection reads its prefix, which is the same span when
+#: ``max_prefix_bytes`` is at least this long, as in every preset: forced ``format=``
+#: and auto-detect then derive the same layout. A custom budget shorter than the
+#: headers leaves detection with no layout, and it answers as for an unparsed stub. A
+#: PE's or an ELF's headers end well inside the span; a Mach-O's load commands can run
+#: past it, and then it has no layout. Detection reads nothing extra for it.
 LAYOUT_PREFIX = 4096
 
 # Offsets in the COFF file header (after ``PE\0\0``) and the optional header.
@@ -588,9 +587,11 @@ def executable_layout(prefix: bytes, total_size: int | None) -> ExecutableLayout
     signature sits inside ``__LINKEDIT``).
 
     - ELF: the furthest end of the ELF header, the program header table, each
-      segment's file bytes, and the section header table, which a linker writes
-      last. The program headers must fit in the prefix; the section headers are
-      not read, so a section a tool placed after their table counts as overlay.
+      segment's file bytes, and the section header table. When that table sits in
+      the prefix (the Go linker's layout), each section's file bytes too, since
+      non-alloc sections lie past the last segment. GNU ld writes the table last,
+      past the prefix, and then it is not read. The program headers must fit in
+      the prefix.
     - Thin Mach-O: the furthest end of the load commands and of each segment's file
       bytes (``LC_SEGMENT`` / ``LC_SEGMENT_64``). The load commands must fit in the
       prefix.
@@ -631,6 +632,10 @@ def executable_layout(prefix: bytes, total_size: int | None) -> ExecutableLayout
 _ELF_HEADER = {1: ("II", 28, 40), 2: ("QQ", 32, 52)}
 _ELF_PHDR = {1: ("I", 4, "I", 16, 32), 2: ("Q", 8, "Q", 32, 56)}
 _PN_XNUM = 0xFFFF
+# Each section header's sh_type offset, then (sh_offset, sh_size) format and offset,
+# and the size those need, per class.
+_ELF_SHDR = {1: (4, "I", 16, 24), 2: (4, "Q", 24, 40)}
+_SHT_NOBITS = 8
 
 
 def _elf_image_end(head: bytes) -> int | None:
@@ -662,7 +667,23 @@ def _elf_image_end(head: bytes) -> int | None:
             if filesz:
                 end = max(end, offset + filesz)
     if shoff:
-        end = max(end, shoff + shnum * shentsize)
+        table_end = shoff + shnum * shentsize
+        end = max(end, table_end)
+        if table_end <= len(head):
+            # The table sits in the prefix (the Go linker writes it right after the
+            # program headers, and its non-alloc sections after the last segment):
+            # take each section's file bytes too.
+            type_at, off_fmt, off_at, entry_min = _ELF_SHDR[elf_class]
+            if shentsize < entry_min:
+                return None
+            for index in range(shnum):
+                entry = shoff + index * shentsize
+                (sh_type,) = struct.unpack_from(endian + "I", head, entry + type_at)
+                offset, size = struct.unpack_from(
+                    endian + off_fmt * 2, head, entry + off_at
+                )
+                if sh_type != _SHT_NOBITS and size:
+                    end = max(end, offset + size)
     return end
 
 
@@ -929,8 +950,8 @@ def scan_for_magic(
 ) -> MagicScan:
     """The earliest ``needles`` match within ``limit`` bytes, as a :class:`MagicScan`.
 
-    ``first_at`` is a candidate origin to judge before anything else: a PE's overlay
-    start (:attr:`ExecutableLayout.overlay_start`), where the format itself says appended data
+    ``first_at`` is a candidate origin to judge before anything else: an
+    executable's overlay start (:attr:`ExecutableLayout.overlay_start`), where the format itself says appended data
     begins. A ``VALID`` or ``VALID_SHORT`` hit there is the answer, ahead of every
     other needle in the window; anything else there leaves the scan below unchanged.
     It needs a ``validator``.

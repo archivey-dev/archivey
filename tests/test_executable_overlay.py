@@ -65,6 +65,19 @@ def test_elf_overlay_starts_after_the_section_headers(
     assert executable_layout(data, None) == ExecutableLayout(expected, None)
 
 
+@pytest.mark.parametrize("is_64", [True, False], ids=["elf64", "elf32"])
+@pytest.mark.parametrize("little", [True, False], ids=["le", "be"])
+def test_go_elf_overlay_starts_after_its_last_section(
+    is_64: bool, little: bool
+) -> None:
+    # The Go linker writes the section headers right after the program headers and
+    # its symbol table past the last segment; the ``.bss`` takes no file bytes.
+    data = elf_file(
+        _IMAGE, payload=b"x" * 100, is_64=is_64, little=little, go_layout=True
+    )
+    assert executable_layout(data, len(data)) == ExecutableLayout(_IMAGE + 0x300, None)
+
+
 def test_elf_without_section_headers_ends_at_its_segments() -> None:
     data = elf_file(_IMAGE, payload=b"x" * 100, section_count=0)
     assert executable_layout(data, len(data)) == ExecutableLayout(_IMAGE, None)
@@ -121,6 +134,7 @@ def test_java_class_file_has_no_layout() -> None:
 
 _STUBS = {
     "elf": lambda payload: elf_file(_IMAGE, payload=payload),
+    "go-elf": lambda payload: elf_file(_IMAGE, payload=payload, go_layout=True),
     "macho": lambda payload: macho_file(_IMAGE, payload=payload),
 }
 

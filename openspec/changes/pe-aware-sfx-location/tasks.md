@@ -83,7 +83,8 @@ Block 3 is the overlay-start rule. Each reuses Block 1's PE layout helper.
 ## 5. ELF and Mach-O overlay start (maintainer decision 2026-11-07)
 
 - [x] 5.1 `internal/sfx.py`: `executable_layout` returns the overlay start of an ELF
-      (header, program headers, segments, section header table), a thin Mach-O (load
+      (header, program headers, segments, section header table, and each section when
+      that table is in the prefix, as the Go linker writes it), a thin Mach-O (load
       commands, segments) or a fat Mach-O (last slice), with no payload end; `PeLayout`
       becomes `ExecutableLayout`. Headers that do not fit the prefix give no layout.
 - [x] 5.2 Detection's overlay-start judgement, `overlay_start_of` (RAR and 7z parser

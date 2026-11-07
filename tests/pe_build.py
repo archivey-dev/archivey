@@ -104,10 +104,19 @@ def elf_file(
     is_64: bool = True,
     little: bool = True,
     section_count: int = 4,
+    go_layout: bool = False,
+    symtab_size: int = 0x300,
 ) -> bytes:
     """An ELF: its header, one ``PT_LOAD`` segment over ``[0, image_size)``, then a
-    section header table of ``section_count`` zeroed entries (a linker's last
-    write), then ``payload``. The overlay starts after the section headers."""
+    section header table of ``section_count`` zeroed entries (GNU ld's last write),
+    then ``payload``. The overlay starts after the section headers.
+
+    With ``go_layout``, the Go linker's shape instead: the section header table right
+    after the program header, naming ``.text`` in the segment, a ``.symtab`` of
+    ``symtab_size`` bytes past the segment (no segment covers it) and a ``.bss`` that
+    takes no file bytes. The overlay starts after the ``.symtab``."""
+    if go_layout:
+        return _go_elf(image_size, payload, is_64, little, symtab_size)
     endian = "<" if little else ">"
     ident = b"\x7fELF" + bytes([2 if is_64 else 1, 1 if little else 2, 1])
     ident = ident.ljust(16, b"\0")
@@ -156,6 +165,74 @@ def elf_file(
         )
     image = (header + phdr).ljust(image_size, b"\xcc")
     return image + bytes(section_count * shentsize) + payload
+
+
+def _go_elf(
+    image_size: int, payload: bytes, is_64: bool, little: bool, symtab_size: int
+) -> bytes:
+    endian = "<" if little else ">"
+    ident = b"\x7fELF" + bytes([2 if is_64 else 1, 1 if little else 2, 1])
+    ident = ident.ljust(16, b"\0")
+    ehsize, phentsize, shentsize = (64, 56, 64) if is_64 else (52, 32, 40)
+    phoff = ehsize
+    shoff = phoff + phentsize
+    # (type, offset, size): null, .text, .symtab past the segment, .bss (NOBITS).
+    sections = [
+        (0, 0, 0),
+        (1, 0x200, image_size - 0x200),
+        (2, image_size, symtab_size),
+        (8, image_size + symtab_size, 0x100000),
+    ]
+    if is_64:
+        header = ident + struct.pack(
+            endian + "HHIQQQIHHHHHH",
+            2,
+            0x3E,
+            1,
+            0,
+            phoff,
+            shoff,
+            0,
+            ehsize,
+            phentsize,
+            1,
+            shentsize,
+            len(sections),
+            0,
+        )
+        phdr = struct.pack(
+            endian + "IIQQQQQQ", 1, 5, 0, 0, 0, image_size, image_size, 0x1000
+        )
+        table = b"".join(
+            struct.pack(endian + "IIQQQQIIQQ", 0, kind, 0, 0, offset, size, 0, 0, 1, 0)
+            for kind, offset, size in sections
+        )
+    else:
+        header = ident + struct.pack(
+            endian + "HHIIIIIHHHHHH",
+            2,
+            3,
+            1,
+            0,
+            phoff,
+            shoff,
+            0,
+            ehsize,
+            phentsize,
+            1,
+            shentsize,
+            len(sections),
+            0,
+        )
+        phdr = struct.pack(
+            endian + "IIIIIIII", 1, 0, 0, 0, image_size, image_size, 5, 0x1000
+        )
+        table = b"".join(
+            struct.pack(endian + "IIIIIIIIII", 0, kind, 0, 0, offset, size, 0, 0, 1, 0)
+            for kind, offset, size in sections
+        )
+    image = (header + phdr + table).ljust(image_size, b"\xcc")
+    return image + b"\x5a" * symtab_size + payload
 
 
 def macho_file(

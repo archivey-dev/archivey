@@ -1023,10 +1023,9 @@ def _scan_for_sfx_payload(
     ``leading`` is the prefix detection holds. When it is a PE, ELF or Mach-O
     program whose layout parses (:func:`~archivey.internal.sfx.executable_layout`),
     the candidate at its overlay start is judged first. When it is a signed PE, a
-    candidate at or past its
-    certificate table is not judged, and the answer carries the table's start as
-    ``payload_end``: the table is not parsed, so a needle inside it could pass a
-    validator, and the readers stop there (``archive-reading``).
+    candidate at or past its certificate table is not judged, and the answer carries
+    the table's start as ``payload_end``: the table is not parsed, so a needle inside
+    it could pass a validator, and the readers stop there (``archive-reading``).
     """
     # A zero ``max_scan_bytes`` turns the tier off, as a zero field does for the others.
     if _record_tier_limit(workspace, "sfx_scan", enabled=scan_limit > 0):
@@ -1226,10 +1225,10 @@ def _judge_overlay_start(
     The overlay start is where the program's own headers say appended data begins, so
     it is stronger evidence than "earliest needle" and than the 7z exact-end
     tie-break. A candidate there that its validator grades ``VALID`` or
-    ``VALID_SHORT`` is the answer (a signed 7z SFX ends before its certificate, so ``VALID_SHORT`` is the
-    common case); anything else leaves the scan to run as it does for any stub. The
-    RAR and 7z parsers' scans and the forward ZIP walk apply the same rule, so forced
-    ``format=`` opens the same payload.
+    ``VALID_SHORT`` is the answer (a signed 7z SFX ends before its certificate, so
+    ``VALID_SHORT`` is the common case); anything else leaves the scan to run as it
+    does for any stub. The RAR and 7z parsers' scans and the forward ZIP walk apply
+    the same rule, so forced ``format=`` opens the same payload.
     """
     origin = layout.overlay_start
     if layout.payload_end is not None and origin >= layout.payload_end:
