@@ -622,8 +622,9 @@ def _probe_inner_container(
             head = stream.read(INNER_CONTAINER_PROBE_BYTES)
     except ResourceLimitError as exc:
         # The decoder is over the caller's ``max_decoder_memory`` (or a probe ceiling),
-        # or its child could not run: "can't tell". Said in a log, since the open that follows reads the source as
-        # the bare compressed stream, and a caller who lowered the cap learns why.
+        # or its child could not run: "can't tell". Said in a log, since the open that
+        # follows reads the source as the bare compressed stream, and a caller who
+        # lowered the cap learns why.
         unavailable = True
         _log_probe_refused(
             f"look inside the {stream_format.name} stream for an archive (it is read "
