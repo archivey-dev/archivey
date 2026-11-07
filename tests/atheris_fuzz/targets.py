@@ -69,6 +69,7 @@ from tests.atheris_fuzz.seeds import (
     lzma_alone_seeds,
     open_detected_seeds,
     rar_seeds,
+    rpm_seeds,
     sevenzip_seeds,
     squashfs_seeds,
     tar_seeds,
@@ -284,6 +285,12 @@ def cpio_open_one(data: bytes) -> None:
     """Walk a CPIO archive of any variant, plain or inside a compression stream, and
     read the first members' data, held hard links included."""
     _sequential_open_one(data, ContainerFormat.CPIO)
+
+
+def rpm_open_one(data: bytes) -> None:
+    """Walk an RPM package: its headers, then its payload in whichever compressor the
+    header names, and read the first members' data, held hard links included."""
+    _sequential_open_one(data, ContainerFormat.RPM)
 
 
 def _sequential_open_one(data: bytes, container: ContainerFormat) -> None:
@@ -900,6 +907,13 @@ def iter_target_specs() -> list[dict]:
             "name": "cpio",
             "fn": cpio_open_one,
             "seeds": cpio_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "rpm",
+            "fn": rpm_open_one,
+            "seeds": rpm_seeds,
             "fixup": None,
             "per_input_timeout": stream_timeout,
         },

@@ -101,7 +101,13 @@ def outer_layer_format(fmt: ArchiveFormat) -> ArchiveFormat | None:
     if fmt.container is ContainerFormat.RAW_STREAM:
         return fmt
     if (
-        fmt.container in (ContainerFormat.TAR, ContainerFormat.AR, ContainerFormat.CPIO)
+        fmt.container
+        in (
+            ContainerFormat.TAR,
+            ContainerFormat.AR,
+            ContainerFormat.CPIO,
+            ContainerFormat.RPM,
+        )
         or isinstance(fmt.container, PluginContainer)
     ) and fmt.stream is not StreamFormat.UNCOMPRESSED:
         return ArchiveFormat(ContainerFormat.RAW_STREAM, fmt.stream)
