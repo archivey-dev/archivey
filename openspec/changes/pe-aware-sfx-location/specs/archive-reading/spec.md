@@ -21,20 +21,15 @@ for itself. A backend that hands the file to an external program (`unrar`) appli
 to its own checks only.
 
 An explicit `format=` that bypasses detection retains each backend’s own
-start-offset / SFX rules (`format-rar`, `format-7z`). A RAR, 7z or ZIP backend opened at
-start offset 0 with no end passed SHALL read its own leading bytes, and when they are a PE
-whose layout parses, SHALL derive the payload end from them with the PE layout helper
-detection uses. That reads the backend's own start, not before it. It applies whether or
-not the backend otherwise scans its start: the seekable ZIP reader locates its archive from
-the tail and reads its leading bytes only for this, and only when the end could change its
-answer (the tail search finds no end record, the record it finds says bytes precede its
-archive, or a non-zero byte follows the archive), so an ordinary ZIP pays no read for it.
-A record that says no bytes precede its archive and has nothing after it is taken as
-found, without the read: a ZIP planted at the end of a certificate table with offsets
-counted from the start of the file is then what a forced `format=ZIP` lists, while
-auto-detect, which passes the end, lists the archive before the table. A backend reading
-a non-seekable source derives no end, as detection reports none for it. Otherwise forced
-`format=` and auto-detect see the same end.
+start-offset / SFX rules (`format-rar`, `format-7z`). For a backend whose format can carry
+a stub (RAR, 7z, ZIP), on a seekable single-file source, `open_archive` SHALL read the
+source's first 4096 bytes and, when they are a PE whose layout parses, SHALL pass the
+payload end derived from them with the PE layout helper detection uses. Detection reads
+the layout from the same 4096 bytes whatever `max_prefix_bytes` says. So a forced
+`format=` and auto-detect open the same region and list the same members: what an archive
+holds SHALL NOT depend on whether its format was named. No backend derives an end itself.
+A non-seekable source gets no end either way, since its size is unknown and the table
+cannot be placed.
 
 #### Scenario: payload_offset hand-off
 
@@ -45,9 +40,9 @@ a non-seekable source derives no end, as detection reports none for it. Otherwis
 | Explicit `format=` | Detection skipped; backend SFX/start-offset rules apply |
 | Bare seek only (no start-offset / no offset view) | Insufficient for 7z; MUST NOT be the sole hand-off mechanism |
 | Auto-detect, signed PE SFX, `payload_end == E` | Backend reads nothing at or past `E`; the certificate raises no `ARCHIVE_TRAILING_DATA` |
-| Forced `format=` on the same signed SFX (RAR, 7z, or ZIP from a seekable source) | The backend derives the same `E` from its leading bytes; same listing, same diagnostics, whenever `max_prefix_bytes` holds the 4096 bytes the layout is read from (every preset) |
+| Forced `format=` on the same signed SFX (RAR, 7z, or ZIP from a seekable source) | `open_archive` passes the same `E`, read from the same headers; same listing, same diagnostics |
+| Auto-detect with `max_prefix_bytes` below 4096 | Detection still reads the layout from the first 4096 bytes and reports the same `E` |
 | The same SFX from a non-seekable stream, auto-detect or forced | No `E`: the certificate is reported as trailing data, the same both ways |
 | Forced `format=ZIP` on the IRPF installer under `DiagnosticPolicy.STRICT` | Opens, as auto-detect does: the certificate is past `E` |
-| Forced `format=ZIP` on a signed SFX whose certificate holds a second whole ZIP with offsets counted from its own start | The archive before `E` is listed, as auto-detect lists it; the ZIP inside the certificate is not |
-| The same, the second ZIP's offsets counted from the start of the file | Auto-detect lists the archive before `E`; forced `format=ZIP` lists the second ZIP (no read of the leading bytes) |
+| Forced `format=ZIP` on a signed SFX whose certificate holds a second whole ZIP, its offsets counted from its own start or from the start of the file | The archive before `E` is listed, as auto-detect lists it; the ZIP inside the certificate is not |
 | No `payload_end` (unsigned, non-PE, or total size unknown) | Unchanged: the archive is read to the end of the source |

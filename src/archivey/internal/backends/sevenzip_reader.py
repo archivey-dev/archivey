@@ -125,7 +125,6 @@ from archivey.internal.password_confirm import (
     run_password_confirm_plan,
 )
 from archivey.internal.registry import register_reader
-from archivey.internal.sfx import read_payload_end
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
@@ -920,16 +919,10 @@ class SevenZipReader(BaseArchiveReader):
         # scan on top of it is what makes forced ``format=SEVEN_Z`` work on an SFX file
         # with no detection involved.
         # Where the archive's region ends: a signed executable's certificate table
-        # follows it. Detection passes it; opened at 0 with none, it is read from the
-        # leading bytes here, so forced ``format=SEVEN_Z`` sees the same end. Every
+        # follows it, read from the executable's headers by detection or, under a
+        # forced ``format=``, by ``open_archive`` (``ReadBackend.open_read``). Every
         # view stops there (``_view``), so nothing at or past it is read, and no
         # signature inside the table is taken for the archive's.
-        if end_offset is None and not start_offset:
-            head = self._shared.view(0)
-            try:
-                end_offset = read_payload_end(head, self._shared.size)
-            finally:
-                head.close()
         self._end: int | None = end_offset
         probe = self._region_view(start_offset)
         try:

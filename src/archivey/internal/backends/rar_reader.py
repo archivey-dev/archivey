@@ -174,7 +174,6 @@ from archivey.internal.password_confirm import (
     run_password_confirm_plan,
 )
 from archivey.internal.registry import register_reader
-from archivey.internal.sfx import read_payload_end
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
 from archivey.internal.streams.archive_stream import (
@@ -1627,21 +1626,14 @@ class RarReader(BaseArchiveReader):
             self._volume0_parse_origin = self._origin
             self._origin = 0
         # Where a lone archive's region ends: a signed executable's certificate table
-        # follows it. Detection passes it; opened at 0 with none, it is read from the
-        # leading bytes, so forced ``format=RAR`` sees the same end. The header walk
-        # reads a view that stops there, so its trailing-data check never reaches the
-        # table and its SFX scan never takes a signature inside it. ``unrar`` reads
-        # the real file: the end bounds archivey's own checks only. A volume set is
-        # left as it is: its parts are joined, and no part's table ends the join.
-        self._end: int | None = None
-        if self._volume_set_size() <= 1:
-            if end_offset is None and not start_offset:
-                head = self._shared.view(0)
-                try:
-                    end_offset = read_payload_end(head, self._shared.size)
-                finally:
-                    head.close()
-            self._end = end_offset
+        # follows it, read from the executable's headers by detection or, under a
+        # forced ``format=``, by ``open_archive`` (``ReadBackend.open_read``). The
+        # header walk reads a view that stops there, so its trailing-data check never
+        # reaches the table and its SFX scan never takes a signature inside it.
+        # ``unrar`` reads the real file: the end bounds archivey's own checks only. A
+        # volume set is left as it is: its parts are joined, and no part's table ends
+        # the join.
+        self._end: int | None = end_offset if self._volume_set_size() <= 1 else None
         # Open-time caveat from source shape, not from later materialization
         # (CostReceipt is a static snapshot; see access-mode-and-cost). With no
         # program nothing is ever copied, so there is no copy to warn about.

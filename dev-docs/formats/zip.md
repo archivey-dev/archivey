@@ -78,10 +78,9 @@ comment's end), found at open by the scan TAR, 7z, RAR and ISO share
 (`internal/trailing_scan.py`), or from a pipe at the end of the pass; zero padding is
 silent and `STRICT` refuses (DR-3). Bytes inside the declared comment are the comment,
 whatever they look like. A signed PE self-extractor's certificate table is not reported
-([`7z.md`](7z.md) §6): with a payload end, from detection or read lazily from the first
-bytes when the search misses, the record found says bytes precede its archive (an end
-record inside the table would, unless its offsets count from the file's start), or a
-non-zero byte follows the archive, the search and the scan stop before the table. A tail longer than the search window hides the end record from
+([`7z.md`](7z.md) §6): with a payload end, from detection or, under a forced `format=ZIP`,
+read by `open_archive` from the same headers, the search and the scan stop before the
+table. A tail longer than the search window hides the end record from
 the search; the reader then walks the local headers from the start (the pipe's walk,
 seeking over sized members and scanning bit-3 ones for their descriptor, decoding
 nothing) and steps over the directory and the records after it to the end record

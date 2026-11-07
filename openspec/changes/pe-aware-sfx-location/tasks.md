@@ -18,11 +18,11 @@ Block 3 is the overlay-start rule. Each reuses Block 1's PE layout helper.
       verb prints both; tests for the scenario rows of *detect_format() returns a
       FormatInfo*.
 - [x] 1.4 `ReadBackend.open_read` takes an end offset beside `start_offset`;
-      `open_archive` passes `payload_end`. A RAR, 7z or ZIP backend opened at start 0 with
-      no end derives it from its own leading bytes with the PE helper (design §12): the
-      RAR and 7z parser scans and the ZIP forward walk from the bytes they scan, the
-      seekable `ZipReader._open_index` from one read of its first bytes. No scan accepts a
-      candidate at or past a known payload end.
+      `open_archive` passes `payload_end`, and under a forced `format=` reads it itself
+      from the source's first 4096 bytes with the PE helper for a backend with
+      `SFX_MAGIC` (design §12); no backend derives one. Detection reads the layout from
+      those 4096 bytes whatever `max_prefix_bytes` says. No scan accepts a candidate at or
+      past a known payload end.
 - [x] 1.5 Readers honour the end: the ZIP end-record search ends there; the ZIP, 7z and RAR
       trailing-data checks stop there. Update the 7z reader's `_report_trailing_data`
       docstring, which records the reversed rule, and any test that pins a warning on a

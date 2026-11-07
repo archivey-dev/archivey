@@ -3,7 +3,8 @@
 A code-signed Windows executable keeps its Authenticode certificate table at the end of
 the file, after anything appended to it. Detection reports where that table starts
 (``FormatInfo.payload_end``), and the ZIP, 7z and RAR readers stop there, whether the
-end came from detection or, under a forced ``format=``, from their own leading bytes.
+end came from detection or, under a forced ``format=``, from ``open_archive``, which
+reads the same headers.
 So the table is not reported as data after the archive, and ``STRICT`` opens the file.
 """
 
@@ -11,13 +12,14 @@ from __future__ import annotations
 
 import io
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO
 
 import pytest
 
 from archivey import detect_format, open_archive
-from archivey.config import ArchiveyConfig
+from archivey.config import BALANCED_BUDGET, ArchiveyConfig
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import (
     CorruptionError,
@@ -224,11 +226,12 @@ def test_end_record_inside_the_certificate_is_not_the_archive(forced: bool) -> N
         assert [member.name for member in reader.members()] == ["f.txt"]
 
 
-def test_absolute_offset_zip_inside_the_certificate() -> None:
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_absolute_offset_zip_inside_the_certificate(forced: bool) -> None:
     # The same planted ZIP, its offsets counted from the start of the file: its
-    # record implies no prefix and nothing follows it, so a forced open takes it as
-    # found without reading the leading bytes (``archive-reading``). Auto-detect
-    # passes the end and lists the archive before the table.
+    # record implies no prefix and nothing follows it. Both opens read the end from
+    # the executable's headers first, so both list the archive before the table:
+    # what a file holds never depends on whether its format was named.
     head = pe_file(_IMAGE, payload=_zip(), certificate_size=8)[:-8]
     buffer = io.BytesIO()
     buffer.write(head + b"\0" * 8)
@@ -238,10 +241,26 @@ def test_absolute_offset_zip_inside_the_certificate() -> None:
     planted = buffer.getvalue()[len(head) + 8 :]
     data = pe_file(_IMAGE, payload=_zip(), certificate_size=8 + len(planted))
     data = data[: len(head) + 8] + planted
-    with open_archive(io.BytesIO(data)) as reader:
+    with open_archive(
+        io.BytesIO(data), format=ArchiveFormat.ZIP if forced else None
+    ) as reader:
         assert [member.name for member in reader.members()] == ["f.txt"]
-    with open_archive(io.BytesIO(data), format=ArchiveFormat.ZIP) as reader:
-        assert [member.name for member in reader.members()] == ["inside.txt"]
+
+
+@pytest.mark.parametrize("fmt", _FORMATS, ids=_IDS)
+def test_a_short_prefix_budget_still_finds_the_certificate(fmt: ArchiveFormat) -> None:
+    # A ``max_prefix_bytes`` below the headers' span: detection reads the headers
+    # anyway, so it reports the end a forced ``format=`` reads.
+    data = pe_file(_IMAGE, payload=_payload(fmt), certificate_size=0x800)
+    budget = replace(BALANCED_BUDGET, max_prefix_bytes=64)
+    config = ArchiveyConfig(
+        detection_budget=budget, diagnostic_policy=DiagnosticPolicy.STRICT
+    )
+    assert (
+        detect_format(io.BytesIO(data), config=config).payload_end == len(data) - 0x800
+    )
+    assert _open(data, None, config=config) == []
+    assert _open(data, fmt, config=config) == []
 
 
 @pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
