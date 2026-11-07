@@ -20,8 +20,9 @@ import logging
 import threading
 import uuid
 from collections import Counter
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypeVar
 
 from archivey.diagnostics import (
@@ -272,6 +273,24 @@ class DiagnosticCollector:
         # every read, and each thread touches only its own list.
         self._local = threading.local()
 
+    @contextmanager
+    def member_ids_from(self, first: int) -> Generator[None]:
+        """Number the members a nested reader reports on from ``first``, on this
+        thread, while the block runs.
+
+        A reader that reads an archive inside another one
+        (``ReaderContext.open_nested``) counts its members from 0, while the outer
+        listing gives them the ids after the members listed before them. A report's
+        ``member_id`` is shifted by ``first`` so it names the member the caller sees.
+        Blocks nest: the offsets add up.
+        """
+        before = getattr(self._local, "member_id_offset", 0)
+        self._local.member_id_offset = before + first
+        try:
+            yield
+        finally:
+            self._local.member_id_offset = before
+
     def scope_stack(self) -> list[DiagnosticScope]:
         """This thread's entered scopes, for a caller that enters one on a hot path.
 
@@ -467,6 +486,11 @@ class DiagnosticCollector:
         ``escalate_as`` only when the disposition is already ``RAISE``.
         """
         validate_code_context(code, context)
+        offset = getattr(self._local, "member_id_offset", 0)
+        if offset:
+            member_id = getattr(context, "member_id", None)
+            if member_id is not None:
+                context = replace(context, member_id=member_id + offset)  # type: ignore[type-var]
         ignored = code in self._policy.ignore
         raising = code in self._policy.raise_on
         log = logger if logger is not None else self._logger

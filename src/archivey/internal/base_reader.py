@@ -642,6 +642,9 @@ class BaseArchiveReader(ArchiveReader):
     # stages each such member's data and places the members only once the walk has
     # ended (``ExtractionCoordinator._stage_then_place``).
     _REVISES_YIELDED_MEMBERS: bool = False
+    # Does this reader read an archive inside another one, for the outer reader
+    # (``ReaderContext.open_nested``)? The outer listing then checks the names.
+    _nested_reader: bool = False
 
     def __init__(
         self,
@@ -2290,7 +2293,9 @@ class BaseArchiveReader(ArchiveReader):
         """
         member._member_id = idx
         member._archive_id = self._archive_id
-        if idx >= self._walk_presented:
+        # A nested reader's members are checked again, by name, as the outer
+        # listing lists them (``ReaderContext.open_nested``): only once, there.
+        if idx >= self._walk_presented and not self._nested_reader:
             # Both lookups read only the members before this one: it is indexed after
             # registration. A hard link is looked up only when it is one, so the
             # common member pays two dict lookups.

@@ -22,7 +22,7 @@ import lzma
 import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager, nullcontext, suppress
-from dataclasses import replace
+from dataclasses import fields, replace
 from typing import Any, BinaryIO, ClassVar, NoReturn, TypeVar, cast
 
 from archivey.config import ArchiveyConfig, ProcessIsolation
@@ -209,6 +209,8 @@ class _PluginAdapter(BaseArchiveReader):
         )
         self._source = source
         self._plugin = plugin
+        # The caller's ``encoding=``, for a nested reader (``_open_nested``).
+        self._encoding = encoding
         # The plugin may hold a handle of its own (a library over ``source.path``), so
         # under CONCURRENT every call into it, and every read of a stream it returned,
         # takes one lock (``_handle_guard``). The exception is ``translate_exception``,
@@ -250,6 +252,7 @@ class _PluginAdapter(BaseArchiveReader):
             report=self._report,
             link_target_unavailable=self._link_target_unavailable,
             hold=self._hold,
+            open_nested=self._open_nested,
         )
         self._reader = self._open_reader(context)
         self._reader_open = True
@@ -457,6 +460,76 @@ class _PluginAdapter(BaseArchiveReader):
             raise ArchiveyUsageError(
                 f"ReaderContext.hold(): {quoted(member.name)} is held already"
             ) from None
+
+    def _open_nested(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
+        """``ReaderContext.open_nested()``: archivey's reader for ``fmt`` over
+        ``data``, working for this reader."""
+        if self._walk_step is None:
+            raise ArchiveyUsageError(
+                "ReaderContext.open_nested() reads an inner archive only while walk() "
+                "is listing"
+            )
+        if not isinstance(fmt, ArchiveFormat):
+            raise TypeError(
+                f"ReaderContext.open_nested() takes an ArchiveFormat, not "
+                f"{type(fmt).__name__}"
+            )
+        registry = get_registry()
+        policy = self._config.formats
+        backend_cls = registry.reader_for_format(
+            fmt,
+            replacement=policy._replacement_for(fmt),
+            excluded=policy.exclude_libraries,
+        )
+        if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
+            raise UnsupportedFeatureError(
+                f"{fmt.display_name} cannot be read inside another archive: it needs "
+                "a seekable source",
+                source_format=fmt,
+            )
+        return self._nested_spans(backend_cls, data, fmt, first=self._walk_index)
+
+    def _nested_spans(
+        self,
+        backend_cls: type[ReadBackend],
+        data: BinaryIO,
+        fmt: ArchiveFormat,
+        *,
+        first: int,
+    ) -> Iterator[MemberSpan]:
+        """The spans of the inner archive ``data``: its members, numbered from
+        ``first`` in what it reports, and their decoded data."""
+        collector = self._diagnostics_collector
+        with collector.member_ids_from(first):
+            reader = backend_cls().open_read(
+                ArchiveSource.for_stream(data),
+                format=fmt,
+                streaming=True,
+                passwords=None,
+                encoding=self._encoding,
+                archive_name=self._archive_name,
+                config=self._config,
+                collector=collector,
+            )
+        try:
+            # The outer listing checks each name and counts each member once.
+            reader._nested_reader = True
+            pairs = iter(reader.stream_members())
+            while True:
+                with collector.member_ids_from(first):
+                    pair = next(pairs, None)
+                if pair is None:
+                    return
+                member, stream = pair
+                yield MemberSpan(
+                    _outer_copy(member),
+                    data=None
+                    if stream is None
+                    else _NestedData(cast(BinaryIO, stream), collector, first),
+                )
+        finally:
+            with collector.member_ids_from(first):
+                reader.close()
 
     def _link_target_unavailable(
         self,
@@ -765,6 +838,67 @@ class IndexedReaderAdapter(_PluginAdapter):
         except BaseException:
             stream.close()
             raise
+
+
+_PUBLIC_MEMBER_FIELDS = tuple(
+    f.name for f in fields(ArchiveMember) if not f.name.startswith("_")
+)
+
+
+def _outer_copy(member: ArchiveMember) -> ArchiveMember:
+    """A nested reader's member as the outer listing takes it: its public fields
+    and what was reported on it so far. The inner reader keeps its own object, whose
+    internal state it reads again (TAR's span, at the end of its walk)."""
+    copy = ArchiveMember(
+        **{
+            name: getattr(member, name)
+            for name in _PUBLIC_MEMBER_FIELDS
+            if name != "link_target_member"
+        }
+    )
+    copy.extra = type(member.extra)(member.extra)
+    copy.hashes = dict(member.hashes)
+    copy._diagnostics = member._diagnostics
+    return copy
+
+
+class _NestedData(io.RawIOBase):
+    """An inner member's data (``ReaderContext.open_nested``): what the inner reader
+    reports while it is read names the member as the outer listing numbers it."""
+
+    # What close() reads, set before __init__ runs.
+    _stream: BinaryIO | None = None
+
+    def __init__(
+        self, stream: BinaryIO, collector: DiagnosticCollector, first: int
+    ) -> None:
+        self._stream = stream
+        self._collector = collector
+        self._first = first
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, buffer: Any) -> int:
+        stream = self._stream
+        assert stream is not None
+        with self._collector.member_ids_from(self._first):
+            data = stream.read(len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
+    @override
+    def close(self) -> None:
+        if not self.closed:
+            try:
+                stream = self._stream
+                if stream is not None:
+                    with self._collector.member_ids_from(self._first):
+                        stream.close()
+            finally:
+                super().close()
 
 
 class _Walk:

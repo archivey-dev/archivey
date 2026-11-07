@@ -1021,6 +1021,7 @@ method archivey.formats.ForwardStream.read(self, n: int) -> bytes
 method archivey.formats.ForwardStream.read_exact(self, n: int) -> bytes
 method archivey.formats.ForwardStream.read_struct(self, fmt: str | struct.Struct) -> tuple[Any, ...]
 method archivey.formats.ForwardStream.skip(self, n: int) -> None
+method archivey.formats.ForwardStream.take(self, n: int) -> BinaryIO
 class archivey.formats.Hasher(Protocol)
 init archivey.formats.Hasher(*args, **kwargs)
 method archivey.formats.Hasher.digest(self) -> bytes
@@ -1071,6 +1072,7 @@ property archivey.formats.ReaderContext.encoding: str | None
 method archivey.formats.ReaderContext.hold(self, member: ArchiveMember, *, stored_name: str | None = None, reason: str | None = None) -> None
 method archivey.formats.ReaderContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
 method archivey.formats.ReaderContext.normalize_name(self, name: str, member_type: MemberType) -> str
+method archivey.formats.ReaderContext.open_nested(self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat) -> Iterator[MemberSpan]
 method archivey.formats.ReaderContext.report(self, code: DiagnosticCode, message: str, details: DiagnosticContext, *, member: ArchiveMember | None = None) -> None
 class archivey.formats.ReaderSource()
 property archivey.formats.ReaderSource.path: Path | None
