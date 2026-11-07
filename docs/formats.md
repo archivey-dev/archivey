@@ -1202,9 +1202,10 @@ other members because of a member's name any more. Setting it to `True` warns.
   is checked as its data is read.
 - `%ghost` files are listed in the package but never stored, and are not members.
 - **Hard links.** Files that share an inode are one file. The package stores the data with
-  the last of them, so archivey lists that one as the `FILE` and the others right after it as
+  the last of them, so archivey lists that one as the `FILE` and the others after it as
   `HARDLINK` members to it.
-- `ArchiveInfo.format_version` is `"4"` or `"6"`. `ArchiveInfo.extra` holds `rpm.name`,
+- `ArchiveInfo.format_version` is `"6"` for an RPM 6 package, `"4"` for an RPM 4 one, and
+  `"3"` for an old header with no immutable region. `ArchiveInfo.extra` holds `rpm.name`,
   `rpm.version`, `rpm.release`, `rpm.arch`, `rpm.epoch` (when set), `rpm.source`,
   `rpm.signed` and `rpm.payload_compressor`. Signatures are reported, not checked: use
   `rpm -K` for that.

@@ -261,6 +261,8 @@ class _Package:
     order: list[int] | None = None
     tamper_digest: int | None = None
     after_trailer: bytes = b""
+    # End a stripped payload with rpm's index -1 rather than the newc trailer.
+    stripped_end: bool = False
 
 
 def _size(f: _F) -> int:
@@ -356,9 +358,12 @@ def _build(package: _Package) -> bytes:
         pad()
         payload.write(data)
     pad()
-    trailer = b"TRAILER!!!\0"
-    fields = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, len(trailer), 0]
-    payload.write(b"070701" + b"".join(b"%08x" % v for v in fields) + trailer)
+    if package.stripped_end:
+        payload.write(b"07070Xffffffff")
+    else:
+        trailer = b"TRAILER!!!\0"
+        fields = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, len(trailer), 0]
+        payload.write(b"070701" + b"".join(b"%08x" % v for v in fields) + trailer)
     pad()
     raw = payload.getvalue() + package.after_trailer
     if package.compressor == b"gzip":
@@ -624,3 +629,67 @@ def test_a_name_that_is_not_utf8_follows_encoding() -> None:
     data = _build(_Package(files))
     with _open(data, encoding="latin-1") as reader:
         assert [m.name for m in reader.members()] == ["opt/café.txt"]
+
+
+def test_a_stripped_payload_can_end_with_index_minus_one() -> None:
+    """rpm's rpmcpioHeaderRead (lib/cpio.c) ends a stripped payload at index -1."""
+    data = _build(_Package(_tree(), stripped=True, stripped_end=True))
+    assert _listing(data) == _EXPECTED
+
+
+@pytest.mark.parametrize("stripped", [False, True], ids=["newc", "stripped"])
+def test_a_hard_link_stored_after_its_data(stripped: bool) -> None:
+    """The set's last file (h2, with the data) before an earlier link (h1): rpm
+    installs it, so h1 is listed, as a link to h2."""
+    data = _build(_Package(_tree(), order=[0, 1, 2, 5, 4, 6], stripped=stripped))
+    assert _listing(data) == _EXPECTED
+    with _open(data) as reader:
+        links = {m.name: m.link_target for m in reader.members()}
+    assert links["opt/t/h1"] == "opt/t/h2"
+
+
+def test_more_files_than_max_members_is_refused_before_the_list_is_built() -> None:
+    data = _build(_Package(_tree()))
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
+    with (
+        pytest.raises(ResourceLimitError, match="lists 7 files"),
+        _open(data, config=config) as reader,
+    ):
+        reader.members()
+
+
+def test_a_shared_directory_is_not_joined_into_every_name_up_front() -> None:
+    """DIRINDEXES lets every file share one long directory: joining the names up
+    front would take files x directory bytes for a header of files + directory."""
+    import tracemalloc
+
+    files = 4000
+    directory = b"/" + b"d" * 4000 + b"/"
+    tags: dict[int, tuple[int, object]] = {
+        63: (_BIN, b"\0" * 16),
+        1000: (_STRING, b"wide"),
+        1028: (_INT32, [0] * files),
+        1030: (_INT16, [0o100644] * files),
+        1116: (_INT32, [0] * files),
+        1117: (_STRING_ARRAY, [b"%d" % i for i in range(files)]),
+        1118: (_STRING_ARRAY, [directory]),
+        1124: (_STRING, b"cpio"),
+    }
+    trailer = b"TRAILER!!!\0"
+    fields = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, len(trailer), 0]
+    payload = b"070701" + b"".join(b"%08x" % v for v in fields) + trailer + b"\0" * 3
+    lead = b"\xed\xab\xee\xdb\x03" + b"\0" * 91
+    signature = _header({62: (_BIN, b"\0" * 16)})
+    data = lead + signature + _header(tags) + payload
+    # Joined, the names alone would be 16 MB.
+    tracemalloc.start()
+    try:
+        with (
+            pytest.raises(CorruptionError, match="ends without 4000"),
+            _open(data) as r,
+        ):
+            r.members()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 8 * 2**20

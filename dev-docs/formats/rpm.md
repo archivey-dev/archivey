@@ -42,11 +42,12 @@ listed, and scriptlets, dependencies and the changelog are not exposed.
   `./usr/bin/x`, or the *stripped* form (`07070X`, then the file's index in the header
   as 8 hexadecimal digits, and nothing else), which RPM 6 always uses and RPM 4 uses for
   a package with a file of 4 GiB or more. Entries are 4-byte aligned from the payload's
-  start, and the payload always ends with a newc `TRAILER!!!` entry.
+  start, and the payload ends with a newc `TRAILER!!!` entry. rpm also ends a stripped
+  payload at an index of `ffffffff` (`rpmcpioHeaderRead`), which it does not write.
 - **Ghost files are in the header only.** A `%ghost` file (flag bit 6) is never stored.
 - **Hard links:** regular, non-ghost files that share `FILEDEVICES` and `FILEINODES`.
-  Their entries come together, and only the set's last file in header order carries the
-  data.
+  rpm writes their entries together, and only the set's last file in header order
+  carries the data.
 - **A symlink's target is its entry's data**, and also in `FILELINKTOS`.
 
 ## 2. The pipeline here
@@ -74,8 +75,9 @@ in every format. A type the header does not name is `CorruptionError`.
 Hard links are handled as in newc CPIO: the earlier, empty entries are held
 (`ReaderContext.hold()`, counted toward the listing's limits), and the set's last file,
 which carries the data, is yielded as the `FILE` with the held ones as `HARDLINK`
-members to it after it. A symlink's payload bytes are skipped; the target is the
-header's.
+members to it after it. An earlier link the payload stores after that file, which rpm
+installs all the same, is yielded as a `HARDLINK` when its entry arrives. A symlink's
+payload bytes are skipped; the target is the header's.
 
 `ArchiveInfo`:
 
@@ -134,6 +136,15 @@ surface is memory a header can ask for:
   directory.
 - A payload entry's name is bounded to 4096 bytes (rpm's own bound); a stripped entry's
   index must name a file.
+- A header listing more files, or more directory names, than
+  `ListingLimits.max_members` is refused before any per-file list is built. Below that a
+  file costs about 400 bytes until the payload reaches it (about 100 MiB at the default
+  262 144).
+- Names stay split as the header stores them (directory, base) and members are made as
+  the payload reaches each file, since `DIRINDEXES` lets every file share one long
+  directory name: joined up front, the names grow with files times directory length.
+  Each member's name is then weighed by the listing's limits as it is listed.
+- A string array cannot declare more strings than its bytes can hold.
 - Held hard links are charged to the listing's limits as they are held.
 - The check for bytes after the trailer reads at most 1 MiB.
 - The payload is decoded by archivey's codecs, under the caller's decoder limits and the

@@ -42,7 +42,9 @@ the `FILE` and the others `HARDLINK` members to it, listed after it.
 | A package whose payload is in the stripped form | The same members as its newc twin |
 | A `%ghost` file | Not a member |
 | A source package | Its spec file under its relative name; `extra["rpm.source"] is True` |
-| A header that stores `RPMFORMAT` 6 | `format_version == "6"`; otherwise `"4"` |
+| A header that stores `RPMFORMAT` 6 | `format_version == "6"`; otherwise `"4"` for a header with an immutable region (tag 63), else `"3"` |
+| A hard-link set whose data-carrying file the payload stores before an earlier link | The earlier link listed when its entry arrives, as a `HARDLINK` to the file |
+| A stripped payload ending with index `ffffffff` (rpm's own end mark) rather than the newc trailer | The same members |
 
 ### Requirement: Check each file's digest
 

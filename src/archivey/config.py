@@ -379,6 +379,8 @@ class ListingLimits:
     not list UDF: an image whose UDF tree has more names than its ISO 9660 tree can be
     refused for the UDF tree. ISO counts members per tree but weighs bytes as one sum
     for the whole image, every tree together.
+    RPM refuses a header that lists more files than ``max_members`` at open, before it
+    builds the file list.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than is left of ``max_metadata_bytes``, before reading it.
     SquashFS walks the whole directory tree before it lists a member, and weighs the

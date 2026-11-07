@@ -217,6 +217,8 @@ class Header:
         if entry.type not in (_STRING, _STRING_ARRAY, _I18NSTRING):
             raise self._bad(tag, f"has type {entry.type}, not a string")
         count = 1 if entry.type == _STRING else entry.count
+        if count > len(self._data) - entry.offset:
+            raise self._bad(tag, f"declares {count} strings in fewer bytes")
         values = []
         at = entry.offset
         for _ in range(count):
@@ -226,6 +228,11 @@ class Header:
             values.append(self._data[at:end])
             at = end + 1
         return values
+
+    def count(self, tag: int) -> int:
+        """How many values the tag's entry declares, 0 when it is absent."""
+        entry = self._entries.get(tag)
+        return 0 if entry is None else entry.count
 
     def string(self, tag: int) -> bytes | None:
         values = self.strings(tag)
@@ -266,12 +273,19 @@ def _read_header(
     return Header(entries, data, what), 16 + total
 
 
-@dataclass
+@dataclass(slots=True)
 class _File:
-    """One file of the header's list."""
+    """One file of the header's list.
+
+    The name stays split as the header stores it, directory and base, and the member
+    is made only when the payload reaches the file: ``DIRINDEXES`` lets many files
+    share one long directory, so joining every name up front would cost far more
+    than the header (rpm joins them lazily too, ``rpmfilesFN``).
+    """
 
     index: int
-    raw_name: bytes
+    directory: bytes
+    base: bytes
     mode: int
     size: int
     flags: int
@@ -280,16 +294,25 @@ class _File:
     stored: str = ""
     found: bool = False
 
+    @property
+    def raw_name(self) -> bytes:
+        return self.directory + self.base
+
 
 @dataclass
 class _Package:
     """What the walk learns from the lead and the headers."""
 
     files: list[_File]
-    by_name: dict[bytes, int]
+    # (directory, base) -> file index: the bytes objects the header's lists hold.
+    by_name: dict[tuple[bytes, bytes], int]
     compressor: StreamFormat | None
     digest: tuple[str, Callable[[], Hasher]] | None
     digests: list[bytes] | None
+    mtimes: list[int] | None
+    users: list[bytes] | None
+    groups: list[bytes] | None
+    targets: list[bytes] | None
     held: dict[int, list[_File]] = field(default_factory=dict)
     base: int = 0
 
@@ -337,13 +360,11 @@ class RpmReader(SequentialReader):
                 )
             file.found = True
             yield from self._entry(payload, package, file)
-        missing = [
-            f.raw_name for f in files if not f.found and not f.flags & RPMFILE_GHOST
-        ]
+        missing = [f for f in files if not f.found and not f.flags & RPMFILE_GHOST]
         if missing:
             raise CorruptionError(
                 f"RPM payload ends without {len(missing)} of the header's files, "
-                f"the first {missing[0]!r}"
+                f"the first {_shown(missing[0].raw_name)}"
             )
         self._check_end(payload)
 
@@ -375,18 +396,12 @@ class RpmReader(SequentialReader):
                     f"RPM payload compressor {_shown(compressor_name)} is not supported"
                 )
         self._describe(signature, header, compressor_name)
-        files = self._files(header)
+        files, columns = self._files(header)
         algorithm = header.number(TAG_FILEDIGESTALGO)
         digest = _DIGESTS.get(1 if algorithm is None else algorithm)
-        digests = header.strings(TAG_FILEDIGESTS)
-        if digests is not None and len(digests) != len(files):
-            raise CorruptionError(
-                f"RPM header lists {len(files)} files and {len(digests)} digests"
-            )
-        by_name = {}
-        for file in files:
-            by_name[file.raw_name] = file.index
-        return _Package(files, by_name, compressor, digest, digests)
+        digests = self._strings_column(header, TAG_FILEDIGESTS, len(files))
+        by_name = {(file.directory, file.base): file.index for file in files}
+        return _Package(files, by_name, compressor, digest, digests, *columns)
 
     def _describe(
         self,
@@ -426,7 +441,27 @@ class RpmReader(SequentialReader):
             version = 4 if TAG_HEADERIMMUTABLE in header else 3
         self._version = str(version)
 
-    def _files(self, header: Header) -> list[_File]:
+    def _files(
+        self, header: Header
+    ) -> tuple[
+        list[_File],
+        tuple[
+            list[int] | None, list[bytes] | None, list[bytes] | None, list[bytes] | None
+        ],
+    ]:
+        """The header's file list, checked, and the columns members are made from."""
+        names_tag = TAG_BASENAMES if TAG_BASENAMES in header else TAG_OLDFILENAMES
+        count = header.count(names_tag)
+        # Before any per-file list is built: each file costs far more in memory than
+        # the few header bytes it can take.
+        max_members = self._context.config.listing_limits.max_members
+        if max_members is not None:
+            for tag, what in ((names_tag, "files"), (TAG_DIRNAMES, "directories")):
+                if header.count(tag) > max_members:
+                    raise ResourceLimitError(
+                        f"Listing limit reached: max_members={max_members} "
+                        f"(the RPM header lists {header.count(tag)} {what})"
+                    )
         basenames = header.strings(TAG_BASENAMES)
         if basenames is not None:
             dirnames = header.strings(TAG_DIRNAMES) or []
@@ -436,17 +471,16 @@ class RpmReader(SequentialReader):
                     f"RPM header lists {len(basenames)} base names and "
                     f"{len(indexes)} directory indexes"
                 )
-            names = []
+            split = []
             for base, at in zip(basenames, indexes, strict=True):
                 if at >= len(dirnames):
                     raise CorruptionError(
-                        f"RPM header: directory index {at} of {base!r} is past the "
-                        f"{len(dirnames)} directory names"
+                        f"RPM header: directory index {at} of {_shown(base)} is past "
+                        f"the {len(dirnames)} directory names"
                     )
-                names.append(dirnames[at] + base)
+                split.append((dirnames[at], base))
         else:
-            names = header.strings(TAG_OLDFILENAMES) or []
-        count = len(names)
+            split = [_split(name) for name in header.strings(TAG_OLDFILENAMES) or []]
 
         def column(tag: int, required: bool = False) -> list[int] | None:
             values = header.ints(tag)
@@ -469,11 +503,27 @@ class RpmReader(SequentialReader):
         mtimes = column(TAG_FILEMTIMES)
         inodes = column(TAG_FILEINODES)
         devices = column(TAG_FILEDEVICES)
-        links = self._strings_column(header, TAG_FILELINKTOS, count)
+        targets = self._strings_column(header, TAG_FILELINKTOS, count)
         users = self._strings_column(header, TAG_FILEUSERNAME, count)
         groups = self._strings_column(header, TAG_FILEGROUPNAME, count)
 
-        files = [_File(i, names[i], modes[i], sizes[i], flags[i]) for i in range(count)]
+        files = [
+            _File(i, split[i][0], split[i][1], modes[i], sizes[i], flags[i])
+            for i in range(count)
+        ]
+        for file in files:
+            if file.flags & RPMFILE_GHOST:
+                continue
+            kind = file.mode & _S_IFMT
+            if kind not in (_S_IFREG, _S_IFDIR, _S_IFLNK) and kind not in _SPECIAL:
+                raise CorruptionError(
+                    f"RPM header: {_shown(file.raw_name)} has the unknown file type "
+                    f"{kind:#o}"
+                )
+            if kind == _S_IFLNK and (targets is None or not targets[file.index]):
+                raise CorruptionError(
+                    f"RPM header: symlink {_shown(file.raw_name)} has no target"
+                )
         # Hard-link sets, as rpm builds them (rpmfilesBuildNLink): regular files that
         # are not ghosts and share a device and a positive inode number.
         if inodes is not None and devices is not None:
@@ -490,66 +540,59 @@ class RpmReader(SequentialReader):
                 if len(members) > 1:
                     for i in members:
                         files[i].links = tuple(members)
+        return files, (mtimes, users, groups, targets)
 
+    def _member(self, package: _Package, file: _File) -> ArchiveMember:
+        """The member for a file the payload has reached."""
         context = self._context
-        for file in files:
-            if file.flags & RPMFILE_GHOST:
-                continue
-            kind = file.mode & _S_IFMT
-            special = _SPECIAL.get(kind)
-            if kind == _S_IFREG:
-                member_type = MemberType.FILE
-            elif kind == _S_IFDIR:
-                member_type = MemberType.DIRECTORY
-            elif kind == _S_IFLNK:
-                member_type = MemberType.SYMLINK
-            elif special is not None:
-                member_type = MemberType.OTHER
-            else:
-                raise CorruptionError(
-                    f"RPM header: {_shown(file.raw_name)} has the unknown file type {kind:#o}"
-                )
-            # The header's names are absolute; the payload stores ``./usr/bin/x``,
-            # which is what rpm2cpio and cpio extract, inside the directory given.
-            stored = context.decode_name(
-                b"." + file.raw_name
-                if file.raw_name.startswith(b"/")
-                else file.raw_name
-            )
-            member = ArchiveMember(
-                type=member_type,
-                name=context.normalize_name(stored, member_type),
-                raw_name=file.raw_name,
-                size=file.size if member_type is MemberType.FILE else None,
-                modified=None if mtimes is None else _time(mtimes[file.index]),
-                mode=file.mode & 0o7777,
-                uname=None
-                if users is None
-                else users[file.index].decode("utf-8", "replace"),
-                gname=None
-                if groups is None
-                else groups[file.index].decode("utf-8", "replace"),
-            )
-            if member_type is MemberType.SYMLINK:
-                if links is None or not links[file.index]:
-                    raise CorruptionError(
-                        f"RPM header: symlink {_shown(file.raw_name)} has no target"
-                    )
-                member.link_target = context.decode_name(links[file.index])
-            if special is not None:
-                member.extra["special_file_type"] = special
-            file.member = member
-            file.stored = stored
-        return files
+        kind = file.mode & _S_IFMT
+        special = _SPECIAL.get(kind)
+        if kind == _S_IFREG:
+            member_type = MemberType.FILE
+        elif kind == _S_IFDIR:
+            member_type = MemberType.DIRECTORY
+        elif kind == _S_IFLNK:
+            member_type = MemberType.SYMLINK
+        else:
+            member_type = MemberType.OTHER  # _files refused any other type
+        raw_name = file.raw_name
+        # The header's names are absolute; the payload stores ``./usr/bin/x``,
+        # which is what rpm2cpio and cpio extract, inside the directory given.
+        stored = context.decode_name(
+            b"." + raw_name if raw_name.startswith(b"/") else raw_name
+        )
+        users, groups, mtimes = package.users, package.groups, package.mtimes
+        member = ArchiveMember(
+            type=member_type,
+            name=context.normalize_name(stored, member_type),
+            raw_name=raw_name,
+            size=file.size if member_type is MemberType.FILE else None,
+            modified=None if mtimes is None else _time(mtimes[file.index]),
+            mode=file.mode & 0o7777,
+            uname=None
+            if users is None
+            else users[file.index].decode("utf-8", "replace"),
+            gname=None
+            if groups is None
+            else groups[file.index].decode("utf-8", "replace"),
+        )
+        if member_type is MemberType.SYMLINK:
+            assert package.targets is not None  # _files checked it
+            member.link_target = context.decode_name(package.targets[file.index])
+        if special is not None:
+            member.extra["special_file_type"] = special
+        file.member = member
+        file.stored = stored
+        return member
 
     @staticmethod
     def _strings_column(header: Header, tag: int, count: int) -> list[bytes] | None:
-        values = header.strings(tag)
-        if values is not None and len(values) != count:
+        if tag in header and header.count(tag) != count:
             raise CorruptionError(
-                f"RPM header lists {count} files and {len(values)} values of tag {tag}"
+                f"RPM header lists {count} files and {header.count(tag)} values of "
+                f"tag {tag}"
             )
-        return values
+        return header.strings(tag)
 
     # The payload ------------------------------------------------------------------
 
@@ -565,6 +608,9 @@ class RpmReader(SequentialReader):
             raw = payload.read_exact(8)
             index = _hex(raw, "file index", offset)
             payload.skip(-(payload.offset - package.base) % 4)
+            # rpm's own end mark for a stripped payload (lib/cpio.c,
+            # rpmcpioHeaderRead: an index of -1 is RPMERR_ITER_END). rpm 4.18 and 6.0
+            # write the newc trailer after a stripped payload too, and read either.
             if index == 0xFFFFFFFF:
                 return None, 0
             if index >= len(package.files):
@@ -596,9 +642,9 @@ class RpmReader(SequentialReader):
         # %_noPayloadPrefix); rpmfilesFindOFN looks the header name up.
         # A source package's names are relative, and stored as they are.
         rest = name.removeprefix(b"./")
-        index = package.by_name.get(b"/" + rest)
+        index = package.by_name.get(_split(b"/" + rest))
         if index is None:
-            index = package.by_name.get(rest)
+            index = package.by_name.get(_split(rest))
         if index is None:
             raise CorruptionError(
                 f"RPM payload entry at offset {offset} stores {_shown(name)}, which the "
@@ -628,8 +674,7 @@ class RpmReader(SequentialReader):
     def _entry(
         self, payload: ForwardStream, package: _Package, file: _File
     ) -> Iterator[MemberSpan]:
-        member = file.member
-        assert member is not None
+        member = self._member(package, file)
         if member.type is MemberType.SYMLINK:
             # The target, which the header already gave.
             yield MemberSpan(member, 0, stored_name=file.stored)
@@ -640,17 +685,26 @@ class RpmReader(SequentialReader):
             return
         if file.links and file.links[-1] != file.index:
             # An earlier link of a set: empty, its data comes with the set's last.
+            data = package.files[file.links[-1]]
+            if data.member is not None:
+                # The payload stored the set's last file first, which rpm installs
+                # all the same: a link to it, now.
+                yield self._link(member, data.member, file.stored)
+                return
             self._context.hold(member, stored_name=file.stored, reason=_HELD)
             package.held.setdefault(file.links[-1], []).append(file)
             return
         yield MemberSpan(member, file.size, self._digests(package, file), file.stored)
         for link in package.held.pop(file.index, []):
-            held = link.member
-            assert held is not None
-            held.type = MemberType.HARDLINK
-            held.link_target = member.name
-            held.size = None
-            yield MemberSpan(held, 0, stored_name=link.stored)
+            assert link.member is not None
+            yield self._link(link.member, member, link.stored)
+
+    @staticmethod
+    def _link(member: ArchiveMember, data: ArchiveMember, stored: str) -> MemberSpan:
+        member.type = MemberType.HARDLINK
+        member.link_target = data.name
+        member.size = None
+        return MemberSpan(member, 0, stored_name=stored)
 
     @staticmethod
     def _digests(package: _Package, file: _File) -> tuple[MemberDigest, ...]:
@@ -691,6 +745,12 @@ class RpmReader(SequentialReader):
                 )
                 return
             scanned += len(chunk)
+
+
+def _split(name: bytes) -> tuple[bytes, bytes]:
+    """A path as the header stores it: the directory, with its slash, and the base."""
+    cut = name.rfind(b"/") + 1
+    return name[:cut], name[cut:]
 
 
 def _shown(raw: bytes) -> str:
