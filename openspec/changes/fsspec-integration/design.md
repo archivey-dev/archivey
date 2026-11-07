@@ -102,14 +102,14 @@ keeps holding (`archive-reading` §Archive metadata access, DR-5).
 
 **What archivey takes from the `OpenFile`, and what it refuses.** An `OpenFile` also
 carries `mode`, `compression`, `encoding`, `errors` and `newline`, and two of them change
-the bytes it would deliver. A raw range read ignores them, so archivey refuses the ones
-it cannot honour rather than drop them in silence (DR-1, DR-15):
+the bytes it would deliver. A raw range read ignores them, so archivey honours them some
+other way or refuses them, rather than drop them in silence (DR-1, DR-15):
 
 | Field | Handling |
 | --- | --- |
 | `fs`, `path` | Used: every range read and the size come from them |
 | `mode` other than `"rb"` | `ArchiveyUsageError` (a `ValueError`) naming the mode |
-| `compression` not `None` after fsspec resolves it (`"infer"` on `x.zip.gz` is `"gzip"`) | `ArchiveyUsageError` naming the compression and the fix: open without it, and archivey reads the compressed stream itself |
+| `compression` not `None` after fsspec resolves it (`"infer"` on `x.zip.gz` is `"gzip"`) | Read through `of.open()`, fsspec's decompressing stream, which archivey owns and closes: no range reads, and a seek back decodes again. One WARNING says so and, for gzip, bz2, xz/lzma, zstd and lz4, that `compression=None` lets archivey decode and read by range. Not turned into `format=`: `x.zip.gz` with `format=` gzip would be a one-member GZ, not the ZIP fsspec delivers. Refused in a volume sequence |
 | `encoding`, `errors`, `newline` | Meaningless in binary mode; ignored, as fsspec ignores them for `"rb"` |
 
 **The boundary row for an `OpenFile` source** (`access-mode-and-cost` §boundary table):

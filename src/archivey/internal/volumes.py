@@ -34,6 +34,9 @@ from archivey.internal.remote import (
     RangeSource,
     WindowPool,
     is_open_file,
+    open_decompressed,
+    open_file_compression,
+    open_file_name,
 )
 from archivey.internal.source import ArchiveSource, seek_is_expensive
 from archivey.internal.streams.streamtools import (
@@ -1428,6 +1431,16 @@ def _resolve_single(
     source: object, *, discover_volumes: bool, max_read_through: int
 ) -> ResolvedSource:
     if is_open_file(source):
+        if open_file_compression(source) is not None:
+            # fsspec decompresses: the archive is the decompressed stream, which
+            # archivey opened and so closes.
+            stream = cast("BinaryIO", open_decompressed(source))
+            try:
+                opened = ArchiveSource.for_opened_stream(stream)
+            except BaseException:
+                stream.close()
+                raise
+            return ResolvedSource(opened, open_file_name(source), 1)
         ranged = RangeSource.from_open_file(
             source, pool=WindowPool(), max_read_through=max_read_through
         )
