@@ -130,6 +130,9 @@ class DebReader(SequentialReader):
             raise CorruptionError(
                 "Debian package does not start with its debian-binary member"
             )
+        # dpkg-deb allocates whatever size the header gives; archivey counts it
+        # against max_metadata_bytes before reading it, like the control files.
+        self._count(size, "debian-binary member")
         self._read_version(stream.read_exact(size))
         stream.read(size & 1)
         control = False
@@ -200,7 +203,7 @@ class DebReader(SequentialReader):
                 target = context.normalize_name(member.link_target, MemberType.FILE)
                 member.link_target = CONTROL_DIR + target
             if member.type is MemberType.FILE and inner in ("control", "md5sums"):
-                held = self._hold(span)
+                held = self._hold(span, inner)
                 if inner == "control":
                     self._read_control(held)
                 else:
@@ -213,6 +216,8 @@ class DebReader(SequentialReader):
         for span in context.open_nested(data, fmt):
             member = span.member
             if member.type is MemberType.HARDLINK and member.link_target:
+                # The nested reader hands the target over as the tar stores it
+                # ("./usr/bin/x"), and the listing normalizes names, not targets.
                 member.link_target = context.normalize_name(
                     member.link_target, MemberType.FILE
                 )
@@ -222,17 +227,25 @@ class DebReader(SequentialReader):
                     member.hashes = {**member.hashes, HashAlgorithm.MD5: digest}
             yield span
 
-    def _hold(self, span: MemberSpan) -> bytes:
+    def _hold(self, span: MemberSpan, name: str) -> bytes:
         """A control file's bytes, read whole, against ``max_metadata_bytes``."""
+        # ``name`` is "control" or "md5sums", never a name from elsewhere.
+        self._count(span.member.size or 0, f"control file {name}")
+        return span.data.read() if span.data is not None else b""
+
+    def _count(self, size: int, what: str) -> None:
+        """Count ``size`` more held bytes, refusing before they are read.
+
+        ``debian-binary``, ``control`` and ``md5sums`` are held whole, and their
+        sizes come from the package, so their total is what the limit bounds.
+        """
         limit = self._context.config.listing_limits.max_metadata_bytes
-        size = span.member.size or 0
         if limit is not None and self._held + size > limit:
             raise ResourceLimitError(
-                f"Debian control file of {size} bytes, over max_metadata_bytes={limit}"
+                f"Debian package {what} of {size} bytes takes the metadata "
+                f"held to {self._held + size} bytes, over max_metadata_bytes={limit}"
             )
-        held = span.data.read() if span.data is not None else b""
-        self._held += len(held)
-        return held
+        self._held += size
 
     def _read_control(self, data: bytes) -> None:
         """The first paragraph's Package, Version and Architecture fields."""

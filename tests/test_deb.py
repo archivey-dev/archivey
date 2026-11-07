@@ -27,6 +27,7 @@ from archivey import (
     open_archive,
 )
 from tests.conftest import requires_zstd
+from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 
 DEB = ArchiveFormat.DEB
@@ -322,8 +323,62 @@ def test_held_control_files_count_against_max_metadata_bytes() -> None:
         open_archive(io.BytesIO(raw), config=config(40)) as reader,
     ):
         reader.members()
+    # The sum counts: control and md5sums each fit, together they do not.
+    held = 4 + len(CONTROL) + len(_md5sums(FILES))
+    with (
+        pytest.raises(ResourceLimitError, match=f"held to {held} bytes"),
+        open_archive(io.BytesIO(raw), config=config(held - 1)) as reader,
+    ):
+        reader.members()
     with open_archive(io.BytesIO(raw), config=config(4096)) as reader:
         assert reader.read("usr/a") == b"alpha"
+
+
+def test_a_huge_version_member_is_refused_before_it_is_read() -> None:
+    # A header that declares 10 GB over a few bytes of body: the size is checked
+    # against max_metadata_bytes before any of it is read.
+    raw = bytearray(_deb())
+    raw[8 + 48 : 8 + 58] = b"9999999999"
+
+    def refuse() -> None:
+        with (
+            pytest.raises(ResourceLimitError, match="debian-binary member"),
+            open_archive(NonSeekableBytesIO(bytes(raw)), streaming=True) as reader,
+        ):
+            reader.members()
+
+    refuse()
+    assert traced_peak(refuse) < 4 * 2**20
+
+
+def test_the_package_fields_appear_once_the_control_tar_is_read() -> None:
+    with open_archive(io.BytesIO(_deb())) as reader:
+        assert dict(reader.info.extra) == {}
+        assert reader.info.format_version == "2.0"
+        reader.members()
+        assert reader.info.extra["deb.package"] == "tiny"
+
+
+def test_md5_is_checked_where_fips_refuses_it_for_security(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    new = hashlib.new
+
+    def fips_new(name: str, *args: object, **kwargs: object) -> object:
+        if name == "md5" and kwargs.get("usedforsecurity", True):
+            raise ValueError("[digital envelope routines] unsupported")
+        return new(name, *args, **kwargs)  # pyrefly: ignore[bad-argument-type]
+
+    monkeypatch.setattr(hashlib, "new", fips_new)
+    with open_archive(io.BytesIO(_deb())) as reader:
+        for member, stream in reader.stream_members():
+            if member.name == "usr/a":
+                assert stream is not None
+                assert stream.read() == b"alpha"
+                assert member.verified is Verification.CHECKSUM
+                break
+        else:
+            pytest.fail("usr/a is not listed")
 
 
 def test_a_cut_package_raises() -> None:

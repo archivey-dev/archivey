@@ -51,8 +51,9 @@ matches wins and ar's `!<arch>\n` matches a package too. The extensions are `.de
 
 ### 2.2 Open and list
 
-`DebReader.walk` checks the ar magic, reads `debian-binary` (the major version must be 2:
-`dpkg-deb` reads 2.x and refuses others), skips `_` members, and hands each tar to
+`DebReader.walk` checks the ar magic, reads `debian-binary` (its size counted against
+`max_metadata_bytes` before the read, since `dpkg-deb` allocates whatever the header
+gives; the major version must be 2: `dpkg-deb` reads 2.x and refuses others), skips `_` members, and hands each tar to
 `open_nested` through `stream.take(size)`:
 
 - **Control tar.** Each member is renamed under `DEBIAN/`; the tar's `./` root becomes
@@ -60,6 +61,8 @@ matches wins and ar's `!<arch>\n` matches a package too. The extensions are `.de
   checked against `max_metadata_bytes`, together), and the span is yielded with those
   bytes as its data. `control`'s first paragraph gives `extra["deb.package"]`,
   `["deb.version"]` and `["deb.architecture"]`; `md5sums` gives a name-to-digest map.
+  Open takes only the first walk step (the control tar's `./`), so the `deb.*` keys are
+  missing on every source until the listing or iteration reaches `control`.
 - **Data tar.** Members keep their names (the tar's `./` root lists as `.`, as reading the
   tar alone gives). A `FILE` whose normalized name is in the map gets
   `hashes[HashAlgorithm.MD5]`, which the read path checks as it checks any listed digest.

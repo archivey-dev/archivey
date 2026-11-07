@@ -1010,6 +1010,8 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``ar.symbol_table`` (``bool``)
     * ``ar.dialect`` (``str``)
     * ``deb.package`` (``str``) — the ``Package`` field of the package's control file.
+      The three ``deb.*`` keys appear once the listing or iteration has read the
+      control tar, on any source; they are absent right after ``open_archive``.
     * ``deb.version`` (``str``) — its ``Version`` field.
     * ``deb.architecture`` (``str``) — its ``Architecture`` field.
     * ``cpio.variant`` (``str``)

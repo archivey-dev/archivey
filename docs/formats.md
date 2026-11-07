@@ -1202,7 +1202,9 @@ other members because of a member's name any more. Setting it to `True` warns.
   `control.tar.xz`, `data.tar.xz`), to read a tar whole.
 - `ArchiveInfo.format_version` is the `debian-binary` version (`"2.0"`), and
   `ArchiveInfo.extra` has `deb.package`, `deb.version` and `deb.architecture`, from the control
-  file. During a streaming pass they appear once the walk has read the control tar.
+  file. They appear once the listing or iteration has read the control tar, on any source:
+  `info.extra` is empty right after `open_archive`, until `members()` or the first members of
+  `stream_members()`.
 - Each file that `DEBIAN/md5sums` lists gets its MD5 in `member.hashes`, and a full read checks
   it: a file that does not match raises `CorruptionError`. A line of `md5sums` that is not an
   MD5 and a name is skipped, and a file it does not list has no digest.
