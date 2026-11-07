@@ -704,6 +704,34 @@ decode contradicts them. A walk over the seek-table cap SHALL report scan `mgzip
 | Walk over the seek-table cap | `SEEK_INDEX_DEGRADED` (scan `mgzip_blocks`, `SeekTableThinned`) |
 | A member's ISIZE claims one byte more; walk, then a read from the start | The read raises `CorruptionError` at that member's trailer |
 
+### Requirement: bzip3 blocks are seek points, walked without decoding
+
+On declared seek demand every bzip3 block with output after the first SHALL be a seek
+point, recorded when a forward read reaches it, with the file's block size as its resume
+state: every block decodes on its own, and its 8-byte header gives its compressed and
+decoded size. A forward seek past the known points, a `SEEK_END` or a size query SHALL
+walk the block headers from the start of the file, jumping from header to header and
+decoding nothing, for every point and the total size. The walk SHALL stop quietly at a
+header whose sizes the decoder would refuse or at a block that runs past the end of the
+file, keeping the points before it; the size is known only when the last block ends
+exactly at the end of the file. The sizes are trusted like the xz and lzip indexes
+(threat-model O17); a block that is decoded is still checked against its header and its
+CRC-32. A stream opened without seek demand SHALL keep no points and SHALL NOT walk. A
+walk over the seek-table cap SHALL report scan `bzip3_blocks`.
+
+#### Scenario: bzip3 block matrix
+
+| Case | Expected |
+| --- | --- |
+| `seek(0, SEEK_END)` | Total from the walk; no block decoded |
+| Seek into block N, forward or backward | Decoding resumes at block N's start; one block decoded |
+| Read forward, then seek back | Resumes at the start of the block holding the target |
+| One-block file | No point but the start |
+| The last block cut | Points for the whole blocks; no size; a read into the cut block raises `TruncatedError` |
+| Bytes after the last block | Points for the blocks; no size; reading past the last block raises `CorruptionError` |
+| A header whose sizes the decoder refuses | Points for the blocks before it; no size |
+| Stream opened without seek demand | No walk, no points |
+
 ### Requirement: gzip decodes record zlib snapshot points
 
 On declared seek demand, the standard library engine SHALL record a seek point inside a

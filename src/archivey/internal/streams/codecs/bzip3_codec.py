@@ -27,6 +27,15 @@ whole, checked block at a time. The decoder runs in a child process unless
 ``process_isolation`` is ``NONE``, as PPMd's does: libbzip3 had seven memory-safety
 CVEs in 2023.
 
+**Seeking.** Every block decodes on its own, and its header gives both its compressed
+and decoded size. Under declared seek demand each block a read reaches is a seek point
+(:class:`~archivey.internal.streams.codecs.framed_decoder.BlockResumable`), and on a
+source that can seek :func:`build_bzip3_index` walks the block headers from the start
+of the file without decoding, one 8-byte read per block, for every point and the size.
+A seek then decodes at most one block. The walk trusts the block sizes, as the xz and
+lzip indexes are trusted (threat-model O17); a block that is decoded is still checked
+against its header and its CRC-32.
+
 **What a file can make this allocate.** libbzip3 allocates its state for the block
 size the header declares, before any block: a swap buffer and a suffix array of four
 bytes per byte, both of ``bz3_bound(block size)``, and a 1 MiB LZP table. The binding
@@ -40,8 +49,9 @@ reads (the ``bzip3`` tool's default is 16 MiB).
 
 from __future__ import annotations
 
+import io
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from archivey.config import ProcessIsolation
 from archivey.exceptions import (
@@ -51,6 +61,7 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.internal.config import StreamConfig, check_decoder_memory
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
@@ -58,7 +69,13 @@ from archivey.internal.streams.codecs.base import (
     CodecParams,
     StreamCodec,
 )
+from archivey.internal.streams.codecs.framed_decoder import StreamIndex
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
+from archivey.internal.streams.decompressor_stream import (
+    SeekPoint,
+    SpacedCollector,
+    emit_index_thinned,
+)
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,
@@ -133,6 +150,27 @@ class Bzip3Decompressor:
         self._ended = False
         # Nothing can follow the last block, so no byte is ever left over.
         self.unused_data = b""
+        # Input bytes framed so far (the header and whole blocks) and output bytes
+        # decoded, from where this decompressor started, and the blocks begun since
+        # ``take_block_starts`` last asked (``BlockResumable``).
+        self._consumed = 0
+        self._decoded = 0
+        self._block_starts: list[tuple[int, int, object]] = []
+
+    def take_block_starts(self) -> list[tuple[int, int, object]]:
+        """The blocks with output decoded since the last call: their compressed and
+        output offsets from this decompressor's start, and the block size, which is
+        what :meth:`resume` needs."""
+        starts, self._block_starts = self._block_starts, []
+        return starts
+
+    def resume(self, state: object) -> None:
+        """Start inside a file whose header declared ``state`` as its block size: the
+        input begins at a block header."""
+        assert isinstance(state, int)
+        assert self._block_size is None and not self._input
+        self._check_block_size(state)
+        self._block_size = state
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
         if data:
@@ -186,6 +224,7 @@ class Bzip3Decompressor:
         self._check_block_size(block_size)
         self._block_size = block_size
         del self._input[:_HEADER_SIZE]
+        self._consumed += _HEADER_SIZE
         return True
 
     def _buffered_block(self) -> tuple[int, int] | None:
@@ -239,6 +278,10 @@ class Bzip3Decompressor:
                 "declares"
             )
         self._output = memoryview(out)
+        if decoded:
+            self._block_starts.append((self._consumed, self._decoded, self._block_size))
+        self._consumed += end
+        self._decoded += decoded
 
     def _call_native(self, data: bytes) -> bytes:
         try:
@@ -339,8 +382,70 @@ class Bzip3Codec(StreamCodec):
         )
 
     @override
+    def stream_index(
+        self, params: CodecParams, config: StreamConfig
+    ) -> StreamIndex | None:
+        del params
+        if not config.seekable:
+            return None
+        # Declared seek demand only, as zstd (``seekable-decompressor-streams``): no
+        # stream follows the last block, so the points are the blocks.
+        collector = config.collector
+        return StreamIndex(
+            resumes_at=lambda data: False,
+            build=lambda inner, last: build_bzip3_index(inner, last, collector),
+        )
+
+    @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         # The decompressor turns the binding's ValueError into CorruptionError itself.
         # MemoryError propagates unchanged, as the error-handling spec asks.
         del exc
         return None
+
+
+def build_bzip3_index(
+    inner: BinaryIO, last_known: SeekPoint, collector: DiagnosticCollector | None
+) -> tuple[list[SeekPoint], int | None]:
+    """Seek points at every block with output after ``last_known``, and the total
+    size, from the block headers alone.
+
+    The walk jumps from block header to block header. It ends quietly at a header
+    whose sizes the decoder would refuse, or at a block that runs past the end of the
+    file: the points before it stand, and the decode raises when it gets there. The
+    size is known only when the last block ends exactly at the end of the file. More
+    blocks than the seek-table cap are thinned, as for BGZF.
+    """
+    file_size = inner.seek(0, io.SEEK_END)
+    inner.seek(0)
+    header = inner.read(_HEADER_SIZE)
+    if len(header) < _HEADER_SIZE or header[: len(BZIP3_MAGIC)] != BZIP3_MAGIC:
+        return [], None
+    block_size = _s32(header, len(BZIP3_MAGIC))
+    if not MIN_BLOCK_SIZE <= block_size <= MAX_BLOCK_SIZE:
+        return [], None
+    bound = bz3_bound(block_size)
+    kept: SpacedCollector[tuple[int, int]] = SpacedCollector(lambda b: b[1])
+    offset, decoded = _HEADER_SIZE, 0
+    while offset + _BLOCK_HEADER_SIZE <= file_size:
+        inner.seek(offset)
+        sizes = inner.read(_BLOCK_HEADER_SIZE)
+        if len(sizes) < _BLOCK_HEADER_SIZE:
+            break
+        compressed, block_decoded = _s32(sizes, 0), _s32(sizes, 4)
+        end = offset + _BLOCK_HEADER_SIZE + compressed
+        if not (0 <= compressed <= bound and 0 <= block_decoded <= block_size):
+            break
+        if end > file_size:
+            break
+        if block_decoded:
+            kept.add((offset, decoded))
+        offset, decoded = end, decoded + block_decoded
+    if kept.thinned:
+        emit_index_thinned(collector, "bzip3", "bzip3_blocks", units="blocks")
+    points = [
+        SeekPoint(start, comp, block_size)
+        for comp, start in kept.items
+        if start > last_known.decompressed_offset
+    ]
+    return points, decoded if offset == file_size else None
