@@ -273,6 +273,46 @@ def test_bytes_after_the_last_block(tail: bytes) -> None:
 
 
 @needs_bzip3
+@pytest.mark.parametrize("isolation", ISOLATIONS, ids=lambda i: i.name)
+@pytest.mark.parametrize("chunk", [4 << 10, 1 << 20], ids=["4KiB", "1MiB"])
+@pytest.mark.parametrize(
+    "tail", [b"\xff" * 16, "copy"], ids=["bad block header", "second file"]
+)
+def test_a_bad_block_header_comes_after_the_good_blocks_output(
+    isolation: ProcessIsolation, chunk: int, tail: bytes | str
+) -> None:
+    """A block header that fails its checks raises only once every byte of the good
+    blocks before it is read (spec ``compressed-streams``)."""
+    raw = (FIXTURES / "lines.txt.bz3").read_bytes()
+    raw += raw if tail == "copy" else tail
+    got = bytearray()
+    with open_archive(io.BytesIO(raw), config=_config(isolation)) as archive:
+        (member,) = archive.members()
+        with (
+            archive.open(member) as stream,
+            pytest.raises(CorruptionError, match="compressed bytes"),
+        ):
+            while piece := stream.read(chunk):
+                got += piece
+    assert bytes(got) == LINES
+
+
+@needs_bzip3
+def test_a_bad_block_in_one_call_keeps_the_output_before_it() -> None:
+    """One unbounded call that decodes a good block and then meets a bad block header
+    returns the good output, says it needs no input, and raises on the next call."""
+    from bz3.backends import BZ3Decompressor
+
+    raw = (FIXTURES / "lines.txt.bz3").read_bytes() + b"\xff" * 16
+    decoder = bzip3_codec.Bzip3Decompressor(lambda size: None, BZ3Decompressor)
+    assert decoder.decompress(raw) == LINES
+    assert not decoder.needs_input
+    assert not decoder.eof
+    with pytest.raises(CorruptionError, match="compressed bytes"):
+        decoder.decompress(b"")
+
+
+@needs_bzip3
 def test_a_second_file_after_the_first_is_refused() -> None:
     raw = _bz3(b"abc" * 100)
     with pytest.raises(CorruptionError, match="compressed bytes"):

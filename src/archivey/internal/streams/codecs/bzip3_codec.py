@@ -130,26 +130,48 @@ class Bzip3Decompressor:
         self._output = memoryview(b"")
         # Whether a whole block is buffered, as the last ``decompress`` left it.
         self._block_buffered = False
+        # A block that fails its framing check or its decode after a good block's
+        # output went into the same call: that output is returned first, and this
+        # raises on the next call (spec ``compressed-streams``).
+        self._raise_after: ArchiveyError | None = None
         self._ended = False
         # Nothing can follow the last block, so no byte is ever left over.
         self.unused_data = b""
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        if self._raise_after is not None:
+            # Set only once every byte of output was returned.
+            raise self._raise_after
         if data:
             self._input += data
         out = bytearray()
-        while True:
-            if self._output:
-                room = len(self._output) if max_length < 0 else max_length - len(out)
-                out += self._output[:room]
-                self._output = self._output[room:]
-            if self._output or (max_length >= 0 and len(out) >= max_length):
-                break
-            sizes = self._buffered_block()
-            if sizes is None:
-                break
-            self._decode_block(*sizes)
-        self._block_buffered = self._buffered_block() is not None
+        try:
+            while True:
+                if self._output:
+                    room = (
+                        len(self._output) if max_length < 0 else max_length - len(out)
+                    )
+                    out += self._output[:room]
+                    self._output = self._output[room:]
+                if self._output or (max_length >= 0 and len(out) >= max_length):
+                    break
+                sizes = self._buffered_block()
+                if sizes is None:
+                    break
+                self._decode_block(*sizes)
+        except ArchiveyError as exc:
+            # A block is decoded only once the output held is used up, so nothing
+            # is held here: the bytes in ``out`` are all there is to return first.
+            if not out:
+                raise
+            self._raise_after = exc
+            return bytes(out)
+        try:
+            self._block_buffered = self._buffered_block() is not None
+        except ArchiveyError:
+            # The look-ahead does not raise: the next call checks the header again
+            # and raises, after the output held is returned.
+            self._block_buffered = True
         return bytes(out)
 
     @property
@@ -158,7 +180,13 @@ class Bzip3Decompressor:
 
     @property
     def needs_input(self) -> bool:
-        return not self._output and not self._ended and not self._block_buffered
+        # False after a failed block, so the next call is made at once and raises.
+        return (
+            self._raise_after is None
+            and not self._output
+            and not self._ended
+            and not self._block_buffered
+        )
 
     def end_input(self) -> None:
         """The input ended: it must end after the header or after a whole block."""
