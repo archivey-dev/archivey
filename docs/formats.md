@@ -52,6 +52,9 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   from its index. Members: direct. Needs a source that can seek.
 - **XAR** (`.xar`, macOS `.pkg` and `.xip`): core for stored, gzip, bzip2, LZMA and xz
   data. Listing: from its index. Members: direct. Needs a source that can seek.
+- **CAB** (`.cab`, Microsoft cabinets): core, for stored, MSZIP and LZX folders. Listing:
+  from its index. Members: solid when a folder is compressed, otherwise direct. Needs a source
+  that can seek.
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
   direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.cpio.gz`,
   …); there, as with a compressed TAR, listing needs decompression and members are solid.
@@ -1169,6 +1172,34 @@ The format of macOS installer packages (`.pkg`) and `.xip` files, written by App
   the link before that member; archivey then lists it after.
 - A file whose data uses an encoding archivey does not know is listed, with
   `CompressionAlgorithm.UNKNOWN`, and raises `UnsupportedFeatureError` when read.
+
+## CAB
+
+Microsoft cabinets: Windows updates and drivers, the payloads inside many installers, and
+what `makecab` and `gcab` write.
+
+- **Needs:** nothing. MSZIP is deflate, read with Python's `zlib`; LZX is decoded by
+  archivey itself, in Python, at a few megabytes a second.
+- **Listing:** from the file table at the start of the cabinet.
+- **Reading members:** a cabinet groups its files into folders, and each folder is one
+  compressed stream, so a compressed folder is solid: reaching a file decodes the folder from
+  its start. Files read in order decode each folder once. A stored folder is direct.
+- **From a pipe:** no; the file table points at folders anywhere in the file, so the cabinet
+  needs a source that can seek.
+- `ArchiveInfo.format_version` is the cabinet's version, `"1.3"` for every current writer.
+  Members are files: a cabinet stores no directories, only paths. A path's `\` separators
+  become `/`. `member.windows_attrs` holds the stored attributes without the two that only
+  a cabinet defines, `0x40` (executable) and `0x80` (name is UTF-8), which a Windows
+  attribute mask uses for other things; `member.modified` holds the stored local time,
+  with no time zone.
+- Names are UTF-8 when valid, otherwise decoded with `encoding=` (a Japanese cabinet from
+  `makecab` is usually `encoding="cp932"`), as in every format.
+- Each data block stores a checksum of its bytes, which a read checks, so a member read to
+  its end is at `Verification.CHECKSUM` when its blocks carry one (some writers store 0, which
+  means none).
+- Quantum-compressed members, an old method, are listed but raise
+  `UnsupportedFeatureError` when read. A cabinet that is part of a set spanning several files
+  (`file.cab`, `file2.cab`) raises `UnsupportedFeatureError` at open.
 
 ## CPIO
 

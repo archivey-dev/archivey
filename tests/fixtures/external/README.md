@@ -171,3 +171,20 @@ and `xz.xar`. Each holds the same tree, every time stamp 2024-03-01 12:00 UTC:
 Made with `bsdtar --format xar --options xar:compression=<c> -cf <c>.xar b.txt dir link
 hard.txt 'caf'$'\xe9''.txt'`. 7-Zip cannot list them. `tests/test_xar.py` reads them
 beside the archives `tests/xar_util.py` writes.
+
+## `cab_libarchive/`
+
+Four cabinets written by Microsoft's **`makecab.exe`**, copied from libarchive's test
+suite (`libarchive/test/test_read_format_cab_*.cab.uu`, decoded; libarchive is
+BSD-2-Clause) on 2026-11-07. No tool on the test image writes LZX, and the other two
+show what Microsoft's own writer does with stored and MSZIP folders, so
+`tests/test_cab.py` reads them beside the cabinets `tests/cab_util.py` writes.
+
+| File | Folder | Notes |
+| --- | --- | --- |
+| `test_read_format_cab_1.cab` | stored | `empty`, `dir1/file1`, `dir2/file2` |
+| `test_read_format_cab_2.cab` | MSZIP | the same, and `zero` (33 000 zero bytes, two blocks) |
+| `test_read_format_cab_3.cab` | LZX | as `_2` |
+| `test_read_format_cab_filename_cp932.cab` | MSZIP | two names in cp932 (`表だよ/漢字.txt`, `表だよ/一覧表.txt`) |
+
+How they were made is in libarchive's `test_read_format_cab.c` (`mkcab1` to `mkcab3`).

@@ -44,6 +44,7 @@ field archivey.ArchiveFormat.stream: StreamFormat | PluginStream
 attribute archivey.ArchiveFormat.AR = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BROTLI = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZ2 = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.CAB = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.CPIO = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DIRECTORY = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DMG = ArchiveFormat(...)
@@ -210,6 +211,8 @@ value archivey.CompressionAlgorithm.DELTA = 'delta'
 value archivey.CompressionAlgorithm.SHRINK = 'shrink'
 value archivey.CompressionAlgorithm.IMPLODE = 'implode'
 value archivey.CompressionAlgorithm.LZO = 'lzo'
+value archivey.CompressionAlgorithm.LZX = 'lzx'
+value archivey.CompressionAlgorithm.QUANTUM = 'quantum'
 value archivey.CompressionAlgorithm.RAR = 'rar'
 value archivey.CompressionAlgorithm.UNKNOWN = 'unknown'
 class archivey.CompressionMethod()
@@ -229,6 +232,7 @@ value archivey.ContainerFormat.CPIO = 'cpio'
 value archivey.ContainerFormat.RPM = 'rpm'
 value archivey.ContainerFormat.SQUASHFS = 'squashfs'
 value archivey.ContainerFormat.XAR = 'xar'
+value archivey.ContainerFormat.CAB = 'cab'
 value archivey.ContainerFormat.DMG = 'dmg'
 value archivey.ContainerFormat.DIRECTORY = 'directory'
 value archivey.ContainerFormat.RAW_STREAM = 'raw_stream'

@@ -15,6 +15,7 @@ Module map:
 - :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio), the same way
 - :mod:`.squashfs_reader` — SquashFS 4.0, the same way
 - :mod:`.xar_reader` — XAR (``.xar``, macOS ``.pkg`` and ``.xip``), the same way
+- :mod:`.cab_reader` — Microsoft cabinets (stored, MSZIP, LZX), the same way
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
 - :mod:`.sevenzip_methods` / ``sevenzip_parser`` / ``sevenzip_pipeline`` /
@@ -37,6 +38,7 @@ Typical split inside a format: ``*ReadBackend`` (registry / ``open_read``) +
 
 from archivey.internal.backends import (
     ar_reader as _ar_reader,  # noqa: F401
+    cab_reader as _cab_reader,  # noqa: F401
     cpio_reader as _cpio_reader,  # noqa: F401
     directory_reader as _directory_reader,  # noqa: F401
     iso_reader as _iso_reader,  # noqa: F401

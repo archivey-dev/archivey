@@ -58,6 +58,7 @@ from tests.atheris_fuzz.seeds import (
     ar_seeds,
     brotli_seeds,
     bzip2_seeds,
+    cab_seeds,
     cpio_seeds,
     deflate64_seeds,
     detect_format_seeds,
@@ -282,6 +283,20 @@ def xar_open_one(data: bytes) -> None:
     try:
         with open_archive(
             io.BytesIO(data), format=ArchiveFormat.XAR, config=_FUZZ_CONFIG
+        ) as arc:
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
+    except ArchiveyError:
+        return
+
+
+def cab_open_one(data: bytes) -> None:
+    """List a cabinet and read the first files: the header, the file table, the block
+    table, then stored, MSZIP or LZX data and its checksums."""
+    try:
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.CAB, config=_FUZZ_CONFIG
         ) as arc:
             _sample_seekable(
                 arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
@@ -915,6 +930,13 @@ def iter_target_specs() -> list[dict]:
             "name": "xar",
             "fn": xar_open_one,
             "seeds": xar_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "cab",
+            "fn": cab_open_one,
+            "seeds": cab_seeds,
             "fixup": None,
             "per_input_timeout": stream_timeout,
         },
