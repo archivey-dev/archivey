@@ -2984,10 +2984,8 @@ def test_parse_rar5_xtime_truncated_ns_does_not_raise() -> None:
 
 def test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime() -> None:
     """RAR3 EXTTIME nibbles: >>12 mtime, >>8 ctime, >>4 atime (UnRAR / rarfile)."""
-    from archivey.internal.backends.rar_parser import (
-        _parse_dos_time,
-        _parse_rar3_ext_time,
-    )
+    from archivey.internal.backends.rar_parser import _parse_rar3_ext_time
+    from archivey.internal.timestamps import dos_to_datetime as _parse_dos_time
 
     dos_mtime = _pack_dos(2020, 1, 15, 12, 0, 0)
     dos_ctime = _pack_dos(2019, 6, 1, 8, 0, 0)
