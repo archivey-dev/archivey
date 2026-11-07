@@ -51,6 +51,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **SquashFS** (`.squashfs`, `.sqfs`, `.snap`): core for gzip, xz, LZMA and LZO images;
   Zstandard images need what a `.zst` file needs; LZ4 images need `[recommended]`. Listing:
   from its index. Members: direct. Needs a source that can seek.
+- **XAR** (`.xar`, macOS `.pkg` and `.xip`): core for stored, gzip, bzip2, LZMA and xz
+  data. Listing: from its index. Members: direct. Needs a source that can seek.
 - **CAB** (`.cab`, Microsoft cabinets): core, for stored, MSZIP and LZX folders. Listing:
   from its index. Members: solid when a folder is compressed, otherwise direct. Needs a source
   that can seek.
@@ -1140,6 +1142,37 @@ other members because of a member's name any more. Setting it to `True` warns.
 - Big-endian images (SquashFS 3 and older) raise `UnsupportedFeatureError`.
 - SquashFS stores no checksums of its own. A damaged block is found when it does not decode
   to its length, or when its compressor's own check fails (zlib's Adler-32, the xz CRC).
+
+## XAR
+
+The format of macOS installer packages (`.pkg`) and `.xip` files, written by Apple's `xar`,
+`pkgbuild` and `bsdtar --format xar`.
+
+- **Needs:** nothing. Each file's data is stored, or compressed with zlib, bzip2, LZMA or xz,
+  all read with Python's own modules.
+- **Listing:** from the table of contents, an XML document at the start of the archive. It
+  is read whole at open, and refused when its header gives it more than
+  `ListingLimits.max_metadata_bytes`, stored or decoded, or it lists more than
+  `max_members` files.
+- **Reading members:** direct; each file's data is compressed on its own.
+- **From a pipe:** no; the index points at data anywhere after it, so the archive needs a
+  source that can seek.
+- `ArchiveInfo.format_version` is `"1"`, the only version there is. Members carry the mode,
+  owners, and modification, access and change times the index stores, all in UTC.
+- An installer package is listed as the files its XAR layer holds: `Distribution`, and per
+  component `PackageInfo`, `Bom`, `Scripts` and `Payload`. `Payload` is a gzip-compressed
+  CPIO archive (or a `pbzx` stream in newer packages); archivey lists and reads it as one
+  file and does not expand it.
+- The index's own checksum is checked at open, and a damaged index raises
+  `CorruptionError`. Each file's data carries a checksum of its decoded bytes (SHA-1 by
+  default, or MD5, SHA-256 or SHA-512), which is `member.hashes`, so a member read to its end
+  is at `Verification.CHECKSUM`.
+- A name stored base64-encoded, as writers do for bytes that are not UTF-8, is decoded with
+  `encoding=` like a name in any other format.
+- A hard link lists the member that holds the data as its `link_target`. bsdtar can write
+  the link before that member; archivey then lists it after.
+- A file whose data uses an encoding archivey does not know is listed, with
+  `CompressionAlgorithm.UNKNOWN`, and raises `UnsupportedFeatureError` when read.
 
 ## CAB
 

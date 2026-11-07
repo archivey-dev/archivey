@@ -75,6 +75,7 @@ from tests.atheris_fuzz.seeds import (
     squashfs_seeds,
     tar_seeds,
     unix_compress_seeds,
+    xar_seeds,
     xz_seeds,
     zip_seeds,
     zlib_seeds,
@@ -268,6 +269,20 @@ def squashfs_open_one(data: bytes) -> None:
     try:
         with open_archive(
             io.BytesIO(data), format=ArchiveFormat.SQUASHFS, config=_FUZZ_CONFIG
+        ) as arc:
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
+    except ArchiveyError:
+        return
+
+
+def xar_open_one(data: bytes) -> None:
+    """List a XAR archive and read the first files: the header, the zlib TOC and its
+    XML, the TOC checksum, then each file's encoded data and its checksum."""
+    try:
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.XAR, config=_FUZZ_CONFIG
         ) as arc:
             _sample_seekable(
                 arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
@@ -908,6 +923,13 @@ def iter_target_specs() -> list[dict]:
             "name": "squashfs",
             "fn": squashfs_open_one,
             "seeds": squashfs_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "xar",
+            "fn": xar_open_one,
+            "seeds": xar_seeds,
             "fixup": None,
             "per_input_timeout": stream_timeout,
         },

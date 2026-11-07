@@ -366,7 +366,9 @@ class ListingLimits:
     names and comments their headers hold against ``max_metadata_bytes`` (RAR's
     compressed RAR 1.5-4 comments by declared or packed size, whichever is larger,
     before decoding them), and ISO the directory records, path tables and UDF
-    descriptors ``pycdlib`` parses, so ``open_archive`` raises. A ZIP read from a
+    descriptors ``pycdlib`` parses, and XAR applies ``max_members`` and weighs its
+    table of contents' size and every path it builds there against
+    ``max_metadata_bytes``, so ``open_archive`` raises. A ZIP read from a
     stream that cannot seek has no directory to read at open: its pass charges
     ``max_members`` on each local header as it yields the member, and again on the
     directory's entries after the last member, and weighs the directory's text

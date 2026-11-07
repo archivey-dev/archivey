@@ -70,4 +70,4 @@ the documentation SHALL NOT tell callers to branch on it.
 | Recognized archive with a damaged header, opened | `CorruptionError` or `TruncatedError` from `open_archive()`; not an `OpenError`. A method, codec or version id damaged to an unknown value in a header with no checksum is the exception (next row) |
 | gzip member whose compression-method byte is damaged to 7, opened | `UnsupportedFeatureError` from `open_archive()`; its message says a damaged header reads the same way |
 | Member data that ends early, read | `TruncatedError`; caught by `except CorruptionError` and by `except ReadError` |
-| Remote object replaced with one of a different length mid-read | `SourceChangedError`; caught by `except ReadError`, not by `except CorruptionError` |
+| Remote object replaced with a shorter one mid-read, read past its new end | `SourceChangedError`; caught by `except ReadError`, not by `except CorruptionError` |

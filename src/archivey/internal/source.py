@@ -306,6 +306,7 @@ class ArchiveSource(ReadOnlyIOStream):
     _replay: bytearray | None = None
     _full_count: _GatheringReader | None = None
     _close_callbacks: tuple[Callable[[], None], ...] = ()
+    _remote: tuple[RangeSource, ...] = ()
 
     def __init__(
         self,
@@ -512,7 +513,7 @@ class ArchiveSource(ReadOnlyIOStream):
         range source, which drops its fetched windows; nothing of the caller's is
         closed, since no file object was ever opened.
         """
-        return cls(
+        source = cls(
             path=None,
             # A RawIOBase whose read is full-count; typeshed keeps it apart from
             # BinaryIO.
@@ -524,6 +525,8 @@ class ArchiveSource(ReadOnlyIOStream):
             owned=cast("BinaryIO", ranged),
             seek_is_expensive=True,
         )
+        source.adopt_remote((ranged,))
+        return source
 
     @classmethod
     def for_volumes(
@@ -553,7 +556,16 @@ class ArchiveSource(ReadOnlyIOStream):
             seek_is_expensive=joined.seek_is_expensive,
         )
 
+    def adopt_remote(self, ranges: tuple[RangeSource, ...]) -> None:
+        """Record the range sources this source reads (one, or a volume list's)."""
+        self._remote = ranges
+
     # --- cheap facts ---------------------------------------------------------------------
+
+    @property
+    def remote_sources(self) -> tuple[RangeSource, ...]:
+        """The range sources an ``fsspec`` ``OpenFile`` source reads; else empty."""
+        return self._remote
 
     @property
     def path(self) -> Path | None:
