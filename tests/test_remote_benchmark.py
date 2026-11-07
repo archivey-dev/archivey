@@ -46,11 +46,13 @@ def test_remote_requests_match_the_baseline():
     assert check_against_baseline(results, baseline) == []
 
 
-def _result(case: str, fmt: str, requests: int, fetched: int) -> RemoteCaseResult:
+def _result(
+    case: str, fmt: str, requests: int, fetched: int, operation: str = "list"
+) -> RemoteCaseResult:
     return RemoteCaseResult(
         case=case,
         format=fmt,
-        operation="list",
+        operation=operation,
         cache="nocache",
         range_requests=requests,
         metadata_requests=1,
@@ -64,16 +66,19 @@ def test_gate_catches_moved_counts_and_dropped_cases():
         "cases": {
             "tar_list_nocache": {
                 "format": "tar",
+                "operation": "list",
                 "range_requests": 3,
                 "bytes_fetched": 100,
             },
             "zip_stored_list_nocache": {
                 "format": "zip_stored",
+                "operation": "list",
                 "range_requests": 2,
                 "bytes_fetched": 50,
             },
             "tar_gz_list_nocache": {
                 "format": "tar_gz",
+                "operation": "list",
                 "range_requests": 9,
                 "bytes_fetched": 9,
             },
@@ -81,8 +86,9 @@ def test_gate_catches_moved_counts_and_dropped_cases():
     }
     results = [
         _result("tar_list_nocache", "tar", 4, 101),
-        # Ungated formats never fail, whatever they measure.
+        # Ungated formats and operations never fail, whatever they measure.
         _result("tar_gz_list_nocache", "tar_gz", 99, 999),
+        _result("tar_threads_nocache", "tar", 99, 999, operation="threads"),
     ]
     failures = check_against_baseline(results, baseline)
     assert failures == [
