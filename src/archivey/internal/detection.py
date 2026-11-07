@@ -1620,6 +1620,7 @@ def _detect_format_body(
         non_archive = _non_archive_signature(data)
         cue = executable_cue(data)
         if cue is not ExecutableCue.NONE and non_archive is None:
+            head = _executable_head(data, peek_more, workspace)
             sfx_info = _scan_for_sfx_payload(
                 registry.sfx_magic_entries(),
                 peek_more,
@@ -1630,7 +1631,7 @@ def _detect_format_body(
                 capped_formats=registry.sfx_parser_scanned_formats(),
                 # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
                 restrict_to_validated=data.startswith(b"#!"),
-                leading=_executable_head(data, peek_more, workspace),
+                leading=head,
             )
             if sfx_info is not None:
                 return conclude(sfx_info, _ConflictEvidence.SFX_SCAN)
@@ -1639,7 +1640,7 @@ def _detect_format_body(
             # overlay runs past the window pays for the tail read.
             tail_info = _probe_pe_tail(
                 workspace,
-                data,
+                head,
                 scan_limit=min(SFX_MAX, budget.max_scan_bytes),
                 enabled=budget.max_scan_bytes > 0,
             )
