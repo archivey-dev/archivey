@@ -978,12 +978,12 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   `/`, compared after NFC and `upper().casefold()` (Windows `unrar` converts a Unix-host
   name to NFC before it compares it, and folds case with `towupper`, under which `ı` and `i`
   are equal though `casefold()` keeps them apart). Where `unrar_matches_names_as_windows()`,
-  a name that is not NFC is not plain either (the NFD name `unrar` sees is not the mask), nor
-  one with a non-ASCII directory component (`unrar` compares the directory part with
-  `CompareStringW`, which ignores some code points and joins canonical equivalents). Such a
-  mask selects the
-  target alone, with no wildcard and no dot rule, so the pipe holds the member and nothing
-  else. History rows count only against the rows `-ver` lists. Every other read gets a
+  a name that is not NFC is not plain either (the NFD name `unrar` sees is not the mask);
+  and once any name in the archive has a directory that is not printable ASCII, no name with
+  a directory is plain (`unrar` compares the directory part with `CompareStringW`, which
+  ignores some code points and joins canonical equivalents, so `ab` and `a` U+00AD `b` can be
+  one directory). Such a mask selects the target alone, with no wildcard and no dot rule,
+  so the pipe holds the member and nothing else. History rows count only against the rows `-ver` lists. Every other read gets a
   synthetic archive whatever its size, within the spool limit; where none can be made (a
   RAR 1.5-4 member past 4 GiB with no 64-bit sizes, a solid chain with data out of reach)
   a name that is not plain raises `UnsupportedFeatureError`. This replaced a port of

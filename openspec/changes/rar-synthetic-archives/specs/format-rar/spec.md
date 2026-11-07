@@ -106,13 +106,14 @@ member.
 
 | Case | Plain |
 | --- | --- |
-| Every name in the archive decodes cleanly (valid UTF-8 for RAR5, ASCII for an 8-bit RAR 1.5-4 name, no lone surrogate in a RAR 1.5-4 Unicode name) and has no NUL, `:`, leading `/`, `\` in a RAR5 name (a RAR 1.5-4 `\` is a separator and reads as `/`), or empty, `.` or `..` component; the target has no `*` or `?` and no component ending in `.`, and is ASCII unless `unrar` reads a non-ASCII mask back as the same text (Windows, or a UTF-8 locale on POSIX); no other name equals it or starts with it plus `/`, compared without case and after NFC; on Windows the target is also NFC and has no non-ASCII directory component | Yes |
+| Every name in the archive decodes cleanly (valid UTF-8 for RAR5, ASCII for an 8-bit RAR 1.5-4 name, no lone surrogate in a RAR 1.5-4 Unicode name) and has no NUL, `:`, leading `/`, `\` in a RAR5 name (a RAR 1.5-4 `\` is a separator and reads as `/`), or empty, `.` or `..` component; the target has no `*` or `?` and no component ending in `.`, and is ASCII unless `unrar` reads a non-ASCII mask back as the same text (Windows, or a UTF-8 locale on POSIX); no other name equals it or starts with it plus `/`, compared without case and after NFC; on Windows the target is also NFC, and has no directory when any name in the archive has a directory that is not printable ASCII | Yes |
 | Any name in the archive that fails the archive-wide part | No, for every member |
 | Target named `a*.txt` or `notes.` | No |
 | Target named `café.txt` | Yes on Windows and under a UTF-8 locale; No on POSIX with none |
 | Target named `café.txt` in NFD | No on Windows, which compares its NFC form; as `café.txt` elsewhere |
 | Targets `é.bin` in NFC and in NFD | No for both |
 | Target named `dé/x.txt` | No on Windows, which compares the directory part with `CompareStringW`; as `café.txt` elsewhere |
+| Target `ab/x.txt` next to `a`U+00AD`b/x.txt` | No on Windows for both; Yes elsewhere |
 
 #### Scenario: route matrix
 

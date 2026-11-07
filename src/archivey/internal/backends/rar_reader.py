@@ -993,21 +993,30 @@ def _fold(text: str) -> str:
 def _mask_key(text: str) -> str:
     """``text`` as two names compare for a mask: NFC, then :func:`_fold`. Windows
     ``unrar`` precomposes a Unix-host name before it compares it, so the NFC and NFD
-    forms of one name select each other's members there."""
+    forms of one name select each other's members there. Elsewhere the join is only
+    conservative: it can only take names out of the plain set, and such a member
+    gets a synthetic copy."""
     return _fold(unicodedata.normalize("NFC", text))
 
 
-def _windows_plain(text: str) -> bool:
-    """Whether a mask of ``text`` reaches Windows ``unrar`` as the name it selects.
+def _printable_ascii(text: str) -> bool:
+    return all(" " <= char <= "~" for char in text)
+
+
+def _windows_plain(text: str, *, loose_directories: bool) -> bool:
+    """Whether a mask of ``text`` selects its member alone in Windows ``unrar``.
 
     A name that is not NFC is not: ``unrar`` compares its NFC form with the mask.
-    A non-ASCII directory component is not either: ``unrar`` compares the
-    directory part with ``CompareStringW``, under which two such directory names
-    can be equal and still differ here (:func:`unrar_matches_names_as_windows`).
+    A name with a directory is not either when ``loose_directories``: some name in
+    the archive has a directory that is not printable ASCII. ``unrar`` compares the
+    directory part with ``CompareStringW``, which ignores some code points and
+    joins canonical equivalents, so such a directory can equal another one,
+    printable ASCII included, that differs here (``ab`` and ``a`` U+00AD ``b``)
+    (:func:`unrar_matches_names_as_windows`).
     """
     if unicodedata.normalize("NFC", text) != text:
         return False
-    return text.rpartition("/")[0].isascii()
+    return not (loose_directories and "/" in text)
 
 
 def _plain_unrar_masks(
@@ -1051,6 +1060,9 @@ def _plain_unrar_masks(
     # Without ``-ver`` unrar lists the current rows; with it, every row.
     current = counts([t for _, raw, t in texts if not raw.is_file_version_history()])
     every = counts([t for _, _, t in texts])
+    loose_directories = windows and not all(
+        _printable_ascii(t.rpartition("/")[0]) for _, _, t in texts
+    )
     plain: dict[int, str] = {}
     for member, raw, text in texts:
         found = every if raw.is_file_version_history() else current
@@ -1060,7 +1072,9 @@ def _plain_unrar_masks(
             and "?" not in text
             and not any(part.endswith(".") for part in text.split("/"))
             and found[_mask_key(text)] == 1
-            and (not windows or _windows_plain(text))
+            and (
+                not windows or _windows_plain(text, loose_directories=loose_directories)
+            )
         ):
             plain[id(member)] = text
     return plain

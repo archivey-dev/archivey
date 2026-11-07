@@ -538,8 +538,9 @@ def unrar_matches_names_as_windows() -> bool:
     ``arcread.cpp``) before it compares it with a mask, and does not convert the
     mask. It compares the directory part of a mask with ``CompareStringW``, which
     ignores some code points (U+00AD, U+200B, ...) and treats canonically
-    equivalent sequences as equal. ``rar_reader._plain_unrar_masks`` keeps names
-    that either rule could match to another member out of the plain set.
+    equivalent sequences as equal. ``rar_reader._plain_unrar_masks`` takes out of
+    the plain set every name that is not NFC, and, when any name in the archive has
+    a directory that is not printable ASCII, every name with a directory.
     """
     return sys.platform == "win32"
 
