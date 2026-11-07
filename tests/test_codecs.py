@@ -3201,7 +3201,7 @@ def test_verify_fused_archive_stream_slurp_raises() -> None:
 
 # The extras that exist after the 11 → 4 consolidation. Anything else in a hint is a name
 # a user cannot install: `pip install archivey[7z]` now fails outright.
-_REAL_EXTRAS = frozenset({"recommended", "seekable", "free-threaded", "all"})
+_REAL_EXTRAS = frozenset({"recommended", "seekable", "free-threaded", "all", "bzip3"})
 _EXTRA_IN_HINT = re.compile(r"archivey\[([a-z0-9,\-.]+)\]")
 
 
@@ -3221,6 +3221,7 @@ def _assert_hint_is_installable(message: str) -> None:
         (Codec.BROTLI, "brotli"),
         (Codec.LZ4, "lz4_frame"),
         (Codec.ZSTD, "zstd"),
+        (Codec.BZIP3, "bzip3"),
     ],
 )
 def test_absent_codec_backend_hint_is_installable(

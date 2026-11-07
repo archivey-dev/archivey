@@ -152,3 +152,17 @@ rebuilt in `tests/test_lzop.py`, each with mtime 2024-03-01 12:00 UTC and mode 0
 - `empty.lzo`: an empty file: a header and the end block.
 - `two-files.lzo`: `lzop -c a.txt b.txt`, two lzop files back to back.
 - `files.tar.lzo`: a USTAR archive of `dir/one.txt` and `dir/two.txt`.
+
+## `bzip3/`
+
+Four `.bz3` files written by the **`bzip3` 1.4.0** tool (Ubuntu 24.04's `bzip3`
+package) on 2026-11-07, with `bzip3 -e -k -c`. No other common tool writes the format.
+`tests/test_bzip3.py` reads them beside files the `bzip3` package's `BZ3Compressor`
+writes.
+
+| File | Made from | Notes |
+| --- | --- | --- |
+| `tiny.txt.bz3` | `hi\n` | one literal block (BWT index -1) |
+| `empty.txt.bz3` | an empty file | the 9-byte header and no block |
+| `lines.txt.bz3` | 30 000 lines `%07d the quick brown fox jumps over the lazy dog\n` | `-b 1`: two blocks, 1 MiB and 511 424 bytes |
+| `files.tar.bz3` | a GNU tar of `tiny.txt` and an empty `empty.txt` | 16 MiB block size (the default) |
