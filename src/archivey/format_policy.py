@@ -281,8 +281,8 @@ class FormatPolicy:
 
     Experimental, with ``archivey.formats``: any release may change it.
 
-    A key is ``ContainerFormat.ZIP``, ``SEVEN_Z``, ``RAR``, ``ISO``, ``SQUASHFS`` or
-    ``CAB``.
+    A key is ``ContainerFormat.ZIP``, ``SEVEN_Z``, ``RAR``, ``ISO``, ``SQUASHFS``,
+    ``CAB`` or ``XAR``.
     Its plugin is a ``archivey.formats.FormatHandler`` that is not registered: its
     ``format`` is the built-in one (``ArchiveFormat.ZIP``), and it declares no
     ``extensions``, ``magic`` or ``probe``, because the file is found by the built-in

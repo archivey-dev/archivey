@@ -2568,6 +2568,7 @@ REPLACEABLE_CONTAINERS = frozenset(
         ContainerFormat.RAR,
         ContainerFormat.ISO,
         ContainerFormat.SQUASHFS,
+        ContainerFormat.XAR,
         ContainerFormat.CAB,
     }
 )
