@@ -36,8 +36,8 @@ and WinRAR installers the archive starts exactly at the end of the last section.
   implies, which is 0 when its offsets count from the start of the file.
 - **`FormatInfo.payload_end` and readers bounded by it.** Detection reports where a signed
   PE's certificate starts; `open_archive` passes it to the reader beside the start offset,
-  and the reader treats the source as `[start, end)`. Under forced `format=` the readers'
-  own payload scans derive the same end. The ZIP end-record search stops there, so the
+  and the reader treats the source as `[start, end)`. Under forced `format=`, `open_archive`
+  reads the same end from the same headers. The ZIP end-record search stops there, so the
   reader finds every record the tail probe accepts, and the ZIP, 7z and RAR trailing-data
   checks stop there, so a signed installer no longer warns about its own certificate.
 - **Accounting.** The tail read is counted in `unique_bytes_read` under a defined tail

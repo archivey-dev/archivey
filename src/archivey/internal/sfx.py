@@ -537,13 +537,12 @@ def pe_payload_end(prefix: bytes, total_size: int | None) -> int | None:
 
 def read_payload_end(handle: BinaryIO, total_size: int | None) -> int | None:
     """:func:`pe_payload_end` from the first :data:`PE_LAYOUT_PREFIX` bytes of the
-    seekable ``handle``, whose byte 0 is the backend's own start; its position is
-    restored.
+    seekable ``handle``, whose byte 0 is where the archive's source starts; its
+    position is restored.
 
-    For a RAR, 7z or ZIP backend opened at 0 with no end passed, so that a forced
-    ``format=`` sees the end detection would report. It reads the backend's own
-    start, never before it. One read, skipped when the size says no certificate
-    could fit.
+    For a forced ``format=``, where detection did not read the headers, so that the
+    open sees the end detection would report (``open_archive``). One read, skipped
+    when the size says no certificate could fit.
     """
     if total_size is None or total_size < _DOS_HEADER_SIZE:
         return None
