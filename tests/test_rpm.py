@@ -257,6 +257,7 @@ class _Package:
     lead_major: int = 3
     signature: dict[int, tuple[int, object]] = field(default_factory=dict)
     extra_tags: dict[int, tuple[int, object]] = field(default_factory=dict)
+    drop_tags: tuple[int, ...] = ()
     # Change the payload's entries: the files to store, in order, by index.
     order: list[int] | None = None
     tamper_digest: int | None = None
@@ -324,6 +325,8 @@ def _build(package: _Package) -> bytes:
     if package.digest_algo is not None:
         tags[5011] = (_INT32, [package.digest_algo])
     tags.update(package.extra_tags)
+    for tag in package.drop_tags:
+        del tags[tag]
     if not files:
         for tag in (1030, 1034, 1035, 1036, 1037, 1039, 1040, 1095, 1096, 1116):
             tags.pop(tag)
@@ -560,6 +563,13 @@ def test_the_rpm_6_format_version() -> None:
     data = _build(_Package(_tree(), stripped=True, extra_tags={5114: (_INT32, [6])}))
     with _open(data) as reader:
         assert reader.info.format_version == "6"
+
+
+def test_a_header_with_no_immutable_region_is_format_version_3() -> None:
+    """rpm's rule: no RPMFORMAT and no immutable region (tag 63) is an RPM 3 header."""
+    data = _build(_Package(_tree(), drop_tags=(63,)))
+    with _open(data) as reader:
+        assert reader.info.format_version == "3"
 
 
 def test_a_header_over_max_metadata_bytes() -> None:
