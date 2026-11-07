@@ -58,7 +58,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   …); there, as with a compressed TAR, listing needs decompression and members are solid.
 - **RPM** (`.rpm`, binary and source packages): core; the payload needs what its compressor
   needs (gzip, bzip2, xz and LZMA in core, Zstandard as for a `.zst` file). Listing: needs
-  decompression. Members: solid. Readable from a pipe.
+  decompression. Members: solid. Readable from a pipe. A package with an uncompressed
+  payload (rare) lists header by header, and its members are direct.
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
@@ -1190,7 +1191,9 @@ other members because of a member's name any more. Setting it to `True` warns.
   default) needs what a `.zst` file needs.
 - **Listing:** the file list is in the package header, but listing walks the payload to find
   each file's data, so it needs decompression.
-- **Reading members:** solid: one compression stream holds every file.
+- **Reading members:** solid: one compression stream holds every file. A package with an
+  uncompressed payload, which `rpmbuild` writes only when asked, reads as a CPIO archive:
+  listing header by header, members direct.
 - **From a pipe:** yes, with `streaming=True`.
 - Members are named as `rpm2cpio | cpio -i` extracts them: `usr/bin/tool` for the package's
   `/usr/bin/tool`, which is the member's `raw_name`. A source package's names are relative.

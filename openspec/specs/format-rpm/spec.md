@@ -37,7 +37,9 @@ the `FILE` and the others `HARDLINK` members to it, listed after it.
 
 | Case | Expected |
 | --- | --- |
-| An rpmbuild package with a gzip, xz, zstd, bzip2, LZMA or no payload compressor | The same members, the same bytes; `cost.listing_cost=REQUIRES_DECOMPRESSION`, `cost.access_cost=SOLID` |
+| An rpmbuild package with a gzip, xz, zstd, bzip2 or LZMA payload compressor | The same members, the same bytes; `cost.listing_cost=REQUIRES_DECOMPRESSION`, `cost.access_cost=SOLID` |
+| The same package with no payload compressor | The same members, the same bytes; `cost.listing_cost=REQUIRES_SCANNING`, `cost.access_cost=DIRECT` |
+| A file whose mode names no type rpm knows | An `OTHER` member, `MEMBER_TYPE_UNKNOWN` reported |
 | The same package from a pipe with `streaming=True` | The same members |
 | A package whose payload is in the stripped form | The same members as its newc twin |
 | A `%ghost` file | Not a member |
@@ -48,10 +50,10 @@ the `FILE` and the others `HARDLINK` members to it, listed after it.
 
 ### Requirement: Check each file's digest
 
-A regular file's digest from `FILEDIGESTS`, in the algorithm `FILEDIGESTALGO` names (MD5
-when absent), SHALL be checked as the file is read: a mismatch raises `CorruptionError`
-and a match is `Verification.CHECKSUM`. An algorithm id rpm does not define SHALL leave
-the file unchecked.
+The RPM backend SHALL check a regular file's digest from `FILEDIGESTS` as the file is
+read, in the algorithm `FILEDIGESTALGO` names (MD5 when absent): a mismatch raises
+`CorruptionError` and a match is `Verification.CHECKSUM`. An algorithm id rpm does not
+define SHALL leave the file unchecked.
 
 #### Scenario: RPM digests
 
@@ -78,4 +80,7 @@ and a payload compressor archivey has no codec for SHALL raise `UnsupportedFeatu
 | `PAYLOADFORMAT` `drpm` | `UnsupportedFeatureError` naming a delta RPM |
 | `PAYLOADCOMPRESSOR` `lzip` | `UnsupportedFeatureError` |
 | Payload missing one non-ghost file | `CorruptionError` |
-| Non-zero bytes after the payload's trailer | `ARCHIVE_TRAILING_DATA` reported, not raised |
+| Non-zero bytes within 1 MiB after the payload's trailer | `ARCHIVE_TRAILING_DATA` reported, not raised; bytes past the first 1 MiB are not read |
+| A header with more than 65 535 entries or more than 256 MiB of data (rpm's own bounds) | `CorruptionError` before the index is read |
+| A payload entry name longer than 4096 bytes (the longest rpm reads, `lib/cpio.c`) | `CorruptionError` |
+| A device, FIFO or directory whose newc entry gives payload bytes | `CorruptionError`: rpm reads none for it |

@@ -70,7 +70,13 @@ normalized: what `rpm2cpio | cpio -i` extracts, relative to the directory given.
 header's absolute name is `raw_name`. A source package's names are relative already.
 
 Device nodes, FIFOs and sockets are `OTHER` members with `extra["special_file_type"]`, as
-in every format. A type the header does not name is `CorruptionError`.
+in every format. A type the header does not name is `OTHER` too, reported with
+`MEMBER_TYPE_UNKNOWN` (DR-25): rpm reads no payload data for it. Neither may carry payload
+bytes, nor may a directory: rpm takes a size of 0 for every type but a regular file and a
+symlink (`iterReadArchiveNext` sets the expected size, whatever the newc entry says), so
+the bytes would be read as the next entry's header and the package fails in rpm. A newc
+size that disagrees with that 0 is `CorruptionError`, as any size that disagrees with the
+header.
 
 Hard links are handled as in newc CPIO: the earlier, empty entries are held
 (`ReaderContext.hold()`, counted toward the listing's limits), and the set's last file,
@@ -83,11 +89,14 @@ payload bytes are skipped; the target is the header's.
 
 - `format_version`: `"6"` when the header stores `RPMFORMAT`, else `"4"` for a header
   with an immutable region (tag 63), else `"3"`: rpm's own rule.
-- `is_solid` is always true, as the payload is compressed in practice and that is known
-  only once the walk reads the header.
+- `is_solid` is true for a compressed payload and false for one with no compressor
+  (`identity`, `ufdio` or no tag), which reads as a CPIO archive does. The header that
+  says which is read by the open's first walk step, so the cost receipt is right from
+  the open.
 - `extra["rpm.name"]`, `rpm.version`, `rpm.release`, `rpm.arch` (strings), `rpm.epoch`
   (int, when set), `rpm.source` (no `SOURCERPM` tag), `rpm.signed` (the signature header
-  holds an RSA, DSA, PGP, GPG or OpenPGP signature) and `rpm.payload_compressor` (the tag's
+  holds an RSA, DSA, PGP, GPG or OpenPGP signature: tags 267, 268, 278, 1002, 1005 or
+  1006, as rpm numbers them on disk) and `rpm.payload_compressor` (the tag's
   value, `"none"` when absent). Set once the walk has read the header, which the open
   does.
 

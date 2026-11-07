@@ -17,8 +17,10 @@ import pytest
 
 import archivey
 from archivey import (
+    AccessCost,
     ArchiveyConfig,
     CorruptionError,
+    ListingCost,
     ListingLimits,
     MemberType,
     ResourceLimitError,
@@ -109,7 +111,17 @@ def test_list_and_read(compressor: str) -> None:
         assert reader.format == RPM
         info = reader.info
         assert info.format_version == "4"
-        assert info.is_solid
+        # Uncompressed, the payload reads as a CPIO archive does.
+        compressed = compressor != "none"
+        assert info.is_solid is compressed
+        assert info.cost.listing_cost is (
+            ListingCost.REQUIRES_DECOMPRESSION
+            if compressed
+            else ListingCost.REQUIRES_SCANNING
+        )
+        assert info.cost.access_cost is (
+            AccessCost.SOLID if compressed else AccessCost.DIRECT
+        )
         assert info.extra["rpm.name"] == "archivey-test"
         assert info.extra["rpm.version"] == "1.0"
         assert info.extra["rpm.release"] == "1"
@@ -553,10 +565,16 @@ def test_an_empty_package() -> None:
         assert reader.members() == []
 
 
-def test_a_signature_is_reported() -> None:
-    data = _build(_Package(_tree(), signature={268: (_BIN, b"sig")}))
+@pytest.mark.parametrize(
+    ("tag", "signed"),
+    [(268, True), (267, True), (1002, True), (1005, True), (1006, True), (259, False)],
+)
+def test_a_signature_is_reported(tag: int, signed: bool) -> None:
+    """The signature header's tags as rpm writes them: RSA and DSA over the header,
+    PGP and GPG over header and payload. 259 is what rpm calls 1002 once read."""
+    data = _build(_Package(_tree(), signature={tag: (_BIN, b"sig")}))
     with _open(data) as reader:
-        assert reader.info.extra["rpm.signed"] is True
+        assert reader.info.extra["rpm.signed"] is signed
 
 
 def test_the_rpm_6_format_version() -> None:
@@ -703,3 +721,54 @@ def test_a_shared_directory_is_not_joined_into_every_name_up_front() -> None:
     finally:
         tracemalloc.stop()
     assert peak < 8 * 2**20
+
+
+def test_an_integer_column_is_counted_before_it_is_unpacked() -> None:
+    """A per-file integer column declaring far more values than files is refused
+    without unpacking them."""
+    import tracemalloc
+
+    modes = (_INT16, [0o100644] * 2_000_000)
+    data = _build(
+        _Package([_F(b"/opt/a", data=b"x")], compressor=None, extra_tags={1030: modes})
+    )
+    tracemalloc.start()
+    try:
+        with pytest.raises(CorruptionError, match="values of tag 1030"):
+            _open(data).close()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # The package itself is 4 MB; unpacked, the column was about 96 MB.
+    assert peak < 32 * 1024 * 1024
+
+
+def test_an_unknown_file_type_is_listed_and_reported() -> None:
+    data = _build(
+        _Package(
+            [_F(b"/opt/odd", mode=0o030644), _F(b"/opt/a", data=b"x")],
+            compressor=None,
+        )
+    )
+    with _open(data) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert reader.read("opt/a") == b"x"
+        codes = [d.code for d in reader.diagnostics.retained]
+    odd = members["opt/odd"]
+    assert odd.type is MemberType.OTHER
+    assert "special_file_type" not in odd.extra
+    assert codes == [DiagnosticCode.MEMBER_TYPE_UNKNOWN]
+    assert [d.code for d in odd.diagnostics] == [DiagnosticCode.MEMBER_TYPE_UNKNOWN]
+
+
+@pytest.mark.parametrize(
+    "mode", [0o010644, 0o040755, 0o030644], ids=["fifo", "dir", "unknown"]
+)
+def test_payload_bytes_for_a_type_rpm_reads_none_for_are_damage(mode: int) -> None:
+    """rpm takes a size of 0 for these whatever the entry says, and would read the
+    bytes as the next entry's header."""
+    data = _build(
+        _Package([_F(b"/opt/x", mode=mode, data=b"0123456789")], compressor=None)
+    )
+    with pytest.raises(CorruptionError, match="the header gives 0"):
+        _open(data).members()

@@ -53,7 +53,11 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
+from archivey.diagnostics import (
+    ArchiveEofContext,
+    DiagnosticCode,
+    UnknownMemberTypeContext,
+)
 from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
@@ -89,6 +93,8 @@ MAX_HEADER_DATA = 0x0FFFFFFF
 # The longest CPIO name rpm reads (lib/cpio.c).
 MAX_PAYLOAD_NAME = 4096
 TRAILER = b"TRAILER!!!"
+# How far past the trailer the check for trailing bytes reads: rpm reads nothing
+# there, so this only bounds a report, and padding a writer adds is far shorter.
 TRAILING_SCAN = 1024 * 1024
 
 # Header data types (rpm.org "Package Header format").
@@ -123,8 +129,12 @@ TAG_PAYLOADCOMPRESSOR = 1125
 TAG_LONGFILESIZES = 5008
 TAG_FILEDIGESTALGO = 5011
 TAG_RPMFORMAT = 5114
-# Signature-header tags that hold a signature (rather than a digest or a size).
-_SIGNATURE_TAGS = frozenset({259, 262, 267, 268, 278})
+# Signature-header tags that hold a signature (rather than a digest or a size), as
+# rpm numbers them on disk (include/rpm/rpmtag.h, rpmSigTag_e): RPMSIGTAG_PGP (1002),
+# RPMSIGTAG_GPG (1005) and the obsolete RPMSIGTAG_PGP5 (1006) over header and payload;
+# RPMSIGTAG_DSA (267), RPMSIGTAG_RSA (268) and the OpenPGP tag (278) over the header.
+# 259 and 262 are the names rpm gives 1002 and 1005 once read, never written.
+_SIGNATURE_TAGS = frozenset({267, 268, 278, 1002, 1005, 1006})
 
 RPMFILE_GHOST = 1 << 6
 
@@ -324,14 +334,15 @@ class RpmReader(SequentialReader):
         self._context = context
         self._extra = ArchiveInfoExtra({})
         self._version: str | None = None
+        # Until the walk reads the header, which the open's first step does: solid,
+        # the answer for a compressed payload.
+        self._solid = True
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:
-        # The payload is compressed in practice (rpm's ufdio, no compression, is rare),
-        # and that is known only once the walk reads the header: say solid up front,
-        # so the cost receipt is right from the open.
+        # A compressed payload is solid; rpm's ufdio (none) is read as a CPIO is.
         return ReaderArchiveInfo(
-            is_solid=True, format_version=self._version, extra=self._extra
+            is_solid=self._solid, format_version=self._version, extra=self._extra
         )
 
     # The walk ---------------------------------------------------------------------
@@ -339,6 +350,7 @@ class RpmReader(SequentialReader):
     @override
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         package = self._read_package(stream)
+        self._solid = package.compressor is not None
         payload = stream
         if package.compressor is not None:
             payload = stream.decompress(package.compressor)
@@ -465,12 +477,13 @@ class RpmReader(SequentialReader):
         basenames = header.strings(TAG_BASENAMES)
         if basenames is not None:
             dirnames = header.strings(TAG_DIRNAMES) or []
-            indexes = header.ints(TAG_DIRINDEXES) or []
-            if len(indexes) != len(basenames):
+            declared = header.count(TAG_DIRINDEXES) if TAG_DIRINDEXES in header else 0
+            if declared != len(basenames):
                 raise CorruptionError(
                     f"RPM header lists {len(basenames)} base names and "
-                    f"{len(indexes)} directory indexes"
+                    f"{declared} directory indexes"
                 )
+            indexes = header.ints(TAG_DIRINDEXES) or []
             split = []
             for base, at in zip(basenames, indexes, strict=True):
                 if at >= len(dirnames):
@@ -483,17 +496,17 @@ class RpmReader(SequentialReader):
             split = [_split(name) for name in header.strings(TAG_OLDFILENAMES) or []]
 
         def column(tag: int, required: bool = False) -> list[int] | None:
-            values = header.ints(tag)
-            if values is None:
+            if tag not in header:
                 if required and count:
                     raise CorruptionError(f"RPM header lists files with no tag {tag}")
                 return None
-            if len(values) != count:
+            # Compared before the values are unpacked: no list longer than the files.
+            if header.count(tag) != count:
                 raise CorruptionError(
-                    f"RPM header lists {count} files and {len(values)} values of "
-                    f"tag {tag}"
+                    f"RPM header lists {count} files and {header.count(tag)} values "
+                    f"of tag {tag}"
                 )
-            return values
+            return header.ints(tag)
 
         modes = column(TAG_FILEMODES, required=True) or []
         sizes = column(TAG_LONGFILESIZES) if TAG_LONGFILESIZES in header else None
@@ -515,11 +528,6 @@ class RpmReader(SequentialReader):
             if file.flags & RPMFILE_GHOST:
                 continue
             kind = file.mode & _S_IFMT
-            if kind not in (_S_IFREG, _S_IFDIR, _S_IFLNK) and kind not in _SPECIAL:
-                raise CorruptionError(
-                    f"RPM header: {_shown(file.raw_name)} has the unknown file type "
-                    f"{kind:#o}"
-                )
             if kind == _S_IFLNK and (targets is None or not targets[file.index]):
                 raise CorruptionError(
                     f"RPM header: symlink {_shown(file.raw_name)} has no target"
@@ -554,7 +562,9 @@ class RpmReader(SequentialReader):
         elif kind == _S_IFLNK:
             member_type = MemberType.SYMLINK
         else:
-            member_type = MemberType.OTHER  # _files refused any other type
+            # A device, FIFO, socket or a type rpm does not name: no payload data,
+            # since rpm reads none for it (iterReadArchiveNext), so OTHER (DR-25).
+            member_type = MemberType.OTHER
         raw_name = file.raw_name
         # The header's names are absolute; the payload stores ``./usr/bin/x``,
         # which is what rpm2cpio and cpio extract, inside the directory given.
@@ -581,6 +591,15 @@ class RpmReader(SequentialReader):
             member.link_target = context.decode_name(package.targets[file.index])
         if special is not None:
             member.extra["special_file_type"] = special
+        elif member_type is MemberType.OTHER:
+            context.report(
+                DiagnosticCode.MEMBER_TYPE_UNKNOWN,
+                f"RPM member {_shown(raw_name)} has the unknown file type {kind:#o}",
+                UnknownMemberTypeContext(
+                    member_name=member.name, stored_type=f"{kind:#o}", size=None
+                ),
+                member=member,
+            )
         file.member = member
         file.stored = stored
         return member
