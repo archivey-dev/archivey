@@ -127,6 +127,43 @@ def test_every_file_checksum_is_a_member_hash(digest: str) -> None:
         assert member.verified is Verification.CHECKSUM
 
 
+@pytest.mark.parametrize(
+    ("attrs", "style"),
+    [(' style="sha224"', "sha224"), ("", ""), (' style=""', "")],
+    ids=["unsupported style", "no style", "empty style"],
+)
+def test_a_file_checksum_archivey_cannot_check_is_reported(
+    attrs: str, style: str
+) -> None:
+    digest = hashlib.sha224(b"0123456789").hexdigest()
+    toc = (
+        '<?xml version="1.0"?><xar><toc><file id="1"><name>a</name><type>file</type>'
+        "<data><length>10</length><offset>0</offset><size>10</size>"
+        '<encoding style="application/octet-stream"/>'
+        f"<extracted-checksum{attrs}>{digest}</extracted-checksum></data>"
+        "</file></toc></xar>"
+    ).encode()
+    with _open(pack_xar(toc, b"0123456789", algorithm=0)) as reader:
+        (member,) = reader.members()
+        assert member.hashes == {}
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code is DiagnosticCode.DIGEST_UNVERIFIABLE
+        assert diagnostic.context.algorithm == style  # type: ignore[union-attr]
+        assert reader.read("a") == b"0123456789"
+        assert member.verified is Verification.LENGTH
+
+
+def test_a_file_with_no_checksum_reports_nothing() -> None:
+    toc = (
+        b'<?xml version="1.0"?><xar><toc><file id="1"><name>a</name><type>file</type>'
+        b"<data><length>10</length><offset>0</offset><size>10</size>"
+        b'<encoding style="application/octet-stream"/></data></file></toc></xar>'
+    )
+    with _open(pack_xar(toc, b"0123456789", algorithm=0)) as reader:
+        (member,) = reader.members()
+        assert not member.diagnostics
+
+
 def test_a_file_that_fails_its_checksum_is_reported() -> None:
     raw = bytearray(write_xar([XarFile("a.txt", TEXT, encoding="none")]))
     raw[-1] ^= 1
