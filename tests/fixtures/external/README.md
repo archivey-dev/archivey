@@ -152,3 +152,22 @@ rebuilt in `tests/test_lzop.py`, each with mtime 2024-03-01 12:00 UTC and mode 0
 - `empty.lzo`: an empty file: a header and the end block.
 - `two-files.lzo`: `lzop -c a.txt b.txt`, two lzop files back to back.
 - `files.tar.lzo`: a USTAR archive of `dir/one.txt` and `dir/two.txt`.
+
+## `xar_bsdtar/`
+
+Five XAR archives written by **bsdtar 3.7.2** (libarchive) on 2026-11-07, one per
+`--options xar:compression=` value: `none.xar`, `gzip.xar`, `bzip2.xar`, `lzma.xar`
+and `xz.xar`. Each holds the same tree, every time stamp 2024-03-01 12:00 UTC:
+
+- `b.txt` (mode 0640): 1 500 words drawn from eight, a line of about 8 KB.
+- `dir/` and `dir/a.txt` (`hello\n`).
+- `link`, a symlink to `dir/a.txt`.
+- `hard.txt`, a hard link to `dir/a.txt`. bsdtar keeps the data on `dir/a.txt`
+  (`<type link="original">`) and writes `hard.txt` after it.
+- a file whose name on disk was `caf\xe9.txt`. bsdtar could not convert the byte to
+  UTF-8, wrote U+FFFD in its place and stored the name base64-encoded
+  (`<name enctype="base64">`), so it reads back as `caf�.txt`.
+
+Made with `bsdtar --format xar --options xar:compression=<c> -cf <c>.xar b.txt dir link
+hard.txt 'caf'$'\xe9''.txt'`. 7-Zip cannot list them. `tests/test_xar.py` reads them
+beside the archives `tests/xar_util.py` writes.

@@ -180,6 +180,14 @@ def squashfs_seeds() -> list[bytes]:
     return tiny + [path.read_bytes() for path in paths]
 
 
+def xar_seeds() -> list[bytes]:
+    """Tiny blobs and the bsdtar archives in tests/fixtures/external/xar_bsdtar, one per
+    encoding, each a few kilobytes."""
+    tiny = [b"", b"xar!\0\x1c\0\x01" + bytes(20)]
+    folder = _REPO_ROOT / "tests" / "fixtures" / "external" / "xar_bsdtar"
+    return tiny + [path.read_bytes() for path in sorted(folder.glob("*.xar"))]
+
+
 def _fixture_seeds(folder: str, pattern: str) -> list[bytes]:
     """The fixtures in tests/fixtures/<folder>, plain and gzip-compressed."""
     paths = sorted((_REPO_ROOT / "tests" / "fixtures" / folder).glob(pattern))

@@ -25,6 +25,8 @@ Formats:
   links whose data, in newc and crc, comes with the last name.
 - [`ar.md`](ar.md) — static libraries and `.deb`, a built-in written against
   `archivey.formats`.
+- [`xar.md`](xar.md) — XAR and macOS `.pkg`: a zlib-compressed XML index, read with
+  expat, and per-file encoded data.
 - [`dmg.md`](dmg.md) — a UDIF image, recognised by the `koly` block and refused.
 - [`single-file.md`](single-file.md) — the stream codecs as one-member archives, with a
   page per codec: [gzip](gzip.md), [bzip2](bzip2.md), [xz, lzip and LZMA Alone](xz.md),

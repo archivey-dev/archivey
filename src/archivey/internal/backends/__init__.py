@@ -13,6 +13,7 @@ Module map:
 - :mod:`.ar_reader` — Unix ar, written against ``archivey.formats`` like ISO
 - :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio), the same way
 - :mod:`.squashfs_reader` — SquashFS 4.0, the same way
+- :mod:`.xar_reader` — XAR (``.xar``, macOS ``.pkg`` and ``.xip``), the same way
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
 - :mod:`.sevenzip_methods` / ``sevenzip_parser`` / ``sevenzip_pipeline`` /
@@ -44,5 +45,6 @@ from archivey.internal.backends import (
     squashfs_reader as _squashfs_reader,  # noqa: F401
     tar_reader as _tar_reader,  # noqa: F401
     udif as _udif,  # noqa: F401
+    xar_reader as _xar_reader,  # noqa: F401
     zip_reader as _zip_reader,  # noqa: F401
 )

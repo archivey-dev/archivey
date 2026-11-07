@@ -89,6 +89,10 @@ class ContainerFormat(StrEnum):
     SQUASHFS = "squashfs"
     """A SquashFS 4.0 filesystem image: a snap package or a live system's root, for
     example. Needs a source that can seek."""
+    XAR = "xar"
+    """A XAR archive: a macOS installer package (``.pkg``) or ``.xip``, or a plain
+    ``.xar``. Its files are listed as the archive holds them; a package's ``Payload``
+    is a member, not expanded. Needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -251,6 +255,7 @@ class ArchiveFormat:
     AR: ClassVar[ArchiveFormat]
     CPIO: ClassVar[ArchiveFormat]
     SQUASHFS: ClassVar[ArchiveFormat]
+    XAR: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -336,6 +341,7 @@ ArchiveFormat.CPIO = ArchiveFormat(ContainerFormat.CPIO, StreamFormat.UNCOMPRESS
 ArchiveFormat.SQUASHFS = ArchiveFormat(
     ContainerFormat.SQUASHFS, StreamFormat.UNCOMPRESSED
 )
+ArchiveFormat.XAR = ArchiveFormat(ContainerFormat.XAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -577,6 +583,14 @@ class HashAlgorithm(StrEnum):
     """CRC-32, as four big-endian bytes."""
     BLAKE2SP = "blake2sp"
     """BLAKE2sp, 32 bytes. Only RAR5 stores it."""
+    MD5 = "md5"
+    """MD5, 16 bytes. A XAR archive may check its files with it."""
+    SHA1 = "sha1"
+    """SHA-1, 20 bytes. What a XAR archive checks its files with by default."""
+    SHA256 = "sha256"
+    """SHA-256, 32 bytes. A XAR archive may check its files with it."""
+    SHA512 = "sha512"
+    """SHA-512, 64 bytes. A XAR archive may check its files with it."""
 
 
 class Verification(IntEnum):
