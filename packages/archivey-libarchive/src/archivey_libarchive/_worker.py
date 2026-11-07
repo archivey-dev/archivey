@@ -32,9 +32,14 @@ def serve(inp: IO[bytes], out: IO[bytes]) -> None:
     tag, payload = proto.receive(inp)
     if tag != b"O":
         raise proto.ProtocolError(f"expected open, got {tag!r}")
-    fmt = proto.unpack_json(payload).get("format")
+    request = proto.unpack_json(payload)
+    charset = request.get("hdrcharset")
     try:
-        session = Session(str(fmt), read_input)
+        session = Session(
+            str(request.get("format")),
+            read_input,
+            charset if isinstance(charset, str) else None,
+        )
     except LibarchiveError as exc:
         _error(out, exc)
         return

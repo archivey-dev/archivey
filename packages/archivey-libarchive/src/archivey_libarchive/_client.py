@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from archivey_libarchive import _protocol as proto
-from archivey_libarchive._libarchive import LibarchiveError, Session
+from archivey_libarchive._libarchive import ARCHIVE_FATAL, LibarchiveError, Session
 
 _PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent)
 _BOOT = (
@@ -44,14 +44,21 @@ class AnySession(Protocol):
     def close(self) -> None: ...
 
 
-def in_process_session(fmt: str, read_input: Callable[[int], bytes]) -> AnySession:
-    return Session(fmt, read_input)
+def in_process_session(
+    fmt: str, read_input: Callable[[int], bytes], hdrcharset: str | None = None
+) -> AnySession:
+    return Session(fmt, read_input, hdrcharset)
 
 
 class ChildSession:
     """A :class:`Session` in a child process of its own, fed by ``read_input``."""
 
-    def __init__(self, fmt: str, read_input: Callable[[int], bytes]) -> None:
+    def __init__(
+        self,
+        fmt: str,
+        read_input: Callable[[int], bytes],
+        hdrcharset: str | None = None,
+    ) -> None:
         self._read_input = read_input
         try:
             self._proc = subprocess.Popen(
@@ -66,7 +73,9 @@ class ChildSession:
             ) from None
         self._closed = False
         try:
-            self._call(b"O", proto.pack_json({"format": fmt}), b"K")
+            self._call(
+                b"O", proto.pack_json({"format": fmt, "hdrcharset": hdrcharset}), b"K"
+            )
         except BaseException:
             self.close()
             raise
@@ -96,8 +105,12 @@ class ChildSession:
                 break
             # The source's own errors (a damaged compressed layer, a cut pipe) pass
             # through as they are.
-            data = self._read_input(self._size(body))
-            self._send(b"I", data)
+            size = self._size(body)
+            # The child asks for Session.CHUNK at a time; a larger request is a child
+            # that is not running our code, and would have this side buffer it.
+            if size > Session.CHUNK:
+                raise self._died(f"asked for {size} bytes of input at once")
+            self._send(b"I", self._read_input(size))
         if got == b"X":
             try:
                 error = proto.unpack_json(body)
@@ -105,7 +118,7 @@ class ChildSession:
                 raise self._died(f"bad error report: {exc}") from None
             code, errno = error.get("code"), error.get("errno")
             raise LibarchiveError(
-                code if isinstance(code, int) else -30,
+                code if isinstance(code, int) else ARCHIVE_FATAL,
                 errno if isinstance(errno, int) else 0,
                 str(error.get("message", "libarchive error")),
             )
@@ -175,5 +188,7 @@ class ChildSession:
             proc.wait()
 
 
-def child_session(fmt: str, read_input: Callable[[int], bytes]) -> AnySession:
-    return ChildSession(fmt, read_input)
+def child_session(
+    fmt: str, read_input: Callable[[int], bytes], hdrcharset: str | None = None
+) -> AnySession:
+    return ChildSession(fmt, read_input, hdrcharset)

@@ -54,10 +54,11 @@ _READ_SIZE = 1 << 20
 _T = TypeVar("_T")
 
 
-def translate(exc: LibarchiveError, what: str) -> ArchiveyError:
+def translate(exc: LibarchiveError) -> ArchiveyError:
     """A libarchive failure as archivey's error. libarchive gives a message and an
-    errno, not a kind, so the kind is read from the message."""
-    message = f"libarchive: {exc.message} ({what})"
+    errno, not a kind, so the kind is read from the message. archivey adds the format
+    and the archive to the message."""
+    message = f"libarchive: {exc.message}"
     lowered = exc.message.lower()
     if exc.errno == errno_codes.ENOMEM:
         return ResourceUnavailableError(message)
@@ -84,6 +85,24 @@ def _time(seconds: object, nsec: object) -> datetime | None:
     if isinstance(nsec, int) and 0 < nsec < 1_000_000_000:
         stamp = stamp.replace(microsecond=nsec // 1000)
     return stamp
+
+
+def _dos_time(stamp: object) -> datetime | None:
+    """A DOS date and time as the naive local time it records."""
+    if not isinstance(stamp, int):
+        return None
+    t, d = stamp & 0xFFFF, stamp >> 16
+    try:
+        return datetime(
+            ((d >> 9) & 0x7F) + 1980,
+            (d >> 5) & 0x0F,
+            d & 0x1F,
+            (t >> 11) & 0x1F,
+            (t >> 5) & 0x3F,
+            (t << 1) & 0x3E,
+        )
+    except ValueError:
+        return None
 
 
 def _int(value: object) -> int | None:
@@ -130,7 +149,7 @@ class _LibarchiveReader(SequentialReader):
         self._context = context
         isolation = context.config.process_isolation
         self._open_session: Callable[
-            [str, Callable[[int], bytes]], _client.AnySession
+            [str, Callable[[int], bytes], str | None], _client.AnySession
         ] = (
             _client.in_process_session
             if isolation is ProcessIsolation.NONE
@@ -146,7 +165,7 @@ class _LibarchiveReader(SequentialReader):
         try:
             return fn()
         except LibarchiveError as exc:
-            raise translate(exc, f"format={self.fmt}") from None
+            raise translate(exc) from None
         except _client.ChildDied as exc:
             raise _died(exc) from None
         except _client.ChildUnavailable as exc:
@@ -155,20 +174,34 @@ class _LibarchiveReader(SequentialReader):
                 "it in this process"
             ) from None
 
+    def _stored(self, converted: bytes) -> bytes:
+        """The name's stored bytes, as near as they can be had. With ``encoding=``,
+        libarchive decoded every name with it (``hdrcharset``), a name that was valid
+        UTF-8 too; encoding back gives the stored bytes, so that valid UTF-8 still
+        wins in :meth:`ReaderContext.decode_name`, as in every format."""
+        encoding = self._context.encoding
+        if encoding is None:
+            return converted
+        try:
+            return converted.decode("utf-8").encode(encoding)
+        except (UnicodeError, LookupError):
+            return converted
+
     def _member(self, header: dict[str, object]) -> ArchiveMember:
-        raw = header.get("path")
-        if not isinstance(raw, bytes) or not raw:
-            raise CorruptionError(f"libarchive gave an entry with no name ({self.fmt})")
+        converted = header.get("path")
+        if not isinstance(converted, bytes) or not converted:
+            raise CorruptionError("libarchive gave an entry with no name")
+        raw = self._stored(converted)
         warning = header.get("warning")
         if warning:
-            raise CorruptionError(f"libarchive: {warning} (format={self.fmt})")
+            raise CorruptionError(f"libarchive: {warning}")
         filetype = header.get("filetype")
         size = _int(header.get("size"))
         link_target = None
         hardlink = header.get("hardlink")
         if isinstance(hardlink, bytes) and hardlink:
             kind = MemberType.HARDLINK
-            link_target = self._context.decode_name(hardlink)
+            link_target = self._context.decode_name(self._stored(hardlink))
             size = None
         elif filetype == AE_IFDIR:
             kind, size = MemberType.DIRECTORY, None
@@ -180,15 +213,29 @@ class _LibarchiveReader(SequentialReader):
         else:
             kind, size = MemberType.OTHER, None
         perm = header.get("perm")
+        mode = perm & 0o7777 if isinstance(perm, int) else None
+        uid, gid = _int(header.get("uid")), _int(header.get("gid"))
+        # When an LHA header stores no Unix mode or owner, libarchive makes them up
+        # (0666 or 0777 less the DOS read-only bit; uid and gid 0): those are unknown.
+        if header.get("lha_mode_stored") is False:
+            mode = None
+        if header.get("lha_owner_stored") is False:
+            uid = gid = None
+        if header.get("mtime_is_dos"):
+            # Levels 0 and 1 store a DOS local time, which libarchive read in this
+            # host's time zone: report the wall-clock time, naive, as ZIP does.
+            modified = _dos_time(header.get("lha_dos_time"))
+        else:
+            modified = _time(header.get("mtime"), header.get("mtime_nsec"))
         return ArchiveMember(
             type=kind,
             name=self._context.decode_name(raw),
             raw_name=raw,
             size=size,
-            modified=_time(header.get("mtime"), header.get("mtime_nsec")),
-            mode=perm & 0o7777 if isinstance(perm, int) else None,
-            uid=_int(header.get("uid")),
-            gid=_int(header.get("gid")),
+            modified=modified,
+            mode=mode,
+            uid=uid,
+            gid=gid,
             uname=_text(header.get("uname")),
             gname=_text(header.get("gname")),
             link_target=link_target,
@@ -196,7 +243,9 @@ class _LibarchiveReader(SequentialReader):
         )
 
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
-        session = self._call(lambda: self._open_session(self.fmt, stream.read))
+        session = self._call(
+            lambda: self._open_session(self.fmt, stream.read, self._context.encoding)
+        )
         try:
             while True:
                 header = self._call(session.next_header)

@@ -13,6 +13,8 @@ import signal
 import struct
 import subprocess
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -235,7 +237,7 @@ def test_a_cut_archive_is_truncated(isolation: ProcessIsolation) -> None:
 def test_libarchive_errors_map_by_message(
     message: str, errno: int, kind: type[Exception]
 ) -> None:
-    error = _formats.translate(_libarchive.LibarchiveError(-30, errno, message), "x")
+    error = _formats.translate(_libarchive.LibarchiveError(-30, errno, message))
     assert type(error) is kind
     assert message in str(error)
 
@@ -322,6 +324,15 @@ def test_a_childs_mode_is_only_permission_bits(monkeypatch: pytest.MonkeyPatch) 
         assert member.mode == 0o4644
 
 
+def test_a_child_cannot_ask_for_more_input_than_a_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The parent would otherwise read that much of the source into memory at once.
+    _fake_child(monkeypatch, [(b"N", proto.pack_size(0xFFFF_FFFF))])
+    with pytest.raises(CorruptionError, match="asked for 4294967295 bytes of input"):
+        _contents(FIXTURES / "lha_lh6.lzh")
+
+
 def test_a_damaged_header_is_corrupt() -> None:
     raw = bytearray(_stored_lha(b"a.txt", b"stored bytes\n"))
     raw[1] ^= 0xFF  # the header checksum
@@ -385,3 +396,104 @@ def test_without_libarchive_the_format_is_unsupported(
 def test_register_twice_is_harmless() -> None:
     archivey_libarchive.register()
     assert archivey_libarchive.libarchive_version().startswith("libarchive 3.")
+
+
+# --- names, times and owners that libarchive converts or makes up ------------------
+
+
+_PROBE = """
+import sys
+sys.path.insert(0, {src!r})
+import archivey_libarchive
+archivey_libarchive.register()
+from archivey import ArchiveyConfig, ProcessIsolation, open_archive
+config = ArchiveyConfig(process_isolation=ProcessIsolation[{isolation!r}])
+with open_archive({path!r}, config=config) as archive:
+    print([m.name for m in archive.members()])
+"""
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS, ids=lambda i: i.name)
+def test_names_do_not_depend_on_the_locale(isolation: ProcessIsolation) -> None:
+    # Under LC_ALL=C libarchive cannot turn a CP932 name into the process locale;
+    # each call runs with a UTF-8 locale for its own thread.
+    code = _PROBE.format(
+        src=str(Path(archivey_libarchive.__file__).parent.parent),
+        isolation=isolation.name,
+        path=str(FIXTURES / "lha_filename_cp932.lzh"),
+    )
+    env = {**os.environ, "LC_ALL": "C", "PYTHONIOENCODING": "utf-8"}
+    out = subprocess.run(
+        [sys.executable, "-I", "-c", code], env=env, capture_output=True, check=True
+    ).stdout.decode()
+    assert out.strip() == "['漢字.txt', '表.txt']"
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS, ids=lambda i: i.name)
+def test_encoding_reaches_libarchive_and_valid_utf8_still_wins(
+    isolation: ProcessIsolation,
+) -> None:
+    latin1 = _stored_lha("café.txt".encode("latin-1"), b"x")
+    utf8 = _stored_lha("café.txt".encode(), b"x")
+    config = _config(isolation)
+    # Neither UTF-8 nor CP932: libarchive refuses the header, with no message of
+    # its own.
+    with pytest.raises(CorruptionError, match="needs encoding="):
+        _contents(io.BytesIO(latin1), config=config)
+    for raw, stored in (
+        (latin1, "café.txt".encode("latin-1")),
+        (utf8, "café.txt".encode()),
+    ):
+        with open_archive(
+            io.BytesIO(raw), config=config, encoding="latin-1"
+        ) as archive:
+            (member,) = archive.members()
+            assert member.name == "café.txt"
+            assert member.raw_name == stored
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS, ids=lambda i: i.name)
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset")
+def test_a_dos_time_is_the_naive_local_time_it_records(
+    monkeypatch: pytest.MonkeyPatch, isolation: ProcessIsolation
+) -> None:
+    raw = _stored_lha(b"a.txt", b"x")  # DOS time 0x5A2E6000, level 0, no extension
+    for zone in ("UTC", "Asia/Tokyo", "America/New_York"):
+        monkeypatch.setenv("TZ", zone)
+        time.tzset()
+        try:
+            with open_archive(io.BytesIO(raw), config=_config(isolation)) as archive:
+                (member,) = archive.members()
+        finally:
+            monkeypatch.undo()
+            time.tzset()
+        assert member.modified == datetime(2025, 1, 14, 12, 0), zone
+
+
+def test_a_unix_time_stays_utc() -> None:
+    with open_archive(FIXTURES / "lha_header0.lzh") as archive:
+        modified = archive.get("dir/").modified
+    assert modified is not None and modified.tzinfo is not None
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # Level 0, no extension: no mode, no owner stored.
+        (_stored_lha(b"a.txt", b"x"), (None, None, None)),
+        # A Windows time stamp extension, no Unix one.
+        (FIXTURES / "lha_filename_cp932.lzh", (None, None, None)),
+        # LHa for UNIX's level-0 extension.
+        (FIXTURES / "lha_header0.lzh", (0o750, 1001, 1001)),
+        # Level 2 records 0x50 and 0x51.
+        (FIXTURES / "lha_header2.lzh", (0o750, 1001, 1001)),
+    ],
+    ids=["level0", "cp932", "header0", "header2"],
+)
+def test_a_mode_and_owner_libarchive_makes_up_are_unknown(
+    source: object, expected: tuple[int | None, int | None, int | None]
+) -> None:
+    src = io.BytesIO(source) if isinstance(source, bytes) else source
+    with open_archive(src) as archive:  # type: ignore[arg-type]
+        member = archive.members()[0]
+    assert (member.mode, member.uid, member.gid) == expected

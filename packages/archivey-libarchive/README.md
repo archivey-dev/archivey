@@ -41,3 +41,10 @@ safe extraction to what libarchive reads.
 - libarchive reports errors as messages, so whether one is a `TruncatedError`, a
   `CorruptionError` or an `UnsupportedFeatureError` is read from the message.
 - `DecoderLimits` do not reach inside libarchive.
+- LHA names: libarchive reads a name in an old header as UTF-8 when it is valid and as
+  CP932 (Japanese) otherwise. Pass `encoding=` for any other charset, such as
+  `encoding="latin-1"` for an Amiga archive; valid UTF-8 names still win.
+- LHA times: old headers (levels 0 and 1) store a local time with no zone, which comes
+  out as a naive `datetime`, as in ZIP. Newer headers store UTC.
+- LHA owners and permissions: a header that stores none gives `mode`, `uid` and `gid`
+  of `None`.
