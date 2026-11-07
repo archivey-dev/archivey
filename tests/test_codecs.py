@@ -3561,6 +3561,7 @@ _NOT_OPTIONAL_LIBRARIES = {
     "_typeshed": "type-checking stubs, imported only under TYPE_CHECKING",
     "typing_extensions": "the type checkers' override, imported only under TYPE_CHECKING",
     "tqdm": "the CLI's progress bar, a dependency of archivey-cli, not a decoder",
+    "fsspec": "the OpenFile source type, imported only under TYPE_CHECKING",
 }
 
 

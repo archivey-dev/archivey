@@ -379,6 +379,8 @@ class ListingLimits:
     not list UDF: an image whose UDF tree has more names than its ISO 9660 tree can be
     refused for the UDF tree. ISO counts members per tree but weighs bytes as one sum
     for the whole image, every tree together.
+    RPM refuses a header that lists more files than ``max_members`` at open, before it
+    builds the file list.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than is left of ``max_metadata_bytes``, before reading it.
     SquashFS walks the whole directory tree before it lists a member, and weighs the
@@ -938,6 +940,19 @@ class ArchiveyConfig:
     The default allows every format archivey reads and every registered plugin format.
     """
 
+    max_read_through: int = 2**20
+    """The longest forward gap, in bytes, that reading a remote archive reads through
+    rather than starting a new request.
+
+    Applies only to an ``fsspec.core.OpenFile`` source, which archivey reads by range
+    requests. When a read lands at most this many bytes past the end of the last fetch,
+    archivey fetches the gap too and keeps the run of reads sequential: a TAR listing
+    then hops over small members' data in a few large requests instead of one request
+    per header. A longer gap starts a new request. The default, 1 MiB, sits just under
+    the break-even of one request against its bytes on a typical object store (about
+    30 ms at 50 MB/s). ``0`` fetches only the bytes a read needs.
+    """
+
     def __post_init__(self) -> None:
         """Check the fields at construction, and convert the two that hold enums.
 
@@ -1028,6 +1043,12 @@ class ArchiveyConfig:
         check_encoding(
             self.zip_unflagged_fallback_encoding,
             call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
+            allow_none=False,
+        )
+        check_limit(
+            self.max_read_through,
+            cls="ArchiveyConfig",
+            field_name="max_read_through",
             allow_none=False,
         )
         check_limit(

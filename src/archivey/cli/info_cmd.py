@@ -72,6 +72,12 @@ def _print_identity(archive: str, detected: FormatInfo, out: TextIO) -> None:
         # Printed under its older name, which output parsers may match on: any
         # prefix, not only a self-extractor's stub (FormatInfo.payload_offset).
         _line("sfx_offset", detected.payload_offset, out)
+    if detected.prefixed:
+        # Separate from ``sfx_offset``: a ZIP whose offsets count from the start of
+        # the file is prefixed at offset 0 (FormatInfo.prefixed).
+        _line("prefixed", True, out)
+    if detected.payload_end is not None:
+        _line("payload_end", detected.payload_end, out)
 
 
 def _can_reread(path: str) -> bool:

@@ -1,6 +1,6 @@
 # Archivey
 
-Archivey reads ZIP, TAR, 7z, RAR, ISO, SquashFS, CPIO, ar, CAB and single compressed files from
+Archivey reads ZIP, TAR, 7z, RAR, ISO, SquashFS, CPIO, ar, RPM, CAB and single compressed files from
 Python, with one simple API. Untrusted archives extract safely by default. Archive formats
 hide some slow and error-prone ways of reading, and archivey's defaults steer around them
 whenever possible. The [cheat sheet](cheat-sheet.md) has the main calls on one page, with the

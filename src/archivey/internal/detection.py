@@ -88,7 +88,7 @@ from contextlib import closing
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, BinaryIO, cast
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -127,17 +127,22 @@ from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
 from archivey.internal.registry import ContentProbe, get_registry
+from archivey.internal.remote import is_open_file, noting_fsspec_decoding
 from archivey.internal.sfx import (
+    LAYOUT_PREFIX,
     MAX_VALIDATED_CANDIDATES,
     SFX_MAX,
     VALIDATOR_PEEK_MAX,
     ExecutableCue,
+    ExecutableLayout,
     HitOutcome,
     HitSelector,
     HitValidator,
     ScanNeedle,
     executable_cue,
+    executable_layout,
     iter_magic_in_prefix,
+    pe_layout,
 )
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs.brotli_framing import (
@@ -149,7 +154,7 @@ from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     source_name,
 )
-from archivey.internal.volumes import first_volume_for_stub, resolve_source
+from archivey.internal.volumes import SourceItem, first_volume_for_stub, resolve_source
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
@@ -959,6 +964,24 @@ def validator_allowance(budget: DetectionBudget) -> int:
     return min(VALIDATOR_PEEK_MAX, budget.max_scan_bytes)
 
 
+def _executable_head(
+    data: bytes, peek_more: Callable[[int], bytes], workspace: PrefixWorkspace
+) -> bytes:
+    """The leading bytes an executable's layout is read from: ``data``, grown to
+    :data:`~archivey.internal.sfx.LAYOUT_PREFIX` bytes when it is shorter.
+
+    A ``max_prefix_bytes`` below that span would hide the headers, and the end and
+    start detection reports would then differ from the ones a forced ``format=``
+    reads from the same span (``open_archive``): what an archive holds never depends
+    on whether its format was named. The scan that follows reads past this span
+    anyway, on a pipe too, so growing it waits for no byte the scan would not.
+    """
+    total = workspace.remaining_known()
+    if len(data) >= (LAYOUT_PREFIX if total is None else min(LAYOUT_PREFIX, total)):
+        return data
+    return peek_more(LAYOUT_PREFIX)
+
+
 def _scan_for_sfx_payload(
     entries: list[MagicSignature],
     peek_more: Callable[[int], bytes],
@@ -970,6 +993,7 @@ def _scan_for_sfx_payload(
     capped_formats: frozenset[ArchiveFormat],
     restrict_to_validated: bool,
     cut_reason: TierSkipReason = TierSkipReason.BUDGET_EXHAUSTED,
+    leading: bytes = b"",
 ) -> FormatInfo | None:
     """Search the SFX window for an appended archive, as ``(format, payload_offset)``.
 
@@ -1015,6 +1039,13 @@ def _scan_for_sfx_payload(
     ``cut_reason`` is what a window shorter than ``SFX_MAX`` is recorded as: the budget
     by default, ``CAPABILITY_UNAVAILABLE`` when the caller cut the window to the bytes a
     forward-only source already holds.
+
+    ``leading`` is the prefix detection holds. When it is a PE, ELF or Mach-O
+    program whose layout parses (:func:`~archivey.internal.sfx.executable_layout`),
+    the candidate at its overlay start is judged first. When it is a signed PE, a
+    candidate at or past its certificate table is not judged, and the answer carries
+    the table's start as ``payload_end``: the table is not parsed, so a needle inside
+    it could pass a validator, and the readers stop there (``archive-reading``).
     """
     # A zero ``max_scan_bytes`` turns the tier off, as a zero field does for the others.
     if _record_tier_limit(workspace, "sfx_scan", enabled=scan_limit > 0):
@@ -1050,11 +1081,23 @@ def _scan_for_sfx_payload(
     # The window bounds where a magic may start, not how far its validator reads: a
     # candidate inside it is judged on its whole header, as far as the budget allows.
     view_limit = scan_limit + peek_allowance
+    layout = executable_layout(leading, workspace.remaining_known())
+    payload_end = None if layout is None else layout.payload_end
+    if layout is not None:
+        first = _judge_overlay_start(
+            layout, entries, by_needle, formats, workspace, scan_limit, view_limit
+        )
+        if first is not None:
+            return first
     for hit in iter_magic_in_prefix(
         peek_more, needles, limit=scan_limit, dropped=dropped
     ):
         key, validator = by_needle[hit.needle]
         origin = hit.candidate_origin
+        if payload_end is not None and origin >= payload_end:
+            # Inside the certificate table: no payload starts there, and every later
+            # needle is further in.
+            break
         outcome = HitOutcome.VALID
         if validator is not None:
             view = workspace.candidate_view(origin, limit=view_limit)
@@ -1074,6 +1117,8 @@ def _scan_for_sfx_payload(
             DetectionConfidence.PROBABLE,
             "sfx_scan",
             payload_offset=chosen[1],
+            prefixed=True,
+            payload_end=payload_end,
         )
     )
     # Charge the window actually examined — a miss is the expensive case.
@@ -1095,6 +1140,148 @@ def _scan_for_sfx_payload(
     elif selector.capped:
         workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
     return result
+
+
+#: The PE tail probe's reads (``detection-cost``, the *tail allowance*): the end-record
+#: search span, as long as the ZIP reader's, and the fixed parts of the two records
+#: that confirm it. Literals that mirror ``zip_parser.EOCD_SEARCH_WINDOW`` and
+#: ``zip_parser.TAIL_CONFIRM_READS``, since detection imports that module only when
+#: the probe runs; ``tests/test_pe_tail_probe.py`` pins them together.
+TAIL_PROBE_SPAN = 65_558
+TAIL_PROBE_ALLOWANCE = TAIL_PROBE_SPAN + 46 + 30
+
+
+def _probe_pe_tail(
+    workspace: PrefixWorkspace,
+    leading: bytes,
+    *,
+    scan_limit: int,
+    enabled: bool,
+) -> FormatInfo | None:
+    """A ZIP end record before a PE's payload end, after the SFX scan missed.
+
+    Runs only for a PE whose layout parses (:func:`~archivey.internal.sfx.pe_layout`)
+    on a source of known length, whose payload end (the certificate table's start, or
+    the end of the source) lies past both the overlay start and the scanned window: a
+    program with nothing appended past its sections other than a certificate never
+    pays for the read.
+    The search covers the :data:`TAIL_PROBE_SPAN` bytes ending at the payload end, with
+    the ZIP reader's own locator, so the reader then finds the same record. The record
+    is confirmed (``zip_parser.confirm_tail_record``) before answering ``ZIP`` /
+    ``PROBABLE`` / ``sfx_scan`` with the base the record implies as
+    ``payload_offset``, which is never after any member. ZIP64 records are declined.
+
+    Records ``sfx_tail`` as *not enabled by policy* when the scan tier is off, and as
+    *capability unavailable* when the source does not allow a cheap tail read: a
+    stream of unknown length that runs past the window and the overlay start, whose
+    end only reading all of it would find, or one whose tail cannot be read without
+    re-decoding (``read_tail``). Nothing for a source the gate excludes.
+    """
+    total = workspace.remaining_known()
+    layout = pe_layout(leading, total)
+    if layout is None:
+        return None
+    if total is None:
+        # Not ended yet, so the stream runs past the bytes it delivered.
+        if workspace.buffered_length >= max(scan_limit, layout.overlay_start):
+            workspace.record_skip(
+                "sfx_tail",
+                TierSkipReason.CAPABILITY_UNAVAILABLE
+                if enabled
+                else TierSkipReason.NOT_ENABLED_BY_POLICY,
+            )
+        return None
+    end = total if layout.payload_end is None else layout.payload_end
+    if end <= layout.overlay_start or end <= scan_limit:
+        return None
+    if not enabled:
+        workspace.record_skip("sfx_tail", TierSkipReason.NOT_ENABLED_BY_POLICY)
+        return None
+    span = workspace.read_tail(TAIL_PROBE_SPAN, end=end, tier="sfx_tail")
+    if span is None:
+        return None
+    # Imported here: detection reads no backend module on any other path.
+    from archivey.internal.backends.zip_parser import (
+        confirm_tail_record,
+        locate_classic_record,
+    )
+
+    span_start = end - len(span)
+
+    def read_at(offset: int, length: int) -> bytes:
+        if span_start <= offset and offset + length <= end:
+            return span[offset - span_start : offset - span_start + length]
+        return workspace.read_at(offset, length) or b""
+
+    found = locate_classic_record(read_at, end)
+    if found is None:
+        return None
+    eocd_offset, record, _comment = found
+    base = confirm_tail_record(read_at, eocd_offset, record, layout.overlay_start)
+    if base is None:
+        return None
+    return FormatInfo(
+        ArchiveFormat.ZIP,
+        DetectionConfidence.PROBABLE,
+        "sfx_scan",
+        payload_offset=base,
+        prefixed=True,
+        payload_end=layout.payload_end,
+    )
+
+
+def _judge_overlay_start(
+    layout: ExecutableLayout,
+    entries: list[MagicSignature],
+    by_needle: dict[bytes, tuple[int, HitValidator | None]],
+    formats: list[ArchiveFormat],
+    workspace: PrefixWorkspace,
+    scan_limit: int,
+    view_limit: int,
+) -> FormatInfo | None:
+    """The SFX answer at an executable's overlay start, judged before the forward
+    scan.
+
+    The overlay start is where the program's own headers say appended data begins, so
+    it is stronger evidence than "earliest needle" and than the 7z exact-end
+    tie-break. A candidate there that its validator grades ``VALID`` or
+    ``VALID_SHORT`` is the answer (a signed 7z SFX ends before its certificate, so
+    ``VALID_SHORT`` is the common case); anything else leaves the scan to run as it
+    does for any stub. The RAR and 7z parsers' scans and the forward ZIP walk apply
+    the same rule, so forced ``format=`` opens the same payload.
+    """
+    origin = layout.overlay_start
+    if layout.payload_end is not None and origin >= layout.payload_end:
+        return None
+    for entry in entries:
+        start = origin + entry.offset
+        if start + len(entry.magic) > scan_limit:
+            continue
+        view = workspace.candidate_view(origin, limit=view_limit)
+        if view(entry.offset + len(entry.magic))[entry.offset :] != entry.magic:
+            continue
+        key, validator = by_needle[entry.magic]
+        outcome = HitOutcome.VALID
+        if validator is not None:
+            source_len = workspace.remaining_known()
+            remaining = None if source_len is None else max(0, source_len - origin)
+            outcome = validator(
+                workspace.candidate_view(origin, limit=view_limit), remaining
+            )
+        if outcome not in (HitOutcome.VALID, HitOutcome.VALID_SHORT):
+            continue
+        # The window examined is the bytes up to the candidate's magic.
+        workspace.charge_scanned(start + len(entry.magic))
+        workspace.take_clamped_view_read()
+        return FormatInfo(
+            formats[key],
+            DetectionConfidence.PROBABLE,
+            "sfx_scan",
+            payload_offset=origin,
+            prefixed=True,
+            payload_end=layout.payload_end,
+        )
+    return None
 
 
 def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
@@ -1145,12 +1332,15 @@ def directory_format_info() -> FormatInfo:
 
 
 def detect_format(
-    source: str | Path | BinaryIO,
+    source: SourceItem,
     *,
     config: ArchiveyConfig | None = None,
     follow_stub_volumes: bool = True,
 ) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.
+
+    ``source`` takes what :func:`~archivey.open_archive` takes for one archive: a path,
+    a binary stream, or an ``fsspec.core.OpenFile`` read by range requests.
 
     Returns a :class:`FormatInfo`. Raises :class:`FormatDetectionError` when no magic
     pattern matches and no extension guess is available. A non-blocking stream with
@@ -1210,7 +1400,7 @@ def detect_format(
 
 
 def detect_format_into(
-    source: str | Path | BinaryIO,
+    source: SourceItem,
     *,
     config: ArchiveyConfig | None,
     collector: DiagnosticCollector | None,
@@ -1232,8 +1422,21 @@ def detect_format_into(
     check_config(config, call="detect_format(config=…)")
     discover = (config or DEFAULT_ARCHIVEY_CONFIG).discover_volumes
     follow_stub_volumes = follow_stub_volumes and discover
+    if is_open_file(source):
+        # Resolved as open_archive resolves it, through the fetch planner.
+        max_read_through = (config or DEFAULT_ARCHIVEY_CONFIG).max_read_through
+        with (
+            noting_fsspec_decoding(source),
+            closing(
+                resolve_source(source, max_read_through=max_read_through).source
+            ) as resolved,
+        ):
+            return _detect_source_into(resolved, config, collector, follow_stub_volumes)
     if not isinstance(source, (str, Path)):
-        return _detect_source_into(source, config, collector, follow_stub_volumes)
+        # ``is_open_file`` cannot narrow the union, so the stream is named here.
+        return _detect_source_into(
+            cast("BinaryIO", source), config, collector, follow_stub_volumes
+        )
     # A path is resolved once, as ``open_archive`` resolves it: any part of a numbered
     # split set (``set.zip.002``) becomes the joined set, and a RAR continuation its
     # volume 1. A middle part has no magic of its own, so detecting the named file
@@ -1495,6 +1698,7 @@ def _detect_format_body(
         non_archive = _non_archive_signature(data)
         cue = executable_cue(data)
         if cue is not ExecutableCue.NONE and non_archive is None:
+            head = _executable_head(data, peek_more, workspace)
             sfx_info = _scan_for_sfx_payload(
                 registry.sfx_magic_entries(),
                 peek_more,
@@ -1505,9 +1709,21 @@ def _detect_format_body(
                 capped_formats=registry.sfx_parser_scanned_formats(),
                 # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
                 restrict_to_validated=data.startswith(b"#!"),
+                leading=head,
             )
             if sfx_info is not None:
                 return conclude(sfx_info, _ConflictEvidence.SFX_SCAN)
+            # 2b. A ZIP far behind a PE stub, found from its end record (the install4j
+            # shape). Gated on the PE's own layout, so only a large installer whose
+            # overlay runs past the window pays for the tail read.
+            tail_info = _probe_pe_tail(
+                workspace,
+                head,
+                scan_limit=min(SFX_MAX, budget.max_scan_bytes),
+                enabled=budget.max_scan_bytes > 0,
+            )
+            if tail_info is not None:
+                return conclude(tail_info, _ConflictEvidence.SFX_SCAN)
 
         # 3. Far magic (ISO's CD001 at offset 32 769). A signature that ends past
         # ``max_far_bytes`` cannot match in the clamped window, so it is dropped and the

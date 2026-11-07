@@ -24,18 +24,30 @@ stay a local path whatever it contains, and the `OpenFile` check SHALL run only 
 | `open_archive(fs.open("a.zip"))`, an already-open fsspec file | Read as any seekable `BinaryIO`, through the caller's object; not closed by the reader |
 | `import archivey; archivey.open_archive(path)` without fsspec imported | `fsspec` is not in `sys.modules` afterwards |
 
-### Requirement: OpenFile fields archivey cannot honour are refused
+### Requirement: How archivey honours the OpenFile fields
 
-An `OpenFile` whose `mode` is not `"rb"`, or whose `compression` is not `None` after
-fsspec resolves it, SHALL be refused with an `ArchiveyUsageError` that is a `ValueError`,
-naming the field and its value, before any range is read. Its `encoding`, `errors` and
+An `OpenFile` whose `mode` is not `"rb"` SHALL be refused with an `ArchiveyUsageError`
+that is a `ValueError`, naming the mode, before any range is read. An `OpenFile` whose
+`compression` is not `None` after fsspec resolves it SHALL be read through `of.open()`,
+fsspec's decompressing stream, as a stream archivey opened and closes, with one WARNING
+on the `archivey.streams` logger saying it reads no ranges; for a codec archivey decodes
+itself, the warning SHALL say that `compression=None` reads by range. Its `compression`
+SHALL NOT become a `format=`: the archive is what the decompressed bytes hold. In a
+volume sequence, and in `open_stream()`, which reads a compressed stream and would get
+the decoded bytes, an `OpenFile` with a `compression` SHALL be refused with an
+`ArchiveyUsageError` before any read. A `FormatDetectionError` from a compressed
+`OpenFile` SHALL carry a note that the bytes were decoded by fsspec and that
+`compression=None` reads the compressed file itself. Its `encoding`, `errors` and
 `newline` SHALL be ignored, as binary mode ignores them.
 
-#### Scenario: refused OpenFile fields
+#### Scenario: OpenFile fields
 
 | Case | Expected |
 | --- | --- |
-| `fsspec.open("memory://x.zip.gz", compression="infer")` | `ArchiveyUsageError` naming `compression='gzip'`; no read |
+| `fsspec.open("memory://x.zip.gz", compression="infer")` | Opens the ZIP inside; one WARNING suggesting `compression=None`; closing the reader closes fsspec's stream |
+| `[fsspec.open("memory://a.7z.001", compression="gzip"), ...]` | `ArchiveyUsageError` naming the compression; no read |
+| `open_stream(fsspec.open("memory://y.txt.gz", compression="infer"))` | `ArchiveyUsageError` naming `compression='gzip'` and `compression=None`; no read |
+| `open_archive(fsspec.open("memory://y.txt.gz", compression="infer"))` | `FormatDetectionError` with a note naming fsspec's `compression='gzip'` |
 | `fsspec.open("memory://x.zip.gz")` | Opens the gzip stream (single-file reader with one member) |
 | `fsspec.open("memory://x.zip", mode="rt")` | `ArchiveyUsageError` naming the mode |
 
@@ -114,12 +126,12 @@ class ArchiveyConfig:
     listing_limits: ListingLimits = ListingLimits()
     decoder_limits: DecoderLimits = DecoderLimits()
     spool_limits: SpoolLimits = SpoolLimits()
-    max_read_through: int = 2**20
     detection_budget: DetectionBudget = BALANCED_BUDGET
     always_probe_content: bool = False
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
     on_diagnostic: Callable[[Diagnostic], None] | None = None
+    max_read_through: int = 2**20
 ```
 
 `max_retained_diagnostic_references` SHALL be non-negative. `max_read_through` is the

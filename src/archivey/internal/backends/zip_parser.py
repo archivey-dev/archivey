@@ -290,6 +290,60 @@ def locate_classic_record(
     return window_start + idx, record, comment
 
 
+#: The bytes :func:`confirm_tail_record` reads past its search span: the fixed part of
+#: the first central header and of the local header it names.
+TAIL_CONFIRM_READS = CENTRAL_HEADER_SIZE + LOCAL_HEADER_SIZE
+
+
+def confirm_tail_record(
+    read_at: ReadAt, eocd_offset: int, record: bytes, overlay_start: int
+) -> int | None:
+    """The base a classic end record found behind an executable implies, or ``None``
+    when the record is not corroborated.
+
+    For detection's PE tail probe, which has only the record to go on: a
+    ``PK\x05\x06`` string constant near the end of a program must not claim the
+    file. Accepted only when both disk numbers are 0, the two entry counts are equal
+    and above 0, no field holds a ZIP64 placeholder, the directory's start and the
+    base are not negative, a central header starts the directory, and the local
+    header it names, ``base`` plus its offset, is at or past ``overlay_start`` and
+    starts with a local header signature. Two small reads, of the two fixed parts
+    (:data:`TAIL_CONFIRM_READS`). A record declaring no entries is declined: with no
+    header to check, 22 bytes of signature and zeros would pass.
+    """
+    (
+        _sig,
+        this_disk,
+        cd_start_disk,
+        entries_this_disk,
+        entries_total,
+        cd_size,
+        cd_offset,
+        _comment_declared,
+    ) = _EOCD.unpack(record)
+    if this_disk or cd_start_disk or not entries_total:
+        return None
+    if entries_this_disk != entries_total or classic_record_saturated(record):
+        return None
+    cd_start = eocd_offset - cd_size
+    base = cd_start - cd_offset
+    if cd_start < 0 or base < 0:
+        return None
+    central = read_at(cd_start, CENTRAL_HEADER_SIZE)
+    if len(central) != CENTRAL_HEADER_SIZE or central[:4] != CENTRAL_HEADER_SIGNATURE:
+        return None
+    (local_offset,) = struct.unpack_from("<I", central, 42)
+    if local_offset == 0xFFFF_FFFF:
+        return None
+    local_at = base + local_offset
+    if local_at < overlay_start:
+        return None
+    local = read_at(local_at, LOCAL_HEADER_SIZE)
+    if local[:4] != LOCAL_HEADER_SIGNATURE:
+        return None
+    return base
+
+
 def step_over_directory(
     read_at: ReadAt, file_size: int, directory_at: int
 ) -> tuple[tuple[int, bytes, bytes] | None, int]:

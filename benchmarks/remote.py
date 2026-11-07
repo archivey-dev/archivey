@@ -14,12 +14,16 @@ that the fetch planner of stage 2 lands as a reviewed diff of
 
 ``CountingFileSystem`` is an fsspec file system over local files. It records every
 range fetch, every ``info``/``size`` call and every ``ls``, needs no network, and is
-deterministic, so its counts are exact on every host. Today archivey sees a caller's
-fsspec file as a plain file object; the cases open it the two ways a caller would:
+deterministic, so its counts are exact on every host. archivey reads a caller's
+open fsspec file as a plain file object, and an ``OpenFile`` by range; the modes:
 
 - ``nocache``: ``fs.open(path, cache_type="none")``: one request per read call.
 - ``default``: ``fs.open(path)``: fsspec's own default cache (``readahead``, 5 MiB
   blocks), which fetches far more than it needs on a small read.
+- ``planner``: the unentered ``OpenFile``, which archivey reads by range through its
+  own fetch planner (stage 2), with the planner's constants set small through its
+  private seam (16 KiB minimum fetch, 128 KiB maximum fetch and pool) and
+  ``max_read_through`` at 16 KiB, so the small fixtures cross every planner rule.
 
 Operations: list; read the first, a middle and the last member; ``extract_all()``;
 ``stream_members()`` under ``streaming=True``; and, on the formats that open members
@@ -62,9 +66,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from fsspec.core import OpenFile
 from fsspec.spec import AbstractBufferedFile, AbstractFileSystem
 
-from archivey import open_archive
+from archivey import ArchiveyConfig, open_archive
+from archivey.internal.remote import PlannerConstants, planner_constants
 
 BASELINES_DIR = Path(__file__).resolve().parent / "baselines"
 REMOTE_BASELINE = BASELINES_DIR / "remote.json"
@@ -205,11 +211,22 @@ class RemoteCaseResult:
         )
 
 
-# Each cache mode is how a caller would open the fsspec file today.
+# The first two are how a caller opens an fsspec file and passes it as a stream:
+# archivey reads it through the caller's object and cache. ``planner`` passes the
+# unentered ``OpenFile`` instead, which archivey reads by range through its own fetch
+# planner (``archivey.internal.remote``), with the planner's constants set small
+# (``PLANNER_TEST_CONSTANTS``, design D2) so the small fixtures cross every rule.
 CACHE_MODES: dict[str, dict[str, Any]] = {
     "nocache": {"cache_type": "none"},
     "default": {},
+    "planner": {},
 }
+PLANNER_MODE = "planner"
+
+PLANNER_TEST_CONSTANTS = PlannerConstants(
+    min_fetch=16 * 1024, max_fetch=128 * 1024, pool_bytes=128 * 1024
+)
+PLANNER_TEST_CONFIG = ArchiveyConfig(max_read_through=16 * 1024)
 
 
 def _members_with_data(reader: Any) -> list[Any]:
@@ -431,11 +448,22 @@ def run_case(
     open_kwargs, op = OPERATIONS[operation]
     fs = CountingFileSystem()
     dest = work / f"{fmt}-{operation}-{cache}"
-    with (
-        fs.open(str(path), "rb", **CACHE_MODES[cache]) as remote,
-        open_archive(remote, **open_kwargs) as reader,
-    ):
-        op(reader, dest)
+    if cache == PLANNER_MODE:
+        with (
+            planner_constants(PLANNER_TEST_CONSTANTS),
+            open_archive(
+                OpenFile(fs, str(path), mode="rb"),
+                config=PLANNER_TEST_CONFIG,
+                **open_kwargs,
+            ) as reader,
+        ):
+            op(reader, dest)
+    else:
+        with (
+            fs.open(str(path), "rb", **CACHE_MODES[cache]) as remote,
+            open_archive(remote, **open_kwargs) as reader,
+        ):
+            op(reader, dest)
     shutil.rmtree(dest, ignore_errors=True)
     return RemoteCaseResult(
         case=f"{fmt}_{operation}_{cache}",

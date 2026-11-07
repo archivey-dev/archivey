@@ -402,17 +402,25 @@ class PrefixWorkspace:
         self._receipt.unique_bytes_read += len(data)
         return data
 
-    def read_tail(self, length: int) -> bytes | None:
-        """The last ``length`` bytes, or ``None`` when that read is not cheap.
+    def read_tail(
+        self, length: int, *, end: int | None = None, tier: str = "trailer"
+    ) -> bytes | None:
+        """The ``length`` bytes that end at ``end`` (the end of the source when
+        ``None``), or ``None`` when that read is not cheap.
 
-        A path or a plain seekable stream seeks to the end and restores the
-        handle, the same way :meth:`read_at` does, and does not grow the prefix
-        through the middle of the file. A non-seekable source, and an
-        ``ArchiveStream`` whose backward seek may re-decode, returns ``None``
-        rather than buffering the whole source to reach the end. Those declines
-        record the trailer tier as ``CAPABILITY_UNAVAILABLE``: the source has a
-        tail detection did not look at. A source shorter than ``length`` has no
-        such block and returns ``None`` with nothing recorded.
+        A path or a plain seekable stream seeks there and restores the handle, the
+        same way :meth:`read_at` does, and does not grow the prefix through the
+        middle of the file. The part the prefix already holds is taken from it, not
+        fetched again, and the fetched bytes count in ``unique_bytes_read``. A
+        non-seekable source, and an ``ArchiveStream`` whose backward seek may
+        re-decode, returns ``None`` rather than buffering the whole source to reach
+        the end. Those declines record ``tier`` as ``CAPABILITY_UNAVAILABLE``: the
+        source has a tail detection did not look at. The trailer step passes
+        ``"trailer"``; the PE tail probe passes ``"sfx_tail"`` and the payload end.
+
+        Ending at the end of the source, a source shorter than ``length`` has no
+        such block and returns ``None`` with nothing recorded. Ending at a given
+        ``end``, the span is cut at the source's start instead.
         """
         if length < 0:
             return None
@@ -420,18 +428,26 @@ class PrefixWorkspace:
             return b""
         total = self.remaining_known()
         if total is None:
-            self.record_skip("trailer", TierSkipReason.CAPABILITY_UNAVAILABLE)
+            self.record_skip(tier, TierSkipReason.CAPABILITY_UNAVAILABLE)
             return None
-        if total < length:
-            return None
-        origin = total - length
-        if origin + length <= len(self._buf):
-            return bytes(self._buf[origin : origin + length])
+        if end is None:
+            if total < length:
+                return None
+            end = total
+        end = min(end, total)
+        origin = max(0, end - length)
+        held = len(self._buf)
+        if end <= held:
+            return bytes(self._buf[origin:end])
         handle = self._cheap_random_access_handle()
         if handle is None:
-            self.record_skip("trailer", TierSkipReason.CAPABILITY_UNAVAILABLE)
+            self.record_skip(tier, TierSkipReason.CAPABILITY_UNAVAILABLE)
             return None
-        return self._read_at_via_seek(handle, origin, length)
+        if origin < held:
+            return bytes(self._buf[origin:held]) + self._read_at_via_seek(
+                handle, held, end - held
+            )
+        return self._read_at_via_seek(handle, origin, end - origin)
 
     def charge_far(self, nbytes: int) -> None:
         self._receipt.far_bytes += nbytes

@@ -932,6 +932,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
             "seeks inside members of a solid LZX folder"
         ),
     ),
+    (
+        "rpm",
+        "no corpus builder (needs rpmbuild); tests/test_rpm.py seeks inside members",
+    ),
 )
 
 _UNTESTED_FORMATS = {
@@ -946,6 +950,7 @@ _UNTESTED_FORMATS = {
     **{ArchiveFormat(ContainerFormat.CPIO, s): "cpio" for s in StreamFormat},
     ArchiveFormat.SQUASHFS: "squashfs",
     ArchiveFormat.CAB: "cab",
+    **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},
 }
 
 
