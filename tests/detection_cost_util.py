@@ -7,7 +7,8 @@ decodes no more than its :class:`~archivey.detection_cost.DetectionBudget` decla
 from __future__ import annotations
 
 from archivey.detection_cost import DetectionBudget, DetectionCostReceipt
-from archivey.internal.detection import validator_allowance
+from archivey.internal.detection import TAIL_PROBE_ALLOWANCE, validator_allowance
+from archivey.internal.sfx import LAYOUT_PREFIX
 from archivey.internal.streams.codecs.brotli_framing import (
     CHAIN_HEADER_READ,
     CHAIN_MAX_LINKS,
@@ -36,7 +37,9 @@ def within_budget(receipt: DetectionCostReceipt, budget: DetectionBudget) -> boo
     :func:`trailer_allowance` bytes, once. So is an SFX hit validator reading the
     header of a candidate near the scan window's end: up to
     :func:`~archivey.internal.detection.validator_allowance` bytes past
-    ``max_scan_bytes``, and only when the receipt shows a scan ran.
+    ``max_scan_bytes``, and only when the receipt shows a scan ran. The PE tail probe
+    (``TAIL_PROBE_ALLOWANCE``: its search span and two record parts) is granted on
+    the same condition.
 
     ``prefix_bytes`` is the one counter not compared: it bills overlapping requests in
     full, so ``unique_bytes_read`` stands in for it.
@@ -51,10 +54,21 @@ def within_budget(receipt: DetectionCostReceipt, budget: DetectionBudget) -> boo
     # anything, and fewer than one pass is judged as one.
     n = max(1, receipt.passes)
     probe_allowance = CHAIN_MAX_LINKS * CHAIN_HEADER_READ
+    # An executable's headers are read from their whole span under any prefix
+    # budget, so the layout matches the one a forced ``format=`` reads.
     read_ceiling = max(
-        budget.max_prefix_bytes, budget.max_far_bytes, budget.max_scan_bytes
+        budget.max_prefix_bytes,
+        budget.max_far_bytes,
+        budget.max_scan_bytes,
+        LAYOUT_PREFIX,
     )
-    sfx_allowance = validator_allowance(budget) if receipt.scanned_bytes > 0 else 0
+    # The PE tail probe runs only after an SFX scan, as the validator reads do; a
+    # receipt cannot show that it ran, so a scan earns both allowances.
+    sfx_allowance = (
+        validator_allowance(budget) + TAIL_PROBE_ALLOWANCE
+        if receipt.scanned_bytes > 0
+        else 0
+    )
     return (
         receipt.unique_bytes_read
         <= n * (read_ceiling + probe_allowance + trailer_allowance() + sfx_allowance)

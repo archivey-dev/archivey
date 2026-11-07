@@ -45,7 +45,7 @@ from archivey.detection_cost import (
     TierSkipReason,
 )
 from archivey.internal import detection_workspace
-from archivey.internal.detection import validator_allowance
+from archivey.internal.detection import TAIL_PROBE_ALLOWANCE, validator_allowance
 from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.sfx import (
     VALIDATOR_PEEK_MAX,
@@ -613,8 +613,8 @@ def test_sfx_miss_extension_guess_stays_within_budget(tmp_path: Path) -> None:
 
 def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     # Seek-based read_at charges unique_bytes without a scan-window home; the allowance
-    # is the Brotli walk, one trailer block, and an SFX validator's header read past
-    # the scan window.
+    # is the Brotli walk, one trailer block, an SFX validator's header read past the
+    # scan window, and the PE tail probe.
     from archivey.detection_cost import DetectionCostReceipt
     from archivey.internal.streams.codecs.brotli_framing import (
         CHAIN_HEADER_READ,
@@ -624,7 +624,10 @@ def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     scan = BALANCED_BUDGET.max_scan_bytes
     assert validator_allowance(BALANCED_BUDGET) == VALIDATOR_PEEK_MAX
     allowance = (
-        CHAIN_MAX_LINKS * CHAIN_HEADER_READ + trailer_allowance() + VALIDATOR_PEEK_MAX
+        CHAIN_MAX_LINKS * CHAIN_HEADER_READ
+        + trailer_allowance()
+        + VALIDATOR_PEEK_MAX
+        + TAIL_PROBE_ALLOWANCE
     )
     at_cap = DetectionCostReceipt(
         unique_bytes_read=scan + allowance,
@@ -639,7 +642,8 @@ def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
 
 
 def test_within_budget_grants_the_validator_allowance_only_to_a_scan() -> None:
-    """The SFX validator allowance needs a scan that ran, and scales with its field.
+    """The SFX validator and tail-probe allowances need a scan that ran; the
+    validator's scales with its field.
 
     A receipt with no scanned bytes gets only the probe and trailer allowances, and a
     budget whose scan is smaller than ``VALIDATOR_PEEK_MAX`` gets its scan size.
@@ -659,8 +663,10 @@ def test_within_budget_grants_the_validator_allowance_only_to_a_scan() -> None:
         assert not within_budget(no_scan, budget)
         assert within_budget(replace(no_scan, unique_bytes_read=ceiling + base), budget)
         scanned = replace(no_scan, scanned_bytes=budget.max_scan_bytes)
-        sfx = validator_allowance(budget)
-        assert sfx == min(VALIDATOR_PEEK_MAX, budget.max_scan_bytes)
+        assert validator_allowance(budget) == min(
+            VALIDATOR_PEEK_MAX, budget.max_scan_bytes
+        )
+        sfx = validator_allowance(budget) + TAIL_PROBE_ALLOWANCE
         assert within_budget(
             replace(scanned, unique_bytes_read=ceiling + base + sfx), budget
         )

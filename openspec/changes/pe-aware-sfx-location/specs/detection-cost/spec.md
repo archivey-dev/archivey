@@ -59,7 +59,8 @@ local header), 65 634 bytes in all, on the same cheap seek. That is the tail all
 below. It has no budget field because its gate, a PE whose overlay runs past the scan
 window, keeps it off every other source. It runs only when `max_scan_bytes` is above 0, is
 recorded as `sfx_tail` *not enabled by policy* when that field is 0 and *capability
-unavailable* when the source does not allow the read, and records nothing on a source its
+unavailable* when the source does not allow the read (a member stream, or a pipe whose
+bytes run past the window, whose end is not known), and records nothing on a source its
 gate excludes. Its bytes count in `unique_bytes_read` and not in `scanned_bytes`.
 
 `max_decode_input` SHALL be one allowance for the whole `detect_format` pass, not a limit
@@ -103,7 +104,8 @@ is 0.
 A receipt is within its budget when each bounded counter is at most `passes` times its
 limit: `far_bytes`, `scanned_bytes`, `decode_input` and `decode_output` against the field
 of the same name, and `unique_bytes_read` against the largest of `max_prefix_bytes`,
-`max_far_bytes` and `max_scan_bytes` plus the probe-seek allowance, the trailer allowance,
+`max_far_bytes`, `max_scan_bytes` and the 4096-byte executable header span (read under
+any prefix budget, so the layout matches a forced `format=`'s) plus the probe-seek allowance, the trailer allowance,
 and, when `scanned_bytes` is positive, the SFX validator allowance and the tail allowance.
 The validator allowance is the smaller of `VALIDATOR_PEEK_MAX` and `max_scan_bytes`, the
 bytes a hit validator may read past the window end to judge a candidate that starts inside

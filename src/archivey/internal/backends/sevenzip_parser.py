@@ -56,6 +56,7 @@ from archivey.internal.sfx import (
     cut_signature_error,
     describe_scan_miss,
     is_cut_signature,
+    overlay_start_of,
     scan_for_magic,
 )
 from archivey.internal.streams.streamtools import read_exact
@@ -601,6 +602,7 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
             (MAGIC_7Z,),
             limit=limit,
             validator=validate_sevenzip_signature_header,
+            first_at=overlay_start_of(fp),
         )
     finally:
         fp.seek(start)

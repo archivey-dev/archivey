@@ -66,6 +66,7 @@ from archivey.internal.sfx import (
     cut_signature_error,
     describe_scan_miss,
     is_cut_signature,
+    overlay_start_of,
     scan_for_magic,
 )
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
@@ -1253,6 +1254,7 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
         (RAR5_ID, RAR_ID),
         limit=SFX_MAX,
         validator=validate_rar_main_header,
+        first_at=overlay_start_of(source),
     )
     if scan.hit is not None:
         return (5 if scan.hit.needle == RAR5_ID else 4), scan.hit.candidate_origin

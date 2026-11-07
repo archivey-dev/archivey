@@ -21,9 +21,11 @@ a related idea, "Bound the SFX search at the PE overlay".
 - One PE layout helper shared by detection and the RAR / 7z parser scans.
 
 **Non-Goals:**
-- ELF and Mach-O layouts. ELF's section header table usually ends the image, so its
-  helper would be simple, but there is no real sample. Mach-O lays its segments out
-  differently. Both wait for a user case.
+- ~~ELF and Mach-O layouts.~~ Brought into scope by a maintainer decision
+  (2026-11-07), as a fourth step: `sfx.executable_layout` reads their overlay start
+  from the headers in the prefix, for the overlay-start-first rule only. No payload end
+  (neither format appends a signature: a Mach-O code signature sits inside
+  `__LINKEDIT`), and the ZIP tail probe stays gated on a PE. See tasks §5.
 - A ZIP inside a PE section past the window (no case seen; Squirrel's sits at 170 KB).
 - Undoing installer obfuscation (install4j's XORed block) or naming installer families.
   That is the "prefix analysis" idea and stays in `IDEAS.md`.
@@ -74,7 +76,9 @@ the cost work; a field can come later as an additive change).
 
 ### 2. Read the layout from the prefix only
 The DOS header, PE header, optional header data directories and section table normally
-end within the first 1 KiB, inside `max_prefix_bytes`. The helper takes the prefix bytes
+end within the first 1 KiB. The helper reads the first 4096 bytes, which detection holds
+even under a `max_prefix_bytes` below that (it then reads them for this), so its answer
+matches the one a forced `format=` reads from the same bytes. It takes those bytes
 and returns `PeLayout(overlay_start, payload_end | None)`, or `None` when anything is out
 of range or past the prefix. The certificate entry (data directory 4) holds a file offset,
 not an RVA. It counts only when it starts at or past the overlay start and runs to the end
