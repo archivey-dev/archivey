@@ -403,14 +403,16 @@ field archivey.FormatAvailability.support: FormatSupport
 class archivey.FormatDetectionError(OpenError)
 init archivey.FormatDetectionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.FormatInfo()
-init archivey.FormatInfo(format: ArchiveFormat, confidence: DetectionConfidence, detected_by: DetectedBy, payload_offset: int = 0, diagnostics: DiagnosticSummary = <factory>, corroborated: bool = False, cost_receipt: DetectionCostReceipt | None = None, unavailable_tiers: tuple[TierSkip, ...] = ()) -> None
+init archivey.FormatInfo(format: ArchiveFormat, confidence: DetectionConfidence, detected_by: DetectedBy, payload_offset: int = 0, diagnostics: DiagnosticSummary = <factory>, corroborated: bool = False, cost_receipt: DetectionCostReceipt | None = None, unavailable_tiers: tuple[TierSkip, ...] = (), prefixed: bool = False, payload_end: int | None = None) -> None
 field archivey.FormatInfo.confidence: DetectionConfidence
 field archivey.FormatInfo.corroborated: bool = False
 field archivey.FormatInfo.cost_receipt: DetectionCostReceipt | None = None
 field archivey.FormatInfo.detected_by: DetectedBy
 field archivey.FormatInfo.diagnostics: DiagnosticSummary = <factory>
 field archivey.FormatInfo.format: ArchiveFormat
+field archivey.FormatInfo.payload_end: int | None = None
 field archivey.FormatInfo.payload_offset: int = 0
+field archivey.FormatInfo.prefixed: bool = False
 field archivey.FormatInfo.unavailable_tiers: tuple[TierSkip, ...] = ()
 property archivey.FormatInfo.from_plugin: bool
 class archivey.FormatPolicy()

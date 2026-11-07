@@ -7,36 +7,37 @@ Block 3 is the overlay-start rule. Each reuses Block 1's PE layout helper.
 
 ## 1. PE layout, `payload_end` and `prefixed` (Block 1)
 
-- [ ] 1.1 Test helper: build a minimal PE (DOS header, `PE\0\0`, optional header with data
+- [x] 1.1 Test helper: build a minimal PE (DOS header, `PE\0\0`, optional header with data
       directories, section table) with a chosen section layout, overlay bytes and
       certificate entry.
-- [ ] 1.2 `internal/sfx.py`: `PeLayout` and a parser from the prefix bytes (design §2).
+- [x] 1.2 `internal/sfx.py`: `PeLayout` and a parser from the prefix bytes (design §2).
       Unit tests: unsigned, signed, certificate not at end, section table past the prefix,
       overflowing fields, PE32 and PE32+.
-- [ ] 1.3 `FormatInfo.prefixed: bool = False` and `FormatInfo.payload_end: int | None =
+- [x] 1.3 `FormatInfo.prefixed: bool = False` and `FormatInfo.payload_end: int | None =
       None`, added last (design §11, §12); set on every `sfx_scan` answer; the `info` CLI
       verb prints both; tests for the scenario rows of *detect_format() returns a
       FormatInfo*.
-- [ ] 1.4 `ReadBackend.open_read` takes an end offset beside `start_offset`;
-      `open_archive` passes `payload_end`. A RAR, 7z or ZIP backend opened at start 0 with
-      no end derives it from its own leading bytes with the PE helper (design §12): the
-      RAR and 7z parser scans and the ZIP forward walk from the bytes they scan, the
-      seekable `ZipReader._open_index` from one read of its first bytes. No scan accepts a
-      candidate at or past a known payload end.
-- [ ] 1.5 Readers honour the end: the ZIP end-record search ends there; the ZIP, 7z and RAR
+- [x] 1.4 `ReadBackend.open_read` takes an end offset beside `start_offset`;
+      `open_archive` passes `payload_end`, and under a forced `format=` reads it itself
+      from the source's first 4096 bytes with the PE helper for a backend with
+      `SFX_MAGIC` (design §12); no backend derives one. Detection reads the layout from
+      those 4096 bytes whatever `max_prefix_bytes` says. No scan accepts a candidate at or
+      past a known payload end.
+- [x] 1.5 Readers honour the end: the ZIP end-record search ends there; the ZIP, 7z and RAR
       trailing-data checks stop there. Update the 7z reader's `_report_trailing_data`
       docstring, which records the reversed rule, and any test that pins a warning on a
       certificate.
-- [ ] 1.6 Tests for the new rows of the `archive-reading`, `format-zip`, `format-7z` and
+- [x] 1.6 Tests for the new rows of the `archive-reading`, `format-zip`, `format-7z` and
       `format-rar` scenarios, each through auto-detect and forced `format=`, including a
       ZIP whose offsets count from byte 0 behind a certificate over 64 KiB.
-- [ ] 1.7 Docs: the `FormatInfo.payload_offset` docstring and `docs/opening.md`, which call
+- [x] 1.7 Docs: the `FormatInfo.payload_offset` docstring and `docs/opening.md`, which call
       `payload_offset > 0` the test for a self-extractor (name `prefixed`, describe the
       base-0 case); `docs/formats.md` on trailing-data warnings for signed installers;
-      the changelog entry for `prefixed` and `payload_end`; `prefixed-archives.md` §6 (the
+      the changelog entry for `prefixed` and `payload_end` (left to the release, which
+      writes the changelog); `prefixed-archives.md` §6 (the
       row saying `prefix_kind` "is not shipped") and its §9 in-flight note, which name
       `prefixed` as the yes-or-no part of the struck `prefix_kind` (design §11).
-- [ ] 1.8 Handbook pages for the certificate rule (design §12): `7z.md` §5 Sharp edges
+- [x] 1.8 Handbook pages for the certificate rule (design §12): `7z.md` §5 Sharp edges
       (the row saying "`STRICT` refuses a signed self-extractor") and §8 Verify ("SFX tail
       measured from the archive's end"); a §6 Decisions row in `7z.md` with the reversal,
       the decider and date, and what would reopen it (a caller that needs to tell an

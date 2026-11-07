@@ -433,6 +433,128 @@ def _is_pe(prefix: bytes) -> bool:
     return prefix[e_lfanew : e_lfanew + len(_PE)] == _PE
 
 
+#: How many leading bytes the PE layout is read from. Every backend reads this span,
+#: and detection reads its prefix, which is the same span when ``max_prefix_bytes``
+#: is at least this long, as in every preset: forced ``format=`` and auto-detect then
+#: derive the same payload end. A custom budget shorter than the headers leaves
+#: detection with no layout, and it answers as for an unparsed stub. The headers a
+#: linker writes end well inside the span, so detection reads nothing extra for it.
+PE_LAYOUT_PREFIX = 4096
+
+# Offsets in the COFF file header (after ``PE\0\0``) and the optional header.
+_COFF_HEADER_SIZE = 20
+_PE32_MAGIC = 0x10B
+_PE32_PLUS_MAGIC = 0x20B
+# Optional header: SizeOfHeaders, then (NumberOfRvaAndSizes, first data directory)
+# per magic.
+_SIZE_OF_HEADERS = 60
+_DATA_DIRECTORIES = {_PE32_MAGIC: (92, 96), _PE32_PLUS_MAGIC: (108, 112)}
+_SECURITY_DIRECTORY = 4
+_SECTION_HEADER_SIZE = 40
+
+
+class PeLayout(NamedTuple):
+    """What a PE's own headers say about the bytes appended to it.
+
+    ``overlay_start`` is where the PE's own image ends in the file: the end of the
+    furthest section's raw data (or of the headers, when no section has raw data).
+    Anything after it is the *overlay*: a self-extractor's payload, an installer's
+    data, a signature. ``payload_end`` is where the archive's region ends when a
+    certificate table follows it: the start of an Authenticode table that starts at
+    or past ``overlay_start`` and runs exactly to the end of the source. ``None``
+    when there is none, or the total size is not known.
+    """
+
+    overlay_start: int
+    payload_end: int | None
+
+
+def pe_layout(prefix: bytes, total_size: int | None) -> PeLayout | None:
+    """The :class:`PeLayout` of a PE whose headers sit in ``prefix``, or ``None``.
+
+    Reads only ``prefix[:PE_LAYOUT_PREFIX]``, so every caller holding at least that
+    many leading bytes gets the same answer. ``None`` when ``prefix`` is not a PE, a
+    header or the section table does not fit, a field is out of range, or a section
+    ends past ``total_size``: a layout that does not parse means "scan as before",
+    never an error. The certificate entry (data directory 4) holds a file offset,
+    not an RVA; it counts only when it starts at or past the overlay start and ends
+    at ``total_size``. So the end is never before the overlay start, as the same
+    headers declare it; nothing checks that a table starts there, so headers that
+    name one inside the archive cut it, and the archive then fails to open.
+    """
+    head = bytes(prefix[:PE_LAYOUT_PREFIX])
+    if not head.startswith(_MZ) or not _is_pe(head):
+        return None
+    (e_lfanew,) = struct.unpack_from("<I", head, _E_LFANEW_OFFSET)
+    optional = e_lfanew + len(_PE) + _COFF_HEADER_SIZE
+    if optional + 2 > len(head):
+        return None
+    (section_count,) = struct.unpack_from("<H", head, e_lfanew + len(_PE) + 2)
+    (optional_size,) = struct.unpack_from("<H", head, e_lfanew + len(_PE) + 16)
+    (magic,) = struct.unpack_from("<H", head, optional)
+    directories = _DATA_DIRECTORIES.get(magic)
+    if directories is None:
+        return None
+    count_at, first_at = directories
+    if _SIZE_OF_HEADERS + 4 > optional_size or count_at + 4 > optional_size:
+        return None
+    sections = optional + optional_size
+    sections_end = sections + section_count * _SECTION_HEADER_SIZE
+    if sections_end > len(head):
+        return None
+    (headers_size,) = struct.unpack_from("<I", head, optional + _SIZE_OF_HEADERS)
+    overlay_start = headers_size
+    for index in range(section_count):
+        raw_size, raw_pointer = struct.unpack_from(
+            "<II", head, sections + index * _SECTION_HEADER_SIZE + 16
+        )
+        if raw_size:
+            overlay_start = max(overlay_start, raw_pointer + raw_size)
+    if total_size is None:
+        return PeLayout(overlay_start, None)
+    if overlay_start > total_size:
+        return None
+    (directory_count,) = struct.unpack_from("<I", head, optional + count_at)
+    entry = first_at + _SECURITY_DIRECTORY * 8
+    if directory_count <= _SECURITY_DIRECTORY or entry + 8 > optional_size:
+        return PeLayout(overlay_start, None)
+    cert_start, cert_size = struct.unpack_from("<II", head, optional + entry)
+    if (
+        cert_size
+        and overlay_start <= cert_start
+        and cert_start + cert_size == total_size
+    ):
+        return PeLayout(overlay_start, cert_start)
+    return PeLayout(overlay_start, None)
+
+
+def pe_payload_end(prefix: bytes, total_size: int | None) -> int | None:
+    """Where a signed PE's certificate table starts (:attr:`PeLayout.payload_end`),
+    or ``None``: the common case, meaning the region runs to the end of the source."""
+    layout = pe_layout(prefix, total_size)
+    return None if layout is None else layout.payload_end
+
+
+def read_payload_end(handle: BinaryIO, total_size: int | None) -> int | None:
+    """:func:`pe_payload_end` from the first :data:`PE_LAYOUT_PREFIX` bytes of the
+    seekable ``handle``, whose byte 0 is where the archive's source starts; its
+    position is restored.
+
+    For a forced ``format=``, where detection did not read the headers, so that the
+    open sees the end detection would report (``open_archive``). One read, skipped
+    when the size says no certificate could fit.
+    """
+    if total_size is None or total_size < _DOS_HEADER_SIZE:
+        return None
+    position = handle.tell()
+    try:
+        handle.seek(0)
+        head = handle.read(min(PE_LAYOUT_PREFIX, total_size))
+    finally:
+        handle.seek(position)
+    return pe_payload_end(head, total_size)
+
+
 def _is_elf(prefix: bytes) -> bool:
     """Whether an ``\\x7fELF`` prefix carries a valid identification block.
 
