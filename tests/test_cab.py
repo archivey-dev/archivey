@@ -392,17 +392,36 @@ def test_a_file_past_its_folder_end() -> None:
         reader.read("a")
 
 
+def _second_block(raw: bytes) -> int:
+    """Where the first folder's second CFDATA header starts (no reserve areas)."""
+    start = _data_start(raw)
+    (stored,) = struct.unpack_from("<H", raw, start + 4)
+    return start + 8 + stored
+
+
+@pytest.mark.parametrize(("value", "match"), [(0, "has no output"), (40000, "at most")])
 @pytest.mark.parametrize("method", ["none", "mszip", "lzx"])
-def test_a_block_with_no_output_is_refused(method: str) -> None:
+def test_a_refused_block_fails_only_the_members_that_reach_it(
+    method: str, value: int, match: str
+) -> None:
     # libmspack reads a decoded size of 0 as a block split across cabinets, and
-    # fails it in a cabinet with no next one.
-    raw = bytearray(_cab(CabFolder(method), [CabFile("a", TEXT[:100])]))
-    struct.pack_into("<H", raw, _data_start(raw) + 6, 0)
-    with (
-        open_archive(io.BytesIO(bytes(raw))) as reader,
-        pytest.raises(CorruptionError, match="has no output"),
-    ):
-        reader.read("a")
+    # fails it in a cabinet with no next one. It reads each block header only when
+    # the decoder needs that block, so the members before it still read.
+    files = [CabFile("a", TEXT[:100]), CabFile("b", BLOB[:51200])]
+    raw = bytearray(_cab(CabFolder(method), files))
+    struct.pack_into("<H", raw, _second_block(raw) + 6, value)
+    with open_archive(io.BytesIO(bytes(raw))) as reader:
+        assert reader.read("a") == TEXT[:100]
+        with pytest.raises(CorruptionError, match=match):
+            reader.read("b")
+    with open_archive(io.BytesIO(bytes(raw))) as reader:
+        names = []
+        with pytest.raises(CorruptionError, match=match):
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                stream.read()
+                names.append(member.name)
+        assert names == ["a"]
 
 
 def test_an_empty_member_decodes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -425,14 +444,15 @@ def test_an_empty_member_decodes_nothing(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_the_lzx_window_counts_against_max_decoder_memory() -> None:
     raw = _cab(CabFolder("lzx", 21), [CabFile("a", b"hello" * 1000)])
     low = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=1 << 20))
-    with (
-        open_archive(io.BytesIO(raw), config=low) as reader,
-        pytest.raises(ResourceLimitError, match="LZX window"),
-    ):
-        reader.read("a")
+    with open_archive(io.BytesIO(raw), config=low) as reader:
+        with pytest.raises(ResourceLimitError, match="LZX window"):
+            reader.read("a")
+        # The declaration is noted before the comparison, so a refusal records it.
+        assert reader._resource_usage().decoder_memory == 1 << 21
     enough = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=1 << 21))
     with open_archive(io.BytesIO(raw), config=enough) as reader:
         assert reader.read("a") == b"hello" * 1000
+        assert reader._resource_usage().decoder_memory == 1 << 21
 
 
 def test_a_name_with_no_end_is_refused() -> None:

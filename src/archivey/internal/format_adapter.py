@@ -265,6 +265,7 @@ class _PluginAdapter(BaseArchiveReader):
             link_target_unavailable=self._link_target_unavailable,
             hold=self._hold,
             open_nested=self._open_nested,
+            usage=self._usage,
         )
         self._reader = self._open_reader(context)
         self._reader_open = True

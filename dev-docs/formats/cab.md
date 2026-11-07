@@ -44,8 +44,10 @@ From the Microsoft Cabinet Format specification (MS-CAB) and libmspack's `cabd.c
   those bits are `FILE_ATTRIBUTE_DEVICE` and `FILE_ATTRIBUTE_NORMAL`.
 - **`CFDATA`** blocks per folder: checksum, stored size, decoded size (at most 32 KiB),
   the data reserve, then the stored bytes. A decoded size of 0 marks a block split across
-  cabinets; libmspack fails it when there is no next cabinet, and archivey refuses it as
-  `CorruptionError`, since it refuses cabinet sets.
+  cabinets; libmspack fails it when there is no next cabinet. archivey refuses cabinet
+  sets, so it raises `CorruptionError` for such a block, and for one over the size
+  limits. As in libmspack, which reads each header only when it needs that block, the
+  error comes when a read reaches the block: the members before it still read.
 
 The methods are 0 stored, 1 MSZIP, 2 Quantum and 3 LZX.
 

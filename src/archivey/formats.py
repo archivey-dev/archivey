@@ -47,7 +47,17 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    BinaryIO,
+    ClassVar,
+    Generic,
+    NamedTuple,
+    Protocol,
+    TypeVar,
+    cast,
+)
 
 from archivey.config import ArchiveyConfig, DecoderLimits
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
@@ -65,6 +75,9 @@ from archivey.types import (
     PluginStream,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 __all__ = [
     "CodecCall",
@@ -533,8 +546,13 @@ class ReaderContext:
         hold: Callable[[ArchiveMember, str | None, str | None], None],
         open_nested: Callable[[BinaryIO, ArchiveFormat], Iterator[MemberSpan]]
         | None = None,
+        usage: ResourceUsageRecorder | None = None,
     ) -> None:
         self._encoding = encoding
+        # The open reader's resource-usage recorder, for a built-in reader that checks
+        # a declared allocation itself (``check_decoder_memory``). Not part of the
+        # plugin interface.
+        self._usage = usage
         self._archive_name = archive_name
         self._config = config
         self._decompress = decompress

@@ -75,7 +75,7 @@ folder is read. A member of size 0 SHALL read as empty without decoding its fold
 | A cabinet cut inside its last folder | The earlier files read; `TruncatedError` for the cut one |
 | An LZX match reaching before the stream start, or past the frame | `CorruptionError` |
 | An LZX match past its block or the window, or from more than a window back; a tree that over- or underfills its code space, or a pretree, aligned or main tree with no codes | `CorruptionError` |
-| A block of 0 decoded bytes, in any method | `CorruptionError` on read |
+| A block of 0 decoded bytes, or over the size limits, in any method | The members before it read; `CorruptionError` for a member that reaches it |
 | A 2^21 LZX window under a 1 MiB `max_decoder_memory` | `ResourceLimitError` on read |
 | An LZX stream that reads more than two bytes past its input | `TruncatedError` |
 | Folders that all name one run of 20 000 blocks | `ResourceLimitError` once the kept tables pass `max_metadata_bytes` |
