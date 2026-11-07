@@ -27,6 +27,7 @@ from archivey.internal.backends.rar_parser import (
     _rar3_s2k,
     _Rar3Sha1,
     _rar5_dictionary_size,
+    _settle_rar15_solid,
     parse_rar_archive,
     parse_rar_volumes,
     rar5_data_key,
@@ -736,6 +737,29 @@ def test_a_solid_rar15_archive_marks_every_file_after_the_first_solid(
     ]
     archive = parse_rar_archive(io.BytesIO(data), use_qo=False)
     assert solid_chain(archive.members, 3) == range(4)
+
+
+def test_a_rar15_directory_before_the_first_file_does_not_count() -> None:
+    # unrar's IsArcDir() returns before FileCount++, so a directory listed first
+    # leaves the first file non-solid. The fixture lists its directories last,
+    # so the members are reordered here. Fails against seen_file = True for a
+    # directory too.
+    data = _as_rar15(_fixture("basic_solid__rar4.rar").read_bytes(), main_solid=False)
+    archive = parse_rar_archive(io.BytesIO(data), use_qo=False)
+    directories = [m for m in archive.members if m.is_directory]
+    files = [m for m in archive.members if not m.is_directory]
+    assert directories and files
+    archive.members[:] = directories + files
+    archive.is_solid = True
+    _settle_rar15_solid(archive)
+    assert [(m.filename, m.file_solid) for m in archive.members] == [
+        ("empty_subdir/", False),
+        ("subdir/", False),
+        ("empty_file.txt", False),
+        ("file1.txt", True),
+        ("subdir/file2.txt", True),
+        ("implicit_subdir/file3.txt", True),
+    ]
 
 
 @pytest.mark.parametrize(

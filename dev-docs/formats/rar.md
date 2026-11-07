@@ -936,7 +936,8 @@ never starts `unrar` and is never asked for a password.
 
 **A solid archive can mix stored and compressed members.** RAR picks the method per
 file: `rar -s -m3 -msbin` compresses most files and stores the `.bin` ones as they are.
-A stored member still gets its own solid flag (`file_solid`), which on a compressed
+A stored member still gets its own solid flag (`file_solid`: the header bit, or for
+a RAR 1.3-1.5 member the archive-wide rule in §3), which on a compressed
 member means "continue from the previous member's decoder state". Its bytes are
 plaintext in the archive all the same, so the direct slice reads them and ignores the
 flag. `unrar` decodes every compressed member ahead of it to reach those bytes, which is

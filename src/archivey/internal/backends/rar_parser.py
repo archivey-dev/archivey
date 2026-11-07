@@ -440,6 +440,8 @@ class RarMemberInfo:
     header_size: int
     data_offset: int
     extract_version: int | None
+    # Decodes on top of the members before it: the header's own solid bit, or for
+    # a RAR 1.3-1.5 member the archive-wide rule (_settle_rar15_solid).
     file_solid: bool
     is_directory: bool
     is_symlink: bool  # RAR4 unix mode or RAR5 redir symlink types
@@ -969,6 +971,15 @@ def _settle_rar15_solid(archive: RarArchive) -> None:
     the flag here keeps one meaning for ``file_solid`` in every consumer: the member
     decodes on top of the members before it. Runs after the volumes merge, because
     the count goes on across volumes.
+
+    The count includes a file with no packed data, as ``unrar``'s does. The
+    synthetic chain holds only members with packed data
+    (:func:`~archivey.internal.backends.rar_synthetic.has_packed_data`), so when the
+    first file of such an archive has none, the second is the first member of the
+    synthetic archive and ``unrar`` decodes it with fresh tables, where against the
+    original it would continue from an ``Unpack`` that has decoded nothing. Modern
+    ``rar`` stores 8 packed bytes even for an empty file; no RAR 1.5 archive of
+    that shape is known.
     """
     if archive.version != 4 or not archive.is_solid:
         return
@@ -2981,6 +2992,7 @@ def _parse_rar3_file_header(
         header_size=header_size,
         data_offset=data_offset,
         extract_version=extract_version,
+        # The header bit; _settle_rar15_solid adds the RAR 1.3-1.5 members.
         file_solid=bool(flags & _RAR3_FILE_SOLID),
         is_directory=is_directory and not is_symlink,
         is_symlink=is_symlink,
