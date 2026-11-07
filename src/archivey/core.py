@@ -407,7 +407,10 @@ def open_archive(
     not enter it: it reads the archive by range requests on the ``OpenFile``'s file
     system, and plans their sizes itself, so listing an archive or reading one member
     fetches little more than the bytes it needs. An ``OpenFile`` opened with a mode
-    other than ``"rb"``, or with a compression, raises :class:`ArchiveyUsageError`. A
+    other than ``"rb"`` raises :class:`ArchiveyUsageError`. One opened with a
+    ``compression=`` is read through fsspec's decompressing stream, with no range
+    requests, and logs a warning: pass ``compression=None`` for a codec archivey decodes
+    itself, and it reads by range. A
     ``str`` is always a local path, never a URL.
 
     ``password`` accepts a single value, an ordered sequence of candidate passwords, or
