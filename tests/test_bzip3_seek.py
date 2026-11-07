@@ -8,6 +8,7 @@ The walk is trusted like the xz and lzip indexes (threat-model O17).
 
 from __future__ import annotations
 
+import functools
 import io
 import random
 import struct
@@ -37,7 +38,10 @@ def _bz3(data: bytes = DATA, block_size: int = BLOCK) -> bytes:
     return compressor.compress(data) + compressor.flush()
 
 
-RAW = _bz3()
+@functools.cache
+def _raw() -> bytes:
+    """The six-block file, built on first use: the core-only legs lack ``bz3``."""
+    return _bz3()
 
 
 def _block_offsets(raw: bytes) -> list[int]:
@@ -84,13 +88,13 @@ def decoded_blocks(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 
 
 def test_the_file_has_several_blocks() -> None:
-    assert len(_block_offsets(RAW)) == len(STARTS)
+    assert len(_block_offsets(_raw())) == len(STARTS)
 
 
 def test_the_walk_gives_the_size_and_every_block_without_decoding(
     decoded_blocks: list[int],
 ) -> None:
-    with _open(io.BytesIO(RAW)) as stream:
+    with _open(io.BytesIO(_raw())) as stream:
         assert stream.seek(0, io.SEEK_END) == len(DATA)
         assert decoded_blocks == []
         assert _points(stream) == STARTS
@@ -100,7 +104,7 @@ def test_the_walk_gives_the_size_and_every_block_without_decoding(
 def test_a_seek_decodes_only_the_block_it_lands_in(
     isolation: ProcessIsolation, decoded_blocks: list[int]
 ) -> None:
-    with _open(io.BytesIO(RAW), isolation=isolation) as stream:
+    with _open(io.BytesIO(_raw()), isolation=isolation) as stream:
         for pos in (STARTS[4] + 7, STARTS[1] + 3, len(DATA) - 5, STARTS[2]):
             del decoded_blocks[:]
             assert stream.seek(pos) == pos
@@ -111,7 +115,7 @@ def test_a_seek_decodes_only_the_block_it_lands_in(
 
 
 def test_a_forward_read_records_each_block() -> None:
-    with _open(io.BytesIO(RAW)) as stream:
+    with _open(io.BytesIO(_raw())) as stream:
         assert stream.read() == DATA
         assert _points(stream) == STARTS
 
@@ -119,7 +123,7 @@ def test_a_forward_read_records_each_block() -> None:
 def test_a_backward_seek_after_a_read_resumes_at_its_block(
     decoded_blocks: list[int],
 ) -> None:
-    with _open(io.BytesIO(RAW)) as stream:
+    with _open(io.BytesIO(_raw())) as stream:
         assert stream.read() == DATA
         del decoded_blocks[:]
         assert _engine(stream).nearest_resume_offset(STARTS[2] + 9) == STARTS[2]
@@ -129,7 +133,7 @@ def test_a_backward_seek_after_a_read_resumes_at_its_block(
 
 
 def test_undeclared_seek_demand_keeps_no_points() -> None:
-    with _open(io.BytesIO(RAW), seekable=False) as stream:
+    with _open(io.BytesIO(_raw()), seekable=False) as stream:
         assert stream.read() == DATA
         assert _points(stream) == [0]
 
@@ -151,8 +155,8 @@ def test_an_empty_file_has_size_zero() -> None:
 
 
 def test_a_file_cut_inside_a_block_has_no_size_and_raises_at_the_cut() -> None:
-    last = _block_offsets(RAW)[-1]
-    raw = RAW[: last + 20]
+    last = _block_offsets(_raw())[-1]
+    raw = _raw()[: last + 20]
     with _open(io.BytesIO(raw)) as stream:
         assert _engine(stream).try_get_size() is None
         # The blocks before the cut are still points.
@@ -164,7 +168,7 @@ def test_a_file_cut_inside_a_block_has_no_size_and_raises_at_the_cut() -> None:
 
 
 def test_bytes_after_the_last_block_end_the_walk_and_fail_the_decode() -> None:
-    with _open(io.BytesIO(RAW + b"junk!!!!!!")) as stream:
+    with _open(io.BytesIO(_raw() + b"junk!!!!!!")) as stream:
         assert _engine(stream).try_get_size() is None
         stream.seek(STARTS[4])
         assert stream.read(BLOCK) == DATA[STARTS[4] : STARTS[5]]
@@ -173,8 +177,8 @@ def test_bytes_after_the_last_block_end_the_walk_and_fail_the_decode() -> None:
 
 
 def test_the_walk_stops_at_a_header_the_decoder_would_refuse() -> None:
-    offsets = _block_offsets(RAW)
-    raw = bytearray(RAW)
+    offsets = _block_offsets(_raw())
+    raw = bytearray(_raw())
     struct.pack_into("<i", raw, offsets[3] + 4, BLOCK + 1)
     points, size = bzip3_codec.build_bzip3_index(io.BytesIO(raw), SeekPoint(0, 0), None)
     assert [p.decompressed_offset for p in points] == STARTS[1:3]
@@ -183,10 +187,10 @@ def test_the_walk_stops_at_a_header_the_decoder_would_refuse() -> None:
 
 def test_the_walk_lists_only_points_after_the_last_known_one() -> None:
     points, size = bzip3_codec.build_bzip3_index(
-        io.BytesIO(RAW), SeekPoint(STARTS[3], 0), None
+        io.BytesIO(_raw()), SeekPoint(STARTS[3], 0), None
     )
     assert [p.decompressed_offset for p in points] == STARTS[4:]
-    assert [p.compressed_offset for p in points] == _block_offsets(RAW)[4:]
+    assert [p.compressed_offset for p in points] == _block_offsets(_raw())[4:]
     assert all(p.state == BLOCK for p in points)
     assert size == len(DATA)
 
