@@ -599,6 +599,30 @@ def test_auto_uses_rapidgzip_for_a_large_gz_in_a_gz(
     assert peak in (None, 2)
 
 
+@pytest.mark.parametrize("seekable", [False, True])
+def test_gzip_isize_peek_through_a_deflated_member_needs_declared_seeking(
+    seekable: bool,
+) -> None:
+    """The ISIZE peek that lets AUTO pick rapidgzip seeks to the end of its source. On a
+    deflated ZIP entry that decodes the whole entry, so it runs only when the open
+    declared seeking, which needs that decode for its index anyway."""
+    from archivey.internal.config import StreamConfig
+    from archivey.internal.streams.codecs.gzip_codec import _config_with_gzip_isize
+
+    payload = random.Random(9).randbytes(64 * 1024)
+    data = _zip_of(
+        {"m.gz": gzip.compress(payload, mtime=0)}, method=zipfile.ZIP_DEFLATED
+    )
+    with (
+        archivey.open_archive(io.BytesIO(data), seekable_members=True) as outer,
+        outer.open("m.gz") as member,
+    ):
+        config = _config_with_gzip_isize(member, StreamConfig(seekable=seekable))
+        assert member.tell() == 0
+    assert config.gzip_isize_backstop is seekable
+    assert config.gzip_isize == (len(payload) if seekable else None)
+
+
 def test_ppmd_child_decodes_a_7z_nested_in_a_ppmd_7z(tmp_path: Path) -> None:
     """Both 7z levels decode PPMd in a child process: the inner child's input comes
     from the outer child's output, through this process."""

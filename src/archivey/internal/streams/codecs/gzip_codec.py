@@ -7,10 +7,11 @@ from __future__ import annotations
 import contextlib
 import gzip
 import io
+import os
 import zlib
 from collections.abc import Callable
 from dataclasses import replace
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from archivey.exceptions import (
     ArchiveyError,
@@ -20,6 +21,7 @@ from archivey.exceptions import (
 from archivey.internal.config import StreamConfig
 from archivey.internal.hashing import crc32_combine
 from archivey.internal.overrides import override
+from archivey.internal.source import seeks_to_end_are_cheap
 from archivey.internal.streams.codecs.base import (
     GZIP_MAGIC,
     GZIP_WBITS,
@@ -119,6 +121,17 @@ def _config_with_gzip_isize(source: CodecSource, config: StreamConfig) -> Stream
     trailer covers only the last member.
     """
     if config.gzip_isize_backstop or config.expected_decompressed_size is not None:
+        return config
+    # Reading the trailer seeks to the end of the source. On a member stream that
+    # decompresses, that decodes all of it, and the restore decodes it again. Without
+    # declared seeking that is paid only so AUTO might pick rapidgzip, so it is skipped
+    # and the read stays on the standard library. With declared seeking the open needs
+    # an index anyway, and the decode that reaches the end builds the source's own.
+    if (
+        not config.seekable
+        and not isinstance(source, (str, os.PathLike))
+        and not seeks_to_end_are_cheap(cast(BinaryIO, source))
+    ):
         return config
     isize = _gzip_isize_from_source(source)
     if isize is None:
