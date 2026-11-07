@@ -180,6 +180,14 @@ def squashfs_seeds() -> list[bytes]:
     return tiny + [path.read_bytes() for path in paths]
 
 
+def cab_seeds() -> list[bytes]:
+    """Tiny blobs and the makecab cabinets in tests/fixtures/external/cab_libarchive:
+    stored, MSZIP, LZX and a cp932 name, each a few hundred bytes."""
+    tiny = [b"", b"MSCF\0\0\0\0", b"MSCF" + bytes(32)]
+    folder = _REPO_ROOT / "tests" / "fixtures" / "external" / "cab_libarchive"
+    return tiny + [path.read_bytes() for path in sorted(folder.glob("*.cab"))]
+
+
 def _fixture_seeds(folder: str, pattern: str) -> list[bytes]:
     """The fixtures in tests/fixtures/<folder>, plain and gzip-compressed."""
     paths = sorted((_REPO_ROOT / "tests" / "fixtures" / folder).glob(pattern))

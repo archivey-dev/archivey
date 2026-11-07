@@ -72,6 +72,7 @@ from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
 from archivey.internal.timestamps import (
     TimestampIssue,
+    dos_to_datetime,
     filetime_to_datetime,
     unix32_to_datetime,
 )
@@ -1698,35 +1699,8 @@ def _load_vstr(buf: bytes | bytearray | memoryview, pos: int) -> tuple[bytes, in
     return _load_bytes(buf, slen, pos)
 
 
-def _parse_dos_time(stamp: int) -> datetime | None:
-    """A DOS date/time word as a naive datetime, or ``None`` when it names no date.
-
-    Zero is the unset value, as in ZIP. Any other word that is not a real date (month
-    13, day 0, 25 o'clock) is also ``None``; the caller reports it through
-    :func:`_dos_time_issue`. It is not clamped to a nearby date, because a clamped
-    date is a fabricated one that nothing downstream could tell from a real one.
-    """
-    if stamp == 0:
-        return None
-    sec = (stamp & 0x1F) * 2
-    stamp >>= 5
-    minute = stamp & 0x3F
-    stamp >>= 6
-    hour = stamp & 0x1F
-    stamp >>= 5
-    day = stamp & 0x1F
-    stamp >>= 5
-    month = stamp & 0x0F
-    stamp >>= 4
-    year = (stamp & 0x7F) + 1980
-    try:
-        return datetime(year, month, day, hour, minute, sec)
-    except ValueError:
-        return None
-
-
 def _dos_time_issue(stamp: int, field: str, filename: str) -> TimestampIssue:
-    """The report for a nonzero DOS word :func:`_parse_dos_time` could not use."""
+    """The report for a nonzero DOS word :func:`~archivey.internal.timestamps.dos_to_datetime` could not use."""
     return TimestampIssue(
         field=field,
         source="dos",
@@ -2886,7 +2860,7 @@ def _parse_rar3_file_header(
     name_size = fld[7]
     mode = fld[8]
 
-    mtime: datetime | None = _parse_dos_time(dos_stamp)
+    mtime: datetime | None = dos_to_datetime(dos_stamp)
 
     if flags & _RAR3_FILE_LARGE:
         h1, pos = _load_le32(hdata, pos)
@@ -3114,7 +3088,7 @@ def _parse_rar3_xtime(
         if pos + 4 > len(data):
             return None, pos
         stamp, pos = _load_le32(data, pos)
-        basetime = _parse_dos_time(stamp)
+        basetime = dos_to_datetime(stamp)
         if basetime is None and stamp != 0 and field is not None:
             name, filename, issues = field
             if issues is not None:

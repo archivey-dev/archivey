@@ -925,6 +925,13 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "cpio",
         "no corpus builder; tests/test_cpio.py seeks inside members, plain and gzip",
     ),
+    (
+        "cab",
+        (
+            "no corpus builder: a cabinet holds no directories; tests/test_cab.py "
+            "seeks inside members of a solid LZX folder"
+        ),
+    ),
 )
 
 _UNTESTED_FORMATS = {
@@ -938,6 +945,7 @@ _UNTESTED_FORMATS = {
     **{ArchiveFormat(ContainerFormat.AR, stream): "ar" for stream in StreamFormat},
     **{ArchiveFormat(ContainerFormat.CPIO, s): "cpio" for s in StreamFormat},
     ArchiveFormat.SQUASHFS: "squashfs",
+    ArchiveFormat.CAB: "cab",
 }
 
 
