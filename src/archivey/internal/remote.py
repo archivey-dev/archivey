@@ -154,7 +154,15 @@ def check_open_file(of: Any) -> None:
 class _Run:
     """One sequential run on one source, and its window (the bytes of its last fetch)."""
 
-    __slots__ = ("data", "fetches", "last_use", "source", "start")
+    __slots__ = (
+        "data",
+        "fetches",
+        "last_use",
+        "served_end",
+        "source",
+        "span_end",
+        "start",
+    )
 
     def __init__(self, source: RangeSource, start: int, tick: int) -> None:
         self.source = source
@@ -162,6 +170,13 @@ class _Run:
         self.data = b""
         self.fetches = 0
         self.last_use = tick
+        # The furthest offset a read has taken from the window.
+        self.served_end = start
+
+    def finished(self) -> bool:
+        """Whether reads have taken the window up to its end, so no stream is still
+        reading inside it."""
+        return self.served_end >= self.end
 
     @property
     def end(self) -> int:
@@ -252,6 +267,7 @@ class WindowPool:
                     view[filled : filled + take] = run.data[off : off + take]
                     filled += take
                     run.last_use = self._tick
+                    run.served_end = max(run.served_end, at + take)
                     continue
                 with view[filled:] as rest:
                     got = self._fetch_into(source, run, at, rest)
@@ -274,10 +290,14 @@ class WindowPool:
         hinted = hint is not None
         if hinted:
             assert hint is not None
-            if run is not None and hint[0] > run.end:
-                # The span starts past this run's window, which another stream on
-                # the source may still be reading: the span gets a run of its own
-                # rather than taking that window over.
+            if run is not None and hint[0] > run.end and not run.finished():
+                # The span starts past the window of a run that reads have not taken
+                # to its end, so another stream on the source may still be reading
+                # it: the span gets a run of its own rather than taking that window
+                # over. A window read to its end is continued through the gap (rule
+                # 2), so members that lie almost back to back (an ISO extent's
+                # padding, a span that leaves out a header) keep one growing run
+                # rather than a request each.
                 run = None
         if run is not None:
             # Continue the run from its end, reading through the gap (rule 2). A
@@ -321,6 +341,7 @@ class WindowPool:
                 self._held -= old
                 run.data = b""
                 run.start = at + len(data)
+                run.served_end = run.start
                 run.fetches = fetches
                 run.last_use = self._tick
             return len(data)
@@ -354,6 +375,7 @@ class WindowPool:
         off = at - start
         take = max(min(want, len(data) - off), 0)
         view[:take] = data[off : off + take]
+        run.served_end = at + take
         return take
 
     def hint(self, source: RangeSource, start: int, end: int) -> None:

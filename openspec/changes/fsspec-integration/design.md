@@ -193,7 +193,11 @@ a thin planner that decides each fetch's start and length:
    A format plugin does not call it: it names the spans a member's stream reads in
    `MemberData.ranges`, and archivey passes them to the source when `open_member`
    returns. A source keeps its latest 8 pending hints, and a read takes the newest one
-   that covers it, so members read side by side each keep their own.
+   that covers it, so members read side by side each keep their own. A span that starts
+   within the read-through distance past a run's window continues that run when reads
+   have taken the window to its end, so spans that lie almost back to back (ISO extents
+   with their sector padding) keep one growing run; a window not yet read to its end
+   may still be another stream's, and the span then gets a run of its own.
 
    | Backend | Hint |
    | --- | --- |

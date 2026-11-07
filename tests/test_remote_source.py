@@ -57,6 +57,7 @@ from tests.test_short_read_sources import (  # noqa: E402
 )
 
 KIB = 1024
+MIB = 1024 * KIB
 SMALL = PlannerConstants(min_fetch=16 * KIB, max_fetch=128 * KIB, pool_bytes=128 * KIB)
 
 
@@ -685,6 +686,24 @@ def test_a_hint_past_a_runs_window_starts_its_own_run():
     assert second[0] == 20 * KIB
 
 
+def test_spans_with_small_gaps_between_them_keep_one_growing_run():
+    # Spans that lie almost back to back (an ISO extent's padding, a span that leaves
+    # out a header): a stream that read its window to the end continues the run
+    # through the gap, so the fetches grow as for one sequential read. Before, each
+    # span past the window started a run of its own: one request per member.
+    data = DATA * 16  # 16 MiB
+    src, fs = _source(data, constants=PlannerConstants(), gap=MIB)
+    member, gap, pos = 100_000, 30, 0
+    while pos + gap + member <= len(data):
+        start = pos + gap
+        src.will_read(start, start + member)
+        src.seek(start)
+        assert src.read(member) == data[start : start + member]
+        pos = start + member
+    # The default constants: fetches that double to 8 MiB, not one per member (167).
+    assert len(fs.fetches) <= 10
+
+
 def test_members_read_side_by_side_each_keep_their_hint():
     # Two streams hint their members before either reads: the second hint does not
     # replace the first, so each member comes in one request.
@@ -860,3 +879,15 @@ def test_ranges_that_are_not_offset_pairs_are_a_plugin_bug(
         member = reader.get("B.BIN")
         with pytest.raises(TypeError, match=r"MemberData\.ranges"):
             reader.read(member)
+
+
+def test_iso_extract_all_reads_members_in_growing_runs(tmp_path: Path):
+    """An ISO's extents lie almost back to back (sector padding between them). Each is
+    a hinted span; a pass over every member keeps one growing run. Red with each span
+    past a window starting a run of its own: one request per member (151 here)."""
+    rng = random.Random(11)
+    data = _iso_bytes({f"f{i}.bin": rng.randbytes(100_000) for i in range(150)})
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, "/a.iso", mode="rb")) as reader:
+        reader.extract_all(tmp_path)
+    assert len(fs.fetches) <= 12
