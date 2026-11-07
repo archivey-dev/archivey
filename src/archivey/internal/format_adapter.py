@@ -20,6 +20,7 @@ import io
 import logging
 import lzma
 import threading
+import weakref
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import fields, replace
@@ -172,6 +173,11 @@ def _reads_full(stream: object) -> bool:
 
 
 # The walk steps ``ReaderContext.hold()`` tells apart (``_PluginAdapter._walk_step``).
+# How many archives deep ``ReaderContext.open_nested`` reads. The formats that nest
+# go one level (a ``.deb``'s tars) or two (a ``.pkg``'s XAR payload); the bound turns
+# a walk that keeps naming its own format into an archivey error before Python's
+# recursion limit does, since each level holds a reader and a few generator frames.
+MAX_NESTED_DEPTH = 8
 _LISTING = "listing"
 _REWALK = "rewalk"
 
@@ -211,6 +217,11 @@ class _PluginAdapter(BaseArchiveReader):
         self._plugin = plugin
         # The caller's ``encoding=``, for a nested reader (``_open_nested``).
         self._encoding = encoding
+        # Iterators ReaderContext.open_nested() returned, closed with the archive at the
+        # latest.
+        self._nested_iterators: weakref.WeakSet[Iterator[MemberSpan]] = (
+            weakref.WeakSet()
+        )
         # The plugin may hold a handle of its own (a library over ``source.path``), so
         # under CONCURRENT every call into it, and every read of a stream it returned,
         # takes one lock (``_handle_guard``). The exception is ``translate_exception``,
@@ -487,7 +498,15 @@ class _PluginAdapter(BaseArchiveReader):
                 "a seekable source",
                 source_format=fmt,
             )
-        return self._nested_spans(backend_cls, data, fmt, first=self._walk_index)
+        if self._nested_depth >= MAX_NESTED_DEPTH:
+            raise UnsupportedFeatureError(
+                f"{fmt.display_name} archive nested more than {MAX_NESTED_DEPTH} "
+                "archives deep",
+                source_format=fmt,
+            )
+        spans = self._nested_spans(backend_cls, data, fmt, first=self._walk_index)
+        self._nested_iterators.add(spans)
+        return spans
 
     def _nested_spans(
         self,
@@ -512,8 +531,6 @@ class _PluginAdapter(BaseArchiveReader):
                 collector=collector,
             )
         try:
-            # The outer listing checks each name and counts each member once.
-            reader._nested_reader = True
             pairs = iter(reader.stream_members())
             while True:
                 with collector.member_ids_from(first):
@@ -521,11 +538,14 @@ class _PluginAdapter(BaseArchiveReader):
                 if pair is None:
                     return
                 member, stream = pair
+                outer = _outer_copy(member)
                 yield MemberSpan(
-                    _outer_copy(member),
+                    outer,
                     data=None
                     if stream is None
-                    else _NestedData(cast(BinaryIO, stream), collector, first),
+                    else _NestedData(
+                        cast(BinaryIO, stream), collector, first, member, outer
+                    ),
                 )
         finally:
             with collector.member_ids_from(first):
@@ -678,6 +698,8 @@ class _PluginAdapter(BaseArchiveReader):
     @override
     def _close_archive(self) -> None:
         try:
+            for spans in list(self._nested_iterators):
+                cast(Generator[MemberSpan, None, None], spans).close()
             with self._translated_errors(), self._handle_guard():
                 self._reader.close()
         finally:
@@ -870,11 +892,29 @@ class _NestedData(io.RawIOBase):
     _stream: BinaryIO | None = None
 
     def __init__(
-        self, stream: BinaryIO, collector: DiagnosticCollector, first: int
+        self,
+        stream: BinaryIO,
+        collector: DiagnosticCollector,
+        first: int,
+        inner: ArchiveMember,
+        outer: ArchiveMember,
     ) -> None:
         self._stream = stream
         self._collector = collector
         self._first = first
+        # What the inner reader attaches to its member while the data is read is
+        # attached to the member the caller holds too.
+        self._inner = inner
+        self._outer = outer
+        self._seen = len(inner._diagnostics)
+
+    def _pass_on_diagnostics(self) -> None:
+        attached = self._inner._diagnostics
+        if len(attached) > self._seen:
+            outer = self._outer
+            new = outer._diagnostics + attached[self._seen :]
+            object.__setattr__(outer, "_diagnostics", new)
+            self._seen = len(attached)
 
     @override
     def readable(self) -> bool:
@@ -884,8 +924,11 @@ class _NestedData(io.RawIOBase):
     def readinto(self, buffer: Any) -> int:
         stream = self._stream
         assert stream is not None
-        with self._collector.member_ids_from(self._first):
-            data = stream.read(len(buffer))
+        try:
+            with self._collector.member_ids_from(self._first):
+                data = stream.read(len(buffer))
+        finally:
+            self._pass_on_diagnostics()
         buffer[: len(data)] = data
         return len(data)
 
@@ -897,6 +940,7 @@ class _NestedData(io.RawIOBase):
                 if stream is not None:
                     with self._collector.member_ids_from(self._first):
                         stream.close()
+                    self._pass_on_diagnostics()
             finally:
                 super().close()
 
