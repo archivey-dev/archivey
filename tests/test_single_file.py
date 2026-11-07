@@ -412,30 +412,26 @@ def _spy_reader_init_seeks(patch: pytest.MonkeyPatch) -> list[MemberSeek]:
     return in_init
 
 
-@pytest.mark.parametrize("container", ["zip_deflated", "zip_stored", "tar"])
-@pytest.mark.parametrize(
-    ("name", "make"),
-    [
-        ("m.gz", gzip.compress),
-        ("m.xz", lzma.compress),
-        ("m.lz", make_lzip_member),
-    ],
-)
-def test_member_stream_source_is_not_seeked_to_its_end(
-    monkeypatch: pytest.MonkeyPatch, container: str, name: str, make
+_NESTED_SINGLE_FILES = [
+    ("m.gz", gzip.compress),
+    ("m.xz", lzma.compress),
+    ("m.lz", make_lzip_member),
+]
+
+
+@pytest.mark.parametrize(("name", "make"), _NESTED_SINGLE_FILES)
+def test_decompressing_member_stream_source_is_not_seeked_to_its_end(
+    monkeypatch: pytest.MonkeyPatch, name: str, make
 ) -> None:
-    # A compressed file inside another archive, opened as a member stream. The member
-    # advertises its length, so compressed_size needs no seek. The xz index and lzip
-    # trailer sit at the end, so those probes are skipped: size=None and no CRC32.
-    #
-    # Every member stream counts as one whose seek may re-decode, as a group. For a
-    # deflated ZIP entry that is true; for a stored ZIP entry or a TAR member, whose
-    # seek is a slice of the container, it is the price of the coarse rule. The
-    # stored and TAR rows pin that loss as the contract (spec: "size matrix").
+    # A compressed file inside a deflated ZIP entry, opened as a member stream. The
+    # member advertises its length, so compressed_size needs no seek. The xz index and
+    # lzip trailer sit at the end, and a seek there decodes the whole entry
+    # (``nearest_resume_offset`` answers far before it), so those probes are skipped:
+    # size=None and no CRC32.
     data = make(random.Random(7).randbytes(64 * 1024))
     with (
         open_archive(
-            _container_of(container, name, data), seekable_members=True
+            _container_of("zip_deflated", name, data), seekable_members=True
         ) as outer,
         outer.open(name) as member,
         monkeypatch.context() as patch,
@@ -453,6 +449,38 @@ def test_member_stream_source_is_not_seeked_to_its_end(
     expected = [MemberSeek(member_id, 0, 0)] if name == "m.gz" else []
     assert seeks == expected
     assert_no_member_tail_seek(seeks, {member_id: len(data)})
+
+
+@pytest.mark.parametrize("container", ["zip_stored", "tar"])
+@pytest.mark.parametrize(("name", "make"), _NESTED_SINGLE_FILES)
+def test_sliced_member_stream_source_reports_size_and_crc(
+    container: str, name: str, make
+) -> None:
+    # A stored ZIP entry or a TAR member is a slice of its archive: a seek to its end is
+    # a pointer move (``nearest_resume_offset`` answers the target), so the tail probes
+    # run as on a file. The xz index and the lzip trailer give the size, the lzip
+    # trailer the CRC-32, and the gzip trailer ``gzip.isize``.
+    payload = random.Random(7).randbytes(64 * 1024)
+    data = make(payload)
+    with (
+        open_archive(
+            _container_of(container, name, data), seekable_members=True
+        ) as outer,
+        outer.open(name) as member,
+        open_archive(member) as nested,
+    ):
+        (inner,) = nested.members()
+        assert inner.compressed_size == len(data)
+        if name == "m.gz":
+            assert inner.size is None
+            assert inner.extra["gzip.isize"] == len(payload)
+        else:
+            assert inner.size == len(payload)
+        if name == "m.lz":
+            assert inner.hashes[HashAlgorithm.CRC32] == crc32_digest(
+                zlib.crc32(payload)
+            )
+        assert nested.read(inner) == payload
 
 
 @pytest.mark.parametrize("container", ["zip_deflated", "zip_stored", "tar"])

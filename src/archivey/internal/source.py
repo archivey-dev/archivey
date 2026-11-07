@@ -65,10 +65,14 @@ ownership rules (``dev-docs/topics/stream-ownership.md``).
 
 from __future__ import annotations
 
+import bz2
+import gzip
 import io
+import lzma
 import os
 import stat
 import sys
+import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
@@ -94,6 +98,7 @@ from archivey.internal.streams.streamtools import (
     underlying_stream,
 )
 from archivey.internal.streams.streamtools.binaryio import (
+    ask_resume_offset,
     read_arrived,
     read_blocking,
     readinto_via_read,
@@ -645,12 +650,32 @@ class ArchiveSource(ReadOnlyIOStream):
         """Whether a seek on this source may re-decode what it skips.
 
         True when the caller's stream is archivey's own member stream
-        (``ArchiveStreamImpl``), under any pass-through buffer (see
-        :func:`seek_is_expensive`), and for a joined set with such a stream among its
-        volumes: a read near the end of the set seeks that volume. A path, and a caller
-        stream that is a file or a ``BytesIO``, answer ``False``.
+        (``ArchiveStreamImpl``) or a standard-library decompressing file object, under
+        any pass-through buffer (see :func:`seek_is_expensive`), and for a joined set
+        with such a stream among its volumes: a read near the end of the set seeks that
+        volume. A path, and a caller stream that is a file or a ``BytesIO``, answer
+        ``False``. Whether a given seek is still cheap is
+        :meth:`nearest_resume_offset`'s answer: a stored member is a slice.
         """
         return self._seek_is_expensive
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """The offset, at or before ``target``, that a seek to ``target`` decodes from.
+
+        ``target`` itself on a seekable source whose seek is a pointer move: a path, a
+        file, a ``BytesIO``. A source that borrows a stream whose seek may re-decode
+        (:attr:`seek_is_expensive`) passes the question to that stream, under any
+        pass-through buffer: a stored ZIP entry or a TAR member, a slice of its
+        archive, answers ``target``, and a decoder answers where it would restart.
+        ``None`` when nothing answers (a remote file, a joined set, a stream with no
+        such method) and on a source that cannot seek. Offsets are the borrowed
+        stream's own, as :meth:`seek`'s are.
+        """
+        if not self._seekable:
+            return None
+        if not self._seek_is_expensive:
+            return target
+        return ask_resume_offset(underlying_stream(self._reader), target)
 
     @property
     @override
@@ -1070,12 +1095,26 @@ def _check_peek_range(n: int, start: int) -> None:
         raise ValueError("peek start must be non-negative")
 
 
+# Streams whose seek decodes what it skips: archivey's own member stream, and the
+# standard library's decompressing file objects, whose backward seek decodes again from
+# the start and whose seek to the end decodes everything (``ZipExtFile`` rewinds the
+# same way, stored or not).
+_DECODING_STREAMS: tuple[type, ...] = (
+    ArchiveStreamImpl,
+    gzip.GzipFile,
+    bz2.BZ2File,
+    lzma.LZMAFile,
+    zipfile.ZipExtFile,
+)
+
+
 def seek_is_expensive(stream: BinaryIO) -> bool:
     """Whether repositioning ``stream`` may cost a re-decode rather than a pointer move.
 
     True for archivey's own member stream (``ArchiveStreamImpl``): many codecs serve a
     backward seek by decoding again from the start, and a seek to the end decodes
-    everything before it.
+    everything before it. True too for the standard library's ``GzipFile``,
+    ``BZ2File``, ``LZMAFile`` and ``ZipExtFile``, which do the same.
     The same holds under a pass-through layer (a ``BufferedReader``, a seek counter),
     which :func:`underlying_stream` peels the way :func:`source_byte_size` does. True as
     well for an :class:`ArchiveSource` that borrows one, which is how ``open_archive``
@@ -1091,7 +1130,50 @@ def seek_is_expensive(stream: BinaryIO) -> bool:
     own = getattr(stream, "seek_is_expensive", None)
     if isinstance(own, bool):
         return own
-    return isinstance(underlying_stream(stream), ArchiveStreamImpl)
+    return isinstance(underlying_stream(stream), _DECODING_STREAMS)
 
 
-__all__ = ["ArchiveSource", "JoinedVolumes", "seek_is_expensive"]
+# How far before a probe's target a resume point may sit and still count as cheap: a
+# cipher block or a small buffer to read again, not a decode.
+_RESUME_TOLERANCE = 4096
+# How far before the end the tail probes start reading: the gzip ISIZE, the xz stream
+# footer and the lzip member trailer all sit in the last 32 bytes.
+_TAIL_WINDOW = 64
+
+
+def seeks_to_end_are_cheap(stream: BinaryIO) -> bool:
+    """Whether a probe may read ``stream``'s tail and seek back without decoding.
+
+    True when the stream can seek and the seek is a pointer move
+    (:func:`seek_is_expensive` is false). A stream whose seek may re-decode still
+    qualifies when it says a seek resumes at, or within
+    a few KiB before, each place the probes go (``ArchiveStream.nearest_resume_offset``):
+    the last bytes, where the trailers sit; the middle, which an index walk may cross;
+    and the current position, which the probe restores. A stored ZIP entry or a TAR
+    member, a slice of its archive, answers every target itself. The end itself is not
+    asked: a decoder can resume there, with nothing left to decode, and still decode
+    everything before it. A stream that has no cheap length or does not answer is not
+    cheap.
+    """
+    if not is_seekable(stream):
+        return False
+    if not seek_is_expensive(stream):
+        return True
+    end = getattr(stream, "size_hint", None)
+    if not isinstance(end, int):
+        end = source_byte_size(stream)
+    if end is None:
+        return False
+    for target in (max(end - _TAIL_WINDOW, 0), end // 2, stream.tell()):
+        resume = ask_resume_offset(stream, target)
+        if resume is None or resume < target - _RESUME_TOLERANCE:
+            return False
+    return True
+
+
+__all__ = [
+    "ArchiveSource",
+    "JoinedVolumes",
+    "seek_is_expensive",
+    "seeks_to_end_are_cheap",
+]
