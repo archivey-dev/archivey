@@ -172,12 +172,13 @@ def _reads_full(stream: object) -> bool:
     return _type_reads_full(type(stream))
 
 
-# The walk steps ``ReaderContext.hold()`` tells apart (``_PluginAdapter._walk_step``).
 # How many archives deep ``ReaderContext.open_nested`` reads. The formats that nest
 # go one level (a ``.deb``'s tars) or two (a ``.pkg``'s XAR payload); the bound turns
 # a walk that keeps naming its own format into an archivey error before Python's
 # recursion limit does, since each level holds a reader and a few generator frames.
 MAX_NESTED_DEPTH = 8
+
+# The walk steps ``ReaderContext.hold()`` tells apart (``_PluginAdapter._walk_step``).
 _LISTING = "listing"
 _REWALK = "rewalk"
 
