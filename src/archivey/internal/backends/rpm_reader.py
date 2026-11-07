@@ -197,14 +197,25 @@ class Header:
     def _bad(self, tag: int, why: str) -> CorruptionError:
         return CorruptionError(f"RPM {self._what}: tag {tag} {why}")
 
-    def ints(self, tag: int) -> list[int] | None:
-        """An integer array, unsigned, or None when the tag is absent."""
+    def _entry(self, tag: int, kind: str) -> _Entry | None:
+        """The tag's entry, checked to be ``kind`` ("an integer" or "a string")."""
         entry = self._entries.get(tag)
         if entry is None:
             return None
-        size = _INT_SIZES.get(entry.type)
-        if size is None or entry.type == _BIN:
-            raise self._bad(tag, f"has type {entry.type}, not an integer")
+        if kind == "an integer":
+            ok = entry.type in _INT_SIZES and entry.type != _BIN
+        else:
+            ok = entry.type in (_STRING, _STRING_ARRAY, _I18NSTRING)
+        if not ok:
+            raise self._bad(tag, f"has type {entry.type}, not {kind}")
+        return entry
+
+    def ints(self, tag: int) -> list[int] | None:
+        """An integer array, unsigned, or None when the tag is absent."""
+        entry = self._entry(tag, "an integer")
+        if entry is None:
+            return None
+        size = _INT_SIZES[entry.type]
         end = entry.offset + size * entry.count
         if end > len(self._data):
             raise self._bad(tag, "runs past the end of the header's data")
@@ -216,17 +227,28 @@ class Header:
         )
 
     def number(self, tag: int) -> int | None:
-        values = self.ints(tag)
-        return values[0] if values else None
+        """The first value of an integer entry, or None when the tag is absent.
+
+        Only that value is unpacked: a scalar tag stored as a long array costs no
+        more than a scalar one.
+        """
+        entry = self._entry(tag, "an integer")
+        if entry is None:
+            return None
+        size = _INT_SIZES[entry.type]
+        if entry.offset + size * entry.count > len(self._data):
+            raise self._bad(tag, "runs past the end of the header's data")
+        if size == 1:
+            return self._data[entry.offset]
+        fmt = {2: ">H", 4: ">I", 8: ">Q"}[size]
+        return struct.unpack_from(fmt, self._data, entry.offset)[0]
 
     def strings(self, tag: int) -> list[bytes] | None:
         """A string array (a single string as a list of one), or None when absent."""
-        entry = self._entries.get(tag)
+        entry = self._entry(tag, "a string")
         if entry is None:
             return None
-        if entry.type not in (_STRING, _STRING_ARRAY, _I18NSTRING):
-            raise self._bad(tag, f"has type {entry.type}, not a string")
-        count = 1 if entry.type == _STRING else entry.count
+        count = entry.count
         if count > len(self._data) - entry.offset:
             raise self._bad(tag, f"declares {count} strings in fewer bytes")
         values = []
@@ -245,8 +267,18 @@ class Header:
         return 0 if entry is None else entry.count
 
     def string(self, tag: int) -> bytes | None:
-        values = self.strings(tag)
-        return values[0] if values else None
+        """The first string of a string entry, or None when the tag is absent.
+
+        Only that string is looked for: a scalar tag stored as a long array costs no
+        more than a scalar one.
+        """
+        entry = self._entry(tag, "a string")
+        if entry is None:
+            return None
+        end = self._data.find(b"\0", entry.offset)
+        if end < 0:
+            raise self._bad(tag, "has a string with no NUL before the data's end")
+        return self._data[entry.offset : end]
 
 
 def _read_header(
@@ -278,6 +310,11 @@ def _read_header(
             raise CorruptionError(
                 f"RPM {what}: tag {tag} has offset {at} and count {n} in a store "
                 f"of {size} bytes"
+            )
+        if kind == _STRING and n != 1:
+            # rpm's headerVerifyInfo refuses this too: a STRING holds one value.
+            raise CorruptionError(
+                f"RPM {what}: tag {tag} is a single string with count {n}"
             )
         entries[tag] = _Entry(kind, n, at)
     return Header(entries, data, what), 16 + total

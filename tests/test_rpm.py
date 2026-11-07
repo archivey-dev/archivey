@@ -772,3 +772,67 @@ def test_payload_bytes_for_a_type_rpm_reads_none_for_are_damage(mode: int) -> No
     )
     with pytest.raises(CorruptionError, match="the header gives 0"):
         _open(data).members()
+
+
+def _retype(data: bytes, tag: int, kind: int) -> bytes:
+    """The package with the main header's index entry for ``tag`` given type ``kind``."""
+    # The signature header starts at 96, after the lead: the next magic is the main one.
+    header = data.index(b"\x8e\xad\xe8\x01", 96 + 1)
+    (count,) = struct.unpack_from(">I", data, header + 8)
+    raw = bytearray(data)
+    for i in range(count):
+        at = header + 16 + 16 * i
+        if struct.unpack_from(">I", raw, at)[0] == tag:
+            struct.pack_into(">I", raw, at + 4, kind)
+            return bytes(raw)
+    raise AssertionError(f"no tag {tag}")
+
+
+@pytest.mark.parametrize("tag", [1027, 1035, 1036, 1039, 1040])
+def test_a_single_string_entry_with_a_count_over_one_is_damage(tag: int) -> None:
+    """rpm's headerVerifyInfo refuses a STRING entry whose count is not 1. A count
+    equal to the file count must not pass a per-file column check with one value."""
+    files = _tree()
+    package = _Package(files, compressor=None)
+    if tag == 1027:
+        package = _Package(
+            files,
+            compressor=None,
+            drop_tags=(1116, 1117, 1118),
+            extra_tags={1027: (_STRING_ARRAY, [f.path for f in files])},
+        )
+    data = _retype(_build(package), tag, _STRING)
+    with pytest.raises(CorruptionError, match=f"tag {tag}"), _open(data) as reader:
+        for _, stream in reader.stream_members():
+            if stream is not None:
+                stream.read()
+
+
+@pytest.mark.parametrize(
+    ("tag", "column"),
+    [
+        (1000, (_STRING_ARRAY, [b""] * 2**21)),
+        (1124, (_STRING_ARRAY, [b"cpio"] + [b""] * 2**21)),
+        (1003, (_INT32, [0] * 2**19)),
+        (5011, (_INT32, [8] * 2**19)),
+    ],
+    ids=["name", "payloadformat", "epoch", "digestalgo"],
+)
+def test_a_scalar_tag_reads_only_its_first_value(
+    tag: int, column: tuple[int, object]
+) -> None:
+    """NAME, EPOCH and the other scalar tags keep one value: a 2 MiB array in their
+    place is not unpacked into one Python object per value."""
+    import tracemalloc
+
+    data = _build(_Package(_tree(), compressor=None, extra_tags={tag: column}))
+    tracemalloc.start()
+    try:
+        with _open(data) as reader:
+            assert len(reader.members()) == 6
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # The package is 2 MiB, held about twice (the read and the store). Unpacked,
+    # the array alone was 16 MiB of list.
+    assert peak < 3 * len(data)
