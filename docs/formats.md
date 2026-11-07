@@ -1149,8 +1149,10 @@ what `makecab` and `gcab` write.
   needs a source that can seek.
 - `ArchiveInfo.format_version` is the cabinet's version, `"1.3"` for every current writer.
   Members are files: a cabinet stores no directories, only paths. A path's `\` separators
-  become `/`. `member.windows_attrs` holds the stored attributes, and `member.modified` the
-  stored local time, with no time zone.
+  become `/`. `member.windows_attrs` holds the stored attributes without the two that only
+  a cabinet defines, `0x40` (executable) and `0x80` (name is UTF-8), which a Windows
+  attribute mask uses for other things; `member.modified` holds the stored local time,
+  with no time zone.
 - Names are UTF-8 when valid, otherwise decoded with `encoding=` (a Japanese cabinet from
   `makecab` is usually `encoding="cp932"`), as in every format.
 - Each data block stores a checksum of its bytes, which a read checks, so a member read to

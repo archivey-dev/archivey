@@ -24,7 +24,8 @@ decoded by archivey's own decoder, in Python. The format handbook is
 
 The CAB backend SHALL list one `FILE` member per `CFFILE` record, in table order, named
 as stored with `\` turned into `/` after decoding, with its size, the DOS date and time
-as a naive `modified`, its attributes as `windows_attrs`, and its folder's method as
+as a naive `modified`, its attributes as `windows_attrs` (without the cabinet-only bits
+`0x40` and `0x80`), and its folder's method as
 `compression`. It SHALL read stored, MSZIP and LZX folders (LZX windows 2^15 to 2^21),
 check each data block's checksum when it is not 0, and report a member whose blocks from
 the folder start through its end all carry one as `Verification.CHECKSUM` once read to the
@@ -44,6 +45,7 @@ with `StreamNotSeekableError`.
 | Header, folder and data reserve areas | Skipped |
 | A block whose checksum is 0 | The member read, `LENGTH` |
 | An invalid DOS date | `modified is None`; `MEMBER_TIMESTAMP_INVALID` |
+| Attributes `0xE1` | `windows_attrs == 0x21` |
 
 ### Requirement: Refuse damaged and unsupported cabinets
 
@@ -55,7 +57,9 @@ libmspack's `cabd_read_string`), an LZX window outside 2^15 to 2^21, a block ove
 stored or 32 768 decoded bytes, a block checksum that does not match, an MSZIP block that
 does not start with `CK` or does not decode to its size, LZX that does not decode, and a
 file past its folder's output. A cut cabinet SHALL raise `TruncatedError` for what it cuts
-off, and still read the files before the cut.
+off, and still read the files before the cut. The block tables the backend keeps, one per
+folder read, SHALL be weighed against `max_metadata_bytes` as they are read, 256 bytes a
+block, and crossing it SHALL raise `ResourceLimitError`.
 
 #### Scenario: CAB refusals
 
@@ -67,3 +71,6 @@ off, and still read the files before the cut.
 | Random bit flips in an LZX folder with no checksums | An `ArchiveyError`, never another exception |
 | A cabinet cut inside its last folder | The earlier files read; `TruncatedError` for the cut one |
 | An LZX match reaching before the stream start, or past the frame | `CorruptionError` |
+| An LZX match past its block or the window, from more than a window back, or an aligned match with no aligned tree; a tree that over- or underfills its code space | `CorruptionError` |
+| An LZX stream that reads more than two bytes past its input | `TruncatedError` |
+| Folders that all name one run of 20 000 blocks | `ResourceLimitError` once the kept tables pass `max_metadata_bytes` |

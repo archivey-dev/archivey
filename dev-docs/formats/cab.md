@@ -39,7 +39,9 @@ From the Microsoft Cabinet Format specification (MS-CAB) and libmspack's `cabd.c
   then the folder reserve.
 - **`CFFILE`** per file, at `coffFiles`: size, offset in its folder's output, folder index
   (`0xFFFD`-`0xFFFF` continue a file across cabinets), DOS date and time, attributes, then
-  a NUL-terminated name with `\` separators.
+  a NUL-terminated name with `\` separators. `windows_attrs` drops the cabinet-only
+  attributes `_A_EXEC` (`0x40`) and `_A_NAME_IS_UTF` (`0x80`): in a Windows attribute mask
+  those bits are `FILE_ATTRIBUTE_DEVICE` and `FILE_ATTRIBUTE_NORMAL`.
 - **`CFDATA`** blocks per folder: checksum, stored size, decoded size (at most 32 KiB),
   the data reserve, then the stored bytes.
 
@@ -78,7 +80,10 @@ The first open of a member in a folder reads that folder's `CFDATA` headers (one
 read per block, seeking past the data) into a block table: where each block's bytes are
 and where its output starts. A block over 38 912 stored or 32 768 decoded bytes
 (`CAB_INPUTMAX`, `CAB_BLOCKMAX`) is `CorruptionError`. A cabinet cut before the last header
-keeps the blocks it has, so a file in them still reads.
+keeps the blocks it has, so a file in them still reads. The tables are kept for the
+reader's life and weighed against `max_metadata_bytes` as they are read (256 bytes a
+block, about twice what one measures): folders may all name the same run of block
+headers, so without the weighing a 2.5 MB cabinet could ask for hundreds of GiB of them.
 
 A member's stream reads its folder's output from its offset. Stored folders start at the
 block holding the offset and skip whole blocks unread. MSZIP and LZX start at the folder's
@@ -100,7 +105,13 @@ earlier block's damage reaches the member, so the earlier blocks count too.
 `lzx_decoder.py` follows libmspack's `lzxd.c` wherever the format leaves a choice, so the
 two agree on every stream; its docstring lists those choices (code-length runs that spill
 past their range, empty trees, matches that cross a frame or reach before the start, the
-E8 limits). Each tree decodes through a 65 536-entry table indexed by the next 16 bits.
+E8 limits). Each tree decodes through a two-level table: a root as wide as the longest
+code, at most 10 bits, and a sub-table under each root entry whose codes are longer. A
+block may be empty and still carry up to six trees, so a table's cost follows its tree:
+a stream of nothing but block headers, with the deepest pretrees the format allows,
+decodes at about 2 µs an input byte (0.5 MB/s, CPython 3.11), against 12 µs with one
+65 536-entry table per tree. No byte comes out, so `ExtractionLimits` does not see it
+(threat model, §No CPU or wall-clock bound).
 Past the end of the input it reads zero bytes, as `lzxd.c` does for two bytes, and refuses
 a stream that uses more than two of them (`TruncatedError`). It runs at about 5-10 MB/s.
 

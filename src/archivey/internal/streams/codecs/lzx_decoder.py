@@ -21,13 +21,17 @@ stream:
 - the E8 translation runs for the first 32 768 frames only, from the first block that
   can produce an ``E8`` byte, and leaves the last 10 bytes of each frame alone.
 
-Every Huffman code is at most 16 bits, so each tree decodes through one table of
-65 536 entries indexed by the next 16 bits.
+Every Huffman code is at most 16 bits. Each tree decodes through a two-level table:
+a root indexed by the next ``min(longest code, 10)`` bits, and, under each root entry
+whose codes are longer, a sub-table as wide as the longest of them. A block header
+builds up to six trees, and a block may be empty, so the cost of a build follows the
+tree it decodes, not the 65 536 entries a one-level 16-bit table would fill.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from itertools import compress
 
 from archivey.exceptions import CorruptionError, TruncatedError
 
@@ -71,36 +75,74 @@ del _slot
 _PADDING_ALLOWED = 2
 _MAX_PADDING = 8
 
-_TABLE_BITS = 16
-_EMPTY = -1
+_MAX_CODE = 16
+_ROOT_BITS = 10
+
+Tree = tuple[list[int], int]
+"""A decoding table and its root width in bits.
+
+A root entry ``symbol << 5 | length`` decodes a code of ``length`` bits. A negative
+root entry ``~(start << 5 | bits)`` points to a sub-table at ``start``, indexed by the
+``bits`` bits after the root's; its entries hold the length past the root.
+"""
 
 
-def _build_table(lengths: list[int], count: int, what: str) -> list[int] | None:
-    """A 16-bit lookup table for the canonical code of ``lengths[:count]``.
+def _build_table(lengths: list[int], count: int, what: str) -> Tree | None:
+    """The two-level decoding table for the canonical code of ``lengths[:count]``.
 
-    Each entry is ``symbol << 5 | length``. ``None`` for a tree with no codes; a code
-    that overfills or underfills the code space is damage.
+    ``None`` for a tree with no codes; a code that overfills or underfills the code
+    space is damage.
     """
-    table: list[int] = []
-    pos = 0
-    full = 1 << _TABLE_BITS
-    by_length: list[list[int]] = [[] for _ in range(17)]
-    for symbol in range(count):
-        length = lengths[symbol]
-        if length:
-            by_length[length].append(symbol)
-    for length in range(1, 17):
-        span = 1 << (_TABLE_BITS - length)
-        for symbol in by_length[length]:
-            pos += span
-            if pos > full:
-                raise CorruptionError(f"LZX {what} tree overfills its code space")
-            table += [symbol << 5 | length] * span
-    if pos == full:
-        return table
-    if pos == 0:
+    by_length: list[list[int]] = [[] for _ in range(_MAX_CODE + 1)]
+    for symbol in compress(range(count), lengths[:count]):
+        by_length[lengths[symbol]].append(symbol)
+    longest = max((n for n in range(1, _MAX_CODE + 1) if by_length[n]), default=0)
+    if not longest:
         return None
-    raise CorruptionError(f"LZX {what} tree does not fill its code space")
+    root = min(longest, _ROOT_BITS)
+    # ``pos`` is where the next code starts, in units of 2**-16 of the code space.
+    full = 1 << _MAX_CODE
+    shift = _MAX_CODE - root
+    pos = 0
+    table = [0] * (1 << root)
+    # Codes past the root, in code order: (start, length, symbol).
+    long_codes: list[tuple[int, int, int]] = []
+    for length in range(1, longest + 1):
+        span = 1 << (_MAX_CODE - length)
+        symbols = by_length[length]
+        if pos + span * len(symbols) > full:
+            raise CorruptionError(f"LZX {what} tree overfills its code space")
+        if length <= root:
+            fill = 1 << (root - length)
+            for symbol in symbols:
+                at = pos >> shift
+                table[at : at + fill] = [symbol << 5 | length] * fill
+                pos += span
+        else:
+            for symbol in symbols:
+                long_codes.append((pos, length, symbol))
+                pos += span
+    if pos != full:
+        raise CorruptionError(f"LZX {what} tree does not fill its code space")
+    # Codes come in length order, so those under one root entry are consecutive and
+    # the last is the longest: the sub-table is as wide as it needs.
+    low = (1 << shift) - 1
+    i = 0
+    while i < len(long_codes):
+        prefix = long_codes[i][0] >> shift
+        j = i
+        while j + 1 < len(long_codes) and long_codes[j + 1][0] >> shift == prefix:
+            j += 1
+        bits = long_codes[j][1] - root
+        start = len(table)
+        table += [0] * (1 << bits)
+        table[prefix] = ~(start << 5 | bits)
+        for code_pos, length, symbol in long_codes[i : j + 1]:
+            at = start + ((code_pos & low) >> (shift - bits))
+            fill = 1 << (root + bits - length)
+            table[at : at + fill] = [symbol << 5 | (length - root)] * fill
+        i = j + 1
+    return table, root
 
 
 class LzxDecoder:
@@ -127,9 +169,9 @@ class LzxDecoder:
         # Decoder state that lives across blocks and frames.
         self._main_lengths = [0] * (_MAIN_MAX + _RUN_SLACK)
         self._length_lengths = [0] * (_LENGTH_MAX + _RUN_SLACK)
-        self._main_table: list[int] | None = None
-        self._length_table: list[int] | None = None
-        self._aligned_table: list[int] | None = None
+        self._main_table: Tree | None = None
+        self._length_table: Tree | None = None
+        self._aligned_table: Tree | None = None
         self._r0 = self._r1 = self._r2 = 1
         self._header_read = False
         self._intel_size = 0
@@ -191,13 +233,20 @@ class LzxDecoder:
         self._nbits -= n
         return (self._bits >> self._nbits) & ((1 << n) - 1)
 
-    def _read_symbol(self, table: list[int] | None, what: str) -> int:
-        if table is None:
+    def _read_symbol(self, tree: Tree | None, what: str) -> int:
+        if tree is None:
             raise CorruptionError(f"LZX {what} symbol read from an empty tree")
-        if self._nbits < 16:
-            self._refill(16)
-        entry = table[(self._bits >> (self._nbits - 16)) & 0xFFFF]
-        self._nbits -= entry & 31
+        if self._nbits < _MAX_CODE:
+            self._refill(_MAX_CODE)
+        table, root = tree
+        bits, nbits = self._bits, self._nbits
+        entry = table[(bits >> (nbits - root)) & ((1 << root) - 1)]
+        if entry < 0:
+            nbits -= root
+            entry = ~entry
+            sub = entry & 31
+            entry = table[(entry >> 5) + ((bits >> (nbits - sub)) & ((1 << sub) - 1))]
+        self._nbits = nbits - (entry & 31)
         return entry >> 5
 
     def _raw_bytes(self, n: int) -> bytes:
@@ -326,11 +375,15 @@ class LzxDecoder:
 
     def _decode_run(self, run: int) -> int:
         """Decode symbols until at least ``run`` bytes are out; return how many."""
-        main_table = self._main_table
-        if main_table is None:
+        if self._main_table is None:
             raise CorruptionError("LZX main symbol read from an empty tree")
-        length_table = self._length_table
-        aligned_table = self._aligned_table if self._block_type == _ALIGNED else None
+        main_table, main_root = self._main_table
+        main_mask = (1 << main_root) - 1
+        length_table, length_root = self._length_table or ([], 0)
+        length_mask = (1 << length_root) - 1
+        aligned = self._block_type == _ALIGNED
+        aligned_table, aligned_root = self._aligned_table or ([], 0)
+        aligned_mask = (1 << aligned_root) - 1
         window = self._window
         window_size = self._window_size
         position_base = _POSITION_BASE
@@ -359,7 +412,14 @@ class LzxDecoder:
                 else:
                     bits, nbits, buf, bpos = self._slow_fill(bits, nbits, buf, bpos)
                     blen = len(buf)
-            entry = main_table[(bits >> (nbits - 16)) & 0xFFFF]
+            entry = main_table[(bits >> (nbits - main_root)) & main_mask]
+            if entry < 0:
+                nbits -= main_root
+                entry = ~entry
+                sub = entry & 31
+                entry = main_table[
+                    (entry >> 5) + ((bits >> (nbits - sub)) & ((1 << sub) - 1))
+                ]
             nbits -= entry & 31
             symbol = entry >> 5
             if symbol < 256:
@@ -369,9 +429,16 @@ class LzxDecoder:
             symbol -= 256
             length = symbol & 7
             if length == _PRIMARY_LENGTHS:
-                if length_table is None:
+                if not length_table:
                     raise CorruptionError("LZX length symbol read from an empty tree")
-                entry = length_table[(bits >> (nbits - 16)) & 0xFFFF]
+                entry = length_table[(bits >> (nbits - length_root)) & length_mask]
+                if entry < 0:
+                    nbits -= length_root
+                    entry = ~entry
+                    sub = entry & 31
+                    entry = length_table[
+                        (entry >> 5) + ((bits >> (nbits - sub)) & ((1 << sub) - 1))
+                    ]
                 nbits -= entry & 31
                 length += entry >> 5
             length += _MIN_MATCH
@@ -393,11 +460,18 @@ class LzxDecoder:
                     blen = len(buf)
                 extra = extra_bits[slot]
                 offset = position_base[slot] - 2
-                if extra >= 3 and aligned_table is not None:
+                if extra >= 3 and aligned:
+                    if not aligned_table:
+                        raise CorruptionError(
+                            "LZX aligned symbol read from an empty tree"
+                        )
                     if extra > 3:
                         nbits -= extra - 3
                         offset += ((bits >> nbits) & ((1 << (extra - 3)) - 1)) << 3
-                    entry = aligned_table[(bits >> (nbits - 16)) & 0xFFFF]
+                    # Aligned codes are at most 7 bits: the root holds them all.
+                    entry = aligned_table[
+                        (bits >> (nbits - aligned_root)) & aligned_mask
+                    ]
                     nbits -= entry & 31
                     offset += entry >> 5
                 elif extra:

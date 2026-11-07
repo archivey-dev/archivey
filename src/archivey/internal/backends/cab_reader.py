@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.exceptions import (
     CorruptionError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -47,6 +48,7 @@ from archivey.formats import (
     ReaderSource,
 )
 from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.listing_limits import metadata_limit_error
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.lzx_decoder import (
     FRAME_SIZE,
@@ -119,6 +121,16 @@ class _Block(NamedTuple):
     stored: int
     decoded: int
     checksum: int
+
+
+# ``_A_EXEC`` and ``_A_NAME_IS_UTF``: bits a cabinet gives its own meaning, which in a
+# Windows attribute mask are FILE_ATTRIBUTE_DEVICE and FILE_ATTRIBUTE_NORMAL.
+_CAB_ONLY_ATTRIBUTES = 0x40 | 0x80
+
+# What one block costs in a kept block table, as ``max_metadata_bytes`` weighs it: about
+# 128 bytes measured for empty blocks, more once offsets and checksums outgrow the small
+# ints Python shares. A 4 GiB cabinet of full blocks keeps about 32 MiB.
+_BLOCK_WEIGHT = 256
 
 
 class _BlockTable(NamedTuple):
@@ -195,6 +207,10 @@ class CabReader(IndexedReader[_Location]):
         self._solid = any(f.method != _STORED for f in self._folders)
         self._lock = threading.Lock()
         self._tables: dict[int, _BlockTable] = {}
+        # What the kept tables weigh, against ``max_metadata_bytes``: folders may all
+        # name the same run of block headers, so they are not bounded by the file.
+        self._table_bytes = 0
+        self._max_meta = context.config.listing_limits.max_metadata_bytes
         # The folder decoder a member stream left behind, to go on from.
         self._parked: _FolderStream | None = None
 
@@ -246,7 +262,7 @@ class CabReader(IndexedReader[_Location]):
                 raw_name=raw,
                 size=size,
                 modified=dos_to_datetime(stamp),
-                windows_attrs=attribs,
+                windows_attrs=attribs & ~_CAB_ONLY_ATTRIBUTES,
                 compression=(
                     CompressionMethod(
                         _METHODS.get(
@@ -276,7 +292,8 @@ class CabReader(IndexedReader[_Location]):
 
     def _block_table(self, index: int) -> _BlockTable:
         """The folder's CFDATA headers, read once: where each block's bytes are, and
-        where its output starts."""
+        where its output starts. Every table is kept, and weighed against
+        ``max_metadata_bytes`` as it is read."""
         with self._lock:
             table = self._tables.get(index)
         if table is not None:
@@ -288,7 +305,12 @@ class CabReader(IndexedReader[_Location]):
         header = _DATA.size + self._data_reserve
         size = self._source.size
         complete = True
+        max_meta = self._max_meta
         for number in range(folder.blocks):
+            if max_meta is not None and (
+                self._table_bytes + (number + 1) * _BLOCK_WEIGHT > max_meta
+            ):
+                raise self._table_limit(index, number + 1)
             if size is not None and pos + header > size:
                 complete = False
                 break
@@ -306,8 +328,24 @@ class CabReader(IndexedReader[_Location]):
             pos += header + stored
         table = _BlockTable(tuple(blocks), tuple(output), complete)
         with self._lock:
+            kept = self._tables.get(index)
+            if kept is not None:  # another thread read it meanwhile
+                return kept
+            self._table_bytes += len(blocks) * _BLOCK_WEIGHT
+            if max_meta is not None and self._table_bytes > max_meta:
+                self._table_bytes -= len(blocks) * _BLOCK_WEIGHT
+                raise self._table_limit(index, len(blocks))
             self._tables[index] = table
         return table
+
+    def _table_limit(self, index: int, block: int) -> ResourceLimitError:
+        assert self._max_meta is not None
+        return metadata_limit_error(
+            self._max_meta,
+            f"the block tables kept weigh {self._table_bytes} bytes, and folder "
+            f"{index}'s passes the limit at block {block} of "
+            f"{self._folders[index].blocks}",
+        )
 
     @override
     def open_member(self, member: ArchiveMember, locator: _Location) -> MemberData:

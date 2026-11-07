@@ -27,14 +27,17 @@ from archivey import (
     open_archive,
 )
 from archivey.internal.backends import cab_reader
+from archivey.internal.streams.codecs import lzx_decoder
 from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
 from tests.cab_util import (
     FRAME,
+    BitWriter,
     CabFile,
     CabFolder,
     LzxEncoder,
     _Token,
     block_checksum,
+    canonical_codes,
     write_cab,
 )
 
@@ -254,7 +257,7 @@ def test_several_folders() -> None:
 def test_names_and_attributes() -> None:
     files = [
         CabFile("dir\\sub\\file.txt", b"x", attribs=0x21),
-        CabFile("caf\xe9.txt", b"y", raw_name="café.txt".encode(), attribs=0xA0),
+        CabFile("caf\xe9.txt", b"y", raw_name="café.txt".encode(), attribs=0xE1),
     ]
     with open_archive(io.BytesIO(_cab(CabFolder("none"), files))) as reader:
         first, second = reader.members()
@@ -262,6 +265,8 @@ def test_names_and_attributes() -> None:
         assert first.raw_name == b"dir\\sub\\file.txt"
         assert first.windows_attrs == 0x21
         assert second.name == "café.txt"
+        # _A_EXEC and _A_NAME_IS_UTF are cabinet-only: not Windows attributes.
+        assert second.windows_attrs == 0x21
 
 
 def test_detection() -> None:
@@ -503,6 +508,231 @@ def test_lzx_frames_are_whole() -> None:
     assert len(_lzx_stream([_Token(literal=1)] * FRAME, FRAME)) == 1
     with pytest.raises(ValueError, match="frame size"):
         _decode([b""], FRAME + 1)
+
+
+def _shared_blocks(folders: int, blocks: int) -> bytes:
+    """A cabinet whose folders all name one run of empty stored blocks, one empty
+    file in each."""
+    files_at = 36 + 8 * folders
+    files = b"".join(
+        struct.pack("<IIHHHH", 0, 0, i, 0x5A21, 0x6000, 0x20) + b"f%d\0" % i
+        for i in range(folders)
+    )
+    data_at = files_at + len(files)
+    body = (
+        struct.pack("<IHH", data_at, blocks, 0) * folders
+        + files
+        + struct.pack("<IHH", 0, 0, 0) * blocks
+    )
+    header = struct.pack(
+        "<4sIIIIIBBHHHHH",
+        b"MSCF",
+        0,
+        36 + len(body),
+        0,
+        files_at,
+        0,
+        3,
+        1,
+        folders,
+        folders,
+        0,
+        0,
+        0,
+    )
+    return header + body
+
+
+def test_kept_block_tables_are_weighed_against_max_metadata_bytes() -> None:
+    raw = _shared_blocks(4, 100)
+    weight = cab_reader._BLOCK_WEIGHT * 100
+    config = archivey.ArchiveyConfig(
+        listing_limits=archivey.ListingLimits(max_metadata_bytes=3 * weight)
+    )
+    with open_archive(io.BytesIO(raw), config=config) as reader:
+        members = reader.members()
+        for member in members[:3]:
+            assert reader.read(member) == b""
+        assert reader.read(members[0]) == b""  # a kept table is not weighed again
+        with pytest.raises(
+            archivey.ResourceLimitError,
+            match=f"max_metadata_bytes={3 * weight} .*{3 * weight} bytes, and folder 3's "
+            "passes the limit at block 1 of 100",
+        ):
+            reader.read(members[3])
+
+
+def test_folders_sharing_their_blocks_cannot_exhaust_memory() -> None:
+    # 200 folders x 20 000 blocks would keep about 1 GiB of block tables; the
+    # default 64 MiB stops it a few folders in.
+    read = 0
+    with (
+        open_archive(io.BytesIO(_shared_blocks(200, 20000))) as reader,
+        pytest.raises(archivey.ResourceLimitError, match="block tables"),
+    ):
+        for member in reader.members():
+            reader.read(member)
+            read += 1
+    assert read == 64 * 2**20 // (cab_reader._BLOCK_WEIGHT * 20000)
+
+
+# ── LZX streams written bit by bit ─────────────────────────────────────────────
+#
+# Window 2**15 (496 main symbols), one block, an empty length tree. Each length is
+# written on its own through a pretree that has every code, so a test states the
+# main tree as {symbol: length}.
+
+_PRE_LENGTHS = [4] * 12 + [5] * 8
+_PRE_CODES = canonical_codes(_PRE_LENGTHS)
+
+
+def _pre(w: BitWriter, code: int) -> None:
+    w.bits(_PRE_CODES[code], _PRE_LENGTHS[code])
+
+
+def _lengths(w: BitWriter, lengths: list[int], first: int, last: int, run: int) -> None:
+    """One pretree-coded range. With ``run``, its last three entries and one past it
+    take that length through a same-length run (pretree code 19)."""
+    for n in _PRE_LENGTHS:
+        w.bits(n, 4)
+    for x in range(first, last - 3 if run else last):
+        _pre(w, -lengths[x] % 17)
+    if run:
+        _pre(w, 19)
+        w.bits(0, 1)  # a run of 4
+        _pre(w, -run % 17)
+
+
+def _raw_lzx(
+    size: int,
+    main: dict[int, int],
+    *,
+    block_type: int = 1,
+    aligned: list[int] | None = None,
+    run_past_main: int = 0,
+) -> BitWriter:
+    """A writer holding the E8 bit and one block header; the caller writes the
+    symbols."""
+    w = BitWriter()
+    w.bits(0, 1)
+    w.bits(block_type, 3)
+    w.bits(size >> 8, 16)
+    w.bits(size & 0xFF, 8)
+    for n in aligned or ():
+        w.bits(n, 3)
+    lengths = [0] * 496
+    for symbol, n in main.items():
+        lengths[symbol] = n
+    _lengths(w, lengths, 0, 256, 0)
+    _lengths(w, lengths, 256, 496, run_past_main)
+    _lengths(w, [0] * 249, 0, 249, 0)
+    return w
+
+
+def _end(w: BitWriter, pad: int = 8) -> bytes:
+    w.align()
+    w.raw(bytes(pad))
+    return w.take()
+
+
+def _decoder(data: bytes) -> LzxDecoder:
+    chunks = iter([data])
+    return LzxDecoder(15, lambda: next(chunks, None))
+
+
+@pytest.mark.parametrize(
+    ("lengths", "message"),
+    [([1, 1, 1], "overfills"), ([1, 2], "does not fill"), ([2, 2, 2], "does not fill")],
+)
+def test_lzx_a_tree_that_does_not_fill_its_code_space_is_damage(
+    lengths: list[int], message: str
+) -> None:
+    with pytest.raises(CorruptionError, match=f"LZX main tree {message}"):
+        lzx_decoder._build_table(lengths, len(lengths), "main")
+
+
+def test_lzx_long_codes_decode_through_sub_tables() -> None:
+    # Codes of 1 to 16 bits: the root takes 10 bits, the rest go to sub-tables.
+    lengths = [*range(1, 16), 16, 16]
+    tree = lzx_decoder._build_table(lengths, len(lengths), "main")
+    assert tree is not None
+    table, root = tree
+    assert root == 10
+    assert len(table) < 1 << 11  # not the 65 536 entries of a one-level table
+    w = BitWriter()
+    codes = canonical_codes(lengths)
+    for symbol in [16, 0, 9, 10, 15, 3, 11]:
+        w.bits(codes[symbol], lengths[symbol])
+    decoder = _decoder(_end(w))
+    assert [decoder._read_symbol(tree, "main") for _ in range(7)] == [
+        16,
+        0,
+        9,
+        10,
+        15,
+        3,
+        11,
+    ]
+
+
+def test_lzx_a_tree_with_no_codes_is_none() -> None:
+    assert lzx_decoder._build_table([0] * 8, 8, "aligned") is None
+
+
+def test_lzx_an_aligned_match_with_an_empty_aligned_tree_is_damage() -> None:
+    # 'A' and a slot-8 match (3 extra bits, which an aligned block reads through
+    # the aligned tree), with the aligned tree empty.
+    w = _raw_lzx(40, {65: 1, 320: 1}, block_type=2, aligned=[0] * 8)
+    w.bits(0, 30)  # 30 x 'A'
+    w.bits(1, 1)  # the match
+    w.bits(0, 3 + 8)
+    with pytest.raises(CorruptionError, match="aligned symbol read from an empty"):
+        _decoder(_end(w)).decode_frame(40)
+
+
+def test_lzx_a_match_past_the_end_of_the_window_is_damage() -> None:
+    # The window is one frame: 32 766 x 'A', then a match of 4 at distance 1.
+    w = _raw_lzx(32770, {65: 1, 258: 1})
+    w.bits(0, 32766)
+    w.bits(1, 1)
+    with pytest.raises(CorruptionError, match="past the end of the window"):
+        _decoder(_end(w)).decode_frame(FRAME)
+
+
+def test_lzx_a_match_from_more_than_a_window_back_is_damage() -> None:
+    # Slot 30 is one past the last a 2**15 window has; a same-length run in the
+    # main tree's last range reaches it, as lzxd.c allows. After two windows of
+    # 'A', a match at distance 40 000 is inside the output but not the window.
+    w = _raw_lzx(2 * FRAME + 2, {65: 1}, run_past_main=3)  # 493 to 496: 3 bits
+    for _ in range(2):
+        w.bits(0, FRAME)
+        w.align()
+    w.bits(0b111, 3)  # symbol 496: slot 30, a match of 2
+    w.bits(40000 + 2 - lzx_decoder._POSITION_BASE[30], 14)
+    decoder = _decoder(_end(w))
+    assert decoder.decode_frame(FRAME) == b"A" * FRAME
+    assert decoder.decode_frame(FRAME) == b"A" * FRAME
+    with pytest.raises(CorruptionError, match="before the stream start"):
+        decoder.decode_frame(2)
+
+
+def test_lzx_a_match_past_the_end_of_its_block_is_damage() -> None:
+    # A block of 5 bytes: 'A', then a match of 8 that ends the 9-byte frame.
+    w = _raw_lzx(5, {65: 1, 262: 1})
+    w.bits(0b01, 2)
+    with pytest.raises(CorruptionError, match="past the end of its block"):
+        _decoder(_end(w)).decode_frame(9)
+
+
+def test_lzx_a_stream_that_reads_past_its_end_is_truncated() -> None:
+    w = _raw_lzx(800, {0: 1, 1: 1})
+    w.bits(0, 800)
+    whole = _end(w, pad=0)
+    assert _decoder(whole).decode_frame(800) == bytes(800)
+    # Four bytes short, the decoder reads zeros past the end: more than the two
+    # lzxd.c reads before it refuses the stream.
+    with pytest.raises(TruncatedError, match="ends before its output"):
+        _decoder(whole[:-4]).decode_frame(800)
 
 
 def test_format_is_listed() -> None:
