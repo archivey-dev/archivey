@@ -132,12 +132,13 @@ from archivey.internal.sfx import (
     SFX_MAX,
     VALIDATOR_PEEK_MAX,
     ExecutableCue,
+    ExecutableLayout,
     HitOutcome,
     HitSelector,
     HitValidator,
-    PeLayout,
     ScanNeedle,
     executable_cue,
+    executable_layout,
     iter_magic_in_prefix,
     pe_layout,
 )
@@ -1019,8 +1020,10 @@ def _scan_for_sfx_payload(
     by default, ``CAPABILITY_UNAVAILABLE`` when the caller cut the window to the bytes a
     forward-only source already holds.
 
-    ``leading`` is the prefix detection holds. When it is a signed PE
-    (:func:`~archivey.internal.sfx.pe_layout`), a candidate at or past its
+    ``leading`` is the prefix detection holds. When it is a PE, ELF or Mach-O
+    program whose layout parses (:func:`~archivey.internal.sfx.executable_layout`),
+    the candidate at its overlay start is judged first. When it is a signed PE, a
+    candidate at or past its
     certificate table is not judged, and the answer carries the table's start as
     ``payload_end``: the table is not parsed, so a needle inside it could pass a
     validator, and the readers stop there (``archive-reading``).
@@ -1059,7 +1062,7 @@ def _scan_for_sfx_payload(
     # The window bounds where a magic may start, not how far its validator reads: a
     # candidate inside it is judged on its whole header, as far as the budget allows.
     view_limit = scan_limit + peek_allowance
-    layout = pe_layout(leading, workspace.remaining_known())
+    layout = executable_layout(leading, workspace.remaining_known())
     payload_end = None if layout is None else layout.payload_end
     if layout is not None:
         first = _judge_overlay_start(
@@ -1209,7 +1212,7 @@ def _probe_pe_tail(
 
 
 def _judge_overlay_start(
-    layout: PeLayout,
+    layout: ExecutableLayout,
     entries: list[MagicSignature],
     by_needle: dict[bytes, tuple[int, HitValidator | None]],
     formats: list[ArchiveFormat],
@@ -1217,12 +1220,13 @@ def _judge_overlay_start(
     scan_limit: int,
     view_limit: int,
 ) -> FormatInfo | None:
-    """The SFX answer at a PE's overlay start, judged before the forward scan.
+    """The SFX answer at an executable's overlay start, judged before the forward
+    scan.
 
-    The overlay start is where the PE format itself says appended data begins, so it
-    is stronger evidence than "earliest needle" and than the 7z exact-end tie-break.
-    A candidate there that its validator grades ``VALID`` or ``VALID_SHORT`` is the
-    answer (a signed 7z SFX ends before its certificate, so ``VALID_SHORT`` is the
+    The overlay start is where the program's own headers say appended data begins, so
+    it is stronger evidence than "earliest needle" and than the 7z exact-end
+    tie-break. A candidate there that its validator grades ``VALID`` or
+    ``VALID_SHORT`` is the answer (a signed 7z SFX ends before its certificate, so ``VALID_SHORT`` is the
     common case); anything else leaves the scan to run as it does for any stub. The
     RAR and 7z parsers' scans and the forward ZIP walk apply the same rule, so forced
     ``format=`` opens the same payload.

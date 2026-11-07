@@ -127,7 +127,11 @@ rather than a stream codec when the ZIP needle matches.
 **Overlay start first.** When the source starts with a PE whose section table the
 detection prefix holds, its *overlay start* is the end of the furthest section's raw data,
 and its *payload end* is the start of an Authenticode certificate table that runs to the
-end of the source, or the end of the source when there is none. When the overlay start
+end of the source, or the end of the source when there is none. An ELF or Mach-O program
+whose headers the prefix holds has an overlay start too, and no payload end: for ELF the
+furthest end of its header, program header table, segments and section header table;
+for a thin Mach-O the furthest end of its load commands and segments; for a fat Mach-O
+the end of its last slice. When the overlay start
 lies inside the window, the candidate there SHALL be judged first, with the same
 validators. A hit there that its validator returns as `VALID` or `VALID_SHORT` SHALL be
 the answer, ahead of any needle before or after it in the window: the exact-end
@@ -210,7 +214,10 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | PE whose ZIP is inside `.rsrc` (Squirrel) | Nothing at the overlay start; the forward scan finds the ZIP as today |
 | PE whose section table lies past the detection prefix, or does not parse | No layout; scanned as today |
 | Signed PE, nothing at the overlay start, a validator-accepted 7z or ZIP inside the certificate table | Not accepted: it starts past the payload end; through detection and forced `format=` alike |
-| ELF or Mach-O stub | Scanned as today |
+| ELF or thin Mach-O, RAR or 7z at the overlay start, a valid ZIP header inside the image | That archive at the overlay start, through detection and forced `format=` alike; `payload_end` is `None` |
+| ELF or thin Mach-O, ZIP at the overlay start, read through forced `format=ZIP` from a pipe | The forward walk lists the ZIP at the overlay start |
+| Fat Mach-O, 7z after its last slice | That 7z, `payload_offset` = the end of the last slice |
+| ELF with extended section numbering, or program headers past the prefix; Mach-O whose load commands run past the prefix; a Java class file (`ca fe ba be`) | No layout; scanned as today |
 
 ### Requirement: Detection's access shape is bounded, not only its byte count
 

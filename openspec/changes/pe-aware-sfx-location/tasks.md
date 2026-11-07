@@ -80,6 +80,21 @@ Block 3 is the overlay-start rule. Each reuses Block 1's PE layout helper.
       keep `test_short_7z_hit_scan_cost_is_bounded_by_the_window` as it is.
 - [x] 3.5 Docs: `prefixed-archives.md` §2 and `docs/formats.md` SFX bullet.
 
+## 5. ELF and Mach-O overlay start (maintainer decision 2026-11-07)
+
+- [x] 5.1 `internal/sfx.py`: `executable_layout` returns the overlay start of an ELF
+      (header, program headers, segments, section header table), a thin Mach-O (load
+      commands, segments) or a fat Mach-O (last slice), with no payload end; `PeLayout`
+      becomes `ExecutableLayout`. Headers that do not fit the prefix give no layout.
+- [x] 5.2 Detection's overlay-start judgement, `overlay_start_of` (RAR and 7z parser
+      scans) and the forward ZIP walk use it; the tail probe keeps `pe_layout`.
+- [x] 5.3 Tests: the layouts (ELF32/64, both byte orders, no section table, extended
+      numbering, headers past the prefix; thin 32/64 and fat Mach-O; a Java class
+      file), and the overlay-start rows through detection and forced `format=`,
+      streaming too for ZIP (`tests/test_executable_overlay.py`).
+- [x] 5.4 Docs: `docs/formats.md` SFX bullet, `prefixed-archives.md` §2, `7z.md` §6,
+      `IDEAS.md`.
+
 ## 4. Verify
 
 - [ ] 4.1 `./scripts/check.sh --fix` and `./scripts/test.sh`

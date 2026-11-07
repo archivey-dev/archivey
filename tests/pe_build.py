@@ -1,10 +1,12 @@
-"""Build minimal PE files for the self-extractor tests.
+"""Build minimal PE, ELF and Mach-O files for the self-extractor tests.
 
 Only the parts :func:`archivey.internal.sfx.pe_layout` reads are real: the DOS header
 with ``e_lfanew``, the ``PE\\0\\0`` signature, the COFF header, an optional header with
 data directories, and the section table. Section bytes are filler. A real installer is
 never committed; these files take its shape: an image, an overlay (the archive), and
-optionally an Authenticode certificate table at the very end.
+optionally an Authenticode certificate table at the very end. The ELF and Mach-O
+builders likewise hold only the headers :func:`archivey.internal.sfx.executable_layout`
+reads.
 """
 
 from __future__ import annotations
@@ -93,3 +95,119 @@ def _certificate(size: int) -> bytes:
         + b"\x30\x82" * ((size - 8) // 2)
         + (b"\x30" if size % 2 else b"")
     )
+
+
+def elf_file(
+    image_size: int = 0x1000,
+    *,
+    payload: bytes = b"",
+    is_64: bool = True,
+    little: bool = True,
+    section_count: int = 4,
+) -> bytes:
+    """An ELF: its header, one ``PT_LOAD`` segment over ``[0, image_size)``, then a
+    section header table of ``section_count`` zeroed entries (a linker's last
+    write), then ``payload``. The overlay starts after the section headers."""
+    endian = "<" if little else ">"
+    ident = b"\x7fELF" + bytes([2 if is_64 else 1, 1 if little else 2, 1])
+    ident = ident.ljust(16, b"\0")
+    ehsize, phentsize, shentsize = (64, 56, 64) if is_64 else (52, 32, 40)
+    phoff = ehsize
+    shoff = image_size if section_count else 0
+    if is_64:
+        header = ident + struct.pack(
+            endian + "HHIQQQIHHHHHH",
+            2,
+            0x3E,
+            1,
+            0,
+            phoff,
+            shoff,
+            0,
+            ehsize,
+            phentsize,
+            1,
+            shentsize,
+            section_count,
+            0,
+        )
+        phdr = struct.pack(
+            endian + "IIQQQQQQ", 1, 5, 0, 0, 0, image_size, image_size, 0x1000
+        )
+    else:
+        header = ident + struct.pack(
+            endian + "HHIIIIIHHHHHH",
+            2,
+            3,
+            1,
+            0,
+            phoff,
+            shoff,
+            0,
+            ehsize,
+            phentsize,
+            1,
+            shentsize,
+            section_count,
+            0,
+        )
+        phdr = struct.pack(
+            endian + "IIIIIIII", 1, 0, 0, 0, image_size, image_size, 5, 0x1000
+        )
+    image = (header + phdr).ljust(image_size, b"\xcc")
+    return image + bytes(section_count * shentsize) + payload
+
+
+def macho_file(
+    image_size: int = 0x1000,
+    *,
+    payload: bytes = b"",
+    is_64: bool = True,
+) -> bytes:
+    """A thin little-endian x86 Mach-O: its header, one segment load command over
+    ``[0, image_size)``, then ``payload``. The overlay starts at ``image_size``."""
+    if is_64:
+        command = struct.pack(
+            "<II16sQQQQiiII",
+            0x19,
+            72,
+            b"__TEXT",
+            0,
+            image_size,
+            0,
+            image_size,
+            5,
+            5,
+            0,
+            0,
+        )
+        header = struct.pack(
+            "<IiiIIIII", 0xFEEDFACF, 0x01000007, 3, 2, 1, len(command), 0, 0
+        )
+    else:
+        command = struct.pack(
+            "<II16sIIIIiiII",
+            0x1,
+            56,
+            b"__TEXT",
+            0,
+            image_size,
+            0,
+            image_size,
+            5,
+            5,
+            0,
+            0,
+        )
+        header = struct.pack("<IiiIIII", 0xFEEDFACE, 7, 3, 2, 1, len(command), 0)
+    return (header + command).ljust(image_size, b"\xcc") + payload
+
+
+def fat_macho_file(slices: Sequence[tuple[int, int]], *, payload: bytes = b"") -> bytes:
+    """A fat Mach-O whose architectures are ``(offset, size)`` slices of filler, then
+    ``payload`` after the furthest one."""
+    table = struct.pack(">II", 0xCAFEBABE, len(slices))
+    for offset, size in slices:
+        table += struct.pack(">iiIII", 0x01000007, 3, offset, size, 12)
+    end = max(offset + size for offset, size in slices)
+    return table.ljust(end, b"\xcc") + payload
