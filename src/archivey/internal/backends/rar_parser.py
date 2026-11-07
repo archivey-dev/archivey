@@ -771,7 +771,7 @@ def parse_rar_archive(
     as 8-bit bytes that are not valid UTF-8 (``_decode_rar3_8bit_name``). RAR5
     names are UTF-8.
     """
-    return _parse_rar_volume(
+    archive = _parse_rar_volume(
         source,
         password=password,
         kdf_cache=kdf_cache if kdf_cache is not None else RarKdfCache(),
@@ -782,6 +782,8 @@ def parse_rar_archive(
         max_metadata_bytes=max_metadata_bytes,
         name_encoding=name_encoding,
     )
+    _settle_rar15_solid(archive)
+    return archive
 
 
 def parse_rar_volumes(
@@ -952,7 +954,32 @@ def parse_rar_volumes(
 
     assert merged is not None
     mark_missing_next_volume(merged, volumes_read=previous, missing=missing)
+    _settle_rar15_solid(merged)
     return merged
+
+
+def _settle_rar15_solid(archive: RarArchive) -> None:
+    """Set ``file_solid`` on the members of a solid archive that RAR 1.3-1.5 wrote.
+
+    Those writers never set the per-file solid flag (``0x10`` exists from RAR 2.0
+    on): only the MAIN header says the archive is solid. ``unrar`` decodes a member
+    whose ``UNP_VER`` is 15 or lower on top of the earlier members when the archive
+    is solid and the member is not the first file it processes, and directories do
+    not count (``extract.cpp``: ``DoUnpack(15, FileCount>1 && Arc.Solid)``). Setting
+    the flag here keeps one meaning for ``file_solid`` in every consumer: the member
+    decodes on top of the members before it. Runs after the volumes merge, because
+    the count goes on across volumes.
+    """
+    if archive.version != 4 or not archive.is_solid:
+        return
+    seen_file = False
+    for member in archive.members:
+        if member.is_directory:
+            continue
+        version = member.extract_version
+        if seen_file and version is not None and version <= 15:
+            member.file_solid = True
+        seen_file = True
 
 
 def mark_missing_next_volume(

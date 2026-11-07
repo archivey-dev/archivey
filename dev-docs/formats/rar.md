@@ -1213,7 +1213,13 @@ pinned RARLAB source tree instead of trusting a third-party tap.
 **Old archives are still readable and still surprising.** RAR 1.5 and 2.x archives (extract
 version ≤ 20) share the RAR3 block layout, so they list and read; extract version alone is
 never a rejection. `rar15-comment.rar` and `rar202-comment-nopsw.rar` are borrowed from
-`rarfile`'s own corpus because modern `rar` cannot emit them. RAR3's two name fields are the
+`rarfile`'s own corpus because modern `rar` cannot emit them. RAR 1.3-1.5 writers never set
+the per-file solid flag: only the MAIN header says the archive is solid, and `unrar` decodes
+every file with extract version 15 or lower after the first file on top of the ones before
+it (`extract.cpp`, `FileCount>1 && Arc.Solid`). The parser sets `file_solid` on those
+members (`_settle_rar15_solid`), so the synthetic chain, the stream-source pass and `unar`'s
+solid runs start at the right member. Neither borrowed fixture is solid; the test patches
+the headers of `basic_solid__rar4.rar` instead. RAR3's two name fields are the
 other legacy trap: the compressed name is UTF-16, which truncates a non-BMP character to a
 single code unit — an emoji arrives as a private-use `U+F600` — and the 8-bit field is
 preferred where it recovers the real character, without overriding a private-use character
