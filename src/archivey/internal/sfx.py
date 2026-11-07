@@ -951,10 +951,10 @@ def scan_for_magic(
     """The earliest ``needles`` match within ``limit`` bytes, as a :class:`MagicScan`.
 
     ``first_at`` is a candidate origin to judge before anything else: an
-    executable's overlay start (:attr:`ExecutableLayout.overlay_start`), where the format itself says appended data
-    begins. A ``VALID`` or ``VALID_SHORT`` hit there is the answer, ahead of every
-    other needle in the window; anything else there leaves the scan below unchanged.
-    It needs a ``validator``.
+    executable's overlay start (:attr:`ExecutableLayout.overlay_start`), where the
+    format itself says appended data begins. A ``VALID`` or ``VALID_SHORT`` hit
+    there is the answer, ahead of every other needle in the window; anything else
+    there leaves the scan below unchanged. It needs a ``validator``.
 
     The scan starts at ``source``'s **current position** and the returned candidate
     origin is relative to it. A needle counts as found only when it lies wholly inside

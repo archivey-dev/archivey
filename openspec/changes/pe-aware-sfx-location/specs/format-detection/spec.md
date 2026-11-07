@@ -131,13 +131,13 @@ end of the source, or the end of the source when there is none. An ELF or Mach-O
 whose headers the prefix holds has an overlay start too, and no payload end: for ELF the
 furthest end of its header, program header table, segments and section header table,
 and of each section's file bytes when that table lies in the prefix (the Go linker puts
-it there, and its symbol table past the last segment); for a thin Mach-O the furthest end of its load commands and segments; for a fat Mach-O
-the end of its last slice. When the overlay start
-lies inside the window, the candidate there SHALL be judged first, with the same
-validators. A hit there that its validator returns as `VALID` or `VALID_SHORT` SHALL be
-the answer, ahead of any needle before or after it in the window: the exact-end
-preference below is a tie-break between needles of unknown standing, and the PE's own
-layout outranks it. When nothing at the overlay start is accepted, the scan below runs
+it there, and its symbol table past the last segment); for a thin Mach-O the furthest
+end of its load commands and segments; for a fat Mach-O the end of its last slice. When
+the overlay start lies inside the window, the candidate there SHALL be judged first,
+with the same validators. A hit there that its validator returns as `VALID` or
+`VALID_SHORT` SHALL be the answer, ahead of any needle before or after it in the window:
+the exact-end preference below is a tie-break between needles of unknown standing, and
+the program's own layout outranks it. When nothing at the overlay start is accepted, the scan below runs
 unchanged. Every other scan bounded by `SFX_MAX` SHALL apply the same rule — the RAR and
 7z parsers' scans and the forward ZIP walk that reads a non-seekable source — so forced
 `format=`, seekable or not, opens the same payload. No scan SHALL accept a candidate that
