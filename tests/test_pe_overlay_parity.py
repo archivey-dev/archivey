@@ -97,8 +97,8 @@ def test_fast_budget_overlay_judgement_reads_the_candidate_only() -> None:
     info = detect_format(io.BytesIO(data), config=_FAST)
     receipt = info.cost_receipt
     assert receipt is not None
-    # The candidate's header, not the program image between the window and it.
-    assert receipt.unique_bytes_read < FAST_BUDGET.max_scan_bytes + 64 * 1024
+    # The headers and the candidate's header, not the program image before it.
+    assert receipt.unique_bytes_read < 64 * 1024
 
 
 def test_fast_budget_on_a_pipe_does_not_answer_from_inside_the_image() -> None:
