@@ -130,8 +130,16 @@ The tree SHALL be the name view of `extract_all(dest, policy=policy)`: each path
 the relative path that policy's name transform gives the member, a duplicate name SHALL
 show its current entry (`ArchiveMember.is_current`), and directories implied by member
 paths SHALL exist. A member the policy refuses SHALL be absent, with the refusal recorded
-on `fs.reader.diagnostics`. Behaviour that depends on a destination (`overwrite=`, existing
-files, case-insensitive collisions) and `filter=` are outside the tree.
+on `fs.reader.diagnostics`, and so SHALL a member extraction does not write because of the
+members before it: a name that collides by the policy's collision key (the first member
+keeps it), a path under a file, a hard link to a refused member, and a symlink that loops
+or leads out through another link. A member under one of the archive's own symlinks SHALL
+be listed where extraction writes it, through the link, and SHALL be absent when the link
+leads to no directory. Paths SHALL compare as on a case-sensitive disk, with only files
+and links colliding by the policy's collision key. Behaviour that depends on a destination
+(`overwrite=`, existing files, names its file system cannot hold, a disk that folds case, a link Windows keeps because it collapses `..` first),
+a link a later member makes lead out, the order of hard links extraction makes in a second
+pass, a hard link to a symlink in another directory, and `filter=` are outside the tree.
 
 | Operation | Behaviour |
 | --- | --- |
@@ -139,7 +147,8 @@ files, case-insensitive collisions) and `filter=` are outside the tree.
 | `ls`, `find`, `glob`, `walk` | From the tree above; no member data read |
 | `open(path, "rb")` | A seekable member stream; backward seeks MAY re-decode (loud-slow-rewind) |
 | A link that resolves to a member | Listed as the target's type with `islink: True` and `destination`; opens the target |
-| A link that resolves to nothing | Listed as `"other"`; `open` raises `FileNotFoundError` |
+| A symlink that resolves to nothing | Listed as `"other"`; `open` raises `FileNotFoundError` |
+| A hard link with no file listed before it as its source | Absent, as extraction does not make it; a hard link to a symlink is listed as that symlink |
 | Missing path | `FileNotFoundError` |
 | `open` on a directory | `IsADirectoryError` |
 | Any write method, or a mode other than `"rb"` | `NotImplementedError` |
@@ -157,6 +166,6 @@ pickle. A file-object `fo` SHALL raise `TypeError` on pickling, naming the reaso
 | `pyarrow.parquet.read_table` on a member through the file system | Same table as from the extracted file |
 | A ZIP with members `a/../../x`, `/etc/y` and `a/b` twice, default `policy` (`STRICT`) | Tree holds `a/b` (current entry); `a/../../x` and `/etc/y` absent, each with a diagnostic |
 | The same ZIP, `policy="standard"` | Tree also holds `etc/y` |
-| 10 000 distinct `archivey://m::memory://a{n}.zip` URLs opened and every reference dropped | No reader stays open |
+| 1 000 distinct `archivey://m::memory://a{n}.zip` URLs opened and every reference dropped | No reader stays open |
 | `pickle.loads(pickle.dumps(fs))` with a URL `fo` | A working file system over the same archive |
 | Two threads read two members at once | Both read their members' bytes |
