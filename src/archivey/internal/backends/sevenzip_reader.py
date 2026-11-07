@@ -339,14 +339,17 @@ def load_sevenzip_archive(
     collector: DiagnosticCollector | None = None,
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
+    will_read: Callable[[int, int], None] | None = None,
 ) -> SevenZipArchive:
     """Two-phase header load: parse → decode encoded → re-parse → materialize.
 
     The one open flow: :class:`SevenZipReader` and the fuzz harnesses both call it.
     ``fp`` starts at the signature header. ``max_members`` and ``max_metadata_bytes``
     are the reader's ``ListingLimits``; both hold at open (``None`` disables one).
+    ``will_read`` takes the next-header range hint
+    (:func:`~archivey.internal.backends.sevenzip_parser.read_signature_and_next_header`).
     """
-    signature = read_signature_and_next_header(fp)
+    signature = read_signature_and_next_header(fp, will_read=will_read)
     if not signature.header_data:
         return empty_archive(signature)
 
@@ -988,6 +991,9 @@ class SevenZipReader(BaseArchiveReader):
             collector=self._diagnostics_collector,
             max_members=self._config.listing_limits.max_members,
             max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
+            will_read=lambda start, end: self._will_read(
+                self._origin + start, self._origin + end
+            ),
         )
 
     def _report_trailing_data(self) -> None:
@@ -1575,7 +1581,14 @@ class SevenZipReader(BaseArchiveReader):
             pack_offset = (
                 self._archive.pack_pos + self._archive.pack_positions[pack_index]
             )
-            views.append(self._view(pack_offset, self._archive.pack_sizes[pack_index]))
+            size = self._archive.pack_sizes[pack_index]
+            if pack_index == first:
+                # The folder's first pack stream, from its start: one request on a
+                # remote source (a solid folder decodes from there whatever the
+                # member).
+                origin = self._origin + pack_offset
+                self._will_read(origin, origin + size)
+            views.append(self._view(pack_offset, size))
         return views
 
     def _open_folder_stream(
