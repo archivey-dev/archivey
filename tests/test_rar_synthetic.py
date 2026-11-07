@@ -55,14 +55,10 @@ _PASSWORDS = {
 _UNLISTABLE = {"tinyvol_cut", "tinyvol_cut_solid"}
 
 
-# Listing needs the header key, which takes AES (the cryptography package).
-_HEADER_ENCRYPTED = {"encrypted_header", "tinyvol_hp"}
-
-
 def _fixture_params() -> Iterator[object]:
     for volumes in _fixture_sets():
-        name = volumes[0].name
-        if any(name.startswith(prefix) for prefix in _HEADER_ENCRYPTED):
+        # Listing needs the header key, which takes AES (the cryptography package).
+        if _password(volumes[0]) == "header_password":
             yield pytest.param(volumes, marks=requires("cryptography"))
         else:
             yield volumes
