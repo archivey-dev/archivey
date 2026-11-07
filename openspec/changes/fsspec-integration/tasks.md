@@ -46,7 +46,7 @@
       (no file object is ever opened).
 - [x] 2.4 Run the full corpus and the short-returning-source tests through a memory-backed
       `OpenFile`: identical listings and bytes to a path source.
-- [ ] 2.5 Change detection, tier 3 (design D7): `SourceChangedError`, the size
+- [x] 2.5 Change detection, tier 3 (design D7): `SourceChangedError`, the size
       comparison on each fetch, and `SOURCE_CHANGE_UNDETECTABLE` at open, with its
       context type, `DiagnosticCodeStr` spellings and its place outside
       `ARCHIVE_INTEGRITY_CODES`.
@@ -54,11 +54,14 @@
 
 ## 3. Backend range hints
 
-- [ ] 3.1 `source.will_read(start, end)` on `ArchiveSource`, a no-op off `RangeSource`.
-- [ ] 3.2 ZIP: tail hint at open, central-directory hint when larger, member span hint
+- [x] 3.1 `source.will_read(start, end)` on `ArchiveSource`, a no-op off `RangeSource`.
+- [x] 3.2 ZIP: tail hint at open, central-directory hint when larger, member span hint
       `[local header, next header or directory)`.
-- [ ] 3.3 7z: next-header hint at open; pack-stream hint per member, folder start for
-      solid folders.
+- [x] 3.3 7z: next-header hint at open; pack-stream hint per member, folder start for
+      solid folders. The next-header hint covers the 64 KiB ending with the next
+      header: an encoded header (the 7-Zip and py7zr default) is a short record after a
+      packed header stream, and one fetch takes both. The pack-stream hint covers the
+      folder's first pack stream from its start.
 - [ ] 3.4 ISO extent hints; RAR header-position hints during the listing walk.
 - [ ] 3.5 Batched span fetches for `extract_all()` and `stream_members()` over
       non-solid ZIP and 7z: `merge_offset_ranges` then one `cat_ranges` per batch,

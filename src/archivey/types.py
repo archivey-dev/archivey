@@ -92,6 +92,13 @@ class ContainerFormat(StrEnum):
     SQUASHFS = "squashfs"
     """A SquashFS 4.0 filesystem image: a snap package or a live system's root, for
     example. Needs a source that can seek."""
+    XAR = "xar"
+    """A XAR archive: a macOS installer package (``.pkg``) or ``.xip``, or a plain
+    ``.xar``. Its files are listed as the archive holds them; a package's ``Payload``
+    is a member, not expanded. Needs a source that can seek."""
+    CAB = "cab"
+    """A Microsoft cabinet (``.cab``): Windows updates, drivers and installer
+    payloads. Stored, MSZIP and LZX folders are read; needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -168,6 +175,9 @@ class StreamFormat(StrEnum):
     """The ``.lzo`` file format ``lzop`` writes: LZO1X blocks behind a header.
     archivey decodes LZO1X with ``python-lzo`` when it is installed, else in Python,
     more than 25 times slower on text."""
+    BZIP3 = "bz3"
+    """The ``.bz3`` files the ``bzip3`` tool writes. Needs ``archivey[bzip3]``; the
+    decoder runs in a child process unless ``process_isolation`` is ``NONE``."""
     MOZLZ4 = "mozlz4"
     """Firefox's ``mozLz40`` files (``.jsonlz4``, ``.mozlz4``, ``.baklz4``, and
     ``addonStartup.json.lz4``): one raw LZ4 block behind a magic and the decoded size.
@@ -248,6 +258,7 @@ class ArchiveFormat:
     Z: ClassVar[ArchiveFormat]
     LZOP: ClassVar[ArchiveFormat]
     MOZLZ4: ClassVar[ArchiveFormat]
+    BZIP3: ClassVar[ArchiveFormat]
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
@@ -255,6 +266,8 @@ class ArchiveFormat:
     CPIO: ClassVar[ArchiveFormat]
     RPM: ClassVar[ArchiveFormat]
     SQUASHFS: ClassVar[ArchiveFormat]
+    XAR: ClassVar[ArchiveFormat]
+    CAB: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -330,6 +343,7 @@ ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BR
 ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
 ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)
 ArchiveFormat.MOZLZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.MOZLZ4)
+ArchiveFormat.BZIP3 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP3)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(
     ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED
 )
@@ -341,6 +355,8 @@ ArchiveFormat.RPM = ArchiveFormat(ContainerFormat.RPM, StreamFormat.UNCOMPRESSED
 ArchiveFormat.SQUASHFS = ArchiveFormat(
     ContainerFormat.SQUASHFS, StreamFormat.UNCOMPRESSED
 )
+ArchiveFormat.XAR = ArchiveFormat(ContainerFormat.XAR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.CAB = ArchiveFormat(ContainerFormat.CAB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -387,6 +403,8 @@ class OptionalLibrary(StrEnum):
     LZO = "lzo"
     """``python-lzo``: LZO1X in ``.lzo`` files and SquashFS images. archivey decodes
     LZO1X in Python without it, more slowly."""
+    BZIP3 = "bz3"
+    """The ``bzip3`` package (imported as ``bz3``): ``.bz3`` files."""
 
 
 OptionalLibraryStr = Literal[
@@ -400,6 +418,7 @@ OptionalLibraryStr = Literal[
     "pycdlib",
     "cryptography",
     "lzo",
+    "bz3",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 
@@ -582,6 +601,14 @@ class HashAlgorithm(StrEnum):
     """CRC-32, as four big-endian bytes."""
     BLAKE2SP = "blake2sp"
     """BLAKE2sp, 32 bytes. Only RAR5 stores it."""
+    MD5 = "md5"
+    """MD5, 16 bytes. A XAR archive may check its files with it."""
+    SHA1 = "sha1"
+    """SHA-1, 20 bytes. What a XAR archive checks its files with by default."""
+    SHA256 = "sha256"
+    """SHA-256, 32 bytes. A XAR archive may check its files with it."""
+    SHA512 = "sha512"
+    """SHA-512, 64 bytes. A XAR archive may check its files with it."""
 
 
 class Verification(IntEnum):
@@ -657,6 +684,12 @@ class CompressionAlgorithm(Enum):
     LZO = "lzo"
     """Raw LZO1X with no header, as SquashFS stores a block. Not the ``.lzo`` file
     format, which is ``StreamFormat.LZOP``."""
+    LZX = "lzx"
+    """Microsoft's LZX, as cabinets store it: LZ77 with Huffman codes over a window
+    of 32 KiB to 2 MiB."""
+    QUANTUM = "quantum"
+    """Quantum, an older cabinet method. archivey lists its members but cannot read
+    them."""
     RAR = "rar"
     """RAR's own compression, any version. Not the same as ``ContainerFormat.RAR``,
     which is the archive format."""
@@ -914,7 +947,7 @@ class MemberExtra(dict[str, object]):
     * ``gzip.original_filename`` (``str``)
     * ``gzip.isize`` (``int``) — the gzip trailer's ISIZE field: the last four
       bytes of the file, read only when its end is cheap to reach (not from a
-      pipe or another archive's member). For a file of one gzip member with
+      pipe or a deflated member of another archive). For a file of one gzip member with
       nothing after it, this is the uncompressed size modulo 2**32. It is not the
       size for a file of several members (it covers only the last; a bgzip file
       ends with an empty member and reads 0) or with bytes after the last one.

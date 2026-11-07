@@ -226,3 +226,30 @@ def test_an_lzop_block_over_the_cap_is_cant_tell(
         info.unavailable_tiers
     )
     assert any("max_decoder_memory=1024" in m for m in _refusal_logs(caplog))
+
+
+def test_a_bzip3_block_over_the_cap_is_cant_tell(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Under its own 16 MiB probe ceiling, a bzip3 block is still held to the cap."""
+    pytest.importorskip("bz3")
+    from archivey.internal.streams.codecs.bzip3_codec import decoder_memory
+
+    data = (_FIXTURES / "bzip3" / "files.tar.bz3").read_bytes()
+    block_size = int.from_bytes(data[5:9], "little")
+    tar_bzip3 = ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP3)
+    assert detect_format(io.BytesIO(data)).format == tar_bzip3
+    assert (
+        detect_format(
+            io.BytesIO(data), config=_capped(decoder_memory(block_size))
+        ).format
+        == tar_bzip3
+    )
+    cap = decoder_memory(block_size) - 1
+    with caplog.at_level(logging.INFO, logger="archivey.detection"):
+        info = detect_format(io.BytesIO(data), config=_capped(cap))
+    assert info.format == ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP3)
+    assert TierSkip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE) in (
+        info.unavailable_tiers
+    )
+    assert any(f"max_decoder_memory={cap}" in m for m in _refusal_logs(caplog))

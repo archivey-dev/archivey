@@ -95,6 +95,7 @@ class Codec(Enum):
     IMPLODE = "implode"  # ZIP method 6 (LZ77 + Shannon-Fano)
     LZOP = "lzop"  # the .lzo file format
     MOZLZ4 = "mozlz4"  # Firefox's mozLz40 files: one raw LZ4 block
+    BZIP3 = "bzip3"  # the .bz3 files the bzip3 tool writes
     LZO = "lzo"  # raw LZO1X (a SquashFS block)
     # Filter-only (composed with raw LZMA; see LZMA_FILTER_IDS).
     DELTA = "delta"

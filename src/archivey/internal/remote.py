@@ -22,7 +22,11 @@ The fetch planner (design D2) decides each fetch's start and length:
    ``max_read_through`` bytes past a run's end continues that run: the fetch starts at
    the run's end and reads through the gap. A longer forward jump, or a backward one
    outside every window, starts a new run.
-3. **Bounded memory, per pool.** Each run keeps one *window*, the bytes of its last
+3. **Range hints from the backend.** ``will_read(start, end)`` records a span the
+   backend reads next; the first read in it that no window holds fetches the whole span
+   (up to the maximum fetch) in one request, and the run continues from there. A hint
+   changes how bytes are fetched, never which bytes a read returns.
+4. **Bounded memory, per pool.** Each run keeps one *window*, the bytes of its last
    fetch. One :class:`WindowPool` holds the windows of every source one reader opens
    (each volume of a set included), at most ``pool_bytes`` in total. When more runs are
    active than the pool holds at ``max_fetch``, the maximum fetch in effect shrinks to
@@ -48,12 +52,18 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from archivey.exceptions import FormatDetectionError, _UsageValueError
+from archivey.exceptions import (
+    FormatDetectionError,
+    SourceChangedError,
+    _UsageValueError,
+)
 from archivey.internal.logs import streams as streams_logger
 from archivey.internal.overrides import override
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
+
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 
 @dataclass(frozen=True)
@@ -321,10 +331,9 @@ class WindowPool:
                     continue
                 with view[filled:] as rest:
                     got = self._fetch_into(source, run, at, rest)
-                if got == 0:
-                    # The object holds fewer bytes than the size read at open: a
-                    # short read, which the reader sees as the end.
-                    break
+                # A fetch returns the full range or raises (RangeSource.fetch), and
+                # the caller clamped ``view`` to the size, so every fetch serves bytes.
+                assert got > 0
                 filled += got
             return filled
 
@@ -337,26 +346,49 @@ class WindowPool:
         """
         c = self.constants
         want = len(view)
+        hint = source.pending_hint
+        hinted = hint is not None and hint[0] <= at < hint[1]
+        if hinted:
+            assert hint is not None
+            source.pending_hint = None
+            if run is not None and hint[0] > run.end:
+                # The span starts past this run's window, which another stream on
+                # the source may still be reading: the span gets a run of its own
+                # rather than taking that window over.
+                run = None
         if run is not None:
-            # Continue the run from its end, reading through the gap (rule 2).
+            # Continue the run from its end, reading through the gap (rule 2). A
+            # hint that starts inside the window continues it the same way.
             start = run.end
             fetches = run.fetches + 1
             runs = len(self._runs)
             old = len(run.data)
         else:
-            start = at
+            # Rule 3: a hinted span is fetched from its start, which may lie before
+            # the read (a backend may read a span's end first: a ZIP end record).
+            start = hint[0] if hinted and hint is not None else at
             fetches = 1
             runs = len(self._runs) + 1
             old = 0
+        cap = self._max_fetch(runs)
+        if hinted and at - start + want > cap:
+            # A span longer than the cap whose read lies past the cap: keep the part
+            # that ends with the read, so the window still holds it.
+            start = max(start, min(at, at + want - cap))
         need = at - start + want
         # ``max_read_through=0`` asks for only the bytes each read needs: no minimum
-        # fetch and no doubling either (``ArchiveyConfig.max_read_through``).
+        # fetch and no doubling either (``ArchiveyConfig.max_read_through``). A hint
+        # still applies: the backend has declared that it reads that span.
         if source.max_read_through == 0:
             length = need
         else:
             length = max(need, self._fetch_size(fetches, runs))
+        if hinted:
+            assert hint is not None
+            length = max(length, hint[1] - start)
+            # The run continues from the span as if it had doubled to that size.
+            fetches = max(fetches, 2 + (length // c.min_fetch).bit_length())
         length = min(length, source.size - start)
-        cap = self._max_fetch(runs)
         if need > cap:
             # A read longer than any window: fetch exactly it, keep nothing. The run
             # (if any) still ends where this read ends, so the next read continues it.
@@ -401,6 +433,23 @@ class WindowPool:
         view[:take] = data[off : off + take]
         return take
 
+    def hint(self, source: RangeSource, start: int, end: int) -> None:
+        """Record that ``source`` will read ``[start, end)`` next (design D2 rule 3).
+
+        Nothing is fetched here: the next read that lands in the span and finds no
+        window fetches the span in one request, up to the maximum fetch. A span a
+        window already holds needs nothing. One pending hint per source; a later one
+        replaces it.
+        """
+        with self._lock:
+            end = min(end, source.size)
+            if start < 0 or end <= start:
+                return
+            for run in self._runs:
+                if run.source is source and run.start <= start and end <= run.end:
+                    return
+            source.pending_hint = (start, end)
+
     def _trim_oversized(self, cap: int, keep: _Run | None) -> None:
         """Cut every other window down to ``cap``, dropping its head.
 
@@ -441,6 +490,9 @@ class RangeSource(io.RawIOBase):
         self.pool = pool
         self.max_read_through = max_read_through
         self._pos = 0
+        # The span a backend declared it reads next (``will_read``), until a fetch
+        # uses it.
+        self.pending_hint: tuple[int, int] | None = None
 
     @classmethod
     def from_open_file(
@@ -468,6 +520,21 @@ class RangeSource(io.RawIOBase):
     def name(self) -> str:
         return self.path
 
+    def will_read(self, start: int, end: int) -> None:
+        """The backend reads ``[start, end)`` next (design D2 rule 3).
+
+        The read that comes fetches the span in one request, up to the maximum fetch.
+        A hint never changes the bytes a read returns.
+        """
+        self.pool.hint(self, start, end)
+
+    @property
+    def url(self) -> str:
+        """The object as a URL (``s3://bucket/a.zip``), for messages. An fsspec path
+        is ``/``-separated on every OS, so it needs no ``display_path``."""
+        unstrip = getattr(self.fs, "unstrip_protocol", None)
+        return unstrip(self.path) if callable(unstrip) else self.path
+
     @property
     def seek_is_expensive(self) -> bool:
         """A seek may cost a request: detection and the tail probes stay off it, as
@@ -476,7 +543,7 @@ class RangeSource(io.RawIOBase):
         return True
 
     def fetch(self, start: int, end: int) -> bytes:
-        """One range request, ``[start, end)``.
+        """One range request, ``[start, end)``, which lies inside the size read at open.
 
         A response longer than the range is refused with ``OSError``: the file system
         ignored the range (an HTTP server answering ``200`` with the whole body does,
@@ -488,14 +555,27 @@ class RangeSource(io.RawIOBase):
         response body into memory (fsspec's HTTP one does) has already allocated it by
         then. archivey reads through ``cat_file`` and opens no file object (design D1),
         so a server that ignores ``Range`` costs that one allocation before the read
-        is refused; an accepted residual, listed for the maintainer.
+        is refused. That cost is accepted.
+
+        A response shorter than the range has seen an object shorter than the size read
+        at open: it was cut or replaced since (design D7, tier 3), so this raises
+        :class:`~archivey.SourceChangedError` rather than hand on bytes of another
+        object. That is all a fetch can see. A replacement of the same length, or a
+        longer one, returns the full range and is not detected without a pinned
+        version (not implemented yet); ``SOURCE_CHANGE_UNDETECTABLE`` says so at open.
         """
         data = self.fs.cat_file(self.path, start=start, end=end)
         if len(data) > end - start:
             raise OSError(
-                f"{self.path}: the file system returned {len(data)} bytes for a "
+                f"{self.url}: the file system returned {len(data)} bytes for a "
                 f"request of bytes {start}-{end}: it does not honour range requests, "
                 f"which reading an archive remotely needs"
+            )
+        if len(data) < end - start:
+            raise SourceChangedError(
+                f"{self.url}: the object changed while it was read: fetching bytes "
+                f"{start}-{end} of the {self.size} bytes seen at open returned "
+                f"{len(data)} bytes"
             )
         return bytes(data)
 
@@ -562,6 +642,46 @@ class RangeSource(io.RawIOBase):
         return f"<RangeSource {self.path!r} size={self.size}>"
 
 
+def protocol_of(fs: Any) -> str:
+    """The first protocol an fsspec file system names (``"s3"``, ``"memory"``)."""
+    protocol = getattr(fs, "protocol", "")
+    if isinstance(protocol, (tuple, list)):
+        protocol = protocol[0] if protocol else ""
+    return str(protocol)
+
+
+def emit_source_change_undetectable(
+    ranges: tuple[RangeSource, ...],
+    collector: DiagnosticCollector,
+    archive_name: str | None,
+) -> None:
+    """Record ``SOURCE_CHANGE_UNDETECTABLE`` once for a source read through ``ranges``.
+
+    archivey pins no object version and sends no ``If-Match`` yet (design D7, tiers 1
+    and 2), so every file system gets tier 3: a fetch catches a change of length only.
+    """
+    if not ranges:
+        return
+    from archivey.diagnostics import DiagnosticCode, SourceChangeContext
+
+    protocol = protocol_of(ranges[0].fs)
+    collector.emit(
+        code=DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
+        message=(
+            f"{archive_name or ranges[0].url} is read by range requests over "
+            f"{protocol or 'fsspec'}, and archivey cannot pin one version of the "
+            f"object: a replacement of the same length, or a longer one, while it "
+            f"is read would not be detected"
+        ),
+        context=SourceChangeContext(
+            archive_name=archive_name,
+            protocol=protocol,
+            reason="archivey implements no version pinning or If-Match for this "
+            "file system",
+        ),
+    )
+
+
 __all__ = [
     "DEFAULT_MAX_READ_THROUGH",
     "DEFAULT_PLANNER_CONSTANTS",
@@ -569,6 +689,7 @@ __all__ = [
     "RangeSource",
     "WindowPool",
     "check_open_file",
+    "emit_source_change_undetectable",
     "is_open_file",
     "planner_constants",
 ]

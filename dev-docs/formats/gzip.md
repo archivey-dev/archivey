@@ -28,9 +28,10 @@ in `member.hashes`, even for a one-member file: proving there is one member mean
 the whole file (§6). `member.size` is `None` although the trailer holds a size, for the
 same reason. With `rapidgzip`, a truncated stream is reported with the same certainty as
 without it only for a one-member gzip; a truncated raw DEFLATE stream read alone through
-`rapidgzip` under `ON` can come back short with no error (§5). And under `AUTO`,
-`rapidgzip` never decodes a stream opened without declared seeking, whatever its size
-(§2.3), so a plain open read front to back gets the standard library.
+`rapidgzip` under `ON` can come back short with no error (§5). And under `AUTO`, a
+stream opened without declared seeking gets `rapidgzip` only on Linux and macOS, when
+its compressed size is known to be at least 16 MiB and it compresses 3:1 or less (§2.3).
+Any other plain open read front to back gets the standard library.
 
 ## 1. Shape
 

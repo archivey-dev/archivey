@@ -371,6 +371,13 @@ data its pass keeps for link targets beside it.
   disables it. ZIP, 7z, RAR and ISO also check `max_members` while parsing, at
   `open_archive` (ZIP, as it walks the directory when the end record understates the
   count; 7z and RAR weigh their header names against `max_metadata_bytes` there too).
+  XAR checks `max_members` while it parses the table of contents, and weighs against
+  `max_metadata_bytes` both the decoded table's size (from the header, before
+  decoding) and every full path it builds there, since nested directories make the
+  paths grow with the square of the depth before any member exists (`xar_reader.py`).
+  CAB weighs the block tables it keeps, one per folder read, against
+  `max_metadata_bytes` as they are read, at 256 bytes a block: folders may all name one
+  run of block headers, so the tables are not bounded by the file (`cab_reader.py`).
   A ZIP read from a pipe has no directory at open: its forward pass charges
   `max_members` on each local header as it yields the member, and again on the
   directory's entries after the last member, whose text it weighs against
@@ -674,17 +681,21 @@ the caller gets the same bytes and no error.
 
 Detection decodes under the same cap. Its probes reserve only what their bounded read
 needs where the codec allows it (an LZMA dictionary of 4 to 64 KiB), and the cap is
-checked against that reservation; a decoder that cannot shrink (a zstd window) and is
-over the cap is "can't tell", recorded as `CAPABILITY_UNAVAILABLE` and logged at INFO
-with the limit (`internal/detection.py` `_log_probe_refused`). A `.tar.zst` is then
-reported as a bare `.zst`, and the read refuses the same window.
+checked against that reservation; a decoder that cannot shrink (a zstd window, a bzip3
+block) and is over the cap is "can't tell", recorded as `CAPABILITY_UNAVAILABLE` and
+logged at INFO with the limit (`internal/detection.py` `_log_probe_refused`). A
+`.tar.zst` is then reported as a bare `.zst`, and the read refuses the same window. Two
+probes also carry a fixed ceiling of their own under the cap: zstd's window at 128 MiB,
+and a `.tar.bz3`'s block size at 16 MiB, about 163 MiB of libbzip3 state
+(`bzip3_codec.py` `_PROBE_BLOCK_SIZE_MAX`).
 
 **Residual.** Codecs whose memory their format bounds at 16 MiB or less (gzip, bzip2,
 Brotli, LZ4 frames) are not checked against the cap, in detection or on read. The RAR
 counts rest on measurements of `unrar` 7.00 and `unar` 1.10.1; another version that
 allocates differently is not measured. The rapidgzip child's peak can pass the cap by
 what it allocates between two checks (about 17 MB measured on four cores; a check
-delayed on a busy machine is caught by the one before the next read). Where the platform does not report a process's peak memory
+delayed on a busy machine is caught by the one before the next read). Where the platform
+does not report a process's peak memory
 (`VmHWM` on Linux, `getrusage` on macOS and the BSDs, `GetProcessMemoryInfo` on
 Windows), the child is not capped.
 
@@ -926,7 +937,9 @@ the zero-configuration projection. Native
 decoders known to crash on crafted input run in a child process: the rapidgzip
 accelerator for gzip, zlib, raw DEFLATE and bzip2 (`internal/streams/codecs/rapidgzip_child.py`), and
 every PPMd member (`internal/streams/codecs/ppmd_child.py`), unless `process_isolation` is
-`NONE`; `NATIVE_DECODERS` moves every other native decoder there too
+`NONE`. libbzip3 runs there too, as a precaution rather than for a known crash: it had
+seven memory-safety CVEs in 2023, and archivey checks each block's framing before the
+native call (`internal/streams/codecs/bzip3_codec.py`); `NATIVE_DECODERS` moves every other native decoder there too
 (`internal/streams/codecs/decoder_child.py`). A fault signal there becomes
 `CorruptionError` and costs only the member; a crash in a reused child is re-run in a
 fresh one before it is charged. A rapidgzip child stopped at its memory cap
@@ -1196,7 +1209,10 @@ nothing; the key-derivation budget allows about ten seconds; a late-CRC 7z folde
 folder size times candidates; a ZIP central directory whose comments are nothing but
 central header signatures lists at about 155 ns a byte (2.0 s for 13 MB, CPython 3.11),
 where an ordinary directory lists at about 5 ns, because each signature is checked for a
-swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). On declared seek demand,
+swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). An LZX stream in a
+cabinet made of nothing but block headers decodes at about 2 µs an input byte (0.5 MB/s),
+producing nothing, since each header builds its trees
+([CAB §2.4](formats/cab.md#24-the-lzx-decoder)). On declared seek demand,
 a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
 Zstandard seek table, and a forward seek past the known points or a `SEEK_END` walks a
 BGZF file's members. Both scans are linear but run one
@@ -1228,7 +1244,9 @@ Under the default `process_isolation` the stdlib `zlib`, `bz2` and `lzma`, zstd,
 brotli and inflate64 run in-process (`NATIVE_DECODERS` isolates them too; under `NONE`
 pyppmd decodes in-process as well and rapidgzip is not used). A crash nobody has found yet
 would abort the process. pyppmd runs in a child by default because of a known pyppmd issue
-([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data). Both rapidgzip decoders run in a child process;
+([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data).
+libbzip3 runs in a child by default too, as a precaution: no crash is known, but it had
+seven memory-safety CVEs in 2023 (under `NONE` it decodes in-process). Both rapidgzip decoders run in a child process;
 `scripts/investigations/accelerator_crash_search.py` tells whether they still need to.
 `MemoryError` is not translated, so running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:

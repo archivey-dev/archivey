@@ -9,8 +9,10 @@ refused ``OpenFile`` fields, and the facts the source settles at open.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import logging
+import random
 import subprocess
 import sys
 import threading
@@ -28,6 +30,12 @@ from archivey import (  # noqa: E402
     ArchiveFormat,
     ArchiveyConfig,
     ArchiveyUsageError,
+    CorruptionError,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    DiagnosticRaisedError,
+    ReadError,
+    SourceChangedError,
     detect_format,
     open_archive,
     open_stream,
@@ -324,7 +332,12 @@ def test_open_archive_reads_an_open_file(memfs):
     with open_archive(of) as reader:
         got = {m.name: reader.read(m) for m in reader.members() if m.is_file}
         assert got == MEMBERS
-        assert reader.format_info == detect_format(fsspec.open("memory://t/a.zip"))
+        detected = detect_format(fsspec.open("memory://t/a.zip"))
+        # Equal but for the diagnostics, whose occurrence ids differ by run.
+        assert dataclasses.replace(
+            reader.format_info, diagnostics=None
+        ) == dataclasses.replace(detected, diagnostics=None)
+        assert reader.format_info.diagnostics.counts == detected.diagnostics.counts
 
 
 def test_concurrent_threads_read_their_members(memfs):
@@ -576,3 +589,248 @@ def test_committed_fixture_reads_the_same_through_the_planner(
         pytest.skip(f"fixture does not open standalone from a BytesIO: {exc}")
     with planner_constants(SMALL):
         assert _probe(_open_file(memfs, data), (FIXTURE_PASSWORD,)) == baseline
+
+
+# --- a changed object (design D7, tier 3) ------------------------------------------------
+
+
+def test_a_shorter_object_raises_source_changed(memfs):
+    data = _zip_bytes(MEMBERS)
+    memfs.pipe("/t/a.zip", data)
+    # No read-through, so the listing leaves the members' bytes unfetched.
+    config = ArchiveyConfig(max_read_through=0)
+    with open_archive(fsspec.open("memory://t/a.zip"), config=config) as reader:
+        members = [m for m in reader.members() if m.is_file]
+        memfs.pipe("/t/a.zip", data[: len(data) // 2])
+        with pytest.raises(SourceChangedError) as info:
+            for member in members:
+                reader.read(member)
+    assert isinstance(info.value, ReadError)
+    assert not isinstance(info.value, CorruptionError)
+
+
+def test_a_longer_object_is_not_detected(memfs):
+    """What tier 3 cannot see (design D7): every fetch lies inside the size read at
+    open, and a longer replacement returns those ranges in full. Pinned so the docs
+    cannot drift back to "a change of length raises"."""
+    data = _zip_bytes({"a.bin": b"a" * 400_000})
+    memfs.pipe("/t/a.zip", data)
+    config = ArchiveyConfig(max_read_through=0)
+    with open_archive(fsspec.open("memory://t/a.zip"), config=config) as reader:
+        (member,) = [m for m in reader.members() if m.is_file]
+        memfs.pipe("/t/a.zip", b"B" * (2 * len(data)))
+        with pytest.raises(CorruptionError) as info:
+            reader.read(member)
+    assert not isinstance(info.value, SourceChangedError)
+
+
+def test_a_planner_fetch_of_another_length_raises():
+    src, fs = _source(DATA)
+    fs.data = DATA[:100]
+    with pytest.raises(SourceChangedError, match="changed while it was read"):
+        src.read(10)
+
+
+def _volume_bytes(data: bytes, parts: int) -> list[bytes]:
+    step = -(-len(data) // parts)
+    return [data[i : i + step] for i in range(0, len(data), step)]
+
+
+@pytest.mark.parametrize("how", ["detected", "format", "volumes"])
+def test_undetectable_change_is_recorded_at_open(memfs, how: str):
+    data = _zip_bytes(MEMBERS)
+    if how == "volumes":
+        names = []
+        for n, part in enumerate(_volume_bytes(data, 3), start=1):
+            memfs.pipe(f"/t/v.zip.{n:03d}", part)
+            names.append(f"memory://t/v.zip.{n:03d}")
+        source: Any = [fsspec.open(name) for name in names]
+    else:
+        memfs.pipe("/t/a.zip", data)
+        source = fsspec.open("memory://t/a.zip")
+    kwargs: dict[str, Any] = {"format": ArchiveFormat.ZIP} if how == "format" else {}
+    with open_archive(
+        source,
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+        **kwargs,
+    ) as reader:
+        assert (
+            reader.diagnostics.counts.get(DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE)
+            == 1
+        )
+        (diag,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE
+        ]
+        assert diag.context.kind == "source_change"
+        assert diag.context.protocol == "memory"
+    if how == "detected":
+        info = detect_format(fsspec.open("memory://t/a.zip"))
+        assert (
+            info.diagnostics.counts.get(DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE) == 1
+        )
+
+
+def test_open_stream_with_format_records_it_and_pedantic_refuses(memfs):
+    import gzip
+
+    memfs.pipe("/t/a.gz", gzip.compress(b"payload"))
+    seen: list[Any] = []
+    with open_stream(
+        fsspec.open("memory://t/a.gz"),
+        format=ArchiveFormat.GZ,
+        config=ArchiveyConfig(on_diagnostic=seen.append),
+    ) as s:
+        assert s.read() == b"payload"
+    assert [d.code for d in seen] == [DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE]
+    # The leak oracle checks the source this refusal opened is closed.
+    with pytest.raises(DiagnosticRaisedError):
+        open_stream(
+            fsspec.open("memory://t/a.gz"),
+            format=ArchiveFormat.GZ,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.PEDANTIC),
+        )
+
+
+def test_a_local_source_records_no_source_change(tmp_path: Path):
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_bytes(MEMBERS))
+    with open_archive(path) as reader:
+        assert (
+            DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE not in reader.diagnostics.counts
+        )
+
+
+# --- backend range hints (design D2 rule 3) ----------------------------------------------
+
+
+def test_a_hint_fetches_its_span_in_one_request_from_its_start():
+    src, fs = _source(DATA)
+    src.will_read(1000, 60_000)
+    src.seek(50_000)  # a backend may read the span's end first
+    assert src.read(100) == DATA[50_000:50_100]
+    src.seek(1000)
+    assert src.read(100) == DATA[1000:1100]
+    assert fs.fetches == [(1000, 60_000)]
+
+
+def test_a_hint_inside_a_window_fetches_nothing():
+    src, fs = _source(DATA)
+    src.read(10)
+    src.will_read(100, 200)
+    assert src.pending_hint is None
+    src.seek(150)
+    src.read(10)
+    assert fs.fetches == [(0, 16 * KIB)]
+
+
+def test_a_hint_past_the_max_fetch_keeps_the_part_that_ends_with_the_read():
+    src, fs = _source(DATA)
+    src.will_read(0, 400 * KIB)
+    src.seek(300 * KIB)
+    assert src.read(10) == DATA[300 * KIB : 300 * KIB + 10]
+    ((start, end),) = fs.fetches
+    assert end - start <= SMALL.max_fetch
+    assert start <= 300 * KIB < 300 * KIB + 10 <= end
+
+
+def test_a_hint_past_a_runs_window_starts_its_own_run():
+    # The read at 20 KiB continues the first run, but its hint starts past that run's
+    # window: the hinted span gets a run of its own, and the first window stays for
+    # whichever stream is still reading it.
+    src, fs = _source(DATA, gap=8 * KIB)
+    assert src.read(10) == DATA[:10]
+    src.will_read(20 * KIB, 30 * KIB)
+    src.seek(20 * KIB)
+    assert src.read(100) == DATA[20 * KIB : 20 * KIB + 100]
+    src.seek(100)
+    assert src.read(100) == DATA[100:200]
+    first, second = fs.fetches
+    assert first == (0, 16 * KIB)
+    assert second[0] == 20 * KIB
+
+
+def test_a_hint_never_changes_the_bytes():
+    src, _ = _source(DATA)
+    for start in range(0, len(DATA), 37 * KIB):
+        src.will_read(start, start + 50 * KIB)
+        src.seek(start + 7)
+        assert src.read(3000) == DATA[start + 7 : start + 3007]
+
+
+def test_a_local_source_ignores_hints(tmp_path: Path):
+    from archivey.internal.source import ArchiveSource
+
+    path = tmp_path / "x"
+    path.write_bytes(b"abc")
+    with ArchiveSource.for_path(path) as source:
+        source.will_read(0, 3)  # no remote source: nothing happens
+        assert source.read() == b"abc"
+
+
+def test_zip_lists_in_two_requests_and_reads_a_member_in_one_more():
+    """The spec ceiling: the detection head, then the tail with the whole directory."""
+    data = _zip_bytes(MEMBERS)
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, "/a.zip", mode="rb")) as reader:
+        members = [m for m in reader.members() if m.is_file]
+        assert len(fs.fetches) <= 2
+        assert (
+            reader.read(members[len(members) // 2])
+            == MEMBERS[members[len(members) // 2].name]
+        )
+        assert len(fs.fetches) <= 3
+
+
+def _py7zr_bytes(members: dict[str, bytes], tmp_path: Path, **kwargs: Any) -> bytes:
+    py7zr = pytest.importorskip("py7zr")
+    path = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(path, "w", **kwargs) as archive:
+        for name, data in members.items():
+            archive.writestr(data, name)
+    return path.read_bytes()
+
+
+def test_7z_with_an_encoded_header_lists_in_two_requests(tmp_path: Path):
+    """py7zr, like 7-Zip, writes an encoded header: a short record after a packed
+    header stream. The next-header hint fetches both with the detection head's
+    follow-up, so the listing is the spec's 2 requests."""
+    rng = random.Random(7)
+    members = {f"m{i}.bin": rng.randbytes(40_000) for i in range(12)}
+    data = _py7zr_bytes(members, tmp_path)
+    fs = RecordingFS(data)
+    with (
+        planner_constants(SMALL),
+        open_archive(OpenFile(fs, "/a.7z", mode="rb")) as reader,
+    ):
+        assert len([m for m in reader.members() if m.is_file]) == 12
+    assert len(fs.fetches) <= 2
+
+
+def test_7z_hints_the_folder_pack_stream_before_a_member_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The pack-stream hint names the folder's pack span in source offsets: from 32
+    (right after the signature header on a plain py7zr archive) for the pack size.
+    Red with the hint call removed, or its origin off by one."""
+    py7zr = pytest.importorskip("py7zr")
+    rng = random.Random(8)
+    payload = rng.randbytes(300_000)
+    data = _py7zr_bytes(
+        {"big.bin": payload}, tmp_path, filters=[{"id": py7zr.FILTER_COPY}]
+    )
+    hints: list[tuple[int, int]] = []
+    original = RangeSource.will_read
+
+    def spy(self: RangeSource, start: int, end: int) -> None:
+        hints.append((start, end))
+        original(self, start, end)
+
+    monkeypatch.setattr(RangeSource, "will_read", spy)
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, "/a.7z", mode="rb")) as reader:
+        (member,) = [m for m in reader.members() if m.is_file]
+        listed = list(hints)
+        assert reader.read(member) == payload
+    assert hints[len(listed) :] == [(32, 32 + 300_000)]

@@ -61,7 +61,8 @@ codecs, encryption, ISO, seeking accelerators, and the CLI.
 | `[recommended]` | `pyppmd`, `inflate64`, `brotli`, `lz4`, `backports.zstd` on Python <3.14, `cryptography`, `pycdlib`, `tqdm` | Every format and codec that installs everywhere: PPMd, Deflate64, Zstd, Brotli, LZ4, AES/crypto (7z, RAR headers, WinZip AES ZIP), ISO, CLI progress |
 | `[seekable]` | `rapidgzip` | Faster gzip/bzip2 decompression and random access via rapidgzip / bundled `IndexedBzip2File` |
 | `[free-threaded]` | `pycdlib`, `lz4`, `tqdm`, `backports.zstd` on Python <3.14, `cryptography` on Python >=3.14 | The subset that keeps the GIL **disabled** on free-threaded builds |
-| `[all]` | `[recommended]` + `[seekable]` | Everything |
+| `[all]` | `[recommended]` + `[seekable]` | Everything above |
+| `[bzip3]` | `bzip3` | `.bz3` files and `.tar.bz3`; in neither `[recommended]` nor `[all]` |
 
 The system SHALL make `[recommended]` the sensible all-useful install and `[seekable]`
 an opt-in on top of it. `[seekable]` MUST remain separate rather than folded into
@@ -70,7 +71,10 @@ into the process (which bzip2 random access does) re-enables the GIL on free-thr
 builds, and it carries the accelerator
 close-before-finalize hazard recorded in `dev-docs/investigations/rapidgzip-upstream-report.md`.
 
-The system SHALL NOT ship an extra per format. Removed names (`[7z]`, `[rar]`,
+The system SHALL NOT ship an extra per format, with one exception: `[bzip3]`. The
+`bzip3` package publishes wheels only for CPython 3.11 to 3.14 on Linux and Windows and no
+source distribution, so it cannot join `[recommended]` ("installs everywhere") or `[all]`,
+and its only use is the one format; its install hint names `archivey[bzip3]`. Removed names (`[7z]`, `[rar]`,
 `[crypto]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`, `[recommended-lite]`) MUST NOT be
 reintroduced as aliases: format-named extras whose contents are capability-scoped are what
 made install hints name the wrong thing.
@@ -82,8 +86,8 @@ table small enough that no user has to reason about it. (Extras, once published,
 be removed; fewer names is the durable choice.)
 
 `PackageNotInstalledError` install hints MUST name the extra that provides the missing
-package (`[recommended]`, or `[seekable]` for rapidgzip) and MUST NOT name a format,
-since member codecs are shared across containers.
+package (`[recommended]`, `[seekable]` for rapidgzip, or `[bzip3]` for bzip3) and MUST NOT
+name another format, since member codecs are shared across containers.
 
 A missing package is reported through two channels — the hint on `MissingComponent` (what
 listing and `format_availability()` surface) and the message of the
@@ -216,7 +220,7 @@ through an explicit documented allowlist in that guard.
 The system SHALL provide a PEP 735 dependency group named `fuzz` that installs
 `atheris` (and any harness-only helpers it needs) for coverage-guided fuzz CI.
 The `fuzz` group is **not** a user-facing runtime extra: it MUST NOT appear in
-`[all]`, `[recommended]`, `[seekable]`, or `[free-threaded]`,
+`[all]`, `[recommended]`, `[seekable]`, `[free-threaded]` or `[bzip3]`,
 and MUST NOT be required to import or use `archivey` at runtime.
 
 #### Scenario: fuzz packaging matrix
