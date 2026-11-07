@@ -232,6 +232,18 @@ class LinkTargetNotFoundReason(StrEnum):
     loops."""
 
 
+class SourceChangedError(ReadError):
+    """The remote object an ``fsspec.core.OpenFile`` source names changed while
+    archivey was reading it.
+
+    A fetch inside the size read at open came back short: the object is now shorter,
+    so the bytes after that point belong to another object, or to none. It is not
+    damage, so it is not a :class:`CorruptionError`: reopen the archive and retry. A
+    replacement of the same length, or a longer one, returns full ranges and is not
+    detected (``SOURCE_CHANGE_UNDETECTABLE``).
+    """
+
+
 class LinkTargetNotFoundError(ReadError):
     """A symlink/hardlink target, or a file copy's source, is absent from the archive.
 

@@ -48,12 +48,18 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from archivey.exceptions import FormatDetectionError, _UsageValueError
+from archivey.exceptions import (
+    FormatDetectionError,
+    SourceChangedError,
+    _UsageValueError,
+)
 from archivey.internal.logs import streams as streams_logger
 from archivey.internal.overrides import override
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
+
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 
 @dataclass(frozen=True)
@@ -321,10 +327,9 @@ class WindowPool:
                     continue
                 with view[filled:] as rest:
                     got = self._fetch_into(source, run, at, rest)
-                if got == 0:
-                    # The object holds fewer bytes than the size read at open: a
-                    # short read, which the reader sees as the end.
-                    break
+                # A fetch returns the full range or raises (RangeSource.fetch), and
+                # the caller clamped ``view`` to the size, so every fetch serves bytes.
+                assert got > 0
                 filled += got
             return filled
 
@@ -469,6 +474,13 @@ class RangeSource(io.RawIOBase):
         return self.path
 
     @property
+    def url(self) -> str:
+        """The object as a URL (``s3://bucket/a.zip``), for messages. An fsspec path
+        is ``/``-separated on every OS, so it needs no ``display_path``."""
+        unstrip = getattr(self.fs, "unstrip_protocol", None)
+        return unstrip(self.path) if callable(unstrip) else self.path
+
+    @property
     def seek_is_expensive(self) -> bool:
         """A seek may cost a request: detection and the tail probes stay off it, as
         they do for a member stream (``archivey.internal.source.seek_is_expensive``).
@@ -476,7 +488,7 @@ class RangeSource(io.RawIOBase):
         return True
 
     def fetch(self, start: int, end: int) -> bytes:
-        """One range request, ``[start, end)``.
+        """One range request, ``[start, end)``, which lies inside the size read at open.
 
         A response longer than the range is refused with ``OSError``: the file system
         ignored the range (an HTTP server answering ``200`` with the whole body does,
@@ -488,14 +500,27 @@ class RangeSource(io.RawIOBase):
         response body into memory (fsspec's HTTP one does) has already allocated it by
         then. archivey reads through ``cat_file`` and opens no file object (design D1),
         so a server that ignores ``Range`` costs that one allocation before the read
-        is refused; an accepted residual, listed for the maintainer.
+        is refused. That cost is accepted.
+
+        A response shorter than the range has seen an object shorter than the size read
+        at open: it was cut or replaced since (design D7, tier 3), so this raises
+        :class:`~archivey.SourceChangedError` rather than hand on bytes of another
+        object. That is all a fetch can see. A replacement of the same length, or a
+        longer one, returns the full range and is not detected without a pinned
+        version (not implemented yet); ``SOURCE_CHANGE_UNDETECTABLE`` says so at open.
         """
         data = self.fs.cat_file(self.path, start=start, end=end)
         if len(data) > end - start:
             raise OSError(
-                f"{self.path}: the file system returned {len(data)} bytes for a "
+                f"{self.url}: the file system returned {len(data)} bytes for a "
                 f"request of bytes {start}-{end}: it does not honour range requests, "
                 f"which reading an archive remotely needs"
+            )
+        if len(data) < end - start:
+            raise SourceChangedError(
+                f"{self.url}: the object changed while it was read: fetching bytes "
+                f"{start}-{end} of the {self.size} bytes seen at open returned "
+                f"{len(data)} bytes"
             )
         return bytes(data)
 
@@ -562,6 +587,46 @@ class RangeSource(io.RawIOBase):
         return f"<RangeSource {self.path!r} size={self.size}>"
 
 
+def protocol_of(fs: Any) -> str:
+    """The first protocol an fsspec file system names (``"s3"``, ``"memory"``)."""
+    protocol = getattr(fs, "protocol", "")
+    if isinstance(protocol, (tuple, list)):
+        protocol = protocol[0] if protocol else ""
+    return str(protocol)
+
+
+def emit_source_change_undetectable(
+    ranges: tuple[RangeSource, ...],
+    collector: DiagnosticCollector,
+    archive_name: str | None,
+) -> None:
+    """Record ``SOURCE_CHANGE_UNDETECTABLE`` once for a source read through ``ranges``.
+
+    archivey pins no object version and sends no ``If-Match`` yet (design D7, tiers 1
+    and 2), so every file system gets tier 3: a fetch catches a change of length only.
+    """
+    if not ranges:
+        return
+    from archivey.diagnostics import DiagnosticCode, SourceChangeContext
+
+    protocol = protocol_of(ranges[0].fs)
+    collector.emit(
+        code=DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
+        message=(
+            f"{archive_name or ranges[0].url} is read by range requests over "
+            f"{protocol or 'fsspec'}, and archivey cannot pin one version of the "
+            f"object: a replacement of the same length, or a longer one, while it "
+            f"is read would not be detected"
+        ),
+        context=SourceChangeContext(
+            archive_name=archive_name,
+            protocol=protocol,
+            reason="archivey implements no version pinning or If-Match for this "
+            "file system",
+        ),
+    )
+
+
 __all__ = [
     "DEFAULT_MAX_READ_THROUGH",
     "DEFAULT_PLANNER_CONSTANTS",
@@ -569,6 +634,7 @@ __all__ = [
     "RangeSource",
     "WindowPool",
     "check_open_file",
+    "emit_source_change_undetectable",
     "is_open_file",
     "planner_constants",
 ]

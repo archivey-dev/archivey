@@ -141,6 +141,7 @@ has a subclass, `ResourceUnavailableError`, listed after it.
 ::: archivey.EncryptionError
 ::: archivey.LinkTargetNotFoundError
 ::: archivey.LinkTargetNotFoundReason
+::: archivey.SourceChangedError
 
 ::: archivey.ExtractionError
 ::: archivey.FilterRejectionError
