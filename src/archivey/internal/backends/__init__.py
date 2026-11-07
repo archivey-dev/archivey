@@ -11,8 +11,10 @@ Module map:
 - :mod:`.udif` — UDIF disk images (``.dmg``); recognised and refused, not read
 - :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
 - :mod:`.ar_reader` — Unix ar, written against ``archivey.formats`` like ISO
+- :mod:`.rpm_reader` — RPM packages (headers, then the CPIO payload), the same way
 - :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio), the same way
 - :mod:`.squashfs_reader` — SquashFS 4.0, the same way
+- :mod:`.cab_reader` — Microsoft cabinets (stored, MSZIP, LZX), the same way
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
 - :mod:`.sevenzip_methods` / ``sevenzip_parser`` / ``sevenzip_pipeline`` /
@@ -35,10 +37,12 @@ Typical split inside a format: ``*ReadBackend`` (registry / ``open_read``) +
 
 from archivey.internal.backends import (
     ar_reader as _ar_reader,  # noqa: F401
+    cab_reader as _cab_reader,  # noqa: F401
     cpio_reader as _cpio_reader,  # noqa: F401
     directory_reader as _directory_reader,  # noqa: F401
     iso_reader as _iso_reader,  # noqa: F401
     rar_reader as _rar_reader,  # noqa: F401
+    rpm_reader as _rpm_reader,  # noqa: F401
     sevenzip_reader as _sevenzip_reader,  # noqa: F401
     single_file_reader as _single_file_reader,  # noqa: F401
     squashfs_reader as _squashfs_reader,  # noqa: F401

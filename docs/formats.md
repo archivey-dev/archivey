@@ -50,12 +50,19 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **SquashFS** (`.squashfs`, `.sqfs`, `.snap`): core for gzip, xz, LZMA and LZO images;
   Zstandard images need what a `.zst` file needs; LZ4 images need `[recommended]`. Listing:
   from its index. Members: direct. Needs a source that can seek.
+- **CAB** (`.cab`, Microsoft cabinets): core, for stored, MSZIP and LZX folders. Listing:
+  from its index. Members: solid when a folder is compressed, otherwise direct. Needs a source
+  that can seek.
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
   direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.cpio.gz`,
   …); there, as with a compressed TAR, listing needs decompression and members are solid.
 - **ar** (`.a`, `.lib`, the outer layer of a `.deb`): core. Listing: header by header. Members:
   direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.a.gz`,
   …); there, as with a compressed TAR, listing needs decompression and members are solid.
+- **RPM** (`.rpm`, binary and source packages): core; the payload needs what its compressor
+  needs (gzip, bzip2, xz and LZMA in core, Zstandard as for a `.zst` file). Listing: needs
+  decompression. Members: solid. Readable from a pipe. A package with an uncompressed
+  payload (rare) lists header by header, and its members are direct.
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
@@ -1133,6 +1140,34 @@ other members because of a member's name any more. Setting it to `True` warns.
 - SquashFS stores no checksums of its own. A damaged block is found when it does not decode
   to its length, or when its compressor's own check fails (zlib's Adler-32, the xz CRC).
 
+## CAB
+
+Microsoft cabinets: Windows updates and drivers, the payloads inside many installers, and
+what `makecab` and `gcab` write.
+
+- **Needs:** nothing. MSZIP is deflate, read with Python's `zlib`; LZX is decoded by
+  archivey itself, in Python, at a few megabytes a second.
+- **Listing:** from the file table at the start of the cabinet.
+- **Reading members:** a cabinet groups its files into folders, and each folder is one
+  compressed stream, so a compressed folder is solid: reaching a file decodes the folder from
+  its start. Files read in order decode each folder once. A stored folder is direct.
+- **From a pipe:** no; the file table points at folders anywhere in the file, so the cabinet
+  needs a source that can seek.
+- `ArchiveInfo.format_version` is the cabinet's version, `"1.3"` for every current writer.
+  Members are files: a cabinet stores no directories, only paths. A path's `\` separators
+  become `/`. `member.windows_attrs` holds the stored attributes without the two that only
+  a cabinet defines, `0x40` (executable) and `0x80` (name is UTF-8), which a Windows
+  attribute mask uses for other things; `member.modified` holds the stored local time,
+  with no time zone.
+- Names are UTF-8 when valid, otherwise decoded with `encoding=` (a Japanese cabinet from
+  `makecab` is usually `encoding="cp932"`), as in every format.
+- Each data block stores a checksum of its bytes, which a read checks, so a member read to
+  its end is at `Verification.CHECKSUM` when its blocks carry one (some writers store 0, which
+  means none).
+- Quantum-compressed members, an old method, are listed but raise
+  `UnsupportedFeatureError` when read. A cabinet that is part of a set spanning several files
+  (`file.cab`, `file2.cab`) raises `UnsupportedFeatureError` at open.
+
 ## CPIO
 
 - **Needs:** nothing.
@@ -1182,6 +1217,37 @@ other members because of a member's name any more. Setting it to `True` warns.
 - A thin archive (`!<thin>`) only names files kept outside it, and raises
   `UnsupportedFeatureError`.
 - The long-name table may be no larger than `ListingLimits.max_metadata_bytes`.
+
+## RPM
+
+- **Needs:** nothing for gzip, bzip2, xz and LZMA payloads; a Zstandard payload (Fedora's
+  default) needs what a `.zst` file needs.
+- **Listing:** the file list is in the package header, but listing walks the payload to find
+  each file's data, so it needs decompression.
+- **Reading members:** solid: one compression stream holds every file. A package with an
+  uncompressed payload, which `rpmbuild` writes only when asked, reads as a CPIO archive:
+  listing header by header, members direct.
+- **From a pipe:** yes, with `streaming=True`.
+- Members are named as `rpm2cpio | cpio -i` extracts them: `usr/bin/tool` for the package's
+  `/usr/bin/tool`, which is the member's `raw_name`. A source package's names are relative.
+- Each member's type, mode, size, time and owner names come from the package header, as `rpm`
+  installs them. Owners are names (`uname`, `gname`); `uid` and `gid` are `None`.
+- Both payload forms read: newc CPIO, and the stripped form of RPM 6 packages and of RPM 4
+  packages with a file of 4 GiB or more.
+- Each regular file's digest from the header (SHA-256 in current packages, MD5 in old ones)
+  is checked as its data is read.
+- `%ghost` files are listed in the package but never stored, and are not members.
+- **Hard links.** Files that share an inode are one file. The package stores the data with
+  the last of them, so archivey lists that one as the `FILE` and the others after it as
+  `HARDLINK` members to it.
+- `ArchiveInfo.format_version` is `"6"` for an RPM 6 package, `"4"` for an RPM 4 one, and
+  `"3"` for an old header with no immutable region. `ArchiveInfo.extra` holds `rpm.name`,
+  `rpm.version`, `rpm.release`, `rpm.arch`, `rpm.epoch` (when set), `rpm.source`,
+  `rpm.signed` and `rpm.payload_compressor`. Signatures are reported, not checked: use
+  `rpm -K` for that.
+- Delta RPMs, and payloads compressed with something archivey cannot decode, raise
+  `UnsupportedFeatureError`. A payload that does not match its header (a missing file, a file
+  the header does not list) raises `CorruptionError`.
 
 ## Disk images
 

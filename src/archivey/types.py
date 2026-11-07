@@ -86,9 +86,15 @@ class ContainerFormat(StrEnum):
     """A CPIO archive in any of its variants (binary, odc, newc, crc): an initramfs or
     an RPM payload, for example. Read in one forward pass, so from a pipe and inside a
     compression stream too."""
+    RPM = "rpm"
+    """An RPM package, binary or source: its files, from the CPIO payload that follows
+    its headers. Read in one forward pass, so from a pipe too."""
     SQUASHFS = "squashfs"
     """A SquashFS 4.0 filesystem image: a snap package or a live system's root, for
     example. Needs a source that can seek."""
+    CAB = "cab"
+    """A Microsoft cabinet (``.cab``): Windows updates, drivers and installer
+    payloads. Stored, MSZIP and LZX folders are read; needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -250,7 +256,9 @@ class ArchiveFormat:
     ISO: ClassVar[ArchiveFormat]
     AR: ClassVar[ArchiveFormat]
     CPIO: ClassVar[ArchiveFormat]
+    RPM: ClassVar[ArchiveFormat]
     SQUASHFS: ClassVar[ArchiveFormat]
+    CAB: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -333,9 +341,11 @@ ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.AR = ArchiveFormat(ContainerFormat.AR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CPIO = ArchiveFormat(ContainerFormat.CPIO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.RPM = ArchiveFormat(ContainerFormat.RPM, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.SQUASHFS = ArchiveFormat(
     ContainerFormat.SQUASHFS, StreamFormat.UNCOMPRESSED
 )
+ArchiveFormat.CAB = ArchiveFormat(ContainerFormat.CAB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -652,6 +662,12 @@ class CompressionAlgorithm(Enum):
     LZO = "lzo"
     """Raw LZO1X with no header, as SquashFS stores a block. Not the ``.lzo`` file
     format, which is ``StreamFormat.LZOP``."""
+    LZX = "lzx"
+    """Microsoft's LZX, as cabinets store it: LZ77 with Huffman codes over a window
+    of 32 KiB to 2 MiB."""
+    QUANTUM = "quantum"
+    """Quantum, an older cabinet method. archivey lists its members but cannot read
+    them."""
     RAR = "rar"
     """RAR's own compression, any version. Not the same as ``ContainerFormat.RAR``,
     which is the archive format."""
@@ -1003,6 +1019,14 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``cpio.variant`` (``str``)
     * ``squashfs.compressor`` (``str``)
     * ``squashfs.block_size`` (``int``)
+    * ``rpm.name`` (``str``)
+    * ``rpm.version`` (``str``)
+    * ``rpm.release`` (``str``)
+    * ``rpm.arch`` (``str``)
+    * ``rpm.epoch`` (``int``)
+    * ``rpm.source`` (``bool``)
+    * ``rpm.signed`` (``bool``)
+    * ``rpm.payload_compressor`` (``str``)
     """
 
     __slots__ = ()
@@ -1025,6 +1049,22 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["squashfs.compressor"], /) -> str: ...
     @overload
     def __getitem__(self, key: Literal["squashfs.block_size"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["rpm.name"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["rpm.version"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["rpm.release"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["rpm.arch"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["rpm.epoch"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["rpm.source"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["rpm.signed"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["rpm.payload_compressor"], /) -> str: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override

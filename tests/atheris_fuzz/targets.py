@@ -58,6 +58,7 @@ from tests.atheris_fuzz.seeds import (
     ar_seeds,
     brotli_seeds,
     bzip2_seeds,
+    cab_seeds,
     cpio_seeds,
     deflate64_seeds,
     detect_format_seeds,
@@ -69,6 +70,7 @@ from tests.atheris_fuzz.seeds import (
     lzma_alone_seeds,
     open_detected_seeds,
     rar_seeds,
+    rpm_seeds,
     sevenzip_seeds,
     squashfs_seeds,
     tar_seeds,
@@ -274,6 +276,20 @@ def squashfs_open_one(data: bytes) -> None:
         return
 
 
+def cab_open_one(data: bytes) -> None:
+    """List a cabinet and read the first files: the header, the file table, the block
+    table, then stored, MSZIP or LZX data and its checksums."""
+    try:
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.CAB, config=_FUZZ_CONFIG
+        ) as arc:
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
+    except ArchiveyError:
+        return
+
+
 def ar_open_one(data: bytes) -> None:
     """Walk an ar archive, plain or inside a compression stream, and read the first
     members' data."""
@@ -284,6 +300,12 @@ def cpio_open_one(data: bytes) -> None:
     """Walk a CPIO archive of any variant, plain or inside a compression stream, and
     read the first members' data, held hard links included."""
     _sequential_open_one(data, ContainerFormat.CPIO)
+
+
+def rpm_open_one(data: bytes) -> None:
+    """Walk an RPM package: its headers, then its payload in whichever compressor the
+    header names, and read the first members' data, held hard links included."""
+    _sequential_open_one(data, ContainerFormat.RPM)
 
 
 def _sequential_open_one(data: bytes, container: ContainerFormat) -> None:
@@ -890,6 +912,13 @@ def iter_target_specs() -> list[dict]:
             "per_input_timeout": stream_timeout,
         },
         {
+            "name": "cab",
+            "fn": cab_open_one,
+            "seeds": cab_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
             "name": "ar",
             "fn": ar_open_one,
             "seeds": ar_seeds,
@@ -900,6 +929,13 @@ def iter_target_specs() -> list[dict]:
             "name": "cpio",
             "fn": cpio_open_one,
             "seeds": cpio_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "rpm",
+            "fn": rpm_open_one,
+            "seeds": rpm_seeds,
             "fixup": None,
             "per_input_timeout": stream_timeout,
         },
