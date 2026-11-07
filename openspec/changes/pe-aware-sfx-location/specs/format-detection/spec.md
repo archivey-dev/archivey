@@ -32,10 +32,11 @@ class FormatInfo:
 ```
 
 `config=None` → library default. `confidence` = magic / structural probe /
-extension-guess. `prefixed` SHALL be `True` when detection had to recognise or skip
-leading bytes before the archive's own structures (an executable stub, a `#!` launcher, any
-other prefix), whether or not the archive's stored offsets count those bytes in, and it is
-the test for a self-extracting or otherwise prefixed archive. `payload_offset` is where to
+extension-guess. `prefixed` SHALL be `True` when detection found and skipped leading
+bytes before the archive's own structures (an executable stub, a `#!` launcher, any other
+prefix), whether or not the archive's stored offsets count those bytes in. It reports what
+detection found: an answer taken from the file's name (`detected_by="extension"`) searched
+for no prefix and SHALL be `False`, so `False` does not prove the archive starts at byte 0. `payload_offset` is where to
 start reading the archive: never after its first member, and exactly that member when the
 detection step saw it. The two are separate facts: a ZIP whose stored offsets count from
 the start of the file starts at byte 0 by its own numbers, so it SHALL report
@@ -133,8 +134,14 @@ furthest end of its header, program header table, segments and section header ta
 and of each section's file bytes when that table lies in the prefix (the Go linker puts
 it there, and its symbol table past the last segment); for a thin Mach-O the furthest
 end of its load commands and segments; for a fat Mach-O the end of its last slice. When
-the overlay start lies inside the window, the candidate there SHALL be judged first,
-with the same validators. A hit there that its validator returns as `VALID` or
+the overlay start's magic ends inside `SFX_MAX`, the candidate there SHALL be judged first,
+with the same validators, whatever window `max_scan_bytes` leaves: a smaller budget may
+make detection give up, but SHALL NOT make it answer with an archive the default budget
+and a forced `format=` pass over. Past the window, a source with a cheap seek reads the
+candidate with one seek, within the validator allowance. When the source cannot seek
+cheaply (a pipe, or a stream whose backward seek re-decodes), or the allowance cut the
+validator's view short and it declined the candidate, the scan SHALL NOT answer: it records
+`sfx_scan` as cut short and detection goes on to its later steps. A hit there that its validator returns as `VALID` or
 `VALID_SHORT` SHALL be the answer, ahead of any needle before or after it in the window:
 the exact-end preference below is a tie-break between needles of unknown standing, and
 the program's own layout outranks it. When nothing at the overlay start is accepted, the scan below runs
@@ -218,6 +225,10 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | ELF (GNU ld or Go layout) or thin Mach-O, RAR or 7z at the overlay start, a valid ZIP header inside the image | That archive at the overlay start, through detection and forced `format=` alike; `payload_end` is `None` |
 | ELF or thin Mach-O, ZIP at the overlay start, read through forced `format=ZIP` from a pipe | The forward walk lists the ZIP at the overlay start |
 | Fat Mach-O, 7z after its last slice | That 7z, `payload_offset` = the end of the last slice |
+| PE with a 7z at the start of a 300 KiB section and another 7z at the overlay start, under the `FAST` budget (256 KiB window), from a seekable source | The 7z at the overlay start, read by one seek; the default budget and forced `format=SEVEN_Z` list the same members |
+| The same shape with ZIPs, from a pipe, under `FAST` | No answer from the section: `sfx_scan` cut short, `FormatDetectionError` for an unnamed stream; the default budget and forced `format=ZIP` list the ZIP at the overlay start |
+| A budget whose validator allowance cannot hold the header at an overlay start past the window | No answer from the image: `sfx_scan` cut short |
+| Overlay start past `SFX_MAX` | Not judged, by detection or by the parsers' scans; the window is scanned as today |
 | ELF with extended section numbering, or program headers past the prefix; Mach-O whose load commands run past the prefix; a Java class file (`ca fe ba be`) | No layout; scanned as today |
 
 ### Requirement: Detection's access shape is bounded, not only its byte count

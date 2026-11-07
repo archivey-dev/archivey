@@ -330,6 +330,41 @@ class PrefixWorkspace:
 
         return peek_more
 
+    def seek_view(self, candidate_origin: int, *, length: int) -> CandidateView | None:
+        """A :meth:`candidate_view`-shaped callable over the ``length`` bytes from
+        ``candidate_origin``, read by seeking (:meth:`read_at`), or ``None`` when the
+        source has no cheap random access: a forward-only source, or a stream whose
+        backward seek may re-decode.
+
+        For one candidate whose place a header gives, past the bytes the prefix
+        holds: the prefix does not grow through the bytes before it. The view keeps
+        what it read, so a validator's growing peeks fetch each byte once. A peek
+        past ``length`` is cut short and noted, as a ``limit`` is for
+        :meth:`candidate_view` (:meth:`take_clamped_view_read`).
+        """
+        if candidate_origin < 0 or length < 0:
+            raise ValueError("candidate_origin and length must be non-negative")
+        if self._cheap_random_access_handle() is None:
+            return None
+        held = bytearray()
+        ended = False
+
+        def peek_more(end: int, start: int = 0, /) -> bytes:
+            nonlocal ended
+            if start < 0:
+                raise ValueError("start must be non-negative")
+            if end > length:
+                self._clamped_view_read = True
+                end = length
+            if end > len(held) and not ended:
+                wanted = end - len(held)
+                data = self.read_at(candidate_origin + len(held), wanted) or b""
+                ended = len(data) < wanted
+                held.extend(data)
+            return bytes(held[start:end])
+
+        return peek_more
+
     def take_clamped_view_read(self) -> bool:
         """Return and clear whether a limited view truncated a peek since last take."""
         flagged = self._clamped_view_read
