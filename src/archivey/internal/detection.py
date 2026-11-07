@@ -139,6 +139,7 @@ from archivey.internal.sfx import (
     ScanNeedle,
     executable_cue,
     iter_magic_in_prefix,
+    pe_layout,
     pe_payload_end,
 )
 from archivey.internal.source import ArchiveSource
@@ -1133,6 +1134,94 @@ def _scan_for_sfx_payload(
     return result
 
 
+#: The PE tail probe's reads (``detection-cost``, the *tail allowance*): the end-record
+#: search span, as long as the ZIP reader's, and the fixed parts of the two records
+#: that confirm it. Literals that mirror ``zip_parser.EOCD_SEARCH_WINDOW`` and
+#: ``zip_parser.TAIL_CONFIRM_READS``, since detection imports that module only when
+#: the probe runs; ``tests/test_pe_tail_probe.py`` pins them together.
+TAIL_PROBE_SPAN = 65_558
+TAIL_PROBE_ALLOWANCE = TAIL_PROBE_SPAN + 46 + 30
+
+
+def _probe_pe_tail(
+    workspace: PrefixWorkspace,
+    leading: bytes,
+    *,
+    scan_limit: int,
+    enabled: bool,
+) -> FormatInfo | None:
+    """A ZIP end record before a PE's payload end, after the SFX scan missed.
+
+    Runs only for a PE whose layout parses (:func:`~archivey.internal.sfx.pe_layout`)
+    on a source of known length, whose payload end (the certificate table's start, or
+    the end of the source) lies past both the overlay start and the scanned window: a
+    program with nothing appended past its sections other than a certificate never
+    pays for the read.
+    The search covers the :data:`TAIL_PROBE_SPAN` bytes ending at the payload end, with
+    the ZIP reader's own locator, so the reader then finds the same record. The record
+    is confirmed (``zip_parser.confirm_tail_record``) before answering ``ZIP`` /
+    ``PROBABLE`` / ``sfx_scan`` with the base the record implies as
+    ``payload_offset``, which is never after any member. ZIP64 records are declined.
+
+    Records ``sfx_tail`` as *not enabled by policy* when the scan tier is off, and as
+    *capability unavailable* when the source does not allow a cheap tail read: a
+    stream of unknown length that runs past the window and the overlay start, whose
+    end only reading all of it would find, or one whose tail cannot be read without
+    re-decoding (``read_tail``). Nothing for a source the gate excludes.
+    """
+    total = workspace.remaining_known()
+    layout = pe_layout(leading, total)
+    if layout is None:
+        return None
+    if total is None:
+        # Not ended yet, so the stream runs past the bytes it delivered.
+        if workspace.buffered_length >= max(scan_limit, layout.overlay_start):
+            workspace.record_skip(
+                "sfx_tail",
+                TierSkipReason.CAPABILITY_UNAVAILABLE
+                if enabled
+                else TierSkipReason.NOT_ENABLED_BY_POLICY,
+            )
+        return None
+    end = total if layout.payload_end is None else layout.payload_end
+    if end <= layout.overlay_start or end <= scan_limit:
+        return None
+    if not enabled:
+        workspace.record_skip("sfx_tail", TierSkipReason.NOT_ENABLED_BY_POLICY)
+        return None
+    span = workspace.read_tail(TAIL_PROBE_SPAN, end=end, tier="sfx_tail")
+    if span is None:
+        return None
+    # Imported here: detection reads no backend module on any other path.
+    from archivey.internal.backends.zip_parser import (
+        confirm_tail_record,
+        locate_classic_record,
+    )
+
+    span_start = end - len(span)
+
+    def read_at(offset: int, length: int) -> bytes:
+        if span_start <= offset and offset + length <= end:
+            return span[offset - span_start : offset - span_start + length]
+        return workspace.read_at(offset, length) or b""
+
+    found = locate_classic_record(read_at, end)
+    if found is None:
+        return None
+    eocd_offset, record, _comment = found
+    base = confirm_tail_record(read_at, eocd_offset, record, layout.overlay_start)
+    if base is None:
+        return None
+    return FormatInfo(
+        ArchiveFormat.ZIP,
+        DetectionConfidence.PROBABLE,
+        "sfx_scan",
+        payload_offset=base,
+        prefixed=True,
+        payload_end=layout.payload_end,
+    )
+
+
 def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
     """The library default config carrying only ``config``'s detection settings
     (``detection_budget``, ``always_probe_content``, ``process_isolation``, which
@@ -1531,6 +1620,7 @@ def _detect_format_body(
         non_archive = _non_archive_signature(data)
         cue = executable_cue(data)
         if cue is not ExecutableCue.NONE and non_archive is None:
+            head = _executable_head(data, peek_more, workspace)
             sfx_info = _scan_for_sfx_payload(
                 registry.sfx_magic_entries(),
                 peek_more,
@@ -1541,10 +1631,21 @@ def _detect_format_body(
                 capped_formats=registry.sfx_parser_scanned_formats(),
                 # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
                 restrict_to_validated=data.startswith(b"#!"),
-                leading=_executable_head(data, peek_more, workspace),
+                leading=head,
             )
             if sfx_info is not None:
                 return conclude(sfx_info, _ConflictEvidence.SFX_SCAN)
+            # 2b. A ZIP far behind a PE stub, found from its end record (the install4j
+            # shape). Gated on the PE's own layout, so only a large installer whose
+            # overlay runs past the window pays for the tail read.
+            tail_info = _probe_pe_tail(
+                workspace,
+                head,
+                scan_limit=min(SFX_MAX, budget.max_scan_bytes),
+                enabled=budget.max_scan_bytes > 0,
+            )
+            if tail_info is not None:
+                return conclude(tail_info, _ConflictEvidence.SFX_SCAN)
 
         # 3. Far magic (ISO's CD001 at offset 32 769). A signature that ends past
         # ``max_far_bytes`` cannot match in the clamped window, so it is dropped and the

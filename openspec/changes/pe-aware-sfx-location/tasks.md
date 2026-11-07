@@ -46,23 +46,23 @@ Block 3 is the overlay-start rule. Each reuses Block 1's PE layout helper.
 
 ## 2. The ZIP tail probe (Block 2)
 
-- [ ] 2.1 `zip_parser`: expose the end-record checks of design §5 as one function taking
+- [x] 2.1 `zip_parser`: expose the end-record checks of design §5 as one function taking
       `read_at`, the end-record offset and the overlay start; reuse
       `locate_classic_record` for the search.
-- [ ] 2.2 `PrefixWorkspace.read_tail`: take an end offset and the tier name a decline is
+- [x] 2.2 `PrefixWorkspace.read_tail`: take an end offset and the tier name a decline is
       recorded under (design §7); the trailer step passes `trailer`. Receipt and records:
       tail bytes in `unique_bytes_read`, not `scanned_bytes`; prefix-held bytes not fetched
       again; `sfx_tail` *not enabled by policy* / *capability unavailable*; nothing
       recorded for an excluded source. Add the tail allowance to `within_budget`
       (`tests/detection_cost_util.py`) on the condition the validator allowance uses,
       `scanned_bytes > 0`; no new receipt field.
-- [ ] 2.3 `internal/detection.py`: the tail probe after a scan miss, gated as in the spec,
+- [x] 2.3 `internal/detection.py`: the tail probe after a scan miss, gated as in the spec,
       answering `ZIP` / `PROBABLE` / `sfx_scan` with `payload_offset` = the EOCD-derived
       base (design §10, maintainer decision), `prefixed=True`, and `payload_end`.
-- [ ] 2.4 Tests for every row of the tail-probe matrix, the receipt scenario and the
+- [x] 2.4 Tests for every row of the tail-probe matrix, the receipt scenario and the
       access-shape rows, including both ZIP write conventions and a certificate larger than
       64 KiB.
-- [ ] 2.5 Docs: `prefixed-archives.md` (§2 tier table, §3 cost, §7 decisions), `detection.md` (tier list and the "no ZIP tail probe" lines),
+- [x] 2.5 Docs: `prefixed-archives.md` (§2 tier table, §3 cost, §7 decisions), `detection.md` (tier list and the "no ZIP tail probe" lines),
       `docs/formats.md` (SFX bullet), and a pointer from the struck Block 2 note in
       `archive/2026-11-05-prefixed-archive-detection/tasks.md`.
 

@@ -1439,7 +1439,9 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   zipapp `.pyz`, a Spring Boot jar). The 2 MiB scan behind the stub reports where the archive starts
   as `payload_offset`, and sets `prefixed`. For a code-signed Windows program, `payload_end` is
   where its signature starts: the ZIP, 7z and RAR readers stop there, so the signature is not
-  reported as data after the archive. A launcher is text, so behind `#!` only formats with a structural check
+  reported as data after the archive. A ZIP further into a Windows installer than the scan
+  reaches is found from its end, when the program's header shows that something was
+  appended past the window. A launcher is text, so behind `#!` only formats with a structural check
   (ZIP, 7z, RAR) are searched for. Among several 7z candidates, one that ends exactly at the end of
   the file is preferred over an earlier one that ends short of it.
 - **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`

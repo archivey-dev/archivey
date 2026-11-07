@@ -59,7 +59,8 @@ local header), 65 634 bytes in all, on the same cheap seek. That is the tail all
 below. It has no budget field because its gate, a PE whose overlay runs past the scan
 window, keeps it off every other source. It runs only when `max_scan_bytes` is above 0, is
 recorded as `sfx_tail` *not enabled by policy* when that field is 0 and *capability
-unavailable* when the source does not allow the read, and records nothing on a source its
+unavailable* when the source does not allow the read (a member stream, or a pipe whose
+bytes run past the window, whose end is not known), and records nothing on a source its
 gate excludes. Its bytes count in `unique_bytes_read` and not in `scanned_bytes`.
 
 `max_decode_input` SHALL be one allowance for the whole `detect_format` pass, not a limit
