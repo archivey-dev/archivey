@@ -31,12 +31,21 @@ from archivey.diagnostics import DiagnosticCode
 from archivey.formats import SequentialReader
 from archivey.internal.backends import rpm_reader
 from archivey.internal.backends.rpm_reader import RpmReader
+from tests.conftest import requires_zstd
 from tests.public_names import assert_only_public_archivey
 from tests.streams_util import NonSeekableBytesIO
 
 RPM = archivey.ArchiveFormat.RPM
 DATA = Path(__file__).parent / "fixtures" / "rpm"
-COMPRESSORS = ["gzip", "xz", "zstd", "bzip2", "lzma", "none"]
+# zstd needs backports.zstd before Python 3.14, which the core-only leg does not install.
+COMPRESSORS = [
+    "gzip",
+    "xz",
+    pytest.param("zstd", marks=requires_zstd()),
+    "bzip2",
+    "lzma",
+    "none",
+]
 
 # The tree make-rpms.sh packages, as archivey lists it.
 CONTENT = {
