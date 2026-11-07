@@ -986,11 +986,12 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   so the pipe holds the member and nothing else. History rows count only against the rows
   `-ver` lists. Every other read gets a synthetic archive whatever its size, within the
   spool limit; where none can be made (a RAR 1.5-4 member past 4 GiB with no 64-bit sizes,
-  a solid chain with data out of reach) a name that is not plain raises `UnsupportedFeatureError`. This replaced a port of
-  `unrar`'s name reading and matcher (`UtfToWide`, `CharToWide`, `ConvertPath`, `CmpName`),
-  the dot-rule probe for unrar 7.30 beta 2, a skip past the members a mask selected before
-  the target, the glob-concatenation refusal and the `AUTO` fallback to `unar` for names
-  `unrar` could not be given; all were removed with the synthetic route (0.4.0).
+  a solid chain with data out of reach) a name that is not plain raises
+  `UnsupportedFeatureError`. This replaced a port of `unrar`'s name reading and matcher
+  (`UtfToWide`, `CharToWide`, `ConvertPath`, `CmpName`), the dot-rule probe for unrar 7.30
+  beta 2, a skip past the members a mask selected before the target, the
+  glob-concatenation refusal and the `AUTO` fallback to `unar` for names `unrar` could not
+  be given; all were removed with the synthetic route (0.4.0).
 - **`-ver` is added** when the target is a history row, or when a solid pass contains any
   versioned payload FILE, because the mask excludes history rows otherwise and the demux
   would go out of alignment.
