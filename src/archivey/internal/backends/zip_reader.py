@@ -239,6 +239,10 @@ if TYPE_CHECKING:
 # / fallback step (`_decode_unflagged_legacy`) with the unflagged-name sniff.
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
+# The end record (22 bytes) and the longest comment it can carry: where the end-record
+# search looks, so the open hints that span to a remote source.
+_TAIL_HINT = 22 + 0xFFFF
+
 # ZIP general-purpose bit 3: data descriptor follows the member; verification byte is
 # then the high byte of the DOS time rather than of the CRC-32.
 _ZIP_MASK_USE_DATA_DESCRIPTOR = 0x8
@@ -1403,6 +1407,8 @@ class ZipReader(BaseArchiveReader):
 
     _MEMBER_LIST_UPFRONT = True
     _LINK_TARGETS_IN_DATA = True
+    # Where the archive starts in the source, for range hints; set at open.
+    _hint_origin = 0
 
     def __init__(
         self,
@@ -1514,7 +1520,12 @@ class ZipReader(BaseArchiveReader):
         if start_offset or end_offset is not None:
             handle = self._region(handle, start_offset, end_offset)
         self._fp = handle
+        # Where the archive starts in the source, for range hints (``_will_read``).
+        self._hint_origin = start_offset
         file_size = handle.seek(0, io.SEEK_END)
+        # The end record, and the whole directory when it fits: one request on a
+        # remote source.
+        self._hint(max(file_size - _TAIL_HINT, 0), file_size)
         # Every header offset the listing walk has read, for the overlap guard; then
         # the guard's sorted bounds once the walk is complete (``_data_bounds``).
         self._index_lock = threading.Lock()
@@ -1539,6 +1550,8 @@ class ZipReader(BaseArchiveReader):
                 raise CorruptionError(NO_END_RECORD_MSG)
             try:
                 self._end: EndRecord = read_end_record(self._read_at, file_size, found)
+                # A directory larger than the tail: its span, in one request.
+                self._hint(self._end.cd_start, self._end.eocd_offset)
             except CorruptionError as exc:
                 # End records that cannot be used (a damaged ZIP64 record after a
                 # saturated classic one, a directory that would start before the
@@ -1692,6 +1705,11 @@ class ZipReader(BaseArchiveReader):
                     walked.error = exc
                     return walked
                 walked.add(entry.offset, descriptor)
+
+    def _hint(self, start: int, end: int) -> None:
+        """``_will_read`` with ZIP offsets, which start at the archive's own start."""
+        origin = self._hint_origin
+        self._will_read(origin + start, origin + end)
 
     def _read_at(self, offset: int, n: int) -> bytes:
         """Up to ``n`` bytes at absolute ``offset``, under the reader's lock.
@@ -3157,6 +3175,9 @@ class ZipReader(BaseArchiveReader):
             # starts where the walk stopped, at the cut member, whose read
             # ``_open_member`` has already refused with the walk's error.
             raise CorruptionError(f"Absurd local-header offset: {loc.header_offset}")
+        # Header, data and data descriptor, up to the next local header or the
+        # directory: one request on a remote source.
+        self._hint(loc.header_offset, self._data_bounds().end_for(loc))
         try:
             header = read_local_header(self._read_at, loc.header_offset)
         except TruncatedError as exc:
