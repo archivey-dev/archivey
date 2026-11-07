@@ -926,6 +926,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "no corpus builder; tests/test_cpio.py seeks inside members, plain and gzip",
     ),
     (
+        "deb",
+        "no corpus builder (needs dpkg-deb); tests/test_deb.py seeks inside members",
+    ),
+    (
         "xar",
         "no corpus builder (needs bsdtar); tests/test_xar.py seeks inside members",
     ),
@@ -952,6 +956,7 @@ _UNTESTED_FORMATS = {
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.MOZLZ4): "mozlz4",
     **{ArchiveFormat(ContainerFormat.AR, stream): "ar" for stream in StreamFormat},
     **{ArchiveFormat(ContainerFormat.CPIO, s): "cpio" for s in StreamFormat},
+    **{ArchiveFormat(ContainerFormat.DEB, s): "deb" for s in StreamFormat},
     ArchiveFormat.SQUASHFS: "squashfs",
     ArchiveFormat.XAR: "xar",
     ArchiveFormat.CAB: "cab",

@@ -649,7 +649,10 @@ class ReaderContext:
         the next one: the inner reader numbers its members as the outer listing will,
         so its reports name the right member. The walk may change a span's member
         before yielding it: rename it, under a prefix say (and the ``link_target`` of
-        a hard link with it), or add ``MemberSpan.digests``. Stop early by closing the
+        a hard link with it), or add ``MemberSpan.digests``. A hard link's
+        ``link_target`` comes as the inner archive stores it (``./usr/bin/x``):
+        archivey normalizes the names the walk yields but not link targets, so a walk
+        passes it through :meth:`normalize_name`. Stop early by closing the
         iterator; one left open is closed when Python collects it, and at the latest
         when the archive is closed.
 
