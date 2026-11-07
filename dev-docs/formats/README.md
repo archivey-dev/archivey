@@ -27,6 +27,8 @@ Formats:
   `archivey.formats`.
 - [`cab.md`](cab.md) — Microsoft cabinets: stored, MSZIP and LZX folders, with
   archivey's own LZX decoder.
+- [`xar.md`](xar.md) — XAR and macOS `.pkg`: a zlib-compressed XML index, read with
+  expat, and per-file encoded data.
 - [`rpm.md`](rpm.md) — RPM packages: the file list from the header, the data from a
   CPIO payload in newc or the stripped form.
 - [`dmg.md`](dmg.md) — a UDIF image, recognised by the `koly` block and refused.
