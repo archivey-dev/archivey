@@ -796,9 +796,10 @@ def _open_resolved(
             _refuse_for_replacement(
                 replacement, "a multi-volume set", resolved_format, archive_name
             )
-        # Best effort: ``prefixed`` is what detection found. A prefixed file whose
-        # name names the format is guessed from the name without a search, and
-        # reaches the replacement, which then sees the prefix as its own bytes.
+        # Best effort: ``prefixed`` is what detection found. A file whose name names
+        # the format and whose first bytes are not an executable header or ``#!`` is
+        # guessed from the name with no search for a prefix, and reaches the
+        # replacement, which then sees any prefix as its own bytes.
         if detected is not None and detected.prefixed:
             _refuse_for_replacement(
                 replacement,

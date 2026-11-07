@@ -92,13 +92,37 @@ def test_fast_budget_judges_an_overlay_start_past_its_window(
     assert _names(source(), ArchiveFormat.SEVEN_Z) == ["overlay.txt"]
 
 
-def test_fast_budget_overlay_judgement_reads_the_candidate_only() -> None:
-    data = _with_image(_stored_7z(name="in_image.txt"), _stored_7z(name="overlay.txt"))
-    info = detect_format(io.BytesIO(data), config=_FAST)
+class _ReadLog(io.BytesIO):
+    """A ``BytesIO`` that records where each read starts."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.starts: list[int] = []
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        self.starts.append(self.tell())
+        return super().read(size)
+
+
+@pytest.mark.parametrize("overlay", ["7z", "rar"])
+def test_fast_budget_overlay_judgement_reads_the_candidate_only(overlay: str) -> None:
+    payload = (
+        _stored_7z(name="overlay.txt")
+        if overlay == "7z"
+        else _rar5_with_a_large_main_header(200)
+    )
+    data = _with_image(_stored_7z(name="in_image.txt"), payload)
+    source = _ReadLog(data)
+    info = detect_format(source, config=_FAST)
+    assert info.payload_offset == _OVERLAY
     receipt = info.cost_receipt
     assert receipt is not None
     # The headers and the candidate's header, not the program image before it.
     assert receipt.unique_bytes_read < 64 * 1024
+    # One read judges the candidate, however many peeks its validator makes. (A read
+    # that reaches the end of the source asks once more and gets nothing.)
+    reads = [start for start in source.starts if _OVERLAY <= start < len(data)]
+    assert reads == [_OVERLAY]
 
 
 def test_fast_budget_on_a_pipe_does_not_answer_from_inside_the_image() -> None:

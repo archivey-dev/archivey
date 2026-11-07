@@ -30,7 +30,7 @@ The cued forward scan and the uncued scan that runs last are shipped today.
 | Tier | How it works | Bound | Status |
 | --- | --- | --- | --- |
 | **Tail probe** | Some formats locate themselves from the end, so no search is needed — only the willingness to look. | Set by the format (ZIP: 65 558 bytes before the payload end) | **Shipped for a PE's overlay only** (`pe-aware-sfx-location`): after a cued scan misses, when the PE's layout says its overlay runs past the window. Not for any other source |
-| **Cued forward scan** | Leading bytes look like a prefix → search forward for each backend's declared needle. For a PE, ELF or Mach-O program whose layout parses (`sfx.executable_layout`), the candidate at its overlay start is judged first, and a `VALID` or `VALID_SHORT` hit there wins over every other needle; the RAR and 7z parsers' scans and the forward ZIP walk do the same, up to `SFX_MAX` whatever the budget: past the window, one seek reads that candidate, and a source that cannot seek gives up rather than answer from the image. | `min(size, SFX_MAX)`, `SFX_MAX` = 2 MiB | **Shipped** |
+| **Cued forward scan** | Leading bytes look like a prefix → search forward for each backend's declared needle. For a PE, ELF or Mach-O program whose layout parses (`sfx.executable_layout`), the candidate at its overlay start is judged first, and a `VALID` or `VALID_SHORT` hit there wins over every other needle; the RAR and 7z parsers' scans and the forward ZIP walk do the same, up to `SFX_MAX` whatever the budget: past the window, one seek reads the candidate's first 512 bytes (a longer header costs a read for each further peek), and a source that cannot seek gives up rather than answer from the image. | `min(size, SFX_MAX)`, `SFX_MAX` = 2 MiB | **Shipped** |
 | **Uncued scan, last** | Every other detection step declined, the leading bytes raise no cue and carry no known non-archive signature, and the name has no known extension → the same scan, every needle held to its validator. | Same window; on a forward-only source, only the bytes detection already holds | **Shipped** (2026-10-29) |
 | **Exhaustive scan** | Search the whole source, for a caller who knows they are holding a firmware image. | Caller's `max_scan_bytes` | Designed, not shipped |
 | **Prefix analysis** | Do not search at all: read the stub, which for some families states where the payload begins and what made it. | None — one seek to the stated offset | An idea in [`IDEAS.md`](../IDEAS.md) |
@@ -140,7 +140,8 @@ false positives of §4 are ELF, so the gate excludes them, and the record checks
 trip on a gated file. The hit reports the base the end record implies as
 `payload_offset`, which is 0 for a ZIP whose offsets count from the start of the file,
 so `FormatInfo.prefixed`, not the offset, says that detection found a prefix. It is
-`False` for an answer taken from the name, which searches for none. ELF, Mach-O and non-executables (a
+`False` for an answer taken from the name, which comes with no search on a file that gives no
+cue, and after a search that was off or missed on an executable. ELF, Mach-O and non-executables (a
 JPEG with a ZIP appended) still get no tail probe.
 
 ## 4. Validate the hit, do not trust the magic
@@ -212,7 +213,7 @@ compressed stream is a real shape for script launchers and not for executable on
 | A prefixed archive behind bytes that fire no cue (a JPEG polyglot, a plain concatenation) is detected only when it starts within the window, and only when the name has no known extension; `open_archive(..., format=ZIP)` reads one further in | **archivey** | The uncued scan (§2, §3); the tail probe is the tier that would find a ZIP at any distance |
 | An unrecognised extension-less file of 2 MiB of `PK\x03\x04` decoys takes about 2.4 s to reject | **archivey** | The uncued scan with ZIP uncapped (§3, §7) |
 | `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped; `FormatInfo.prefixed` (`pe-aware-sfx-location`) ships its yes-or-no part. Resolved 2026-09-25: kept, not renamed; `detected_by` is documented as an open set and `sfx_scan` as covering every prefixed hit |
-| Under a budget below 2 MiB, an executable read from a pipe whose overlay starts past the window is not detected, even when the window holds an archive | **archivey** | Reading on to the overlay start would pass the budget, and answering from the image would list what the default budget and a forced `format=` do not (§2). A seekable source reads the overlay start with one seek |
+| Under a budget below 2 MiB, an executable read from a pipe whose overlay starts past the window is not detected, even when the window holds an archive | **archivey** | Reading on to the overlay start would pass the budget, and answering from the image would list what the default budget and a forced `format=` do not (§2). A seekable source reads the overlay start by seeking to it |
 | A prefixed archive on a non-seekable source may be missed entirely | **format** | The tail probe needs a seek; the cued scan needs a cue in the first bytes, and the uncued one sees only the bytes detection already read |
 
 A defect worth remembering because it shows what the cue gate is really protecting: before

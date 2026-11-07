@@ -64,6 +64,12 @@ class CandidateView(Protocol):
     def __call__(self, end: int, start: int = 0, /) -> bytes: ...
 
 
+#: What :meth:`PrefixWorkspace.seek_view` reads on its first peek: more than a 7z
+#: start header (32 bytes), a ZIP local header with a name of normal length, or a RAR 5
+#: main header of normal size (about 220 bytes), so one seek judges the candidate.
+SEEK_VIEW_FIRST_READ = 512
+
+
 class PrefixWorkspace:
     """Monotonically growing prefix buffer over a detection source.
 
@@ -337,8 +343,11 @@ class PrefixWorkspace:
         backward seek may re-decode.
 
         For one candidate whose place a header gives, past the bytes the prefix
-        holds: the prefix does not grow through the bytes before it. The view keeps
-        what it read, so a validator's growing peeks fetch each byte once. A peek
+        holds: the prefix does not grow through the bytes before it. The first peek
+        reads :data:`SEEK_VIEW_FIRST_READ` bytes (or ``length``, when smaller) in one
+        seek, which holds every validator's header of normal size, and the view keeps
+        what it read: a validator's growing peeks then cost no more reads, and only a
+        longer header costs one read for each peek past what is held. A peek
         past ``length`` is cut short and noted, as a ``limit`` is for
         :meth:`candidate_view` (:meth:`take_clamped_view_read`).
         """
@@ -358,6 +367,8 @@ class PrefixWorkspace:
                 end = length
             if end > len(held) and not ended:
                 wanted = end - len(held)
+                if not held:
+                    wanted = max(wanted, min(SEEK_VIEW_FIRST_READ, length))
                 data = self.read_at(candidate_origin + len(held), wanted) or b""
                 ended = len(data) < wanted
                 held.extend(data)

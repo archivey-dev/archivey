@@ -72,9 +72,9 @@ class FormatInfo:
     text the archive was appended to. It is never after the archive's first member.
 
     To ask whether detection found the archive behind a prefix, test
-    :attr:`prefixed`, not ``payload_offset > 0``: the offset says where reading starts, and it is 0 behind
-    a stub for a ZIP found from its end record whose stored offsets count from the
-    start of the file."""
+    :attr:`prefixed`, not ``payload_offset > 0``: the offset says where reading
+    starts, and it is 0 behind a stub for a ZIP found from its end record whose stored
+    offsets count from the start of the file."""
 
     diagnostics: DiagnosticSummary = field(default_factory=DiagnosticSummary.empty)
     """What detection reported on its way to the answer."""
@@ -119,10 +119,13 @@ class FormatInfo:
     self-extractor's executable stub, a ``#!`` launcher, or any other prefix. Test it,
     not :attr:`payload_offset`, to ask whether detection found a prefix.
 
-    ``False`` does not prove that there is none. When the file's name names a format
-    and its first bytes match no signature, detection answers from the name
-    (``detected_by="extension"``) and does not search for a prefix; the ZIP, 7z and
-    RAR readers then find an archive behind one themselves."""
+    ``False`` does not prove that there is none. Detection searches for a prefix only
+    when the first bytes look like one (an executable header or ``#!``), or when
+    nothing else matched and the name has no known extension. So an answer from the
+    name (``detected_by="extension"``) did no search on a file whose first bytes give
+    no such cue, and on an executable it comes only after a search that was turned
+    off or found nothing. The ZIP, 7z and RAR readers then find an archive behind a
+    prefix themselves."""
 
     payload_end: int | None = None
     """Where the archive's region of the source ends, when detection identified what

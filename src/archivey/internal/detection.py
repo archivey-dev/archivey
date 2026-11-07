@@ -1274,8 +1274,9 @@ def _judge_overlay_start(
     Those paths judge the overlay start when its magic ends inside ``SFX_MAX``, and so
     does this one, whatever the budget made of ``scan_limit``: otherwise a smaller
     budget would answer with an archive inside the program image that the default
-    budget and a forced open pass over. A candidate past the window is read by one
-    seek, within the validator allowance a candidate in the window gets
+    budget and a forced open pass over. A candidate past the window is read by seeking
+    (:meth:`PrefixWorkspace.seek_view`): one read for a header of normal size, all
+    within the validator allowance a candidate in the window gets
     (``view_limit - scan_limit``). The answer is :data:`_OUT_OF_REACH` instead when
     the source cannot seek cheaply, since reading on to the candidate would pass the
     budget, and when the allowance cut the validator's view short and it declined:
