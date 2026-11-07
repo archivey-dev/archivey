@@ -27,6 +27,7 @@ import pytest
 fsspec = pytest.importorskip("fsspec")
 
 from archivey import (  # noqa: E402
+    ArchiveyConfig,
     ArchiveyUsageError,
     DiagnosticCode,
     ExtractionPolicy,
@@ -104,6 +105,23 @@ def test_strict_tree_shows_current_entries_and_reports_refusals(hostile: str) ->
             "a/../../x",
         ]
         assert {d.context.policy for d in refused} == {"strict"}
+
+
+def test_a_chained_url_takes_its_options_by_protocol_name(
+    hostile: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``fsspec.open`` (and pandas' ``storage_options``) hand each layer of a chained
+    URL the options under its protocol name: a policy and a config reach the file
+    system, and a refusal reaches ``on_diagnostic`` and the log."""
+    seen: list[DiagnosticCode] = []
+    config = ArchiveyConfig(on_diagnostic=lambda d: seen.append(d.code))
+    with fsspec.open(
+        f"archivey://etc/y::{hostile}",
+        archivey={"policy": "standard", "config": config},
+    ) as f:
+        assert f.read() == b"absolute"  # rerooted under STANDARD, refused under STRICT
+    assert DiagnosticCode.MEMBER_PATH_REFUSED in seen
+    assert "'a/../../x' is not in the archivey:// tree" in caplog.text
 
 
 def test_standard_tree_reroots_absolute_names(hostile: str) -> None:
