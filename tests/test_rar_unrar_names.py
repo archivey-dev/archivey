@@ -232,7 +232,10 @@ def test_a_large_member_with_a_utf8_name_reads_in_place(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A non-ASCII name reaches ``unrar`` as its own mask and selects that member
-    alone, on Windows (Unicode argv) and under a UTF-8 locale on POSIX."""
+    alone, on Windows (Unicode argv) and under a UTF-8 locale on POSIX. On Windows
+    a name under a directory that is not printable ASCII is not plain
+    (``_windows_plain``), so ``日本/ß.txt`` reads from a synthetic copy there, with
+    no mask."""
     if not rar_reader.unrar_mask_carries_non_ascii():
         pytest.skip("no UTF-8 locale for unrar on this system")
     monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
@@ -250,7 +253,8 @@ def test_a_large_member_with_a_utf8_name_reads_in_place(
     with open_archive(path, config=_UNRAR_ONLY) as reader:
         got = [reader.read(member) for member in reader.members()]
     assert got == [_payload(i) for i in range(3)]
-    assert spawned == ["café.txt", "日本/ß.txt", "plain.txt"]
+    windows = rar_reader.unrar_matches_names_as_windows()
+    assert spawned == ["café.txt", None if windows else "日本/ß.txt", "plain.txt"]
 
 
 @requires_binary("unrar")
