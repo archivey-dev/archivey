@@ -537,12 +537,15 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
 - **`context.open_nested(data, format)`** reads `data` with archivey's reader for
   `format` (`ArchiveFormat.TAR_XZ`, say), in one forward pass, and yields one
   `MemberSpan` per inner member, its decoded data in `MemberSpan.data`. A format that
-  needs a seekable source (7z, RAR) raises `UnsupportedFeatureError`. Call it from
-  `walk()` only.
+  needs a seekable source (7z, RAR) raises `UnsupportedFeatureError`, and so does an
+  archive nested more than 8 deep, which a format that reads its inner format from its
+  own bytes can be made to reach. Call it from `walk()` only. Stop early by closing the
+  iterator it returns; archivey closes one left open when the archive closes.
 - **One archive to the caller.** The inner reader works for the outer one: its listing
   limits and decoder limits are the caller's, and what it reports (a TAR header it had
   to guess at, bytes after its end) goes into the outer reader's diagnostics, naming
-  the member as the caller sees it. Its errors raise from the walk. Names are checked
+  the member as the caller sees it, and reaches that member's `diagnostics`, while the
+  data is read too. Its errors raise from the walk. Names are checked
   once, by the outer listing, after the walk renames them.
 - **Yield every span, in order.** The inner reader numbers its members as the outer
   listing will, so yield each span before taking the next. The walk may change the

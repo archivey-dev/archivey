@@ -408,7 +408,9 @@ class ForwardStream:
         self._check_not_handed_off()
         self._end_take()
         taken = self._taken = _TakenBytes(self, n)
-        return cast(BinaryIO, io.BufferedReader(taken))
+        # Unbuffered, so that a read after the walk moved on raises at once rather than
+        # returning what a buffer pulled in earlier.
+        return cast(BinaryIO, taken)
 
     def _end_take(self) -> None:
         """Move past what the last :meth:`take` left unread, and close it."""
@@ -470,7 +472,8 @@ class ForwardStream:
 
 class _TakenBytes(io.RawIOBase):
     """What :meth:`ForwardStream.take` reads: the next bytes of its stream, up to
-    ``end``."""
+    ``end``. A read fills what it asks for, up to ``end``, as a buffered stream's
+    does."""
 
     def __init__(self, forward: ForwardStream, n: int) -> None:
         self._forward = forward
@@ -491,17 +494,18 @@ class _TakenBytes(io.RawIOBase):
             )
         forward = self._forward
         want = min(len(buffer), self.end - forward._offset)
-        if want <= 0:
-            return 0
-        data = forward._read_fn(want)
-        if not data:
-            raise TruncatedError(
-                f"the archive ends at offset {forward._offset}, inside the "
-                f"{self.end - forward._offset} bytes up to offset {self.end}"
-            )
-        forward._offset += len(data)
-        buffer[: len(data)] = data
-        return len(data)
+        got = 0
+        while got < want:
+            data = forward._read_fn(want - got)
+            if not data:
+                raise TruncatedError(
+                    f"the archive ends at offset {forward._offset}, inside the "
+                    f"{self.end - forward._offset} bytes up to offset {self.end}"
+                )
+            forward._offset += len(data)
+            buffer[got : got + len(data)] = data
+            got += len(data)
+        return got
 
 
 class ReaderContext:
@@ -646,12 +650,16 @@ class ReaderContext:
         so its reports name the right member. The walk may change a span's member
         before yielding it: rename it, under a prefix say (and the ``link_target`` of
         a hard link with it), or add ``MemberSpan.digests``. Stop early by closing the
-        iterator; archivey closes it when the walk ends.
+        iterator; one left open is closed when Python collects it, and at the latest
+        when the archive is closed.
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
         format is read by its replacement, and ``exclude_libraries`` holds; ``only``
         and ``exclude`` check only the file the call opens. A format that needs a
-        seekable source (ZIP, 7z) raises ``UnsupportedFeatureError``. Call it from
+        seekable source (7z, RAR) raises ``UnsupportedFeatureError``, and so does an
+        archive nested more than 8 deep (an inner reader calling ``open_nested`` in
+        turn). What the inner reader attaches to a member while its data is read
+        reaches the member the walk yielded. Call it from
         :meth:`SequentialReader.walk` only; anywhere else it raises
         ``ArchiveyUsageError``.
         """

@@ -9,6 +9,7 @@ inner archive. A length of 0 ends it. The walk lists inner archive ``n``'s membe
 
 from __future__ import annotations
 
+import inspect
 import io
 import lzma
 import tarfile
@@ -19,6 +20,7 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    ArchiveMember,
     ArchiveyUsageError,
     ContainerFormat,
     CorruptionError,
@@ -39,7 +41,13 @@ from archivey.formats import (
     SequentialReader,
     register_format,
 )
-from archivey.internal.format_adapter import registration_scope
+from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.format_adapter import (
+    MAX_NESTED_DEPTH,
+    _NestedData,
+    _outer_copy,
+    registration_scope,
+)
 from tests.streams_util import NonSeekableBytesIO
 
 _KINDS = {
@@ -279,6 +287,89 @@ def test_take_stream_ends_and_hands_back() -> None:
     assert forward.offset == 6
     with pytest.raises(ArchiveyUsageError, match="after the walk moved past"):
         taken.read()
+    # A sized read after the walk moved on raises too, whatever an earlier read took.
+    sized = forward.take(3)
+    assert sized.read(1) == b"6"
+    forward.read(1)
+    with pytest.raises(ArchiveyUsageError, match="after the walk moved past"):
+        sized.read(1)
     short = forward.take(10)
     with pytest.raises(TruncatedError):
         short.read()
+
+
+def _nest(depth: int) -> bytes:
+    """A tar inside ``depth`` BOXES layers, each naming BOXES as its inner kind."""
+    data = _boxes((b"T", _tar([("a", b"a")])))
+    for _ in range(depth - 1):
+        data = _boxes((b"B", data))
+    return data
+
+
+@pytest.mark.usefixtures("boxes")
+def test_nesting_is_bounded() -> None:
+    """A walk that names its own format inside itself is refused past 8 levels of
+    nesting, with an archivey error and not Python's recursion limit."""
+    _KINDS[b"B"] = BoxesHandler.format
+    try:
+        # The tar is MAX_NESTED_DEPTH archives deep: read.
+        with open_archive(io.BytesIO(_nest(MAX_NESTED_DEPTH))) as reader:
+            names = [m.name for m in reader.members()]
+        assert names == ["0/" * (MAX_NESTED_DEPTH - 1) + "0/a"]
+        for depth in (MAX_NESTED_DEPTH + 1, 400):
+            with (
+                pytest.raises(UnsupportedFeatureError, match="nested more than 8"),
+                open_archive(io.BytesIO(_nest(depth))) as reader,
+            ):
+                reader.members()
+    finally:
+        del _KINDS[b"B"]
+
+
+def test_an_iterator_the_walk_keeps_is_closed_with_the_archive() -> None:
+    kept: list[Iterator[MemberSpan]] = []
+
+    class Keeper(BoxesReader):
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            stream.read_exact(5 + 8 + 1)
+            spans = self._context.open_nested(
+                stream.take(len(_TAR_A)), ArchiveFormat.TAR
+            )
+            kept.append(spans)
+            yield next(spans)
+
+    class KeeperHandler(BoxesHandler):
+        def open_sequential(self, context: ReaderContext) -> BoxesReader:
+            return Keeper(context)
+
+    with registration_scope():
+        register_format(KeeperHandler)
+        data = _boxes((b"T", _TAR_A))
+        with open_archive(io.BytesIO(data), format=BoxesHandler.format) as reader:
+            assert [m.name for m in reader.members()] == ["a"]
+            assert inspect.getgeneratorstate(kept[0]) != inspect.GEN_CLOSED
+    assert inspect.getgeneratorstate(kept[0]) == inspect.GEN_CLOSED
+
+
+_TAR_A = _tar([("a", b"a"), ("b", b"b")])
+
+
+def test_reports_made_while_data_is_read_reach_the_listed_member() -> None:
+    """What the inner reader attaches to its member during a read is attached to the
+    member the walk yielded, after the reports already there."""
+    inner = ArchiveMember(name="x", type=MemberType.FILE, size=1)
+    outer = _outer_copy(inner)
+    earlier, later = object(), object()
+    object.__setattr__(outer, "_diagnostics", (earlier,))
+
+    class Reporting(io.BytesIO):
+        def read(self, n: int | None = -1) -> bytes:
+            if not inner._diagnostics:
+                object.__setattr__(inner, "_diagnostics", (later,))
+            return super().read(n)
+
+    collector = DiagnosticCollector()
+    data = _NestedData(Reporting(b"x"), collector, 0, inner, outer)  # type: ignore[arg-type]
+    assert data.read() == b"x"
+    data.close()
+    assert outer._diagnostics == (earlier, later)

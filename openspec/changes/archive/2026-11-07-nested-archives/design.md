@@ -39,21 +39,34 @@ touches one place; numbering inside the inner reader would touch every report si
 The outer adapter keeps its own state on each member it lists (`_raw`, ids); TAR reads
 its own state back from its members at the end of its walk. So the span carries a copy of
 the public fields, with the reports attached to the member so far. A report the inner
-reader attaches later, while the data is read, reaches the collector but not the copy.
+reader attaches later, while the data is read, is passed on to the copy after each read
+(`_NestedData`), so `member.diagnostics` holds it as it would for the inner format read
+on its own.
 
 ### 5. Name checks once
 
-A nested reader (`_nested_reader`) skips the presentation checks at registration
+A nested reader (`_nested_depth` above 0) skips the presentation checks at registration
 (deceptive names, duplicates, NUL); the outer listing makes them on the renamed member,
 across all the inner archives. Each inner reader still applies the listing limits to
 its own members.
 
 ### 6. `take()`
 
-`take(n)` returns a buffered stream over the next `n` bytes, read through the
+`take(n)` returns an unbuffered stream over the next `n` bytes, read through the
 `ForwardStream`'s own read function, so it works on every layer: a pipe, a file and a
-`decompress()`ed layer. The next `read`, `skip`, `take` or `decompress` skips what is
-left; a read of the stream after that is a plugin bug (`ArchiveyUsageError`).
+`decompress()`ed layer. A read fills what it asks for, as a buffered stream's does. The
+next `read`, `skip`, `take` or `decompress` skips what is left; a read of the stream
+after that is a plugin bug (`ArchiveyUsageError`). With no buffer in between, that read
+raises even when an earlier read was a short one.
+
+### 7. Depth
+
+Each nested reader records its depth (`_nested_depth`), one more than the reader that
+opened it, and `open_nested` refuses past `MAX_NESTED_DEPTH` (8) with
+`UnsupportedFeatureError`. Formats that nest go one or two levels deep; a walk that
+reads its inner format from its own bytes could otherwise recurse until Python's
+recursion limit, a bare `RecursionError` on a 19 KB input. The iterators `open_nested`
+returns are kept in a weak set and closed with the archive at the latest.
 
 ## Risks
 

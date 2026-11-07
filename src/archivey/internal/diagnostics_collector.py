@@ -23,7 +23,7 @@ from collections import Counter
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from archivey.diagnostics import (
     _INFO_LOG_CODES,
@@ -282,14 +282,25 @@ class DiagnosticCollector:
         (``ReaderContext.open_nested``) counts its members from 0, while the outer
         listing gives them the ids after the members listed before them. A report's
         ``member_id`` is shifted by ``first`` so it names the member the caller sees.
-        Blocks nest: the offsets add up.
+        Blocks nest: the offsets add up, and :attr:`nesting_depth` counts the blocks
+        open, so a reader made inside one knows how deep it reads.
         """
-        before = getattr(self._local, "member_id_offset", 0)
-        self._local.member_id_offset = before + first
+        local = self._local
+        before = getattr(local, "member_id_offset", 0)
+        depth = getattr(local, "nesting_depth", 0)
+        local.member_id_offset = before + first
+        local.nesting_depth = depth + 1
         try:
             yield
         finally:
-            self._local.member_id_offset = before
+            local.member_id_offset = before
+            local.nesting_depth = depth
+
+    @property
+    def nesting_depth(self) -> int:
+        """How many :meth:`member_ids_from` blocks are open on this thread: how deep
+        inside other archives a reader made now reads."""
+        return getattr(self._local, "nesting_depth", 0)
 
     def scope_stack(self) -> list[DiagnosticScope]:
         """This thread's entered scopes, for a caller that enters one on a hot path.
@@ -490,7 +501,8 @@ class DiagnosticCollector:
         if offset:
             member_id = getattr(context, "member_id", None)
             if member_id is not None:
-                context = replace(context, member_id=member_id + offset)  # type: ignore[type-var]
+                # Every context with a member_id field is a dataclass.
+                context = replace(cast(Any, context), member_id=member_id + offset)
         ignored = code in self._policy.ignore
         raising = code in self._policy.raise_on
         log = logger if logger is not None else self._logger
