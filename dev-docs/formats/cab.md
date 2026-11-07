@@ -43,7 +43,9 @@ From the Microsoft Cabinet Format specification (MS-CAB) and libmspack's `cabd.c
   attributes `_A_EXEC` (`0x40`) and `_A_NAME_IS_UTF` (`0x80`): in a Windows attribute mask
   those bits are `FILE_ATTRIBUTE_DEVICE` and `FILE_ATTRIBUTE_NORMAL`.
 - **`CFDATA`** blocks per folder: checksum, stored size, decoded size (at most 32 KiB),
-  the data reserve, then the stored bytes.
+  the data reserve, then the stored bytes. A decoded size of 0 marks a block split across
+  cabinets; libmspack fails it when there is no next cabinet, and archivey refuses it as
+  `CorruptionError`, since it refuses cabinet sets.
 
 The methods are 0 stored, 1 MSZIP, 2 Quantum and 3 LZX.
 
@@ -94,7 +96,8 @@ the last one up to the folder's total, whatever size each block says.
 When a member stream closes, the reader keeps its folder decoder; the next member of the
 same folder at a later offset continues from it. So `stream_members()` and members read
 in order decode each folder once. Only one decoder is kept: memory stays at one LZX window
-(at most 2 MiB).
+(at most 2 MiB), and the window is checked against `max_decoder_memory` before a member of
+the folder opens. A member of size 0 reads as empty and decodes nothing.
 
 A member is `checked` (`Verification.CHECKSUM` once read to the end) when every block
 from the folder's start through its last byte has a checksum. LZX history means an
@@ -104,7 +107,8 @@ earlier block's damage reaches the member, so the earlier blocks count too.
 
 `lzx_decoder.py` follows libmspack's `lzxd.c` wherever the format leaves a choice, so the
 two agree on every stream; its docstring lists those choices (code-length runs that spill
-past their range, empty trees, matches that cross a frame or reach before the start, the
+past their range, code lengths a delta wraps out of range, which trees may be empty,
+matches that cross a frame or reach before the start, the
 E8 limits). Each tree decodes through a two-level table: a root as wide as the longest
 code, at most 10 bits, and a sub-table under each root entry whose codes are longer. A
 block may be empty and still carry up to six trees, so a table's cost follows its tree:

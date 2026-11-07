@@ -47,6 +47,7 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
+from archivey.internal.config import check_decoder_memory
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import metadata_limit_error
 from archivey.internal.overrides import override
@@ -317,6 +318,13 @@ class CabReader(IndexedReader[_Location]):
             checksum, stored, decoded = _DATA.unpack(
                 self._read(pos, _DATA.size, "a data block header")
             )
+            if not decoded:
+                # libmspack reads this as a block split across cabinets, and fails
+                # it when there is no next cabinet. Sets are refused at open.
+                raise CorruptionError(
+                    f"data block {number} of folder {index} has no output: a block "
+                    "split across cabinets, in a cabinet that is not part of a set"
+                )
             if stored > _INPUT_MAX or decoded > _BLOCK_MAX:
                 raise CorruptionError(
                     f"data block {number} of folder {index} stores {stored} bytes "
@@ -367,8 +375,17 @@ class CabReader(IndexedReader[_Location]):
                 f"folder {locator.folder} declares an LZX window of "
                 f"2**{folder.window_bits} bytes"
             )
-        table = self._block_table(locator.folder)
+        if folder.method == _LZX:
+            check_decoder_memory(
+                1 << folder.window_bits,
+                limits=self._context.config.decoder_limits,
+                what=f"folder {locator.folder}'s LZX window",
+            )
         size = member.size or 0
+        if not size:
+            # Nothing to decode: do not run the folder up to the member's offset.
+            return MemberData(io.BytesIO(b""), bounded=True)
+        table = self._block_table(locator.folder)
         end = locator.offset + size
         if table.complete and end > table.output[-1]:
             raise CorruptionError(
@@ -383,7 +400,7 @@ class CabReader(IndexedReader[_Location]):
         stream = self._folder_stream(locator.folder, folder, table, locator.offset)
         return MemberData(
             _MemberStream(self, stream, size),
-            checked=checked and size > 0,
+            checked=checked,
             bounded=True,
         )
 
