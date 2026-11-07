@@ -681,10 +681,10 @@ reported as a bare `.zst`, and the read refuses the same window.
 
 **Residual.** Codecs whose memory their format bounds at 16 MiB or less (gzip, bzip2,
 Brotli, LZ4 frames) are not checked against the cap, in detection or on read. The RAR
-counts rest on measurements of `unrar` 7.00 and `unar` 1.10.1; another version that allocates differently is not measured. The
-rapidgzip child's peak can pass the cap by what it allocates between two checks (about
-17 MB measured on four cores; a check delayed on a busy machine is caught by the one
-before the next read). Where the platform does not report a process's peak memory
+counts rest on measurements of `unrar` 7.00 and `unar` 1.10.1; another version that
+allocates differently is not measured. The rapidgzip child's peak can pass the cap by
+what it allocates between two checks (about 17 MB measured on four cores; a check
+delayed on a busy machine is caught by the one before the next read). Where the platform does not report a process's peak memory
 (`VmHWM` on Linux, `getrusage` on macOS and the BSDs, `GetProcessMemoryInfo` on
 Windows), the child is not capped.
 
