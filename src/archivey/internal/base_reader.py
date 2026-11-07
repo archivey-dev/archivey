@@ -663,6 +663,9 @@ class BaseArchiveReader(ArchiveReader):
     # stages each such member's data and places the members only once the walk has
     # ended (``ExtractionCoordinator._stage_then_place``).
     _REVISES_YIELDED_MEMBERS: bool = False
+    # How deep inside other archives this reader reads (``ReaderContext.open_nested``):
+    # 0 for the archive the caller opened. Above 0, the outer listing checks the names.
+    _nested_depth: int = 0
 
     def __init__(
         self,
@@ -681,6 +684,10 @@ class BaseArchiveReader(ArchiveReader):
         self._diagnostics_collector = (
             collector if collector is not None else collector_from_config(self._config)
         )
+        # A reader made while an outer reader reads its inner archive
+        # (``ReaderContext.open_nested``) knows its depth from the start, so the checks
+        # its open makes already skip what the outer listing checks.
+        self._nested_depth = self._diagnostics_collector.nesting_depth
         self._member_streams = member_streams
         self._open_site = open_site
         self._state = ReaderState(member_streams=member_streams, open_site=open_site)
@@ -2322,7 +2329,9 @@ class BaseArchiveReader(ArchiveReader):
         """
         member._member_id = idx
         member._archive_id = self._archive_id
-        if idx >= self._walk_presented:
+        # A nested reader's members are checked again, by name, as the outer
+        # listing lists them (``ReaderContext.open_nested``): only once, there.
+        if idx >= self._walk_presented and not self._nested_depth:
             # Both lookups read only the members before this one: it is indexed after
             # registration. A hard link is looked up only when it is one, so the
             # common member pays two dict lookups.

@@ -172,12 +172,36 @@ def cpio_seeds() -> list[bytes]:
     return tiny + _fixture_seeds("cpio", "*.cpio")
 
 
+def rpm_seeds() -> list[bytes]:
+    """Tiny magics, and the rpmbuild packages in tests/fixtures/rpm: one per payload
+    compressor, uncompressed included, and a source package."""
+    tiny = [b"", b"\xed\xab\xee\xdb", b"\xed\xab\xee\xdb\x03" + bytes(91)]
+    paths = sorted((_REPO_ROOT / "tests" / "fixtures" / "rpm").glob("*.rpm"))
+    return tiny + [path.read_bytes() for path in paths]
+
+
 def squashfs_seeds() -> list[bytes]:
     """Tiny blobs and the images in tests/fixtures/squashfs, one per compressor and
     layout (no fragments, tail ends), each a few KiB."""
     tiny = [b"", b"hsqs", b"hsqs" + bytes(92), b"sqsh" + bytes(92)]
     paths = sorted((_REPO_ROOT / "tests" / "fixtures" / "squashfs").glob("*.sqfs"))
     return tiny + [path.read_bytes() for path in paths]
+
+
+def xar_seeds() -> list[bytes]:
+    """Tiny blobs and the bsdtar archives in tests/fixtures/external/xar_bsdtar, one per
+    encoding, each a few kilobytes."""
+    tiny = [b"", b"xar!\0\x1c\0\x01" + bytes(20)]
+    folder = _REPO_ROOT / "tests" / "fixtures" / "external" / "xar_bsdtar"
+    return tiny + [path.read_bytes() for path in sorted(folder.glob("*.xar"))]
+
+
+def cab_seeds() -> list[bytes]:
+    """Tiny blobs and the makecab cabinets in tests/fixtures/external/cab_libarchive:
+    stored, MSZIP, LZX and a cp932 name, each a few hundred bytes."""
+    tiny = [b"", b"MSCF\0\0\0\0", b"MSCF" + bytes(32)]
+    folder = _REPO_ROOT / "tests" / "fixtures" / "external" / "cab_libarchive"
+    return tiny + [path.read_bytes() for path in sorted(folder.glob("*.cab"))]
 
 
 def _fixture_seeds(folder: str, pattern: str) -> list[bytes]:
