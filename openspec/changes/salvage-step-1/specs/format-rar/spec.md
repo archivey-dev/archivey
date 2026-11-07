@@ -8,99 +8,71 @@ When a header after the main header fails its CRC, and it is not taken as a dama
 block ("A damaged end-of-archive block SHALL keep the listing"), the archive SHALL open
 and list the members whose headers precede it. The walk SHALL then resume past the
 damaged header when the headers after it confirm it, as below, and list the members
-after it too. The damage SHALL be reported
-as `CorruptionError` after the last member the walk reaches: as
-`members_report().error`, and raised by `members()` and `stream_members()` after the
-listed members. It SHALL NOT be `TruncatedError` unless the set is also incomplete
-(below). This SHALL hold for RAR 1.5-4 and RAR5, in both access modes (DR-2). The message
-SHALL name the first damaged header, and in a multi-volume set the first damaged volume.
+after it too. The damage SHALL be reported as `CorruptionError` after the last member
+the walk reaches: as `members_report().error`, and raised by `members()` and
+`stream_members()` after the listed members. It SHALL NOT be `TruncatedError` unless the
+set is also incomplete (below). This SHALL hold for RAR 1.5-4 and RAR5, in both access
+modes (DR-2). The message SHALL name the first damaged header, and in a multi-volume set
+the first damaged volume.
 
 **Resuming.** The walk SHALL compute the next header's position from the damaged
 header's own fields, as `unrar` does: its start, plus its header size, plus its data
 size (RAR5: the header-size vint and, when its flags declare one, the data-size vint;
 RAR 1.5-4: `HEAD_SIZE` plus `ADD_SIZE`, or the FILE header's packed size including the
-high part its flags declare). It SHALL resume there only if all of these hold:
+high part its flags declare). The damaged header SHALL parse as the walk parses any
+header (every field, not only its sizes), its type SHALL read as FILE or SERVICE (RAR
+1.5-4: FILE, NEWSUB or an old sub-block type the walk accepts), and the position SHALL
+be after it and inside the volume. A damaged header whose type reads as anything else
+(`ENDARC` not taken as the end block, MAIN, RAR5 `CRYPT`, an unknown value) SHALL end
+the walk there: `unrar` 7.00 stops at an `ENDARC`- or `CRYPT`-typed one too.
 
-- the damaged header parses as the walk parses any header (every field, not only its
-  sizes), its type reads as a member or service type that may follow the main header
-  (RAR5: FILE or SERVICE; RAR 1.5-4: FILE, NEWSUB or an old sub-block type the walk
-  accepts), and the position is after it and inside the volume;
-- the header at that position passes its own CRC, its fields parse, and its type is one
-  that may follow the main header (RAR5: FILE, SERVICE, ENDARC; RAR 1.5-4: FILE, NEWSUB,
-  ENDARC and the old sub-block types the walk accepts);
-- the header after that one passes the same checks, or is the clean end of the volume
-  (the volume's end, or nothing but zero bytes after an intact end block), or is itself
-  a damaged header that this rule resumes past. In that last case the headers that
-  confirm the second resume confirm the first one too, and when the second resume is
-  not confirmed, neither is the first. When the resumed header is the end block, its
-  CRC and what follows it are the two checks.
+The position SHALL then be *confirmed*:
 
-Otherwise the walk SHALL stop at the damaged header, as it stops for a header it cannot
-resume past, and nothing past it SHALL be listed. It SHALL NOT search the bytes for a
-header. The member or service header whose header is damaged SHALL NOT be listed. Each
-skipped header SHALL emit `ARCHIVE_DAMAGE_SKIPPED` (`diagnostics`). Each later damaged
-header SHALL get the same rule. The skipped spans the reader keeps SHALL be capped, with
-any past the cap counted.
+- **RAR5:** the header at that position passes its own CRC (32 bits), its fields parse,
+  and its type may follow the main header (FILE, SERVICE, ENDARC).
+- **RAR 1.5-4:** the header at that position passes those checks (its CRC is 16 bits),
+  and so does the header after it, or that header is the clean end of the volume (the
+  volume's end, or nothing but zero bytes after an intact end block).
+- When the resumed header is the end block, its CRC and what follows it are the checks.
 
-A skipped header's fields are trusted only as `unrar` and `lsar` use them. Its sizes say
-where the next header is, which the confirming headers then check. Its type, name,
-unpacked size, dictionary size, and the fields that decide whether a FILE header is a
-payload member (the directory flag, the host attributes, the RAR5 redirect record) say
-how those programs count the entry.
+When the header at the computed position is itself a damaged header that parses and
+whose type reads as FILE or SERVICE, the walk SHALL follow its sizes the same way, and
+so on, up to 8 damaged headers in a row. The whole chain SHALL be accepted only when the
+header after its last damaged header is confirmed as above; that header vouches for
+every position in the chain. When the chain is not confirmed, or is longer than 8, the
+walk SHALL stop at its first damaged header, and nothing past it SHALL be listed. The
+walk SHALL NOT search the bytes for a header. Each later damaged header SHALL get the
+same rule.
 
-A damaged header whose type reads as anything but FILE or SERVICE (RAR 1.5-4: FILE,
-NEWSUB or an accepted old sub-block type), and that is not taken as the damaged end
-block, SHALL end the walk there: `ENDARC`, MAIN, RAR5 `CRYPT` or an unknown value. A
-field `unrar` acts on to end its walk ends archivey's too: `unrar` 7.00 stops at an
-`ENDARC`-typed one, as `lsar` 1.10.1 does, and at a `CRYPT`-typed one ("Unknown
-encryption method"). A type archivey would refuse one header later is no ground to
-resume on either.
+**The damaged member is listed.** A damaged header whose type reads as FILE, in an
+accepted resume, SHALL be listed as a member with the fields it holds, as `unrar` lists
+it. Its name, type, mode, times and flags are not checked by anything. Its sizes are
+confirmed by the resume, and its data is checked by the data CRC it holds: when that
+CRC, or a size the decode depends on, is the damaged field, the member's read SHALL
+raise `CorruptionError` as any digest mismatch does. Every read, open, stream or
+extraction of such a member SHALL emit `MEMBER_HEADER_DAMAGED` (`diagnostics`) before
+any of its bytes are returned. Listing it SHALL NOT emit it: under `STRICT` the member
+is listed and its read refused, and the other members read. Path safety, link and type
+rules apply to its fields as to any member's.
 
-**Unlisted entries.** `unrar` and `lsar` still read a skipped FILE header as an entry, by
-its damaged fields. A skipped header whose type reads as SERVICE (or NEWSUB) is not an
-entry for them: `lsar` does not list it, `unrar p` emits nothing for it, and an include
-mask built from its name selects nothing (measured on unrar 7.00 and lsar 1.10.1 with
-the type byte set to SERVICE, plain and solid: `unrar p` emits the other members'
-bytes only, and the mask read emits 0 bytes). The reader SHALL
-keep each skipped header whose type reads as FILE as an *unlisted entry*: never listed or
-returned, and counted as those programs count it. It SHALL count a skipped header of any
-other type nowhere. Each count includes:
-
-- the `unar -i` index of "Read RAR member data with unar": every unlisted entry, payload
-  or not, since `lsar` gives every FILE header an index;
-- the split in "Stream solid RAR archives through one unrar pipe", the selection and
-  skipped bytes in "Return a named member's own bytes when its mask selects others", the
-  refusal in "Refuse a glob member name whose mask also matches earlier members", and
-  the counts in "Count the RAR dictionary against the decoder memory cap": the *payload
-  FILE entries*, that is, the listed payload FILE members and the unlisted entries that
-  the same rules make payload members (not a directory, link or file copy).
-
-An unlisted entry whose name cannot be read the way `unrar` reads it is refused as an
-earlier member is in the mask requirement: `UnsupportedFeatureError` naming
-`rar_decompressor='unar'`, and under `auto` "Under auto, read a member unrar cannot name
-with unar" applies. A damaged size or dictionary is counted as it reads. A solid pass
-SHALL stay one process. Each listed member SHALL still be checked by its own digest, so
-a damaged unpacked size, or a skipped block whose data `unrar` did not decode, makes the
-later members of that solid stream fail their digests rather than return wrong bytes.
-For a listed member after a skip in the same solid stream that has no stored digest,
-the outcome SHALL depend on what archivey knows about the stream:
-
-- after a skipped SERVICE-typed header with a data area, `unrar` did not decode that
-  data, so the decoder state after it is known to be wrong: the member's read SHALL
-  raise `CorruptionError` naming the skip;
-- after an unlisted FILE entry, `unrar` decoded the skipped data and only the split
-  rests on its unchecked unpacked size: the member's bytes SHALL be returned, with
-  `DIGEST_UNVERIFIABLE` (`reason="after_damaged_header"`, `algorithm=""`) naming the
-  skip, as DR-1 asks wherever bytes reach the caller unchecked. That code is in
-  `ARCHIVE_INTEGRITY_CODES`, so `STRICT` refuses.
+A damaged header whose type reads as SERVICE (or NEWSUB, or an old sub-block type) SHALL
+NOT be listed, as neither `unrar` nor `lsar` lists it; it SHALL be reported as a damaged
+service header is (`MEMBER_HEADER_RECORD_SKIPPED`, under the existing cap). In a solid
+stream, a SERVICE-typed damaged header with a data area leaves the decoder state after
+it wrong (`unrar p` does not decode that data): each later member of that stream SHALL
+fail its digest, and one with no stored digest SHALL raise `CorruptionError` naming the
+damaged header rather than return bytes. A member with no stored digest after a listed
+damaged member in the same solid stream SHALL return its bytes with `DIGEST_UNVERIFIABLE`
+(`reason="after_damaged_header"`): only the split rests on the damaged member's
+unpacked size, which the damaged member's own CRC checks when it passes.
 
 **Volumes.** The walk SHALL go on to the next volume only when the last member header
-it read with an intact CRC says that its data continues there. The next volume's first
-header is at its own offset 0, so no damaged size is needed to find it. That volume's
-members SHALL be listed, and the `CorruptionError` SHALL follow the whole listing (DR-2,
-as for a missing middle volume). With no continuing member the set ends at that volume.
-When the next volume is missing, the open SHALL end with the incomplete-set
-`TruncatedError`, whose message also names the damaged header.
+it read with an intact CRC, or a listed damaged member, says that its data continues
+there. The next volume's first header is at its own offset 0, so no damaged size is
+needed to find it. That volume's members SHALL be listed, and the `CorruptionError` SHALL
+follow the whole listing (DR-2, as for a missing middle volume). With no continuing
+member the set ends at that volume. When the next volume is missing, the open SHALL end
+with the incomplete-set `TruncatedError`, whose message also names the damaged header.
 
 A damaged main header SHALL still raise `CorruptionError` at open: nothing precedes it,
 and its flags (solid, volume, header encryption) are needed to read anything after it.
@@ -112,34 +84,40 @@ invalid, SHALL stay `CorruptionError` at open (see
 "A RAR file cut inside a header SHALL list the members before the cut").
 
 With encrypted headers the damage is reported this way only once the header password is
-proven, as for a cut, and the walk SHALL NOT resume past it, as `unrar` does not. Before
-that proof a CRC mismatch reads the same as a wrong key, so the open SHALL raise the
-wrong-password `EncryptionError`. When that header's read ran out of ciphertext, its
-message also names a cut in that header or damage to it, under the condition that
+proven, as for a cut, and the walk SHALL NOT resume past it, as `unrar` does not: the
+next header's IV would come from a size no CRC has checked. Before that proof a CRC
+mismatch reads the same as a wrong key, so the open SHALL raise the wrong-password
+`EncryptionError`. When that header's read ran out of ciphertext, its message also names
+a cut in that header or damage to it, under the condition that
 "A RAR file cut inside a header SHALL list the members before the cut" sets.
 
 #### Scenario: damaged header matrix
 
+Fixtures: `basic_nonsolid__.rar` (RAR5, six members) and its RAR 1.5-4 twin, the third
+FILE header damaged unless stated.
+
 | Case | Expected |
 | --- | --- |
-| Plain RAR 1.5-4 or RAR5, six members, the last byte of the third FILE header flipped | Five members listed and read (all but the third); one `ARCHIVE_DAMAGE_SKIPPED`; `CorruptionError` after them (`unrar lb`: six listed, exit 3) |
-| The same, a byte of the third header's name flipped | The same five; the damaged name is not listed (`unrar x` writes it under the damaged name) |
-| The same, the third header's size vint damaged so that the next position fails its CRC | Two members listed; `CorruptionError` after them (`unrar`: the same two, "Unexpected end of archive") |
-| The last bytes of the third and fifth FILE headers flipped (the fifth is the header after the one that confirms the third) | The other four listed; two `ARCHIVE_DAMAGE_SKIPPED`; the error names the third (`unrar lb`: six) |
-| The last bytes of the third and fourth FILE headers flipped (adjacent) | Two members listed; `CorruptionError` after them (`unrar lb` and `lsar`: six, with no CRC vouching for the fourth's position) |
-| The third FILE header's type byte flipped to `ENDARC` | Two members listed; `CorruptionError` after them (`unrar lb` and `lsar`: the same two) |
-| The third FILE header's type byte flipped to SERVICE | The other five listed and read, also with `rar_decompressor="unar"` (no unlisted entry, so no index shift); one `ARCHIVE_DAMAGE_SKIPPED` (`unrar lb` and `lsar`: the same five) |
-| The third FILE header's type byte flipped to MAIN or to RAR5 `CRYPT` | Two members listed; `CorruptionError` after them (MAIN: `unrar lb` and `lsar` five; `CRYPT`: `unrar lb` two, `lsar` five) |
-| Solid RAR5, the third FILE header's type byte flipped to SERVICE, `stream_members()` | One process; the members before it read; the members after it raise `CorruptionError` from their digests (`unrar t`: "checksum error" on the next one); five listed |
-| Solid, a listed member with no stored digest after a SERVICE-typed skip with data | `CorruptionError` naming the skip; no bytes returned |
-| Solid, a listed member with no stored digest after a confirmed FILE-typed skip (a name byte) | Its own bytes; `DIGEST_UNVERIFIABLE` (`reason="after_damaged_header"`) naming the skip |
+| RAR5 or RAR 1.5-4, the last byte of the third FILE header flipped | Six listed; the third reads its own bytes with `MEMBER_HEADER_DAMAGED`; `CorruptionError` after them (`unrar lb`: six, exit 3) |
+| A byte of the third header's name flipped | Six listed, the third under the damaged name (`suXdir/file2.txt`), its bytes checked by its CRC, with `MEMBER_HEADER_DAMAGED` (`unrar x` writes the same path) |
+| The same under `DiagnosticPolicy.STRICT` | Six listed; the third's read raises `DiagnosticRaisedError`; the other five read; `CorruptionError` at the end |
+| The third header's data CRC field damaged | Six listed; the third's read raises `CorruptionError` from its digest |
+| The third header's size vint damaged so that the next position fails its CRC | Two listed; `CorruptionError` after them (`unrar`: the same two, "Unexpected end of archive") |
+| RAR 1.5-4, the damaged size lands on a header that passes CRC16 while the one after it does not | Two listed; no resume; `CorruptionError` after them |
+| RAR5, the same, the header after the landing header damaged and unresumable | The landing header's member listed too (one confirming header) |
+| The last bytes of the third and fourth FILE headers flipped (a chain of two) | Six listed, the third and fourth with `MEMBER_HEADER_DAMAGED` (`unrar lb` and `lsar`: six) |
+| The last bytes of the third and fifth FILE headers flipped | Six listed, two flagged |
+| Nine damaged FILE headers in a row | The members before them listed; `CorruptionError` (chain longer than 8) |
+| The third FILE header's type byte set to `ENDARC` | Two listed; `CorruptionError` after them (`unrar lb` and `lsar`: the same two) |
+| The third FILE header's type byte set to SERVICE | The other five listed and read; `MEMBER_HEADER_RECORD_SKIPPED` for the damaged service header (`unrar lb` and `lsar`: the same five) |
+| The type byte set to MAIN or to RAR5 `CRYPT` | Two listed; `CorruptionError` after them (MAIN: `unrar lb` and `lsar` five; `CRYPT`: `unrar lb` two, `lsar` five) |
+| Solid RAR5, the type byte set to SERVICE, `stream_members()` | The members before it read; those after it raise `CorruptionError` from their digests (`unrar t`: "checksum error" on the next) |
+| Solid, a member with no stored digest after a SERVICE-typed damaged header with data | `CorruptionError` naming the damaged header; no bytes returned |
+| Solid, a member with no stored digest after a listed damaged member | Its own bytes; `DIGEST_UNVERIFIABLE` (`reason="after_damaged_header"`) |
+| Solid RAR5, a name byte damaged, `stream_members()` | One pass; every member reads its own bytes; the damaged one flagged |
+| A RAR5 file copy or hard link whose source is the damaged member | Resolves to it as to any listed member |
+| `rar_decompressor="unar"`, read each member after the damage | Each returns its own bytes (the damaged member takes its `lsar` index, as `lsar` lists it) |
 | Plain, one byte of the MAIN header flipped | `CorruptionError` at open |
-| The same, the header at the computed position passes but the header after it does not | Two members listed; no `ARCHIVE_DAMAGE_SKIPPED`; `CorruptionError` after them |
-| Solid RAR5, a name byte of a FILE header damaged and confirmed, `stream_members()` | One `unrar p` process; every listed member reads its own bytes (one with no stored digest also emits `DIGEST_UNVERIFIABLE`, as below) |
-| Solid RAR5, the damaged byte is in the skipped header's unpacked size | One process; the members before it read; the members after it raise `CorruptionError` from their digests |
-| The first case, `rar_decompressor="unar"`, read each member after the skip | Each returns its own bytes (the `unar -i` index counts the unlisted entry) |
-| A skipped header whose name cannot be read the way `unrar` reads it, then a later member, `rar_decompressor='unrar'` | `UnsupportedFeatureError` naming `rar_decompressor='unar'`; nothing is spawned; under `auto` with an accepted `unar`, the member's own bytes |
-| Solid, a skipped FILE header's dictionary reads over the cap | The reads it counts for raise `ResourceLimitError` naming the skipped header |
 | Plain two-volume set, volume 1's end block damaged and not taken as one, its last member continues into volume 2 | Full set listing; members read; `CorruptionError` naming volume 1 after them |
 | The same set with volume 2 missing | Volume 1's members listed; `TruncatedError` naming volume 2 and the damaged header |
 | `-hp` RAR 1.5-4, a FILE header damaged after one whose CRC16 matched | Members before it listed; no resume; `CorruptionError` after them |
@@ -168,10 +146,10 @@ check looks at most 1 MiB past the block, the bound of the trailing-data check: 
 non-zero byte at 1 MiB or more past it goes unseen, and the block is then taken for the
 end block with no `ARCHIVE_TRAILING_DATA`. Any other CRC-failed header SHALL be handled
 as "A damaged header after the main header SHALL list the members before it" says: the
-members before it list, the walk resumes past it when its type does not read as
-`ENDARC` and the headers after it confirm its sizes, and the listing ends in
-`CorruptionError`. A CRC-failed header typed as `ENDARC` that is not taken as the end
-block ends the walk there.
+members before it list, the walk resumes past it when its type reads as FILE or SERVICE
+and the headers after it confirm its sizes, and the listing ends in `CorruptionError`.
+A CRC-failed header typed as `ENDARC` that is not taken as the end block ends the walk
+there.
 
 The walk SHALL NOT read the flags of a damaged block, so its next-volume flag SHALL NOT
 chain the walk to another volume. In a multi-volume set the walk SHALL continue past
@@ -207,162 +185,3 @@ record has no check value.
 | `-hp` RAR5 with a check value, or `-hp` RAR 1.5-4 after a header whose CRC16 matched | Full listing; `ARCHIVE_EOF_MARKER_MISSING` |
 | `-hp` RAR 1.5-4 whose end block is the first encrypted header | `EncryptionError` ("wrong password?") at open |
 | `-hp` RAR5 without a check value | `EncryptionError` ("wrong password?") at open |
-
-### Requirement: Stream solid RAR archives through one unrar pipe
-
-For solid-archive `stream_members()`, the system SHALL run one
-`unrar p -inul <archive>` subprocess **with no member path arguments** and
-demultiplex stdout into per-member streams using the unpacked sizes of
-**payload FILE entries only** (entries whose content `unrar p` emits: the listed payload
-members and the unlisted entries that are payload members, as "A damaged header after
-the main header SHALL list the members before it" defines them). An unlisted entry's
-bytes SHALL be drained, never returned. Symlinks, hardlinks, file-copies, and
-directories MUST NOT consume pipe bytes even when native headers advertise a non-zero
-size. Demultiplexing SHALL use `SolidBlockReader` (or equivalent forward-only slicing).
-The system SHALL validate each payload member's CRC32 or Blake2sp hash incrementally via
-the shared verification stage. This path MUST process the archive once, not spawn
-one subprocess per member.
-
-#### Scenario: solid streaming matrix
-
-| Case | Expected |
-| --- | --- |
-| `stream_members()` on a solid RAR | Exactly one unnamed `unrar p` process |
-| Solid archive with symlinks / hardlinks | Pipe length equals Σ payload FILE sizes only; link members yield `stream is None` |
-| Member has CRC32/Blake2sp | Verification runs as bytes are read and raises on mismatch |
-| A later member is selected in the same pass | Earlier payload bytes are drained through the single pipe, not separate member subprocesses |
-| Filtered `stream_members(selector)` | Still one unnamed `unrar p`; unselected payload tails are skipped via the shared iterator close/`SolidBlockReader` lazy skip |
-| A skipped FILE header between two listed members | Its unpacked size is drained between them; each listed member reads its own bytes, checked by its digest, or with `DIGEST_UNVERIFIABLE` when it stores none ("A damaged header after the main header SHALL list the members before it") |
-
-### Requirement: Return a named member's own bytes when its mask selects others
-
-`unrar p` with an include mask emits every payload member the mask selects, in archive
-order and with no headers between them. The system SHALL build the mask from the name as
-`unrar` reads it from the header, SHALL compute which members that mask selects the way
-`unrar` 7 does, and SHALL return only the target's bytes: it SHALL skip the unpacked size
-of the selected payload FILE entries before the target, unlisted entries included (see
-"A damaged header after the main header SHALL list the members before it"), and SHALL
-stop at the target's size. This
-covers members with the same name, names `unrar` reads as the same text, a mask that
-names a directory prefix of another member, and a RAR5 name that is not valid UTF-8,
-which `unrar` reads only up to its first invalid byte.
-
-The system MUST NOT return another member's bytes for a member. When the selection is not
-known, the system SHALL raise `UnsupportedFeatureError` naming
-`rar_decompressor='unar'` before `unrar` is spawned and before a stream source is
-copied. That is the case when `unrar` reads the name as empty or as a path with no name,
-when the name `unrar` reads cannot be passed back to it in argv, when the mask would not
-select the target, and when the name of an earlier member or unlisted entry cannot be
-read the way `unrar` reads it on this host. A stored name that contains a NUL SHALL be
-refused the same way.
-
-A mask with no `*` or `?` that selects earlier members SHALL be read without
-`rar_allow_glob_member_concatenation`.
-
-#### Scenario: shared mask matrix
-
-| Case | Expected |
-| --- | --- |
-| Two or three members with the same name, solid or not | Each read returns its own bytes |
-| RAR5 `ab\xffcd.txt` after members `unrar` reads as `ab` | Its own bytes; the earlier ones are skipped |
-| RAR5 name `\xff` beside a sibling named U+FFFD, no stored digest | `UnsupportedFeatureError`; never the sibling's bytes |
-| A name `unrar` reads as empty (`\xc0\x80x`) | `UnsupportedFeatureError` |
-| Earlier 8-bit RAR 1.5-4 name and no UTF-8 locale for `unrar` | A later member's read raises `UnsupportedFeatureError` |
-| A skipped header whose damaged name the target's mask selects | Its unpacked size is skipped; the target's own bytes |
-| A skipped header whose damaged name cannot be read the way `unrar` reads it | A later member's read raises `UnsupportedFeatureError` |
-
-### Requirement: Refuse a glob member name whose mask also matches earlier members
-
-A RAR member's stored name may contain `*` or `?`. Because `unrar` is addressed by an
-include mask, such a name can match other members, and `unrar` decompresses every match
-and emits them concatenated ahead of the target.
-
-When the mask built from a member's stored name also matches **earlier** payload FILE
-entries (listed members, or the unlisted entries that are payload members, as "A damaged
-header after the main header SHALL list the members before it" defines them), the system
-SHALL raise `UnsupportedFeatureError` rather than read the member. The error SHALL name
-the configuration flag that allows the read. On a non-solid archive it SHALL also name
-the number of bytes of earlier matching entries that `unrar` would decompress first. On
-a solid archive those members are already inside the solid prefix the read pays, so the
-error SHALL NOT describe that count as an avoidable extra decode.
-
-`ArchiveyConfig.rar_allow_glob_member_concatenation` SHALL default to `False`. When set
-to `True` the read SHALL proceed and return the member's own bytes, skipping the earlier
-matches as before. The flag SHALL govern only whether the read is attempted; it SHALL
-NOT change what a successful read returns.
-
-A glob name whose mask matches **no** other member SHALL be unaffected and SHALL read
-without the flag. A name with no `*` or `?` SHALL NOT be refused by this requirement,
-whatever else its mask selects (`Return a named member's own bytes when its mask selects
-others`), unless the mask built for it holds a `?` that the name does not: on POSIX a
-RAR 1.5-4 UTF-16 name sends each surrogate unit as `?` (`Decode RAR member names`), and
-that mask falls under this requirement like a stored glob.
-
-A call site that builds no include mask SHALL be unaffected, whatever the member names
-are. In particular a solid `stream_members()` pass uses one unnamed `unrar p` pipe
-demultiplexed by size, so it SHALL read glob-named members without the flag.
-
-The refusal exists because names like this are almost always constructed. On a
-non-solid archive the extra decode is also unbounded and unreported: it is not
-covered by `ExtractionLimits`, which do not reach `open()` / `read()`. On a solid
-archive `AccessCost.SOLID` already advertises the prefix; the names are still
-refused.
-
-#### Scenario: glob member matrix
-
-| Case | Expected |
-| --- | --- |
-| `a*.txt` with an earlier `subdir/aY.txt` match, default config, non-solid | `UnsupportedFeatureError` naming the byte count and the flag |
-| The same member on a solid archive, default config | `UnsupportedFeatureError` naming the flag, not an avoidable extra decode |
-| The same read with `rar_allow_glob_member_concatenation=True` | The member's own bytes, earlier matches skipped |
-| `only*.dat`, whose mask matches nothing else, default config | Reads normally; no refusal |
-| `a*.txt` after a skipped header whose damaged name the mask matches, default config | `UnsupportedFeatureError` naming the flag |
-| Solid `stream_members()` over glob-named members, default config | All members read; no mask is built |
-| A name with no `*` or `?`, even one shared with an earlier member | Not refused in either configuration |
-| POSIX: `hi` U+D800 `.txt` after `hiX.txt`, default config | `UnsupportedFeatureError` naming the flag; with the flag, the member's own bytes |
-
-### Requirement: Count the RAR dictionary against the decoder memory cap
-
-The reader SHALL refuse a member read with `ResourceLimitError` when the dictionary
-memory the decompressing program would use is over
-`DecoderLimits.max_decoder_memory`. The refusal SHALL come before `unrar` or `unar` is
-spawned and before a stream source is copied to disk. The count SHALL follow the
-program that will run, so under `rar_decompressor="auto"` it is the rule of the program
-`auto` picked:
-
-- `unar`: the largest dictionary declared in the member's solid stream, up to and
-  including the member.
-- `unrar`, nonsolid: for the member and for every earlier payload FILE entry its include
-  mask also selects, the smaller of that entry's declared dictionary and its unpacked
-  size; the largest of these.
-- `unrar`, solid: the smaller of the largest dictionary declared up to and including the
-  member and the unpacked size of those entries. "Solid" here is the MAIN header's solid
-  flag, which is what `unrar` decides by; a member's own solid flag does not.
-
-These counts include the unlisted entries that are payload members, as "A damaged header
-after the main header SHALL list the members before it" defines them, with their
-dictionary and sizes as they read.
-
-A stored member, a directory and a RAR5 redirect add nothing to either count. Under
-`unar` and in a nonsolid archive they SHALL count 0; under `unrar` in a solid archive
-they SHALL count the `unrar` solid count of the members before them, because `unrar`
-decodes those members to reach them. A `stream_members()` pass that runs one process
-over the archive SHALL count, for each member, the largest count of any member up to
-and including it, and SHALL check it on that member's first read, so a pass that lists
-or skips a member is not refused for it. The message SHALL name the member whose header
-declared the dictionary behind the count, or the skipped header by its offset, when the
-member read does not declare it, and SHALL give the declared size when the count is
-smaller.
-
-#### Scenario: dictionary cap matrix
-
-| Case | Expected |
-| --- | --- |
-| `unar`, a small member declaring 4 GiB, default cap | `ResourceLimitError`; `unar` not spawned |
-| `unrar`, a small nonsolid member declaring 4 GiB, default cap | Reads |
-| `unrar`, a nonsolid member declaring 4 GiB and 3 GiB unpacked, default cap | `ResourceLimitError` naming 3 GiB and the declared 4 GiB; `unrar` not spawned |
-| `unrar`, a solid member behind a member declaring 4 GiB and 3 GiB unpacked | `ResourceLimitError`, for a named read and in a `stream_members()` pass |
-| `unrar`, a stored solid member behind a member declaring 4 GiB and 3 GiB unpacked | `ResourceLimitError` naming the earlier member; `unar` counts it 0 |
-| `unrar`, a duplicate name whose earlier entry declares 4 GiB and 3 GiB unpacked | `ResourceLimitError` when the later, small entry is read |
-| `rar_decompressor="auto"` | The count of the program `auto` picked |
-| `unrar`, solid, a member after a skipped header whose damaged dictionary reads 4 GiB and 3 GiB unpacked | `ResourceLimitError` naming the skipped header's offset |
