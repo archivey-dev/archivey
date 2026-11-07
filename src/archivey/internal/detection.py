@@ -127,7 +127,11 @@ from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
 from archivey.internal.registry import ContentProbe, get_registry
-from archivey.internal.remote import emit_source_change_undetectable, is_open_file
+from archivey.internal.remote import (
+    emit_source_change_undetectable,
+    is_open_file,
+    noting_fsspec_decoding,
+)
 from archivey.internal.sfx import (
     MAX_VALIDATED_CANDIDATES,
     PE_LAYOUT_PREFIX,
@@ -1275,9 +1279,12 @@ def detect_format_into(
     if is_open_file(source):
         # Resolved as open_archive resolves it, through the fetch planner.
         max_read_through = (config or DEFAULT_ARCHIVEY_CONFIG).max_read_through
-        with closing(
-            resolve_source(source, max_read_through=max_read_through).source
-        ) as resolved:
+        with (
+            noting_fsspec_decoding(source),
+            closing(
+                resolve_source(source, max_read_through=max_read_through).source
+            ) as resolved,
+        ):
             return _detect_source_into(resolved, config, collector, follow_stub_volumes)
     if not isinstance(source, (str, Path)):
         # ``is_open_file`` cannot narrow the union, so the stream is named here.

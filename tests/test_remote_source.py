@@ -447,6 +447,27 @@ def test_a_compressed_open_file_closes_with_the_reader(memfs, monkeypatch):
     assert opened[0].closed
 
 
+def test_a_compressed_open_file_holding_no_archive_names_fsspec_decoding(memfs):
+    import gzip
+
+    from archivey import FormatDetectionError, open_stream
+
+    memfs.pipe("/t/y.txt.gz", gzip.compress(b"hello"))
+    of = fsspec.open("memory://t/y.txt.gz", compression="infer")
+    with pytest.raises(
+        ArchiveyUsageError, match=r"compression='gzip'.*compression=None"
+    ):
+        open_stream(of)
+    for call in (open_archive, detect_format):
+        with pytest.raises(FormatDetectionError) as info:
+            call(of)
+        notes = getattr(info.value, "__notes__", [])
+        assert any("compression='gzip'" in note for note in notes), notes
+    # Without compression=, archivey decodes the gzip itself.
+    with open_stream(fsspec.open("memory://t/y.txt.gz")) as stream:
+        assert stream.read() == b"hello"
+
+
 def test_a_compressed_open_file_in_a_volume_list_is_refused(memfs):
     memfs.pipe("/t/a.001", b"not read")
     memfs.pipe("/t/a.002", b"not read")

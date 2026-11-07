@@ -52,7 +52,11 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from archivey.exceptions import SourceChangedError, _UsageValueError
+from archivey.exceptions import (
+    FormatDetectionError,
+    SourceChangedError,
+    _UsageValueError,
+)
 from archivey.internal.logs import streams as streams_logger
 from archivey.internal.overrides import override
 
@@ -176,6 +180,36 @@ def open_decompressed(of: Any) -> Any:
         ),
     )
     return of.open()
+
+
+@contextlib.contextmanager
+def noting_fsspec_decoding(source: object) -> Generator[None]:
+    """Name fsspec's decoding on a ``FormatDetectionError`` from a compressed
+    ``OpenFile``: its bytes are already decoded, so a lone compressed file holds no
+    archive magic, and the message alone would say no archive was found."""
+    try:
+        yield
+    except FormatDetectionError as exc:
+        compression = open_file_compression(source) if is_open_file(source) else None
+        if compression is not None:
+            exc.add_note(
+                f"{open_file_name(source)!r} was read through fsspec's compression="
+                f"{compression!r}, so these are its decoded bytes. Pass "
+                "compression=None to read the compressed file itself."
+            )
+        raise
+
+
+def refuse_compressed_open_file_stream(source: object) -> None:
+    """``open_stream()`` reads a compressed stream; fsspec would hand it the decoded
+    bytes, with the compression layer gone."""
+    compression = open_file_compression(source)
+    if compression is not None:
+        raise _UsageValueError(
+            f"open_stream() reads a compressed stream, but fsspec OpenFile "
+            f"compression={compression!r} hands it the bytes already decoded: open "
+            "it with compression=None, and archivey decodes it itself"
+        )
 
 
 _ARCHIVEY_DECODES = (
