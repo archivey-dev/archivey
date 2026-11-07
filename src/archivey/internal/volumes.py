@@ -13,7 +13,7 @@ from collections import Counter, OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, NoReturn, TypeGuard
+from typing import TYPE_CHECKING, BinaryIO, NoReturn, TypeAlias, TypeGuard, cast
 
 from archivey.exceptions import (
     OpenError,
@@ -29,6 +29,15 @@ from archivey.internal.arg_checks import (
     reject_source,
 )
 from archivey.internal.overrides import override
+from archivey.internal.remote import (
+    DEFAULT_MAX_READ_THROUGH,
+    RangeSource,
+    WindowPool,
+    is_open_file,
+    open_decompressed,
+    open_file_compression,
+    open_file_name,
+)
 from archivey.internal.source import ArchiveSource, seek_is_expensive
 from archivey.internal.streams.streamtools import (
     is_stream,
@@ -41,8 +50,14 @@ from archivey.terminal import display_path
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
+    from fsspec.core import OpenFile
 
-SourceItem = str | Path | BinaryIO
+if TYPE_CHECKING:
+    # An ``fsspec.core.OpenFile`` is a source too; fsspec is never imported at run
+    # time, so the run-time alias leaves it out (it only matters to a type checker).
+    SourceItem: TypeAlias = str | Path | BinaryIO | OpenFile
+else:
+    SourceItem = str | Path | BinaryIO
 SourceSequence = Sequence[SourceItem]
 
 # 7-Zip's ``-v`` writes ``name.7z.001``/``name.zip.001`` — in both cases a *raw byte
@@ -1296,7 +1311,11 @@ class ResolvedSource:
     volume_count: int
 
 
-def _coerce_path_or_stream(item: object) -> Path | BinaryIO:
+def _coerce_path_or_stream(
+    item: object, ranges: _RangeSources | None = None
+) -> Path | BinaryIO:
+    if ranges is not None and is_open_file(item):
+        return cast("BinaryIO", ranges.open(item))
     if isinstance(item, (str, Path)):
         check_path_not_empty(item, call="open_archive()")
         return Path(item)
@@ -1325,8 +1344,36 @@ def _is_source_sequence(source: object) -> TypeGuard[Sequence[object]]:
     return isinstance(source, Sequence)
 
 
+class _RangeSources:
+    """The range sources one volume list opens, over one window pool.
+
+    The pool is per reader, not per volume (``fsspec-integration`` design D2 rule 4),
+    so every ``OpenFile`` of the list draws on it. The joined set never closes a
+    stream part, so the source over it closes these (:meth:`close_all`).
+    """
+
+    def __init__(self, max_read_through: int) -> None:
+        self._pool = WindowPool()
+        self._max_read_through = max_read_through
+        self.opened: list[RangeSource] = []
+
+    def open(self, of: object) -> RangeSource:
+        ranged = RangeSource.from_open_file(
+            of, pool=self._pool, max_read_through=self._max_read_through
+        )
+        self.opened.append(ranged)
+        return ranged
+
+    def close_all(self) -> None:
+        for ranged in self.opened:
+            ranged.close()
+
+
 def resolve_source(
-    source: OpenSourceInput, *, discover_volumes: bool = True
+    source: OpenSourceInput,
+    *,
+    discover_volumes: bool = True,
+    max_read_through: int = DEFAULT_MAX_READ_THROUGH,
 ) -> ResolvedSource:
     """Turn ``source`` into the one :class:`ArchiveSource` every later step reads.
 
@@ -1342,28 +1389,61 @@ def resolve_source(
 
     ``discover_volumes=False`` (``ArchiveyConfig.discover_volumes``) reads a path as
     the one file it names, never as a part of a set found beside it.
+
+    An ``fsspec.core.OpenFile`` (alone or in a list) is read by range through the fetch
+    planner (:mod:`archivey.internal.remote`), whose read-through distance is
+    ``max_read_through`` (``ArchiveyConfig.max_read_through``).
     """
     if _is_source_sequence(source):
         raw_items = list(source)
         if not raw_items:
             raise _UsageValueError("source sequence must not be empty")
         if len(raw_items) == 1:
-            return _resolve_single(raw_items[0], discover_volumes=discover_volumes)
-        items = [_coerce_path_or_stream(item) for item in raw_items]
-        paths = [item for item in items if isinstance(item, Path)]
-        joined = (
-            join_volumes(paths) if len(paths) == len(items) else ConcatenatedFile(items)
-        )
+            return _resolve_single(
+                raw_items[0],
+                discover_volumes=discover_volumes,
+                max_read_through=max_read_through,
+            )
+        ranges = _RangeSources(max_read_through)
+        try:
+            items = [_coerce_path_or_stream(item, ranges) for item in raw_items]
+            paths = [item for item in items if isinstance(item, Path)]
+            joined = (
+                join_volumes(paths)
+                if len(paths) == len(items)
+                else ConcatenatedFile(items)
+            )
+        except BaseException:
+            ranges.close_all()
+            raise
         name = source_name(items[0])
-        return ResolvedSource(
-            ArchiveSource.for_volumes(joined, name=name),
-            name,
-            len(items),
+        archive_source = ArchiveSource.for_volumes(joined, name=name)
+        if ranges.opened:
+            archive_source.on_close(ranges.close_all)
+        return ResolvedSource(archive_source, name, len(items))
+    return _resolve_single(
+        source, discover_volumes=discover_volumes, max_read_through=max_read_through
+    )
+
+
+def _resolve_single(
+    source: object, *, discover_volumes: bool, max_read_through: int
+) -> ResolvedSource:
+    if is_open_file(source):
+        if open_file_compression(source) is not None:
+            # fsspec decompresses: the archive is the decompressed stream, which
+            # archivey opened and so closes.
+            stream = cast("BinaryIO", open_decompressed(source))
+            try:
+                opened = ArchiveSource.for_opened_stream(stream)
+            except BaseException:
+                stream.close()
+                raise
+            return ResolvedSource(opened, open_file_name(source), 1)
+        ranged = RangeSource.from_open_file(
+            source, pool=WindowPool(), max_read_through=max_read_through
         )
-    return _resolve_single(source, discover_volumes=discover_volumes)
-
-
-def _resolve_single(source: object, *, discover_volumes: bool) -> ResolvedSource:
+        return ResolvedSource(ArchiveSource.for_range_source(ranged), ranged.name, 1)
     if isinstance(source, (str, Path)):
         check_path_not_empty(source, call="open_archive()")
         path = Path(source)

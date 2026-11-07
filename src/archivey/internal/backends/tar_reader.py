@@ -2058,8 +2058,9 @@ class TarReadBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> TarReader:
-        reject_start_offset(start_offset, format, archive_name)
+        reject_start_offset(start_offset, format, archive_name, end_offset)
         # `format` carries the concrete (TAR, <stream>) variant the detector/caller resolved;
         # the backend uses its stream to pick the codec to decompress with.
         return TarReader(

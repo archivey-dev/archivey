@@ -56,6 +56,7 @@ attribute archivey.ArchiveFormat.LZMA_ALONE = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.LZOP = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.MOZLZ4 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.RAR = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.RPM = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.SEVEN_Z = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.SQUASHFS = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.TAR = ArchiveFormat(...)
@@ -166,7 +167,7 @@ method archivey.ArchiveStream.verify(self, *, password_only: bool = False) -> Ve
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
-init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO, process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>) -> None
+init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO, process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576) -> None
 field archivey.ArchiveyConfig.always_probe_content: bool = False
 field archivey.ArchiveyConfig.decoder_limits: DecoderLimits = DecoderLimits(...)
 field archivey.ArchiveyConfig.detection_budget: DetectionBudget = DetectionBudget(...)
@@ -175,6 +176,7 @@ field archivey.ArchiveyConfig.discover_volumes: bool = True
 field archivey.ArchiveyConfig.extraction_limits: ExtractionLimits = ExtractionLimits(...)
 field archivey.ArchiveyConfig.formats: FormatPolicy = <factory>
 field archivey.ArchiveyConfig.listing_limits: ListingLimits = ListingLimits(...)
+field archivey.ArchiveyConfig.max_read_through: int = 1048576
 field archivey.ArchiveyConfig.max_retained_diagnostic_references: int = 256
 field archivey.ArchiveyConfig.on_diagnostic: OnDiagnostic | None = None
 field archivey.ArchiveyConfig.process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
@@ -224,6 +226,7 @@ value archivey.ContainerFormat.SEVEN_Z = '7z'
 value archivey.ContainerFormat.ISO = 'iso'
 value archivey.ContainerFormat.AR = 'ar'
 value archivey.ContainerFormat.CPIO = 'cpio'
+value archivey.ContainerFormat.RPM = 'rpm'
 value archivey.ContainerFormat.SQUASHFS = 'squashfs'
 value archivey.ContainerFormat.DMG = 'dmg'
 value archivey.ContainerFormat.DIRECTORY = 'directory'
@@ -402,14 +405,16 @@ field archivey.FormatAvailability.support: FormatSupport
 class archivey.FormatDetectionError(OpenError)
 init archivey.FormatDetectionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.FormatInfo()
-init archivey.FormatInfo(format: ArchiveFormat, confidence: DetectionConfidence, detected_by: DetectedBy, payload_offset: int = 0, diagnostics: DiagnosticSummary = <factory>, corroborated: bool = False, cost_receipt: DetectionCostReceipt | None = None, unavailable_tiers: tuple[TierSkip, ...] = ()) -> None
+init archivey.FormatInfo(format: ArchiveFormat, confidence: DetectionConfidence, detected_by: DetectedBy, payload_offset: int = 0, diagnostics: DiagnosticSummary = <factory>, corroborated: bool = False, cost_receipt: DetectionCostReceipt | None = None, unavailable_tiers: tuple[TierSkip, ...] = (), prefixed: bool = False, payload_end: int | None = None) -> None
 field archivey.FormatInfo.confidence: DetectionConfidence
 field archivey.FormatInfo.corroborated: bool = False
 field archivey.FormatInfo.cost_receipt: DetectionCostReceipt | None = None
 field archivey.FormatInfo.detected_by: DetectedBy
 field archivey.FormatInfo.diagnostics: DiagnosticSummary = <factory>
 field archivey.FormatInfo.format: ArchiveFormat
+field archivey.FormatInfo.payload_end: int | None = None
 field archivey.FormatInfo.payload_offset: int = 0
+field archivey.FormatInfo.prefixed: bool = False
 field archivey.FormatInfo.unavailable_tiers: tuple[TierSkip, ...] = ()
 property archivey.FormatInfo.from_plugin: bool
 class archivey.FormatPolicy()
@@ -585,12 +590,12 @@ value archivey.Verification.NONE = 0
 value archivey.Verification.UNLOCKED = 1
 value archivey.Verification.LENGTH = 2
 value archivey.Verification.CHECKSUM = 3
-function archivey.detect_format(source: str | Path | BinaryIO, *, config: ArchiveyConfig | None = None, follow_stub_volumes: bool = True) -> FormatInfo
+function archivey.detect_format(source: SourceItem, *, config: ArchiveyConfig | None = None, follow_stub_volumes: bool = True) -> FormatInfo
 function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True, config: ArchiveyConfig | None = None) -> FormatAvailability
 function archivey.list_known_formats() -> list[ArchiveFormat]
 function archivey.list_supported_formats(*, config: ArchiveyConfig | None = None) -> list[ArchiveFormat]
 function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None) -> ForwardArchiveReader
-function archivey.open_stream(source: str | Path | BinaryIO, *, format: StreamFormat | PluginStream | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None) -> ArchiveStream
+function archivey.open_stream(source: SourceItem, *, format: StreamFormat | PluginStream | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None) -> ArchiveStream
 function archivey.sanitize_names(member: ArchiveMember) -> ArchiveMember
 module archivey.detection_cost
 constant archivey.detection_cost.BALANCED_BUDGET = DetectionBudget(...)

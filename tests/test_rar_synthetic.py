@@ -55,6 +55,15 @@ _PASSWORDS = {
 _UNLISTABLE = {"tinyvol_cut", "tinyvol_cut_solid"}
 
 
+def _fixture_params() -> Iterator[object]:
+    for volumes in _fixture_sets():
+        # Listing needs the header key, which takes AES (the cryptography package).
+        if _password(volumes[0]) == "header_password":
+            yield pytest.param(volumes, marks=requires("cryptography"))
+        else:
+            yield volumes
+
+
 def _fixture_sets() -> Iterator[list[Path]]:
     for path in sorted(_FIXTURES.glob("*.rar")):
         first = re.fullmatch(r"(.*)\.part0*1\.rar", path.name)
@@ -145,7 +154,7 @@ def _synthetic_read(
 
 
 @requires_unrar_cli()
-@pytest.mark.parametrize("volumes", list(_fixture_sets()), ids=lambda v: v[0].name)
+@pytest.mark.parametrize("volumes", list(_fixture_params()), ids=lambda v: v[0].name)
 def test_synthetic_read_matches_the_original(volumes: list[Path]) -> None:
     password = _password(volumes[0])
     source = volumes[0] if len(volumes) == 1 else volumes

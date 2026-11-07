@@ -932,6 +932,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "cpio",
         "no corpus builder; tests/test_cpio.py seeks inside members, plain and gzip",
     ),
+    (
+        "rpm",
+        "no corpus builder (needs rpmbuild); tests/test_rpm.py seeks inside members",
+    ),
 )
 
 _UNTESTED_FORMATS = {
@@ -947,6 +951,7 @@ _UNTESTED_FORMATS = {
     ArchiveFormat.SQUASHFS: "squashfs",
     ArchiveFormat.BZIP3: "bzip3",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP3): "bzip3",
+    **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},
 }
 
 

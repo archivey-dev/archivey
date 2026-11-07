@@ -713,8 +713,9 @@ class DirectoryReadBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> DirectoryReader:
-        reject_start_offset(start_offset, format, archive_name)
+        reject_start_offset(start_offset, format, archive_name, end_offset)
         # `format` is always DIRECTORY here (single-format backend); accepted for the
         # uniform ReadBackend signature. Password rejection is central (SUPPORTS_PASSWORD).
         if not source.is_directory or source.path is None:

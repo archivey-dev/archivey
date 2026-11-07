@@ -172,6 +172,14 @@ def cpio_seeds() -> list[bytes]:
     return tiny + _fixture_seeds("cpio", "*.cpio")
 
 
+def rpm_seeds() -> list[bytes]:
+    """Tiny magics, and the rpmbuild packages in tests/fixtures/rpm: one per payload
+    compressor, uncompressed included, and a source package."""
+    tiny = [b"", b"\xed\xab\xee\xdb", b"\xed\xab\xee\xdb\x03" + bytes(91)]
+    paths = sorted((_REPO_ROOT / "tests" / "fixtures" / "rpm").glob("*.rpm"))
+    return tiny + [path.read_bytes() for path in paths]
+
+
 def squashfs_seeds() -> list[bytes]:
     """Tiny blobs and the images in tests/fixtures/squashfs, one per compressor and
     layout (no fragments, tail ends), each a few KiB."""

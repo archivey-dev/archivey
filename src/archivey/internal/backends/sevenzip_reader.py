@@ -853,6 +853,7 @@ class SevenZipReader(BaseArchiveReader):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> None:
         super().__init__(
             ArchiveFormat.SEVEN_Z,
@@ -917,7 +918,13 @@ class SevenZipReader(BaseArchiveReader):
         # byte 0 of the source. ``start_offset`` is detection's ``payload_offset``; the
         # scan on top of it is what makes forced ``format=SEVEN_Z`` work on an SFX file
         # with no detection involved.
-        probe = self._shared.view(start_offset)
+        # Where the archive's region ends: a signed executable's certificate table
+        # follows it, read from the executable's headers by detection or, under a
+        # forced ``format=``, by ``open_archive`` (``ReadBackend.open_read``). Every
+        # view stops there (``_view``), so nothing at or past it is read, and no
+        # signature inside the table is taken for the archive's.
+        self._end: int | None = end_offset
+        probe = self._region_view(start_offset)
         try:
             self._origin = start_offset + find_signature_offset(probe)
         finally:
@@ -962,7 +969,15 @@ class SevenZipReader(BaseArchiveReader):
         next-header seek and the encoded-header slices are all signature-relative
         already, so they keep working unchanged for an archive that begins mid-file.
         """
-        return self._shared.view(self._origin + start, length)
+        return self._region_view(self._origin + start, length)
+
+    def _region_view(self, start: int, length: int | None = None) -> BinaryIO:
+        """A view of the source from ``start``, cut at the region's end when a
+        certificate table follows the archive (``ReadBackend.open_read``)."""
+        if self._end is not None:
+            room = max(0, self._end - start)
+            length = room if length is None else min(length, room)
+        return self._shared.view(start, length)
 
     def _load_archive(self) -> SevenZipArchive:
         return load_sevenzip_archive(
@@ -983,9 +998,11 @@ class SevenZipReader(BaseArchiveReader):
         TAR trailer: a warning by default, refused under ``DiagnosticPolicy.STRICT``
         (DR-3). Zero padding is silent under DR-3; 7-Zip warns about any tail, zeros
         included. Runs after the header has parsed, so a wrong header password or a
-        damaged header is reported as that, not as this. A self-extractor's tail (the
-        certificate table of a code-signed one) is reported too: it is outside the
-        archive whatever wrote it.
+        damaged header is reported as that, not as this. A code-signed
+        self-extractor's certificate table is not reported: ``_view`` stops before it,
+        because it is identified, not unexplained (maintainer decision; see
+        ``dev-docs/formats/7z.md`` §6). Any other tail of a self-extractor is reported,
+        measured from the archive's own end.
         """
         fp = self._view(self._archive.end_offset)
         try:
@@ -2202,6 +2219,7 @@ class SevenZipReadBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> SevenZipReader:
         del format
         return SevenZipReader(
@@ -2215,6 +2233,7 @@ class SevenZipReadBackend(ReadBackend):
             member_streams=member_streams,
             open_site=open_site,
             start_offset=start_offset,
+            end_offset=end_offset,
         )
 
 

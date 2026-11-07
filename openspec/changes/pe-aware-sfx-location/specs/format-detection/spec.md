@@ -43,9 +43,11 @@ the start of the file starts at byte 0 by its own numbers, so it SHALL report
 `payload_end` is where the archive's region of the source ends
 when detection identified something after it: today the start of a PE's Authenticode
 certificate table (*Self-extracting (SFX) archives are detected behind an executable
-stub*), whatever tier found the archive and whether or not the source can seek. It needs
-the PE layout from the prefix and a known total size, because the table counts only when
-it runs to the end of the source; a source whose size is unknown reports `None`. `None`,
+stub*), whatever tier found the archive. It needs the PE layout from the prefix and a
+known remaining length, because the table counts only when it runs to the end of the
+source; a source whose remaining length is unknown reports `None`. That includes a
+non-seekable source that states a size: the size counts from the object's offset 0, and
+detection cannot tell where such a stream starts in it. `None`,
 the common case, means the region runs to the end of the source. `open_archive` passes both bounds to the reader
 (`archive-reading`). `cost_receipt` and
 `unavailable_tiers` are part of this contract; `detection-cost` defines what they hold.
@@ -86,8 +88,8 @@ format its bytes show; `open_archive` refuses it as an incomplete set.
 | RAR, 7z or ZIP found by the SFX scan at offset N | `detected_by="sfx_scan"`, `prefixed=True`, `payload_offset == N` |
 | ZIP found from its end record behind a PE stub, offsets counted from the ZIP's start | `prefixed=True`, `payload_offset` = the ZIP's first byte |
 | The same, offsets counted from the start of the file | `prefixed=True`, `payload_offset` 0 |
-| Signed PE SFX, any tier, total size known (a path, a seekable stream, or a sized non-seekable source) | `payload_end` = the certificate table's start |
-| Unsigned PE SFX, no PE layout, or total size unknown | `payload_end` is `None` |
+| Signed PE SFX, any tier, remaining length known (a path or a seekable stream) | `payload_end` = the certificate table's start |
+| Unsigned PE SFX, no PE layout, or remaining length unknown (a non-seekable stream, sized or not) | `payload_end` is `None` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
 | Empty string `""` | `ValueError`; the current directory is not detected |
@@ -125,12 +127,17 @@ rather than a stream codec when the ZIP needle matches.
 **Overlay start first.** When the source starts with a PE whose section table the
 detection prefix holds, its *overlay start* is the end of the furthest section's raw data,
 and its *payload end* is the start of an Authenticode certificate table that runs to the
-end of the source, or the end of the source when there is none. When the overlay start
-lies inside the window, the candidate there SHALL be judged first, with the same
-validators. A hit there that its validator returns as `VALID` or `VALID_SHORT` SHALL be
-the answer, ahead of any needle before or after it in the window: the exact-end
-preference below is a tie-break between needles of unknown standing, and the PE's own
-layout outranks it. When nothing at the overlay start is accepted, the scan below runs
+end of the source, or the end of the source when there is none. An ELF or Mach-O program
+whose headers the prefix holds has an overlay start too, and no payload end: for ELF the
+furthest end of its header, program header table, segments and section header table,
+and of each section's file bytes when that table lies in the prefix (the Go linker puts
+it there, and its symbol table past the last segment); for a thin Mach-O the furthest
+end of its load commands and segments; for a fat Mach-O the end of its last slice. When
+the overlay start lies inside the window, the candidate there SHALL be judged first,
+with the same validators. A hit there that its validator returns as `VALID` or
+`VALID_SHORT` SHALL be the answer, ahead of any needle before or after it in the window:
+the exact-end preference below is a tie-break between needles of unknown standing, and
+the program's own layout outranks it. When nothing at the overlay start is accepted, the scan below runs
 unchanged. Every other scan bounded by `SFX_MAX` SHALL apply the same rule — the RAR and
 7z parsers' scans and the forward ZIP walk that reads a non-seekable source — so forced
 `format=`, seekable or not, opens the same payload. No scan SHALL accept a candidate that
@@ -208,7 +215,10 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | PE whose ZIP is inside `.rsrc` (Squirrel) | Nothing at the overlay start; the forward scan finds the ZIP as today |
 | PE whose section table lies past the detection prefix, or does not parse | No layout; scanned as today |
 | Signed PE, nothing at the overlay start, a validator-accepted 7z or ZIP inside the certificate table | Not accepted: it starts past the payload end; through detection and forced `format=` alike |
-| ELF or Mach-O stub | Scanned as today |
+| ELF (GNU ld or Go layout) or thin Mach-O, RAR or 7z at the overlay start, a valid ZIP header inside the image | That archive at the overlay start, through detection and forced `format=` alike; `payload_end` is `None` |
+| ELF or thin Mach-O, ZIP at the overlay start, read through forced `format=ZIP` from a pipe | The forward walk lists the ZIP at the overlay start |
+| Fat Mach-O, 7z after its last slice | That 7z, `payload_offset` = the end of the last slice |
+| ELF with extended section numbering, or program headers past the prefix; Mach-O whose load commands run past the prefix; a Java class file (`ca fe ba be`) | No layout; scanned as today |
 
 ### Requirement: Detection's access shape is bounded, not only its byte count
 
@@ -217,10 +227,11 @@ origin. Bytes already in the prefix buffer SHALL NOT be fetched again. The trail
 when it runs, SHALL add one seek towards the end, one read of its block, and one seek
 back to the end of the prefix. Those bytes are not kept, so a later tier that reads
 them as part of the prefix fetches them again. The PE tail probe (*A ZIP in a PE's overlay
-is found from its end record*), when it runs, SHALL add one seek towards the end and one
-read of its span, at most two reads of fixed record parts the span does not already hold
-(the first central header and the local header it names), and one seek back to the end of
-the prefix. The probe runs before far magic, so a probe hit ends detection before the
+is found from its end record*), when it runs, SHALL add one seek towards the end, one
+read of its span and one seek back to the end of the prefix, then at most two reads of
+fixed record parts the span does not already hold (the first central header and the local
+header it names), each a seek to the record and one back to the end of the prefix, as
+every read off the prefix restores the handle. The probe runs before far magic, so a probe hit ends detection before the
 trailer tier: the two tails are both read only when the probe declines. No other backward
 seek re-reads the prefix. The exit restore of a seekable caller stream is the
 non-consumption contract.
@@ -249,9 +260,10 @@ from its end record reports the EOCD-derived base, which needs no walk.
 | ISO far magic, seekable stream | 1 pass | 0 | **0** |
 | Seekable bzip2 or xz larger than the prefix, no `koly` block | 1 pass, then the rest of the file for the inner-TAR probe, which fetches the trailer bytes again | 1 | 1, back to the end of the prefix |
 | `koly` hit on a seekable image larger than the prefix | 1 prefix pass; the trailer bytes are fetched once | 1 | 1, back to the end of the prefix |
-| Gated PE, ZIP found from its end record, directory inside the span | 1 prefix pass, the span, the local header | 1 | 2: to the local header, back to the end of the prefix |
-| Gated PE, directory and local header both before the span | 1 prefix pass, the span, two fixed record parts | 1 | 3: to the central header, to the local header, back to the end of the prefix |
-| Gated PE, probe declines, then the trailer step runs | 1 prefix pass, the span, up to two fixed record parts, the trailer block | 2 | Up to 4: up to two record reads, and one back to the end of the prefix after each tail read |
+| Gated PE, ZIP found from its end record, directory and local header inside the span | 1 prefix pass, the span | 1 | 1, back to the end of the prefix |
+| Gated PE, local header before the span | 1 prefix pass, the span, one fixed record part | 2 | 2, back to the end of the prefix after each read |
+| Gated PE, directory and local header both before the span | 1 prefix pass, the span, two fixed record parts | 3 | 3, back to the end of the prefix after each read |
+| Gated PE, probe declines, then the trailer step runs | 1 prefix pass, the span, up to two fixed record parts, the trailer block | Up to 4 | Up to 4, back to the end of the prefix after each read |
 | Non-seekable source, any tier | 1 pass | 0 | **0** |
 | Member stream (`ArchiveStream`), bare, buffered, through `open_archive`, or one volume of a list, any tier | 1 pass | 0 | **0** |
 
@@ -271,7 +283,9 @@ the prefix. The search SHALL cover the 65 558 bytes ending at the payload end, t
 span the ZIP reader searches, with the same locator. That span ends at the payload end, not
 necessarily at end of source, and the part of it the prefix already holds SHALL be taken
 from the prefix. A source that does not allow the read SHALL be recorded under `sfx_tail`,
-never under `trailer`, so the two tiers' records cannot be confused.
+never under `trailer`, so the two tiers' records cannot be confused. So SHALL a source of
+unknown length whose bytes already run past both the overlay start and the scan window:
+only reading all of it would find its end.
 
 A record found there SHALL be accepted only when all of these hold: both disk numbers are
 0 and its two entry counts are equal and above 0; `cd_start = eocd − cd_size` and
@@ -307,5 +321,5 @@ continues with far magic, as after a scan miss today.
 | End record with ZIP64 placeholders | Declined |
 | End record declaring no entries (`PK\x05\x06` and 18 zero bytes, or a real empty ZIP) | Declined |
 | ELF or Mach-O stub with an appended ZIP past the window | Not found, as today |
-| Pipe or member stream | No tail read; `sfx_tail` recorded *capability unavailable* |
+| Pipe running past the window, or member stream | No tail read; `sfx_tail` recorded *capability unavailable* |
 | `max_scan_bytes` 0 | No tail read; `sfx_tail` recorded *not enabled by policy* |

@@ -719,8 +719,9 @@ class SingleFileBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> SingleFileReader:
-        reject_start_offset(start_offset, format, archive_name)
+        reject_start_offset(start_offset, format, archive_name, end_offset)
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.
         return SingleFileReader(

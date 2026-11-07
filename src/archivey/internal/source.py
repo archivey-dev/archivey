@@ -103,6 +103,8 @@ from archivey.internal.streams.streamtools.binaryio import (
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
+    from archivey.internal.remote import RangeSource
+
 
 class JoinedVolumes(Protocol):
     """What :meth:`ArchiveSource.for_volumes` needs from a joined set.
@@ -268,6 +270,7 @@ class ArchiveSource(ReadOnlyIOStream):
     path (regular file)           fact        none          none         yes
     path (block device)           ``None``    none          none         yes
     path (FIFO, device, socket)   ``None``    yes           none         no
+    fsspec ``OpenFile``           fact        none          none         yes
     directory                     ``None``    yes (unused)  none         no
     buffered caller stream        fact/None   none          none         yes
     seekable raw caller stream    fact/None   none          none         yes
@@ -487,6 +490,39 @@ class ArchiveSource(ReadOnlyIOStream):
             buffer=buffer,
             position=position,
             seek_is_expensive=expensive,
+        )
+
+    @classmethod
+    def for_opened_stream(cls, stream: BinaryIO) -> ArchiveSource:
+        """Own a stream archivey opened itself (an fsspec ``OpenFile``'s decompressed
+        file): read as :meth:`for_stream` reads a caller's, and closed with this
+        source."""
+        source = cls.for_stream(stream)
+        source._owned = stream
+        return source
+
+    @classmethod
+    def for_range_source(cls, ranged: RangeSource) -> ArchiveSource:
+        """Own a :class:`~archivey.internal.remote.RangeSource` built from an fsspec
+        ``OpenFile``.
+
+        Its size is a fact (``fs.size`` at open), its reads are full-count, and a seek
+        may cost a request, so it is marked ``seek_is_expensive``. It has no path: a
+        backend that needs one spools, as for any stream. Closing this source closes the
+        range source, which drops its fetched windows; nothing of the caller's is
+        closed, since no file object was ever opened.
+        """
+        return cls(
+            path=None,
+            # A RawIOBase whose read is full-count; typeshed keeps it apart from
+            # BinaryIO.
+            reader=cast("BinaryIO", ranged),
+            seekable=True,
+            size=ranged.size,
+            length=ranged.size,
+            name=ranged.name,
+            owned=cast("BinaryIO", ranged),
+            seek_is_expensive=True,
         )
 
     @classmethod
@@ -987,18 +1023,19 @@ class ArchiveSource(ReadOnlyIOStream):
         for callback in callbacks:
             callback()
         try:
-            owned = self._owned
-            self._owned = None
-            if owned is not None:
-                owned.close()
+            buffer = self._buffer
+            self._buffer = None
+            if buffer is not None:
+                # A ``_NonClosingBufferedReader``: it detaches, so the caller's raw
+                # stays open. Before the owned stream closes, as detaching a buffer
+                # whose raw is closed raises.
+                buffer.close()
         finally:
             try:
-                buffer = self._buffer
-                self._buffer = None
-                if buffer is not None:
-                    # A ``_NonClosingBufferedReader``: it detaches, so the caller's raw
-                    # stays open.
-                    buffer.close()
+                owned = self._owned
+                self._owned = None
+                if owned is not None:
+                    owned.close()
             finally:
                 if self._replay is not None:
                     self._replay.clear()

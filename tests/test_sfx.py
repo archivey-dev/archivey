@@ -679,6 +679,28 @@ def test_a_format_without_stubs_refuses_a_start_offset(tmp_path: Path) -> None:
         )
 
 
+def test_a_format_without_stubs_refuses_an_end_offset(tmp_path: Path) -> None:
+    # Only a signed self-extractor has a payload end, and only RAR, 7z and ZIP are
+    # found behind one; an end handed to any other backend is refused, not ignored.
+    from archivey.internal.backends.tar_reader import TarReadBackend
+    from archivey.internal.source import ArchiveSource
+
+    path = tmp_path / "x.tar"
+    path.write_bytes(b"\x00" * 1024)
+    with pytest.raises(UnsupportedFeatureError, match="with an end offset") as caught:
+        TarReadBackend().open_read(
+            ArchiveSource.for_path(path),
+            format=ArchiveFormat.TAR,
+            streaming=False,
+            passwords=None,
+            encoding=None,
+            archive_name=path.name,
+            config=DEFAULT_ARCHIVEY_CONFIG,
+            end_offset=10,
+        )
+    assert caught.value.source_format is ArchiveFormat.TAR
+
+
 def test_sfx_max_is_one_shared_bound() -> None:
     """RAR, 7z, the forward ZIP walk and detection bind to the same constant, not
     drifting copies."""
