@@ -44,6 +44,7 @@ from archivey.exceptions import (
 from archivey.internal.config import (
     DecoderLimits,
     check_decoder_memory,
+    probe_dictionary_origin,
     probe_lzma_dictionary,
 )
 from archivey.internal.diagnostics_collector import (
@@ -1376,11 +1377,13 @@ def _head_filter_chain(
         if len(props) != props_size:
             raise CorruptionError("XZ block header filter properties are truncated")
         if index == last and filter_id == lzma.FILTER_LZMA2 and props_size == 1:
-            dict_size = probe_lzma_dictionary(_lzma2_dictionary(props[0]), read_bound)
+            declared = _lzma2_dictionary(props[0])
+            dict_size = probe_lzma_dictionary(declared, read_bound)
             check_decoder_memory(
                 dict_size,
                 limits=limits,
                 what="the LZMA2 dictionary a detection probe reserves",
+                counted_from=probe_dictionary_origin(declared),
             )
             chain.append({"id": lzma.FILTER_LZMA2, "dict_size": dict_size})
         elif index < last and filter_id == lzma.FILTER_DELTA and props_size == 1:

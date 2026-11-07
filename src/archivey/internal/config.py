@@ -206,6 +206,14 @@ def probe_lzma_dictionary(declared: int, read_bound: int | None) -> int:
     return min(declared, max(read_bound + _LZMA_FILTER_LOOKAHEAD, _LZMA_DICT_MIN))
 
 
+def probe_dictionary_origin(declared: int) -> str:
+    """``check_decoder_memory``'s ``counted_from`` for a probe's clamped dictionary."""
+    return (
+        f"the {declared}-byte dictionary the header declares, cut to what the "
+        "detection probe reads"
+    )
+
+
 def check_decoder_memory(
     declared: int,
     *,

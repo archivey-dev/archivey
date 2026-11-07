@@ -621,8 +621,8 @@ def _probe_inner_container(
         ) as stream:
             head = stream.read(INNER_CONTAINER_PROBE_BYTES)
     except ResourceLimitError as exc:
-        # The decoder is over the caller's ``max_decoder_memory`` (or a probe ceiling):
-        # "can't tell". Said in a log, since the open that follows reads the source as
+        # The decoder is over the caller's ``max_decoder_memory`` (or a probe ceiling),
+        # or its child could not run: "can't tell". Said in a log, since the open that follows reads the source as
         # the bare compressed stream, and a caller who lowered the cap learns why.
         unavailable = True
         _log_probe_refused(
@@ -701,13 +701,15 @@ def _probe_inner_container(
 
 
 def _log_probe_refused(what: str, exc: ResourceLimitError) -> None:
-    """Log at INFO that a probe's decoder was refused, so detection could not tell.
+    """Log at INFO that a probe could not build its decoder, so detection could not tell.
 
-    ``exc`` names the limit: ``DecoderLimits.max_decoder_memory`` with its value when the
-    caller's cap refused it. The receipt records the tier as ``CAPABILITY_UNAVAILABLE``.
+    ``exc`` says why: ``DecoderLimits.max_decoder_memory`` with its value when the
+    caller's cap refused it, a probe's own ceiling (an lzop or mozlz4 block), or, as a
+    ``ResourceUnavailableError``, a decoder child that could not run. The receipt
+    records the tier as ``CAPABILITY_UNAVAILABLE``.
     """
     logger.info(
-        "Detection could not %s: the decoder it needs is over a limit. %s",
+        "Detection could not %s: it could not build the decoder it needs. %s",
         what,
         exc,
     )
@@ -803,8 +805,10 @@ def _probe_completes(
             decoder_limits=workspace.decoder_limits,
         )
     except ResourceLimitError as exc:
-        # The window decode passed under the same limits, so this is rare: the hit
-        # stands on the window alone, as when the allowance cannot cover the source.
+        # The whole-source decode reads up to 64 KiB, so a probe's clamped LZMA
+        # dictionary is larger here than for the window, and a cap between the two
+        # refuses only this decode. The hit stands on the window alone, as when the
+        # allowance cannot cover the source.
         workspace.record_skip("probe_completion", TierSkipReason.CAPABILITY_UNAVAILABLE)
         _log_probe_refused("decode the whole source to confirm its format", exc)
         return True
@@ -1915,8 +1919,9 @@ def _detect_format_body(
                         decoder_limits=workspace.decoder_limits,
                     )
                 except ResourceLimitError as exc:
-                    # Its decoder is over the caller's ``max_decoder_memory``: "can't
-                    # tell", not "not this format". The next probe still runs.
+                    # Its decoder is over the caller's ``max_decoder_memory``, or its
+                    # child could not run: "can't tell", not "not this format". The
+                    # next probe still runs.
                     workspace.record_skip(
                         "content_probe", TierSkipReason.CAPABILITY_UNAVAILABLE
                     )

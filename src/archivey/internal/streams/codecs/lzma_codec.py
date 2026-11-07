@@ -21,6 +21,7 @@ from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
     check_decoder_memory,
+    probe_dictionary_origin,
     probe_lzma_dictionary,
 )
 from archivey.internal.hashing import crc32_digest
@@ -321,13 +322,13 @@ class _ClampedAloneDecompressor:
                 self._header = header
                 return b""
             self._header = None
-            dict_size = probe_lzma_dictionary(
-                int.from_bytes(header[1:5], "little"), self._read_bound
-            )
+            declared = int.from_bytes(header[1:5], "little")
+            dict_size = probe_lzma_dictionary(declared, self._read_bound)
             check_decoder_memory(
                 dict_size,
                 limits=self._limits,
                 what="the LZMA dictionary a detection probe reserves",
+                counted_from=probe_dictionary_origin(declared),
             )
             data = header[:1] + dict_size.to_bytes(4, "little") + header[5:]
         return self._dec.decompress(data, max_length)

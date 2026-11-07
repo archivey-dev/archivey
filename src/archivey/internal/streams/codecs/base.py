@@ -779,7 +779,8 @@ class StreamCodec:
             return not fully_visible
         except ResourceLimitError:
             # The decoder this probe needs is over the caller's ``max_decoder_memory``
-            # (or a probe ceiling): "can't tell", which detection records and logs.
+            # (or a probe ceiling), or its child could not run: "can't tell", which
+            # detection records and logs.
             raise
         except ArchiveyError:
             return False

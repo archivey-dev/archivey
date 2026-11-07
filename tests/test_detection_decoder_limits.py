@@ -166,6 +166,35 @@ def test_a_probe_dictionary_over_the_cap_is_cant_tell(
     assert found.detected_by == "content_probe"
 
 
+def test_a_cap_between_the_window_and_the_whole_source_skips_completion(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The whole-source re-check reads up to 64 KiB, so its clamped dictionary is
+    larger than the window's: a cap between the two refuses only the re-check, and
+    the window's hit stands."""
+    import random
+
+    payload = random.Random(0).randbytes(20_000)
+    data = lzma_alone_with_filter(payload, {"id": lzma.FILTER_LZMA1, "dict_size": _MIB})
+    assert 4096 < len(data) < 64 * 1024  # past the window, within the re-check
+    path = tmp_path / "a.lzma"
+    path.write_bytes(data)
+    assert TierSkip("probe_completion", TierSkipReason.CAPABILITY_UNAVAILABLE) not in (
+        detect_format(path).unavailable_tiers
+    )
+    with caplog.at_level(logging.INFO, logger="archivey.detection"):
+        info = detect_format(path, config=_capped(32 * 1024))
+    assert info.format == ArchiveFormat.LZMA_ALONE
+    assert info.detected_by == "content_probe"
+    assert TierSkip("probe_completion", TierSkipReason.CAPABILITY_UNAVAILABLE) in (
+        info.unavailable_tiers
+    )
+    (message,) = _refusal_logs(caplog)
+    assert "max_decoder_memory=32768" in message
+    # The number refused is the probe's, and the message says where it comes from.
+    assert f"counted from the {_MIB}-byte dictionary the header declares" in message
+
+
 def test_a_gzip_probe_is_not_capped() -> None:
     """gzip's 32 KiB window is the format's: no cap applies to it."""
     import gzip

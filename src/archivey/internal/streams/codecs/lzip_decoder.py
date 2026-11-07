@@ -46,6 +46,7 @@ from archivey.exceptions import (
 from archivey.internal.config import (
     DecoderLimits,
     check_decoder_memory,
+    probe_dictionary_origin,
     probe_lzma_dictionary,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -501,14 +502,16 @@ class _LzipState:
         decode_dict = probe_lzma_dictionary(dict_size, self._read_bound)
         # The format's own ceiling is 512 MiB (exponent 29), under the default cap, so
         # this refuses only for a caller who set a smaller one.
+        probe = self._read_bound is not None
         check_decoder_memory(
             decode_dict,
             limits=self._limits,
             what=(
-                "lzip dictionary size"
-                if self._read_bound is None
-                else "the lzip dictionary a detection probe reserves"
+                "the lzip dictionary a detection probe reserves"
+                if probe
+                else "lzip dictionary size"
             ),
+            counted_from=probe_dictionary_origin(dict_size) if probe else None,
             usage=self._usage,
         )
         lzma_alone_header = _PROPS_BYTE + struct.pack("<I", decode_dict) + _UNKNOWN_SIZE
