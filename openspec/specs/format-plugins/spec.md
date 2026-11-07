@@ -37,8 +37,10 @@ it) in one forward pass and yield one `MemberSpan` per inner member, in the inne
 archive's order, its decoded data as `MemberSpan.data`. The inner reader SHALL use the
 caller's config and `encoding`; what it reports SHALL go into the outer reader's
 diagnostics with `member_id` as the outer listing numbers the member, when the walk
-yields each span in order; its errors SHALL raise from the walk. Name checks SHALL run
-once, on the members the outer listing lists.
+yields each span in order, and SHALL be attached to that member, while its data is read
+too; its errors SHALL raise from the walk. Name checks SHALL run once, on the members the
+outer listing lists. An archive nested more than 8 deep (`MAX_NESTED_DEPTH`) SHALL be
+refused with `UnsupportedFeatureError`.
 
 #### Scenario: nested reads
 
@@ -52,4 +54,6 @@ once, on the members the outer listing lists.
 | A ZIP inside, read from a pipe | Its members |
 | A 7z inside | `UnsupportedFeatureError` |
 | `open_nested` called outside `walk()` | `ArchiveyUsageError` |
+| A format that names itself as its inner format, 9 levels deep | `UnsupportedFeatureError` |
+| A `take` stream read after the walk moved on, one byte read before | `ArchiveyUsageError` |
 
