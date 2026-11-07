@@ -26,14 +26,18 @@ A source whose seek may decode what it skips (`seek_is_expensive`: another archi
 member stream, bare or under a pass-through buffer, or a standard-library `GzipFile`,
 `BZ2File`, `LZMAFile` or `ZipExtFile`) is probed only when it says the seeks are cheap:
 `ArchiveStream.nearest_resume_offset` SHALL answer, for the last 64 bytes, the middle
-and the current position, an offset at most 4 KiB before each. The xz index and the
-lzip trailers sit at the end, and on a member stream that decompresses (a deflated ZIP
-entry, a `.gz`'s content) reaching them decompresses the whole member, so such a member
-answers far earlier and its size is `None`. A stored ZIP entry or a TAR member is a
-slice of its container, answers every target itself, and is probed as a file is. A
-source that does not answer, or has no cheap length, is not probed. The end itself is
-not asked: a decoder may resume there, with nothing left to decode, after decoding all
-that comes before it.
+and the current position, an offset at most 4 KiB before each, and not 0 for a later
+target. The xz index and the lzip trailers sit at the end, and on a member stream that
+decompresses (a deflated ZIP entry, a `.gz`'s content) reaching them decompresses the
+whole member, so such a member answers far earlier and its size is `None`. A stored ZIP
+entry or an uncompressed TAR member is a slice of its container's bytes, answers every
+target itself, and is probed as a file is. A member of a compressed TAR (`.tar.xz`,
+`.tar.gz`) is a slice of decoded data: it answers its decoder's resume point, and its
+view clamps a point behind the member's start to 0, which is why 0 does not count. A
+source that does not answer, or has no cheap length, is not probed; a standard-library
+decompressing file object has no `nearest_resume_offset`, so it is never probed. The end
+itself is not asked: a decoder may resume there, with nothing left to decode, after
+decoding all that comes before it.
 
 `member.compressed_size` SHALL be the source's length when that is cheap to learn. A
 member stream from another archive (`seek_is_expensive`) SHALL report its advertised
@@ -91,8 +95,10 @@ A size the format records SHALL NOT be replaced.
 | `.lz` opened from a seekable source whose end is cheap to reach | Size is available from the trailer |
 | `.xz` / `.lz`, seekable source, with and without `seekable_members=True` | Same `member.size` both ways |
 | `.xz` / `.lz` from a pipe | Size is `None` until a full read fills it; no decode pass is forced |
-| `.xz` / `.lz` opened from a deflated ZIP entry longer than 4 KiB | Size is `None` until a full read fills it; the member is not seeked to its end |
-| `.xz` / `.lz` opened from a seekable stored ZIP entry or TAR member | Size is available from the index or trailer |
+| `.xz` / `.lz` opened from a deflated ZIP entry | Size is `None` until a full read fills it; the member is not seeked to its end |
+| `.xz` / `.lz` opened from a seekable stored ZIP entry or uncompressed TAR member | Size is available from the index or trailer |
+| `.xz` / `.lz` opened from a member of a `.tar.xz` whose decoder cannot resume near it | Size is `None`; the outer stream is not decoded again |
+| `.xz` / `.lz` opened through a standard-library `GzipFile`, `BZ2File`, `LZMAFile` or `ZipExtFile` | Size is `None` until a full read fills it |
 | `.gz` from a path or `BytesIO` | `compressed_size` is the source's length |
 | `.gz` from a caller's pipe with a `size` attribute | `compressed_size` is `None` |
 | `.gz` from a member stream that advertises its length, seekable or not | `compressed_size` is that length; no seek to the end |
@@ -128,8 +134,8 @@ the whole file tells these apart. It SHALL therefore never fill `member.size`.
 | `.gz` without `FNAME` | No gzip original filename extra; name is derived from source filename |
 | `.gz` of one member from a path or `BytesIO` | `extra["gzip.isize"]` is the uncompressed size modulo 2^32; `size` is `None` |
 | `.gz` of two members | `extra["gzip.isize"]` is the last member's ISIZE; a full read fills `size` with the whole length |
-| `.gz` from a pipe or a deflated ZIP entry longer than 4 KiB | No `gzip.isize` |
-| `.gz` from a seekable stored ZIP entry or TAR member | `extra["gzip.isize"]` as from a file |
+| `.gz` from a pipe or a deflated ZIP entry | No `gzip.isize` |
+| `.gz` from a seekable stored ZIP entry or uncompressed TAR member | `extra["gzip.isize"]` as from a file |
 | `.xz` / `.zst` / `.lz4` / `.lz` / `.bz2` | No gzip filename fields are set |
 
 ### Requirement: Surface stored decompressed digests without decompression
@@ -177,7 +183,7 @@ caller does a plain `open_archive()` and never asks to `seek()`.
 | Multi-member `.lz`, seekable source | `CRC32` present (= combine of per-member trailers) |
 | `.lz` seekable, with and without `seekable_members=True` | Same `hashes` both ways |
 | `.lz` from a pipe | no digest key |
-| `.lz` opened from a deflated ZIP entry longer than 4 KiB | no digest key |
-| `.lz` opened from a seekable stored ZIP entry or TAR member | `CRC32` present |
+| `.lz` opened from a deflated ZIP entry | no digest key |
+| `.lz` opened from a seekable stored ZIP entry or uncompressed TAR member | `CRC32` present |
 | `.bz2` / `.xz` / `.zlib` / `.br` / `.Z` | no digest key |
 | Any of the above, full `read()` | verification unchanged; hashes are metadata only |

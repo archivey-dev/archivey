@@ -17,7 +17,7 @@ this page states the behaviour and links the row.
 | Write | **Not shipped** |
 | Backends | The standard library's `lzma`, always available. `streams/codecs/xz_decoder.py` and `streams/codecs/lzip_decoder.py` are archivey's own framing parsers over it |
 | Seeking | xz: from the nearest block or stream. lzip: from the nearest member. LZMA Alone: a backward seek decodes again from the start |
-| Size | xz: from the index. lzip: from the member trailers. LZMA Alone: from the header, unless it holds the "unknown" marker. xz and lzip need a seekable source whose end is cheap to reach (a stored ZIP entry or a TAR member is; a deflated member stream is not) |
+| Size | xz: from the index. lzip: from the member trailers. LZMA Alone: from the header, unless it holds the "unknown" marker. xz and lzip need a seekable source whose end is cheap to reach (a stored ZIP entry or an uncompressed TAR member is; a deflated member stream, a standard-library decompressor and usually a member of a compressed TAR are not) |
 | Digests | lzip only: the CRC-32 of the whole content, combined from each member's trailer. xz checks (CRC-32, CRC-64, SHA-256) are verified on read, not listed. A check ID liblzma cannot compute (2, 3, 5 to 9, 11 to 15) reads unverified with `DIGEST_UNVERIFIABLE`. LZMA Alone has no check at all (§4), and reports nothing |
 | Metadata | None beyond the shared fields |
 | Truncation | Always raised, as `TruncatedError` |
@@ -115,7 +115,7 @@ for lzip, the size and the CRC-32 of the whole content, combined from each membe
 trailer CRC with `crc32_combine`, in one walk that holds no per-member state. On a pipe,
 neither is known before the read ends. Another archive's member stream, passed to
 `open_archive(member_stream)`, is peeked only when its seek resumes near each probe
-target: a stored ZIP entry or a TAR member is, a deflated one is not
+target: a stored ZIP entry or an uncompressed TAR member is, a deflated one is not
 ([`single-file.md`](single-file.md) §2.2).
 
 When seeking was declared, the xz scan made at open is kept, and each member stream
@@ -332,7 +332,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | LZMA Alone: zero bytes end the data unless they run to the end of the file; a stream after them is `ARCHIVE_TRAILING_DATA` (maintainer ruling, 2026-10-10). xz keeps reading past its Stream Padding | Match the official tool (DR-6): `xz --format=lzma` stops at the zeros and fails, as do the gzip, bzip2, zstd and LZ4 tools; xz defines padding between streams and LZMA Alone defines none. Zeros at the end stay silent although `xz` refuses them: one rule for every codec ([`single-file.md`](single-file.md) §6) | Reading a stream after the zeros, as `lzma.LZMAFile` does |
 | Combine the lzip trailer CRCs into one whole-content CRC-32 (PR #160) | It is a real digest of the content, known from one backward walk | Listing it only for single-member files |
 | Read the xz index and lzip trailers whenever the source is seekable (PR #232); narrowed by PR #732, below | Size must not depend on a flag about member-stream seeking | Gating them on `seekable_members` |
-| Peek another archive's member stream only when its seek is cheap (PR #732 excluded all member streams; the per-stream signal came on 2026-11-07, [`single-file.md`](single-file.md)) | A seek to the end of a deflated member decompresses it twice; a stored ZIP entry or a TAR member is a slice, and keeps `size` and the lzip `CRC32` | Excluding member streams as a group |
+| Peek another archive's member stream only when its seek is cheap (PR #732 excluded all member streams; the per-stream signal came on 2026-11-07, [`single-file.md`](single-file.md)) | A seek to the end of a deflated member decompresses it twice; a stored ZIP entry or an uncompressed TAR member is a slice, and keeps `size` and the lzip `CRC32` | Excluding member streams as a group |
 | Keep the xz index scanned at open on the reader for its whole lifetime when seeking was declared, whether or not a stream ever seeks; bounded by `MAX_SEEK_POINTS` (2**18) points | A crafted file of many tiny streams makes the scan cost seconds, and each member stream would repeat it. Peak memory is unchanged; steady-state memory grows by at most the capped table while the reader is open | Freeing the scan after open and rebuilding it on the first seek, which repeats the slow scan per stream |
 | Cold seeks trust a self-consistent index (O17) | Verifying a seek means decoding from the start, which removes the reason to have an index; a forward read still verifies | Verifying every seek |
 | Check lzip `member_size` on the forward read (PR #407) | An unchecked member size let a seek serve another member's bytes | Trusting it |

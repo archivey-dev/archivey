@@ -43,6 +43,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.single_file_reader import SingleFileReader
 from archivey.internal.hashing import crc32_digest
+from archivey.internal.source import ArchiveSource, seeks_to_end_are_cheap
 from archivey.types import HashAlgorithm
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
@@ -1438,3 +1439,40 @@ def test_open_time_probe_still_rejects_a_wrong_codec_with_the_accelerator_on(
     config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
     with raises_corruption_not_truncation():
         open_archive(path, format=ArchiveFormat.GZ, config=config)
+
+
+def test_small_member_late_in_a_compressed_tar_is_not_peeked() -> None:
+    # A member of a .tar.xz is a slice of decoded data. Its view clamps the decoder's
+    # resume point, far behind the member's start, to 0, so a small .xz there answers
+    # 0 for every probe target; that is not a cheap seek, and the tail probes skip it.
+    pad = random.Random(11).randbytes(2 * 1024 * 1024)
+    payload = b"late member " * 80
+    data = lzma.compress(payload)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:xz") as tar:
+        for name, blob in (("pad.bin", pad), ("m.xz", data)):
+            info = tarfile.TarInfo(name)
+            info.size = len(blob)
+            tar.addfile(info, io.BytesIO(blob))
+    buf.seek(0)
+    with (
+        open_archive(buf, seekable_members=True) as outer,
+        outer.open("m.xz") as member,
+    ):
+        source = ArchiveSource.for_stream(member)
+        assert not seeks_to_end_are_cheap(source)
+        with open_archive(member) as nested:
+            (inner,) = nested.members()
+            assert inner.size is None
+            assert nested.read(inner) == payload
+
+
+def test_a_standard_library_decompressor_source_is_not_peeked() -> None:
+    # A GzipFile re-decodes on a seek and has no resume offsets to say otherwise, so
+    # a .xz read through one is not peeked for its index: size stays None until read.
+    payload = b"inside a GzipFile " * 300
+    outer = gzip.GzipFile(fileobj=io.BytesIO(gzip.compress(lzma.compress(payload))))
+    with outer, open_archive(outer) as nested:
+        (inner,) = nested.members()
+        assert inner.size is None
+        assert nested.read(inner) == payload

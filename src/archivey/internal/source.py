@@ -655,7 +655,7 @@ class ArchiveSource(ReadOnlyIOStream):
         with such a stream among its volumes: a read near the end of the set seeks that
         volume. A path, and a caller stream that is a file or a ``BytesIO``, answer
         ``False``. Whether a given seek is still cheap is
-        :meth:`nearest_resume_offset`'s answer: a stored member is a slice.
+        :meth:`nearest_resume_offset`'s answer: a member stored as-is is a slice.
         """
         return self._seek_is_expensive
 
@@ -665,8 +665,9 @@ class ArchiveSource(ReadOnlyIOStream):
         ``target`` itself on a seekable source whose seek is a pointer move: a path, a
         file, a ``BytesIO``. A source that borrows a stream whose seek may re-decode
         (:attr:`seek_is_expensive`) passes the question to that stream, under any
-        pass-through buffer: a stored ZIP entry or a TAR member, a slice of its
-        archive, answers ``target``, and a decoder answers where it would restart.
+        pass-through buffer: a stored ZIP entry or an uncompressed TAR member, a slice
+        of its archive's bytes, answers ``target``, and a decoder answers where it
+        would restart.
         ``None`` when nothing answers (a remote file, a joined set, a stream with no
         such method) and on a source that cannot seek. Offsets are the borrowed
         stream's own, as :meth:`seek`'s are.
@@ -1149,8 +1150,11 @@ def seeks_to_end_are_cheap(stream: BinaryIO) -> bool:
     qualifies when it says a seek resumes at, or within
     a few KiB before, each place the probes go (``ArchiveStream.nearest_resume_offset``):
     the last bytes, where the trailers sit; the middle, which an index walk may cross;
-    and the current position, which the probe restores. A stored ZIP entry or a TAR
-    member, a slice of its archive, answers every target itself. The end itself is not
+    and the current position, which the probe restores. A stored ZIP entry or an
+    uncompressed TAR member, a slice of its archive's bytes, answers every target
+    itself. A member of a compressed TAR is a slice of decoded data and answers its
+    decoder's resume point. A resume at 0 for a later target is not cheap, since a
+    member view clamps a point behind its own start to 0. The end itself is not
     asked: a decoder can resume there, with nothing left to decode, and still decode
     everything before it. A stream that has no cheap length or does not answer is not
     cheap.
@@ -1167,6 +1171,12 @@ def seeks_to_end_are_cheap(stream: BinaryIO) -> bool:
     for target in (max(end - _TAIL_WINDOW, 0), end // 2, stream.tell()):
         resume = ask_resume_offset(stream, target)
         if resume is None or resume < target - _RESUME_TOLERANCE:
+            return False
+        # A member view clamps a resume point behind its own start to 0
+        # (``SlicingStream.nearest_resume_offset``): a small member of a ``.tar.xz``
+        # answers 0, and reaching it decodes the outer stream from its origin. So 0
+        # for a later target is no answer.
+        if resume == 0 and target > 0:
             return False
     return True
 

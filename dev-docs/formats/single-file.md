@@ -182,11 +182,18 @@ member stream passed to `open_archive(member_stream)`, or a standard-library `Gz
 (`seeks_to_end_are_cheap` in `internal/source.py`). It asks the stream's
 `nearest_resume_offset` about the last 64 bytes, where the trailers sit, the middle,
 which an index walk may cross, and the current position, which the peek restores; each
-answer must be at most 4 KiB before its target. A stored ZIP entry or a TAR member is a
-slice of its container and answers every target itself, so a `.xz`, `.lz` or `.gz` in one
-is peeked as a file is. A `.xz` stored deflated in a ZIP answers far earlier, since a
-seek to its end decompresses the whole member and the restore decompresses it again; it
-is not peeked, unless the deflated member is under 4 KiB. The end itself is not asked: a
+answer must be at most 4 KiB before its target, and not 0 for a later target. A stored
+ZIP entry or an uncompressed TAR member is a slice of its container's bytes and answers
+every target itself, so a `.xz`, `.lz` or `.gz` in one is peeked as a file is. A `.xz`
+stored deflated in a ZIP answers far earlier, since a seek to its end decompresses the
+whole member and the restore decompresses it again; it is not peeked. A member of a
+`.tar.xz` or `.tar.gz` is a slice of decoded data: it answers its decoder's resume point,
+and its view clamps a point behind the member's start to 0. A small member late in a
+`.tar.xz` therefore answers 0 for every target, and reaching its tail would decode the
+outer stream from its origin each time (measured in review: seven times for a 20 MB
+`.tar.xz`), which is why 0 does not count. A standard-library `GzipFile`, `BZ2File`,
+`LZMAFile` or `ZipExtFile` has no `nearest_resume_offset`, so a `.xz` read through one
+is never peeked; before, the peek decoded it twice. The end itself is not asked: a
 decoder can resume there, with nothing left to decode, and still decode everything before
 it. A source that is not peeked reports `size=None`, no lzip `CRC32`, no `gzip.isize`, and
 a `compressed_size` only when the member stream advertises its length. `size` and
@@ -452,7 +459,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Present the stream as a one-member archive | Callers handle `.gz` and `.zip` with the same code, extraction included | A separate stream-only API; `open_stream` exists as well, for callers who want the bytes |
 | Name the member from the source's filename, not gzip's `FNAME` | It is the name the caller chose, it exists for every codec, and it is not attacker bytes | Using `FNAME` when present |
 | Read the xz index and lzip trailers whenever the source is seekable (PR #232); narrowed by PR #732, below | Metadata must not depend on a flag about member-stream seeking | Gating them on `seekable_members` |
-| Do not peek another archive's member stream that decompresses; peek a stored ZIP entry or a TAR member (PR #732 excluded all member streams; davitf chose the per-stream signal on 2026-11-07) | A seek to the end of a deflated member decompresses it twice. The public `nearest_resume_offset` already says where a seek resumes, so a slice answers the target and a decoder an earlier offset; no new flag. The probe targets are the last 64 bytes, the middle and the current position, not the end, where a decoder may resume with nothing left to decode, and a resume up to 4 KiB early still counts as cheap (a cipher block, a small re-decode) | A boolean "seek is cheap" flag on `ArchiveStream`; asking about the end itself |
+| Do not peek another archive's member stream that decompresses; peek a stored ZIP entry or an uncompressed TAR member (PR #732 excluded all member streams; davitf chose the per-stream signal on 2026-11-07) | A seek to the end of a deflated member decompresses it twice. The public `nearest_resume_offset` already says where a seek resumes, so a slice answers the target and a decoder an earlier offset; no new flag. The probe targets are the last 64 bytes, the middle and the current position, not the end, where a decoder may resume with nothing left to decode, and a resume up to 4 KiB early still counts as cheap (a cipher block, a small re-decode), but 0 for a later target does not: a member view clamps a resume point behind its start to 0 | A boolean "seek is cheap" flag on `ArchiveStream`; asking about the end itself |
 | Decode one byte at open, on a seekable source (PR #461) | A file that is not the claimed codec fails where the caller opened it; otherwise a `.gz` full of zeros lists one member and fails only on the read | Checking nothing until the read; decoding more, which costs every open |
 | The open-time byte is decoded with the standard library; the accelerator is only resolved (PR #1018) | rapidgzip runs in a child process, about 30 ms to start, and the read started a second one, so a `.gz` paid for two children. Resolving still raises what an `ON` open must raise at open (DR-15b); a child that fails to start is found only by starting one, so it stays on the first read | Probing through the accelerator; skipping the resolution, which moved a missing-package error to the first read |
 | Arm truncation at end of input and raise on the next read (PR #183) | The caller gets every byte before the cut from a sized `read(n)`, and the error cannot be missed by a caller who never calls `close()`. A `read()` of everything raises and returns nothing: a short payload returned as if whole is worse than none | Raising inside the decode, which drops the decoded prefix; raising from `close()` (ADR 0014) |

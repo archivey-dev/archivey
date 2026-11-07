@@ -400,7 +400,7 @@ class SingleFileReader(BaseArchiveReader):
         ``OSError`` gives ``None``. So does a source whose seek may re-decode
         (``seeks_to_end_are_cheap``): the xz index and the lzip trailer sit at the end, and
         on a member that decompresses, reaching them decompresses the whole member, then
-        the restore decompresses it again. A stored ZIP entry or a TAR member, whose
+        the restore decompresses it again. A stored ZIP entry or an uncompressed TAR member, whose
         seek is a slice of its archive, is probed like a file. Those probes only fill
         metadata (``size``, the lzip CRC-32, ``gzip.isize``); the decoder still checks
         its own index and trailers on read.
@@ -456,9 +456,10 @@ class SingleFileReader(BaseArchiveReader):
         if not src.seekable():
             # No ``SEEK_END`` here to measure the end, so only a declared length can
             # answer. A member stream's is its container's header (``seek_is_expensive``
-            # is true exactly when the source borrows an ``ArchiveStream``; a joined set
-            # with one is seekable and never reaches here). A caller's pipe reports
-            # ``None`` even with a ``size`` attribute.
+            # is true when the source borrows an ``ArchiveStream``, and for a standard-
+            # library decompressing file object, which has no cheap size, so its hint
+            # is ``None``; a joined set with one is seekable and never reaches here). A
+            # caller's pipe reports ``None`` even with a ``size`` attribute.
             return src.size_hint if src.seek_is_expensive else None
         if src.size_hint is not None:
             return src.size_hint
