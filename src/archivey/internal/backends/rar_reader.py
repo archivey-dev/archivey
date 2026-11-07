@@ -1387,7 +1387,8 @@ class _SolidStream:
     """The synthetic archive of one solid stream, kept until the reader closes.
 
     A stream no read holds is removed earlier, its charge given back, when another
-    copy does not fit the spool limit (:meth:`RarReader._drop_idle_solid_stream`).
+    copy does not fit the spool limit and removing it makes room
+    (:meth:`RarReader._reserve_synthetic`).
 
     It holds the stream's members with packed data, from the stream start, as far
     as reads have reached: a read further in appends the members between, and a
@@ -1400,9 +1401,10 @@ class _SolidStream:
     A read further in while another read holds the file starts a new generation:
     a new :class:`_SolidStream` for the same stream start, which later reads
     extend. The old one is :attr:`retired`, and removed, its charge given back,
-    when its last read closes. So each packed byte is copied once per generation;
-    only reads that each go further in while every earlier one is still open copy
-    the stream's start again each time.
+    when its last read closes. So each packed byte is copied once per generation,
+    and again after its file was removed to make room; only reads that each go
+    further in while every earlier one is still open copy the stream's start again
+    each time.
     """
 
     def __init__(self, version: int) -> None:
@@ -1422,7 +1424,8 @@ class _SolidStream:
 class _SolidRead:
     """One read's hold on a :class:`_SolidStream`: the file and the mask its
     ``unrar`` runs use. :meth:`close` lets the stream grow again; the reader removes
-    the file itself, at its own close."""
+    the file itself, at its own close, or earlier when another copy needs the room
+    and no read holds the stream."""
 
     def __init__(self, reader: RarReader, stream: _SolidStream, mask: str) -> None:
         self._reader = reader
@@ -1583,7 +1586,8 @@ class RarReader(BaseArchiveReader):
         # close removes any a member stream left (``_SyntheticFile``).
         self._synthetic_files: set[_SyntheticFile] = set()
         # One synthetic archive per solid stream, by the archive index of its first
-        # member with data; removed at reader close.
+        # member with data, least recently read first; removed at reader close, or
+        # earlier to make room (``_reserve_synthetic``).
         self._solid_streams: dict[int, _SolidStream] = {}
         # Older generations still held by a read (:class:`_SolidStream`).
         self._retired_streams: set[_SolidStream] = set()
@@ -5358,43 +5362,47 @@ class RarReader(BaseArchiveReader):
     ) -> bool:
         """Charge a synthetic copy to the spool budget; under ``_materialize_lock``.
 
-        When the charge does not fit, the solid streams no read holds are removed,
-        oldest first, until it fits (:meth:`_drop_idle_solid_stream`); ``keep`` is
-        the stream the copy extends, never removed. A read of a removed stream later
-        copies it again. Without that, earlier reads would refuse a copy that fits
-        the limit on its own. ``False`` sends a source on disk back to the original
-        archive. A stream source has no such fallback: the refusal raises, naming
-        ``what``, and is not recorded, so a smaller copy later still fits.
+        When the charge does not fit and removing the solid streams no read holds
+        would make room, those streams are removed, least recently read first,
+        until it fits; ``keep`` is the stream the copy extends, never removed. A
+        read of a removed stream later copies it again. Without that, earlier reads
+        would refuse a copy that fits the limit on its own. When removing them all
+        would not make room, nothing is removed. ``False`` sends a source on disk
+        back to the original archive. A stream source has no such fallback: the
+        refusal raises, naming ``what``, and is not recorded, so a smaller copy
+        later still fits.
         """
         # Named only when this copy refuses: a fallback's own copy names itself.
         budget = self._spool_budget(None)
-        while not budget.try_reserve(charge):
-            if not self._drop_idle_solid_stream(keep):
-                break
-        else:
+        if budget.try_reserve(charge):
             return True
+        idle = [
+            (start, stream)
+            for start, stream in self._solid_streams.items()
+            if not stream.readers and stream is not keep
+        ]
+        if budget.would_fit(charge, freed=sum(stream.charge for _, stream in idle)):
+            for start, stream in idle:
+                self._drop_solid_stream(start, stream)
+                if budget.try_reserve(charge):
+                    return True
         if not in_place:
             budget = self._spool_budget(what)
             with self._translated_errors(name):
                 budget.check_fits(charge)
         return False
 
-    def _drop_idle_solid_stream(self, keep: _SolidStream | None) -> bool:
-        """Remove the oldest solid stream file no read holds, other than ``keep``,
-        and give back its charge; under ``_materialize_lock``. ``False`` when there
-        is none. A retired generation is never idle: it is removed when its last
-        read closes."""
-        for start, stream in self._solid_streams.items():
-            if stream.readers or stream is keep:
-                continue
-            del self._solid_streams[start]
-            file, stream.file = stream.file, None
-            self._spool_budget(None).release(stream.charge)
-            stream.charge = 0
-            if file is not None:
-                file.close()
-            return True
-        return False
+    def _drop_solid_stream(self, start: int, stream: _SolidStream) -> None:
+        """Remove ``stream``, which no read holds, and give back its charge; under
+        ``_materialize_lock``. A retired generation is not in ``_solid_streams``:
+        it is removed when its last read closes."""
+        assert not stream.readers
+        del self._solid_streams[start]
+        file, stream.file = stream.file, None
+        self._spool_budget(None).release(stream.charge)
+        stream.charge = 0
+        if file is not None:
+            file.close()
 
     def _member_position(self, member: ArchiveMember) -> int:
         """``member``'s index in the member list, which is the parsed list's order."""
@@ -5432,10 +5440,16 @@ class RarReader(BaseArchiveReader):
         what = "the packed bytes of this member's solid stream up to it"
         mask = placeholder_mask(len(chain) - 1, raw, self._archive.version)
         with self._materialize_lock:
-            stream = self._solid_streams.get(chain[0])
-            if stream is None:
-                stream = _SolidStream(self._archive.version)
-                self._solid_streams[chain[0]] = stream
+            # Taken out and put back last, so the dict runs from the least
+            # recently read stream to the most, the order _reserve_synthetic
+            # removes idle streams in. A new stream goes in only once its file
+            # is written, so a copy that is refused leaves no empty entry.
+            current = self._solid_streams.pop(chain[0], None)
+            if current is not None:
+                self._solid_streams[chain[0]] = current
+            stream = (
+                current if current is not None else _SolidStream(self._archive.version)
+            )
             have = len(stream.indices)
             assert stream.indices[: len(chain)] == chain[:have]
             if have >= len(chain):
@@ -5475,11 +5489,10 @@ class RarReader(BaseArchiveReader):
                     stream.file.close()
                     stream.file = None
                 raise
-            current = self._solid_streams[chain[0]]
-            if current is not stream:
+            if current is not None and current is not stream:
                 current.retired = True
                 self._retired_streams.add(current)
-                self._solid_streams[chain[0]] = stream
+            self._solid_streams[chain[0]] = stream
             stream.indices.extend(chain[have:])
             stream.charge += charge
             stream.readers += 1

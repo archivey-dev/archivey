@@ -735,7 +735,7 @@ def test_a_solid_member_of_a_large_stream_on_disk_keeps_the_original(
         member = reader.get("file1.txt")
         assert isinstance(member._raw, RarMemberInfo)
         assert reader._synthetic_file(member, member._raw) is None
-        assert reader._solid_streams[0].file is None
+        assert 0 not in reader._solid_streams
 
 
 def test_the_chain_dictionary_counts_the_stream_alone() -> None:
@@ -856,6 +856,71 @@ def test_idle_solid_streams_give_back_their_charge(
             assert live.live == 1
     assert live.made == 4
     assert live.live == 0
+
+
+@requires_unrar_cli()
+@requires_binary("rar")
+def test_idle_streams_go_least_recently_read_first(tmp_path: Path) -> None:
+    """A stream read again moves behind the others: the one read longest ago is
+    removed first, not the one first read."""
+    path = _three_streams(tmp_path)
+    data = path.read_bytes()
+    expected = _pass_bytes(path)
+    c0, c1, c2 = _stream_charges(data, _STREAM_ENDS)
+    # Any two streams fit; all three do not.
+    limit = max(c0 + c1, c0 + c2, c1 + c2)
+    assert limit < c0 + c1 + c2
+    with open_archive(BytesIO(data), config=_limited(limit)) as reader:
+        assert isinstance(reader, RarReader)
+        for name in ["f1.txt", "f3.txt", "f1.txt", "f5.txt"]:
+            assert reader.read(name) == expected[name]
+        # The streams start at members 0, 2 and 4; f3's (2) was read longest ago.
+        assert list(reader._solid_streams) == [0, 4]
+
+
+@requires_unrar_cli()
+@requires_binary("rar")
+@pytest.mark.parametrize("stream_source", [False, True], ids=["path", "stream"])
+def test_a_copy_that_cannot_fit_removes_no_idle_stream(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stream_source: bool
+) -> None:
+    """Removing idle streams that cannot make room for a copy only throws their
+    files away: the copy is refused, or falls back, with the streams kept."""
+    path = _three_streams(tmp_path)
+    data = path.read_bytes()
+    c0, _, c2 = _stream_charges(data, _STREAM_ENDS)
+    # f1's stream fits; f5's does not, even alone.
+    assert c0 < c2
+    source: object = BytesIO(data) if stream_source else path
+    with open_archive(source, config=_limited(c0)) as reader:  # type: ignore[arg-type]
+        assert isinstance(reader, RarReader)
+        reader.read("f1.txt")
+        if stream_source:
+            with pytest.raises(ResourceLimitError):
+                reader.read("f5.txt")
+        else:
+            # A plain name: the path source reads f5 in place instead.
+            reader.read("f5.txt")
+        assert list(reader._solid_streams) == [0]
+        assert reader._solid_streams[0].file is not None
+
+
+@requires_unrar_cli()
+@requires_binary("rar")
+def test_a_refused_budget_removes_no_idle_stream(tmp_path: Path) -> None:
+    """Once the budget recorded a refusal it refuses every reservation, so
+    removing idle streams cannot make room and none is removed."""
+    path = _three_streams(tmp_path)
+    data = path.read_bytes()
+    with open_archive(BytesIO(data), config=_limited(10**6)) as reader:
+        assert isinstance(reader, RarReader)
+        reader.read("f1.txt")
+        budget = reader._spool_budget("a test copy")
+        with pytest.raises(ResourceLimitError):
+            budget.check_total(10**7)
+        with pytest.raises(ResourceLimitError):
+            reader.read("f3.txt")
+        assert list(reader._solid_streams) == [0]
 
 
 @requires_unrar_cli()
