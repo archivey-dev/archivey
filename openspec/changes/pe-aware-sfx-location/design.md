@@ -21,9 +21,11 @@ a related idea, "Bound the SFX search at the PE overlay".
 - One PE layout helper shared by detection and the RAR / 7z parser scans.
 
 **Non-Goals:**
-- ELF and Mach-O layouts. ELF's section header table usually ends the image, so its
-  helper would be simple, but there is no real sample. Mach-O lays its segments out
-  differently. Both wait for a user case.
+- ~~ELF and Mach-O layouts.~~ Brought into scope by a maintainer decision
+  (2026-11-07), as a fourth step: `sfx.executable_layout` reads their overlay start
+  from the headers in the prefix, for the overlay-start-first rule only. No payload end
+  (neither format appends a signature: a Mach-O code signature sits inside
+  `__LINKEDIT`), and the ZIP tail probe stays gated on a PE. See tasks §5.
 - A ZIP inside a PE section past the window (no case seen; Squirrel's sits at 170 KB).
 - Undoing installer obfuscation (install4j's XORed block) or naming installer families.
   That is the "prefix analysis" idea and stays in `IDEAS.md`.

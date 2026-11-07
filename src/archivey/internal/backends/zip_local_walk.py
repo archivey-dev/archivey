@@ -93,13 +93,13 @@ from archivey.internal.backends.zip_parser import (
 )
 from archivey.internal.overrides import override
 from archivey.internal.sfx import (
-    PE_LAYOUT_PREFIX,
+    LAYOUT_PREFIX,
     SFX_MAX,
     VALIDATOR_PEEK_MAX,
     HitOutcome,
     cut_signature_error,
+    executable_layout,
     is_cut_signature,
-    pe_layout,
 )
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import read_exact
@@ -1207,9 +1207,9 @@ class LocalHeaderWalk:
 
             return peek_more
 
-        # A PE's overlay start first, as detection and the RAR and 7z scans judge it:
+        # An executable's overlay start first, as detection and the RAR and 7z scans judge it:
         # a decoy header in the program's own sections never competes with the payload.
-        layout = pe_layout(peek_at(0)(PE_LAYOUT_PREFIX), None)
+        layout = executable_layout(peek_at(0)(LAYOUT_PREFIX), None)
         if (
             layout is not None
             and layout.overlay_start + len(LOCAL_HEADER_SIGNATURE) <= SFX_MAX

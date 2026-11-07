@@ -1442,8 +1442,9 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   reported as data after the archive. A ZIP further into a Windows installer than the scan
   reaches is found from its end, when the program's header shows that something was
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
-  (ZIP, 7z, RAR) are searched for. Behind a Windows program, an archive that starts exactly where
-  the program's own image ends is taken first, ahead of anything else in the window. Otherwise,
+  (ZIP, 7z, RAR) are searched for. Behind a Windows, Linux or macOS program whose header says
+  where its own image ends, an archive that starts exactly there is taken first, ahead of
+  anything else in the window. Otherwise,
   among several 7z candidates, one that ends exactly at the end of
   the file is preferred over an earlier one that ends short of it.
 - **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`

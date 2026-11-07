@@ -433,13 +433,14 @@ def _is_pe(prefix: bytes) -> bool:
     return prefix[e_lfanew : e_lfanew + len(_PE)] == _PE
 
 
-#: How many leading bytes the PE layout is read from. Every backend reads this span,
-#: and detection reads its prefix, which is the same span when ``max_prefix_bytes``
-#: is at least this long, as in every preset: forced ``format=`` and auto-detect then
-#: derive the same payload end. A custom budget shorter than the headers leaves
-#: detection with no layout, and it answers as for an unparsed stub. The headers a
-#: linker writes end well inside the span, so detection reads nothing extra for it.
-PE_LAYOUT_PREFIX = 4096
+#: How many leading bytes an executable's layout is read from. Every backend reads
+#: this span, and detection reads its prefix, which is the same span when
+#: ``max_prefix_bytes`` is at least this long, as in every preset: forced ``format=``
+#: and auto-detect then derive the same layout. A custom budget shorter than the
+#: headers leaves detection with no layout, and it answers as for an unparsed stub. A
+#: PE's or an ELF's headers end well inside the span; a Mach-O's load commands can run
+#: past it, and then it has no layout. Detection reads nothing extra for it.
+LAYOUT_PREFIX = 4096
 
 # Offsets in the COFF file header (after ``PE\0\0``) and the optional header.
 _COFF_HEADER_SIZE = 20
@@ -453,26 +454,27 @@ _SECURITY_DIRECTORY = 4
 _SECTION_HEADER_SIZE = 40
 
 
-class PeLayout(NamedTuple):
-    """What a PE's own headers say about the bytes appended to it.
+class ExecutableLayout(NamedTuple):
+    """What an executable's own headers say about the bytes appended to it.
 
-    ``overlay_start`` is where the PE's own image ends in the file: the end of the
-    furthest section's raw data (or of the headers, when no section has raw data).
-    Anything after it is the *overlay*: a self-extractor's payload, an installer's
-    data, a signature. ``payload_end`` is where the archive's region ends when a
-    certificate table follows it: the start of an Authenticode table that starts at
-    or past ``overlay_start`` and runs exactly to the end of the source. ``None``
-    when there is none, or the total size is not known.
+    ``overlay_start`` is where the program's own image ends in the file (for a PE,
+    the end of the furthest section's raw data, or of the headers when no section
+    has raw data; for ELF and Mach-O, see :func:`executable_layout`). Anything after
+    it is the *overlay*: a self-extractor's payload, an installer's data, a
+    signature. ``payload_end`` is where the archive's region ends when a certificate
+    table follows it: the start of a PE's Authenticode table that starts at or past
+    ``overlay_start`` and runs exactly to the end of the source. ``None`` when there
+    is none, the total size is not known, or the program is not a PE.
     """
 
     overlay_start: int
     payload_end: int | None
 
 
-def pe_layout(prefix: bytes, total_size: int | None) -> PeLayout | None:
-    """The :class:`PeLayout` of a PE whose headers sit in ``prefix``, or ``None``.
+def pe_layout(prefix: bytes, total_size: int | None) -> ExecutableLayout | None:
+    """The :class:`ExecutableLayout` of a PE whose headers sit in ``prefix``, or ``None``.
 
-    Reads only ``prefix[:PE_LAYOUT_PREFIX]``, so every caller holding at least that
+    Reads only ``prefix[:LAYOUT_PREFIX]``, so every caller holding at least that
     many leading bytes gets the same answer. ``None`` when ``prefix`` is not a PE, a
     header or the section table does not fit, a field is out of range, or a section
     ends past ``total_size``: a layout that does not parse means "scan as before",
@@ -482,7 +484,7 @@ def pe_layout(prefix: bytes, total_size: int | None) -> PeLayout | None:
     headers declare it; nothing checks that a table starts there, so headers that
     name one inside the archive cut it, and the archive then fails to open.
     """
-    head = bytes(prefix[:PE_LAYOUT_PREFIX])
+    head = bytes(prefix[:LAYOUT_PREFIX])
     if not head.startswith(_MZ) or not _is_pe(head):
         return None
     (e_lfanew,) = struct.unpack_from("<I", head, _E_LFANEW_OFFSET)
@@ -511,32 +513,32 @@ def pe_layout(prefix: bytes, total_size: int | None) -> PeLayout | None:
         if raw_size:
             overlay_start = max(overlay_start, raw_pointer + raw_size)
     if total_size is None:
-        return PeLayout(overlay_start, None)
+        return ExecutableLayout(overlay_start, None)
     if overlay_start > total_size:
         return None
     (directory_count,) = struct.unpack_from("<I", head, optional + count_at)
     entry = first_at + _SECURITY_DIRECTORY * 8
     if directory_count <= _SECURITY_DIRECTORY or entry + 8 > optional_size:
-        return PeLayout(overlay_start, None)
+        return ExecutableLayout(overlay_start, None)
     cert_start, cert_size = struct.unpack_from("<II", head, optional + entry)
     if (
         cert_size
         and overlay_start <= cert_start
         and cert_start + cert_size == total_size
     ):
-        return PeLayout(overlay_start, cert_start)
-    return PeLayout(overlay_start, None)
+        return ExecutableLayout(overlay_start, cert_start)
+    return ExecutableLayout(overlay_start, None)
 
 
 def pe_payload_end(prefix: bytes, total_size: int | None) -> int | None:
-    """Where a signed PE's certificate table starts (:attr:`PeLayout.payload_end`),
+    """Where a signed PE's certificate table starts (:attr:`ExecutableLayout.payload_end`),
     or ``None``: the common case, meaning the region runs to the end of the source."""
     layout = pe_layout(prefix, total_size)
     return None if layout is None else layout.payload_end
 
 
 def read_payload_end(handle: BinaryIO, total_size: int | None) -> int | None:
-    """:func:`pe_payload_end` from the first :data:`PE_LAYOUT_PREFIX` bytes of the
+    """:func:`pe_payload_end` from the first :data:`LAYOUT_PREFIX` bytes of the
     seekable ``handle``, whose byte 0 is where the archive's source starts; its
     position is restored.
 
@@ -549,15 +551,15 @@ def read_payload_end(handle: BinaryIO, total_size: int | None) -> int | None:
     position = handle.tell()
     try:
         handle.seek(0)
-        head = handle.read(min(PE_LAYOUT_PREFIX, total_size))
+        head = handle.read(min(LAYOUT_PREFIX, total_size))
     finally:
         handle.seek(position)
     return pe_payload_end(head, total_size)
 
 
 def overlay_start_of(source: BinaryIO) -> int | None:
-    """The PE overlay start of the seekable ``source`` from its current position, or
-    ``None``; the position is restored.
+    """The overlay start (:func:`executable_layout`) of the seekable ``source`` from
+    its current position, or ``None``; the position is restored.
 
     For the RAR and 7z parsers' scans, which judge the candidate there first, as
     detection does (``format-detection``, *Overlay start first*). One read of the
@@ -565,13 +567,167 @@ def overlay_start_of(source: BinaryIO) -> int | None:
     """
     position = source.tell()
     try:
-        head = source.read(PE_LAYOUT_PREFIX)
+        head = source.read(LAYOUT_PREFIX)
     finally:
         source.seek(position)
     total = source_byte_size(source)
     remaining = None if total is None else total - position
-    layout = pe_layout(head, remaining)
+    layout = executable_layout(head, remaining)
     return None if layout is None else layout.overlay_start
+
+
+def executable_layout(prefix: bytes, total_size: int | None) -> ExecutableLayout | None:
+    """The :class:`ExecutableLayout` of a PE, ELF or Mach-O program whose headers
+    sit in ``prefix[:LAYOUT_PREFIX]``, or ``None``.
+
+    A PE is read by :func:`pe_layout`. For the others the overlay start is where the
+    headers the prefix holds say the image ends, and ``payload_end`` is always
+    ``None``: neither format appends a signature after the image (a Mach-O code
+    signature sits inside ``__LINKEDIT``).
+
+    - ELF: the furthest end of the ELF header, the program header table, each
+      segment's file bytes, and the section header table. When that table sits in
+      the prefix (the Go linker's layout), each section's file bytes too, since
+      non-alloc sections lie past the last segment. GNU ld writes the table last,
+      past the prefix, and then it is not read. The program headers must fit in
+      the prefix.
+    - Thin Mach-O: the furthest end of the load commands and of each segment's file
+      bytes (``LC_SEGMENT`` / ``LC_SEGMENT_64``). The load commands must fit in the
+      prefix.
+    - Fat Mach-O: the furthest end of an architecture's slice.
+
+    ``None`` when the headers do not parse or do not fit, or the image ends past
+    ``total_size``: a layout that does not parse means "scan as before".
+    """
+    head = bytes(prefix[:LAYOUT_PREFIX])
+    if head.startswith(_MZ):
+        return pe_layout(head, total_size)
+    if head.startswith(_ELF):
+        end = _elf_image_end(head)
+    elif bytes(head[:4]) in _MACHO_THIN:
+        endian, is_64 = _MACHO_THIN[bytes(head[:4])]
+        end = (
+            _thin_macho_image_end(head, endian, is_64)
+            if _thin_macho_parses(head, endian, is_64)
+            else None
+        )
+    elif bytes(head[:4]) in _MACHO_FAT:
+        endian, is_64 = _MACHO_FAT[bytes(head[:4])]
+        end = (
+            _fat_macho_image_end(head, endian, is_64)
+            if _fat_macho_parses(head, endian, is_64)
+            else None
+        )
+    else:
+        return None
+    if end is None or (total_size is not None and end > total_size):
+        return None
+    return ExecutableLayout(end, None)
+
+
+# ELF header fields after ``e_ident`` (16 bytes): (phoff, shoff, then ehsize,
+# phentsize, phnum, shentsize, shnum) per class, and each program header's
+# (p_offset, p_filesz) and the size those need.
+_ELF_HEADER = {1: ("II", 28, 40), 2: ("QQ", 32, 52)}
+_ELF_PHDR = {1: ("I", 4, "I", 16, 32), 2: ("Q", 8, "Q", 32, 56)}
+_PN_XNUM = 0xFFFF
+# Each section header's sh_type offset, then (sh_offset, sh_size) format and offset,
+# and the size those need, per class.
+_ELF_SHDR = {1: (4, "I", 16, 24), 2: (4, "Q", 24, 40)}
+_SHT_NOBITS = 8
+
+
+def _elf_image_end(head: bytes) -> int | None:
+    """Where an ELF's image ends by the headers in ``head``, or ``None``."""
+    if not _is_elf(head):
+        return None
+    elf_class = head[4]
+    endian = "<" if head[5] == 1 else ">"
+    offsets_fmt, offsets_at, sizes_at = _ELF_HEADER[elf_class]
+    if sizes_at + 12 > len(head):
+        return None
+    phoff, shoff = struct.unpack_from(endian + offsets_fmt, head, offsets_at)
+    ehsize, phentsize, phnum, shentsize, shnum = struct.unpack_from(
+        endian + "5H", head, sizes_at
+    )
+    if phnum == _PN_XNUM or (shoff and not shnum):
+        # Extended numbering: the real count sits in section 0, past the prefix.
+        return None
+    end = ehsize
+    if phnum:
+        off_fmt, off_at, size_fmt, size_at, entry_min = _ELF_PHDR[elf_class]
+        if phentsize < entry_min or phoff + phnum * phentsize > len(head):
+            return None
+        end = max(end, phoff + phnum * phentsize)
+        for index in range(phnum):
+            entry = phoff + index * phentsize
+            (offset,) = struct.unpack_from(endian + off_fmt, head, entry + off_at)
+            (filesz,) = struct.unpack_from(endian + size_fmt, head, entry + size_at)
+            if filesz:
+                end = max(end, offset + filesz)
+    if shoff:
+        table_end = shoff + shnum * shentsize
+        end = max(end, table_end)
+        if table_end <= len(head):
+            # The table sits in the prefix (the Go linker writes it right after the
+            # program headers, and its non-alloc sections after the last segment):
+            # take each section's file bytes too.
+            type_at, off_fmt, off_at, entry_min = _ELF_SHDR[elf_class]
+            if shentsize < entry_min:
+                return None
+            for index in range(shnum):
+                entry = shoff + index * shentsize
+                (sh_type,) = struct.unpack_from(endian + "I", head, entry + type_at)
+                offset, size = struct.unpack_from(
+                    endian + off_fmt * 2, head, entry + off_at
+                )
+                if sh_type != _SHT_NOBITS and size:
+                    end = max(end, offset + size)
+    return end
+
+
+_LC_SEGMENT = 0x1
+_LC_SEGMENT_64 = 0x19
+
+
+def _thin_macho_image_end(head: bytes, endian: str, is_64: bool) -> int | None:
+    """Where a thin Mach-O's image ends by the load commands in ``head``."""
+    header_size = 32 if is_64 else 28
+    ncmds, sizeofcmds = struct.unpack_from(endian + "II", head, 16)
+    commands_end = header_size + sizeofcmds
+    if commands_end > len(head):
+        return None
+    end = commands_end
+    at = header_size
+    for _ in range(ncmds):
+        if at + 8 > commands_end:
+            return None
+        cmd, cmdsize = struct.unpack_from(endian + "II", head, at)
+        if cmdsize < 8 or at + cmdsize > commands_end:
+            return None
+        if cmd == _LC_SEGMENT and cmdsize >= 56:
+            fileoff, filesize = struct.unpack_from(endian + "II", head, at + 32)
+        elif cmd == _LC_SEGMENT_64 and cmdsize >= 72:
+            fileoff, filesize = struct.unpack_from(endian + "QQ", head, at + 40)
+        else:
+            fileoff = filesize = 0
+        if filesize:
+            end = max(end, fileoff + filesize)
+        at += cmdsize
+    return end
+
+
+def _fat_macho_image_end(head: bytes, endian: str, is_64: bool) -> int:
+    """Where a fat Mach-O's last slice ends; ``_fat_macho_parses`` checked the
+    table."""
+    (nfat_arch,) = struct.unpack_from(endian + "I", head, 4)
+    arch_size = 32 if is_64 else 20
+    arch_fmt = endian + ("iiQQII" if is_64 else "iiIII")
+    end = 8 + nfat_arch * arch_size
+    for index in range(nfat_arch):
+        fields = struct.unpack_from(arch_fmt, head, 8 + index * arch_size)
+        end = max(end, fields[2] + fields[3])
+    return end
 
 
 def _is_elf(prefix: bytes) -> bool:
@@ -793,11 +949,11 @@ def scan_for_magic(
 ) -> MagicScan:
     """The earliest ``needles`` match within ``limit`` bytes, as a :class:`MagicScan`.
 
-    ``first_at`` is a candidate origin to judge before anything else: a PE's overlay
-    start (:attr:`PeLayout.overlay_start`), where the format itself says appended data
-    begins. A ``VALID`` or ``VALID_SHORT`` hit there is the answer, ahead of every
-    other needle in the window; anything else there leaves the scan below unchanged.
-    It needs a ``validator``.
+    ``first_at`` is a candidate origin to judge before anything else: an
+    executable's overlay start (:attr:`ExecutableLayout.overlay_start`), where the
+    format itself says appended data begins. A ``VALID`` or ``VALID_SHORT`` hit
+    there is the answer, ahead of every other needle in the window; anything else
+    there leaves the scan below unchanged. It needs a ``validator``.
 
     The scan starts at ``source``'s **current position** and the returned candidate
     origin is relative to it. A needle counts as found only when it lies wholly inside
