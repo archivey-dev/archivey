@@ -33,8 +33,11 @@ fsspec's decompressing stream, as a stream archivey opened and closes, with one 
 on the `archivey.streams` logger saying it reads no ranges; for a codec archivey decodes
 itself, the warning SHALL say that `compression=None` reads by range. Its `compression`
 SHALL NOT become a `format=`: the archive is what the decompressed bytes hold. In a
-volume sequence, an `OpenFile` with a `compression` SHALL be refused with an
-`ArchiveyUsageError`. Its `encoding`, `errors` and `newline` SHALL be ignored, as binary
+volume sequence, and in `open_stream()`, which reads a compressed stream and would get
+the decoded bytes, an `OpenFile` with a `compression` SHALL be refused with an
+`ArchiveyUsageError` before any read. A `FormatDetectionError` from a compressed
+`OpenFile` SHALL carry a note that the bytes were decoded by fsspec and that
+`compression=None` reads the compressed file itself. Its `encoding`, `errors` and `newline` SHALL be ignored, as binary
 mode ignores them.
 
 #### Scenario: OpenFile fields
@@ -43,6 +46,8 @@ mode ignores them.
 | --- | --- |
 | `fsspec.open("memory://x.zip.gz", compression="infer")` | Opens the ZIP inside; one WARNING suggesting `compression=None`; closing the reader closes fsspec's stream |
 | `[fsspec.open("memory://a.7z.001", compression="gzip"), ...]` | `ArchiveyUsageError` naming the compression; no read |
+| `open_stream(fsspec.open("memory://y.txt.gz", compression="infer"))` | `ArchiveyUsageError` naming `compression='gzip'` and `compression=None`; no read |
+| `open_archive(fsspec.open("memory://y.txt.gz", compression="infer"))` | `FormatDetectionError` with a note naming fsspec's `compression='gzip'` |
 | `fsspec.open("memory://x.zip.gz")` | Opens the gzip stream (single-file reader with one member) |
 | `fsspec.open("memory://x.zip", mode="rt")` | `ArchiveyUsageError` naming the mode |
 
