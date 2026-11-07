@@ -209,13 +209,16 @@ region runs to the end of the source), `open_archive` passes it to `open_read` b
 start offset, and the backend behaves as if handed a view of `[start, end)`. A backend
 never reads before its start offset to find an end itself: that would break the
 "as if a view" promise of `ReadBackend.open_read` and would not work on a stream. Under
-forced `format=` the start is 0 and the stub is the backend's own first bytes. Every RAR,
-7z and ZIP backend opened at 0 with no end reads those bytes and derives the same end with
-the same helper, so both paths agree (DR-23a). For RAR, 7z and the ZIP forward walk these
-are bytes their payload scan reads anyway. The seekable ZIP reader locates its archive
-from the tail and never reads its start, so it gains one read of its first bytes for
-this; without it, forced `format=ZIP` on IRPF would keep warning about the certificate
-and fail under `STRICT` while auto-detect opens it.
+forced `format=` the start is 0 and the stub is the source's first bytes: `open_archive`
+reads them for a backend that can carry a stub, on a seekable single-file source, and
+passes the end the same helper derives, so both paths agree (DR-23a). Detection reads the
+layout from the same 4096 bytes whatever `max_prefix_bytes` says. One rule for every
+backend: none derives an end itself. An earlier cut had each backend derive it, the
+seekable ZIP reader lazily; a ZIP planted in the table with offsets counted from the start
+of the file then listed under forced `format=ZIP` and not under auto-detect. **Maintainer
+decision (davitf, 2026-11-07):** auto-detect and a forced format never return different
+contents; accelerators may differ in cost only. The forced open costs one read of the
+first 4096 bytes.
 
 A scan never accepts a candidate that starts at or past a known payload end. The
 certificate table is not parsed, so a needle inside it could pass a validator, and the

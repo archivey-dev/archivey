@@ -2195,8 +2195,9 @@ class _PluginBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
     ) -> _PluginAdapter:
-        reject_start_offset(start_offset, format, archive_name)
+        reject_start_offset(start_offset, format, archive_name, end_offset)
         adapter = (
             SequentialReaderAdapter
             if issubclass(self.PLUGIN, SequentialFormatHandler)
