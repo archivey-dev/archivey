@@ -15,7 +15,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import TYPE_CHECKING, BinaryIO, ClassVar, cast
+from typing import TYPE_CHECKING, BinaryIO, ClassVar
 
 from archivey.config import ProcessIsolation
 from archivey.exceptions import (
@@ -32,7 +32,6 @@ from archivey.internal.config import (
 from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_excluded
 from archivey.internal.overrides import override
-from archivey.internal.source import seeks_to_end_are_cheap
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -224,8 +223,7 @@ def _source_tail(
 
     ``(length, None)`` when the source is shorter than ``min_length``, and
     ``(None, None)`` when it cannot be read: a stream without ``seek``, ``tell`` or
-    ``read``, one that says it cannot seek, one whose seek to its end may decode what
-    it skips (``seeks_to_end_are_cheap``), or a read that fails.
+    ``read``, one that says it cannot seek, or a read that fails.
     """
     try:
         if not isinstance(source, (str, os.PathLike)):
@@ -235,10 +233,6 @@ def _source_tail(
             ):
                 return None, None
             if seekable is not None and not seekable():
-                return None, None
-            # A seek to the end of a member that decompresses decodes all of it, and
-            # the restore decodes it again. A stored member is a slice and is read.
-            if not seeks_to_end_are_cheap(cast(BinaryIO, source)):
                 return None, None
         with _peeking(source) as f:
             length = f.seek(0, io.SEEK_END)

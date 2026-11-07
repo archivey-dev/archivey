@@ -199,7 +199,9 @@ it. A source that is not peeked reports `size=None`, no lzip `CRC32`, no `gzip.i
 a `compressed_size` only when the member stream advertises its length. `size` and
 `CRC32` are metadata: the decoder still checks the xz index and the lzip trailers when
 the member is read. The gzip codec's own ISIZE peek at codec open ([`gzip.md`](gzip.md)
-§2.3) asks the same question.
+§2.3), which lets `AUTO` pick `rapidgzip`, asks the same question only when the open did
+not declare seeking: an open that did needs the decode to the end for its index anyway.
+The truncation checks that run once `rapidgzip` is picked read the trailer either way.
 
 A member stream's advertised length is the length its container's header declares, not a
 caller's claim, so it is the `compressed_size` whether the member stream is seekable or
