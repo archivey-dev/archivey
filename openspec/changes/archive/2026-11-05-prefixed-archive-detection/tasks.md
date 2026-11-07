@@ -1,7 +1,8 @@
 > **Cut on 2026-09-25**, when `detection-evidence-ledger` was decided against. **Block 2
 > (ZIP tail probe) is struck**: off under `BALANCED` by decision, no measured real appended
 > ZIP, six false positives on a developer tree, and `open_archive(format=ZIP)` already opens
-> one; reopen if a user asks. **`prefix_kind` / `PrefixKind` is struck**: `payload_offset > 0`
+> one; reopen if a user asks. (Reopened for one case, a ZIP in a PE's overlay, by
+> `openspec/changes/pe-aware-sfx-location`.) **`prefix_kind` / `PrefixKind` is struck**: `payload_offset > 0`
 > already says "prefixed". `ArchiveyConfig.detection_budget` landed (3.1's config half) and
 > task 2.3's exact-end tie-break landed. The exhaustive scan is **deferred unless asked**:
 > the scan window is still clamped to `SFX_MAX` (`min(SFX_MAX, budget.max_scan_bytes)` in
