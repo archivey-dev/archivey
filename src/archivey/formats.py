@@ -30,7 +30,9 @@ decode it.
 
 A sequential format is also read inside each single-file compression stream archivey
 decodes (``.cpio.gz``), and its walk can hand the rest of the archive to one of
-archivey's codecs part-way (:meth:`ForwardStream.decompress`). What the first version
+archivey's codecs part-way (:meth:`ForwardStream.decompress`). Its walk can also read a
+member that is an archive in turn, a ``.deb``'s ``data.tar.xz`` say, as members of its
+own (:meth:`ForwardStream.take` and :meth:`ReaderContext.open_nested`). What the first version
 leaves out: an indexed format inside a compression stream, member data a library decodes
 in a sequential format, self-extracting stubs, multi-volume sets, passwords, and new
 diagnostic codes.
@@ -354,6 +356,8 @@ class ForwardStream:
         self._offset = 0
         # Set once decompress() has handed the rest of the bytes to a decoded stream.
         self._handed_off = False
+        # The stream take() returned last, until the walk moves past its bytes.
+        self._taken: _TakenBytes | None = None
 
     @property
     def offset(self) -> int:
@@ -366,6 +370,7 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.read() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
+        self._end_take()
         data = self._read_fn(n)
         self._offset += len(data)
         return data
@@ -394,8 +399,40 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.skip() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
+        self._end_take()
         self._skip_fn(self._offset, n)
         self._offset += n
+
+    def take(self, n: int) -> BinaryIO:
+        """The next ``n`` bytes as a stream of their own, read forward: a member that
+        is an archive in turn, to hand :meth:`ReaderContext.open_nested`.
+
+        The stream reads the archive's bytes as they come, from a pipe too, so nothing
+        is held in memory. It ends after ``n`` bytes, or raises ``TruncatedError`` where
+        the archive ends first. The walk resumes after the ``n`` bytes: the next
+        :meth:`read`, :meth:`skip`, :meth:`take` or :meth:`decompress` first skips what
+        the stream left unread, and the stream reads nothing after that.
+        """
+        if n < 0:
+            raise ValueError(f"ForwardStream.take() takes a size of 0 or more, got {n}")
+        self._check_not_handed_off()
+        self._end_take()
+        taken = self._taken = _TakenBytes(self, n)
+        # Unbuffered, so that a read after the walk moved on raises at once rather than
+        # returning what a buffer pulled in earlier.
+        return cast(BinaryIO, taken)
+
+    def _end_take(self) -> None:
+        """Move past what the last :meth:`take` left unread, and close it."""
+        taken = self._taken
+        if taken is None:
+            return
+        self._taken = None
+        left = taken.end - self._offset
+        taken.ended = True
+        if left:
+            self._skip_fn(self._offset, left)
+            self._offset += left
 
     def decompress(self, stream_format: StreamFormat | PluginStream) -> ForwardStream:
         """The rest of the archive, from :attr:`offset` on, decoded as a
@@ -426,6 +463,7 @@ class ForwardStream:
         handed off, or was not built by archivey.
         """
         self._check_not_handed_off()
+        self._end_take()
         if self._decompress_fn is None:
             raise ArchiveyUsageError(
                 "this ForwardStream was not built by archivey and cannot decompress"
@@ -440,6 +478,44 @@ class ForwardStream:
                 "the rest of this stream was handed to decompress(): read the stream "
                 "it returned"
             )
+
+
+class _TakenBytes(io.RawIOBase):
+    """What :meth:`ForwardStream.take` reads: the next bytes of its stream, up to
+    ``end``. A read fills what it asks for, up to ``end``, as a buffered stream's
+    does."""
+
+    def __init__(self, forward: ForwardStream, n: int) -> None:
+        self._forward = forward
+        self.end = forward.offset + n
+        # Set once the walk moved past these bytes: a read then is a plugin bug.
+        self.ended = False
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, buffer: Any) -> int:
+        if self.ended:
+            raise ArchiveyUsageError(
+                "the stream ForwardStream.take() returned was read after the walk "
+                "moved past its bytes"
+            )
+        forward = self._forward
+        want = min(len(buffer), self.end - forward._offset)
+        got = 0
+        while got < want:
+            data = forward._read_fn(want - got)
+            if not data:
+                raise TruncatedError(
+                    f"the archive ends at offset {forward._offset}, inside the "
+                    f"{self.end - forward._offset} bytes up to offset {self.end}"
+                )
+            forward._offset += len(data)
+            buffer[got : got + len(data)] = data
+            got += len(data)
+        return got
 
 
 class ReaderContext:
@@ -465,6 +541,8 @@ class ReaderContext:
         ],
         link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None],
         hold: Callable[[ArchiveMember, str | None, str | None], None],
+        open_nested: Callable[[BinaryIO, ArchiveFormat], Iterator[MemberSpan]]
+        | None = None,
     ) -> None:
         self._encoding = encoding
         self._archive_name = archive_name
@@ -473,6 +551,7 @@ class ReaderContext:
         self._report = report
         self._link_target_unavailable = link_target_unavailable
         self._hold = hold
+        self._open_nested = open_nested
 
     @property
     def encoding(self) -> str | None:
@@ -559,6 +638,46 @@ class ReaderContext:
         already, raises ``ArchiveyUsageError``.
         """
         self._hold(member, stored_name, reason)
+
+    def open_nested(
+        self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat
+    ) -> Iterator[MemberSpan]:
+        """Read ``data``, an archive stored inside this one, as members of this one.
+
+        ``data`` is the inner archive's bytes, read forward, usually a
+        :meth:`ForwardStream.take` of the member that holds them; ``format`` is the
+        inner archive's, such as ``ArchiveFormat(ContainerFormat.TAR,
+        StreamFormat.XZ)`` for a ``.deb``'s ``data.tar.xz``. archivey reads it with its
+        own reader for that format, in one forward pass, and yields one
+        :class:`MemberSpan` per inner member, with the decoded data as
+        :attr:`MemberSpan.data` (``None`` for a member with no data). The inner reader
+        works for this archive: its listing limits are this archive's, what it
+        reports goes into this archive's diagnostics, under the caller's
+        ``DiagnosticPolicy``, and its errors raise from the walk.
+
+        Yield every span, in order, from :meth:`SequentialReader.walk` before taking
+        the next one: the inner reader numbers its members as the outer listing will,
+        so its reports name the right member. The walk may change a span's member
+        before yielding it: rename it, under a prefix say (and the ``link_target`` of
+        a hard link with it), or add ``MemberSpan.digests``. Stop early by closing the
+        iterator; one left open is closed when Python collects it, and at the latest
+        when the archive is closed.
+
+        The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
+        format is read by its replacement, and ``exclude_libraries`` holds; ``only``
+        and ``exclude`` check only the file the call opens. A format that needs a
+        seekable source (7z, RAR) raises ``UnsupportedFeatureError``, and so does an
+        archive nested more than 8 deep (an inner reader calling ``open_nested`` in
+        turn). What the inner reader attaches to a member while its data is read
+        reaches the member the walk yielded. Call it from
+        :meth:`SequentialReader.walk` only; anywhere else it raises
+        ``ArchiveyUsageError``.
+        """
+        if self._open_nested is None:
+            raise ArchiveyUsageError(
+                "ReaderContext.open_nested() is not available for this reader"
+            )
+        return self._open_nested(cast(BinaryIO, data), format)
 
     def normalize_name(self, name: str, member_type: MemberType) -> str:
         """The name archivey gives a member: ``./a//b`` becomes ``a/b``, and a
