@@ -533,13 +533,15 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
 - **`stream.take(n)`** gives the next `n` bytes as a stream of their own, read forward
   from the archive as they come, from a pipe too. The walk resumes after them: the next
   `read()`, `skip()`, `take()` or `decompress()` first skips what the inner reader left
-  unread, such as padding after a tar's end.
+  unread, such as padding after a tar's end. A `read(0)` or `skip(0)` moves nothing
+  and leaves the stream open.
 - **`context.open_nested(data, format)`** reads `data` with archivey's reader for
   `format` (`ArchiveFormat.TAR_XZ`, say), in one forward pass, and yields one
   `MemberSpan` per inner member, its decoded data in `MemberSpan.data`. A format that
   needs a seekable source (7z, RAR) raises `UnsupportedFeatureError`, and so does an
   archive nested more than 8 deep, which a format that reads its inner format from its
-  own bytes can be made to reach. Call it from `walk()` only. Stop early by closing the
+  own bytes can be made to reach. Under `FormatPolicy(plugins=False)` a plugin format
+  inside raises it too. Call it from `walk()` only. Stop early by closing the
   iterator it returns; archivey closes one left open when the archive closes.
 - **One archive to the caller.** The inner reader works for the outer one: its listing
   limits and decoder limits are the caller's, and what it reports (a TAR header it had

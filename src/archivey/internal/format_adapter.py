@@ -488,6 +488,20 @@ class _PluginAdapter(BaseArchiveReader):
             )
         registry = get_registry()
         policy = self._config.formats
+        if not policy.plugins:
+            # plugins=False holds for every member and nested archive, as in
+            # decompress(): a plugin format inside a built-in one does not run.
+            reasons = []
+            if isinstance(fmt.container, PluginContainer):
+                reasons.append("plugins=False turns off every plugin format")
+            if isinstance(fmt.stream, PluginStream):
+                reasons.append("plugins=False turns off every plugin codec")
+            if reasons:
+                raise UnsupportedFeatureError(
+                    f"{fmt.display_name} cannot be read inside another archive: "
+                    + "; ".join(reasons),
+                    source_format=fmt,
+                )
         backend_cls = registry.reader_for_format(
             fmt,
             replacement=policy._replacement_for(fmt),
@@ -882,6 +896,9 @@ def _outer_copy(member: ArchiveMember) -> ArchiveMember:
     copy.extra = type(member.extra)(member.extra)
     copy.hashes = dict(member.hashes)
     copy._diagnostics = member._diagnostics
+    # The inner listing settled the target (an empty one it reported): the outer
+    # listing does not look for it in the data, nor report it again.
+    copy._link_target_resolved = member._link_target_resolved
     return copy
 
 
@@ -1815,6 +1832,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             member.type is MemberType.SYMLINK
             and self._sequential.link_target_in_data
             and member.link_target is None
+            and not member._link_target_resolved
         ):
             if decoded is not None:
                 with self._translated_errors(member.name), self._handle_guard():
@@ -1827,6 +1845,10 @@ class SequentialReaderAdapter(_PluginAdapter):
                     )
             elif length > MAX_LINK_TARGET_BYTES:
                 self._emit_link_target_too_long(member, member_id=index)
+            elif not length:
+                # No stored bytes: an empty target, which the listing reports. A
+                # read of 0 bytes is not made, since it moves nothing.
+                member.link_target = ""
             else:
                 with self._translated_errors(member.name), self._handle_guard():
                     target = forward.read_exact(length)
