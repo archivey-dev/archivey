@@ -235,6 +235,7 @@ extend-select = [
 [tool.ruff.lint.isort]
 # One `from m import (...)` per module, aliases included (`Set as AbstractSet`).
 combine-as-imports = true
+known-first-party = ["archivey", "archivey_libarchive"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Immutable values, safe as argument and dataclass defaults (B008, RUF009): an enum.Flag
@@ -313,7 +314,7 @@ exclude_also = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "tests", "."]
+pythonpath = ["src", "tests", ".", "packages/archivey-libarchive/src"]
 testpaths = ["tests", "scripts/tests"]
 # --timeout: a hung test fails fast (with a traceback of all threads) instead of stalling
 # the whole job until the CI hard limit. 60s is far above any real test here (all run in

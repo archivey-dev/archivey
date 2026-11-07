@@ -8,6 +8,11 @@
 #   ./scripts/test.sh tests/test_zip.py -k roundtrip
 #   ./scripts/test.sh --all-configs   all three legs CI runs — when a change can reach an extra
 #
+# A run of the whole suite (no extra arguments) and the [all] leg also run the
+# archivey-libarchive package's tests (packages/archivey-libarchive), in a pytest of their
+# own as CI does: the package registers its formats for the whole process. Those tests
+# skip where the system has no libarchive.
+#
 # Every leg runs on all cores (`-n auto`, pytest-xdist). A later `-n 0` among the extra
 # arguments wins, for a run where you want one process (pdb, `-s` output in order).
 #
@@ -41,9 +46,18 @@ done
 
 EVERYDAY_SYNC=(uv sync --group dev --extra all)
 
+PACKAGE_TESTS=(uv run --no-sync pytest packages/archivey-libarchive/tests -q --no-cov)
+
 if [ "$ALL_CONFIGS" -eq 0 ]; then
   "${EVERYDAY_SYNC[@]}" || exit 1
-  exec uv run --no-sync pytest -n auto "${PYTEST_ARGS[@]}"
+  if [ ${#PYTEST_ARGS[@]} -gt 0 ]; then
+    exec uv run --no-sync pytest -n auto "${PYTEST_ARGS[@]}"
+  fi
+  uv run --no-sync pytest -n auto
+  status=$?
+  printf '\n\033[1m=== archivey-libarchive\033[0m\n'
+  "${PACKAGE_TESTS[@]}" || status=1
+  exit $status
 fi
 
 if [ ${#PYTEST_ARGS[@]} -gt 0 ]; then
@@ -77,6 +91,7 @@ leg "[all]" bash -c '
   uv sync --group dev --extra all
   uv run --no-sync pytest -n auto
 '
+leg "[all] archivey-libarchive" "${PACKAGE_TESTS[@]}"
 
 # 2. minimum supported versions
 # Legs 2 and 3 pass --no-cov, as CI does: only leg 1's report is read, and tracing
