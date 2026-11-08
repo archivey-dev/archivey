@@ -38,6 +38,7 @@ from tests.cab_util import (
     _Token,
     block_checksum,
     canonical_codes,
+    checksum as oracle_checksum,
     write_cab,
 )
 
@@ -319,6 +320,22 @@ def test_the_checksum_matches_libmspack() -> None:
     checksum, stored, decoded = struct.unpack_from("<IHH", raw, start)
     assert checksum
     assert block_checksum(raw[start + 8 : start + 8 + stored], decoded) == checksum
+
+
+def test_the_reader_checksum_matches_the_word_by_word_one() -> None:
+    # The reader folds the words as one integer; every length around a word and a
+    # fold boundary, with and without a seed, gives what XORing word by word gives.
+    raw = (LIBARCHIVE / "test_read_format_cab_2.cab").read_bytes()
+    start = _data_start(raw)
+    stored_checksum, stored, decoded = struct.unpack_from("<IHH", raw, start)
+    payload = raw[start + 8 : start + 8 + stored]
+    assert cab_reader._block_checksum(payload, decoded) == stored_checksum
+    rng = random.Random(11)
+    for size in [*range(70), 255, 256, 257, 4095, 4096, 4097, 32767, 32768, 32771]:
+        data = rng.randbytes(size)
+        seed = rng.getrandbits(32)
+        assert cab_reader._checksum(data) == oracle_checksum(data)
+        assert cab_reader._checksum(data, seed) == oracle_checksum(data, seed)
 
 
 @pytest.mark.parametrize("flag", [1, 2])
