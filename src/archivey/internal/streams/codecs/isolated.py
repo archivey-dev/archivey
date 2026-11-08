@@ -106,6 +106,9 @@ _TYPICAL_DECODER_MEMORY = 8 << 20
 _BZ2_DECODER_MEMORY = 3600 << 10
 # brotli: the ring buffer of the default 22-bit window.
 _BROTLI_DECODER_MEMORY = 4 << 20
+# bzip3: libbzip3's state for the bzip3 tool's default 16 MiB blocks (``bzip3_codec``
+# counts it per file before the decoder is built).
+_BZIP3_DECODER_MEMORY = 96 << 20
 
 
 def _lzma_decoder_memory(
@@ -246,6 +249,18 @@ class ChildPpmdDecoder(_ChildProxy):
     @property
     def unused_data(self) -> bytes:
         return self._child.get("unused_data") if self.eof else b""
+
+
+class _Bzip3Child(DecoderChild):
+    isolated_unless_none = True
+
+
+class ChildBzip3Decompressor(_ChildProxy):
+    """A ``bz3`` ``BZ3Decompressor`` in a child. ``Bzip3Decompressor`` reads the
+    framing and calls only ``decompress``."""
+
+    def decompress(self, data: bytes) -> bytes:
+        return self._child.call("decompress", data)
 
 
 class Natives:
@@ -411,6 +426,26 @@ class Natives:
             assert inflate64 is not None
             return inflate64.Inflater()
         return ChildInflater(self._child("inflate64"))
+
+    def bzip3_decompressor(self, setting: str) -> Any:
+        """A ``bz3`` ``BZ3Decompressor``; needs bzip3 installed. Not imported here
+        when isolated. ``setting`` is the ``process_isolation`` value, named in the
+        error when no child can start: bzip3 decodes in a child under every setting
+        but ``NONE``."""
+        if not self.isolated:
+            bz3 = deps.bzip3.load()
+            assert bz3 is not None
+            decoder = bz3.backends.BZ3Decompressor()
+            note_native_memory(decoder, _BZIP3_DECODER_MEMORY)
+            return decoder
+        reason = decoder_child_unavailable_reason("bzip3")
+        if reason is not None:
+            raise isolation_error(reason, setting, isolated_unless_none=True)
+        try:
+            child = _Bzip3Child("bzip3", setting=setting)
+        except DecoderChildStartError as exc:
+            raise isolation_error(str(exc), setting, isolated_unless_none=True) from exc
+        return ChildBzip3Decompressor(child)
 
     def package_available(self, lazy: deps.LazyOptional) -> bool:
         """Whether a lazily imported package can decode. In-process this imports it

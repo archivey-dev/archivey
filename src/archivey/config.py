@@ -97,8 +97,9 @@ class ProcessIsolation(Enum):
 
     KNOWN_CRASHES = "known_crashes"
     """The default: only the decoders seen to crash on some input run in a child
-    process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``) and pyppmd (every PPMd
-    member). Every other decoder runs in the caller's process. Processes are reused for
+    process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``), pyppmd (every PPMd
+    member) and libbzip3 (every ``.bz3`` file, a young library with memory-safety fixes
+    in its 2023 releases). Every other decoder runs in the caller's process. Processes are reused for
     later decoders. Measured on one Linux machine
     (``scripts/investigations/bench_process_isolation.py``), each PPMd decoder costs
     about 1.4 to 2 ms more than in-process: a non-solid 7z of 1024 PPMd members of 4 KiB
@@ -106,12 +107,12 @@ class ProcessIsolation(Enum):
     own. A solid PPMd folder is one decoder for all its members: it pays that once, and
     about 0.1 to 0.35 ms for each 4 KiB member read from it; the decoded bytes cross
     between processes on top of that, at the copying cost ``NATIVE_DECODERS`` gives for
-    single streams. Where no child process can be started, a PPMd member raises
-    :class:`~archivey.ResourceUnavailableError` and rapidgzip under ``AUTO`` falls back
+    single streams. Where no child process can be started, a PPMd member or a ``.bz3``
+    file raises :class:`~archivey.ResourceUnavailableError` and rapidgzip under ``AUTO`` falls back
     to the standard library."""
     NATIVE_DECODERS = "native_decoders"
     """Every native decoder runs in a child process: zlib, bz2, lzma, zstd, lz4, brotli,
-    inflate64, pyppmd, rapidgzip and python-lzo, including the trial decodes format
+    inflate64, pyppmd, libbzip3, rapidgzip and python-lzo, including the trial decodes format
     detection runs. LZO without python-lzo decodes in Python, in the caller's process.
 
     Each open decoder has a process of its own, and processes are reused for later
@@ -131,10 +132,10 @@ class ProcessIsolation(Enum):
     NONE = "none"
     """No child process at all: every decoder runs in the caller's process.
 
-    Not recommended for archives you do not trust: rapidgzip and pyppmd are isolated by
-    default because they crash the process on some input, and here a crash takes the
+    Not recommended for archives you do not trust: rapidgzip, pyppmd and libbzip3 are
+    isolated by default because they crash the process on some input or may, and here a crash takes the
     caller with it. It suits trusted files where speed matters, tests, and environments
-    that cannot start processes. PPMd members decode in-process at any size, and
+    that cannot start processes. PPMd members and ``.bz3`` files decode in-process, and
     rapidgzip is not used: ``use_rapidgzip`` and ``use_indexed_bzip2`` under ``AUTO`` use
     the standard library, and ``ON`` is refused with
     :class:`~archivey.ArchiveyUsageError` when the config is built."""
@@ -454,7 +455,8 @@ class DecoderLimits:
     wherever an archive declares one — 7z LZMA and LZMA2, ZIP method 14, each xz
     block, ``.lzma`` and each lzip member — the window each zstd frame declares,
     on ``.zst``, ZIP method 93 and 7z, and twice the decoded size a mozlz4 header
-    declares (the decode buffer and its copy). RAR's dictionary is checked too, before
+    declares (the decode buffer and its copy), and the block size a ``.bz3`` header
+    declares, at what libbzip3 allocates for it (about 10 times the block size). RAR's dictionary is checked too, before
     ``unrar`` or ``unar`` is started, at what that program allocates for it. ``unar``
     writes to the whole declared dictionary, so the declared size counts. ``unrar``
     writes to it only as output is produced, so the declared size counts only up

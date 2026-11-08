@@ -2395,7 +2395,8 @@ def test_a_malformed_rock_ridge_entry_costs_its_own_member_only() -> None:
 
 def test_a_report_made_while_listing_names_the_member_as_listed() -> None:
     """A directory's name ends in ``/`` once normalized; a report made while the
-    member was typed names it the same way, so the two can be matched."""
+    member was typed names it the same way in its context, so the two can be
+    matched. The message keeps the name as the image stores it."""
     from archivey import DiagnosticCode
 
     def populate(iso: Any) -> None:
@@ -2407,7 +2408,7 @@ def test_a_report_made_while_listing_names_the_member_as_listed() -> None:
         [diagnostic] = ddd.diagnostics
         assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
         assert diagnostic.context.member_name == "ddd/"
-        assert "ddd/" in diagnostic.message
+        assert "'ddd'" in diagnostic.message
 
 
 def test_an_empty_rock_ridge_name_falls_back_to_the_iso9660_name() -> None:
@@ -2501,7 +2502,7 @@ def test_an_nm_entry_with_flags_pycdlib_refuses_costs_only_its_member(
 
 def test_a_directory_record_without_entries_is_named_as_listed() -> None:
     """The report for a record with no Rock Ridge entries names a directory with its
-    ``/``, in the message as in the context."""
+    ``/`` in the context; the message keeps the name as the image stores it."""
     from archivey import DiagnosticCode
 
     def populate(iso: Any) -> None:
@@ -2532,7 +2533,7 @@ def test_a_directory_record_without_entries_is_named_as_listed() -> None:
         [diagnostic] = ddd.diagnostics
         assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
         assert diagnostic.context.member_name == "DDD/"
-        assert "'DDD/'" in diagnostic.message
+        assert "'DDD'" in diagnostic.message
 
 
 def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
