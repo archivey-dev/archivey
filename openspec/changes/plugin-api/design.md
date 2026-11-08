@@ -372,11 +372,11 @@ above, each for a reason found while building it:
 `MemberSpan` is `(member, data_length, digests, data, checked)`. The decoded-data
 fields (`data`, `checked`) came with the stage that reads library-decoded data,
 appended so a plugin that passes fields by position kept working. Removing
-`stored_name` (archivey now normalizes names itself) moved them up one place and
-broke positional passing on purpose: the API is experimental, and a plugin that
-passes `data` by position now fails loudly (`checked=True` with no data). Stages: (1) the shape over stored
-data, file and pipe; (2) the CPIO package; (3) outer compression with
-`ForwardStream.decompress` and the inner-container probe; (4) decoded data.
+`stored_name` (archivey now normalizes names itself) moved them up one place and broke
+positional passing on purpose: the API is experimental, and a plugin that passes
+`data` by position now fails loudly (`checked=True` with no data). Stages: (1) the
+shape over stored data, file and pipe; (2) the CPIO package; (3) outer compression
+with `ForwardStream.decompress` and the inner-container probe; (4) decoded data.
 
 ### 2b. Checked against real libraries
 
