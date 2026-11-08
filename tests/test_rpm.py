@@ -29,7 +29,11 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import (
+    ArchiveEofContext,
+    DiagnosticCode,
+    UnknownMemberTypeContext,
+)
 from archivey.formats import SequentialReader
 from archivey.internal.backends import rpm_reader
 from archivey.internal.backends.rpm_reader import RpmReader
@@ -1057,15 +1061,16 @@ def test_old_style_file_names_are_read() -> None:
 
 
 @pytest.mark.parametrize(
-    ("change", "match"),
+    ("drop", "tags", "match"),
     [
-        ({"drop": (1116,)}, "lists 7 base names and 0 directory indexes"),
-        ({"tags": {1116: (_INT32, [0] * 6)}}, "lists 7 base names and 6 directory"),
-        ({"drop": (1030,)}, "^RPM header lists files with no tag 1030"),
-        ({"drop": (1028,)}, "^RPM header lists files with no tag 1028"),
-        ({"tags": {1034: (_INT32, [0] * 6)}}, "lists 7 files and 6 values of tag 1034"),
+        ((1116,), {}, "lists 7 base names and 0 directory indexes"),
+        ((), {1116: (_INT32, [0] * 6)}, "lists 7 base names and 6 directory"),
+        ((1030,), {}, "^RPM header lists files with no tag 1030"),
+        ((1028,), {}, "^RPM header lists files with no tag 1028"),
+        ((), {1034: (_INT32, [0] * 6)}, "lists 7 files and 6 values of tag 1034"),
         (
-            {"tags": {1039: (_STRING_ARRAY, [b"root"] * 6)}},
+            (),
+            {1039: (_STRING_ARRAY, [b"root"] * 6)},
             "lists 7 files and 6 values of tag 1039",
         ),
     ],
@@ -1079,13 +1084,9 @@ def test_old_style_file_names_are_read() -> None:
     ],
 )
 def test_a_file_list_whose_columns_disagree_is_refused(
-    change: dict[str, object], match: str
+    drop: tuple[int, ...], tags: dict[int, tuple[int, object]], match: str
 ) -> None:
-    package = _Package(
-        _tree(),
-        drop_tags=change.get("drop", ()),  # type: ignore[arg-type]
-        extra_tags=change.get("tags", {}),  # type: ignore[arg-type]
-    )
+    package = _Package(_tree(), drop_tags=drop, extra_tags=tags)
     with pytest.raises(CorruptionError, match=match):
         _open(_build(package)).close()
 
@@ -1166,25 +1167,35 @@ def test_without_device_numbers_there_are_no_hard_link_sets() -> None:
 
 
 @pytest.mark.parametrize(
-    "second",
+    ("first", "second", "second_listed"),
     [
-        _F(b"/opt/b", data=b"two", raw_inode=0),
-        _F(b"/opt/b", data=b"two", inode=7, flags=1 << 6),
-        _F(b"/opt/b", mode=0o120777, link=b"a", inode=7),
+        (
+            _F(b"/opt/a", data=b"one", raw_inode=0),
+            _F(b"/opt/b", data=b"two", raw_inode=0),
+            (MemberType.FILE, b"two"),
+        ),
+        (
+            _F(b"/opt/a", data=b"one", inode=7),
+            _F(b"/opt/b", data=b"two", inode=7, flags=1 << 6),
+            None,
+        ),
+        (
+            _F(b"/opt/a", data=b"one", inode=7),
+            _F(b"/opt/b", mode=0o120777, link=b"a", inode=7),
+            (MemberType.SYMLINK, None),
+        ),
     ],
     ids=["inode-0", "ghost", "symlink"],
 )
-def test_only_regular_files_with_a_positive_inode_share_data(second: _F) -> None:
-    """A file with inode 0, a ghost or a symlink never joins a hard-link set, so the
-    first file keeps its own data."""
-    first = _F(b"/opt/a", data=b"one", raw_inode=0 if second.raw_inode == 0 else None)
-    if second.raw_inode is None:
-        first.inode = 7
-    data = _build(_Package([first, second]))
-    listing = _listing(data)
+def test_only_regular_files_with_a_positive_inode_share_data(
+    first: _F, second: _F, second_listed: tuple[MemberType, bytes | None] | None
+) -> None:
+    """Two files that share an inode, where the second is a file with inode 0, a
+    ghost or a symlink: it never joins a hard-link set, so the first file keeps its
+    own data rather than coming back as a hard link."""
+    listing = _listing(_build(_Package([first, second])))
     assert listing["opt/a"] == (MemberType.FILE, b"one")
-    if not second.flags:
-        assert listing["opt/b"][0] in (MemberType.FILE, MemberType.SYMLINK)
+    assert listing.get("opt/b") == second_listed
 
 
 def test_an_uncompressed_payload_pads_from_its_own_start() -> None:
@@ -1256,10 +1267,12 @@ def test_trailing_data_is_reported_where_it_starts(after: bytes, at: int) -> Non
         reader.members()
         (diagnostic,) = reader.diagnostics.retained
     assert diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
-    # The trailer pads to 4: the offset counts from the end of that padding.
-    assert diagnostic.context.format == "rpm"  # type: ignore[attr-defined]
-    assert diagnostic.context.observed_kind == "nonzero"  # type: ignore[attr-defined]
-    assert diagnostic.context.observed_bytes == at  # type: ignore[attr-defined]
+    context = diagnostic.context
+    assert isinstance(context, ArchiveEofContext)
+    assert (context.format, context.observed_kind) == ("rpm", "nonzero")
+    # The offset counts from the end of the trailer's own padding to 4, which is
+    # where ``after`` starts: in "zeros-then-junk" the three zeros are past it.
+    assert context.observed_bytes == at
     assert f"data {at} bytes after its trailer" in diagnostic.message
 
 
@@ -1277,9 +1290,10 @@ def test_an_unknown_file_type_diagnostic_names_the_member_and_type() -> None:
     with _open(data) as reader:
         reader.members()
         (diagnostic,) = reader.diagnostics.retained
-    assert diagnostic.context.member_name == "opt/odd"  # type: ignore[attr-defined]
-    assert diagnostic.context.stored_type == "0o30000"  # type: ignore[attr-defined]
-    assert diagnostic.context.size is None  # type: ignore[attr-defined]
+    context = diagnostic.context
+    assert isinstance(context, UnknownMemberTypeContext)
+    assert (context.member_name, context.stored_type) == ("opt/odd", "0o30000")
+    assert context.size is None
 
 
 def test_a_ghost_before_a_symlink_with_no_target_does_not_hide_it() -> None:
