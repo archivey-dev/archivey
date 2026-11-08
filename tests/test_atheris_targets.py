@@ -22,6 +22,8 @@ from tests.atheris_fuzz import TARGET_NAMES, seeds as fuzz_seeds
 from tests.atheris_fuzz.oracles import (
     ORACLE_TARGETS,
     _compare,
+    _extract,
+    _make_accessible,
     extract_diff_one,
     oracle_seeds,
 )
@@ -226,8 +228,8 @@ def _tar_with_modes(*entries: tuple[str, int]) -> bytes:
 @pytest.mark.parametrize(
     "entries",
     [
-        (("f", 0o000),),
-        (("d/", 0o500), ("d/f", 0o644)),
+        (("{n}", 0o000),),
+        (("{n}/", 0o500), ("{n}/f", 0o644)),
     ],
     ids=["unreadable-file", "read-only-dir"],
 )
@@ -237,10 +239,22 @@ def test_extract_diff_reads_and_removes_restrictive_modes(
     # As a user that is not root (CI), a member at mode 000 could not be read, and a
     # read-only directory could not be emptied, so it leaked into the next input.
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    data = _tar_with_modes(*entries)
-    for policy_byte in range(3):
-        # The first byte picks the policy: name it so all three run.
-        extract_diff_one(bytes([ord("a") + policy_byte]) + data[1:])
+    # The first byte, the first member name's first letter, picks the policy:
+    # ord("a") % 3 == 1, "b" 2, "c" 0, so the three names run all three.
+    for n in "abc":
+        data = _tar_with_modes(*((name.format(n=n), mode) for name, mode in entries))
+        tree, error = _extract(
+            data,
+            ContainerFormat.TAR,
+            streaming=False,
+            dest=tmp_path / "check",
+            policy="standard",
+        )
+        assert error is None
+        assert tree
+        _make_accessible(tmp_path / "check")
+        shutil.rmtree(tmp_path / "check")
+        extract_diff_one(data)
     assert list(tmp_path.iterdir()) == []
 
 
