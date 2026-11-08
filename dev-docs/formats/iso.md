@@ -276,7 +276,10 @@ What is ISO-specific in turning a record into a member:
   `TruncatedError` where its stored data runs out, so the declared-length check other
   files get is off.
 - **Times.** `modified` is the Rock Ridge `TF` modification time when there is one, else
-  the record's 7-byte date; `TF` also supplies `accessed`. `TF` long-form dates (17 bytes,
+  the record's 7-byte date; `TF` also supplies `accessed`. pycdlib 1.x labels `TF` flag
+  bit 1 (the modification time under RRIP 1.12) as `access_time` and bit 2 as
+  `modification_time`; `_tf_modify_access_fields` asks pycdlib once which attribute gets
+  bit 1 (§5). `TF` long-form dates (17 bytes,
   hundredths of a second) are read; MagicISO's out-of-range hundredths become 0. A date
   that is all zeros is unset and `None`. Any other date that is not a date (a month of
   13, or 0001-01-01 at a positive GMT offset, whose UTC form is before year 1) is `None`
@@ -532,6 +535,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A multi-extent file whose extents overlap each other raises `CorruptionError` on read | **archivey** | Its `size` lists; no writer makes overlapping extents, and reading them would let a small image produce a huge file (§2.3) |
 | Two members share their bytes, and extraction writes both | **format** | Hardlinks are records sharing an extent; there is no hardlink record to map to `HARDLINK` |
 | Two members have one name and different bytes, and one of them is a resource fork | **format** | An associated file (flag bit 2) shares its data file's identifier; both records list, in on-disc order, and the later one is current (§2.3). Nothing on the member marks which is the fork |
+| A Rock Ridge image's `modified` would be each file's access time when the image was made | **library** | pycdlib 1.x swaps the names of `TF` flag bits 1 and 2 against RRIP 1.12; archivey reads them through a probe (§2.2). Before the probe, Ubuntu 4.10's install CD listed 1083 files 50 s off what xorriso extracts. `test_rock_ridge_tf_times_are_read_in_rrip_order` pins it |
 | Opening a large image is slow and listing is instant | **library** | `open_fp` parses every tree up front (§2.2). The cost class `INDEXED` is still right: nothing is decoded |
 | An image whose UDF or Joliet tree loops is refused at open, although the tree archivey lists from is intact | **library** | `pycdlib` walks every tree in `open_fp` and refuses a loop in any of them (§4). No tool writes a looping tree |
 | `password=` is accepted and has no effect | **archivey** | Dropped with `PASSWORD_ARGUMENT_UNUSED` — shared behaviour, not ISO's own |
