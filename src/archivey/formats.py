@@ -638,9 +638,10 @@ class ReaderContext:
         The bytes count with the members already listed, and ``ResourceLimitError``
         is raised when they would cross the limit, so call it before reading them,
         with the size the archive declares. ``what`` names them, for that error
-        ("the long-name table"). The charge lasts until the walk ends; text that
-        becomes a member's name is not charged again here, since archivey charges
-        the member.
+        ("the long-name table"). The charge lasts until the walk ends. A name read
+        only to put on the member it yields needs no charge, since archivey charges
+        the member; a table kept to look names up in is charged, though its entries
+        become names.
 
         Call it from ``walk()`` or ``iter_members()``, as :meth:`hold` is called. In
         a walk archivey starts over to reach a member's data, the bytes were counted
