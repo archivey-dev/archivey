@@ -3467,7 +3467,8 @@ def test_rewind_report_gives_the_policy_when_rapidgzip_is_excluded(
     for message in messages:
         assert message.endswith(
             "The 'rapidgzip' accelerator is not available: "
-            "ArchiveyConfig.formats.exclude_libraries turns it off."
+            "ArchiveyConfig.formats turns it off (exclude_libraries= lists it, "
+            "or only_libraries= does not)."
         ), message
 
 

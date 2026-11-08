@@ -1,0 +1,98 @@
+"""``FormatPolicy(only_libraries=)``: the allowlist form of ``exclude_libraries=``.
+
+``tests/test_exclude_libraries.py`` runs every behaviour test under both forms; this file
+holds what only the allowlist has: its construction rules, ``allows_library``, and the
+guard that every check reads the combined set.
+"""
+
+from __future__ import annotations
+
+import ast
+import copy
+import pickle
+from pathlib import Path
+
+import pytest
+
+from archivey import ArchiveyUsageError, FormatPolicy, OptionalLibrary
+
+L = OptionalLibrary
+_SRC = Path(__file__).resolve().parents[1] / "src" / "archivey"
+
+
+def test_the_default_allows_every_package() -> None:
+    policy = FormatPolicy()
+    assert policy.only_libraries is None
+    assert all(policy.allows_library(lib) for lib in L)
+
+
+def test_an_empty_allowlist_turns_every_package_off() -> None:
+    policy = FormatPolicy(only_libraries=set())
+    assert policy.only_libraries == frozenset()
+    assert not any(policy.allows_library(lib) for lib in L)
+
+
+def test_names_and_values_are_accepted_and_stored_as_members() -> None:
+    policy = FormatPolicy(only_libraries={L.PYPPMD, "brotli"})
+    assert policy.only_libraries == frozenset({L.PYPPMD, L.BROTLI})
+    assert policy.allows_library("pyppmd")
+    assert policy.allows_library(L.BROTLI)
+    assert not policy.allows_library("lz4")
+    assert not policy.allows_library("lz4.block")
+
+
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [
+        ({"pyppm"}, "Accepted: 'pyppmd'"),
+        ({"zlib"}, "standard library codecs cannot be turned off"),
+        ("pyppmd", "bare string"),
+    ],
+)
+def test_a_wrong_entry_is_refused(value: object, match: str) -> None:
+    with pytest.raises(ArchiveyUsageError, match=match) as info:
+        FormatPolicy(only_libraries=value)  # type: ignore[arg-type]
+    assert "only_libraries=" in str(info.value)
+
+
+def test_a_package_in_both_lists_is_refused() -> None:
+    with pytest.raises(ArchiveyUsageError, match="both only_libraries= and"):
+        FormatPolicy(only_libraries={"lz4", "brotli"}, exclude_libraries={"lz4"})
+
+
+def test_both_lists_combine() -> None:
+    policy = FormatPolicy(only_libraries={"lz4"}, exclude_libraries={"brotli"})
+    assert policy.allows_library("lz4")
+    assert not policy.allows_library("brotli")
+    assert not policy.allows_library("pyppmd")
+
+
+def test_a_module_that_is_not_an_optional_library_is_allowed() -> None:
+    policy = FormatPolicy(only_libraries=set())
+    assert policy.allows_library("zlib")
+    assert policy.allows_library("my_plugin_codec")
+
+
+def test_the_allowlist_takes_part_in_equality_and_survives_pickle() -> None:
+    policy = FormatPolicy(only_libraries={"lz4"})
+    assert policy == FormatPolicy(only_libraries={L.LZ4})
+    assert policy != FormatPolicy()
+    assert hash(policy) == hash(FormatPolicy(only_libraries={"lz4"}))
+    for clone in (pickle.loads(pickle.dumps(policy)), copy.deepcopy(policy)):
+        assert clone == policy
+        assert not clone.allows_library("brotli")
+    assert "only_libraries" in repr(policy)
+    assert "_libraries_off" not in repr(policy)
+
+
+def test_no_check_reads_exclude_libraries_alone() -> None:
+    # Every check reads the combined set, so ``only_libraries`` cannot be skipped by a
+    # code path that asks for ``exclude_libraries`` only.
+    offenders = []
+    for path in _SRC.rglob("*.py"):
+        if path.name == "format_policy.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Attribute) and node.attr == "exclude_libraries":
+                offenders.append(f"{path.relative_to(_SRC)}:{node.lineno}")
+    assert offenders == []

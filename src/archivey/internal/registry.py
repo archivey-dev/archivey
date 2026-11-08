@@ -720,7 +720,7 @@ class BackendRegistry:
             for fmt in self._known_formats()
             if self.format_availability(
                 fmt,
-                excluded=policy.exclude_libraries,
+                excluded=policy._libraries_off,
                 replacement=policy._replacement_for(fmt),
             ).support
             is not FormatSupport.NONE
@@ -783,7 +783,7 @@ def format_availability(
     return _registry.format_availability(
         resolved,
         check_programs=check_programs,
-        excluded=policy.exclude_libraries,
+        excluded=policy._libraries_off,
         replacement=policy._replacement_for(resolved),
     )
 

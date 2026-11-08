@@ -609,7 +609,7 @@ class _PluginAdapter(BaseArchiveReader):
         backend_cls = registry.reader_for_format(
             fmt,
             replacement=policy._replacement_for(fmt),
-            excluded=policy.exclude_libraries,
+            excluded=policy._libraries_off,
         )
         if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
             raise UnsupportedFeatureError(

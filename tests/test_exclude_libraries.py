@@ -57,13 +57,30 @@ _SRC = Path(__file__).resolve().parents[1] / "src" / "archivey"
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
 
+# How ``_excluding`` turns its packages off: ``exclude_libraries=`` naming them, or
+# ``only_libraries=`` naming every other one. Each test that builds its config with
+# ``_excluding`` runs under both, so the allowlist is held to every rule here.
+_FORM = "exclude"
+
+
+@pytest.fixture(autouse=True, params=["exclude", "only"])
+def _policy_form(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "_FORM", request.param)
+
+
 def _excluding(
     *libraries: OptionalLibrary | OptionalLibraryStr, **config: Any
 ) -> ArchiveyConfig:
-    """A config whose policy excludes ``libraries``, with ``config``'s other fields."""
-    return dataclasses.replace(
-        ArchiveyConfig(formats=FormatPolicy(exclude_libraries=libraries)), **config
-    )
+    """A config whose policy turns ``libraries`` off, with ``config``'s other fields."""
+    if _FORM == "only":
+        policy = FormatPolicy(
+            only_libraries=frozenset(L) - {L(lib) for lib in libraries}
+        )
+    else:
+        policy = FormatPolicy(exclude_libraries=libraries)
+    return dataclasses.replace(ArchiveyConfig(formats=policy), **config)
 
 
 def _assert_refused_by_policy(

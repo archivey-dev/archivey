@@ -1547,7 +1547,7 @@ class RarReader(BaseArchiveReader):
         self._kdf_cache = RarKdfCache(budget=kdf_budget)
         # The call's ``FormatPolicy.exclude_libraries``: ``cryptography`` there reads
         # as not installed for this reader.
-        self._excluded = self._config.formats.exclude_libraries
+        self._excluded = self._config.formats._libraries_off
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False

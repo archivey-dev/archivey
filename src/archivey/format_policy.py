@@ -10,7 +10,7 @@ an allowed plugin matches.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from archivey.exceptions import _UsageTypeError, _UsageValueError
@@ -85,9 +85,11 @@ def _coerce_entries(values: object, *, param: str) -> frozenset[_FormatEntry]:
 _STDLIB_CODECS = frozenset({"zlib", "bz2", "lzma"})
 
 
-def _coerce_libraries(values: object) -> frozenset[OptionalLibrary]:
-    """``exclude_libraries=`` as a frozenset of members, refusing any other name."""
-    param = "exclude_libraries="
+def _coerce_libraries(
+    values: object, param: str = "exclude_libraries="
+) -> frozenset[OptionalLibrary]:
+    """``exclude_libraries=`` or ``only_libraries=`` as a frozenset of members,
+    refusing any other name."""
     if isinstance(values, OptionalLibrary):
         # A StrEnum member is a str, so the shared helper would call it a bare string.
         raise _UsageTypeError(
@@ -144,9 +146,9 @@ def _check_named_plugins(
         if clash:
             raise _UsageValueError(
                 f"{_CALL} {where} {plugin.__name__}, which requires "
-                f"{', '.join(clash)}, but exclude_libraries= turns "
-                f"{'it' if len(clash) == 1 else 'them'} off. Drop the plugin or the "
-                "exclusion."
+                f"{', '.join(clash)}, but exclude_libraries= or only_libraries= "
+                f"turns {'it' if len(clash) == 1 else 'them'} off. Drop the plugin, "
+                "or let the package run."
             )
 
 
@@ -221,7 +223,7 @@ class FormatPolicy:
     file, or the xz around a ``.tar.xz``. It is not the xz codec. An xz-compressed ZIP
     member, or the xz payload a plugin reader decodes inside its own archive, still
     decodes under ``exclude={S.XZ}``: a member's compression is part of its archive's
-    format. ``plugins`` and ``exclude_libraries`` turn off the code that decodes,
+    format. ``plugins``, ``exclude_libraries`` and ``only_libraries`` turn off the code that decodes,
     wherever it runs, so they hold for every member too: under ``plugins=False`` no
     plugin codec decodes anything in the call, and an excluded package decodes nothing.
 
@@ -318,6 +320,27 @@ class FormatPolicy:
     excluded. A policy that names a plugin (in ``replace=``, or by its container in
     ``only=``) whose ``requires`` lists an excluded package is refused."""
 
+    only_libraries: frozenset[OptionalLibrary] | None
+    """The optional packages the call may decode with, or ``None`` for all of them.
+
+    The allowlist form of :attr:`exclude_libraries`, as ``only`` is of ``exclude``:
+    every :class:`~archivey.OptionalLibrary` it does not list reads as not installed in
+    this call, with the same effects, including on a package a later archivey release
+    adds. ``only_libraries=set()`` runs on the standard library alone. Both may be set,
+    as long as no package is in both.
+
+    It covers archivey's own optional packages. A plugin's own modules are not
+    :class:`~archivey.OptionalLibrary` members, so it leaves them alone: ``plugins=``
+    turns plugins off. Zstandard runs on ``compression.zstd`` where the interpreter has
+    it and ``backports.zstd`` otherwise, so list both to keep zstd everywhere."""
+
+    _libraries_off: frozenset[OptionalLibrary] = field(
+        init=False, repr=False, compare=False
+    )
+    """Every package the call reads as not installed: :attr:`exclude_libraries`, and
+    each one :attr:`only_libraries` does not list. Every check reads this, never the
+    two fields."""
+
     # A hand-written __init__, as DiagnosticPolicy has: the parameters take any
     # iterable, and the fields always hold frozensets.
     def __init__(
@@ -331,6 +354,7 @@ class FormatPolicy:
         plugins: bool = True,
         replace: Mapping[ContainerFormat, type[IndexedFormatHandler]] | None = None,
         exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = (),
+        only_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] | None = None,
     ) -> None:
         only_parsed = None if only is None else _coerce_entries(only, param="only=")
         exclude_parsed = _coerce_entries(exclude, param="exclude=")
@@ -367,9 +391,26 @@ class FormatPolicy:
                     "turns it off. Allow the container, or drop the replacement."
                 )
         libraries = _coerce_libraries(exclude_libraries)
-        _check_named_plugins(replace_parsed, only_parsed, libraries)
+        only_libs = (
+            None
+            if only_libraries is None
+            else _coerce_libraries(only_libraries, "only_libraries=")
+        )
+        libraries_off = libraries
+        if only_libs is not None:
+            both_libs = only_libs & libraries
+            if both_libs:
+                names = ", ".join(sorted(lib.value for lib in both_libs))
+                raise _UsageValueError(
+                    f"{_CALL} got packages in both only_libraries= and "
+                    f"exclude_libraries=: {names}."
+                )
+            libraries_off = libraries | (frozenset(OptionalLibrary) - only_libs)
+        _check_named_plugins(replace_parsed, only_parsed, libraries_off)
         object.__setattr__(self, "replace", replace_parsed)
         object.__setattr__(self, "exclude_libraries", libraries)
+        object.__setattr__(self, "only_libraries", only_libs)
+        object.__setattr__(self, "_libraries_off", libraries_off)
         object.__setattr__(self, "only", only_parsed)
         object.__setattr__(self, "exclude", exclude_parsed)
         object.__setattr__(self, "plugins", plugins)
@@ -390,6 +431,17 @@ class FormatPolicy:
         """Whether ``fmt`` may open under this policy."""
         return self._refusal(fmt) is None
 
+    def allows_library(self, module: OptionalLibrary | str) -> bool:
+        """Whether the call may decode with ``module``, an import name.
+
+        ``False`` when :attr:`exclude_libraries` lists the package ``module`` is or is
+        part of (``lz4.block`` is part of ``lz4``), or :attr:`only_libraries` does not
+        list it. A name that is not an :class:`~archivey.OptionalLibrary`, such as a
+        plugin's own module or ``zlib``, is always allowed. A plugin reader that imports
+        an optional package outside its ``requires`` asks this before it imports it.
+        """
+        return not is_excluded_module(str(module), self._libraries_off)
+
     def _refusal(self, fmt: ArchiveFormat) -> str | None:
         """The refusal text for ``fmt``, naming every entry to change, or ``None``."""
         reasons = self._reasons(fmt)
@@ -404,7 +456,7 @@ class FormatPolicy:
         """The refusal text for ``codec`` decoding inside an open (a member's data, or
         the rest of an archive a reader hands on), or ``None``.
 
-        Only ``plugins`` and ``exclude_libraries`` reach that far; ``only`` and
+        Only ``plugins``, ``exclude_libraries`` and ``only_libraries`` reach that far; ``only`` and
         ``exclude`` choose the file opened, so they are not asked. An excluded package
         is refused by the codec layer, which reads it as missing.
         """

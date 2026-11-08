@@ -100,7 +100,7 @@ and which packages would add the rest. RAR counts as partly supported without RA
 when `unar` is installed. To find out, it runs each `unrar` or `rar` on your `PATH` once to read its
 version, whatever `rar_decompressor` says; pass `check_programs=False` to run nothing. `cryptography`
 isn't counted, because only encrypted members need it. Pass the `config=` you open with to count
-the packages its `FormatPolicy(exclude_libraries=)` turns off as missing.
+the packages its `FormatPolicy(exclude_libraries=)` or `only_libraries=` turns off as missing.
 
 ## Python versions and platforms
 

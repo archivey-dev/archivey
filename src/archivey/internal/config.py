@@ -154,7 +154,7 @@ def stream_config_from_archivey(
         use_indexed_bzip2=config.use_indexed_bzip2,
         decoder_limits=config.decoder_limits,
         process_isolation=config.process_isolation,
-        excluded_libraries=config.formats.exclude_libraries,
+        excluded_libraries=config.formats._libraries_off,
     )
 
 

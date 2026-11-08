@@ -16,7 +16,10 @@ from archivey.types import MissingComponent, OptionalLibrary
 NO_EXCLUSIONS: frozenset[OptionalLibrary] = frozenset()
 """The excluded set of a call whose policy excludes nothing: every check as without one."""
 
-EXCLUDED_REASON = "ArchiveyConfig.formats.exclude_libraries turns it off"
+EXCLUDED_REASON = (
+    "ArchiveyConfig.formats turns it off (exclude_libraries= lists it, or "
+    "only_libraries= does not)"
+)
 """``MissingComponent.reason`` for an excluded package: installing it would not help."""
 
 

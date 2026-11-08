@@ -1586,7 +1586,7 @@ def _detect_format_body(
         kept_probes = [(f, p) for f, p in probes if not is_off(f, signal=True)]
         off_probe = len(kept_probes) < len(probes)
         probes = kept_probes
-    excluded = formats.exclude_libraries
+    excluded = formats._libraries_off
     if excluded:
         # A probe whose format needs a package the policy turns off does not run, so the
         # package is not called: a codec's probe decodes with it, and a plugin's probe

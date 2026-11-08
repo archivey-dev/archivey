@@ -201,11 +201,24 @@ and any other name is refused, so a typo can't leave a package on. The setting o
 made with that config: other calls in the same program, on any thread, still use the package.
 `format_availability(fmt, config=...)` and `list_supported_formats(config=...)` answer with the
 excluded packages counted as missing. A plugin reader that imports a package itself honours the setting
-only if it checks `config.formats.exclude_libraries` itself.
+only if it checks `config.formats.allows_library(name)` itself.
+
+`only_libraries=` is the allowlist form, as `only=` is of `exclude=`: every optional package it
+doesn't list is turned off, including any that a later archivey release adds. `only_libraries=set()`
+runs on the standard library alone:
+
+```python
+STDLIB_ONLY = ArchiveyConfig(formats=FormatPolicy(only_libraries=set()))
+WITH_AES = ArchiveyConfig(formats=FormatPolicy(only_libraries={L.CRYPTOGRAPHY}))
+```
+
+It covers archivey's own optional packages, not a plugin's own modules: `plugins=False` turns
+plugins off. Zstandard comes from `compression.zstd` on Python 3.14 and `backports.zstd` before
+that, so list both to keep zstd on every version.
 
 `only=` and `exclude=` check the file you open, not what's inside it. `S.XZ` there means a file
 compressed with xz as a whole, such as a `.xz` or `.tar.xz` file, not the xz codec: a ZIP member
 compressed with xz can still be read under `exclude={S.XZ}`, because the file is a ZIP.
-`plugins=False` and `exclude_libraries=` are different, since they turn off the code that
+`plugins=False`, `exclude_libraries=` and `only_libraries=` are different, since they turn off the code that
 decodes, wherever it runs. Under `plugins=False`, no plugin codec runs in the call, even for a
 member inside an archive: reading a member that needs one raises `UnsupportedFeatureError`.

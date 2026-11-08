@@ -1106,12 +1106,13 @@ class ArchiveyConfig:
                         "process_isolation=NONE: rapidgzip runs only in a child "
                         "process. Use AUTO or OFF, or another process_isolation."
                     )
-        if OptionalLibrary.RAPIDGZIP in self.formats.exclude_libraries:
+        if OptionalLibrary.RAPIDGZIP in self.formats._libraries_off:
             for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
                 if getattr(self, field_name) is AcceleratorMode.ON:
                     raise ArchiveyUsageError(
                         f"ArchiveyConfig({field_name}=ON) cannot be combined with "
-                        "formats=FormatPolicy(exclude_libraries=) naming rapidgzip, "
+                        "a formats=FormatPolicy that turns rapidgzip off (exclude_libraries= or "
+                        "only_libraries=), "
                         "which turns that accelerator off. Use AUTO or OFF, or drop "
                         "the exclusion."
                     )
