@@ -221,18 +221,52 @@ def test_damage_that_ends_the_walk_keeps_the_ceiling_and_fails_the_files(
     }
 
 
-def test_a_check_that_did_not_run_names_the_archive_once(tmp_path: Path) -> None:
-    """``verify_all()`` rebuilds the error for the members still short of the check.
-    It took the old error's whole text, archive name included, and added the
-    archive name again: "... ends early (archive='x') (archive='x')"."""
+def _plain_tar(files: dict[str, bytes]) -> bytes:
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w") as tar:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return out.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("tar", "cut", "cause"),
+    [
+        # The read ends early: no error stopped the check.
+        pytest.param(_tar("w"), 20, "ends early", id="ended"),
+        # The cut lands inside the deflate data: an error stopped the check.
+        pytest.param(
+            _plain_tar({"a": b"x" * 3000, "b": b"y"}), 30, "truncated", id="error"
+        ),
+    ],
+)
+def test_a_check_that_did_not_run_names_the_archive_once(
+    tmp_path: Path, tar: bytes, cut: int, cause: str
+) -> None:
+    """The error for the members a spanning check did not reach, as ``verify_all()``
+    returns it, names the archive once, both when the read ended early and when an
+    error stopped the check."""
     path = tmp_path / "cut.tar.gz"
-    path.write_bytes(gzip.compress(_tar("w"), mtime=0)[:-20])
+    path.write_bytes(gzip.compress(tar, mtime=0)[:-cut])
     with open_archive(path) as reader:
         failures = reader.verify_all()
     assert failures
     text = str(failures[0][1])
     assert "did not run" in text
+    assert cause in text
     assert text.count("archive=") == 1
+
+
+def test_a_check_that_did_not_run_escapes_each_name_once() -> None:
+    data = gzip.compress(_plain_tar({"a\\b": b"x" * 3000, "c": b"y"}), mtime=0)[:-20]
+    with open_archive(io.BytesIO(data)) as reader:
+        failures = reader.verify_all()
+    assert failures
+    text = str(failures[0][1])
+    assert "'a\\\\b'" in text
+    assert "'a\\\\\\\\b'" not in text
 
 
 @pytest.mark.parametrize("cut", [8, 20])
