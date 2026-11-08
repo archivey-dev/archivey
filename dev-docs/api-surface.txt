@@ -1102,6 +1102,7 @@ field archivey.formats.ReaderArchiveInfo.format_version: str | None
 field archivey.formats.ReaderArchiveInfo.is_solid: bool
 class archivey.formats.ReaderContext()
 property archivey.formats.ReaderContext.archive_name: str | None
+method archivey.formats.ReaderContext.charge_metadata(self, nbytes: int, *, what: str) -> None
 property archivey.formats.ReaderContext.config: ArchiveyConfig
 method archivey.formats.ReaderContext.decode_name(self, raw: bytes) -> str
 method archivey.formats.ReaderContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat | PluginStream, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO

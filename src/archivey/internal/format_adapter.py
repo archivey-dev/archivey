@@ -269,6 +269,7 @@ class _PluginAdapter(BaseArchiveReader):
             report=self._report,
             link_target_unavailable=self._link_target_unavailable,
             hold=self._hold,
+            charge_metadata=self._charge_metadata,
             open_nested=self._open_nested,
         )
         self._reader = self._open_reader(context)
@@ -571,6 +572,24 @@ class _PluginAdapter(BaseArchiveReader):
             raise ArchiveyUsageError(
                 f"ReaderContext.hold(): {quoted(member.name)} is held already"
             ) from None
+
+    def _charge_metadata(self, nbytes: int, what: str) -> None:
+        """``ReaderContext.charge_metadata()``: charge the listing for what the walk
+        keeps. A walk started over to reach member data was charged already."""
+        step = self._walk_step
+        if step is None:
+            raise ArchiveyUsageError(
+                "ReaderContext.charge_metadata() counts bytes only while walk() or "
+                "iter_members() is listing"
+            )
+        if step == _REWALK:
+            return
+        if not isinstance(nbytes, int) or isinstance(nbytes, bool) or nbytes < 0:
+            raise ArchiveyUsageError(
+                "ReaderContext.charge_metadata() takes a size of 0 or more, got "
+                f"{nbytes!r}"
+            )
+        self._listing_tracker.charge_walk(nbytes, what)
 
     def _open_nested(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
         """``ReaderContext.open_nested()``: archivey's reader for ``fmt`` over
