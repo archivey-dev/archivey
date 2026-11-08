@@ -553,7 +553,8 @@ class ForwardArchiveReader(ABC):
         ``ReaderContext.open_nested`` adds its own reader and packages here. The
         standard library's codecs are not listed, except zstd, which names the module in
         use (``compression.zstd`` on Python 3.14 and later). Decodes made while
-        detecting the format are not listed either. Experimental, as :class:`~archivey.BackendUse` is.
+        detecting the format are not listed either. Experimental, as
+        :class:`~archivey.BackendUse` is.
         """
         ...
 
