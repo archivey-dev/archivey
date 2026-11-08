@@ -1368,7 +1368,8 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   several `.xz` streams or `.lz` members reads only the last one's index or trailer, sees the
   earlier ones and stops, so `size` is `None` and the `.lz` CRC is absent. Walking every
   stream would cost the open a step per stream, and a read from the start never needs it.
-  The same file from a path reports both. A seek in that member still works: it walks the
+  The same file from a path reports both. The same holds for a `.xz` from an `OpenFile` whose
+  last 64 KiB are stream padding (zeros): the open does not scan back over it. A seek in that member still works: it walks the
   index then.
   `seekable_members=True` makes no difference, since reading the trailer is a bounded backward peek
   at open. A `.xz` or `.lz` opened from another archive's member stream gets both when the

@@ -1333,6 +1333,41 @@ def test_a_large_last_stream_is_not_read_for_its_header(
     _assert_head_and_tail_only(fs, len(data))
 
 
+@pytest.mark.parametrize("streams", [1, 2])
+@pytest.mark.parametrize("pad", [8_000_000, 50_000_000])
+def test_long_xz_padding_does_not_make_a_remote_open_scan_it(
+    pad: int, streams: int, tmp_path: Path
+) -> None:
+    """Stream padding after the last xz stream has no length limit. On a remote
+    source the open looks at one tail window: all zeros there means it cannot tell,
+    so no size and no scan. The open then costs the same whatever the padding's
+    length: the head, the tail once, and the reader's bounded look past the stream
+    (``TRAILING_DATA_SEARCH``). A path still scans and gives the size. Red with the
+    scan: 8 MB of zeros took 18 requests and 13 MB, 50 MB took 50 requests and
+    155 MB."""
+    data = lzma.compress(b"hello" * 10) * streams + bytes(pad)
+    fs = RecordingFS(data)
+    c = PlannerConstants()
+    with open_archive(OpenFile(fs, "/f.xz", mode="rb")) as reader:
+        (member,) = reader.members()
+        assert member.size is None
+        assert [f for f in fs.fetches if f[1] == len(data)] == [
+            (len(data) - c.min_fetch, len(data))
+        ]
+        # The head as the reader's buffered reads ask for it (128 KiB at once on
+        # Python 3.15), the tail, and the look past the stream.
+        head = max(c.min_fetch, io.DEFAULT_BUFFER_SIZE)
+        assert len(fs.fetches) <= 8 + io.DEFAULT_BUFFER_SIZE // c.min_fetch
+        fetched = sum(end - start for start, end in fs.fetches)
+        assert fetched <= (1 << 20) + c.min_fetch + 2 * head
+        assert reader.read(member) == b"hello" * 10 * streams
+    path = tmp_path / "f.xz"
+    path.write_bytes(data)
+    with open_archive(path) as reader:
+        (local,) = reader.members()
+    assert local.size == 50 * streams
+
+
 @pytest.mark.parametrize("name", sorted(_MULTI))
 def test_a_seek_on_a_remote_multi_stream_file_walks_a_bounded_index(
     name: str,

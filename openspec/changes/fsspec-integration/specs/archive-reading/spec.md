@@ -75,7 +75,9 @@ the open SHALL read only the last stream's footer and index (the last member's
 trailer). If that read shows an earlier stream or member, the open SHALL NOT walk the
 rest: the member's `size` SHALL be `None`, and the facts the walk fills (the lzip
 combined CRC) SHALL be absent. A path source SHALL keep the full walk. A seek in the
-member SHALL still work, walking the index when it needs it.
+member SHALL still work, walking the index when it needs it. A `.xz` on an `OpenFile`
+source whose last 64 KiB are all zeros (stream padding) SHALL be treated the same way,
+without scanning back over the padding.
 
 A backend that needs a local path SHALL treat the source as any non-path stream (RAR's
 spool under `SpoolLimits`). Closing the reader SHALL NOT close the `OpenFile`'s file

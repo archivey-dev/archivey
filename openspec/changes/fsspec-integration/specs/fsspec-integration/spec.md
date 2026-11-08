@@ -53,6 +53,7 @@ listed are held by its baseline.
 | ISO, member within `F` | baseline | list + 1 request |
 | RAR5, TAR, compressed TAR | bytes fetched ≤ archive size + `F` | the same; a compressed RAR member also spools the archive |
 | A single-stream `.xz`, a `.gz` or a UDIF image larger than the first fetch | The tail reads add 1 request | the same |
+| A `.xz` whose last 64 KiB are stream padding | `size` is `None` and the padding is not scanned: the head, the tail once, and the bounded look past the stream (bytes fetched ≤ 1 MiB plus the head and tail windows), whatever the padding's length | the same |
 | A multi-stream `.xz` or a multi-member `.lz` | ≤ 2 requests, whatever the stream count; the member's `size` is `None` (maintainer ruling, 2026-11-08) | read from the start: about one request per planner fetch. A seek: bytes fetched ≤ 2 × archive size + `F` for the index walk |
 
 #### Scenario: concurrent streams share the pool

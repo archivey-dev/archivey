@@ -155,7 +155,11 @@ costs one step per stream, and a file of many tiny streams would pay for it on e
 open, while a read from start to end never needs it. A single-stream file keeps its
 size on a remote source. The walk runs later only when a seek needs it (the member
 stream's own index build); it steps its window back and doubles (D2 rule 6), so it
-costs about what a forward read of the same bytes costs.
+costs about what a forward read of the same bytes costs. xz stream padding after the
+last stream has no length limit, and the scan back over it reads every byte (a
+50 MB run of zeros cost 50 requests and 155 MB), so on a remote source the open looks
+at one tail window only: when it is all zeros, the open cannot tell and treats the
+file as above, with no size and no scan.
 
 Rejected:
 

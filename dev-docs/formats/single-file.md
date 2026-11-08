@@ -182,7 +182,9 @@ stops when that shows an earlier one (`SingleFileReader._remote_with_earlier_str
 `size` is `None` and the lzip CRC is absent. This is the maintainer's ruling of
 2026-11-08, "lazy for multi-stream only": the walk costs a step per stream on every open,
 and a read from the start never needs it. A path keeps the whole walk. A seek in the
-member walks the index then.
+member walks the index then. A `.xz` whose last 64 KiB are all zeros (stream padding,
+which has no length limit) is treated the same way: the scan back over the padding
+would read every byte of it.
 
 A source whose seek may decode what it skips (`seek_is_expensive`: another archive's
 member stream passed to `open_archive(member_stream)`, or a standard-library `GzipFile`,
