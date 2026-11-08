@@ -250,7 +250,8 @@ _finder = CliToolFinder(
 
 
 def find_unar(*, purpose: str, program: str | None = None) -> str:
-    """Absolute path of a usable ``unar`` 1.10+ on ``PATH``, or ``PackageNotInstalledError``.
+    """Absolute path of a usable ``unar`` 1.10+ on ``PATH``, or at the one path the
+    caller pinned, or ``PackageNotInstalledError``.
 
     Usable: it identifies itself, and it decodes the RAR5 test archive
     (:func:`unar_rar5_probe_failure`). Each binary pays for both once per process.

@@ -219,10 +219,11 @@ the time-limit recipe [above](#where-the-guarantees-stop).
 ## Hardening
 
 RAR data is decompressed by an external program found on your `PATH`: `unrar` or `rar`, or `unar`
-when neither is installed. To run a binary you chose instead, set `unrar_path=` (or `unar_path=`) in
-`ArchiveyConfig` to its absolute path: archivey then runs that file and searches `PATH` for no other. Like the optional packages, it's [trusted not to be
-malicious](#what-archivey-relies-on), and archivey checks only that it runs and that archivey works
-with its version, which can be several years old. Older versions can have security bugs that later
+when neither is installed. To run a binary you chose instead, set `unrar_path=` (or `unar_path=`)
+in `ArchiveyConfig` to its absolute path: archivey then runs that file and searches `PATH` for no
+other. Like the optional packages, it's [trusted not to be malicious](#what-archivey-relies-on),
+and archivey checks only that it runs and that archivey works with its version, which can be
+several years old. Older versions can have security bugs that later
 ones fixed, so an up-to-date version is safer. `unar` receives the password on its command line,
 where other users on the same machine can see it while it runs. If you set
 `rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig`, archivey never runs `unar`. With

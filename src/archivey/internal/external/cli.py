@@ -1,4 +1,5 @@
-"""Find and identify an external decompressor on ``PATH``, once per binary.
+"""Find and identify an external decompressor on ``PATH``, or at the one path the
+caller pinned, once per binary.
 
 A program on ``PATH`` with the right name is not proof that it is the right program, so
 each candidate runs once with an identification argv, and its banner decides. The
@@ -74,7 +75,8 @@ def stat_identity(path: str) -> tuple[int, int, int, int]:
 
 
 class CliToolFinder:
-    """Locate one program on ``PATH`` and accept it only if its banner identifies it.
+    """Locate one program on ``PATH``, or at the one path the caller pinned, and accept
+    it only if its banner identifies it.
 
     ``names`` are tried in order; the first candidate that identifies and meets
     ``version_floor`` wins. ``parse_banner`` receives stdout and stderr of
@@ -163,7 +165,7 @@ class CliToolFinder:
         ``purpose`` completes "<program> is required …" in the refusal, so the caller
         can say which read needed the program. ``program``, when set, is the only
         binary tried (``PATH`` is not searched), under the same checks; the refusal
-        names the config field that set it in the refusal (the finder's ``setting``).
+        names the config field that set it (the finder's ``setting``).
         """
         too_old: list[tuple[str, tuple[int, ...] | None]] = []
         timed_out: list[str] = []
@@ -228,11 +230,26 @@ class CliToolFinder:
     ) -> str:
         name = self._display_name
         where = "on PATH" if program is None else f"at {self._setting}"
+        # A pinned binary is the only one tried, so installing another on PATH changes
+        # nothing: the advice is to point the setting elsewhere.
+        hint = (
+            self._install_hint
+            if program is None
+            else (
+                f"archivey does not look on PATH when {self._setting} is set; point "
+                f"it at {name} {self._floor_text()} or later."
+            )
+        )
         if rejected:
             # The reason carries its own advice: a generic install hint could name the
-            # very package that was just rejected.
+            # very package that was just rejected. Under a pin the reason's install
+            # hint is swapped for the pin's advice.
             found = "; ".join(
-                f"{display_path(path)} {reason}" for path, reason in rejected
+                f"{display_path(path)} {reason}"
+                if program is None
+                else f"{display_path(path)} "
+                f"{reason.removesuffix(self._install_hint).rstrip()} {hint}"
+                for path, reason in rejected
             )
             return f"{name} is required {purpose}, but {found}"
         if unchecked:
@@ -257,7 +274,7 @@ class CliToolFinder:
             )
             return (
                 f"{name} {self._floor_text()} or later is required {purpose}, but "
-                f"{found}. {self._install_hint}"
+                f"{found}. {hint}"
             )
         if timed_out:
             shown = " and ".join(display_path(path) for path in timed_out)
@@ -265,7 +282,7 @@ class CliToolFinder:
                 f"{name} is required {purpose}. Found {shown} {where}, but it did not "
                 f"answer the identification probe within {PROBE_TIMEOUT_SECONDS:g} "
                 "seconds. archivey does not probe an unchanged binary again in this "
-                f"process. {self._install_hint}"
+                f"process. {hint}"
             )
         if program is not None:
             return (
