@@ -455,6 +455,8 @@ class CpioReader(SequentialReader):
             gid=header.gid,
         )
         context.set_unix_time(member, "modified", header.mtime, source="cpio")
+        if special is not None:
+            member.extra["special_file_type"] = special
         if special == "unknown":
             kind = header.mode & _S_IFMT
             context.report(
@@ -467,18 +469,16 @@ class CpioReader(SequentialReader):
                 ),
                 member=member,
             )
-        elif special is not None:
-            member.extra["special_file_type"] = special
-            if size:
-                context.report(
-                    DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
-                    f"CPIO member {member.name!r} is a {special} with {size} bytes "
-                    "of data; listed as a file",
-                    SpecialFileDataContext(
-                        member_name=member.name, special_file_type=special, size=size
-                    ),
-                    member=member,
-                )
+        elif special is not None and size:
+            context.report(
+                DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
+                f"CPIO member {member.name!r} is a {special} with {size} bytes "
+                "of data; listed as a file",
+                SpecialFileDataContext(
+                    member_name=member.name, special_file_type=special, size=size
+                ),
+                member=member,
+            )
         return member
 
     def _digests(

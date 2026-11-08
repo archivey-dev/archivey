@@ -46,7 +46,6 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import (
     Any,
@@ -71,7 +70,7 @@ from archivey.internal.naming import normalize_member_name
 from archivey.internal.overrides import override
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
-from archivey.internal.timestamps import dos_to_datetime
+from archivey.internal.timestamps import dos_to_datetime, unix_to_datetime
 from archivey.internal.unix_mode import special_file_type
 from archivey.terminal import quoted
 from archivey.types import (
@@ -116,8 +115,6 @@ __all__ = [
 TimeField = Literal["modified", "accessed", "created"]
 """An ``ArchiveMember`` time field a reader sets with :meth:`ReaderContext.set_unix_time`
 or :meth:`ReaderContext.set_dos_time`."""
-
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class Magic(NamedTuple):
@@ -722,16 +719,16 @@ class ReaderContext:
         reported the same way. Call it while the member is being listed or opened.
         """
         if not 0 <= nanoseconds < 1_000_000_000:
-            self._report_bad_time(member, field, source, f"{seconds}.{nanoseconds}")
-            return
-        try:
-            stamp = _EPOCH + timedelta(
-                seconds=seconds, microseconds=nanoseconds // 1000
+            self._report_bad_time(
+                member, field, source, f"{seconds} s + {nanoseconds} ns"
             )
-        except OverflowError:
+            return
+        stamp = unix_to_datetime(seconds)
+        if stamp is None:
             self._report_bad_time(member, field, source, str(seconds))
             return
-        setattr(member, field, stamp)
+        # Whole seconds, so the microseconds are 0 and adding them cannot overflow.
+        setattr(member, field, stamp.replace(microsecond=nanoseconds // 1000))
 
     def set_dos_time(
         self, member: ArchiveMember, field: TimeField, stamp: int, *, source: str
@@ -1206,8 +1203,9 @@ def unix_member_type(
     reads, unless the archive stores data for it (``has_data``): then it is a
     ``FILE`` whose bytes are the content, and the special file still says what the
     mode named. Other type bits, none included, give ``"unknown"`` and the same
-    type: a format that stores a full mode reports them as
-    ``MEMBER_TYPE_UNKNOWN``.
+    type. Store the special file in ``extra`` whenever it is not ``None``,
+    ``"unknown"`` included, as every built-in format does, and report
+    ``"unknown"`` as ``MEMBER_TYPE_UNKNOWN`` too.
     """
     member_type = _UNIX_TYPES.get(mode & 0o170000)
     if member_type is not None:

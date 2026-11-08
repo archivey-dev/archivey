@@ -573,6 +573,8 @@ class RpmReader(SequentialReader):
         if member_type is MemberType.SYMLINK:
             assert package.targets is not None  # _files checked it
             member.link_target = context.decode_name(package.targets[file.index])
+        if special is not None:
+            member.extra["special_file_type"] = special
         if special == "unknown":
             kind = file.mode & _S_IFMT
             context.report(
@@ -583,8 +585,6 @@ class RpmReader(SequentialReader):
                 ),
                 member=member,
             )
-        elif special is not None:
-            member.extra["special_file_type"] = special
         file.member = member
         return member
 

@@ -79,8 +79,8 @@ def test_a_unix_time_before_the_epoch() -> None:
     [
         (999_999_999_999, 0, "999999999999"),
         (-(10**12), 0, "-1000000000000"),
-        (0, 1_000_000_000, "0.1000000000"),
-        (0, -1, "0.-1"),
+        (0, 1_000_000_000, "0 s + 1000000000 ns"),
+        (0, -1, "0 s + -1 ns"),
     ],
 )
 def test_a_unix_time_outside_a_datetime_is_reported_and_left_unset(

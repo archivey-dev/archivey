@@ -201,7 +201,8 @@ built-in format does:
 - `unix_member_type(mode, has_data=...)` turns a Unix `st_mode` into the member's `type`,
   and names a device, FIFO or socket for `extra["special_file_type"]`. Such a file is
   `OTHER`, or a `FILE` when the archive stores data for it. Type bits it does not know
-  come back as `"unknown"`, for you to report as `MEMBER_TYPE_UNKNOWN`.
+  come back as `"unknown"`: store that in `extra` as well, and report it as
+  `MEMBER_TYPE_UNKNOWN`.
 - `ReaderContext.set_unix_time(member, "modified", seconds, nanoseconds=0, source="cpio")`
   sets a UTC time from seconds since 1970.
 - `ReaderContext.set_dos_time(member, "modified", stamp, source="dos")` sets a local time
