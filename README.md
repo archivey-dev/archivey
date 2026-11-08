@@ -24,6 +24,9 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
   archive order and in one pass, so a solid 7z or RAR is decoded once and a large member
   is read in chunks rather than held in memory. TAR, ZIP and the single-file formats can
   also be read straight from a pipe.
+- **Remote archives:** an archive on S3, an HTTP server or another store reached through
+  [fsspec](https://filesystem-spec.readthedocs.io/) opens without a download. Listing a ZIP or 7z
+  archive there, or reading one of its members, fetches little more than the bytes it needs.
 - **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z, and RAR encryption.
 - **Native 7z and RAR metadata readers.** 7z data decodes in-process; RAR data needs
   RARLAB `unrar` or `rar`, or `unar`.
@@ -71,6 +74,7 @@ Coding agents can read the docs as Markdown, starting from
 [Install](https://archivey-dev.github.io/archivey/install/) ·
 [Opening an archive](https://archivey-dev.github.io/archivey/opening/) ·
 [Choosing how to read](https://archivey-dev.github.io/archivey/reading/) ·
+[Remote archives](https://archivey-dev.github.io/archivey/remote/) ·
 [Extracting](https://archivey-dev.github.io/archivey/extracting/) ·
 [Security](https://archivey-dev.github.io/archivey/security/) ·
 [Formats and extras](https://archivey-dev.github.io/archivey/formats/) ·

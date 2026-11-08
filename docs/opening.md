@@ -20,7 +20,9 @@ zeros are recorded as `ARCHIVE_TRAILING_DATA`, which `DiagnosticPolicy.STRICT` t
 exception. Behind more than 64 KiB of trailing bytes, zeros included, a ZIP's index is found by
 walking its members from the start, which takes longer. A file object that can't seek, such as a
 pipe or an HTTP response, needs `streaming=True` and works only for some formats, which [Reading
-once](reading.md#reading-once) lists.
+once](reading.md#reading-once) lists. An archive on S3, an HTTP server or another remote store
+opens from `fsspec.open(url)` without downloading it, and can seek
+([Remote archives](remote.md)).
 
 ??? note "Why not refuse bytes after the archive?"
     They aren't part of any member, so every member is still read correctly. GNU gzip and bzip2 also

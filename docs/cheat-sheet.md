@@ -39,7 +39,8 @@ What each call returns, and the errors you're most likely to meet. The
 [next section](#exceptions) has all of them.
 
 - **`open_archive(source)`** returns an [`ArchiveReader`][archivey.ArchiveReader], to use in a
-  `with` block. `source` is a path, a binary file object or a folder. A missing file raises
+  `with` block. `source` is a path, a binary file object, a folder, or a remote file from
+  `fsspec.open(url)` ([Remote archives](remote.md)). A missing file raises
   `FileNotFoundError`, and a file in no format archivey reads raises `FormatDetectionError`. A
   file object that can't seek, such as a pipe, raises `StreamNotSeekableError` unless you pass
   `streaming=True`, which reads TAR, ZIP and single compressed files from one.
