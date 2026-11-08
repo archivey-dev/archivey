@@ -565,4 +565,5 @@ print("\n".join(scan("upload.zip", config)))
 Going over the budget raises `ResourceLimitError`. Each member is copied to a temporary file, which
 can seek, so an inner 7z, RAR or ISO archive opens too. The copy is drawn from the budget as it's
 decoded, before anything is opened from it, so a nested archive can't use more than what's left.
-An inner archive's bytes count twice: once as the outer member, and again as it's decoded. The temporary files take disk space up to the budget at each level.
+An inner archive's bytes count twice: once as the outer member, and again as it's decoded. The
+temporary files take disk space up to the budget at each level.

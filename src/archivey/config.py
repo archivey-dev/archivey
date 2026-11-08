@@ -783,15 +783,20 @@ class Budget:
     - every byte a decoder delivers counts against ``max_decoded_bytes``: the member
       reads of ``open()``, ``stream_members()``, ``read()``, ``extract_all`` and
       ``verify_all``, the folder or block a solid 7z or RAR member is decoded from, and
-      the bytes a forward seek in a member skips over. A byte read again after a seek
-      back counts again: it was decoded again;
+      the bytes a forward seek in a member skips over (to the end, for a seek to an
+      end the stream cannot size), and the one byte opening a compressed single file
+      decodes to check it. A byte read again after a seek back counts again: it was
+      decoded again;
     - every member a listing registers counts against ``max_members``, once per reader
       however often it is listed.
 
     The read, seek or listing step that would take the total past a limit raises
     :exc:`~archivey.exceptions.ResourceLimitError`, from every reader sharing the
     budget, and extraction stops there rather than going on to the next member. The
-    budget does not refill: build a new one for the next upload.
+    budget does not refill: build a new one for the next upload. The step that crosses
+    a byte limit decodes at most one byte past it; readers on several threads each size
+    their reads against the same room, so together they can overshoot by about one
+    read each.
 
     A compressed TAR's listing decodes the archive stream to walk its headers; that
     decode is held by :attr:`DecoderLimits.max_ratio` and the listing limits, not by

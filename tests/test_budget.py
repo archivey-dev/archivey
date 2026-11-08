@@ -207,3 +207,69 @@ def test_repr_shows_limits_and_counts() -> None:
     assert repr(budget) == (
         "Budget(max_decoded_bytes=5, max_members=None; decoded_bytes=0, members=0)"
     )
+
+
+def _no_translation(exc: Exception) -> None:
+    return None
+
+
+def test_two_holds_on_a_lazy_codec_handle_both_draw() -> None:
+    # A codec handle not yet opened can get a ratio hold and the budget's hold; the
+    # second wraps outside the first. Fails if ``_hold_inner`` keeps only the last.
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
+    from archivey.internal.streams.counting import BudgetDrawStream
+
+    first, second = Budget(), Budget()
+    stream = ArchiveStreamImpl(
+        lambda: io.BytesIO(b"abc"), translate=_no_translation, lazy=True
+    )
+    assert stream._inner is None
+    stream._hold_inner(lambda inner: BudgetDrawStream(inner, first))
+    stream._hold_inner(lambda inner: BudgetDrawStream(inner, second))
+    assert stream.read() == b"abc"
+    assert (first.decoded_bytes, second.decoded_bytes) == (3, 3)
+
+
+def test_a_collapsed_lazy_handle_keeps_its_hold() -> None:
+    # A lazy handle collapsed into another before it opened still serves through
+    # its hold. Fails if ``_collapse_nested`` drops ``_inner_wrap``.
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
+    from archivey.internal.streams.counting import BudgetDrawStream
+
+    budget = Budget()
+    nested = ArchiveStreamImpl(
+        lambda: io.BytesIO(b"abc"), translate=_no_translation, lazy=True
+    )
+    nested._hold_inner(lambda inner: BudgetDrawStream(inner, budget))
+    outer = ArchiveStreamImpl(lambda: nested, translate=_no_translation)
+    assert outer.read() == b"abc"
+    assert nested.closed
+    assert budget.decoded_bytes == 3
+
+
+def test_a_seek_to_the_end_is_held_to_the_budget() -> None:
+    budget = Budget(max_decoded_bytes=1000)
+    with (
+        _open(_zip(1, size=5 * _MEMBER), budget, seekable_members=True) as reader,
+        reader.open("m0.bin") as stream,
+        pytest.raises(ResourceLimitError, match="Budget exhausted"),
+    ):
+        stream.seek(0, io.SEEK_END)
+    assert budget.decoded_bytes <= 1001
+
+
+def test_a_seek_to_an_unsized_end_reads_there_and_draws() -> None:
+    from archivey.internal.streams.counting import BudgetDrawStream
+
+    budget = Budget(max_decoded_bytes=1000)
+    stream = BudgetDrawStream(io.BytesIO(b"x" * 5000), budget)
+    assert stream.try_get_size() is None
+    with pytest.raises(ResourceLimitError, match="Budget exhausted"):
+        stream.seek(0, io.SEEK_END)
+    assert budget.decoded_bytes == 1001
+    roomy = Budget(max_decoded_bytes=10_000)
+    stream = BudgetDrawStream(io.BytesIO(b"x" * 5000), roomy)
+    assert stream.seek(-10, io.SEEK_END) == 4990
+    assert stream.read() == b"x" * 10
+    # The ten bytes after the seek back are read again, so they count again.
+    assert roomy.decoded_bytes == 5010

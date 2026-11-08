@@ -152,9 +152,11 @@ class BudgetDrawStream(DelegatingStream):
 
     A read that could cross the limit asks the decoder for at most one byte past
     what is left, so the read that crosses it decodes one byte more than the budget
-    allows, not the rest of the member. A forward seek past the furthest offset the
+    allows, not the rest of the member. That holds per read: readers on other threads
+    size their reads against the same room, so each can overshoot by one read. A forward seek past the furthest offset the
     stream has reached draws the gap: a decoder serves it by decoding the bytes it
-    skips. A seek the budget cannot cover is refused before the decoder moves.
+    skips. A seek the budget cannot cover is refused before the decoder moves; a
+    seek to an end the stream cannot size reads to it, drawn as a read is.
     """
 
     # Changes no bytes and no positions: verification and resume offsets are the
@@ -209,13 +211,22 @@ class BudgetDrawStream(DelegatingStream):
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         budget = self._budget
+        room = budget._bytes_room()
         if whence == io.SEEK_SET:
             target: int | None = offset
         elif whence == io.SEEK_CUR:
             target = self._pos + offset
         else:
-            target = None  # the decoder finds the end; drawn below
-        room = budget._bytes_room()
+            size = self.try_get_size()
+            target = None if size is None else size + offset
+            if target is None and room is not None:
+                # The end is not known without decoding to it: read there from the
+                # furthest offset reached, each step drawn, so the budget stops the
+                # decode where it runs out, as it does a read.
+                self._inner.seek(self._reach)
+                self._pos = self._reach
+                while self.read(_BUDGET_STEP):
+                    pass
         if target is not None and room is not None and target - self._reach > room:
             # Refused before the decoder decodes the gap. One byte past the room, so
             # the error names the total the seek would have reached.

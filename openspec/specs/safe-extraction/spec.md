@@ -982,9 +982,13 @@ pickled.
 
 - **Bytes.** Every byte a member stream delivers (a read, `stream_members()`, an
   extraction's writes) SHALL be drawn, and so SHALL the gap a forward seek skips past
-  the furthest offset reached. A read that would cross `max_decoded_bytes` SHALL
+  the furthest offset reached, and the byte a compressed single file's open-time check
+  decodes. A seek to the end SHALL be refused before the decoder moves when the size
+  is known and the gap does not fit, and otherwise SHALL read to the end, drawn. A read that would cross `max_decoded_bytes` SHALL
   decode at most one byte past what is left, then raise the always-stop
-  `ResourceLimitError`, so an extraction stops at that member. Once spent, a budget
+  `ResourceLimitError`, so an extraction stops at that member. Readers on several
+  threads MAY each overshoot by one read, since each sizes its read against the same
+  room. Once spent, a budget
   SHALL refuse every later read before it decodes.
 - **Members.** Each member a reader lists SHALL be drawn once per reader. The listing
   that would pass `max_members` SHALL raise `ResourceLimitError`, and the refused
