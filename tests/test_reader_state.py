@@ -15,6 +15,7 @@ import tarfile
 import threading
 import time
 import unicodedata
+import warnings
 import zipfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -165,6 +166,42 @@ def test_default_reader_callback_close_during_members_names_the_callback() -> No
         holder.append(reader)
         reader.members()
     assert errors, "fixture must emit a diagnostic during listing"
+    assert CLOSE_FROM_INSIDE in str(errors[0])
+
+
+def _zip_with_a_duplicate_name() -> bytes:
+    buf = io.BytesIO()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # zipfile warns on the duplicate name
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("a", b"1")
+            zf.writestr("a", b"2")
+            zf.writestr("b", b"3")
+    return buf.getvalue()
+
+
+def test_default_reader_callback_close_during_index_peek_names_the_callback() -> None:
+    """members_report_if_available() drains the walk on an upfront index: a close()
+    from a callback there is refused, not let through to tear the walk down under
+    the drain (an AssertionError in the next pull)."""
+    errors: list[BaseException] = []
+    holder: list[ArchiveReader] = []
+
+    def on_diagnostic(_diag: object) -> None:
+        try:
+            holder[0].close()
+        except ArchiveyUsageError as exc:
+            errors.append(exc)
+
+    config = ArchiveyConfig(on_diagnostic=on_diagnostic)
+    with open_archive(
+        io.BytesIO(_zip_with_a_duplicate_name()), config=config
+    ) as reader:
+        holder.append(reader)
+        report = reader.members_report_if_available()
+    assert report is not None
+    assert [m.name for m in report.members] == ["a", "a", "b"]
+    assert errors, "fixture must emit a diagnostic during the drain"
     assert CLOSE_FROM_INSIDE in str(errors[0])
 
 

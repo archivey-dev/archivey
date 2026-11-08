@@ -222,6 +222,10 @@ def _load_inflate64() -> Callable[..., Any]:
     return importlib.import_module("inflate64").Inflater
 
 
+def _load_bzip3() -> Callable[..., Any]:
+    return importlib.import_module("bz3.backends").BZ3Decompressor
+
+
 def _load_ppmd7() -> Callable[..., Any]:
     return importlib.import_module("pyppmd").Ppmd7Decoder
 
@@ -240,6 +244,7 @@ LOADERS: dict[str, Callable[[], Callable[..., Any]]] = {
     "brotli": _load_brotli,
     "lzo": _load_lzo,
     "inflate64": _load_inflate64,
+    "bzip3": _load_bzip3,
     "ppmd7": _load_ppmd7,
     "ppmd8": _load_ppmd8,
 }

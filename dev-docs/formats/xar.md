@@ -10,7 +10,7 @@ and registered as a built-in, as ISO, SquashFS and ar are.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/xar_reader.py`, a `XarHandler` (`FormatHandler`) and a `XarReader` (`IndexedReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/xar_reader.py`, a `XarHandler` (`IndexedFormatHandler`) and a `XarReader` (`IndexedReader`), registered with `register_builtin_format` |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file or a stream that can seek. Not a pipe: the index points at data anywhere after it |
 | Listing cost | From the index, read whole at open |

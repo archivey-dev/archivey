@@ -128,7 +128,7 @@ from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     MemberStreamParts,
 )
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.decompressor_stream import StreamChecksumError
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     LockedStream,
@@ -745,7 +745,7 @@ class TarReader(BaseArchiveReader):
         (``_note_spanning_unreachable``)."""
         try:
             yield from self._walk_members()
-        except _StreamChecksumError:
+        except StreamChecksumError:
             # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
             # it stays the ceiling of the members it covers, which verify_all()
             # returns. An xz or bzip2 check failure reads as damage, handled below.
@@ -1054,7 +1054,7 @@ class TarReader(BaseArchiveReader):
         A tail that fails to *decode* never raises. Every member was already read
         whole, so a decode failure out here must not turn a good listing into an
         error, and it is not trailing tar data, so it is not reported as that. The one
-        exception is a :class:`_StreamChecksumError`: a codec checksum that covers the
+        exception is a :class:`StreamChecksumError`: a codec checksum that covers the
         whole decoded stream (gzip's CRC-32 and ISIZE, zlib's Adler-32, the zstd and lz4
         content checksums, lzip's CRC-32) failed, so the members already read are
         damaged, and that raises. A ``tar -b128`` record pads 64 KiB past the trailer,
@@ -1099,7 +1099,7 @@ class TarReader(BaseArchiveReader):
             try:
                 with self._translated_errors(), self._walk_guard():
                     chunk = stream.read(want)
-            except _StreamChecksumError:
+            except StreamChecksumError:
                 # Nothing non-zero has come out since the trailer, so the stream this
                 # checksum covers holds the members already read: this is damage to
                 # them, not a tail that failed to decode. (A codec's read-ahead can

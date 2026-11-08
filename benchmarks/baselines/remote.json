@@ -1179,13 +1179,13 @@
     },
     "zip_stored_many_streams_planner": {
       "archive_size": 510881,
-      "bytes_fetched": 651993,
+      "bytes_fetched": 671181,
       "cache": "planner",
       "format": "zip_stored",
       "gated": true,
       "metadata_requests": 1,
       "operation": "many_streams",
-      "overfetch": 1.276,
+      "overfetch": 1.314,
       "range_requests": 34
     },
     "zip_stored_read_first_default": {

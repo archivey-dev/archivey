@@ -28,9 +28,10 @@ in `member.hashes`, even for a one-member file: proving there is one member mean
 the whole file (§6). `member.size` is `None` although the trailer holds a size, for the
 same reason. With `rapidgzip`, a truncated stream is reported with the same certainty as
 without it only for a one-member gzip; a truncated raw DEFLATE stream read alone through
-`rapidgzip` under `ON` can come back short with no error (§5). And under `AUTO`,
-`rapidgzip` never decodes a stream opened without declared seeking, whatever its size
-(§2.3), so a plain open read front to back gets the standard library.
+`rapidgzip` under `ON` can come back short with no error (§5). And under `AUTO`, a
+stream opened without declared seeking gets `rapidgzip` only on Linux and macOS, when
+its compressed size is known to be at least 16 MiB and it compresses 3:1 or less (§2.3).
+Any other plain open read front to back gets the standard library.
 
 ## 1. Shape
 
@@ -485,7 +486,7 @@ the end lands there, and the rest is reported as `ARCHIVE_TRAILING_DATA`, as wit
 stream when the end shows up, and they cannot be taken back; there the decode goes on stream
 by stream up to the delivered length, and that output is accepted (§5). Whichever decode
 runs must reproduce the delivered bytes; failing that, the read or seek that reached the end
-raises `_StreamChecksumError`, a `CorruptionError`. The TAR end-of-archive scan, which
+raises `StreamChecksumError`, a `CorruptionError`. The TAR end-of-archive scan, which
 otherwise ignores a tail that fails to decode, re-raises it, because the checksum covers
 members it already handed out. A stream never read to its end is not checked, and the
 standard library does not check one either: it verifies the trailer only when it consumes
