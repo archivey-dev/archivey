@@ -4052,7 +4052,7 @@ class BaseArchiveReader(ArchiveReader):
         return None
 
     def _check_solid_open(self, member: ArchiveMember) -> None:
-        """Run :meth:`_note_solid_open` for an ``open()`` of ``member`` about to start."""
+        """Note an ``open()`` of ``member`` that is about to start."""
         run = self._solid_run(member)
         if run is not None:
             self._note_solid_open(member, run)
