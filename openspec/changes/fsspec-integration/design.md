@@ -137,14 +137,25 @@ target, a joined volume set asks the volume that holds the target, and detection
 read uses `seeks_to_end_are_cheap` (as the single-file probes already did), not
 `seek_is_expensive`. A tail read that steps backward (the xz footer, then the index
 before it) stays one request: a new run that the end would cut short starts earlier, so
-its window holds the minimum fetch (D2 rule 5), and a walk toward the start (the
-index of each stream of a multi-stream `.xz`, the trailer of each `.lz` member)
-steps its window back and doubles (D2 rule 6), so it costs about what a forward
-read of the same bytes costs. Detection hints its tail read (D2 rule
+its window holds the minimum fetch (D2 rule 5). Detection hints its tail read (D2 rule
 3), so on an object within the read-through distance the tail is a run of its own and
 does not read through from the head and drop the head's window, which the backend reads
 next. Detection's probe reads at an offset still do not seek a remote source: each
 would be a request, and they grow the prefix.
+
+**Multi-stream files list lazily on a remote source** (maintainer, 2026-11-08: "lazy
+for multi-stream only"). The size of a `.xz` or `.lz` file comes from every stream's
+index (every member's trailer), read from the end toward the start. On a remote source
+the open reads only the last stream's footer and index (the last member's trailer), in
+the same tail request as above. If that read shows an earlier stream, the open stops:
+the member's `size` is `None`, and nothing else the walk fills is set (for `.lz`, the
+combined CRC). A local path keeps the full walk and reports the size. This is the one
+accepted difference between a remote and a local listing of the same bytes: the walk
+costs one step per stream, and a file of many tiny streams would pay for it on every
+open, while a read from start to end never needs it. A single-stream file keeps its
+size on a remote source. The walk runs later only when a seek needs it (the member
+stream's own index build); it steps its window back and doubles (D2 rule 6), so it
+costs about what a forward read of the same bytes costs.
 
 Rejected:
 
@@ -274,7 +285,10 @@ a thin planner that decides each fetch's start and length:
    without this rule each step was a new run of `_MIN_FETCH` bytes, and a crafted
    1.2 MB file of 20,000 xz streams took 75,633 requests and 1.7 GB to list. With
    it the walk fetches each byte about once, in about as many requests as a
-   forward read (5 requests for that file).
+   forward read (5 requests for that file). Since multi-stream files list lazily on
+   a remote source (D1), the open no longer walks; the rule stays for the walk a
+   seek needs (the member stream's own index build), which without it costs 75,631
+   requests on that file and with it 4.
 
 `_MIN_FETCH`, `_MAX_FETCH` and `_POOL_BYTES` are internal. They are fixed bounds per
 reader that do not grow with input, so DR-9 does not ask for a new public limit. If the

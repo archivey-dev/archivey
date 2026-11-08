@@ -51,6 +51,9 @@
       new run at the end keeps the minimum fetch (D2 rule 5), and a read just before a
       window steps that window back (D2 rule 6). Tested from a path and
       from an `OpenFile`: a bzip2-first UDIF image, a `.xz` size, a `.gz` ISIZE.
+      A multi-stream `.xz` or multi-member `.lz` from an `OpenFile` reads only the last
+      stream's index and stops (maintainer 2026-11-08, "lazy for multi-stream only"):
+      `size` is `None`, the walk runs when a seek needs it, a path is unchanged.
 - [x] 2.4 Run the full corpus and the short-returning-source tests through a memory-backed
       `OpenFile`: identical listings and bytes to a path source.
 - [x] 2.5 Change detection, tier 3 (design D7): `SourceChangedError`, the size

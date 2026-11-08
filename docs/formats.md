@@ -1364,7 +1364,12 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   is filled in, a `streaming=True` pass ends, or the reader closes.
 - **`.xz` size and `.lz` CRC-32** come from the stream's index or the lzip trailer whenever the
   source can seek: a file path, an in-memory stream and an fsspec `OpenFile` (one more range
-  request) qualify, a pipe does not.
+  request) qualify, a pipe does not. One exception, from an fsspec `OpenFile` only: a file of
+  several `.xz` streams or `.lz` members reads only the last one's index or trailer, sees the
+  earlier ones and stops, so `size` is `None` and the `.lz` CRC is absent. Walking every
+  stream would cost the open a step per stream, and a read from the start never needs it.
+  The same file from a path reports both. A seek in that member still works: it walks the
+  index then.
   `seekable_members=True` makes no difference, since reading the trailer is a bounded backward peek
   at open. A `.xz` or `.lz` opened from another archive's member stream gets both when the
   member stream is seekable and is a stored ZIP entry or an uncompressed TAR member, whose end is

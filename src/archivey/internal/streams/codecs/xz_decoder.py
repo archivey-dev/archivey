@@ -429,12 +429,32 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     )
 
 
+class _MoreStreams(Exception):
+    """The walk met a stream before the ones it was allowed to read."""
+
+
+def last_stream_is_the_whole_file(stream: BinaryIO, file_size: int) -> bool:
+    """Whether the last xz stream starts at offset 0, read from its footer and index.
+
+    Reads the last stream's footer and index only (and its header when it starts at
+    offset 0), and stops before any earlier stream: on a remote source a
+    multi-stream file then costs no more requests than a single-stream one
+    (fsspec-integration design D1).
+    """
+    try:
+        _read_xz_index_backwards(stream, file_size, last_stream_only=True)
+    except _MoreStreams:
+        return False
+    return True
+
+
 def _read_xz_index_backwards(
     stream: BinaryIO,
     file_size: int,
     stop_at: int = 0,
     start_decompressed_offset: int = 0,
     on_thinned: Callable[[], None] | None = None,
+    last_stream_only: bool = False,
 ) -> list[_XzBlockBounds]:
     """Walk XZ streams from EOF toward ``stop_at``, building a block index.
 
@@ -446,6 +466,9 @@ def _read_xz_index_backwards(
     resumes correctly (``_XzBlockResume``). Within a stream the records are walked
     forward and thinned there first, so a stream declaring millions of blocks is never
     held whole. The last block is always kept, so the total stays exact.
+
+    With ``last_stream_only``, the walk raises ``_MoreStreams`` when the last stream
+    does not start at ``stop_at``, before reading that stream's header.
     """
     # Keyed on decompressed distance from the block's start to the end of the scan,
     # which only grows as the walk goes back.
@@ -489,6 +512,10 @@ def _read_xz_index_backwards(
         if stream_header_start < 0:
             raise CorruptionError("XZ stream header start computes to negative offset")
 
+        if last_stream_only and stream_header_start > stop_at:
+            # Before the header read: on a remote source the header of a large last
+            # stream is far from both the head and the tail windows.
+            raise _MoreStreams
         stream.seek(stream_header_start)
         header_data = stream.read(_STREAM_HEADER_SIZE)
         if len(header_data) < _STREAM_HEADER_SIZE:

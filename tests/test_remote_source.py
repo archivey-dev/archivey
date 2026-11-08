@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
@@ -54,6 +55,10 @@ from archivey.internal.volumes import ConcatenatedFile  # noqa: E402
 from tests.sample_archives import (  # noqa: E402
     corpus_archive_path,
     skip_unless_runnable,
+)
+from tests.streams_util import (  # noqa: E402
+    make_multi_member_lzip,
+    make_multi_stream_xz,
 )
 from tests.test_short_read_sources import (  # noqa: E402
     _CORPUS_CASES,
@@ -1138,33 +1143,105 @@ def test_the_tail_read_does_not_take_over_the_head_window() -> None:
 
 
 def _many_lzip_members(count: int) -> bytes:
-    from tests.streams_util import make_multi_member_lzip
-
     return make_multi_member_lzip([b"a"] * count)
+
+
+_MULTI = {
+    "f.xz": lambda count: lzma.compress(b"a") * count,
+    "f.lz": _many_lzip_members,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_MULTI))
+@pytest.mark.parametrize("count", [2, 200, 20_000])
+def test_a_remote_multi_stream_file_lists_without_walking(
+    name: str, count: int, tmp_path: Path
+) -> None:
+    """Maintainer ruling, 2026-11-08: lazy for multi-stream files, remote only. The
+    open reads the last stream's footer and index (or the last member's trailer),
+    sees an earlier stream, and stops: no size, in the same requests whatever the
+    stream count. A local path keeps the whole walk and the size. Red with the
+    walk at open: 2,000 tiny xz streams took 4 requests, 20,000 took 5."""
+    data = _MULTI[name](count)
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, f"/{name}", mode="rb")) as reader:
+        (member,) = reader.members()
+    assert member.size is None
+    _assert_head_and_tail_only(fs, len(data))
+    path = tmp_path / name
+    path.write_bytes(data)
+    with open_archive(path) as reader:
+        (local,) = reader.members()
+    assert local.size == count
+
+
+def _assert_head_and_tail_only(fs: RecordingFS, size: int) -> None:
+    """The open fetched the head (as the reader's buffered reads ask for it, 128
+    KiB at once on Python 3.15) and the tail once, and nothing between them."""
+    c = PlannerConstants()
+    head = max(c.min_fetch, io.DEFAULT_BUFFER_SIZE)
+    assert len(fs.fetches) <= 2 + io.DEFAULT_BUFFER_SIZE // c.min_fetch
+    assert [f for f in fs.fetches if f[1] == size] == [
+        (max(0, size - c.min_fetch), size)
+    ]
+    assert all(end <= head for start, end in fs.fetches if end != size)
 
 
 @pytest.mark.parametrize(
     ("name", "build"),
     [
-        ("f.xz", lambda: lzma.compress(b"a") * 2000),
-        ("f.lz", lambda: _many_lzip_members(2000)),
+        ("f.xz", make_multi_stream_xz),
+        ("f.lz", make_multi_member_lzip),
     ],
 )
-def test_a_backward_walk_over_many_streams_is_bounded(name: str, build: Any) -> None:
-    """The xz index walk and the lzip member walk step backward a few bytes at a
-    time, once per stream. Each step past a window steps the window back too, doubling
-    as a forward run does, so the walk costs about as many requests as reading the
-    file forward and fetches each byte about once. Red with a new run per step: 3,633
-    requests and 88 MB for 2,000 xz streams."""
-    data = build()
+def test_a_large_last_stream_is_not_read_for_its_header(
+    name: str, build: Callable[[list[bytes]], bytes]
+) -> None:
+    """The open stops at the last stream's footer and index (the last member's
+    trailer): its header, far from both the head and the tail, is not read. Red
+    when the check read it: a read through from the head (65536, 400092), and the
+    head fetched again."""
+    parts = [random.Random(i).randbytes(400_000) for i in range(2)]
+    data = build(parts)
     fs = RecordingFS(data)
-    c = PlannerConstants()
     with open_archive(OpenFile(fs, f"/{name}", mode="rb")) as reader:
         (member,) = reader.members()
-    if name == "f.xz":
-        assert member.size == 2000
+    assert member.size is None
+    _assert_head_and_tail_only(fs, len(data))
+
+
+@pytest.mark.parametrize("name", sorted(_MULTI))
+def test_a_seek_on_a_remote_multi_stream_file_walks_a_bounded_index(
+    name: str,
+) -> None:
+    """The walk the open skipped runs when a seek needs it. It steps backward a few
+    bytes per stream; the planner steps its window back and doubles (design D2 rule
+    6), so it costs about as many requests as reading the file forward. Red without
+    rule 6: 75,631 requests for 20,000 tiny xz streams."""
+    data = _MULTI[name](20_000)
+    fs = RecordingFS(data)
+    c = PlannerConstants()
+    with open_archive(
+        OpenFile(fs, f"/{name}", mode="rb"), seekable_members=True
+    ) as reader:
+        (member,) = reader.members()
+        with reader.open(member) as stream:
+            stream.seek(15_000)
+            assert stream.read(10) == b"a" * 10
     assert len(fs.fetches) <= 2 + len(data) // c.min_fetch + 4
     assert sum(end - start for start, end in fs.fetches) <= 2 * len(data) + c.max_fetch
+
+
+def test_a_remote_multi_stream_file_reads_start_to_end_without_the_walk() -> None:
+    """A read from start to end never needs the index: about one request per
+    planner fetch, not one per stream."""
+    parts = [random.Random(i).randbytes(20_000) for i in range(50)]
+    data = b"".join(lzma.compress(part, preset=0) for part in parts)
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, "/f.xz", mode="rb")) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == b"".join(parts)
+    assert len(fs.fetches) <= 8
 
 
 def test_a_read_just_before_a_window_steps_it_back() -> None:

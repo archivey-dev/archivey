@@ -69,7 +69,13 @@ The `ArchiveSource` built from an `OpenFile` SHALL settle its facts once, at ope
 The reads that look at the end of a source (detection's UDIF trailer and PE tail
 probe, the xz index, the lzip trailer, the gzip ISIZE) SHALL run on an `OpenFile`
 source as they run on a path, so the same bytes give the same detected format and the
-same member facts.
+same member facts, with one exception (maintainer ruling, 2026-11-08: lazy for
+multi-stream files, remote only). For a `.xz` or `.lz` file on an `OpenFile` source,
+the open SHALL read only the last stream's footer and index (the last member's
+trailer). If that read shows an earlier stream or member, the open SHALL NOT walk the
+rest: the member's `size` SHALL be `None`, and the facts the walk fills (the lzip
+combined CRC) SHALL be absent. A path source SHALL keep the full walk. A seek in the
+member SHALL still work, walking the index when it needs it.
 
 A backend that needs a local path SHALL treat the source as any non-path stream (RAR's
 spool under `SpoolLimits`). Closing the reader SHALL NOT close the `OpenFile`'s file
@@ -83,7 +89,9 @@ system.
 | Object grows after open | Reads stop at the open-time size; detecting the change is the planner's (`fsspec-integration`) |
 | RAR, compressed member, `OpenFile` source | The archive is spooled under `SpoolLimits`, with the existing cost note |
 | A bzip2 stream that ends in a UDIF `koly` block | `DMG`, as from a path |
-| A `.xz` file | The member's `size` from the stream index, as from a path |
+| A single-stream `.xz` or `.lz` file | The member's `size` from the stream index (the trailer), as from a path |
+| A multi-stream `.xz` or multi-member `.lz` file | `size` is `None`, in the same requests whatever the stream count; from a path, the size |
+| A seek in that member, with `seekable_members=True` | The right bytes; the index walk runs then |
 | A `.gz` file | `extra["gzip.isize"]` from the trailer, as from a path |
 
 ## MODIFIED Requirements
