@@ -10,6 +10,7 @@ their data, as CPIO's do. Each test registers it on a registry restored afterwar
 from __future__ import annotations
 
 import bz2
+import dataclasses
 import gzip
 import io
 import lzma
@@ -47,7 +48,7 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.formats import (
     ForwardStream,
     Magic,
@@ -88,6 +89,8 @@ class ToysContainer(PluginContainer):
     HOLDING_DECODED = "toys-holding-decoded"
     CHARGING_DECODED = "toys-charging-decoded"
     YIELDS_NONE = "toys-yields-none"
+    REPORTS_LATE = "toys-reports-late"
+    REPORTING_DECODED = "toys-reporting-decoded"
 
 
 TOYS = ArchiveFormat(ToysContainer.TOYS, StreamFormat.UNCOMPRESSED)
@@ -628,8 +631,7 @@ def test_a_listing_stopped_by_a_limit_walks_again(
 
 class _HoldingReader(ToysReader):
     """Holds back every member with no data until the end header, as a reader that
-    must see later headers to finish a member does, and lists it by its normalized
-    name."""
+    must see later headers to finish a member does."""
 
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         held: list[MemberSpan] = []
@@ -637,11 +639,8 @@ class _HoldingReader(ToysReader):
             if span.data_length:
                 yield span
                 continue
-            member = span.member
-            stored = member.name
-            member.name = self._context.normalize_name(stored, member.type)
-            self._context.hold(member, stored_name=stored, reason="toys held back")
-            held.append(MemberSpan(member, 0, stored_name=stored))
+            self._context.hold(span.member, reason="toys held back")
+            held.append(span)
         yield from held
 
 
@@ -663,14 +662,15 @@ def _holding_listing(
 
 def test_a_held_member_is_counted_once(toys: ArchiveFormat, tmp_path: Path) -> None:
     """A member held and then yielded is counted as one member: limits equal to the
-    peak the listing reaches are not crossed. The peak is the listed weight plus
-    the stored names ``a//b`` and ``d``, which weigh only while their members are
-    held; were a held member still charged once listed, it would be higher."""
+    peak the listing reaches are not crossed. Held, ``a//b`` and ``d`` weigh their
+    names as the reader holds them (4 and 1 bytes), listed ``a/b`` and ``d/`` (3 and
+    2): the same total, so the peak is the listed weight. Were a held member still
+    charged once listed, it would be higher."""
     fmt = _variant(_HoldingReader, ToysContainer.HOLDING)
     path = _write(tmp_path, build_toys(_HOLDING_ENTRIES))
     members = _holding_listing(fmt, path)
     assert [m.name for m in members] == ["c.txt", "e.txt", "a/b", "d/"]
-    peak = sum(member_metadata_bytes(m) for m in members) + len("a//b") + len("d")
+    peak = sum(member_metadata_bytes(m) for m in members)
     assert len(_holding_listing(fmt, path, max_members=4, max_metadata_bytes=peak))
     with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
         _holding_listing(fmt, path, max_metadata_bytes=peak - 1)
@@ -695,20 +695,20 @@ def test_held_members_count_with_listed_ones(
         _holding_listing(fmt, path, max_members=3)
 
 
-def test_a_held_member_weighs_its_stored_name(
+def test_a_held_member_weighs_its_name_as_held(
     toys: ArchiveFormat, tmp_path: Path
 ) -> None:
-    """While held, a member also weighs the name it will be yielded with when that
-    differs from its normalized name: ``a/b`` (3), ``a//b`` (4) and its raw bytes (4)."""
+    """While held, a member weighs the name the reader holds it under, before
+    archivey normalizes it: ``a//b`` (4) and its raw bytes (4)."""
     fmt = _variant(_HoldingReader, ToysContainer.HOLDING)
     path = _write(tmp_path, build_toys(_HOLDING_ENTRIES[:1], end=False))
     with pytest.raises(
         ResourceLimitError,
-        match=r"max_metadata_bytes=10 \(retained 11 bytes, 11 of them for 1 toys",
+        match=r"max_metadata_bytes=7 \(retained 8 bytes, 8 of them for 1 toys",
     ):
-        _holding_listing(fmt, path, max_metadata_bytes=10)
+        _holding_listing(fmt, path, max_metadata_bytes=7)
     with pytest.raises(TruncatedError):
-        _holding_listing(fmt, path, max_metadata_bytes=11)
+        _holding_listing(fmt, path, max_metadata_bytes=8)
 
 
 class _HoldingTwiceReader(ToysReader):
@@ -2433,3 +2433,120 @@ def test_decoded_data_listed_again_counts_once(
         for _ in range(3):
             assert [m.name for m in reader.members()] == ["m"]
         assert reader.read("m") == bytes(size)
+
+
+def _bad_date(context: ReaderContext, member: ArchiveMember) -> None:
+    context.report(
+        DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+        f"bad date for {member.name}",
+        MemberTimestampContext(
+            member_name=member.name, field="modified", source="toys", value_repr="0"
+        ),
+        member=member,
+    )
+
+
+class _ReportsOnLate(ToysReader):
+    """Reports on a member it holds and yields only after every other one."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        late = ArchiveMember(type=MemberType.DIRECTORY, name="late")
+        _bad_date(self._context, late)
+        self._context.hold(late)
+        yield from super().walk(stream)
+        yield MemberSpan(late, 0)
+
+
+_RAISE_ON_DATES = archivey.ArchiveyConfig(
+    diagnostic_policy=archivey.DiagnosticPolicy(
+        raise_on={DiagnosticCode.MEMBER_TIMESTAMP_INVALID}
+    )
+)
+
+
+def test_a_held_report_raises_from_a_listing_that_reaches_its_member(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    fmt = _variant(_ReportsOnLate, ToysContainer.REPORTS_LATE)
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    with (
+        open_archive(path, format=fmt, config=_RAISE_ON_DATES) as reader,
+        pytest.raises(archivey.DiagnosticRaisedError, match="bad date for late"),
+    ):
+        reader.members()
+
+
+def test_a_listing_stopped_early_records_a_held_report_without_raising(
+    toys: ArchiveFormat, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The caller stops before the held member: its report is recorded under the
+    reader's name with no member id, and the policy's raise is dropped rather than
+    lost as an "Exception ignored" in the walk's close. Fails with the report sent
+    outside ``deferring_raises``."""
+    import sys
+
+    unraisable: list[object] = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+    seen: list[archivey.Diagnostic] = []
+    config = dataclasses.replace(_RAISE_ON_DATES, on_diagnostic=seen.append)
+    fmt = _variant(_ReportsOnLate, ToysContainer.REPORTS_LATE)
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    with open_archive(path, format=fmt, config=config, streaming=True) as reader:
+        for _member in reader:
+            break
+        # Nothing closes a walk stopped part-way but the collector, which on PyPy
+        # need not get to it on one gc.collect(): close it here, as the collector
+        # would.
+        walk = reader._walk  # type: ignore[attr-defined]  # the backend's walk
+        assert walk is not None
+        walk.close()
+    (late,) = [d for d in seen if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID]
+    assert late.context.member_name == "late"  # type: ignore[union-attr]
+    assert late.context.member_id is None  # type: ignore[union-attr]
+    assert unraisable == []
+
+
+def test_damage_ending_the_walk_is_not_replaced_by_a_held_report(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    fmt = _variant(_ReportsOnLate, ToysContainer.REPORTS_LATE)
+    path = _write(tmp_path, build_toys(_ENTRIES, end=False))
+    with (
+        open_archive(path, format=fmt, config=_RAISE_ON_DATES) as reader,
+        pytest.raises(archivey.TruncatedError),
+    ):
+        reader.members()
+
+
+class _ReportingDecodedReader(_DecodedReader):
+    """Reports on every member as it walks to it, under the name as stored."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        for span in super().walk(stream):
+            _bad_date(self._context, span.member)
+            yield span
+
+
+def test_a_report_in_a_walk_started_over_names_the_listed_member(
+    tmp_path: Path,
+) -> None:
+    """A walk started over for data yields fresh members under their stored names;
+    a report on one names the member as listed, with its id."""
+    with registration_scope():
+        fmt = _variant(_ReportingDecodedReader, ToysContainer.REPORTING_DECODED)
+        entries = [
+            ("./x//a", MemberType.FILE, b"alpha"),
+            ("./y//b", MemberType.FILE, b"beta"),
+        ]
+        path = _write(tmp_path, build_decoded(entries))
+        with open_archive(path, format=fmt) as reader:
+            listed = {m.name: m.member_id for m in reader.members()}
+            assert reader.read("y/b") == b"beta"
+            assert reader.read("x/a") == b"alpha"
+            pairs = [
+                (d.context.member_name, d.context.member_id)  # type: ignore[union-attr]
+                for d in reader.diagnostics.retained
+                if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+            ]
+    assert len(pairs) > 2  # the reads walked again
+    assert set(pairs) == set(listed.items())

@@ -175,11 +175,9 @@ class ListingLimitTracker:
         self.metadata_bytes = next_bytes
         self.member_count = next_count
 
-    def hold_member(
-        self, member: ArchiveMember, stored_name: str | None, reason: str
-    ) -> None:
+    def hold_member(self, member: ArchiveMember, reason: str) -> None:
         """Charge a member a reader holds back before yielding it, as one member and
-        its metadata, with ``stored_name`` weighed too when it differs from the name.
+        its metadata.
 
         ``reason`` says what the held members wait for, for the refusal. The charge
         stays until :meth:`release_member`, called when the member is yielded and
@@ -189,8 +187,6 @@ class ListingLimitTracker:
         if key in self._held:
             raise ValueError(f"member {member.name!r} is already held")
         nbytes = member_metadata_bytes(member)
-        if stored_name is not None and stored_name != member.name:
-            nbytes += _str_retained_bytes(stored_name)
         held = len(self._held) + 1
         held_bytes = self._held_bytes + nbytes
         next_count = self.member_count + 1

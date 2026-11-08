@@ -38,7 +38,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import (
-    FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -271,10 +271,7 @@ class CabReader(IndexedReader[_Location]):
                     ),
                 ),
             )
-            stored_name = None
             if member.modified is None and stamp:
-                stored_name = name
-                member.name = context.normalize_name(name, MemberType.FILE)
                 context.report(
                     DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
                     f"Invalid cabinet date for {quoted(member.name)}: 0x{stamp:08x}",
@@ -286,7 +283,7 @@ class CabReader(IndexedReader[_Location]):
                     ),
                     member=member,
                 )
-            yield MemberRecord(member, _Location(folder, offset), stored_name)
+            yield MemberRecord(member, _Location(folder, offset))
 
     # ── Data ─────────────────────────────────────────────────────────────────────────
 
@@ -634,20 +631,18 @@ class _MemberStream(io.RawIOBase):
         super().close()
 
 
-class CabHandler(FormatHandler):
+class CabHandler(IndexedFormatHandler):
     """Microsoft cabinets: ``.cab``."""
 
     format = ArchiveFormat.CAB
     extensions = (".cab",)
     magic = (Magic(0, MAGIC),)
     uses_encoding = True
+    non_seekable_reason = "its file table points at folders anywhere in the file"
 
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> CabReader:
         return CabReader(source, context)
 
 
-CabReadBackend = register_builtin_format(
-    CabHandler,
-    NON_SEEKABLE_REASON="its file table points at folders anywhere in the file",
-)
+CabReadBackend = register_builtin_format(CabHandler)

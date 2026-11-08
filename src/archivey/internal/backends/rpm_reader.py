@@ -300,7 +300,6 @@ class _File:
     flags: int
     links: tuple[int, ...] = ()
     member: ArchiveMember | None = None
-    stored: str = ""
     found: bool = False
 
     @property
@@ -564,13 +563,12 @@ class RpmReader(SequentialReader):
         raw_name = file.raw_name
         # The header's names are absolute; the payload stores ``./usr/bin/x``,
         # which is what rpm2cpio and cpio extract, inside the directory given.
-        stored = context.decode_name(
-            b"." + raw_name if raw_name.startswith(b"/") else raw_name
-        )
         users, groups, mtimes = package.users, package.groups, package.mtimes
         member = ArchiveMember(
             type=member_type,
-            name=context.normalize_name(stored, member_type),
+            name=context.decode_name(
+                b"." + raw_name if raw_name.startswith(b"/") else raw_name
+            ),
             raw_name=raw_name,
             size=file.size if member_type is MemberType.FILE else None,
             modified=None if mtimes is None else _time(mtimes[file.index]),
@@ -597,7 +595,6 @@ class RpmReader(SequentialReader):
                 member=member,
             )
         file.member = member
-        file.stored = stored
         return member
 
     @staticmethod
@@ -692,11 +689,11 @@ class RpmReader(SequentialReader):
         member = self._member(package, file)
         if member.type is MemberType.SYMLINK:
             # The target, which the header already gave.
-            yield MemberSpan(member, 0, stored_name=file.stored)
+            yield MemberSpan(member, 0)
             payload.skip(file.size)
             return
         if member.type is not MemberType.FILE:
-            yield MemberSpan(member, 0, stored_name=file.stored)
+            yield MemberSpan(member, 0)
             return
         if file.links and file.links[-1] != file.index:
             # An earlier link of a set: empty, its data comes with the set's last.
@@ -704,22 +701,22 @@ class RpmReader(SequentialReader):
             if data.member is not None:
                 # The payload stored the set's last file first, which rpm installs
                 # all the same: a link to it, now.
-                yield self._link(member, data.member, file.stored)
+                yield self._link(member, data.member)
                 return
-            self._context.hold(member, stored_name=file.stored, reason=_HELD)
+            self._context.hold(member, reason=_HELD)
             package.held.setdefault(file.links[-1], []).append(file)
             return
-        yield MemberSpan(member, file.size, self._digests(package, file), file.stored)
+        yield MemberSpan(member, file.size, self._digests(package, file))
         for link in package.held.pop(file.index, []):
             assert link.member is not None
-            yield self._link(link.member, member, link.stored)
+            yield self._link(link.member, member)
 
     @staticmethod
-    def _link(member: ArchiveMember, data: ArchiveMember, stored: str) -> MemberSpan:
+    def _link(member: ArchiveMember, data: ArchiveMember) -> MemberSpan:
         member.type = MemberType.HARDLINK
         member.link_target = data.name
         member.size = None
-        return MemberSpan(member, 0, stored_name=stored)
+        return MemberSpan(member, 0)
 
     @staticmethod
     def _digests(package: _Package, file: _File) -> tuple[MemberDigest, ...]:
