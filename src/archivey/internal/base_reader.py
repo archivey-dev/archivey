@@ -947,7 +947,13 @@ class BaseArchiveReader(ArchiveReader):
         teardown_exc: Exception | None = None
         try:
             try:
-                self._close_archive()
+                try:
+                    # A walk stopped part-way: close it first, so the backend's
+                    # ``finally`` blocks run now, on an open archive, and not when a
+                    # collector gets to the generator (on PyPy, not on one collect).
+                    self._close_walk()
+                finally:
+                    self._close_archive()
             finally:
                 # After the backend: whatever it built reads through the source, so the
                 # source goes last. It closes only what archivey opened or built.
@@ -2070,12 +2076,16 @@ class BaseArchiveReader(ArchiveReader):
             self._unindex_members(name, gone)
         _settle_listing(dropped, links_too=True)
 
-    def _abandon_walk(self, exc: BaseException) -> None:
-        """A pull failed without terminal damage: discard the walk, or poison it."""
+    def _close_walk(self) -> None:
+        """Close a walk that has not ended: at reader teardown, or when a pull failed."""
         close = getattr(self._walk, "close", None)
         self._walk = None
         if close is not None:
             close()
+
+    def _abandon_walk(self, exc: BaseException) -> None:
+        """A pull failed without terminal damage: discard the walk, or poison it."""
+        self._close_walk()
         if self._streaming:
             # The pass has already yielded the prefix, so it cannot be walked again
             # without handing the caller a second object for the same member.
@@ -4667,7 +4677,8 @@ class BaseArchiveReader(ArchiveReader):
         streaming iteration pass suspended at a yield does not block it: the reader
         closes, and resuming that iterator raises ``ArchiveyUsageError``. A suspended
         ``stream_members()`` pass is wound down here, before teardown. Teardown runs at
-        most once, after the last lease drops.
+        most once, after the last lease drops, and closes a member walk the caller
+        stopped part-way before the backend's own close.
         """
         if self._closed:
             return

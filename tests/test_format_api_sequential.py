@@ -605,6 +605,23 @@ def test_an_unlisted_walk_ends_before_close(
     assert _ClosingReader.events == ["walk done", "close"]
 
 
+def test_a_streaming_walk_stopped_part_way_ends_before_close(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    """Closing the reader closes a walk the caller stopped part-way, before the
+    reader's close(): its cleanup does not wait for the collector, which on PyPy
+    need not get to it on one gc.collect(). (A random-access reader always walks
+    to the end before it hands a member out.)"""
+    fmt = _variant(_ClosingReader, ToysContainer.CLOSING)
+    _ClosingReader.events = []
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    with open_archive(path, format=fmt, streaming=True) as reader:
+        with iter(reader) as members:
+            next(members)
+        assert _ClosingReader.events == []
+    assert _ClosingReader.events == ["walk done", "close"]
+
+
 def test_a_listing_stopped_by_a_limit_walks_again(
     toys: ArchiveFormat, tmp_path: Path
 ) -> None:
