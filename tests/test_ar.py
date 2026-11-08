@@ -15,6 +15,7 @@ import pytest
 import archivey
 from archivey import (
     CorruptionError,
+    DiagnosticCode,
     MemberType,
     ResourceLimitError,
     TruncatedError,
@@ -458,7 +459,10 @@ def test_a_time_past_the_datetime_range(tmp_path: Path) -> None:
     raw = bytearray(_ar((b"x/", b"data")))
     raw[8 + 16 : 8 + 28] = b"999999999999"
     with open_archive(_archive(tmp_path, bytes(raw))) as reader:
-        assert reader.members()[0].modified is None
+        (member,) = reader.members()
+        assert member.modified is None
+        codes = [d.code for d in member.diagnostics]
+        assert codes == [DiagnosticCode.MEMBER_TIMESTAMP_INVALID]
 
 
 def test_the_reader_uses_only_public_archivey() -> None:

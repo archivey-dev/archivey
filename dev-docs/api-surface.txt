@@ -1102,6 +1102,8 @@ method archivey.formats.ReaderContext.link_target_unavailable(self, member: Arch
 method archivey.formats.ReaderContext.normalize_name(self, name: str, member_type: MemberType) -> str
 method archivey.formats.ReaderContext.open_nested(self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat) -> Iterator[MemberSpan]
 method archivey.formats.ReaderContext.report(self, code: DiagnosticCode, message: str, details: DiagnosticContext, *, member: ArchiveMember | None = None) -> None
+method archivey.formats.ReaderContext.set_dos_time(self, member: ArchiveMember, field: TimeField, stamp: int, *, source: str) -> None
+method archivey.formats.ReaderContext.set_unix_time(self, member: ArchiveMember, field: TimeField, seconds: int, *, nanoseconds: int = 0, source: str) -> None
 class archivey.formats.ReaderSource()
 property archivey.formats.ReaderSource.path: Path | None
 method archivey.formats.ReaderSource.read_at(self, offset: int, n: int) -> bytes
@@ -1129,6 +1131,7 @@ function archivey.formats.block_stream(size: int, block_size: int, read_block: C
 function archivey.formats.buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO
 function archivey.formats.register_codec(handler: type[CodecHandler]) -> None
 function archivey.formats.register_format(handler: type[FormatHandler]) -> None
+function archivey.formats.unix_member_type(mode: int, *, has_data: bool) -> tuple[MemberType, SpecialFileType | None]
 module archivey.terminal
 function archivey.terminal.display_path(path: str | os.PathLike[str]) -> str
 function archivey.terminal.escape_control_chars(text: str) -> str

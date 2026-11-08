@@ -42,7 +42,6 @@ from __future__ import annotations
 import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from enum import Enum
 
 from archivey.diagnostics import (
@@ -65,6 +64,7 @@ from archivey.formats import (
     ReaderContext,
     SequentialFormatHandler,
     SequentialReader,
+    unix_member_type,
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
@@ -126,17 +126,6 @@ _AFIO_LARGE_FIELDS = (
 _AFIO_LARGE_SEPARATORS = ((24, b"m"), (79, b"n"), (92, b"s"), (109, b":"))
 
 _S_IFMT = 0o170000
-_TYPES = {
-    0o100000: MemberType.FILE,
-    0o040000: MemberType.DIRECTORY,
-    0o120000: MemberType.SYMLINK,
-}
-_SPECIAL = {
-    0o020000: "char_device",
-    0o060000: "block_device",
-    0o010000: "fifo",
-    0o140000: "socket",
-}
 
 
 @dataclass
@@ -452,25 +441,33 @@ class CpioReader(SequentialReader):
     def _member(self, header: Header, raw: bytes) -> ArchiveMember:
         """The member a header describes, named as the archive stores it."""
         context = self._context
-        kind = header.mode & _S_IFMT
-        member_type = _TYPES.get(kind)
-        special = _SPECIAL.get(kind)
         size = header.file_size
-        if member_type is None:
-            # A device, FIFO or socket is OTHER, as in every format archivey reads;
-            # with data it is a FILE whose bytes are the content (DR-25).
-            member_type = MemberType.FILE if size else MemberType.OTHER
+        # A device, FIFO or socket is OTHER, as in every format archivey reads; with
+        # data it is a FILE whose bytes are the content (DR-25).
+        member_type, special = unix_member_type(header.mode, has_data=size > 0)
         member = ArchiveMember(
             type=member_type,
             name=context.decode_name(raw),
             raw_name=raw,
             size=size if member_type is MemberType.FILE else None,
-            modified=_time(header.mtime),
             mode=header.mode & 0o7777,
             uid=header.uid,
             gid=header.gid,
         )
-        if special is not None:
+        context.set_unix_time(member, "modified", header.mtime, source="cpio")
+        if special == "unknown":
+            kind = header.mode & _S_IFMT
+            context.report(
+                DiagnosticCode.MEMBER_TYPE_UNKNOWN,
+                f"CPIO member {member.name!r} has the unknown file type {kind:#o}",
+                UnknownMemberTypeContext(
+                    member_name=member.name,
+                    stored_type=f"{kind:#o}",
+                    size=member.size,
+                ),
+                member=member,
+            )
+        elif special is not None:
             member.extra["special_file_type"] = special
             if size:
                 context.report(
@@ -482,17 +479,6 @@ class CpioReader(SequentialReader):
                     ),
                     member=member,
                 )
-        elif kind not in _TYPES:
-            context.report(
-                DiagnosticCode.MEMBER_TYPE_UNKNOWN,
-                f"CPIO member {member.name!r} has the unknown file type {kind:#o}",
-                UnknownMemberTypeContext(
-                    member_name=member.name,
-                    stored_type=f"{kind:#o}",
-                    size=member.size,
-                ),
-                member=member,
-            )
         return member
 
     def _digests(
@@ -530,16 +516,6 @@ class CpioReader(SequentialReader):
                 )
                 return
             scanned += len(chunk)
-
-
-def _time(mtime: int) -> datetime | None:
-    """The modification time, or None past what a ``datetime`` holds: afio's large
-    header has 16 hexadecimal digits for it. The other variants' fields stop at the
-    year 2242 (odc's 11 octal digits) or before."""
-    try:
-        return datetime.fromtimestamp(mtime, UTC)
-    except (OverflowError, ValueError, OSError):
-        return None
 
 
 def _binary_probe(prefix: bytes) -> bool:
