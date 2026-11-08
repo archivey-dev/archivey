@@ -446,13 +446,16 @@ Rejected:
 
 ### D4. Sibling volumes over fsspec
 
-For an `OpenFile` source, volume discovery lists the parent directory once
-(`fs.ls(parent, detail=False)`) and applies the same naming rules as local discovery
-(`archive-reading` §Multi-volume). `discover_volume_siblings` is split so that the rules
-run on a list of names, and the local and fsspec callers each supply the list. Each
-volume becomes its own `RangeSource`. A file system without listing (plain HTTP) finds no
-siblings, and a multi-volume open then fails as it does today for a lone first volume;
-an explicit sequence of `OpenFile` objects is the way to open those.
+For an `OpenFile` source, volume discovery lists the parent directory once (`fs.ls(parent,
+detail=True)`, cached per directory) and applies the same naming rules as local discovery
+(`archive-reading` §Multi-volume). The rules run on a path-like adaptor,
+`RemoteVolumePath`, that answers every question they ask (`iterdir`, `is_file`,
+`is_symlink`) from that one listing, so the same rule code serves both callers; the
+listing's `type` and `islink` keep the link refusal. Each volume becomes its own
+`RangeSource`, with its size taken from the listing, so no part costs an `info` request. A
+file system without listing (plain HTTP) finds no siblings, and a multi-volume open then
+fails as it does today for a lone first volume; an explicit sequence of `OpenFile` objects
+is the way to open those.
 
 ### D5. Batched fetches for whole-archive passes
 

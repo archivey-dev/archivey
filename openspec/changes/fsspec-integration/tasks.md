@@ -105,8 +105,10 @@
 
 ## 5. Volumes over fsspec
 
-- [ ] 5.1 Split `discover_volume_siblings` so the naming rules run on a list of names.
-- [ ] 5.2 fsspec discovery through one `ls` of the parent; each volume its own
+- [x] 5.1 Split `discover_volume_siblings` so the naming rules run on a list of names.
+      The rules run on a local `Path` or a `RemoteVolumePath`, whose directory
+      questions are answered from one `ls(detail=True)`; the code is shared, not copied.
+- [x] 5.2 fsspec discovery through one `ls` of the parent; each volume its own
       `RangeSource`. Tests on `memory://` for all three naming schemes.
 
 ## 6. Docs
