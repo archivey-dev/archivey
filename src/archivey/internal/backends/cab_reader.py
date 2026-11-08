@@ -276,8 +276,10 @@ class CabReader(IndexedReader[_Location]):
         folder again in any order.
 
         A cabinet that lists one name twice keeps table order, which says which entry
-        is current. A damaged table keeps table order too: the members before the
-        damage come, then the error, as when each record is read as it is reached.
+        is current. A damaged table yields the members before the damage, then the
+        error, as when each record is read as it is reached; those members are sorted
+        by the same rule, since a crafted table could otherwise add one bad record at
+        its end to turn the sort off.
 
         The whole table is read before the first member comes. That holds at most
         65 535 records, each a stored name read once from the table and six numbers,
@@ -293,7 +295,7 @@ class CabReader(IndexedReader[_Location]):
         except ArchiveyError as exc:
             failure = exc
         order: Sequence[int] = range(len(records))
-        if failure is None and _decodes_twice(self._folders, records, order):
+        if _decodes_twice(self._folders, records, order):
             order = self._in_data_order(records) or order
         for index in order:
             yield self._record(records[index])
@@ -523,7 +525,8 @@ class CabReader(IndexedReader[_Location]):
 
 def _opens(folder: _Folder) -> bool:
     """Whether a member of ``folder`` opens a folder stream: Quantum, unknown methods
-    and LZX windows out of range are refused before one is made."""
+    and LZX windows out of range are refused before one is made. It must match the
+    refusals at the top of ``CabReader.open_member``."""
     if folder.method == _LZX:
         return MIN_WINDOW_BITS <= folder.window_bits <= MAX_WINDOW_BITS
     return folder.method in (_STORED, _MSZIP)

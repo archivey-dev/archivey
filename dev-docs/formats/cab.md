@@ -84,7 +84,8 @@ decide, `iter_members` reads the whole table before the first member comes (at m
 65 535 records, each read once from the table: about 6 MiB more at the peak for 65 535
 files) and replays the kept decoder over it (`_decodes_twice`). A cabinet that lists one
 name twice keeps table order, since the entry listed last is the current one. A damaged
-table keeps table order: the members before the damage come, then the error.
+table yields the members before the damage, sorted by the same rule, then the error: one
+bad record at the end of a crafted table does not turn the sort off.
 
 ### 2.3 Read
 

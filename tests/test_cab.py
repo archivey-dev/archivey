@@ -966,7 +966,11 @@ def test_a_name_listed_twice_keeps_table_order() -> None:
         assert reader.read("f0-0") == files[0].data
 
 
-def test_a_damaged_table_out_of_data_order_lists_up_to_the_damage() -> None:
+def test_a_damaged_table_out_of_data_order_sorts_up_to_the_damage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One bad record at the end of a crafted table must not turn the sort off: the
+    # members before it come in data order, each block read once, then the error.
     files = _spans(1, 4)
     raw = bytearray(
         _with_table_order(write_cab(files, [CabFolder("lzx")]), [3, 2, 1, 0])
@@ -976,6 +980,7 @@ def test_a_damaged_table_out_of_data_order_lists_up_to_the_damage() -> None:
     for _ in range(2):
         pos = raw.index(b"\0", pos + 16) + 1
     struct.pack_into("<H", raw, pos + 8, 5)
+    reads = _count_block_reads(monkeypatch)
     with open_archive(io.BytesIO(bytes(raw))) as reader:
         names = []
         with pytest.raises(CorruptionError, match="folder 5"):
@@ -983,7 +988,52 @@ def test_a_damaged_table_out_of_data_order_lists_up_to_the_damage() -> None:
                 assert stream is not None
                 assert stream.read() == files[int(member.name[3:])].data
                 names.append(member.name)
-        assert names == ["f0-3", "f0-2"]
+        assert names == ["f0-2", "f0-3"]
+        assert len(reads) == len(set(reads))
+
+
+def _set_offset(raw: bytes, record: int, offset: int) -> bytes:
+    """``raw`` with the ``record``-th CFFILE record's folder offset set to ``offset``."""
+    out = bytearray(raw)
+    pos = _file_record(out)
+    for _ in range(record):
+        pos = out.index(b"\0", pos + 16) + 1
+    struct.pack_into("<I", out, pos + 4, offset)
+    return bytes(out)
+
+
+def test_an_empty_member_does_not_count_in_the_order_replay() -> None:
+    # An empty member opens no folder stream, so one listed last at offset 0 leaves
+    # the table in an order that decodes each block once.
+    files = [*_spans(1, 2), CabFile("empty", b"")]
+    raw = _set_offset(write_cab(files, [CabFolder("lzx")]), 2, 0)
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert [m.name for m in reader.members()] == ["f0-0", "f0-1", "empty"]
+
+
+def test_a_folder_that_opens_no_stream_does_not_count_in_the_order_replay() -> None:
+    # Quantum members are refused before a folder stream is made, so their order
+    # does not count; the LZX folder beside them reads in one pass.
+    quantum = [
+        CabFile(f"q{i}", BLOB[i * 9000 : (i + 1) * 9000], folder=0) for i in range(3)
+    ]
+    lzx = [
+        CabFile(f"z{i}", TEXT[i * 9000 : (i + 1) * 9000], folder=1) for i in range(3)
+    ]
+    raw = _with_table_order(
+        write_cab([*quantum, *lzx], [CabFolder("quantum", 10), CabFolder("lzx")]),
+        [2, 1, 0, 3, 4, 5],
+    )
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert [m.name for m in reader.members()] == [
+            "q2",
+            "q1",
+            "q0",
+            "z0",
+            "z1",
+            "z2",
+        ]
+        assert reader.read("z2") == lzx[2].data
 
 
 @pytest.mark.parametrize(
