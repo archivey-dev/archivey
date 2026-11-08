@@ -296,6 +296,13 @@ class MakeselfReader(SequentialReader):
                 )
             buffer += chunk
         assert variables is not None and skip is not None
+        if end < block_end:
+            # The script, the variables included, is the header: a count that ends
+            # inside them cannot be makeself's.
+            raise CorruptionError(
+                f"makeself header: it states {skip} lines, which end before its "
+                "variables do"
+            )
         pending.data = bytes(buffer[end:])
         return self._describe(bytes(buffer[:end]), variables, block_end, skip)
 

@@ -276,6 +276,17 @@ def test_a_damaged_header_is_refused(
         open_archive(io.BytesIO(data))
 
 
+@pytest.mark.parametrize("skip", [b"000", b"3"])
+def test_a_line_count_inside_the_variables_is_damage(skip: bytes) -> None:
+    """``skip`` must cover the script it heads, the variables at least (found by the
+    fuzz target: a header of no lines)."""
+    data = (DATA / "gzip-2.7.1.run").read_bytes()
+    assert data.count(b'skip="762"') == 1
+    data = data.replace(b'skip="762"', b'skip="%s"' % skip)
+    with pytest.raises(CorruptionError, match="end before its variables"):
+        open_archive(io.BytesIO(data))
+
+
 def test_an_unknown_compressor_is_refused_by_name() -> None:
     header, payloads = _split((DATA / "gzip-2.7.1.run").read_bytes())
     header = header.replace(b'eval "gzip -cd"', b'eval "brotli -d"')
