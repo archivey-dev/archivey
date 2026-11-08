@@ -657,6 +657,9 @@ class _PluginAdapter(BaseArchiveReader):
                 config=self._config,
                 collector=collector,
             )
+        # The inner archive's reader and packages are listed in the outer reader's
+        # ``backends_used``, which is the only one the caller holds.
+        reader._usage.report_backends_to(self._usage)
         try:
             pairs = iter(reader.stream_members())
             while True:

@@ -64,10 +64,15 @@ class PluginCodec(StreamCodec):
     _detection_error_logged = False
 
     @override
-    def backend_use(self) -> tuple[BackendKindStr, str] | None:
+    def backend_uses(self) -> tuple[tuple[BackendKindStr, str], ...]:
+        # The plugin, then the packages its ``requires`` names, as a format plugin's
+        # are listed. A codec archivey ships through the plugin interface is
+        # archivey's own code, so only its packages are listed.
         name = handler_name(self.handler)
-        # A codec archivey ships through the plugin interface is archivey's own code.
-        return None if name == "archivey" else ("codec", name)
+        libraries = tuple(("library", module) for module in self.handler.requires)
+        if name == "archivey":
+            return libraries
+        return (("codec", name), *libraries)
 
     def detection_error_level(self) -> int:
         """The level to log the decoder's exception at when detection takes it as no

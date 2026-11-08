@@ -437,8 +437,8 @@ class BackendUse:
 
     kind: BackendKindStr
     """``"reader"``: the format reader, built in or a plugin. ``"codec"``: a plugin
-    codec. ``"library"``: an optional package, an :class:`OptionalLibrary` value.
-    ``"program"``: an external program."""
+    codec. ``"library"``: an optional package (an :class:`OptionalLibrary` value), or a
+    module a plugin's ``requires`` names. ``"program"``: an external program."""
 
     name: str
     """``"archivey"`` for a built-in reader; a plugin's handler class, as

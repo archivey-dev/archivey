@@ -635,11 +635,12 @@ class StreamCodec:
         ``requirement``, which is also what an absent package's error names."""
         return None
 
-    def backend_use(self) -> tuple[BackendKindStr, str] | None:
-        """What :attr:`~archivey.ArchiveReader.backends_used` lists for a decode: the
-        optional package in use, or ``None`` for the standard library."""
+    def backend_uses(self) -> tuple[tuple[BackendKindStr, str], ...]:
+        """What :attr:`~archivey.ArchiveReader.backends_used` lists for a decode, as
+        ``(kind, name)`` pairs: the optional package in use, or nothing for the
+        standard library (zstd names its module, ``compression.zstd`` on 3.14+)."""
         library = self._excludable()
-        return None if library is None else ("library", str(library))
+        return () if library is None else (("library", str(library)),)
 
     def _excludable(self) -> OptionalLibrary | str | None:
         """The package ``exclude_libraries`` turns off: the one in use, or

@@ -365,11 +365,12 @@ def _open_backend(
         with probe_streams():
             stream = backend.open(source, params)
     usage = config.usage
-    if usage is not None:
+    # A detection probe's decode is not the reader's: ``backends_used`` leaves it out
+    # even when a recorder reaches the probe.
+    if usage is not None and config.probe_read_bound is None:
         sc = _BY_CODEC[backend.codec]
-        use = sc.backend_use()
-        if use is not None:
-            usage.note_backend(use[0], use[1], sc.stream_name)
+        for kind, name in sc.backend_uses():
+            usage.note_backend(kind, name, sc.stream_name)
     return stream
 
 

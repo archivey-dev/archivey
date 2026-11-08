@@ -238,8 +238,10 @@ package, upgrade it, for example with `pip install -U brotli`.
 
 To see what actually ran, read `reader.backends_used` once you've read what you need. It lists the
 format reader, each optional package as it decodes something, and each external program with its
-path, for example `BackendUse("program", "unrar", "RAR", "/usr/bin/unrar")`. The standard library's
-own codecs aren't listed. It's experimental, so its entries may change in a later release.
+path, for example `BackendUse("program", "unrar", "RAR", "/usr/bin/unrar")`. What a plugin reads
+through a nested archive is listed too. The standard library's codecs aren't listed, except zstd,
+which names the module in use (`compression.zstd` on Python 3.14 and later). It's experimental, so
+its entries may change in a later release.
 
 Every limit has a default that lets large legitimate archives through. A higher limit lets a
 malicious archive use more memory, disk space or processing time before it's stopped, so if you know

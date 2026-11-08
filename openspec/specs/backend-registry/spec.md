@@ -523,10 +523,17 @@ experimental.
   decodes: a codec's package (the zstd module in use, `pyppmd`, `lz4`, `brotli`, …),
   the rapidgzip accelerator when a child decodes, `python-lzo` when chosen, SquashFS's
   `lz4.block`, and `cryptography` once a reader decrypts AES with it.
-- A plugin codec SHALL be listed as `("codec", "module.QualName", <stream>)`.
+- A plugin codec SHALL be listed as `("codec", "module.QualName", <stream>)`, followed
+  by one `("library", <module>, <stream>)` entry per module its `requires` names, as a
+  format plugin's are.
+- An archive a plugin reads through `ReaderContext.open_nested` SHALL add what its
+  reader ran to the outer reader's list: its own `("reader", "archivey", <format>)`
+  entry, then its packages and programs.
 - An external program SHALL be listed as `("program", "unrar" | "unar", "RAR",
   <absolute path>)` when it is spawned for a read.
-- A standard-library codec SHALL NOT be listed, nor anything a detection probe decoded.
+- A standard-library codec SHALL NOT be listed, except zstd, which SHALL name the module
+  in use (`compression.zstd` on Python 3.14 and later, `backports.zstd` before). Nothing
+  a detection probe decoded SHALL be listed, even when a recorder reaches the probe.
 
 #### Scenario: backends_used
 
@@ -538,3 +545,6 @@ experimental.
 | Stored encrypted RAR member read | includes `("library", "cryptography", "AES decryption")` |
 | Member read through `unrar` | includes `("program", "unrar", "RAR", <path>)` |
 | ZIP under `replace={C.ZIP: Plugin}` | `("reader", "<module>.Plugin", "ZIP")` |
+| AES ZIP member read from a non-seekable source | includes `("library", "cryptography", "AES decryption")` |
+| Plugin reading a nested `.tar.zst` | the plugin, then the inner `("reader", "archivey", <format>)` and the zstd module |
+| Plugin codec with `requires=("json",)` | `("codec", "<module>.Handler", <stream>)`, then `("library", "json", <stream>)` |

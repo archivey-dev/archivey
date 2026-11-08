@@ -85,6 +85,7 @@ class ResourceUsageRecorder:
 
     __slots__ = (
         "_backends",
+        "_backends_also_to",
         "_decoder_memory",
         "_decoder_memory_what",
         "_kdf_budgets",
@@ -102,6 +103,9 @@ class ResourceUsageRecorder:
         self._listing: ListingLimitTracker | None = None
         # Insertion-ordered: the order each backend was first used.
         self._backends: dict[BackendUse, None] = {}
+        # The outer reader's recorder, for a reader a plugin opened through
+        # ``ReaderContext.open_nested``: what the inner archive ran is the outer's too.
+        self._backends_also_to: ResourceUsageRecorder | None = None
 
     def note_decoder_memory(self, declared: int, what: str) -> None:
         """Keep ``declared`` if it is the largest declaration so far."""
@@ -121,6 +125,18 @@ class ResourceUsageRecorder:
         use = BackendUse(kind, name, used_for, path)
         with self._lock:
             self._backends.setdefault(use, None)
+            outer = self._backends_also_to
+        if outer is not None:
+            outer.note_backend(kind, name, used_for, path)
+
+    def report_backends_to(self, outer: ResourceUsageRecorder) -> None:
+        """Record every backend this reader has run, and every later one, in ``outer``
+        too: a nested reader's backends are its outer reader's."""
+        with self._lock:
+            self._backends_also_to = outer
+            so_far = tuple(self._backends)
+        for use in so_far:
+            outer.note_backend(use.kind, use.name, use.used_for, use.path)
 
     def backends(self) -> tuple[BackendUse, ...]:
         """Every backend recorded, in the order each was first used."""
