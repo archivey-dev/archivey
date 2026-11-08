@@ -1365,8 +1365,10 @@ so 8 levels cannot use 8 times the caps:
   members, archive comments, late link targets, sparse maps) counts with the outermost
   listing while that level is open. Its members count once, in the outermost listing.
 - `max_decoder_memory`: an inner level's decoders get the cap less the largest working
-  set each enclosing level declared before it opened, since the outer decoders run
-  while the inner ones do. A level's largest declaration stands for the level, ended
+  set each enclosing level declared by the time the inner archive's first byte was
+  decoded, since the outer decoders run while the inner ones do. Reading that byte
+  first makes a member decoder that reads its own header (xz, LZMA Alone, zstd from
+  `ReaderContext.decompress`) declare before the inner cap is set. A level's largest declaration stands for the level, ended
   decoders included, so the count errs toward refusing. Within one level the cap is
   still one decoder's. xz, LZMA Alone and zstd declarations are recorded from the
   first block header, the stream header and each frame header; a later xz block with

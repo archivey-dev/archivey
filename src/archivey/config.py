@@ -572,7 +572,8 @@ class DecoderLimits:
     An archive a format reads inside its own (``ReaderContext.open_nested``) decodes
     while the outer archive's decoder runs, so the two share the cap: the inner
     archive's decoders get it less the largest working set the outer archive declared
-    before the inner one opened, and a refusal there names what was left.
+    by the time the inner archive's first byte was decoded, and a refusal there names
+    what was left.
 
     What the default is *not* is a promise about the machine. The cap
     bounds what an archive may ask for; whether an allocation succeeds

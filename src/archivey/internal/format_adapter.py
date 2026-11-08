@@ -524,10 +524,17 @@ class _PluginAdapter(BaseArchiveReader):
         """The spans of the inner archive ``data``: its members, numbered from
         ``first`` in what it reports, and their decoded data."""
         collector = self._diagnostics_collector
+        # The decoder that gives ``data`` may not have read its header yet (an xz,
+        # zstd or LZMA Alone member from ``ReaderContext.decompress``): the first
+        # byte makes it declare its working set, so the inner cap counts it.
+        with collector.member_ids_from(first):
+            head = data.read(1) or b""
         config = self._nested_config()
         with collector.member_ids_from(first), reading_inside(self):
             reader = backend_cls().open_read(
-                ArchiveSource.for_stream(data),
+                ArchiveSource.for_stream(
+                    cast(BinaryIO, _Primed(head, data)) if head else data
+                ),
                 format=fmt,
                 streaming=True,
                 passwords=None,
@@ -560,13 +567,14 @@ class _PluginAdapter(BaseArchiveReader):
     def _nested_config(self) -> ArchiveyConfig:
         """The configuration of a reader inside this one: this one's, with
         ``max_decoder_memory`` less the largest working set a decoder of this archive
-        has declared so far.
+        has declared so far (``_nested_spans`` reads the inner archive's first byte
+        first, so the decoder that gives it has declared too).
 
         The decoders of a nest's levels run at once: an inner archive's bytes come
         out of the outer archive's decoder while the inner one decodes them. So the
         levels share one ``max_decoder_memory`` (maintainer ruling, 2026-11-08:
         "charge across the nesting"), and each level counts as one decoder holding
-        the largest working set it declared before the inner archive opened. That
+        the largest working set it declared before the inner reader was built. That
         counts a decoder that has ended too, which can only refuse more, never less.
         Within one level the cap stays one decoder's, as it is for an archive that
         is not nested. The inner reader's codecs, those that hand the cap to their
@@ -917,6 +925,35 @@ def _outer_copy(member: ArchiveMember) -> ArchiveMember:
     # listing does not look for it in the data, nor report it again.
     copy._link_target_resolved = member._link_target_resolved
     return copy
+
+
+class _Primed(io.RawIOBase):
+    """``data`` with ``head``, its first bytes, read already, in front of it.
+
+    Closing it leaves ``data`` open, as ``ArchiveSource.for_stream`` leaves a stream
+    it did not open."""
+
+    def __init__(self, head: bytes, data: BinaryIO) -> None:
+        super().__init__()
+        self._head = head
+        self._data = data
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, buffer: Any) -> int:
+        view = memoryview(buffer).cast("B")
+        head = self._head
+        if head:
+            n = min(len(view), len(head))
+            view[:n] = head[:n]
+            self._head = head[n:]
+            return n
+        got = self._data.read(len(view)) or b""
+        view[: len(got)] = got
+        return len(got)
 
 
 class _NestedData(io.RawIOBase):

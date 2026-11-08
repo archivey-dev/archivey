@@ -54,6 +54,7 @@ from archivey.internal.format_adapter import (
     MAX_NESTED_DEPTH,
     _NestedData,
     _outer_copy,
+    _Primed,
     registration_scope,
 )
 from tests.streams_util import NonSeekableBytesIO
@@ -657,6 +658,84 @@ def test_xz_levels_count_against_one_decoder_memory_budget(
             _names(data, BoxesHandler.format, config)
     else:
         assert _names(data, BoxesHandler.format, config) == ["0/0/0/a"]
+
+
+class CodecBoxesContainer(PluginContainer):
+    CODEC_BOXES = "codec-boxes"
+
+
+_CODECS = {b"x": StreamFormat.XZ, b"a": StreamFormat.LZMA_ALONE}
+
+
+class CodecBoxesReader(BoxesReader):
+    """BOXES, but each box is compressed on its own (``x`` xz, ``a`` LZMA Alone) and
+    decoded with ``ReaderContext.decompress``, whose decoder reads the dictionary
+    from the data only when the inner archive is first read."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        if stream.read_exact(5) != b"BOXES":
+            raise CorruptionError("not BOXES")
+        box = 0
+        while True:
+            packed = int(stream.read_exact(8))
+            if not packed:
+                return
+            kind = _KINDS[stream.read_exact(1)]
+            codec = _CODECS[stream.read_exact(1)]
+            decoded = self._context.decompress(stream.take(packed), codec)
+            for span in self._context.open_nested(decoded, kind):
+                span.member.name = f"{box}/{span.member.name}"
+                yield span
+            box += 1
+
+
+class CodecBoxesHandler(BoxesHandler):
+    format = ArchiveFormat(CodecBoxesContainer.CODEC_BOXES, StreamFormat.UNCOMPRESSED)
+    magic = ()
+
+    def open_sequential(self, context: ReaderContext) -> BoxesReader:
+        return CodecBoxesReader(context)
+
+
+@pytest.mark.parametrize("codec", [b"x", b"a"], ids=["xz", "alone"])
+@pytest.mark.parametrize(
+    ("limit", "refused"), [(5 * 2**20 // 2, True), (7 * 2**20 // 2, False)]
+)
+def test_member_decoders_liblzma_checks_count_against_one_budget(
+    monkeypatch: pytest.MonkeyPatch, codec: bytes, limit: int, refused: bool
+) -> None:
+    """Each level decodes one member with a 1 MiB xz or LZMA Alone dictionary through
+    ``ReaderContext.decompress`` and reads an archive from it. The decoder declares
+    its dictionary only once it reads its data, after ``open_nested`` is called."""
+    monkeypatch.setitem(_KINDS, b"C", CodecBoxesHandler.format)
+    if codec == b"x":
+        filters = [{"id": lzma.FILTER_LZMA2, "dict_size": 2**20}]
+        options = {"format": lzma.FORMAT_XZ, "filters": filters}
+    else:
+        filters = [{"id": lzma.FILTER_LZMA1, "dict_size": 2**20}]
+        options = {"format": lzma.FORMAT_ALONE, "filters": filters}
+
+    def box(kind: bytes, inner: bytes) -> bytes:
+        packed = lzma.compress(inner, **options)  # type: ignore[arg-type]
+        return b"BOXES%08d" % len(packed) + kind + codec + packed + b"00000000"
+
+    data = box(b"C", box(b"C", box(b"T", _tar([("a", b"a")]))))
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=limit))
+    with registration_scope():
+        register_format(CodecBoxesHandler)
+        if refused:
+            with pytest.raises(ResourceLimitError, match="max_decoder_memory="):
+                _names(data, CodecBoxesHandler.format, config)
+        else:
+            assert _names(data, CodecBoxesHandler.format, config) == ["0/0/0/a"]
+
+
+def test_a_primed_stream_gives_its_head_then_the_rest() -> None:
+    primed = _Primed(b"ab", io.BytesIO(b"cdef"))
+    assert primed.read(1) == b"a"
+    assert primed.read(3) == b"b"
+    assert primed.read() == b"cdef"
+    assert primed.read() == b""
 
 
 class PaddedBoxesContainer(PluginContainer):

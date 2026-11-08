@@ -88,7 +88,9 @@ learns the reader it reads inside while it is built (`archivey.internal.nesting`
   more. Inside one level the cap stays one decoder's, as for an archive that is not
   nested. The working sets liblzma and libzstd check themselves are recorded too: an xz
   stream's first block dictionary, an LZMA Alone header's dictionary, a zstd frame's
-  window.
+  window. Those codecs record it only when they first read their data, so
+  `_nested_spans` reads the inner archive's first byte before it works out the inner
+  cap: a member decoded with `ReaderContext.decompress` has declared by then.
 - **`max_ratio`.** An inner reader's ratio guards divide by the outermost archive's
   compressed size (or its live count of bytes taken), not by the bytes of the inner
   archive. Dividing by the inner archive's own bytes lets each level expand its input
