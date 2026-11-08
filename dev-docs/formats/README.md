@@ -29,6 +29,8 @@ Formats:
   archivey's own LZX decoder.
 - [`xar.md`](xar.md) — XAR and macOS `.pkg`: a zlib-compressed XML index, read with
   expat, and per-file encoded data.
+- [`makeself.md`](makeself.md) — makeself `.run` installers: a shell header parsed, never
+  run, then one or more compressed TARs.
 - [`rpm.md`](rpm.md) — RPM packages: the file list from the header, the data from a
   CPIO payload in newc or the stripped form.
 - [`dmg.md`](dmg.md) — a UDIF image, recognised by the `koly` block and refused.

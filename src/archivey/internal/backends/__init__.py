@@ -12,6 +12,7 @@ Module map:
 - :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
 - :mod:`.ar_reader` — Unix ar, written against ``archivey.formats`` like ISO
 - :mod:`.rpm_reader` — RPM packages (headers, then the CPIO payload), the same way
+- :mod:`.makeself_reader` — makeself ``.run`` installers (a shell header, then TARs)
 - :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio), the same way
 - :mod:`.squashfs_reader` — SquashFS 4.0, the same way
 - :mod:`.xar_reader` — XAR (``.xar``, macOS ``.pkg`` and ``.xip``), the same way
@@ -42,6 +43,7 @@ from archivey.internal.backends import (
     cpio_reader as _cpio_reader,  # noqa: F401
     directory_reader as _directory_reader,  # noqa: F401
     iso_reader as _iso_reader,  # noqa: F401
+    makeself_reader as _makeself_reader,  # noqa: F401
     rar_reader as _rar_reader,  # noqa: F401
     rpm_reader as _rpm_reader,  # noqa: F401
     sevenzip_reader as _sevenzip_reader,  # noqa: F401
