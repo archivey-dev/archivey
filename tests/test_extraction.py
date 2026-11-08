@@ -5109,6 +5109,94 @@ def test_a_directory_beside_a_held_back_link_is_written(tmp_path: Path) -> None:
     assert (dest / "h").read_bytes() == b"lost-s"
 
 
+_HELD_BACK_LINK_SHAPES = {
+    # A directory at the link's name: RENAME gives the directory the new name.
+    "directory-at-name": [
+        ("file", "src", b"d"),
+        ("hard", "h", "src"),
+        ("dir", "h", None),
+    ],
+    # A member under the link's name: it fails, as a file is in the way.
+    "member-under-name": [
+        ("file", "src", b"d"),
+        ("hard", "h", "src"),
+        ("file", "h/x", b"x"),
+    ],
+    # Two links of one key, then a later file of that key: under REPLACE the later
+    # file wins, as in archive order.
+    "two-links-then-file": [
+        ("file", "src", b"d"),
+        ("hard", "ab", "src"),
+        ("hard", "AB", "src"),
+        ("file", "Ab", b"later"),
+    ],
+    "later-name": [
+        ("file", "src", b"d"),
+        ("file", "S", b"first-S"),
+        ("hard", "h", "src"),
+        ("file", "H", b"later-H"),
+    ],
+}
+
+
+def _extracted(dest: Path) -> dict[str, bytes | None]:
+    return {
+        p.relative_to(dest).as_posix(): None if p.is_dir() else p.read_bytes()
+        for p in sorted(dest.rglob("*"))
+        if p.name != "src"
+    }
+
+
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+@pytest.mark.parametrize("shape", list(_HELD_BACK_LINK_SHAPES))
+def test_a_held_back_link_extracts_as_a_made_one(
+    tmp_path: Path, shape: str, overwrite: OverwritePolicy
+) -> None:
+    # A link whose source is excluded is made in a second pass, but the members
+    # after it meet it as they would the link made at its place in archive order.
+    archive = _tar_bytes(_HELD_BACK_LINK_SHAPES[shape])
+    runs = {}
+    for held in (False, True):
+        dest = tmp_path / ("held" if held else "made")
+        with open_archive(io.BytesIO(archive)) as reader:
+            report = reader.extract_all(
+                dest,
+                overwrite=overwrite,
+                on_error=OnError.CONTINUE,
+                members=(lambda m: m.name != "src") if held else None,
+            )
+        statuses = [
+            (r.member.name, r.status.name)
+            for r in report.results
+            if r.member.name != "src"
+        ]
+        runs[held] = (statuses, _extracted(dest))
+    assert runs[True] == runs[False]
+
+
+def test_a_directory_reaches_a_held_back_link_under_another_case_where_case_folds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On a filesystem that folds case, `H/` is the entry the made link `h` would be,
+    # so it meets the link's name. Faked here, as the suite runs on either kind.
+    monkeypatch.setattr(
+        extraction_module.ExtractionCoordinator, "_folds_case", lambda self: True
+    )
+    archive = _tar_bytes(
+        [("file", "src", b"d"), ("hard", "h", "src"), ("dir", "H", None)]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest, on_error=OnError.CONTINUE, members=lambda m: m.name != "src"
+        )
+    assert [(r.member.name, r.status.name) for r in report.results] == [
+        ("h", "EXTRACTED"),
+        ("H/", "FAILED"),
+    ]
+    assert sorted(p.name for p in dest.iterdir()) == ["h"]
+
+
 def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> None:
     # TRUSTED defers: readme and README are distinct on a case-sensitive FS, so the orphan
     # recovery writes both (no collision event). Asserts the OS-independent invariant that
