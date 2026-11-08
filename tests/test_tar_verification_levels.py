@@ -12,6 +12,7 @@ import gzip
 import io
 import random
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -218,6 +219,20 @@ def test_damage_that_ends_the_walk_keeps_the_ceiling_and_fails_the_files(
     assert {(m.verified, m.verifiable) for m in files} == {
         (Verification.LENGTH, Verification.CHECKSUM)
     }
+
+
+def test_a_check_that_did_not_run_names_the_archive_once(tmp_path: Path) -> None:
+    """``verify_all()`` rebuilds the error for the members still short of the check.
+    It took the old error's whole text, archive name included, and added the
+    archive name again: "... ends early (archive='x') (archive='x')"."""
+    path = tmp_path / "cut.tar.gz"
+    path.write_bytes(gzip.compress(_tar("w"), mtime=0)[:-20])
+    with open_archive(path) as reader:
+        failures = reader.verify_all()
+    assert failures
+    text = str(failures[0][1])
+    assert "did not run" in text
+    assert text.count("archive=") == 1
 
 
 @pytest.mark.parametrize("cut", [8, 20])
