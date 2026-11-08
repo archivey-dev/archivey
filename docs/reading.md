@@ -174,7 +174,7 @@ with archivey.open_archive("data.zip", config=config) as archive:
 
 The standard library then decodes everything. A backward seek in bzip2 data decompresses again from
 the start of the member, one in DEFLATE data from the nearest place a read has passed (above), and a
-large gzip file is read on one core.
+large gzip or bzip2 file is read on one core.
 
 ## Why these aren't on by default
 

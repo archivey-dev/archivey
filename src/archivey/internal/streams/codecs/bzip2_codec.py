@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import itertools
+import os
 import re
 from collections.abc import Callable
 from typing import BinaryIO
@@ -48,6 +49,7 @@ from archivey.internal.streams.codecs.rapidgzip_child import (
     reported_by_child,
 )
 from archivey.internal.streams.codecs.rapidgzip_select import (
+    _SEQUENTIAL_PLATFORM,
     _bound_rapidgzip_source,
     _open_rapidgzip,
     _rapidgzip_present,
@@ -85,11 +87,42 @@ def _bzip2_wanted(config: StreamConfig, *, available: bool) -> bool:
     if config.process_isolation is ProcessIsolation.NONE:
         return False
     return config.use_indexed_bzip2.enabled_for(
-        seekable=config.seekable,
+        seekable=config.seekable or _bzip2_sequential_read_pays(config),
         available=available,
         input_size=config.compressed_input_size,
         min_size=INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE,
     )
+
+
+def _usable_cpus() -> int:
+    """The CPUs this process may run on (its affinity where the platform says)."""
+    affinity = getattr(os, "sched_getaffinity", None)
+    if affinity is not None:
+        try:
+            return len(affinity(0))
+        except OSError:
+            pass
+    return os.cpu_count() or 1
+
+
+def _bzip2_sequential_read_pays(config: StreamConfig) -> bool:
+    """Whether ``AUTO`` takes a bzip2 read with no declared seek demand through rapidgzip.
+
+    rapidgzip decodes bzip2 blocks in parallel, and the standard library decodes them
+    one after the other. Measured on Linux, 4 cores, text that compresses about 7:1, a
+    full read under ``ON`` took 0.62 of the standard library's time at 0.6 MiB
+    compressed and 0.40 at 2.3 MiB; on 2 cores 0.86 and 0.63. On one core it was
+    slower (1.24 and 1.05), so a single usable CPU keeps the standard library. Only on Linux and macOS (the platforms where the
+    DEFLATE rule was measured to pay, ``_SEQUENTIAL_PLATFORM``), for a source that can
+    seek, at or above the same size gate as declared seeking
+    (:data:`~archivey.config.INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`).
+    """
+    if not (_SEQUENTIAL_PLATFORM and config.source_seekable):
+        return False
+    size = config.compressed_input_size
+    if size is None or size < INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE:
+        return False
+    return _usable_cpus() >= 2
 
 
 def _bzip2_auto_without_child(config: StreamConfig) -> str | None:

@@ -10,12 +10,13 @@ import bz2
 import functools
 import io
 import random
+from dataclasses import replace
 
 import pytest
 
 from archivey.config import INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE
 from archivey.internal.config import AcceleratorMode, StreamConfig
-from archivey.internal.streams.codecs import Codec, open_codec_stream
+from archivey.internal.streams.codecs import Codec, bzip2_codec, open_codec_stream
 from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
 from tests.conftest import requires
 
@@ -87,3 +88,54 @@ def test_auto_uses_the_accelerator_from_the_threshold() -> None:
     with open_codec_stream(Codec.BZIP2, io.BytesIO(compressed), config=config) as s:
         assert _uses_child(s)
         assert s.read() == payload
+
+
+def _sequential_config(compressed: bytes) -> StreamConfig:
+    """A read with no declared seek demand over a seekable source of known size."""
+    return StreamConfig(
+        use_indexed_bzip2=AcceleratorMode.AUTO,
+        source_seekable=True,
+        compressed_input_size=len(compressed),
+    )
+
+
+def test_auto_takes_a_large_sequential_read_through_the_accelerator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bzip2_codec, "_SEQUENTIAL_PLATFORM", True)
+    monkeypatch.setattr(bzip2_codec, "_usable_cpus", lambda: 4)
+    payload, compressed = _at_threshold()
+    config = _sequential_config(compressed)
+    with open_codec_stream(Codec.BZIP2, io.BytesIO(compressed), config=config) as s:
+        assert _uses_child(s)
+        assert s.read() == payload
+
+
+@pytest.mark.parametrize(
+    ("change", "cpus", "platform"),
+    [
+        pytest.param({}, 1, True, id="one-cpu"),
+        pytest.param({}, 4, False, id="unmeasured-platform"),
+        pytest.param({"source_seekable": False}, 4, True, id="forward-only-source"),
+        pytest.param({"compressed_input_size": None}, 4, True, id="unknown-size"),
+        pytest.param(
+            {"compressed_input_size": INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE - 1},
+            4,
+            True,
+            id="below-the-gate",
+        ),
+    ],
+)
+def test_the_sequential_gate_refuses_on_each_condition(
+    monkeypatch: pytest.MonkeyPatch, change: dict, cpus: int, platform: bool
+) -> None:
+    monkeypatch.setattr(bzip2_codec, "_SEQUENTIAL_PLATFORM", platform)
+    monkeypatch.setattr(bzip2_codec, "_usable_cpus", lambda: cpus)
+    _payload, compressed = _at_threshold()
+    config = replace(_sequential_config(compressed), **change)
+    assert not bzip2_codec._bzip2_sequential_read_pays(config)
+    assert not bzip2_codec._bzip2_wanted(config, available=True)
+
+
+def test_usable_cpus_is_at_least_one() -> None:
+    assert bzip2_codec._usable_cpus() >= 1
