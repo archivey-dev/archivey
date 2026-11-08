@@ -219,9 +219,9 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     Windows, case folded by the disk, a link Windows keeps because it collapses
     ``..`` before following links), a link that a later member makes lead out, the
     order of the hard links extraction makes in a second pass (one whose source it
-    did not write in order), a hard link to a symlink in another directory (written
-    with the symlink's target, read from the hard link's own directory), and
-    ``filter=``.
+    did not write in order), and ``filter=``. A hard link to a symlink is that
+    symlink, with its target read from the hard link's own directory, as
+    extraction (and GNU tar) write it.
 
     A link whose target is a member is listed as the target's type, with
     ``"islink": True`` and ``"destination"`` in its ``info()``, and opens the target.
@@ -288,6 +288,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         self.dir_cache: dict[str, dict[str, Any]] | None = None
         self._dirs_lock = threading.Lock()
         self._children: dict[str, list[str]] = {}
+        # A hard link to a symlink, by path: the member its own target text reaches.
+        self._read_as: dict[str, ArchiveMember | None] = {}
 
     @classmethod
     @override
@@ -471,19 +473,26 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         view = extraction_view(member, self.policy)
         if view.type is MemberType.HARDLINK:
             # A hard link to a symlink is a second name for the symlink, written as a
-            # symlink with its target, as extraction's ``_as_written`` does.
-            direct = hardlink_chain_end(
-                cast("BaseArchiveReader", self.reader), member, hardlink_ends
-            )
+            # symlink with its target, as extraction's ``_as_written`` does (and GNU
+            # tar). Its target text is then read from the hard link's own directory,
+            # so it can lead to another member than the symlink's does.
+            reader = cast("BaseArchiveReader", self.reader)
+            direct = hardlink_chain_end(reader, member, hardlink_ends)
             if (
                 direct is not None
                 and direct.type is MemberType.SYMLINK
                 and direct.link_target is not None
             ):
+                as_symlink = member.replace(
+                    type=MemberType.SYMLINK,
+                    link_target=direct.link_target,
+                    link_target_member=None,
+                )
+                reader._resolve_link(as_symlink, {})
                 view = view.replace(
                     type=MemberType.SYMLINK,
                     link_target=direct.link_target,
-                    link_target_member=direct.link_target_member,
+                    link_target_member=as_symlink.link_target_member,
                 )
         if view.type is MemberType.SYMLINK:
             # Where its target points: a target that leaves the destination is refused
@@ -536,6 +545,9 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         if modified is not None:
             entry["mtime"] = modified.timestamp()
         entry["member"] = member
+        if member.type is MemberType.HARDLINK and view.type is MemberType.SYMLINK:
+            # Read through the target as resolved from this name, not the symlink's.
+            self._read_as[name] = view.link_target_member
         return entry
 
     def _report_refused(self, member: ArchiveMember, reason: str) -> None:
@@ -578,7 +590,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             raise IsADirectoryError(path)
         if info["type"] != "file":
             raise FileNotFoundError(path)
-        stream = self.reader.open(info["member"])
+        member = self._read_as.get(path, info["member"])
+        if member is None:
+            raise FileNotFoundError(path)
+        stream = self.reader.open(member)
         # The stream keeps this file system, and through it the reader, alive while
         # the caller holds only the stream (``fsspec.open(url).open()``).
         stream._archivey_fs = self  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]

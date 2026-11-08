@@ -277,6 +277,32 @@ def _listed(fs: ArchiveyFileSystem) -> dict[str, tuple[Any, ...]]:
     return out
 
 
+def test_a_hard_link_to_a_symlink_reads_its_target_from_its_own_directory(
+    memfs: Any, tmp_path: Path
+) -> None:
+    """Extraction writes ``x`` as a symlink with ``d/l``'s target text, ``t``, which
+    then leads to the root ``t`` from ``x``'s directory, not to ``d/t``."""
+    data = _tar_entries(
+        [
+            ("file", "t", b"root t"),
+            ("dir", "d", ""),
+            ("file", "d/t", b"d t"),
+            ("sym", "d/l", "t"),
+            ("hard", "x", "d/l"),
+        ]
+    )
+    memfs.pipe("/d/hs.tar", data)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.extract_all(dest)
+    if (dest / "x").is_symlink():
+        assert (dest / "x").read_bytes() == b"root t"
+    with ArchiveyFileSystem("memory://d/hs.tar") as fs:
+        assert fs.cat("x") == b"root t"
+        assert fs.cat("d/l") == b"d t"
+        assert fs.info("x")["destination"] == "t"
+
+
 @pytest.mark.parametrize("policy", list(ExtractionPolicy))
 def test_tree_matches_extraction_on_links_and_collisions(
     memfs: Any, tmp_path: Path, policy: ExtractionPolicy
