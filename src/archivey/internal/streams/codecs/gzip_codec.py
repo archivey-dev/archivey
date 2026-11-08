@@ -123,10 +123,10 @@ def _config_with_gzip_isize(source: CodecSource, config: StreamConfig) -> Stream
     if (
         config.gzip_isize_backstop
         or config.expected_decompressed_size is not None
-        # A detection probe decodes a bounded prefix and never reaches the trailer,
-        # and the end of its source is the end of the probe's window: seeking there
-        # would pull the whole window (up to 1 MiB) for an ISIZE that is not the
-        # file's.
+        # A detection probe needs no ISIZE: it never selects the accelerator, and the
+        # standard library checks any trailer the probe reaches. Its source may be a
+        # window whose end is not the file's, so seeking there would pull the whole
+        # window (up to 1 MiB) and read four bytes from the wrong place.
         or config.probe_read_bound is not None
     ):
         return config

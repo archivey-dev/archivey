@@ -14,7 +14,7 @@ import subprocess
 import zipfile
 import zlib
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 
@@ -35,6 +35,9 @@ from archivey.types import MagicSignature
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.detection_cost_util import within_budget
 from tests.streams_util import NonSeekableBytesIO
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 
 # LZMA Alone, zlib and Brotli are recognised only by a content probe, and by default a
 # probe runs only when the source's name carries that format's extension. Tests of the
@@ -449,14 +452,15 @@ def test_inner_tar_probe_over_gzip_does_not_read_to_the_end() -> None:
             self.bytes_read += len(chunk)
             return chunk
 
-        def readinto(self, b: bytearray | memoryview, /) -> int:  # type: ignore[override]
+        def readinto(self, b: WriteableBuffer, /) -> int:
             n = super().readinto(b)
             self.bytes_read += n
             return n
 
+    # Larger than the bound, so a read to the end and a read of a prefix differ.
+    assert len(data) > 512 * 1024
     source = CountingBytesIO(data)
     assert detect_format(source).format == ArchiveFormat.TAR_GZ
-    assert len(data) > 512 * 1024
     assert source.bytes_read <= 256 * 1024
 
 
