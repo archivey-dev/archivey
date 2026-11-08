@@ -1088,7 +1088,7 @@ def test_a_remote_single_file_lists_as_a_local_one(
     ],
 )
 def test_tail_reads_cost_one_request_each(name: str, requests: int) -> None:
-    """The ruling's price: a tail read is one range request, never a walk."""
+    """The ruling's price: on a single stream, a tail read is one range request."""
     data = _TAIL_CASES[name]
     fs = RecordingFS(data)
     source = OpenFile(fs, f"/{name}", mode="rb")
@@ -1133,6 +1133,67 @@ def test_the_tail_read_does_not_take_over_the_head_window() -> None:
     assert fs.fetches == [(0, 64 * KIB), (len(data) - 64 * KIB, len(data))]
 
 
+def _many_lzip_members(count: int) -> bytes:
+    from tests.streams_util import make_multi_member_lzip
+
+    return make_multi_member_lzip([b"a"] * count)
+
+
+@pytest.mark.parametrize(
+    ("name", "build"),
+    [
+        ("f.xz", lambda: lzma.compress(b"a") * 2000),
+        ("f.lz", lambda: _many_lzip_members(2000)),
+    ],
+)
+def test_a_backward_walk_over_many_streams_is_bounded(name: str, build: Any) -> None:
+    """The xz index walk and the lzip member walk step backward a few bytes at a
+    time, once per stream. Each step past a window steps the window back too, doubling
+    as a forward run does, so the walk costs about as many requests as reading the
+    file forward and fetches each byte about once. Red with a new run per step: 3,633
+    requests and 88 MB for 2,000 xz streams."""
+    data = build()
+    fs = RecordingFS(data)
+    c = PlannerConstants()
+    with open_archive(OpenFile(fs, f"/{name}", mode="rb")) as reader:
+        (member,) = reader.members()
+    if name == "f.xz":
+        assert member.size == 2000
+    assert len(fs.fetches) <= 2 + len(data) // c.min_fetch + 4
+    assert sum(end - start for start, end in fs.fetches) <= 2 * len(data) + c.max_fetch
+
+
+def test_a_read_just_before_a_window_steps_it_back() -> None:
+    """Rule 6: the new window ends where the window after it starts and doubles; a
+    window placed by its end moves back again, so the walk holds one run."""
+    source, fs = _source(DATA, gap=8 * KIB)
+    end = len(DATA)
+    source.seek(end - 12)
+    source.read(12)
+    for back in (16 * KIB + 100, 32 * KIB + 100, 64 * KIB + 100):
+        source.seek(end - back)
+        assert source.read(10) == DATA[end - back : end - back + 10]
+    assert fs.fetches == [
+        (end - 16 * KIB, end),
+        (end - 32 * KIB, end - 16 * KIB),
+        (end - 64 * KIB, end - 32 * KIB),
+        (end - 128 * KIB, end - 64 * KIB),
+    ]
+    assert source.pool.run_count == 1
+
+
+def test_a_read_just_before_a_forward_window_starts_its_own_run() -> None:
+    """A window a forward run placed is not stepped back from: a read just before
+    it is a reader starting a new member, and it reads forward. Red when rule 6
+    applies to every window: the TAR cases of the benchmark gate fetch more."""
+    source, fs = _source(DATA, gap=8 * KIB)
+    source.seek(100 * KIB)
+    source.read(10)
+    source.seek(95 * KIB)
+    assert source.read(10) == DATA[95 * KIB : 95 * KIB + 10]
+    assert fs.fetches == [(100 * KIB, 116 * KIB), (95 * KIB, 111 * KIB)]
+
+
 def test_a_new_run_at_the_end_keeps_the_minimum_fetch() -> None:
     """A tail read that steps backward (a footer, then the index before it) is one
     request: the first window ends at the end and holds the minimum fetch. Red when
@@ -1143,6 +1204,42 @@ def test_a_new_run_at_the_end_keeps_the_minimum_fetch() -> None:
     source.seek(len(DATA) - 5000)
     assert source.read(100) == DATA[-5000:-4900]
     assert fs.fetches == [(len(DATA) - 16 * KIB, len(DATA))]
+
+
+class _RestartsAtZero(io.BytesIO):
+    """A volume whose seek decodes from its own start, as a member view of a
+    ``.tar.xz`` answers once it clamps a resume point behind its start."""
+
+    seek_is_expensive = True
+
+    def nearest_resume_offset(self, target: int) -> int:
+        return 0
+
+
+def test_a_joined_set_refuses_a_volume_that_restarts_at_zero(tmp_path: Path) -> None:
+    """Red with the ``inner == 0 and target > start`` guard removed: the set would
+    answer the volume's start, which ``seeks_to_end_are_cheap`` takes as cheap for a
+    target within 4 KiB of it."""
+    first = tmp_path / "a.001"
+    first.write_bytes(bytes(5000))
+    joined = ConcatenatedFile([first, cast("BinaryIO", _RestartsAtZero(bytes(3000)))])
+    assert joined.seek_is_expensive
+    # A path volume answers the target.
+    assert joined.nearest_resume_offset(1234) == 1234
+    # The decoding volume: its own start is fine, a later target is no answer.
+    assert joined.nearest_resume_offset(5000) == 5000
+    assert joined.nearest_resume_offset(5100) is None
+    assert not seeks_to_end_are_cheap(cast("BinaryIO", joined))
+    joined.close()
+
+
+def test_a_joined_set_of_cheap_volumes_answers_the_target(tmp_path: Path) -> None:
+    first = tmp_path / "a.001"
+    first.write_bytes(bytes(5000))
+    joined = ConcatenatedFile([first, cast("BinaryIO", io.BytesIO(bytes(3000)))])
+    assert not joined.seek_is_expensive
+    assert joined.nearest_resume_offset(6000) == 6000
+    joined.close()
 
 
 def test_a_range_source_resumes_at_any_offset() -> None:

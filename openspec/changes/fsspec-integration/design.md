@@ -137,7 +137,10 @@ target, a joined volume set asks the volume that holds the target, and detection
 read uses `seeks_to_end_are_cheap` (as the single-file probes already did), not
 `seek_is_expensive`. A tail read that steps backward (the xz footer, then the index
 before it) stays one request: a new run that the end would cut short starts earlier, so
-its window holds the minimum fetch (D2 rule 5). Detection hints its tail read (D2 rule
+its window holds the minimum fetch (D2 rule 5), and a walk toward the start (the
+index of each stream of a multi-stream `.xz`, the trailer of each `.lz` member)
+steps its window back and doubles (D2 rule 6), so it costs about what a forward
+read of the same bytes costs. Detection hints its tail read (D2 rule
 3), so on an object within the read-through distance the tail is a run of its own and
 does not read through from the head and drop the head's window, which the backend reads
 next. Detection's probe reads at an offset still do not seek a remote source: each
@@ -257,6 +260,18 @@ a thin planner that decides each fetch's start and length:
    without this each piece would be a request of its own. It costs up to `_MIN_FETCH`
    bytes before the read (D1, tail reads). A hinted span ends at or before the end,
    so the window still holds all of it.
+6. **A read just before an end-placed window steps back from it.** A window is
+   end-placed when rule 5 or this rule placed it by where it ends. A read that
+   ends at most `max_read_through` before such a window's start fetches the bytes
+   up to that start, doubling as a forward run does, and the window moves back.
+   A window a forward run placed is not stepped back from: a read just before it
+   is a reader starting a new member, which reads forward (applied to every
+   window, this rule cost the gated TAR cases an extra request and 160 KB). The xz
+   index walk and the lzip member walk step backward a few bytes per stream:
+   without this rule each step was a new run of `_MIN_FETCH` bytes, and a crafted
+   1.2 MB file of 20,000 xz streams took 75,633 requests and 1.7 GB to list. With
+   it the walk fetches each byte about once, in about as many requests as a
+   forward read (5 requests for that file).
 
 `_MIN_FETCH`, `_MAX_FETCH` and `_POOL_BYTES` are internal. They are fixed bounds per
 reader that do not grow with input, so DR-9 does not ask for a new public limit. If the

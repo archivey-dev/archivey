@@ -278,7 +278,7 @@ _COMPRESSION_HINT = dict.fromkeys(
 class _Run:
     """One sequential run on one source, and its window (the bytes of its last fetch)."""
 
-    __slots__ = ("data", "fetches", "last_use", "source", "start")
+    __slots__ = ("backward", "data", "fetches", "last_use", "source", "start")
 
     def __init__(self, source: RangeSource, start: int, tick: int) -> None:
         self.source = source
@@ -286,6 +286,10 @@ class _Run:
         self.data = b""
         self.fetches = 0
         self.last_use = tick
+        # Whether the window was placed by where it ends rather than where it starts:
+        # at the end of the object (rule 5) or before the window it stepped back
+        # from (rule 6). Only such a window is stepped back from.
+        self.backward = False
 
     @property
     def end(self) -> int:
@@ -360,6 +364,22 @@ class WindowPool:
                 best = run
         return best, False
 
+    def _run_ahead(self, source: RangeSource, at: int, want: int) -> _Run | None:
+        """The nearest end-placed window of ``source`` (``_Run.backward``) that
+        starts after ``at``, at most ``max_read_through`` past the read's end: a read
+        just before it steps backward from it (rule 6). A window a forward run placed
+        is not stepped back from: a read just before it is a reader starting a new
+        member, which reads forward."""
+        best: _Run | None = None
+        for run in self._runs:
+            if run.source is not source or not run.backward or run.start <= at:
+                continue
+            if run.start - (at + want) <= source.max_read_through and (
+                best is None or run.start < best.start
+            ):
+                best = run
+        return best
+
     def read(self, source: RangeSource, pos: int, view: memoryview) -> int:
         """Fill ``view`` from ``source`` at ``pos``; the caller clamped it to the size."""
         with self._lock:
@@ -404,6 +424,10 @@ class WindowPool:
                 # the source may still be reading: the span gets a run of its own
                 # rather than taking that window over.
                 run = None
+        ahead = None
+        if run is None and not hinted and source.max_read_through != 0:
+            ahead = self._run_ahead(source, at, want)
+        backward_end: int | None = None
         if run is not None:
             # Continue the run from its end, reading through the gap (rule 2). A
             # hint that starts inside the window continues it the same way.
@@ -411,6 +435,23 @@ class WindowPool:
             fetches = run.fetches + 1
             runs = len(self._runs)
             old = len(run.data)
+            run.backward = False
+        elif ahead is not None and (
+            max(ahead.start, at + want) - at <= self._max_fetch(len(self._runs))
+        ):
+            # Rule 6: a read just before an end-placed window steps back from it.
+            # The new window ends where that one starts, doubling as a forward run does,
+            # so a walk toward the start (the xz index of each stream, the lzip
+            # trailer of each member) costs about as many requests as a forward
+            # read of the same bytes, and fetches each byte once. The window moves
+            # back: the walk does not return to the bytes it leaves.
+            backward_end = max(ahead.start, at + want)
+            fetches = ahead.fetches + 1
+            run = ahead
+            runs = len(self._runs)
+            old = len(run.data)
+            span = max(backward_end - at, self._fetch_size(fetches, runs))
+            start = max(0, backward_end - span)
         else:
             # Rule 3: a hinted span is fetched from its start, which may lie before
             # the read (a backend may read a span's end first: a ZIP end record).
@@ -436,6 +477,8 @@ class WindowPool:
             length = max(length, hint[1] - start)
             # The run continues from the span as if it had doubled to that size.
             fetches = max(fetches, 2 + (length // c.min_fetch).bit_length())
+        if backward_end is not None:
+            length = backward_end - start
         if (
             run is None
             and source.max_read_through != 0
@@ -448,6 +491,7 @@ class WindowPool:
             # or before the end, so the window still holds all of it.
             start = max(0, source.size - length)
             need = at - start + want
+            backward_end = source.size
         length = min(length, source.size - start)
         if need > cap:
             # A read longer than any window: fetch exactly it, keep nothing. The run
@@ -483,6 +527,7 @@ class WindowPool:
         if run is None:
             run = _Run(source, start, self._tick)
             self._runs.append(run)
+        run.backward = backward_end is not None
         self._held += len(data) - len(run.data)
         run.start = start
         run.data = data
