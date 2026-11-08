@@ -682,7 +682,9 @@ the caller gets the same bytes and no error.
 
 **Residual.** Detection decodes an LZMA or compressed-tar sample uncapped, so under a
 memory cap an oversized declaration can surface as `MemoryError` from `open_archive`
-(public in extracting.md §Limits). The RAR counts rest on measurements of `unrar` 7.00
+(public in extracting.md §Limits). Two probes carry a fixed ceiling of their own instead
+of the caller's cap: zstd's window at 128 MiB, and a `.tar.bz3`'s block size at 16 MiB,
+about 163 MiB of libbzip3 state (`bzip3_codec.py` `_PROBE_BLOCK_SIZE_MAX`). The RAR counts rest on measurements of `unrar` 7.00
 and `unar` 1.10.1; another version that allocates differently is not measured. The
 rapidgzip child's peak can pass the cap by what it allocates between two checks (about
 17 MB measured on four cores; a check delayed on a busy machine is caught by the one
@@ -928,7 +930,9 @@ the zero-configuration projection. Native
 decoders known to crash on crafted input run in a child process: the rapidgzip
 accelerator for gzip, zlib, raw DEFLATE and bzip2 (`internal/streams/codecs/rapidgzip_child.py`), and
 every PPMd member (`internal/streams/codecs/ppmd_child.py`), unless `process_isolation` is
-`NONE`; `NATIVE_DECODERS` moves every other native decoder there too
+`NONE`. libbzip3 runs there too, as a precaution rather than for a known crash: it had
+seven memory-safety CVEs in 2023, and archivey checks each block's framing before the
+native call (`internal/streams/codecs/bzip3_codec.py`); `NATIVE_DECODERS` moves every other native decoder there too
 (`internal/streams/codecs/decoder_child.py`). A fault signal there becomes
 `CorruptionError` and costs only the member; a crash in a reused child is re-run in a
 fresh one before it is charged. A rapidgzip child stopped at its memory cap
@@ -1233,7 +1237,9 @@ Under the default `process_isolation` the stdlib `zlib`, `bz2` and `lzma`, zstd,
 brotli and inflate64 run in-process (`NATIVE_DECODERS` isolates them too; under `NONE`
 pyppmd decodes in-process as well and rapidgzip is not used). A crash nobody has found yet
 would abort the process. pyppmd runs in a child by default because of a known pyppmd issue
-([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data). Both rapidgzip decoders run in a child process;
+([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data).
+libbzip3 runs in a child by default too, as a precaution: no crash is known, but it had
+seven memory-safety CVEs in 2023 (under `NONE` it decodes in-process). Both rapidgzip decoders run in a child process;
 `scripts/investigations/accelerator_crash_search.py` tells whether they still need to.
 `MemoryError` is not translated, so running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
@@ -1261,9 +1267,10 @@ with a hard latency budget set them to `OFF`. Public:
 
 ### A seek trusts the file's own index
 
-A cold seek into a `.xz`, `.lz`, seekable `.zst`, or BGZF or mgzip `.gz` goes where the
-file's index says (XZ block records, lzip member trailers, the zstd seek table, BGZF block
-sizes, or mgzip `MZ` DEFLATE sizes, with the ISIZEs of both), and all are attacker-controlled. An index consistent with itself
+A cold seek into a `.xz`, `.lz`, seekable `.zst`, BGZF or mgzip `.gz`, or `.bz3` goes where
+the file's index says (XZ block records, lzip member trailers, the zstd seek table, BGZF block
+sizes, or mgzip `MZ` DEFLATE sizes, with the ISIZEs of both, or bzip3 block headers), and all
+are attacker-controlled. An index consistent with itself
 but not with the data serves bytes from the wrong unit, and `try_get_size()` /
 `member.size` report the index's total, with no error. Accepted, ruled by davi on
 2026-09-23 (PR #407 review round 1): a unit's real end is known only by decompressing
@@ -1430,10 +1437,10 @@ several candidates: a 7z Copy, PPMd, Brotli or filter-only chain whose only CRC 
 folder end; any ZIP, 7z or RAR3/4 unit where more than one candidate survives the bounded
 probe, which then walks to the end anchor once per survivor; and a stored RAR3/4 member,
 decrypted in full once per candidate. Each costs time proportional to the unit, once per
-candidate, and only when the caller passes a list. For 7z, the OpenSpec change
-`sevenzip-aes-tail-key-check` adds an O(1) check on the AES padding at the end of the
-packed stream, which settles it for the archives with at least 4 padding bytes. Not
-implemented (its tasks are open).
+candidate, and only when the caller passes a list. For 7z, an O(1) check on the AES
+padding at the end of the packed stream settles it for a folder with 4 or more zero
+padding bytes, about three folders in four from 7-Zip or py7zr
+([7z handbook](formats/7z.md)). The rest still walk once per candidate.
 
 ### Detection decoding scan candidates
 
@@ -1484,7 +1491,7 @@ writing lands (possibly after 1.0), and must be a day-one decision of the writin
 | O14 | 7z encoded-header nesting | [Listing](#listing) |
 | O15 | Tar extended header sized an allocation | [Allocations sized by a header field](#allocations-sized-by-a-header-field) |
 | O16 | ISO directory record sized an allocation | [Allocations sized by a header field](#allocations-sized-by-a-header-field) |
-| O17 | Seek trusts the xz/lzip/zstd/BGZF/mgzip index | [A seek trusts the file's own index](#a-seek-trusts-the-files-own-index) |
+| O17 | Seek trusts the xz/lzip/zstd/BGZF/mgzip/bzip3 index | [A seek trusts the file's own index](#a-seek-trusts-the-files-own-index) |
 | O18 | Archive chooses the key-derivation cost | [Key derivation](#key-derivation) |
 | O19 | Data-stored symlink target sized an allocation | [Listing](#listing) |
 | O20 | 7z BCJ2 in pure Python | CPU: [No CPU or wall-clock bound](#no-cpu-or-wall-clock-bound); memory: [Decoder memory](#decoder-memory) |

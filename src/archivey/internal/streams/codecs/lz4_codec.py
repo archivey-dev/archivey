@@ -24,7 +24,7 @@ from archivey.internal.streams.codecs.framed_decoder import (
     stream_magic,
 )
 from archivey.internal.streams.codecs.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.decompressor_stream import StreamChecksumError
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,
@@ -114,7 +114,7 @@ class Lz4Codec(StreamCodec):
             if "contentChecksum" in str(exc):
                 # The frame's content checksum, over everything the frame decoded; a
                 # block checksum covers one block and stays a plain corruption.
-                return _StreamChecksumError(
+                return StreamChecksumError(
                     f"Error reading lz4 stream: {exception_detail(exc)}"
                 )
             return CorruptionError(f"Error reading lz4 stream: {exception_detail(exc)}")

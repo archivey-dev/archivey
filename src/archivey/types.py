@@ -175,6 +175,9 @@ class StreamFormat(StrEnum):
     """The ``.lzo`` file format ``lzop`` writes: LZO1X blocks behind a header.
     archivey decodes LZO1X with ``python-lzo`` when it is installed, else in Python,
     more than 25 times slower on text."""
+    BZIP3 = "bz3"
+    """The ``.bz3`` files the ``bzip3`` tool writes. Needs ``archivey[bzip3]``; the
+    decoder runs in a child process unless ``process_isolation`` is ``NONE``."""
     MOZLZ4 = "mozlz4"
     """Firefox's ``mozLz40`` files (``.jsonlz4``, ``.mozlz4``, ``.baklz4``, and
     ``addonStartup.json.lz4``): one raw LZ4 block behind a magic and the decoded size.
@@ -255,6 +258,7 @@ class ArchiveFormat:
     Z: ClassVar[ArchiveFormat]
     LZOP: ClassVar[ArchiveFormat]
     MOZLZ4: ClassVar[ArchiveFormat]
+    BZIP3: ClassVar[ArchiveFormat]
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
@@ -339,6 +343,7 @@ ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BR
 ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
 ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)
 ArchiveFormat.MOZLZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.MOZLZ4)
+ArchiveFormat.BZIP3 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP3)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(
     ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED
 )
@@ -398,6 +403,8 @@ class OptionalLibrary(StrEnum):
     LZO = "lzo"
     """``python-lzo``: LZO1X in ``.lzo`` files and SquashFS images. archivey decodes
     LZO1X in Python without it, more slowly."""
+    BZIP3 = "bz3"
+    """The ``bzip3`` package (imported as ``bz3``): ``.bz3`` files."""
 
 
 OptionalLibraryStr = Literal[
@@ -411,6 +418,7 @@ OptionalLibraryStr = Literal[
     "pycdlib",
     "cryptography",
     "lzo",
+    "bz3",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 
@@ -939,7 +947,7 @@ class MemberExtra(dict[str, object]):
     * ``gzip.original_filename`` (``str``)
     * ``gzip.isize`` (``int``) — the gzip trailer's ISIZE field: the last four
       bytes of the file, read only when its end is cheap to reach (not from a
-      pipe or another archive's member). For a file of one gzip member with
+      pipe or a deflated member of another archive). For a file of one gzip member with
       nothing after it, this is the uncompressed size modulo 2**32. It is not the
       size for a file of several members (it covers only the last; a bgzip file
       ends with an empty member and reads 0) or with bytes after the last one.

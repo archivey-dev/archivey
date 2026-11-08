@@ -180,12 +180,13 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 costs only the member being read:
 
 - **`ProcessIsolation.KNOWN_CRASHES`**, the default, isolates the decoders that have crashed on
-  some input: rapidgzip and pyppmd. The decoders it leaves in your process cost nothing extra;
+  some input: rapidgzip and pyppmd, and libbzip3 (`.bz3`), which fixed several memory-safety
+  bugs in 2023. The decoders it leaves in your process cost nothing extra;
   each PPMd member, or each solid PPMd folder, costs about 1.4 to 2 ms more, and each 4 KiB
   member read from a solid PPMd folder about 0.1 to 0.35 ms, with the copying of larger members
   on top ([why every PPMd member](#where-the-guarantees-stop)). Where no child process can start, such as in a frozen
   application, a PPMd member raises `ResourceUnavailableError`, and rapidgzip gives way to the standard
-  library's decoder with one warning.
+  library's decoder with one warning; a `.bz3` file raises `ResourceUnavailableError` too.
 - **`ProcessIsolation.NATIVE_DECODERS`** also isolates zlib, bz2, lzma, zstd, lz4, brotli and
   inflate64 (Deflate64), detection's trial decodes included. Reads take longer. Measured on one
   Linux machine, a single stream took about 1.05 to 1.5 times as long for bzip2, 1.1 to 1.6 times
@@ -200,7 +201,7 @@ costs only the member being read:
   in the repository measures these costs on your machine.
 - **`ProcessIsolation.NONE`** decodes everything in your process. It's for trusted files, tests,
   and places that can't start processes. A damaged or crafted PPMd member can crash your process,
-  and rapidgzip isn't used.
+  and so can a crafted `.bz3` file; rapidgzip isn't used.
 
 AES decryption and checksums always run in your process. A child that crashes raises
 `CorruptionError`, and one killed from outside raises `ResourceUnavailableError` (SIGKILL, most
