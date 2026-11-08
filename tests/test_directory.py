@@ -25,6 +25,7 @@ from archivey import (
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.types import ContainerFormat, StreamFormat
 from tests.scandir_util import patch_dir_entry_stat
+from tests.stack_util import recursion_limit_above_caller
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -603,18 +604,8 @@ def test_tree_deeper_than_recursion_limit_lists(tmp_path: Path) -> None:
     leaf.mkdir(parents=True)
     (leaf / "f").write_bytes(b"deep")
 
-    frames = 0
-    frame = sys._getframe()
-    while frame is not None:
-        frames += 1
-        frame = frame.f_back
-    old_limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(frames + depth // 2)
-    try:
-        with open_archive(tmp_path) as reader:
-            names = [m.name for m in reader]
-    finally:
-        sys.setrecursionlimit(old_limit)
+    with recursion_limit_above_caller(depth // 2), open_archive(tmp_path) as reader:
+        names = [m.name for m in reader]
 
     assert len(names) == depth + 1
     assert names[-1] == "d/" * depth + "f"

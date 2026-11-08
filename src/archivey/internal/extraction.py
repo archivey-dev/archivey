@@ -69,7 +69,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
-from archivey.internal.long_paths import long_path, plain
+from archivey.internal.long_paths import long_path, make_dirs, plain
 from archivey.internal.overrides import override
 from archivey.internal.selection import CollectionSelector
 from archivey.paths import numbered_name
@@ -3875,7 +3875,7 @@ class ExtractionCoordinator:
         if self._dry is not None:
             self._dry.check_creatable()
         else:
-            os.makedirs(long_path(dest), exist_ok=True)
+            make_dirs(dest)
         return True
 
     def _makedirs(self, path: Path, member: ArchiveMember) -> None:
@@ -3907,7 +3907,7 @@ class ExtractionCoordinator:
             missing.append(probe)
             probe = probe.parent
         try:
-            os.makedirs(long_path(path), exist_ok=True)
+            make_dirs(path)
         except (FileExistsError, NotADirectoryError, FileNotFoundError) as exc:
             # FileNotFoundError too: Windows can report a directory created under a file
             # as a missing path. Nearest the root first, because that component is the
