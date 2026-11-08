@@ -617,12 +617,14 @@ class ForwardArchiveReader(ABC):
         **A yielded member may not be final.** The pass hands it over before archivey
         has read the rest of the archive, and it is updated in place when archivey
         learns more: a ZIP read from a pipe gets its type, permissions and link target
-        from the index at its end, so a symlink is yielded looking like a file; and a
-        member whose name a later member reuses is yielded with ``is_current`` set to
-        ``True``. While :attr:`~archivey.ArchiveMember.member_state_final` is
-        ``False``, do not act on those fields in a way you cannot take back (an upload,
-        a database row, an event sent on): check it first, or act once the pass has
-        ended, when every member you kept is final. ``extract_all`` already waits.
+        from the index at its end, so a symlink is yielded looking like a file; and in
+        a pass that lists as it goes (every streaming reader, and TAR), a member whose
+        name a later member reuses is yielded with ``is_current`` set to ``True``.
+        While :attr:`~archivey.ArchiveMember.member_state_final` is ``False``, do not
+        act on those fields in a way you cannot take back (an upload, a database row,
+        an event sent on): check it first. The end of the pass settles the listing, but
+        a link target or size that nothing has read yet can still be pending then, so
+        the flag stays the check after the loop too. ``extract_all`` already waits.
 
         The stream is ``None`` for every member that has no data of its own: links,
         special entries, tombstones and most directories. A directory that declares

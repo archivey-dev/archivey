@@ -39,10 +39,12 @@ costs, but it never allows or refuses one: the options below do that.
     A `stream_members` loop gives you each member as soon as archivey reaches it, before it has
     read the rest of the archive, and archivey updates that same object when it learns more. A ZIP
     from a pipe keeps permissions and symlinks in an index at its end, so until the pass gets
-    there a symlink looks like a file. A member whose name a later member reuses has `is_current`
-    set to `True` until the loop ends. Check `member.member_state_final` before you do something
-    with a member that you can't take back, such as uploading it or recording it in a database, or
-    do it after the loop, when every member you kept is final. `extract_all` already waits.
+    there a symlink looks like a file. A member whose name a later member reuses can have
+    `is_current` set to `True` until the loop ends. Check `member.member_state_final` before you do
+    something with a member that you can't take back, such as uploading it or recording it in a
+    database. The end of the loop settles the listing, but a link target or size that nothing has
+    read yet can still be pending then, so check the flag after the loop too. `extract_all` already
+    waits.
 
 ```python
 import sys
