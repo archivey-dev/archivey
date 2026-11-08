@@ -83,6 +83,11 @@ place of a stream, and each stream works only until the loop moves on. A directo
 hides data in the archive is the exception: it can come with a stream of those bytes, which is
 why the loop tests `member.is_file`.
 
+A member from the loop may not be final yet: archivey can still update it once it has read further,
+for example to turn what looked like a file into a symlink in a ZIP read from a pipe.
+`member.member_state_final` is `False` until then. [Reading once](reading.md#reading-once) says when
+that happens and what to do about it.
+
 ## Extract
 
 ```python

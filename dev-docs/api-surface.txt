@@ -47,6 +47,7 @@ attribute archivey.ArchiveFormat.BZ2 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZIP3 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.CAB = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.CPIO = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.DEB = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DIRECTORY = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DMG = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.GZ = ArchiveFormat(...)
@@ -230,6 +231,7 @@ value archivey.ContainerFormat.RAR = 'rar'
 value archivey.ContainerFormat.SEVEN_Z = '7z'
 value archivey.ContainerFormat.ISO = 'iso'
 value archivey.ContainerFormat.AR = 'ar'
+value archivey.ContainerFormat.DEB = 'deb'
 value archivey.ContainerFormat.CPIO = 'cpio'
 value archivey.ContainerFormat.RPM = 'rpm'
 value archivey.ContainerFormat.MAKESELF = 'makeself'
@@ -1081,6 +1083,7 @@ class archivey.formats.MemberData(tuple)
 field archivey.formats.MemberData.bounded: bool
 field archivey.formats.MemberData.checked: bool
 field archivey.formats.MemberData.digests: tuple[MemberDigest, ...]
+field archivey.formats.MemberData.ranges: tuple[tuple[int, int], ...]
 field archivey.formats.MemberData.stream: BinaryIO | io.RawIOBase
 class archivey.formats.MemberDigest(tuple)
 field archivey.formats.MemberDigest.expected: bytes
@@ -1104,6 +1107,7 @@ field archivey.formats.ReaderArchiveInfo.format_version: str | None
 field archivey.formats.ReaderArchiveInfo.is_solid: bool
 class archivey.formats.ReaderContext()
 property archivey.formats.ReaderContext.archive_name: str | None
+method archivey.formats.ReaderContext.charge_metadata(self, nbytes: int, *, what: str) -> None
 property archivey.formats.ReaderContext.config: ArchiveyConfig
 method archivey.formats.ReaderContext.decode_name(self, raw: bytes) -> str
 method archivey.formats.ReaderContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat | PluginStream, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO

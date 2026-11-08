@@ -217,6 +217,14 @@ other fields say how archivey can check those bytes, as described in
 
 There are four ways to build the stream. Pick the first one that fits your format.
 
+Whichever you pick, an archive read by range from an `fsspec` file system fetches a
+member's bytes in one request, rather than in steps that start small, when archivey knows
+where they are. It knows when the stream is a `ReaderSource.view()`, a
+`ReaderContext.decompress()` over one, or a `block_stream()` whose blocks are those, as
+TOYA's is. For any other stream, such as one from your own library, name the spans it
+reads in `MemberData.ranges` as `(start, end)` pairs; they win over what archivey
+infers. On a local file the spans do nothing, and they never change what a read returns.
+
 **Stored bytes.** `ReaderSource.view(start, length)` is a stream over part of the archive
 with its own position, so two members open at the same time do not move each other. A
 format that stores members uncompressed returns a view, as TOYA does.
@@ -718,6 +726,15 @@ keeps it, from `walk()` or `iter_members()`; a call made anywhere else raises
 `reason=`, for the error. Yielding that same member object takes the hold off before
 archivey lists it, so it is counted once; a copy would count twice until the walk
 ends. In a walk archivey starts over to reach a member's data, `hold()` does nothing.
+
+A walk that keeps something in memory beyond its members, such as an ar long-name
+table or an RPM header, passes its size to `ReaderContext.charge_metadata(nbytes,
+what=...)` before reading it. The bytes count toward `max_metadata_bytes` with the
+members, and the call raises `ResourceLimitError` when they would cross it. The charge
+lasts until the walk ends. Like `hold()`, it is called from `walk()` or
+`iter_members()` only. A name read only to put on the member it yields needs no
+charge, since archivey counts the member. A table kept to look names up in is
+charged, though its entries become names.
 
 ## Archive details
 

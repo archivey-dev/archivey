@@ -82,6 +82,11 @@ class ContainerFormat(StrEnum):
     """A Unix ar archive: a static library (``.a``, ``.lib``) or the outer layer of a
     ``.deb`` package. Read in one forward pass, so from a pipe and inside a compression
     stream too."""
+    DEB = "deb"
+    """A Debian binary package (``.deb``): an ar archive holding a control tar and a
+    data tar. Listed as the files it installs, the control files under ``DEBIAN/``, as
+    ``dpkg-deb -R`` unpacks it; ``format=ArchiveFormat.AR`` reads the ar layer instead.
+    Read in one forward pass, so from a pipe too."""
     CPIO = "cpio"
     """A CPIO archive in any of its variants (binary, odc, newc, crc): an initramfs or
     an RPM payload, for example. Read in one forward pass, so from a pipe and inside a
@@ -268,6 +273,7 @@ class ArchiveFormat:
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
     AR: ClassVar[ArchiveFormat]
+    DEB: ClassVar[ArchiveFormat]
     CPIO: ClassVar[ArchiveFormat]
     RPM: ClassVar[ArchiveFormat]
     MAKESELF: ClassVar[ArchiveFormat]
@@ -356,6 +362,7 @@ ArchiveFormat.SEVEN_Z = ArchiveFormat(
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.AR = ArchiveFormat(ContainerFormat.AR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.DEB = ArchiveFormat(ContainerFormat.DEB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CPIO = ArchiveFormat(ContainerFormat.CPIO, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.RPM = ArchiveFormat(ContainerFormat.RPM, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.MAKESELF = ArchiveFormat(
@@ -611,7 +618,8 @@ class HashAlgorithm(StrEnum):
     BLAKE2SP = "blake2sp"
     """BLAKE2sp, 32 bytes. Only RAR5 stores it."""
     MD5 = "md5"
-    """MD5, 16 bytes. A XAR archive may check its files with it."""
+    """MD5, 16 bytes. A Debian package's ``md5sums`` lists one per installed file, and
+    a XAR archive may check its files with it."""
     SHA1 = "sha1"
     """SHA-1, 20 bytes. What a XAR archive checks its files with by default."""
     SHA256 = "sha256"
@@ -1047,6 +1055,11 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``7z.volume_count`` (``int``)
     * ``ar.symbol_table`` (``bool``)
     * ``ar.dialect`` (``str``)
+    * ``deb.package`` (``str``) — the ``Package`` field of the package's control file.
+      The three ``deb.*`` keys appear once the listing or iteration has read the
+      control tar, on any source; they are absent right after ``open_archive``.
+    * ``deb.version`` (``str``) — its ``Version`` field.
+    * ``deb.architecture`` (``str``) — its ``Architecture`` field.
     * ``cpio.variant`` (``str``)
     * ``squashfs.compressor`` (``str``)
     * ``squashfs.block_size`` (``int``)
@@ -1081,6 +1094,12 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["ar.symbol_table"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["ar.dialect"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["deb.package"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["deb.version"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["deb.architecture"], /) -> str: ...
     @overload
     def __getitem__(self, key: Literal["cpio.variant"], /) -> str: ...
     @overload
