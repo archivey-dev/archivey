@@ -490,6 +490,16 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture
+def zip_general_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open every ZIP member through the codec layer: no small member is read whole at
+    open (``ZipReader._speculative_small_member``). For tests that inject faults into,
+    or count, what that layer builds."""
+    from archivey.internal.backends import zip_reader
+
+    monkeypatch.setattr(zip_reader, "_SPECULATIVE_MAX", -1)
+
+
+@pytest.fixture
 def test_dir(tmp_path: Path) -> Path:
     """Create a test directory with some files and subdirectories."""
     (tmp_path / "file1.txt").write_bytes(b"hello world")

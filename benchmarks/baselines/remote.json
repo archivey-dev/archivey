@@ -1003,25 +1003,25 @@
     },
     "zip_stored_many_streams_nocache": {
       "archive_size": 510881,
-      "bytes_fetched": 657174,
+      "bytes_fetched": 255766,
       "cache": "nocache",
       "format": "zip_stored",
       "gated": true,
       "metadata_requests": 1,
       "operation": "many_streams",
-      "overfetch": 1.286,
-      "range_requests": 83
+      "overfetch": 0.501,
+      "range_requests": 28
     },
     "zip_stored_many_streams_planner": {
       "archive_size": 510881,
-      "bytes_fetched": 671181,
+      "bytes_fetched": 360448,
       "cache": "planner",
       "format": "zip_stored",
       "gated": true,
       "metadata_requests": 1,
       "operation": "many_streams",
-      "overfetch": 1.314,
-      "range_requests": 34
+      "overfetch": 0.706,
+      "range_requests": 6
     },
     "zip_stored_read_first_default": {
       "archive_size": 510881,

@@ -366,6 +366,7 @@ def test_encryption_header_larger_than_declared_size_is_corruption(
     assert excinfo.value.source_format is ArchiveFormat.ZIP
 
 
+@pytest.mark.usefixtures("zip_general_path")
 def test_archive_close_waits_for_an_in_flight_member_read() -> None:
     """Closing waits for a member stream's read that is inside the archive's source.
 
@@ -442,6 +443,7 @@ def test_archive_closed_before_the_overrun_probe() -> None:
         assert stream.read() == data
 
 
+@pytest.mark.usefixtures("zip_general_path")
 def test_unencrypted_codec_indexerror_is_not_truncated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -507,6 +509,7 @@ def _opened_codec_reading_from(
     return opener
 
 
+@pytest.mark.usefixtures("zip_general_path")
 def test_unencrypted_member_read_indexerror_is_not_truncated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -536,6 +539,7 @@ def test_unencrypted_member_read_indexerror_is_not_truncated(
             stream.read(10)
 
 
+@pytest.mark.usefixtures("zip_general_path")
 def test_member_read_unsupported_operation_other_than_seek_is_not_corruption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3192,6 +3196,7 @@ def test_relative_seek_before_0_after_a_deferred_seek_clamps() -> None:
         assert stream.read() == data
 
 
+@pytest.mark.usefixtures("zip_general_path")
 @pytest.mark.parametrize(
     "method",
     [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA],
