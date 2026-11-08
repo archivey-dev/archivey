@@ -48,6 +48,7 @@ from archivey.diagnostics import (
 )
 from archivey.formats import (
     FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -65,6 +66,7 @@ from archivey.internal.format_adapter import registration_scope
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.registry import get_registry
 from tests.conftest import requires, requires_zstd
+from tests.streams_util import NonSeekableBytesIO
 
 _MAGIC = b"TOYARC1\n"
 
@@ -136,7 +138,7 @@ class ToyReader(IndexedReader[tuple[int, int]]):
         return ReaderArchiveInfo(format_version="1", comment="toy")
 
 
-class ToyHandler(FormatHandler):
+class ToyHandler(IndexedFormatHandler):
     format = TOYA
     extensions = (".toya",)
     magic = (Magic(0, _MAGIC),)
@@ -413,6 +415,46 @@ def test_registration_refuses_clashes(clean_registry: None) -> None:
         register_format(int)  # type: ignore[arg-type]
 
 
+def test_a_handler_of_no_shape_is_refused(clean_registry: None) -> None:
+    """``FormatHandler`` is the base of both shapes; a direct subclass opens neither
+    reader, so registering it is refused."""
+
+    class Neither(PluginContainer):
+        NEITHER = "neither"
+
+    class NoShape(FormatHandler):
+        format = ArchiveFormat(Neither.NEITHER, StreamFormat.UNCOMPRESSED)
+
+    with pytest.raises(ArchiveyUsageError, match="IndexedFormatHandler or a"):
+        register_format(NoShape)
+
+
+def test_the_non_seekable_reason_reaches_a_pipe(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """An indexed plugin's ``non_seekable_reason`` is what a pipe is told, and
+    without one a generic reason stands in."""
+    register_format(ToyHandler)
+    data = build_toya(_ENTRIES)
+    with pytest.raises(archivey.StreamNotSeekableError, match="random access"):
+        open_archive(NonSeekableBytesIO(data), format=ToyHandler.format)
+
+    class Reasoned(PluginContainer):
+        REASONED = "reasoned"
+
+    class ReasonedHandler(ToyHandler):
+        format = ArchiveFormat(Reasoned.REASONED, StreamFormat.UNCOMPRESSED)
+        extensions = (".reasoned",)
+        magic = ()
+        non_seekable_reason = "its toy index is at the end"
+
+    register_format(ReasonedHandler)
+    with pytest.raises(
+        archivey.StreamNotSeekableError, match="toy index is at the end"
+    ):
+        open_archive(NonSeekableBytesIO(data), format=ReasonedHandler.format)
+
+
 def test_missing_requirement(clean_registry: None, tmp_path: Path) -> None:
     class Needs(PluginContainer):
         NEEDS = "needsmod"
@@ -489,7 +531,7 @@ def _plugin_with(
     fmt = ArchiveFormat(container[name.upper()], StreamFormat.UNCOMPRESSED)
 
     def open_(
-        self: FormatHandler, source: ReaderSource, context: ReaderContext
+        self: IndexedFormatHandler, source: ReaderSource, context: ReaderContext
     ) -> ToyReader:
         return reader(source, context)
 
@@ -1043,7 +1085,7 @@ def _compressed_plugin(
     method: CompressionAlgorithm | StreamFormat,
     properties: bytes | None = None,
     translated: list[Exception] | None = None,
-) -> type[FormatHandler]:
+) -> type[IndexedFormatHandler]:
     """A TOYA plugin whose one member is stored compressed with ``method``; the
     member's data runs to the end of the file."""
 
@@ -1675,7 +1717,7 @@ class _ForwardOnly(io.RawIOBase):
 
 def _forward_only_plugin(
     opened: list[int], *, listed_size: bool = True
-) -> type[FormatHandler]:
+) -> type[IndexedFormatHandler]:
     class ForwardOnlyReader(ToyReader):
         def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
             for record in super().iter_members():
@@ -1752,7 +1794,7 @@ def _sum16(data: bytes) -> bytes:
     return hasher.digest()
 
 
-def _digest_plugin(digests: dict[str, MemberDigest]) -> type[FormatHandler]:
+def _digest_plugin(digests: dict[str, MemberDigest]) -> type[IndexedFormatHandler]:
     """TOYA with no CRC-32 in the listing: only ``digests`` (by member name) checks."""
 
     class DigestReader(ToyReader):
@@ -1946,7 +1988,7 @@ def test_member_stream_is_closed_when_a_hasher_factory_fails(
 
 def _reporting_plugin(
     report: Callable[[ReaderContext, ArchiveMember], None],
-) -> type[FormatHandler]:
+) -> type[IndexedFormatHandler]:
     """TOYA whose reader calls ``report(context, member)`` on ``docs/a.txt``."""
 
     class ReportingReader(ToyReader):
@@ -2074,7 +2116,7 @@ class _CountingReads(io.BytesIO):
 
 def _bounded_plugin(
     reads: list[int], *, bounded: bool, extra: bytes = b"", cut: int = 0
-) -> type[FormatHandler]:
+) -> type[IndexedFormatHandler]:
     class BoundedReader(ToyReader):
         def open_member(
             self, member: ArchiveMember, locator: tuple[int, int]
