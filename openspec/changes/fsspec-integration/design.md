@@ -262,11 +262,14 @@ a thin planner that decides each fetch's start and length:
    so the window still holds all of it.
 6. **A read just before an end-placed window steps back from it.** A window is
    end-placed when rule 5 or this rule placed it by where it ends. A read that
-   ends at most `max_read_through` before such a window's start fetches the bytes
-   up to that start, doubling as a forward run does, and the window moves back.
+   ends before such a window's start, by at most the window's size and at most
+   `max_read_through`, fetches the bytes up to that start, doubling as a forward run does, and the window moves back.
    A window a forward run placed is not stepped back from: a read just before it
    is a reader starting a new member, which reads forward (applied to every
-   window, this rule cost the gated TAR cases an extra request and 160 KB). The xz
+   window, this rule cost the gated TAR cases an extra request and 160 KB). A
+   longer gap is a read of something else: with Python 3.15's 128 KiB
+   `io.DEFAULT_BUFFER_SIZE`, the xz reader re-reads the stream header at offset 0,
+   and without the size limit that read fetched the whole gap up to the tail. The xz
    index walk and the lzip member walk step backward a few bytes per stream:
    without this rule each step was a new run of `_MIN_FETCH` bytes, and a crafted
    1.2 MB file of 20,000 xz streams took 75,633 requests and 1.7 GB to list. With

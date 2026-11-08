@@ -366,15 +366,19 @@ class WindowPool:
 
     def _run_ahead(self, source: RangeSource, at: int, want: int) -> _Run | None:
         """The nearest end-placed window of ``source`` (``_Run.backward``) that
-        starts after ``at``, at most ``max_read_through`` past the read's end: a read
-        just before it steps backward from it (rule 6). A window a forward run placed
-        is not stepped back from: a read just before it is a reader starting a new
-        member, which reads forward."""
+        starts after ``at``, with a gap from the read's end to it of at most its own
+        size and at most ``max_read_through``: a read just before it steps backward
+        from it (rule 6). A walk's steps are short, so a longer gap is a read of
+        something else (a header at the start), which gets a run of its own rather
+        than fetching the whole gap. A window a forward run placed is not stepped
+        back from: a read just before it is a reader starting a new member, which
+        reads forward."""
         best: _Run | None = None
         for run in self._runs:
             if run.source is not source or not run.backward or run.start <= at:
                 continue
-            if run.start - (at + want) <= source.max_read_through and (
+            gap = run.start - (at + want)
+            if gap <= min(len(run.data), source.max_read_through) and (
                 best is None or run.start < best.start
             ):
                 best = run

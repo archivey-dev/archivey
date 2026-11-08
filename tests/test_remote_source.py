@@ -1114,11 +1114,10 @@ def test_a_large_remote_xz_reads_its_index_from_the_tail() -> None:
     ):
         (member,) = reader.members()
     assert member.size == len(payload)
-    assert fs.fetches == [
-        (0, 16 * KIB),
-        (len(data) - 16 * KIB, len(data)),
-        (16 * KIB, 64 * KIB),
-    ]
+    # The later fetches read the stream header through a buffer whose size is
+    # ``io.DEFAULT_BUFFER_SIZE`` (8 KiB to Python 3.14, 128 KiB from 3.15).
+    assert fs.fetches[:2] == [(0, 16 * KIB), (len(data) - 16 * KIB, len(data))]
+    assert fs.fetches.count((len(data) - 16 * KIB, len(data))) == 1
 
 
 def test_the_tail_read_does_not_take_over_the_head_window() -> None:
@@ -1130,7 +1129,12 @@ def test_the_tail_read_does_not_take_over_the_head_window() -> None:
     data = lzma.compress(random.Random(45).randbytes(300_000), preset=0)
     fs = RecordingFS(data)
     _listing(OpenFile(fs, "/big.xz", mode="rb"))
-    assert fs.fetches == [(0, 64 * KIB), (len(data) - 64 * KIB, len(data))]
+    # Without the hint the second fetch reads through from 64 KiB to the end.
+    # What follows depends on ``io.DEFAULT_BUFFER_SIZE`` (the stream header is
+    # read through a buffer of that size), so only the first two are pinned.
+    assert fs.fetches[:2] == [(0, 64 * KIB), (len(data) - 64 * KIB, len(data))]
+    # The header re-read never steps back from the tail across the whole gap.
+    assert all(end - start <= 128 * KIB for start, end in fs.fetches)
 
 
 def _many_lzip_members(count: int) -> bytes:
