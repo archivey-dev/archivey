@@ -28,6 +28,7 @@ from archivey.internal.format_args import (
 )
 from archivey.internal.overrides import override
 from archivey.internal.registry import _optional, get_registry
+from archivey.internal.resource_usage import handler_name
 from archivey.internal.streams.codecs.base import (
     CodecParams,
     StreamCodec,
@@ -35,6 +36,7 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.registry import add_stream_codec, stream_codecs
 from archivey.types import (
     ArchiveFormat,
+    BackendKindStr,
     ContainerFormat,
     MagicSignature,
     MissingComponent,
@@ -60,6 +62,12 @@ class PluginCodec(StreamCodec):
 
     # Per registration, as ``format_adapter.prefix_probe``'s flag: nothing outlives it.
     _detection_error_logged = False
+
+    @override
+    def backend_use(self) -> tuple[BackendKindStr, str] | None:
+        name = handler_name(self.handler)
+        # A codec archivey ships through the plugin interface is archivey's own code.
+        return None if name == "archivey" else ("codec", name)
 
     def detection_error_level(self) -> int:
         """The level to log the decoder's exception at when detection takes it as no

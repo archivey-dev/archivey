@@ -360,9 +360,17 @@ def _open_backend(
     """``backend.open``; a detection probe's streams (``probe_read_bound``) ask their
     decoder for exactly what each read asks (:func:`probe_streams`)."""
     if config.probe_read_bound is None:
-        return backend.open(source, params)
-    with probe_streams():
-        return backend.open(source, params)
+        stream = backend.open(source, params)
+    else:
+        with probe_streams():
+            stream = backend.open(source, params)
+    usage = config.usage
+    if usage is not None:
+        sc = _BY_CODEC[backend.codec]
+        use = sc.backend_use()
+        if use is not None:
+            usage.note_backend(use[0], use[1], sc.stream_name)
+    return stream
 
 
 def _prepared_backend(

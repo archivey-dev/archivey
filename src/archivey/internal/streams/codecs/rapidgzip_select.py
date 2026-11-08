@@ -448,7 +448,7 @@ def _open_rapidgzip(
     reason = _no_child_reason(label)
     _require_rapidgzip_child(label)
     try:
-        return RapidgzipChildStream(
+        child = RapidgzipChildStream(
             source,
             label=label,
             bzip2=bzip2,
@@ -461,6 +461,9 @@ def _open_rapidgzip(
             ) from exc
         _warn_child_fallback(str(exc), field_name)
         return None
+    if config.usage is not None:
+        config.usage.note_backend("library", OptionalLibrary.RAPIDGZIP.value, label)
+    return child
 
 
 def _translate_child_or_stdlib(

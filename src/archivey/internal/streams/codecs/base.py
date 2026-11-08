@@ -51,6 +51,7 @@ from archivey.internal.streams.decompressor_stream import truncated_message
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
+    BackendKindStr,
     ContainerFormat,
     MagicSignature,
     MissingComponent,
@@ -633,6 +634,12 @@ class StreamCodec:
         standard library's module on 3.14+, else the backport), or ``None`` to go by
         ``requirement``, which is also what an absent package's error names."""
         return None
+
+    def backend_use(self) -> tuple[BackendKindStr, str] | None:
+        """What :attr:`~archivey.ArchiveReader.backends_used` lists for a decode: the
+        optional package in use, or ``None`` for the standard library."""
+        library = self._excludable()
+        return None if library is None else ("library", str(library))
 
     def _excludable(self) -> OptionalLibrary | str | None:
         """The package ``exclude_libraries`` turns off: the one in use, or

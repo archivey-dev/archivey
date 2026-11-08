@@ -83,6 +83,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
+from archivey.internal.resource_usage import handler_name
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
@@ -190,6 +191,11 @@ class _PluginAdapter(BaseArchiveReader):
 
     _reader: FormatReader
 
+    @override
+    def _note_reader_backend(self, format: ArchiveFormat) -> None:
+        # Recorded once ``_plugin`` is set: the plugin, not archivey, reads the format.
+        pass
+
     def __init__(
         self,
         plugin: FormatHandler,
@@ -217,6 +223,7 @@ class _PluginAdapter(BaseArchiveReader):
         )
         self._source = source
         self._plugin = plugin
+        self._usage.note_backend("reader", handler_name(plugin), format.display_name)
         # The caller's ``encoding=``, for a nested reader (``_open_nested``).
         self._encoding = encoding
         # Iterators ReaderContext.open_nested() returned, closed with the archive at the
@@ -272,6 +279,7 @@ class _PluginAdapter(BaseArchiveReader):
             charge_metadata=self._charge_metadata,
             open_nested=self._open_nested,
         )
+        context._usage = self._usage
         self._reader = self._open_reader(context)
         self._reader_open = True
 
@@ -2516,7 +2524,7 @@ class _PluginBackend(ReadBackend):
             if issubclass(self.PLUGIN, SequentialFormatHandler)
             else IndexedReaderAdapter
         )
-        return adapter(
+        reader = adapter(
             self.PLUGIN(),
             source,
             format,
@@ -2528,6 +2536,11 @@ class _PluginBackend(ReadBackend):
             member_streams=member_streams,
             open_site=open_site,
         )
+        # The packages the handler reads with: pycdlib for ISO, a plugin's ``requires``.
+        for library in (self.OPTIONAL_DEPENDENCY, *self.REQUIRED_MODULES):
+            if library is not None:
+                reader._usage.note_backend("library", str(library), format.display_name)
+        return reader
 
 
 def prefix_probe(probe: object) -> ContentProbe:

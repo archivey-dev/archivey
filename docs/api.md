@@ -18,6 +18,8 @@ See [Opening an archive](opening.md).
 ::: archivey.FormatSupport
 ::: archivey.MissingComponent
 ::: archivey.OptionalLibrary
+::: archivey.BackendUse
+::: archivey.BackendKindStr
 ::: archivey.list_supported_formats
 ::: archivey.list_known_formats
 

@@ -25,6 +25,10 @@ limits off; the decoder-memory peak is exact either way.
 
 A detection probe builds its own stream config, without a recorder, so a size a
 content probe checks is never counted as the archive's.
+
+The recorder also keeps the public list of backends the reader ran
+(:attr:`archivey.ArchiveReader.backends_used`): it already reaches every codec through
+``StreamConfig.usage``. A detection probe's decodes are not in it, for the same reason.
 """
 
 from __future__ import annotations
@@ -33,10 +37,22 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from archivey.types import BackendKindStr, BackendUse
+
 if TYPE_CHECKING:
     from archivey.internal.config import KeyDerivationBudget
     from archivey.internal.listing_limits import ListingLimitTracker
     from archivey.internal.spool import SpoolBudget
+
+
+def handler_name(handler: object) -> str:
+    """How :attr:`~archivey.ArchiveReader.backends_used` names a format or codec
+    handler: ``"archivey"`` for one archivey ships (CAB and XAR read through the plugin
+    adapter too), else its class as ``module.QualName``."""
+    cls = handler if isinstance(handler, type) else type(handler)
+    if cls.__module__ == "archivey" or cls.__module__.startswith("archivey."):
+        return "archivey"
+    return f"{cls.__module__}.{cls.__qualname__}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +84,7 @@ class ResourceUsageRecorder:
     """
 
     __slots__ = (
+        "_backends",
         "_decoder_memory",
         "_decoder_memory_what",
         "_kdf_budgets",
@@ -83,6 +100,8 @@ class ResourceUsageRecorder:
         self._kdf_budgets: list[KeyDerivationBudget] = []
         self._spool: SpoolBudget | None = None
         self._listing: ListingLimitTracker | None = None
+        # Insertion-ordered: the order each backend was first used.
+        self._backends: dict[BackendUse, None] = {}
 
     def note_decoder_memory(self, declared: int, what: str) -> None:
         """Keep ``declared`` if it is the largest declaration so far."""
@@ -90,6 +109,23 @@ class ResourceUsageRecorder:
             if declared > self._decoder_memory:
                 self._decoder_memory = declared
                 self._decoder_memory_what = what
+
+    def note_backend(
+        self,
+        kind: BackendKindStr,
+        name: str,
+        used_for: str,
+        path: str | None = None,
+    ) -> None:
+        """Record that the reader ran ``name`` for ``used_for``; a repeat is a no-op."""
+        use = BackendUse(kind, name, used_for, path)
+        with self._lock:
+            self._backends.setdefault(use, None)
+
+    def backends(self) -> tuple[BackendUse, ...]:
+        """Every backend recorded, in the order each was first used."""
+        with self._lock:
+            return tuple(self._backends)
 
     def watch_key_derivation(self, budget: KeyDerivationBudget) -> None:
         self._kdf_budgets.append(budget)

@@ -507,3 +507,34 @@ refusal SHALL come before the plugin's `open` runs.
   `FormatPolicy(replace={ContainerFormat.ZIP: P})`
 - **THEN** the open raises `UnsupportedFeatureError` that names `P`
 - **AND** `P.open` is not called
+
+### Requirement: A reader lists the backends it ran
+
+`ForwardArchiveReader.backends_used` SHALL return a tuple of `BackendUse(kind, name,
+used_for, path)`, in the order each was first used, without repeats. It is
+experimental.
+
+- The format reader SHALL come first: `("reader", "archivey", <format>)` for a reader
+  archivey ships, including one built on the plugin interface (CAB, XAR, ISO), and
+  `("reader", "module.QualName", <format>)` for a plugin, a `replace=` one included.
+  The packages a handler reads with (`OPTIONAL_DEPENDENCY`, a plugin's `requires`) SHALL
+  follow as `"library"` entries.
+- An optional package SHALL be listed as `("library", <import name>, <what>)` once it
+  decodes: a codec's package (the zstd module in use, `pyppmd`, `lz4`, `brotli`, …),
+  the rapidgzip accelerator when a child decodes, `python-lzo` when chosen, SquashFS's
+  `lz4.block`, and `cryptography` once a reader decrypts AES with it.
+- A plugin codec SHALL be listed as `("codec", "module.QualName", <stream>)`.
+- An external program SHALL be listed as `("program", "unrar" | "unar", "RAR",
+  <absolute path>)` when it is spawned for a read.
+- A standard-library codec SHALL NOT be listed, nor anything a detection probe decoded.
+
+#### Scenario: backends_used
+
+| Case | Expected |
+| --- | --- |
+| Deflate ZIP read | `(BackendUse("reader", "archivey", "ZIP"),)` |
+| `.zst` file read | reader, then `("library", <zstd module>, "zstd")` |
+| `.gz` read under `use_rapidgzip="on"` | includes `("library", "rapidgzip", "gzip")`; under `"off"`, only the reader |
+| Stored encrypted RAR member read | includes `("library", "cryptography", "AES decryption")` |
+| Member read through `unrar` | includes `("program", "unrar", "RAR", <path>)` |
+| ZIP under `replace={C.ZIP: Plugin}` | `("reader", "<module>.Plugin", "ZIP")` |

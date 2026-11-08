@@ -47,7 +47,17 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    BinaryIO,
+    ClassVar,
+    Generic,
+    NamedTuple,
+    Protocol,
+    TypeVar,
+    cast,
+)
 
 from archivey.config import ArchiveyConfig, DecoderLimits
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
@@ -65,6 +75,9 @@ from archivey.types import (
     PluginStream,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 __all__ = [
     "CodecCall",
@@ -538,6 +551,9 @@ class ReaderContext:
         self._hold = hold
         self._charge_metadata = charge_metadata
         self._open_nested = open_nested
+        # Set by archivey's adapter: where a built-in reader that calls a package
+        # itself (SquashFS's lz4) records it for ``ArchiveReader.backends_used``.
+        self._usage: ResourceUsageRecorder | None = None
 
     @property
     def encoding(self) -> str | None:

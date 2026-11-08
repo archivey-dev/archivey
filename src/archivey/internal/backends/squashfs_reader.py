@@ -381,6 +381,9 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             return through_archivey
         if compressor == "lz4":
             natives = self._lz4_natives()
+            usage = self._context._usage
+            if usage is not None:
+                usage.note_backend("library", OptionalLibrary.LZ4.value, "lz4")
             block_error = cast("Any", deps.lz4_block).LZ4BlockError
 
             def lz4_block(start: int, length: int, limit: int) -> bytes:

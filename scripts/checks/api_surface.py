@@ -90,6 +90,10 @@ EXPERIMENTAL = (
     "archivey.ArchiveMember.verifiable",
     "archivey.ForwardArchiveReader.verify_all",
     "archivey.ArchiveReader.verify_all",
+    "archivey.BackendUse",
+    "archivey.BackendKindStr",
+    "archivey.ForwardArchiveReader.backends_used",
+    "archivey.ArchiveReader.backends_used",
 )
 #: The literal type that lists every diagnostic code string, which grows with them.
 CODE_LITERALS = frozenset({"archivey.diagnostics.DiagnosticCodeStr"})

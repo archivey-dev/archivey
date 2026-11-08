@@ -89,7 +89,7 @@ class LzopCodec(StreamCodec):
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         return LzopDecompressor(
-            lzo1x_decompressor(config.excluded_libraries, config.natives),
+            lzo1x_decompressor(config.excluded_libraries, config.natives, config.usage),
             _block_check(config),
         )
 
@@ -151,7 +151,9 @@ class Lzo1xCodec(StreamCodec):
             what="a raw LZO1X block's size",
             usage=config.usage,
         )
-        decode_block = lzo1x_decompressor(config.excluded_libraries, config.natives)
+        decode_block = lzo1x_decompressor(
+            config.excluded_libraries, config.natives, config.usage
+        )
         return DecompressorStream(
             source,
             make_decoder=lambda _p, _i: Lzo1xDecoder(decode_block, size),

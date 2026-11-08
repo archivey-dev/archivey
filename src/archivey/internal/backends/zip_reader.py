@@ -186,6 +186,7 @@ from archivey.internal.streams.codecs import (
     open_codec_raw,
     open_codec_stream,
 )
+from archivey.internal.streams.crypto import note_crypto_use
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     SharedView,
@@ -3728,7 +3729,7 @@ class ZipReader(BaseArchiveReader):
         def stage(password: bytes) -> BinaryIO:
             raw = self._open_raw_payload(loc, member)
             try:
-                return open_winzip_aes_member(
+                decrypted = open_winzip_aes_member(
                     raw,
                     aes=aes,
                     password=password,
@@ -3742,6 +3743,8 @@ class ZipReader(BaseArchiveReader):
             except BaseException:
                 raw.close()
                 raise
+            note_crypto_use(self._usage)
+            return decrypted
 
         return stage
 

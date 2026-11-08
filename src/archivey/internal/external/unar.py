@@ -60,6 +60,7 @@ from archivey.internal.external.cli import (
     spawn_for_stdout,
 )
 from archivey.internal.overrides import override
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.streams.child_process import describe_exit, is_system_kill
 
 # Inclusive floor. Measured: Debian/Ubuntu ``unar`` 1.10.1 and MacPaw XADMaster v1.10.8
@@ -307,6 +308,7 @@ def open_unar_stdout(
     purpose: str,
     password: str | None = None,
     program: str | None = None,
+    usage: ResourceUsageRecorder | None = None,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Spawn ``unar`` for the given entries (``None``: all) and return ``(proc, stdout)``.
 
@@ -317,6 +319,8 @@ def open_unar_stdout(
     archive legitimately produces no bytes while earlier entries decode.
     """
     unar = find_unar(purpose=purpose, program=program)
+    if usage is not None:
+        usage.note_backend("program", "unar", "RAR", unar)
     # ``unar`` asks for a missing password on a terminal. With stdin on DEVNULL (the
     # default) it reports the missing password and exits non-zero instead.
     return spawn_for_stdout(
