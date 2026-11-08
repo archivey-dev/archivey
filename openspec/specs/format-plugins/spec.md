@@ -5,7 +5,7 @@ TBD - created by archiving change format-policy. Update Purpose after archive.
 ## Requirements
 ### Requirement: A replacement plugin declares a built-in format and no detection
 
-A `FormatHandler` named in `FormatPolicy(replace=)` SHALL NOT be registered. Its `format`
+An `IndexedFormatHandler` named in `FormatPolicy(replace=)` SHALL NOT be registered. Its `format`
 SHALL be the built-in `ArchiveFormat(key, StreamFormat.UNCOMPRESSED)` of the container
 it replaces, the key SHALL be `ZIP`, `SEVEN_Z`, `RAR` or `ISO`, the plugin SHALL be an
 indexed one, and it SHALL declare no `extensions`, `magic` or `probe`. Building the
@@ -21,7 +21,7 @@ fails before any open.
 | `P.format` is a plugin format, or another built-in format | `ArchiveyUsageError` |
 | `P` declares `extensions`, `magic` or `probe` | `ArchiveyUsageError` |
 | `P` is a sequential plugin | `ArchiveyUsageError` |
-| The value is not a `FormatHandler` subclass | `ArchiveyUsageError` |
+| The value is not an `IndexedFormatHandler` subclass | `ArchiveyUsageError` |
 
 ### Requirement: A sequential walk reads an archive stored inside its archive
 

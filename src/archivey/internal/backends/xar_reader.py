@@ -45,7 +45,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import (
-    FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -630,20 +630,18 @@ def _empty() -> io.BytesIO:
     return io.BytesIO(b"")
 
 
-class XarHandler(FormatHandler):
+class XarHandler(IndexedFormatHandler):
     """XAR archives: ``.xar``, and macOS ``.pkg`` and ``.xip``."""
 
     format = ArchiveFormat.XAR
     extensions = (".xar", ".pkg", ".xip")
     magic = (Magic(0, MAGIC + b"\0"),)
     uses_encoding = True
+    non_seekable_reason = "its files' data sit anywhere in the heap after the index"
 
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> XarReader:
         return XarReader(source, context)
 
 
-XarReadBackend = register_builtin_format(
-    XarHandler,
-    NON_SEEKABLE_REASON="its files' data sit anywhere in the heap after the index",
-)
+XarReadBackend = register_builtin_format(XarHandler)
