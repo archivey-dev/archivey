@@ -287,10 +287,19 @@ def test_link_target_bidi_control_is_reported_once(
         # Presented exactly as stored.
         assert link.link_target == _BIDI_TARGET
         (context,) = _target_bidi_contexts(link)
+        (diagnostic,) = [
+            d
+            for d in link.diagnostics
+            if d.code is DiagnosticCode.MEMBER_NAME_BIDI_CONTROL
+        ]
+    assert diagnostic.message.startswith("Link target of 'link' contains a bidi")
     assert isinstance(context, MemberNameControlsContext)
     assert context.field == "link_target"
     assert context.member_name == "link"
     assert context.controls == "U+202E"
+    assert context.archive_name == str(archive)
+    assert context.raw_name_base64 == "bGluaw=="  # b"link"
+    assert context.member_id == link._member_id
 
 
 def test_member_name_bidi_control_context_says_name(tmp_path: Path) -> None:
@@ -299,8 +308,11 @@ def test_member_name_bidi_control_context_says_name(tmp_path: Path) -> None:
     with archivey.open_archive(archive) as reader:
         (member,) = reader.members()
         (context,) = _target_bidi_contexts(member)
+        (diagnostic,) = member.diagnostics
+    assert diagnostic.message.startswith("Member name contains a bidi")
     assert isinstance(context, MemberNameControlsContext)
     assert context.field == "name"
+    assert context.archive_name == str(archive)
 
 
 def test_byte_cap_message_counts_only_what_was_written() -> None:
