@@ -1192,7 +1192,7 @@ class ArchiveStreamImpl(ArchiveStream):
 
         That is the only change a read short of the end can make to the member's
         ceiling (``_frames_pending``), so such a read asks only the codec layer
-        (``find_frame_watch``), not every layer three times as a full sync does.
+        (``find_frame_watch``), not the whole stack as a full sync does.
         """
         watch = self._frame_watch
         if watch is not None and watch():
