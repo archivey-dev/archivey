@@ -8,6 +8,7 @@ import io
 import lzma
 import random
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -468,3 +469,91 @@ def test_the_reader_uses_only_public_archivey() -> None:
 
 def test_the_reader_is_a_sequential_reader() -> None:
     assert issubclass(ArReader, SequentialReader)
+
+
+def _header(
+    name: bytes,
+    data: bytes,
+    *,
+    mtime: bytes = b"0",
+    uid: bytes = b"0",
+    gid: bytes = b"0",
+    mode: bytes = b"644",
+) -> bytes:
+    """One member, each numeric field written as given."""
+    return (
+        name.ljust(16)
+        + mtime.ljust(12)
+        + uid.ljust(6)
+        + gid.ljust(6)
+        + mode.ljust(8)
+        + str(len(data)).encode().ljust(10)
+        + b"`\n"
+        + data
+        + b"\n" * (len(data) & 1)
+    )
+
+
+def test_the_numeric_fields_are_decimal_and_the_mode_octal(tmp_path: Path) -> None:
+    data = b"!<arch>\n" + _header(
+        b"x.txt/",
+        b"data",
+        mtime=b"1000000000",
+        uid=b"1000",
+        gid=b"100",
+        mode=b"12345670",
+    )
+    with open_archive(_archive(tmp_path, data)) as reader:
+        (member,) = reader.members()
+        assert (member.uid, member.gid) == (1000, 100)
+        # Every octal digit is valid; the mode keeps its permission bits only.
+        assert member.mode == 0o12345670 & 0o7777
+        assert member.modified == datetime.fromtimestamp(1_000_000_000, UTC)
+        assert member.modified.tzinfo is UTC
+        assert (member.size, member.raw_name) == (4, b"x.txt")
+
+
+@pytest.mark.parametrize("what", ["mtime", "uid", "gid", "mode"])
+def test_a_bad_numeric_field_names_the_field_and_the_header(
+    tmp_path: Path, what: str
+) -> None:
+    data = (
+        b"!<arch>\n" + _header(b"a/", b"ab") + _header(b"x/", b"data", **{what: b"1x"})
+    )
+    with (
+        open_archive(_archive(tmp_path, data)) as reader,
+        pytest.raises(
+            CorruptionError, match=rf"^ar header at offset 70: the {what} field b'1x "
+        ),
+    ):
+        reader.members()
+
+
+def test_a_long_name_keeps_its_raw_name_without_the_slash(tmp_path: Path) -> None:
+    data = _ar((b"//", b"a-long-member-name.txt/\n"), (b"/0", b"data"))
+    with open_archive(_archive(tmp_path, data)) as reader:
+        (member,) = reader.members()
+        assert member.raw_name == b"a-long-member-name.txt"
+        assert reader.info.extra["ar.dialect"] == "gnu"
+
+
+def test_a_bsd_name_ending_in_digits_is_not_a_long_name(tmp_path: Path) -> None:
+    with open_archive(_archive(tmp_path, _ar((b"x123", b"data")))) as reader:
+        assert [m.name for m in reader.members()] == ["x123"]
+        assert reader.info.extra["ar.dialect"] == "bsd"
+
+
+def test_long_name_offsets_at_the_edges_of_the_table(tmp_path: Path) -> None:
+    def opened(data: bytes) -> list[str]:
+        with open_archive(_archive(tmp_path, data), format=AR) as reader:
+            return [m.name for m in reader.members()]
+
+    table = b"ab/\n"
+    with pytest.raises(CorruptionError, match="long-name offset 4 is past the 4-byte"):
+        opened(_ar((b"//", table), (b"/4", b"data")))
+    # An offset that lands on an entry's newline names nothing.
+    with pytest.raises(CorruptionError, match="has no name"):
+        opened(_ar((b"//", table), (b"/3", b"data")))
+    assert opened(_ar((b"//", table), (b"/0", b"data"))) == ["ab"]
+    with pytest.raises(CorruptionError, match="names entry 12 of a long-name"):
+        opened(_ar((b"/12", b"data")))
