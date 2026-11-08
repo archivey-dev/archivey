@@ -1387,8 +1387,10 @@ class _ZisofsStream(io.RawIOBase):
                 block = self._block(index)
                 start = self._position - (index << self._log2)
                 count = min(len(view) - filled, len(block) - start)
-                if count <= 0:
-                    break
+                # _block returns exactly the block's bytes (it raises otherwise) and
+                # start is inside it, so each turn copies at least one byte. A short
+                # count here would end the member early (ADR 0014).
+                assert count > 0, (count, start, len(block))
                 view[filled : filled + count] = block[start : start + count]
                 self._position += count
                 filled += count
