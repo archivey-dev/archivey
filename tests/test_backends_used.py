@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import sys
 import zipfile
 from pathlib import Path
 
@@ -134,6 +135,9 @@ def test_aes_decryption_lists_cryptography(fixture: Path, password: str) -> None
         )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="uses a POSIX shell script as a stand-in unrar"
+)
 def test_an_unrar_spawn_records_the_binary(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
