@@ -2879,9 +2879,7 @@ class IsoHandler(IndexedFormatHandler):
     format = ArchiveFormat.ISO
     extensions = (".iso",)
     # pycdlib addresses the image by absolute offsets (volume descriptors at 32 KiB),
-    # so even a forward-only pass needs a seekable source. The same requirement the
-    # reader raises from, so the hint reported by listing / format_availability and
-    # the one in the open() failure cannot diverge.
+    # so even a forward-only pass needs a seekable source.
     non_seekable_reason = (
         "its volume descriptors and directory records are at absolute offsets in "
         "the image"

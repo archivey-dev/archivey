@@ -2631,7 +2631,11 @@ def _backend_class(
             {}
             if sequential
             else {
-                "NON_SEEKABLE_REASON": getattr(plugin, "non_seekable_reason", None)
+                # Not sequential, so indexed: ``_check_plugin`` and
+                # ``check_replacement`` admit no other shape.
+                "NON_SEEKABLE_REASON": cast(
+                    "type[IndexedFormatHandler]", plugin
+                ).non_seekable_reason
                 or "its reader needs random access to the archive"
             }
         ),
@@ -2666,7 +2670,7 @@ def register_builtin_format(
     built-in backends, so detection does not change and ``FormatInfo.from_plugin`` is
     false. A sequential format's compressed pairs are spelled as a plugin's are
     (``"ar.gz"``). ``overrides`` sets backend attributes a plugin cannot declare
-    (``NON_SEEKABLE_REASON``, ``OPTIONAL_DEPENDENCY``). Returns the backend class.
+    (``OPTIONAL_DEPENDENCY``, ``INSTALL_HINT``). Returns the backend class.
     """
     backend = _backend_class(plugin, plugin.format, overrides)
     get_registry().register_reader(backend)

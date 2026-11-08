@@ -12,10 +12,10 @@ by a program or a separate package (a plugin). A handler declares the format: it
 An :class:`IndexedFormatHandler` opens an :class:`IndexedReader` (a format with an
 index: list the members first, then open any one of them); a
 :class:`SequentialFormatHandler` opens a :class:`SequentialReader` (a format of header,
-data, header, data, read in one forward pass, from a pipe too). The reader hands archivey members and bytes; archivey does the
-rest the same way for every format: name normalization and the name checks, listing
-limits, link resolution, safe extraction and its limits, and the size and digest checks
-on member data. Formats that do not fit, or need special features or more speed, are
+data, header, data, read in one forward pass, from a pipe too). The reader hands
+archivey members and bytes; archivey does the rest the same way for every format: name
+normalization and the name checks, listing limits, link resolution, safe extraction and
+its limits, and the size and digest checks on member data. Formats that do not fit, or need special features or more speed, are
 written against archivey's internal reader classes instead.
 
 A program registers a format with :func:`register_format`. Nothing is loaded
@@ -888,9 +888,9 @@ class IndexedFormatHandler(FormatHandler):
     :class:`IndexedReader`. A pipe is refused before :meth:`open` is called."""
 
     non_seekable_reason: ClassVar[str | None] = None
-    """Why the format needs a seekable source, for the error a pipe gets and for
-    ``format_availability`` (``"its index is at the end of the file"``). ``None``
-    gives a generic reason."""
+    """Why the format needs a seekable source: the clause the ``StreamNotSeekableError``
+    a pipe gets gives (``"its index is at the end of the file"``). ``None`` gives a
+    generic reason."""
 
     @abstractmethod
     def open(self, source: ReaderSource, context: ReaderContext) -> IndexedReader[Any]:
@@ -923,7 +923,9 @@ class SequentialFormatHandler(FormatHandler):
 _register_lock = threading.Lock()
 
 
-def register_format(handler: type[FormatHandler]) -> None:
+def register_format(
+    handler: type[IndexedFormatHandler | SequentialFormatHandler],
+) -> None:
     """Make archivey read the format ``handler`` declares, in this process.
 
     Register before other threads open archives: detection reads the registry
@@ -933,9 +935,10 @@ def register_format(handler: type[FormatHandler]) -> None:
     format lists and ``format="<extension>"`` all know the format. There is no way to
     remove a registration.
 
-    Raises ``ArchiveyUsageError`` when the format is registered already, when its
-    container value is a built-in's or another plugin's, or when one of its
-    extensions is a built-in format's.
+    Raises ``ArchiveyUsageError`` when ``handler`` subclasses neither
+    :class:`IndexedFormatHandler` nor :class:`SequentialFormatHandler`, when the format
+    is registered already, when its container value is a built-in's or another
+    plugin's, or when one of its extensions is a built-in format's.
     """
     # Imported here: the registry imports the backends, and they import this module's
     # neighbours, so a module-level import would be circular for a caller that imports

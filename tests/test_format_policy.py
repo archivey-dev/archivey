@@ -38,6 +38,7 @@ from archivey import (
 )
 from archivey.detection_cost import TierSkipReason
 from archivey.formats import (
+    FormatHandler,
     IndexedFormatHandler,
     IndexedReader,
     Magic,
@@ -603,6 +604,12 @@ class _SequentialZip(SequentialFormatHandler):
         raise NotImplementedError
 
 
+class _BareZip(FormatHandler):
+    """The base class alone: neither shape."""
+
+    format = ArchiveFormat.ZIP
+
+
 @pytest.mark.parametrize(
     ("replace", "match"),
     [
@@ -611,6 +618,7 @@ class _SequentialZip(SequentialFormatHandler):
         ({"zip": StdlibZipPlugin}, "ContainerFormat keys"),
         ({C.ZIP: object}, "IndexedFormatHandler subclass"),
         ({C.ZIP: _SequentialZip}, "SequentialFormatHandler"),
+        ({C.ZIP: _BareZip}, "IndexedFormatHandler subclass"),
         ({C.SEVEN_Z: StdlibZipPlugin}, "must be ArchiveFormat"),
         ({C.ZIP: _replacement(magic=(Magic(0, b"PK"),))}, "declares extensions"),
         ({C.ZIP: _replacement(extensions=(".zap",))}, "declares extensions"),
