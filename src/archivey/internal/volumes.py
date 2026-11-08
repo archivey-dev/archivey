@@ -417,7 +417,7 @@ _NOT_A_DISCOVERY_MISS = (ArchiveyError, ArchiveyUsageError, MemoryError)
 
 def _log_discovery_miss(what: str, path: object, exc: BaseException) -> None:
     logger.debug(
-        "Volume discovery could not %s %s, so it looks for no volumes there: %r",
+        "Volume discovery could not %s %r, so it looks for no volumes there: %r",
         what,
         path,
         exc,

@@ -2694,7 +2694,9 @@ def test_a_directory_that_cannot_be_listed_opens_the_named_file_alone(
                     for m in reader.members()
                 ]
         except TruncatedError as exc:
-            return type(exc), str(exc).replace(str(directory), "<dir>")
+            # The message without its ``(archive=...)`` tail, which names the folder
+            # (escaped in ``repr`` form, so a Windows path is not a plain substring).
+            return type(exc), str(exc).partition(" (archive=")[0]
 
     alone = outcome(alone_dir)
 
