@@ -1377,17 +1377,22 @@ class _ZisofsStream(io.RawIOBase):
 
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
-        # Views released on return: see try_readinto.
+        # Views released on return: see try_readinto. Full-count (ADR 0014): archivey
+        # takes a short read from its own stream as the member's end, so a read goes
+        # on past a block's end until the buffer is full or the file ends.
         with memoryview(b) as outer, outer.cast("B") as view:
-            if self._position >= self._size or not len(view):
-                return 0
-            index = self._position >> self._log2
-            block = self._block(index)
-            start = self._position - (index << self._log2)
-            count = min(len(view), len(block) - start)
-            view[:count] = block[start : start + count]
-            self._position += count
-            return count
+            filled = 0
+            while filled < len(view) and self._position < self._size:
+                index = self._position >> self._log2
+                block = self._block(index)
+                start = self._position - (index << self._log2)
+                count = min(len(view) - filled, len(block) - start)
+                if count <= 0:
+                    break
+                view[filled : filled + count] = block[start : start + count]
+                self._position += count
+                filled += count
+            return filled
 
     def _block(self, index: int) -> bytes:
         if index == self._cached_index:
