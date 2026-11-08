@@ -175,9 +175,9 @@ class _Frame:
         self.has_data = False
         self.path: str | None = None
         self.raw_path = b""
-        # The first <name>'s text, as stored: a repeat of it is accepted
-        # (``_set_path``).
-        self.name_xml: str | None = None
+        # The first <name>, as stored (whether base64, and its text): a repeat of
+        # it is accepted (``_set_path``).
+        self.name_xml: tuple[bool, str] | None = None
 
 
 class _TocParser:
@@ -288,10 +288,10 @@ class _TocParser:
             # same both times (Node.js, GitHub CLI and Miniconda installers do this);
             # xar and pkgutil read it as one name. Two different names stay refused:
             # nothing says which one the file is.
-            if text == frame.name_xml:
+            if (self._name_base64, text) == frame.name_xml:
                 return
             raise CorruptionError(f"XAR file {quoted(frame.path)} has two names")
-        frame.name_xml = text
+        frame.name_xml = (self._name_base64, text)
         if self._name_base64:
             try:
                 raw = base64.b64decode(text, validate=True)

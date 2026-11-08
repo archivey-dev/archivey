@@ -298,6 +298,11 @@ def test_a_name_that_is_not_base64_is_refused() -> None:
         ([XarFile("", b"x", name_xml="")], "has no name"),
         ([XarFile("", b"x", name_xml="<name></name>")], "empty name"),
         ([XarFile("a", b"x", extra="<name>b</name>")], "two names"),
+        # The same text under another encoding is another name.
+        (
+            [XarFile("Zm9v", b"x", extra='<name enctype="base64">Zm9v</name>')],
+            "two names",
+        ),
     ],
 )
 def test_name_damage(files: list[XarFile], message: str) -> None:
