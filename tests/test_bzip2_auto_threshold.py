@@ -19,6 +19,7 @@ from archivey.config import INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import Codec, bzip2_codec, open_codec_stream
 from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
+from archivey.internal.streams.streamtools.slice import SlicingStream
 from tests.conftest import requires
 
 pytestmark = requires("rapidgzip")
@@ -161,3 +162,46 @@ def test_the_sequential_gate_refuses_on_each_condition(
 
 def test_usable_cpus_is_at_least_one() -> None:
     assert bzip2_codec._usable_cpus() >= 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "is_file"),
+    [
+        pytest.param("str", True, id="str-path"),
+        pytest.param("path", True, id="pathlike"),
+        pytest.param("open-file", True, id="open-file"),
+        pytest.param("slice", True, id="slice-of-a-file"),
+        pytest.param("bytesio", False, id="bytesio"),
+    ],
+)
+def test_prepare_config_marks_a_file_on_disk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str, is_file: bool
+) -> None:
+    monkeypatch.setattr(bzip2_codec, "_SEQUENTIAL_PLATFORM", True)
+    _payload, compressed = _at_threshold()
+    path = tmp_path / "a.bz2"
+    path.write_bytes(b"x" * 16 + compressed)
+    config = replace(_sequential_config(compressed), source_is_file=False)
+    codec = bzip2_codec.Bzip2Codec()
+    with path.open("rb") as f:
+        source: object = {
+            "str": str(path),
+            "path": path,
+            "open-file": f,
+            "slice": SlicingStream(f, start=16, length=len(compressed)),
+            "bytesio": io.BytesIO(compressed),
+        }[kind]
+        prepared = codec.prepare_config(source, config)  # type: ignore[arg-type]
+    assert prepared.source_is_file is is_file
+
+
+def test_prepare_config_asks_nothing_when_already_set_or_not_wanted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bzip2_codec, "_SEQUENTIAL_PLATFORM", True)
+    _payload, compressed = _at_threshold()
+    codec = bzip2_codec.Bzip2Codec()
+    already = _sequential_config(compressed)
+    assert codec.prepare_config(io.BytesIO(compressed), already) is already
+    declared = replace(already, source_is_file=False, seekable=True)
+    assert codec.prepare_config("unused.bz2", declared) is declared
