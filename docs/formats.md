@@ -1173,6 +1173,8 @@ The format of macOS installer packages (`.pkg`) and `.xip` files, written by App
   is at `Verification.CHECKSUM`.
 - A name stored base64-encoded, as writers do for bytes that are not UTF-8, is decoded with
   `encoding=` like a name in any other format.
+- Apple's `productbuild` stores the name of each top-level file twice, the same both times;
+  that is one name. A file with two different names raises `CorruptionError`.
 - A hard link lists the member that holds the data as its `link_target`. bsdtar can write
   the link before that member; archivey then lists it after.
 - A file whose data uses an encoding archivey does not know is listed, with
