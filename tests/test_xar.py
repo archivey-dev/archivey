@@ -25,6 +25,7 @@ from archivey import (
     detect_format,
     open_archive,
 )
+from archivey.diagnostics import MemberTimestampContext, UnknownMemberTypeContext
 from tests.streams_util import NonSeekableBytesIO
 from tests.xar_util import ENCODINGS, HEADER, XarFile, pack_xar, write_xar
 
@@ -664,9 +665,13 @@ def test_an_unknown_type_diagnostic_names_the_member_type_and_size() -> None:
         (member,) = reader.members()
         (diagnostic,) = member.diagnostics
     assert diagnostic.code is DiagnosticCode.MEMBER_TYPE_UNKNOWN
-    assert diagnostic.context.member_name == "odd"  # type: ignore[attr-defined]
-    assert diagnostic.context.stored_type == "whiteout"  # type: ignore[attr-defined]
-    assert diagnostic.context.size == 5  # type: ignore[attr-defined]
+    context = diagnostic.context
+    assert isinstance(context, UnknownMemberTypeContext)
+    assert (context.member_name, context.stored_type, context.size) == (
+        "odd",
+        "whiteout",
+        5,
+    )
 
 
 @pytest.mark.parametrize(
@@ -680,7 +685,6 @@ def test_an_unreadable_time_diagnostic_names_its_field(stored: str, attr: str) -
         (diagnostic,) = member.diagnostics
     assert diagnostic.message.startswith(f"Invalid XAR {stored} for 'a': 'soon'")
     context = diagnostic.context
-    assert context.member_name == "a"  # type: ignore[attr-defined]
-    assert context.field == attr  # type: ignore[attr-defined]
-    assert context.source == "xar"  # type: ignore[attr-defined]
-    assert context.value_repr == "soon"  # type: ignore[attr-defined]
+    assert isinstance(context, MemberTimestampContext)
+    assert context.member_name == "a"
+    assert (context.field, context.source, context.value_repr) == (attr, "xar", "soon")
