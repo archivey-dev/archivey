@@ -38,7 +38,7 @@ from archivey import (
 )
 from archivey.detection_cost import TierSkipReason
 from archivey.formats import (
-    FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -547,7 +547,7 @@ class _StdlibZipReader(IndexedReader[str]):
 _opened: list[str] = []
 
 
-class StdlibZipPlugin(FormatHandler):
+class StdlibZipPlugin(IndexedFormatHandler):
     format = ArchiveFormat.ZIP
 
     def open(self, source: ReaderSource, context: ReaderContext) -> _StdlibZipReader:
@@ -592,7 +592,7 @@ def test_a_replacement_is_hashable_and_compares_by_value() -> None:
     assert dict(again.replace) == {C.ZIP: StdlibZipPlugin}
 
 
-def _replacement(**attrs: object) -> type[FormatHandler]:
+def _replacement(**attrs: object) -> type[IndexedFormatHandler]:
     return type("Variant", (StdlibZipPlugin,), attrs)
 
 
@@ -609,7 +609,7 @@ class _SequentialZip(SequentialFormatHandler):
         ({C.TAR: StdlibZipPlugin}, "cannot replace ContainerFormat.TAR"),
         ({C.DIRECTORY: StdlibZipPlugin}, "cannot replace ContainerFormat.DIRECTORY"),
         ({"zip": StdlibZipPlugin}, "ContainerFormat keys"),
-        ({C.ZIP: object}, "FormatHandler subclass"),
+        ({C.ZIP: object}, "IndexedFormatHandler subclass"),
         ({C.ZIP: _SequentialZip}, "SequentialFormatHandler"),
         ({C.SEVEN_Z: StdlibZipPlugin}, "must be ArchiveFormat"),
         ({C.ZIP: _replacement(magic=(Magic(0, b"PK"),))}, "declares extensions"),
@@ -669,7 +669,7 @@ def test_unused_arguments_name_the_replacement_not_the_format(tmp_path: Path) ->
         assert "replacement reader" in record.context.reason  # type: ignore[union-attr]
 
 
-class _RecordingIsoPlugin(FormatHandler):
+class _RecordingIsoPlugin(IndexedFormatHandler):
     format = ArchiveFormat.ISO
 
     def open(self, source: ReaderSource, context: ReaderContext) -> _StdlibZipReader:
@@ -699,7 +699,7 @@ def test_the_containers_a_plugin_can_replace() -> None:
     }
 
 
-class _RecordingSquashfsPlugin(FormatHandler):
+class _RecordingSquashfsPlugin(IndexedFormatHandler):
     format = ArchiveFormat.SQUASHFS
 
     def open(self, source: ReaderSource, context: ReaderContext) -> _StdlibZipReader:

@@ -425,12 +425,12 @@ field archivey.FormatInfo.prefixed: bool = False
 field archivey.FormatInfo.unavailable_tiers: tuple[TierSkip, ...] = ()
 property archivey.FormatInfo.from_plugin: bool
 class archivey.FormatPolicy()
-init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[FormatHandler]] | None = None, exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = ()) -> None
+init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[IndexedFormatHandler]] | None = None, exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = ()) -> None
 field archivey.FormatPolicy.exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
 field archivey.FormatPolicy.exclude_libraries: frozenset[OptionalLibrary]
 field archivey.FormatPolicy.only: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None
 field archivey.FormatPolicy.plugins: bool
-field archivey.FormatPolicy.replace: Mapping[ContainerFormat, type[FormatHandler]]
+field archivey.FormatPolicy.replace: Mapping[ContainerFormat, type[IndexedFormatHandler]]
 method archivey.FormatPolicy.allows(self, fmt: ArchiveFormat) -> bool
 class archivey.FormatSupport(Enum)
 enum archivey.FormatSupport
@@ -1034,7 +1034,6 @@ class archivey.formats.FormatHandler(ABC)
 attribute archivey.formats.FormatHandler.extensions = ()
 attribute archivey.formats.FormatHandler.install_hint = None
 attribute archivey.formats.FormatHandler.magic = ()
-method archivey.formats.FormatHandler.open(self, source: ReaderSource, context: ReaderContext) -> FormatReader
 attribute archivey.formats.FormatHandler.probe = None
 attribute archivey.formats.FormatHandler.requires = ()
 method archivey.formats.FormatHandler.translate_exception(self, exc: Exception) -> ArchiveyError | None
@@ -1056,6 +1055,16 @@ class archivey.formats.Hasher(Protocol)
 init archivey.formats.Hasher(*args, **kwargs)
 method archivey.formats.Hasher.digest(self) -> bytes
 method archivey.formats.Hasher.update(self, data: bytes, /) -> None
+class archivey.formats.IndexedFormatHandler(FormatHandler)
+attribute archivey.formats.IndexedFormatHandler.extensions = ()
+attribute archivey.formats.IndexedFormatHandler.install_hint = None
+attribute archivey.formats.IndexedFormatHandler.magic = ()
+attribute archivey.formats.IndexedFormatHandler.non_seekable_reason = None
+method archivey.formats.IndexedFormatHandler.open(self, source: ReaderSource, context: ReaderContext) -> IndexedReader[Any]
+attribute archivey.formats.IndexedFormatHandler.probe = None
+attribute archivey.formats.IndexedFormatHandler.requires = ()
+method archivey.formats.IndexedFormatHandler.translate_exception(self, exc: Exception) -> ArchiveyError | None
+attribute archivey.formats.IndexedFormatHandler.uses_encoding = False
 class archivey.formats.IndexedReader(FormatReader, Generic[LocatorT])
 method archivey.formats.IndexedReader.archive_info(self) -> ReaderArchiveInfo
 method archivey.formats.IndexedReader.close(self) -> None
@@ -1115,7 +1124,6 @@ class archivey.formats.SequentialFormatHandler(FormatHandler)
 attribute archivey.formats.SequentialFormatHandler.extensions = ()
 attribute archivey.formats.SequentialFormatHandler.install_hint = None
 attribute archivey.formats.SequentialFormatHandler.magic = ()
-method archivey.formats.SequentialFormatHandler.open(self, source: ReaderSource, context: ReaderContext) -> FormatReader
 method archivey.formats.SequentialFormatHandler.open_sequential(self, context: ReaderContext) -> SequentialReader
 attribute archivey.formats.SequentialFormatHandler.probe = None
 attribute archivey.formats.SequentialFormatHandler.requires = ()

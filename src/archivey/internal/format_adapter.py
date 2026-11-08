@@ -48,6 +48,7 @@ from archivey.formats import (
     FormatReader,
     ForwardStream,
     Hasher,
+    IndexedFormatHandler,
     IndexedReader,
     MemberData,
     MemberDigest,
@@ -722,8 +723,10 @@ class IndexedReaderAdapter(_PluginAdapter):
         plugin_source = ReaderSource(
             shared.view, shared.size, source.path, shared.read_at
         )
+        plugin = self._plugin
+        assert isinstance(plugin, IndexedFormatHandler)
         with self._translated_errors(), self._handle_guard():
-            reader = self._plugin.open(plugin_source, context)
+            reader = plugin.open(plugin_source, context)
         if not isinstance(reader, IndexedReader):
             self._wrong_reader(reader, "open", "an IndexedReader")
         self._indexed = reader
@@ -2414,9 +2417,13 @@ def prefix_probe(probe: object) -> ContentProbe:
 
 
 def _check_plugin(plugin: type[FormatHandler]) -> ArchiveFormat:
-    if not (isinstance(plugin, type) and issubclass(plugin, FormatHandler)):
+    if not (
+        isinstance(plugin, type)
+        and issubclass(plugin, (IndexedFormatHandler, SequentialFormatHandler))
+    ):
         raise ArchiveyUsageError(
-            f"register_format() takes a FormatHandler subclass, got {plugin!r}"
+            "register_format() takes an IndexedFormatHandler or a "
+            f"SequentialFormatHandler subclass, got {plugin!r}"
         )
     fmt = getattr(plugin, "format", None)
     if not isinstance(fmt, ArchiveFormat):
@@ -2567,17 +2574,17 @@ def check_replacement(container: object, plugin: object) -> None:
         raise _UsageValueError(
             f"{call} cannot replace ContainerFormat.{container.name}; it takes {names}."
         )
-    if not (isinstance(plugin, type) and issubclass(plugin, FormatHandler)):
+    if isinstance(plugin, type) and issubclass(plugin, SequentialFormatHandler):
+        raise _UsageValueError(
+            f"{call}: {plugin.__name__} is a SequentialFormatHandler; a replacement "
+            "reads an indexed container and subclasses IndexedFormatHandler."
+        )
+    if not (isinstance(plugin, type) and issubclass(plugin, IndexedFormatHandler)):
         raise _UsageTypeError(
-            f"{call} takes a FormatHandler subclass for ContainerFormat."
+            f"{call} takes an IndexedFormatHandler subclass for ContainerFormat."
             f"{container.name}, got {plugin!r}."
         )
     name = plugin.__name__
-    if issubclass(plugin, SequentialFormatHandler):
-        raise _UsageValueError(
-            f"{call}: {name} is a SequentialFormatHandler; a replacement reads an "
-            "indexed container and subclasses FormatHandler."
-        )
     expected = ArchiveFormat(container, StreamFormat.UNCOMPRESSED)
     fmt = getattr(plugin, "format", None)
     if fmt != expected:
@@ -2624,7 +2631,8 @@ def _backend_class(
             {}
             if sequential
             else {
-                "NON_SEEKABLE_REASON": "its reader needs random access to the archive"
+                "NON_SEEKABLE_REASON": getattr(plugin, "non_seekable_reason", None)
+                or "its reader needs random access to the archive"
             }
         ),
         "INSTALL_HINT": plugin.install_hint,

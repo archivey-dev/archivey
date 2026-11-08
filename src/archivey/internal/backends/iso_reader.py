@@ -93,7 +93,7 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.formats import (
-    FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -2873,11 +2873,19 @@ def refuse_raw_sector_image(
     )
 
 
-class IsoHandler(FormatHandler):
+class IsoHandler(IndexedFormatHandler):
     """ISO 9660 images, read through ``archivey.formats`` (requires ``pycdlib``)."""
 
     format = ArchiveFormat.ISO
     extensions = (".iso",)
+    # pycdlib addresses the image by absolute offsets (volume descriptors at 32 KiB),
+    # so even a forward-only pass needs a seekable source. The same requirement the
+    # reader raises from, so the hint reported by listing / format_availability and
+    # the one in the open() failure cannot diverge.
+    non_seekable_reason = (
+        "its volume descriptors and directory records are at absolute offsets in "
+        "the image"
+    )
     # The primary volume descriptor's "CD001" magic sits at offset 32 769; detection
     # peeks the extended 32 774-byte window on demand to find it (see
     # internal/detection.py).
@@ -2914,14 +2922,6 @@ class IsoHandler(FormatHandler):
 
 IsoReadBackend = register_builtin_format(
     IsoHandler,
-    # pycdlib addresses the image by absolute offsets (volume descriptors at 32 KiB),
-    # so even a forward-only pass needs a seekable source. The same requirement the
-    # reader raises from, so the hint reported by listing / format_availability and
-    # the one in the open() failure cannot diverge.
-    NON_SEEKABLE_REASON=(
-        "its volume descriptors and directory records are at absolute offsets in "
-        "the image"
-    ),
     OPTIONAL_DEPENDENCY=OptionalLibrary.PYCDLIB,
     INSTALL_HINT=_PYCDLIB_REQUIREMENT.install_hint,
 )
