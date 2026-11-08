@@ -145,7 +145,10 @@ candidate by seeking to it, within the validator allowance: one read of its firs
 bytes, and one more read for each further peek of a longer header. When the source cannot seek
 cheaply (a pipe, or a stream whose backward seek re-decodes), or the allowance cut the
 validator's view short and it declined the candidate, the scan SHALL NOT answer: it records
-`sfx_scan` as cut short and detection goes on to its later steps. A hit there that its validator returns as `VALID` or
+`sfx_scan` as cut short and detection goes on to its later steps. So on such a source a
+smaller budget can fail to detect what the default budget detects; that difference is
+accepted (maintainer ruling, 2026-11-08), and the budget never changes which archive is
+found. A hit there that its validator returns as `VALID` or
 `VALID_SHORT` SHALL be the answer, ahead of any needle before or after it in the window:
 the exact-end preference below is a tie-break between needles of unknown standing, and
 the program's own layout outranks it. When nothing at the overlay start is accepted, the scan below runs

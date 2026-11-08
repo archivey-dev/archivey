@@ -1567,7 +1567,11 @@ they open at once. Close the sending side when the file is done.
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
   (ZIP, 7z, RAR) are searched for. Behind a Windows, Linux or macOS program whose header says
   where its own image ends, an archive that starts exactly there is taken first, ahead of
-  anything else in the window. Otherwise,
+  anything else in the window. That holds under every detection budget: a smaller one, such as
+  `FAST`, still looks there, with a seek. Read from a pipe, under a budget whose window ends before
+  that point, detection gives up instead (`FormatDetectionError` when nothing else names the
+  format), because answering from the program image could open a different archive. Raise
+  `max_scan_bytes`, or pass `format=`. Otherwise,
   among several 7z candidates, one that ends exactly at the end of
   the file is preferred over an earlier one that ends short of it.
 - **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`
