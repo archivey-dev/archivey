@@ -541,6 +541,9 @@ class _RunState:
     # first. A dict used as an ordered set: a hardlink checks and drops a path in
     # constant time, so an archive of many links to one file stays linear.
     source_paths: dict[int, dict[Path, None]] = field(default_factory=dict)
+    # The reverse of ``source_paths``: path -> the one source whose content it holds,
+    # so forgetting a path is one lookup however many sources the run has.
+    source_of: dict[Path, int] = field(default_factory=dict)
     # The entries this run has written under ``dest``.
     written_paths: set[Path] = field(default_factory=set)
     # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> the claim
@@ -3657,15 +3660,27 @@ class ExtractionCoordinator:
         ):
             yield
             return
-        others: list[Path] = []
+        other_name: Path | None = None
         if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
+            # One other name is enough to put the attribute back, as it belongs to
+            # the file. The run's other names of this file are links to the same
+            # source, so while ``path`` is still recorded only that source's paths
+            # are looked at, newest first; a path of another device's copy has
+            # another identity and is passed. A superseded copy is forgotten before
+            # it is removed, so for it every recorded path is a candidate.
             identity = (st.st_dev, st.st_ino)
-            for paths in state.source_paths.values():
-                for other in paths:
-                    with contextlib.suppress(OSError):
-                        ost = os.lstat(long_path(other))
-                        if other != path and (ost.st_dev, ost.st_ino) == identity:
-                            others.append(other)
+            source_id = state.source_of.get(path)
+            candidates: Iterator[Path] = (
+                reversed(state.source_paths[source_id])
+                if source_id is not None
+                else (p for paths in state.source_paths.values() for p in paths)
+            )
+            for other in candidates:
+                with contextlib.suppress(OSError):
+                    ost = os.lstat(long_path(other))
+                    if other != path and (ost.st_dev, ost.st_ino) == identity:
+                        other_name = other
+                        break
         os.chmod(long_path(path), st.st_mode | stat.S_IWRITE)
         try:
             yield
@@ -3674,9 +3689,9 @@ class ExtractionCoordinator:
                 # Still the same file: the block failed.
                 os.chmod(long_path(path), st.st_mode)
             raise
-        for other in others:
+        if other_name is not None:
             with contextlib.suppress(OSError):
-                os.chmod(long_path(other), st.st_mode)
+                os.chmod(long_path(other_name), st.st_mode)
 
     def _forget_source_path(self, path: Path) -> bool:
         """Stop offering ``path`` as a hardlink source: something else is going there.
@@ -3689,16 +3704,16 @@ class ExtractionCoordinator:
         A source left with no path is re-read by the second pass where the source is
         seekable, as an excluded one is.
         """
-        source_paths = self._state.source_paths
-        content_kept = False
-        for source_id, paths in list(source_paths.items()):
-            if path in paths:
-                del paths[path]
-                if paths:
-                    content_kept = True
-                else:
-                    del source_paths[source_id]
-        return content_kept
+        state = self._state
+        source_id = state.source_of.pop(path, None)
+        if source_id is None:
+            return False
+        paths = state.source_paths[source_id]
+        del paths[path]
+        if paths:
+            return True
+        del state.source_paths[source_id]
+        return False
 
     def _resolutions_changed(self) -> None:
         """Forget the cached parent resolutions: a symlink was created or removed."""
@@ -4239,9 +4254,8 @@ class ExtractionCoordinator:
         Records ``new_path`` under ``source_id`` so a later same-device link can reuse
         it — which is what keeps a fan-out across one device boundary to a single copy
         per device rather than one per link, and a fan-out past the link-count limit to
-        one copy per full file. When ``new_path`` already named the source's file, it
-        is not recorded twice: the name existed, so ``_prepare_destination`` dropped it
-        from the list (``_forget_source_path``) before this method ran.
+        one copy per full file. ``_record_source_path`` keeps each path once, as the
+        newest.
 
         The first path at the link-count limit ends the search with a copy. The paths
         recorded before it are older names of the same file, of a file that filled up
@@ -4337,10 +4351,18 @@ class ExtractionCoordinator:
         return landed
 
     def _record_source_path(self, source_id: int, path: Path) -> None:
-        """Record ``path`` as the newest on-disk path holding ``source_id``'s content."""
-        paths = self._state.source_paths.setdefault(source_id, {})
-        paths.pop(path, None)  # newest last, as a list append kept it
+        """Record ``path`` as the newest on-disk path holding ``source_id``'s content.
+
+        A path holds one file, so it belongs to one source: recorded again, it moves
+        to the newest place, and recorded under another source, it leaves the first.
+        """
+        state = self._state
+        if state.source_of.get(path, source_id) != source_id:
+            self._forget_source_path(path)
+        paths = state.source_paths.setdefault(source_id, {})
+        paths.pop(path, None)
         paths[path] = None
+        state.source_of[path] = source_id
 
     def _already_exists(self, dest: Path, member: ArchiveMember) -> ExtractionError:
         """The error ``OverwritePolicy.ERROR`` raises for an entry at ``dest``, from the
