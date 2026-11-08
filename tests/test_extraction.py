@@ -5130,6 +5130,14 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "AB", "src"),
         ("file", "Ab", b"later"),
     ],
+    # The same name twice, then a directory there: the second link supersedes the
+    # first and keeps the name.
+    "repeated-name": [
+        ("file", "src", b"d"),
+        ("hard", "h", "src"),
+        ("hard", "h", "src"),
+        ("dir", "h", None),
+    ],
     "later-name": [
         ("file", "src", b"d"),
         ("file", "S", b"first-S"),

@@ -1701,6 +1701,7 @@ class ExtractionCoordinator:
             member_bytes = state.counted.pop(index)
             state.tracker.refund(0 if content_kept else member_bytes)
         state.orphans[:] = [o for o in state.orphans if o.result_index != index]
+        self._release_reservation_of(index)
 
     def _drop_parked_copies(self, name: str, result_index: int | None) -> None:
         """Remove each parked copy of ``name`` unless the member just handled, recorded
@@ -3371,16 +3372,35 @@ class ExtractionCoordinator:
             state.folds_case = folds
         return state.folds_case
 
+    def _release_reservation_of(self, index: int) -> None:
+        """Drop the name the held-back link of result ``index`` holds, if any, for a
+        link taken back (``_take_back_written``): the claim it took the name from
+        gets it back, so a later copy of the same name meets what the link would
+        have replaced, not the link."""
+        state = self._state
+        for key, orphan in state.reservations.items():
+            if orphan.result_index != index:
+                continue
+            del state.reservations[key]
+            self._give_back_name(key, orphan)
+            return
+
+    def _give_back_name(self, key: str, orphan: _Orphan) -> None:
+        """Put back the claim ``orphan``'s reservation took ``key`` from, unless a
+        later member has claimed ``key`` since (``REPLACE``)."""
+        collision_map = self._state.collision_map
+        claim = collision_map.get(key)
+        if claim is not None and claim.result_index == orphan.result_index:
+            del collision_map[key]
+            if orphan.previous_claim is not None:
+                collision_map[key] = orphan.previous_claim
+
     def _release_reservations(self) -> None:
         """Give each held-back link's name back to the claim it took it from, so the
         second pass resolves the link as the first pass would have."""
         state = self._state
         for key, orphan in state.reservations.items():
-            claim = state.collision_map.get(key)
-            if claim is not None and claim.result_index == orphan.result_index:
-                del state.collision_map[key]
-                if orphan.previous_claim is not None:
-                    state.collision_map[key] = orphan.previous_claim
+            self._give_back_name(key, orphan)
         state.reservations.clear()
         state.rename_next.clear()
 
