@@ -120,7 +120,15 @@ def _config_with_gzip_isize(source: CodecSource, config: StreamConfig) -> Stream
     bound for ``VerifyingStream``, but ISIZE is mod 2**32 and multi-member gzip's
     trailer covers only the last member.
     """
-    if config.gzip_isize_backstop or config.expected_decompressed_size is not None:
+    if (
+        config.gzip_isize_backstop
+        or config.expected_decompressed_size is not None
+        # A detection probe decodes a bounded prefix and never reaches the trailer,
+        # and the end of its source is the end of the probe's window: seeking there
+        # would pull the whole window (up to 1 MiB) for an ISIZE that is not the
+        # file's.
+        or config.probe_read_bound is not None
+    ):
         return config
     # Reading the trailer seeks to the end of the source. On a member stream that
     # decompresses, that decodes all of it, and the restore decodes it again. Without

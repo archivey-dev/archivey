@@ -424,6 +424,42 @@ def test_inner_tar_over_gzip_is_tar_gz() -> None:
     assert info.detected_by == "content_probe"
 
 
+def test_inner_tar_probe_over_gzip_does_not_read_to_the_end() -> None:
+    # The probe decodes the first block only. Seeking to the end of its window for the
+    # gzip ISIZE trailer pulled the whole window (up to 1 MiB) through detection, which
+    # doubled what a remote .tar.gz open fetched.
+    import gzip
+    import tarfile
+
+    rng = random.Random(5)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        for i in range(40):
+            payload = rng.randbytes(16 * 1024)
+            info = tarfile.TarInfo(f"m{i}")
+            info.size = len(payload)
+            t.addfile(info, io.BytesIO(payload))
+    data = gzip.compress(buf.getvalue())
+
+    class CountingBytesIO(io.BytesIO):
+        bytes_read = 0
+
+        def read(self, size: int | None = -1, /) -> bytes:
+            chunk = super().read(size)
+            self.bytes_read += len(chunk)
+            return chunk
+
+        def readinto(self, b: bytearray | memoryview, /) -> int:  # type: ignore[override]
+            n = super().readinto(b)
+            self.bytes_read += n
+            return n
+
+    source = CountingBytesIO(data)
+    assert detect_format(source).format == ArchiveFormat.TAR_GZ
+    assert len(data) > 512 * 1024
+    assert source.bytes_read <= 256 * 1024
+
+
 def test_gzip_without_inner_tar_stays_bare_gz() -> None:
     import gzip
 
