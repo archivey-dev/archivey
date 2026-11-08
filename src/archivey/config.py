@@ -65,9 +65,10 @@ class AcceleratorMode(Enum):
         ``PackageNotInstalledError`` if the package is missing — the user asked for it
         explicitly; ``min_size`` is ignored). ``AUTO`` enables it only when ``seekable``
         is true and the package is available, so a missing package falls back silently.
-        ``seekable`` is the demand for the accelerator: declared seeking, or for the
-        DEFLATE family also a large sequential read judged worth it
-        (``_sequential_read_pays`` in ``codecs/rapidgzip_select.py``). When ``min_size``
+        ``seekable`` is the demand for the accelerator: declared seeking, or a large
+        sequential read judged worth it (``_sequential_read_pays`` in
+        ``codecs/rapidgzip_select.py`` for the DEFLATE family,
+        ``_bzip2_sequential_read_pays`` in ``codecs/bzip2_codec.py``). When ``min_size``
         is set and ``input_size`` is known and strictly below that threshold, ``AUTO``
         also falls back (tiny members do not repay per-stream accelerator setup).
         Unknown ``input_size`` keeps the pre-threshold AUTO behaviour.

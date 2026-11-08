@@ -11,6 +11,7 @@ import functools
 import io
 import random
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -95,19 +96,39 @@ def _sequential_config(compressed: bytes) -> StreamConfig:
     return StreamConfig(
         use_indexed_bzip2=AcceleratorMode.AUTO,
         source_seekable=True,
+        source_is_file=True,
         compressed_input_size=len(compressed),
     )
 
 
-def test_auto_takes_a_large_sequential_read_through_the_accelerator(
-    monkeypatch: pytest.MonkeyPatch,
+def test_auto_takes_a_large_sequential_read_of_a_file_through_the_accelerator(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(bzip2_codec, "_SEQUENTIAL_PLATFORM", True)
     monkeypatch.setattr(bzip2_codec, "_usable_cpus", lambda: 4)
     payload, compressed = _at_threshold()
-    config = _sequential_config(compressed)
-    with open_codec_stream(Codec.BZIP2, io.BytesIO(compressed), config=config) as s:
+    path = tmp_path / "a.bz2"
+    path.write_bytes(compressed)
+    config = replace(_sequential_config(compressed), source_is_file=False)
+    with (
+        path.open("rb") as f,
+        open_codec_stream(Codec.BZIP2, f, config=config) as s,
+    ):
         assert _uses_child(s)
+        assert s.read() == payload
+
+
+def test_auto_keeps_a_sequential_read_of_a_callers_stream_in_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The accelerator reads its bzip2 input about twice; a caller's stream (a remote
+    # file above all) would serve it all twice.
+    monkeypatch.setattr(bzip2_codec, "_SEQUENTIAL_PLATFORM", True)
+    monkeypatch.setattr(bzip2_codec, "_usable_cpus", lambda: 4)
+    payload, compressed = _at_threshold()
+    config = replace(_sequential_config(compressed), source_is_file=False)
+    with open_codec_stream(Codec.BZIP2, io.BytesIO(compressed), config=config) as s:
+        assert not _uses_child(s)
         assert s.read() == payload
 
 
@@ -117,6 +138,7 @@ def test_auto_takes_a_large_sequential_read_through_the_accelerator(
         pytest.param({}, 1, True, id="one-cpu"),
         pytest.param({}, 4, False, id="unmeasured-platform"),
         pytest.param({"source_seekable": False}, 4, True, id="forward-only-source"),
+        pytest.param({"source_is_file": False}, 4, True, id="not-a-file"),
         pytest.param({"compressed_input_size": None}, 4, True, id="unknown-size"),
         pytest.param(
             {"compressed_input_size": INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE - 1},
