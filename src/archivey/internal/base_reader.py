@@ -146,7 +146,7 @@ from archivey.internal.streams.counting import (
     OutputCountingStream,
     SeekCountingStream,
 )
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.decompressor_stream import StreamChecksumError
 from archivey.internal.streams.streamtools import (
     OneReadEachStream,
     ReadableStream,
@@ -4220,7 +4220,7 @@ class BaseArchiveReader(ArchiveReader):
                     break
                 except DiagnosticRaisedError:
                     raise
-                except _StreamChecksumError as e:
+                except StreamChecksumError as e:
                     # A codec checksum over the archive stream failed (a .tar.gz
                     # trailer). It may cover only some of the files (a concatenated
                     # .tar.gz, a multi-frame .tar.zst), and nothing says which, so

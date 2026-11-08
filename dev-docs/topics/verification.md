@@ -241,7 +241,7 @@ Until it passes, each member's `verified` stays where its own reads left it, usu
   reader, since a random-access listing is walked once, and leaves only when the check
   runs (`_spanning_check_ran`). An xz or bzip2 check failure looks like damage to
   archivey and goes the same way. A failed gzip, zlib, lzip, zstd or LZ4 checksum
-  (`_StreamChecksumError`) returns every listed file (§3.2). A walk the caller cut
+  (`StreamChecksumError`) returns every listed file (§3.2). A walk the caller cut
   short changes nothing. Listing such an archive on a random-access reader reads it to
   the end, so its members are often at `CHECKSUM` before any read.
 - **7z folders.** A folder can store one CRC for its whole unpacked stream and none per
