@@ -196,6 +196,16 @@ class MemberData(NamedTuple):
     more than ``size`` bytes either way, but a stream that breaks the promise has
     its extra bytes go unreported, where they would raise ``CorruptionError``."""
 
+    ranges: tuple[tuple[int, int], ...] = ()
+    """The spans ``(start, end)`` of the archive the stream reads, in archive
+    offsets, end exclusive: the member's stored or compressed bytes. An archive read
+    by range from an ``fsspec`` file system then fetches each span in one request (up
+    to the largest fetch archivey makes) when the stream first reads it, not in steps
+    that start small; any other source ignores them. They never change what a read
+    returns, and a wrong one costs only a fetch. archivey learns them when
+    ``open_member`` returns, so a read the plugin makes inside ``open_member`` is not
+    covered."""
+
 
 class MemberSpan(NamedTuple):
     """One member, as :meth:`SequentialReader.walk` yields it: the member, and either
