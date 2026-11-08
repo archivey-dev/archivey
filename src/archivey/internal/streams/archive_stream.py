@@ -1080,7 +1080,12 @@ class ArchiveStreamImpl(ArchiveStream):
 
         ``frames=False`` leaves out a codec's per-frame checks (``_frame_verdict``).
         """
-        below = ask_verification_proofs(self._inner)
+        return self._proofs_over(ask_verification_proofs(self._inner), frames=frames)
+
+    def _proofs_over(
+        self, below: VerificationProofs, *, frames: bool = True
+    ) -> VerificationProofs:
+        """This stream's proofs on top of ``below``, the layers' answer under it."""
         ended = self._ended_from_start
         frames_content, frames_possible = (
             self._frame_verdict(below) if frames else (False, False)
@@ -1144,12 +1149,7 @@ class ArchiveStreamImpl(ArchiveStream):
     def _ceiling_now(self, *, frames: bool = True) -> Verification:
         """The most a read to the end can prove, from the layers' proofs (without a
         codec's per-frame checks with ``frames=False``)."""
-        proofs = self._verification_proofs(frames=frames)
-        if proofs.content_possible:
-            return Verification.CHECKSUM
-        if proofs.key_in_doubt:
-            return Verification.NONE
-        return Verification.LENGTH
+        return _ceiling_of(self._verification_proofs(frames=frames))
 
     def _sync_member_level(self) -> None:
         """Raise the member to what this stream has proved (``raise_member_level``).
@@ -1163,11 +1163,13 @@ class ArchiveStreamImpl(ArchiveStream):
             return
         if self._inner is None:
             return
+        # The layers are asked once: a sync runs on every open, end of data and close,
+        # and each answer walks the whole stack.
         below = ask_verification_proofs(self._inner)
         without: Verification | None = None
         if below.per_frame:
             possible = self._frame_verdict(below)[1]
-            without = self._ceiling_now(frames=False)
+            without = _ceiling_of(self._proofs_over(below, frames=False))
             if not possible:
                 note_frame_unchecked(member, without)
             # A frame read later can lower the ceiling only while the frames' checks
@@ -1179,8 +1181,10 @@ class ArchiveStreamImpl(ArchiveStream):
             )
             if self._frames_pending and self._frame_watch is None:
                 self._frame_watch = find_frame_watch(self._inner)
+        # After ``note_frame_unchecked``: the frames' verdict reads the member's flag.
+        proofs = self._proofs_over(below)
         raise_member_level(
-            member, self._level_now(), self._ceiling_now(), without_frames=without
+            member, _level_of(proofs), _ceiling_of(proofs), without_frames=without
         )
 
     def _sync_frame_unchecked(self) -> None:
@@ -1198,16 +1202,7 @@ class ArchiveStreamImpl(ArchiveStream):
         """The level the layers' proofs add up to."""
         if self._inner is None:
             return Verification.NONE
-        proofs = self._verification_proofs()
-        # A checksum that matched every byte proves the key as well: a wrong key does
-        # not decrypt to data that matches it.
-        if proofs.ended and proofs.content:
-            return Verification.CHECKSUM
-        if proofs.key_in_doubt:
-            return Verification.NONE
-        if proofs.ended:
-            return Verification.LENGTH
-        return Verification.UNLOCKED
+        return _level_of(self._verification_proofs())
 
     @override
     def nearest_resume_offset(self, target: int) -> int | None:
@@ -1534,3 +1529,25 @@ def _is_content_verdict(error: BaseException) -> bool:
         seen.add(id(current))
         current = current.__cause__
     return False
+
+
+def _level_of(proofs: VerificationProofs) -> Verification:
+    """The level ``proofs`` add up to, for a stream that has opened its data."""
+    # A checksum that matched every byte proves the key as well: a wrong key does not
+    # decrypt to data that matches it.
+    if proofs.ended and proofs.content:
+        return Verification.CHECKSUM
+    if proofs.key_in_doubt:
+        return Verification.NONE
+    if proofs.ended:
+        return Verification.LENGTH
+    return Verification.UNLOCKED
+
+
+def _ceiling_of(proofs: VerificationProofs) -> Verification:
+    """The most a read to the end can prove, given ``proofs``."""
+    if proofs.content_possible:
+        return Verification.CHECKSUM
+    if proofs.key_in_doubt:
+        return Verification.NONE
+    return Verification.LENGTH
