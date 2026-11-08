@@ -605,8 +605,15 @@ class XarReader(IndexedReader[_Location]):
                 "which archivey does not read"
             )
         start = self._heap + data.offset
+        end = start + data.length
         size = self._source.size
-        if size is not None and start + data.length > size:
+        if size is not None:
+            cut = end > size
+        else:
+            # A source whose size is not known: is the last byte there? Otherwise the
+            # codec would meet the cut first and report it as damage.
+            cut = data.length > 0 and not self._source.read_at(end - 1, 1)
+        if cut:
             raise TruncatedError(
                 f"the XAR archive ends inside the data of {quoted(member.name)}"
             )
