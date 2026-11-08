@@ -413,6 +413,7 @@ def test_archive_close_waits_for_an_in_flight_member_read() -> None:
     assert got == [b"data"]
 
 
+@pytest.mark.usefixtures("zip_general_path")
 def test_archive_closed_before_the_overrun_probe() -> None:
     """A close between the last declared byte and the over-run probe keeps the read.
 
@@ -428,11 +429,13 @@ def test_archive_closed_before_the_overrun_probe() -> None:
 
     class _ClosesOnRead(io.BytesIO):
         armed = False
+        fired = False
 
         def read(self, size: int | None = -1, /) -> bytes:
             out = super().read(size)
             if self.armed:
                 self.armed = False
+                self.fired = True
                 ar.close()
             return out
 
@@ -441,6 +444,7 @@ def test_archive_closed_before_the_overrun_probe() -> None:
     with ar.open("a.txt") as stream:
         source.armed = True
         assert stream.read() == data
+    assert source.fired  # the close happened inside the member's read
 
 
 @pytest.mark.usefixtures("zip_general_path")

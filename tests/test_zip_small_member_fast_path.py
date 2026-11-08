@@ -20,6 +20,7 @@ from collections.abc import Callable
 import pytest
 
 from archivey import open_archive
+from archivey.exceptions import SourceChangedError
 from archivey.internal.backends import zip_reader
 
 
@@ -185,3 +186,55 @@ def test_a_declared_size_one_short_reads_the_same(
 ) -> None:
     data = _deflate_member_zip(_raw_deflate(_TEXT), _TEXT[:-1])
     assert _outcome(data) == _general(monkeypatch, data)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(lambda: ValueError("boom"), id="value-error"),
+        pytest.param(
+            lambda: SourceChangedError("the object changed"), id="source-changed"
+        ),
+    ],
+)
+def test_an_error_from_the_source_reads_the_same(
+    monkeypatch: pytest.MonkeyPatch, error: Callable[[], Exception]
+) -> None:
+    """The source raises once a read reaches the payload: the error comes out as the
+    general path gives it, translated and stamped with the member."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("x.txt", _TEXT, compress_type=zipfile.ZIP_DEFLATED)
+    data = buf.getvalue()
+    payload = data.index(b"x.txt") + len("x.txt")
+
+    class _Raises(io.BytesIO):
+        armed = False
+
+        def read(self, size: int | None = -1, /) -> bytes:
+            if self.armed and self.tell() + (size or 0) > payload:
+                raise error()
+            return super().read(size)
+
+    def outcome() -> tuple[object, ...]:
+        source = _Raises(data)
+        with open_archive(source) as ar:
+            member = ar.get("x.txt")
+            source.armed = True
+            try:
+                with ar.open(member) as stream:
+                    stream.read()
+            except Exception as exc:  # noqa: BLE001 - the error is what is compared
+                return (
+                    type(exc).__name__,
+                    str(exc),
+                    getattr(exc, "member_name", None),
+                )
+            return ("read",)
+
+    fast = outcome()
+    with monkeypatch.context() as m:
+        m.setattr(zip_reader, "_SPECULATIVE_MAX", -1)
+        general = outcome()
+    assert fast == general
+    assert general[2] == "x.txt"
