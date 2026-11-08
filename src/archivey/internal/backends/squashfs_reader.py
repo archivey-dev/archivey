@@ -36,7 +36,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import (
-    FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -1082,11 +1082,13 @@ class _MetadataCursor:
         return b"".join(parts)
 
 
-class SquashfsHandler(FormatHandler):
+class SquashfsHandler(IndexedFormatHandler):
     """SquashFS 4.0 images: ``.squashfs``, ``.sqfs`` and snap packages."""
 
     format = ArchiveFormat.SQUASHFS
     extensions = (".squashfs", ".sqfs", ".snap")
+    # The tables are at offsets the superblock gives, past the data blocks.
+    non_seekable_reason = "its directory and inode tables come after the file data"
     # ``sqsh`` too, so an older big-endian image is refused by name, not left undetected.
     magic = (Magic(0, MAGIC), Magic(0, _SWAPPED_MAGIC))
     uses_encoding = True
@@ -1096,8 +1098,4 @@ class SquashfsHandler(FormatHandler):
         return SquashfsReader(source, context)
 
 
-SquashfsReadBackend = register_builtin_format(
-    SquashfsHandler,
-    # The tables are at offsets the superblock gives, past the data blocks.
-    NON_SEEKABLE_REASON="its directory and inode tables come after the file data",
-)
+SquashfsReadBackend = register_builtin_format(SquashfsHandler)

@@ -2377,7 +2377,6 @@ def test_a_listing_stopped_early_records_a_held_report_without_raising(
     reader's name with no member id, and the policy's raise is dropped rather than
     lost as an "Exception ignored" in the walk's close. Fails with the report sent
     outside ``deferring_raises``."""
-    import gc
     import sys
 
     unraisable: list[object] = []
@@ -2389,9 +2388,12 @@ def test_a_listing_stopped_early_records_a_held_report_without_raising(
     with open_archive(path, format=fmt, config=config, streaming=True) as reader:
         for _member in reader:
             break
-    # The walk closes when it is collected.
-    del reader, _member
-    gc.collect()
+        # Nothing closes a walk stopped part-way but the collector, which on PyPy
+        # need not get to it on one gc.collect(): close it here, as the collector
+        # would.
+        walk = reader._walk  # type: ignore[attr-defined]  # the backend's walk
+        assert walk is not None
+        walk.close()
     (late,) = [d for d in seen if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID]
     assert late.context.member_name == "late"  # type: ignore[union-attr]
     assert late.context.member_id is None  # type: ignore[union-attr]

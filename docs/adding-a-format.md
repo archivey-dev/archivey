@@ -43,9 +43,11 @@ do.
 
 A format is two classes:
 
-- A **`FormatHandler`** subclass. Its class attributes say what the format is called and
-  how to recognise it: an `ArchiveFormat`, file extensions, and magic bytes. Its `open()`
-  method returns a reader.
+- An **`IndexedFormatHandler`** subclass. Its class attributes say what the format is
+  called and how to recognise it: an `ArchiveFormat`, file extensions, and magic bytes.
+  Its `open()` method returns a reader. Its `non_seekable_reason` says, in a few words,
+  why the format needs a seekable source (`"its index is at the end of the file"`), for
+  the error a pipe gets.
 - An **`IndexedReader`** subclass. It lists the members with `iter_members()`, and returns
   the data of one member with `open_member()`.
 
@@ -88,7 +90,7 @@ from archivey import (
     StreamFormat,
 )
 from archivey.formats import (
-    FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -141,7 +143,7 @@ class ToyReader(IndexedReader[Locator]):
         return MemberData(self._source.view(offset, size))
 
 
-class ToyHandler(FormatHandler):
+class ToyHandler(IndexedFormatHandler):
     format = TOYA
     extensions = (".toya",)
     magic = (Magic(0, b"TOYARC1\n"),)
@@ -389,9 +391,9 @@ A format of header, data, header, data has no index to list from: the only way t
 the members is to read the archive from the start. Such a format can be read from a pipe,
 and a plugin for it has two other classes:
 
-- A **`SequentialFormatHandler`** subclass. It declares the format as a `FormatHandler`
-  does, but implements `open_sequential(context)` instead of `open()`. There is no
-  `ReaderSource`, because the archive may be a pipe.
+- A **`SequentialFormatHandler`** subclass. It declares the format as an
+  `IndexedFormatHandler` does, but implements `open_sequential(context)` instead of
+  `open()`. There is no `ReaderSource`, because the archive may be a pipe.
 - A **`SequentialReader`** subclass. Its `walk(stream)` is a generator that reads headers
   from a `ForwardStream` and yields one `MemberSpan` per member.
 
@@ -476,7 +478,9 @@ What archivey does with the spans:
   the bytes, extraction creates the directory, and the listing reports
   `MEMBER_DIRECTORY_DATA_IGNORED`, as for a built-in format.
 
-`SequentialFormatHandler` takes the same class attributes as `FormatHandler`. The format's
+`SequentialFormatHandler` takes the same class attributes as `IndexedFormatHandler`, except
+`non_seekable_reason`: it reads a pipe. Both share the base class `FormatHandler`, which
+holds those attributes and `translate_exception()`. The format's
 `archive.info.cost` says the listing needs a scan, and `format_availability()` reports
 that it can be read from a source that cannot seek.
 
@@ -670,7 +674,7 @@ def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
     return None
 ```
 
-Define it on the `FormatHandler` to cover `open()` too, where there is no reader yet. The
+Define it on the handler to cover `open()` too, where there is no reader yet. The
 plugin's `translate_exception()` is also asked about anything the reader's returns
 `None` for, so a translation that needs nothing from the open archive is written once,
 on the plugin.
@@ -770,7 +774,7 @@ A plugin that wraps a library names its modules in `requires` and what to instal
 `install_hint`:
 
 ```python
-class CabHandler(FormatHandler):
+class CabHandler(IndexedFormatHandler):
     requires = ("cabarchive",)
     install_hint = "pip install cabarchive"
 ```

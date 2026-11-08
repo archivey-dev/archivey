@@ -7,15 +7,15 @@ policy: any release may change or remove it, a patch release included, with no
 deprecation warning first. Pin the exact archivey version a plugin is tested with.
 
 A format that fits the model is two classes, whether it is built in (ISO 9660) or added
-by a program or a separate package (a plugin). A :class:`FormatHandler` subclass
-declares the format: its :class:`~archivey.ArchiveFormat`, file extensions, magic bytes,
-and an ``open()`` that returns a reader. The reader subclasses :class:`IndexedReader` (a
-format with an index: list the members first, then open any one of them) or
-:class:`SequentialReader` (a format of header, data, header, data, read in one forward
-pass, from a pipe too). The reader hands archivey members and bytes; archivey does the
-rest the same way for every format: name normalization and the name checks, listing
-limits, link resolution, safe extraction and its limits, and the size and digest checks
-on member data. Formats that do not fit, or need special features or more speed, are
+by a program or a separate package (a plugin). A handler declares the format: its
+:class:`~archivey.ArchiveFormat`, file extensions and magic bytes, and opens a reader.
+An :class:`IndexedFormatHandler` opens an :class:`IndexedReader` (a format with an
+index: list the members first, then open any one of them); a
+:class:`SequentialFormatHandler` opens a :class:`SequentialReader` (a format of header,
+data, header, data, read in one forward pass, from a pipe too). The reader hands
+archivey members and bytes; archivey does the rest the same way for every format: name
+normalization and the name checks, listing limits, link resolution, safe extraction and
+its limits, and the size and digest checks on member data. Formats that do not fit, or need special features or more speed, are
 written against archivey's internal reader classes instead.
 
 A program registers a format with :func:`register_format`. Nothing is loaded
@@ -92,6 +92,7 @@ __all__ = [
     "FormatReader",
     "ForwardStream",
     "Hasher",
+    "IndexedFormatHandler",
     "IndexedReader",
     "Magic",
     "MemberData",
@@ -921,8 +922,10 @@ class SequentialReader(FormatReader):
 
 
 class FormatHandler(ABC):
-    """One format: what identifies it, and how to open it. Never instantiated by a
-    caller; archivey calls :meth:`open` on an instance it makes."""
+    """What every format declares: what identifies it, and the modules it needs.
+    Subclass :class:`IndexedFormatHandler` or :class:`SequentialFormatHandler`, not
+    this class: each adds the method that opens its shape of reader. Never
+    instantiated by a caller; archivey makes the instance it opens with."""
 
     format: ClassVar[ArchiveFormat]
     """The format, with ``StreamFormat.UNCOMPRESSED``. A plugin builds it from a
@@ -967,16 +970,25 @@ class FormatHandler(ABC):
         """
         return None
 
+
+class IndexedFormatHandler(FormatHandler):
+    """A format with an index, read from a seekable source: :meth:`open` returns an
+    :class:`IndexedReader`. A pipe is refused before :meth:`open` is called."""
+
+    non_seekable_reason: ClassVar[str | None] = None
+    """Why the format needs a seekable source: the clause the ``StreamNotSeekableError``
+    a pipe gets gives (``"its index is at the end of the file"``). ``None`` gives a
+    generic reason."""
+
     @abstractmethod
-    def open(self, source: ReaderSource, context: ReaderContext) -> FormatReader:
+    def open(self, source: ReaderSource, context: ReaderContext) -> IndexedReader[Any]:
         """Open the archive. Raise ``CorruptionError`` or ``TruncatedError`` when its
         structure is damaged, as a built-in reader does."""
 
 
 class SequentialFormatHandler(FormatHandler):
-    """A format read in one forward pass. Subclass this instead of
-    :class:`FormatHandler`, and implement :meth:`open_sequential` instead of
-    :meth:`~FormatHandler.open`: there is no seekable source to hand over, since the
+    """A format read in one forward pass: :meth:`open_sequential` returns a
+    :class:`SequentialReader`. There is no seekable source to hand over, since the
     archive may be a pipe. Its bytes reach :meth:`SequentialReader.walk`.
 
     Registering one also registers the format inside each single-file compression
@@ -995,20 +1007,13 @@ class SequentialFormatHandler(FormatHandler):
         raises from the first step of :meth:`SequentialReader.walk`, which archivey
         takes when it opens the archive."""
 
-    @override
-    def open(self, source: ReaderSource, context: ReaderContext) -> FormatReader:
-        """Not called for a sequential format: archivey calls
-        :meth:`open_sequential`."""
-        raise TypeError(
-            f"{type(self).__name__} is a SequentialFormatHandler: archivey calls "
-            "open_sequential(), not open()"
-        )
-
 
 _register_lock = threading.Lock()
 
 
-def register_format(handler: type[FormatHandler]) -> None:
+def register_format(
+    handler: type[IndexedFormatHandler | SequentialFormatHandler],
+) -> None:
     """Make archivey read the format ``handler`` declares, in this process.
 
     Register before other threads open archives: detection reads the registry
@@ -1018,9 +1023,10 @@ def register_format(handler: type[FormatHandler]) -> None:
     format lists and ``format="<extension>"`` all know the format. There is no way to
     remove a registration.
 
-    Raises ``ArchiveyUsageError`` when the format is registered already, when its
-    container value is a built-in's or another plugin's, or when one of its
-    extensions is a built-in format's.
+    Raises ``ArchiveyUsageError`` when ``handler`` subclasses neither
+    :class:`IndexedFormatHandler` nor :class:`SequentialFormatHandler`, when the format
+    is registered already, when its container value is a built-in's or another
+    plugin's, or when one of its extensions is a built-in format's.
     """
     # Imported here: the registry imports the backends, and they import this module's
     # neighbours, so a module-level import would be circular for a caller that imports
@@ -1249,7 +1255,8 @@ def buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO:
 
 
 def _bind_policy_hint() -> None:
-    """Bind ``FormatHandler`` where :class:`~archivey.FormatPolicy` is defined.
+    """Bind ``IndexedFormatHandler`` where :class:`~archivey.FormatPolicy` is
+    defined.
 
     ``FormatPolicy.replace`` is annotated with it, but that module cannot import this
     one (this module imports the config, which imports the policy), so it names it only
@@ -1258,7 +1265,7 @@ def _bind_policy_hint() -> None:
     """
     from archivey import format_policy
 
-    format_policy.FormatHandler = FormatHandler
+    format_policy.IndexedFormatHandler = IndexedFormatHandler
 
 
 _bind_policy_hint()
