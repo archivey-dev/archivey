@@ -314,24 +314,56 @@ def test_an_unlimited_budget_reads_a_long_license() -> None:
         assert _contents(reader) == FILES
 
 
+_HEADER_START = b"#!/bin/sh\n# This script was generated using Makeself 2.7.1\n"
+_OLD_HEADER = (DATA / "gzip-2.4.0.run").read_bytes()
+_OLD_VARIABLES = _OLD_HEADER[: _OLD_HEADER.index(b"MS_Printf()")]
+
+
 @pytest.mark.parametrize(
-    "body",
+    ("data", "error"),
     [
         pytest.param(
-            b'label="' + b"x" * 79 + b"\n" + (b"x" * 79 + b"\n") * 2**15,
-            id="value-never-closed",
+            _HEADER_START
+            + b'label="'
+            + b"x" * 79
+            + b"\n"
+            + (b"x" * 79 + b"\n") * 2**15,
+            "before its variables end",
+            id="value-over-lines-never-closed",
         ),
         pytest.param(
-            b"".join(b'v%d="x"\n' % i for i in range(2**18)), id="no-function"
+            _HEADER_START + b"".join(b'v%d="x"\n' % i for i in range(2**18)),
+            "before its variables end",
+            id="no-function",
+        ),
+        pytest.param(
+            _HEADER_START + b'label="' + b"x" * 2**21,
+            "before its variables end",
+            id="value-no-newline",
+        ),
+        pytest.param(
+            _HEADER_START + b"x" * 2**21,
+            "before its variables end",
+            id="line-no-newline",
+        ),
+        pytest.param(
+            _HEADER_START + b'v="x"' + b"y" * 2**21,
+            "before its variables end",
+            id="after-value-no-newline",
+        ),
+        pytest.param(
+            _OLD_VARIABLES + b"MS_Printf()\n{\n" + b"y" * 2**21,
+            "before the script states",
+            id="old-offsets-line-no-newline",
         ),
     ],
 )
 def test_the_header_is_read_in_one_pass(
-    body: bytes, monkeypatch: pytest.MonkeyPatch
+    data: bytes, error: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Each chunk is parsed once: the parse goes on from where the last one stopped,
     so a header that never ends costs time in proportion to its length. Counted as
-    the bytes the parse's patterns match over."""
+    the bytes the parse's patterns and newline searches go over."""
     scanned = [0]
 
     class Counting:
@@ -343,14 +375,29 @@ def test_the_header_is_read_in_one_pass(
             scanned[0] += (found.end() if found else pos) - pos + 1
             return found
 
-    for name in ("_VALUE", "_LINE_ASSIGNMENT"):
+        def search(self, buffer: bytearray, pos: int, *end: int) -> re.Match[bytes]:
+            scanned[0] += (end[0] if end else len(buffer)) - pos + 1
+            return self._pattern.search(buffer, pos, *end)
+
+    for name in ("_VALUE", "_LINE_ASSIGNMENT", "_OLD_OFFSET"):
         monkeypatch.setattr(
             makeself_reader, name, Counting(getattr(makeself_reader, name))
         )
-    data = b"#!/bin/sh\n# This script was generated using Makeself 2.7.1\n" + body
-    with pytest.raises(TruncatedError, match="before its variables end"):
+
+    def find(buffer: bytearray, start: int) -> int:
+        found = buffer.find(b"\n", start)
+        scanned[0] += (len(buffer) if found < 0 else found) - start + 1
+        return found
+
+    def rfind(buffer: bytearray, start: int) -> int:
+        scanned[0] += len(buffer) - start + 1
+        return buffer.rfind(b"\n", start)
+
+    monkeypatch.setattr(makeself_reader, "_find_newline", find)
+    monkeypatch.setattr(makeself_reader, "_rfind_newline", rfind)
+    with pytest.raises(TruncatedError, match=error):
         open_archive(io.BytesIO(data), format=MAKESELF)
-    assert scanned[0] <= 2 * len(data)
+    assert scanned[0] <= 3 * len(data)
 
 
 def test_base64_reads_on_after_padding_as_gnu_base64_does() -> None:

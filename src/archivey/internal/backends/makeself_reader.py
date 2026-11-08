@@ -252,22 +252,27 @@ class MakeselfReader(SequentialReader):
         skip: int | None = None
         end: int | None = None
         scanned = 0
+        # Where the search for the buffer's last newline ended, and the end of the
+        # whole lines before it.
+        searched = whole_end = 0
         while True:
             if variables is None and parser.feed(buffer):
                 variables, block_end = parser.variables, parser.block_end
-                scanned = block_end
+                scanned = searched = whole_end = block_end
                 stated = variables.get(b"skip")
                 if stated is not None:
                     skip = _number(stated, "skip")
             if variables is not None and skip is None:
                 # makeself 2.2.0 to 2.4.0: the count is in the script's offset lines.
-                found = _OLD_OFFSET.search(buffer, scanned)
+                # Whole lines only, each searched once: the last line may still
+                # be arriving.
+                whole_end = _rfind_newline(buffer, searched) + 1 or whole_end
+                searched = len(buffer)
+                found = _OLD_OFFSET.search(buffer, scanned, whole_end)
                 if found is not None:
                     skip = int(found.group(1))
                 else:
-                    # A line can straddle the end of what is read; look again from
-                    # its start.
-                    scanned = max(block_end, buffer.rfind(b"\n") + 1)
+                    scanned = max(scanned, whole_end)
             if skip is not None:
                 end = lines.after(buffer, skip)
                 if end is not None:
@@ -432,8 +437,10 @@ class _VariableParser:
     not grow with the header. One of those assigned twice is damage: the shell would
     take the last, and a reader should not have to guess which one makeself wrote.
 
-    ``feed`` goes on from where the last call stopped: the start of the line it could
-    not finish, or inside a value, the point the value was read to.
+    ``feed`` goes on from where the last call stopped and reads each byte about once:
+    a newline is looked for only past where the last search ended, a line is matched
+    only once its newline is in, and a value that runs over lines is read on from the
+    point it was read to.
     """
 
     def __init__(self) -> None:
@@ -443,24 +450,25 @@ class _VariableParser:
         self._name: bytes | None = None  # the variable whose value is being read
         self._value_start = 0
         self._value_end = 0
+        self._searched = 0  # no newline between the last search's start and here
 
     def feed(self, buffer: bytearray) -> bool:
         """Read on in ``buffer``; ``True`` once the variable block has ended."""
         if self._pos < 0:
-            found = buffer.find(b"\n", len(MAGIC))
+            found = self._newline(buffer, len(MAGIC))
             if found < 0:
                 return False
             self._pos = found + 1
         while True:
             if self._name is None:
-                whole = _LINE_ASSIGNMENT.match(buffer, self._pos)
+                eol = self._newline(buffer, self._pos)
+                if eol < 0:
+                    return False
+                whole = _LINE_ASSIGNMENT.match(buffer, self._pos, eol + 1)
                 if whole is not None:
                     self._keep(whole.group(1), whole.group(2), whole.group(3))
                     self._pos = whole.end()
                     continue
-                eol = buffer.find(b"\n", self._pos)
-                if eol < 0:
-                    return False
                 if _FUNCTION.fullmatch(buffer, self._pos, eol):
                     self.block_end = self._pos
                     return True
@@ -477,7 +485,7 @@ class _VariableParser:
             if stop >= len(buffer) or buffer[stop] != 0x22:  # no closing quote yet
                 self._value_end = stop
                 return False
-            eol = buffer.find(b"\n", stop)
+            eol = self._newline(buffer, stop)
             if eol < 0:
                 self._value_end = stop
                 return False
@@ -486,6 +494,13 @@ class _VariableParser:
             )
             self._name = None
             self._pos = eol + 1
+
+    def _newline(self, buffer: bytearray, start: int) -> int:
+        """The next newline from ``start``, or -1. The searches start in order, so
+        the bytes an earlier one passed over are not searched again."""
+        found = _find_newline(buffer, max(start, self._searched))
+        self._searched = len(buffer) if found < 0 else found
+        return found
 
     def _keep(
         self, name: bytes, raw: bytes | bytearray, after: bytes | bytearray
@@ -504,6 +519,15 @@ class _VariableParser:
         if name in self.variables:
             raise CorruptionError(f"makeself header assigns {_shown(name)} twice")
         self.variables[name] = _ESCAPE.sub(_unescape_one, bytes(raw))
+
+
+# The header's newline searches, each over ``buffer[start:]``.
+def _find_newline(buffer: bytearray, start: int) -> int:
+    return buffer.find(b"\n", start)
+
+
+def _rfind_newline(buffer: bytearray, start: int) -> int:
+    return buffer.rfind(b"\n", start)
 
 
 def _unescape_one(match: re.Match[bytes]) -> bytes:
