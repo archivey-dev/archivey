@@ -207,7 +207,13 @@ class MemberData(NamedTuple):
     that start small; any other source ignores them. They never change what a read
     returns, and a wrong one costs only a fetch. archivey learns them when
     ``open_member`` returns, so a read the plugin makes inside ``open_member`` is not
-    covered."""
+    covered.
+
+    Leave it empty when the stream is a :meth:`ReaderSource.view`, or a
+    :meth:`ReaderContext.decompress` over one: archivey then hints the view's span
+    itself. A :func:`block_stream` whose blocks are such streams hints each block
+    when it reads it. Set it for a stream from your own library, or to name more
+    than the view (several extents)."""
 
 
 class MemberSpan(NamedTuple):

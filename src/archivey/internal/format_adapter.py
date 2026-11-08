@@ -99,6 +99,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.registry import save_codec_state
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.read_hints import mark_read_span, read_span_hint
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
@@ -368,13 +369,18 @@ class _PluginAdapter(BaseArchiveReader):
             input_size = source_byte_size(data)
             if input_size is not None:
                 changes["compressed_input_size"] = input_size
-        return open_codec_stream(
+        decoded = open_codec_stream(
             codec,
             data,
             config=copy_with(self._decoder_config, **changes),
             params=params,
             collector=self._diagnostics_collector,
         )
+        # A decoder over a view reads the view's span.
+        hint = read_span_hint(data)
+        if hint is not None:
+            mark_read_span(decoded, hint)
+        return decoded
 
     def _member_id(self, member: ArchiveMember | None) -> int | None:
         if member is None:
@@ -721,7 +727,7 @@ class IndexedReaderAdapter(_PluginAdapter):
             source, wrap_handle=self._seek_handle_wrapper()
         )
         plugin_source = ReaderSource(
-            shared.view, shared.size, source.path, shared.read_at
+            self._marked_view, shared.size, source.path, shared.read_at
         )
         with self._translated_errors(), self._handle_guard():
             reader = self._plugin.open(plugin_source, context)
@@ -730,6 +736,19 @@ class IndexedReaderAdapter(_PluginAdapter):
         self._indexed = reader
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
         return reader
+
+    def _marked_view(self, start: int, length: int | None) -> BinaryIO:
+        """``ReaderSource.view``: a view of the shared source, marked with its span
+        for the range hint archivey gives when the view is read as a member's data."""
+        shared = self._shared
+        assert shared is not None
+        view = shared.view(start, length)
+        size = view.size
+        if size:
+            mark_read_span(
+                view, functools.partial(self._will_read, start, start + size)
+            )
+        return view
 
     @override
     def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
@@ -808,7 +827,13 @@ class IndexedReaderAdapter(_PluginAdapter):
                     f"{type(data).__name__}, not MemberData"
                 )
             )
-        self._hint_ranges(data)
+        if data.ranges:
+            self._hint_ranges(data)
+        else:
+            # A view, or a decoder over one, says its span itself.
+            hint = read_span_hint(data.stream)
+            if hint is not None:
+                hint()
         stream = cast(BinaryIO, data.stream)
         if not data.bounded and _bounded(stream, member.size):
             data = data._replace(bounded=True)
