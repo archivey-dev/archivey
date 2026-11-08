@@ -303,6 +303,11 @@ what you called:
 | `members_report()` | `report.diagnostics`: that one listing |
 | Any listing | `member.diagnostics`: the ones about that member |
 
+To find the diagnostics about a member, read `member.diagnostics`, or compare `context.member_name`
+with `member.name`. Don't search the messages for the name: a message about a CPIO, RPM, ISO, CAB
+or XAR member can quote its name as the archive stores it, such as `'./dev'` for the member listed
+as `dev`.
+
 All but the last are summaries: `counts` has an exact count for each code, and `retained` keeps the
 records themselves. An archive keeps at most 256 records by default, counting those attached to
 members, and `max_retained_diagnostic_references` in `ArchiveyConfig` changes that.

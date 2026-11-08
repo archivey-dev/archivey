@@ -2480,14 +2480,19 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _close_archive(self) -> None:
         # A walk taken at open and never listed is still suspended in the plugin's
         # walk(): finish it first, so its own cleanup runs before close() and over an
-        # open stream, not later in the collector.
+        # open stream, not later in the collector. It never ran in _iter_members, so
+        # the reports its first step held are sent here, as for a walk stopped
+        # part-way: recorded, never raised.
         try:
             if self._open_walk is not None:
                 close = getattr(self._open_walk[0], "close", None)
                 self._open_walk = None
-                if close is not None:
-                    with self._translated_errors(), self._handle_guard():
-                        close()
+                try:
+                    if close is not None:
+                        with self._translated_errors(), self._handle_guard():
+                            close()
+                finally:
+                    self._send_unyielded_reports(may_raise=False)
         finally:
             try:
                 super()._close_archive()

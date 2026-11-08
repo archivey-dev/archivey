@@ -616,6 +616,50 @@ def test_a_held_link_keeps_its_stored_name(tmp_path: Path) -> None:
         reader.members()
 
 
+_CHAR_DEVICE = 0o020644
+
+
+def test_a_report_from_the_walk_step_at_open_is_sent_at_close(tmp_path: Path) -> None:
+    """The walk takes its first step at open. A report on that member is held until
+    the member is listed, so a reader closed without listing sends it at close.
+    It is recorded, and a policy that raises on it does not raise from close."""
+    data = _newc((b"./dev", _CHAR_DEVICE, 7, 1, b"xyz"))
+    path = _archive(tmp_path, data)
+    seen: list[archivey.Diagnostic] = []
+    config = archivey.ArchiveyConfig(on_diagnostic=seen.append)
+    with open_archive(path, config=config):
+        assert seen == []
+    assert [d.code for d in seen] == [DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA]
+    # archivey listed no member, so the report names the member as stored.
+    assert seen[0].context.member_name == "./dev"  # type: ignore[union-attr]
+    assert seen[0].context.member_id is None  # type: ignore[union-attr]
+    strict = archivey.ArchiveyConfig(
+        diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
+        on_diagnostic=seen.append,
+    )
+    seen.clear()
+    with open_archive(path, config=strict):
+        pass
+    assert [d.code for d in seen] == [DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA]
+
+
+def test_a_report_made_while_listing_quotes_the_stored_name(tmp_path: Path) -> None:
+    """The message quotes the member's name as the archive stores it; the context's
+    ``member_name`` is the name the member is listed by
+    (``docs/errors-and-diagnostics.md`` §Diagnostics)."""
+    data = _newc((b"./dev", _CHAR_DEVICE, 7, 1, b"xyz"))
+    with open_archive(_archive(tmp_path, data)) as reader:
+        (member,) = reader.members()
+    (report,) = [
+        d
+        for d in member.diagnostics
+        if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+    ]
+    assert member.name == "dev"
+    assert report.context.member_name == "dev"  # type: ignore[union-attr]
+    assert "'./dev'" in report.message
+
+
 def test_a_name_that_is_not_utf8_follows_encoding(tmp_path: Path) -> None:
     """CPIO declares no name encoding, so ``encoding=`` replaces the escape fallback."""
     path = _archive(tmp_path, _newc((b"caf\xe9.txt", _FILE, 1, 1, b"x")))
