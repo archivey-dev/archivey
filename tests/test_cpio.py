@@ -26,7 +26,7 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import DiagnosticCode, SpecialFileDataContext
 from archivey.formats import SequentialReader
 from archivey.internal.backends import cpio_reader
 from archivey.internal.backends.cpio_reader import MAX_NAME_BYTES, CpioReader
@@ -631,8 +631,10 @@ def test_a_report_from_the_walk_step_at_open_is_sent_at_close(tmp_path: Path) ->
         assert seen == []
     assert [d.code for d in seen] == [DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA]
     # archivey listed no member, so the report names the member as stored.
-    assert seen[0].context.member_name == "./dev"  # type: ignore[union-attr]
-    assert seen[0].context.member_id is None  # type: ignore[union-attr]
+    context = seen[0].context
+    assert isinstance(context, SpecialFileDataContext)
+    assert context.member_name == "./dev"
+    assert context.member_id is None
     strict = archivey.ArchiveyConfig(
         diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
         on_diagnostic=seen.append,
@@ -656,7 +658,8 @@ def test_a_report_made_while_listing_quotes_the_stored_name(tmp_path: Path) -> N
         if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
     ]
     assert member.name == "dev"
-    assert report.context.member_name == "dev"  # type: ignore[union-attr]
+    assert isinstance(report.context, SpecialFileDataContext)
+    assert report.context.member_name == "dev"
     assert "'./dev'" in report.message
 
 
