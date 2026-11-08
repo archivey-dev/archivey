@@ -39,7 +39,7 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
-from archivey import ExtractionLimits, open_archive
+from archivey import ExtractionLimits
 from benchmarks.fixtures import FixtureSet, materialize_fixtures
 from benchmarks.harness import (
     _py7zr_available,
@@ -47,6 +47,7 @@ from benchmarks.harness import (
     _rarfile_available,
     _rarfile_open_list,
     _unrar_available,
+    open_archive,
 )
 
 # --- archivey ---
