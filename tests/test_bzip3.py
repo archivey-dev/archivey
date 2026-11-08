@@ -497,10 +497,12 @@ def test_a_block_exactly_as_long_as_its_own_header_reaches_the_decoder(
 
 @needs_bzip3
 def test_a_block_of_exactly_the_bound_is_not_refused_by_its_size() -> None:
+    """The size check runs before libbzip3 sees the block, so its content does not
+    matter: zeros get past the check and libbzip3 refuses them."""
     raw = _bz3(LINES)
     pos, _, decoded = _blocks(raw)[0]
     bound = bzip3_codec.bz3_bound(1 << 20)
-    block = bytes(9) + bytes(bound - 9)
+    block = bytes(bound)
     forged = raw[:pos] + struct.pack("<ii", bound, decoded) + block
     with pytest.raises(CorruptionError, match="does not decode"):
         _read(io.BytesIO(forged), format=ArchiveFormat.BZIP3, config=_config())
