@@ -42,7 +42,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
     _StdlibOnAcceleratorError,
 )
 from archivey.internal.streams.decompressor_stream import (
-    _StreamChecksumError,
+    StreamChecksumError,
     input_after_end_error,
     release_decoder,
     zlib_error,
@@ -165,7 +165,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
     goes on, one zlib stream after another, until it has as many bytes as rapidgzip
     delivered, and that output is accepted. Every decode must succeed and reproduce the
     delivered length and Adler-32; otherwise the read or seek that reached the end raises
-    :class:`_StreamChecksumError`. The second decode runs only on a mismatch, so a last
+    :class:`StreamChecksumError`. The second decode runs only on a mismatch, so a last
     trailer that matches the Adler-32 of several streams (forged, or after empty ones)
     is accepted, and every stream is content (an accepted difference, handbook
     ``gzip.md`` §5).
@@ -309,7 +309,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         except _ZlibFirstStreamEnds as first:
             self._pos = max(first.end, start)
             return self._hand_to_stdlib(size, at=self._pos)
-        except _StreamChecksumError as exc:
+        except StreamChecksumError as exc:
             # Kept as a copy: the raised instance's traceback holds this frame,
             # which holds the codec (kept_errors).
             self._verdict = KeptError.of(exc)
@@ -328,7 +328,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         """Decode the source again with the standard library, up to the output
         rapidgzip delivered, and compare.
 
-        Raises :class:`_StreamChecksumError` when the two disagree on those bytes, and
+        Raises :class:`StreamChecksumError` when the two disagree on those bytes, and
         :class:`_ZlibStoppedShort` when they agree and the standard library has more
         to say past them: more output, or the end of the source inside the stream.
         Raises :class:`_ZlibFirstStreamEnds` when the first zlib stream ends before
@@ -369,7 +369,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                     adler = zlib.adler32(out[: self._sum.frontier - produced], adler)
                     produced += len(out)
         except zlib.error as exc:
-            raise _StreamChecksumError(
+            raise StreamChecksumError(
                 f"Error reading zlib stream: {exception_detail(exc)}"
             ) from exc
         finally:
@@ -379,7 +379,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         ):
             raise _ZlibStoppedShort
         if produced != self._sum.frontier or adler != self._sum.value:
-            raise _StreamChecksumError(
+            raise StreamChecksumError(
                 "zlib stream is damaged: the data does not match its Adler-32 "
                 "(the rapidgzip accelerator does not check it)"
             )

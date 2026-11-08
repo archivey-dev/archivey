@@ -178,9 +178,7 @@ class _LinkGroup:
     until one does."""
 
     name: str | None = None
-    # Each held member with the name it was stored under, for the adapter's report of
-    # a normalized name (MemberSpan.stored_name).
-    held: list[tuple[ArchiveMember, str]] = field(default_factory=list)
+    held: list[ArchiveMember] = field(default_factory=list)
 
 
 # What the held links are, in a limit error (ReaderContext.hold).
@@ -240,7 +238,7 @@ class CpioReader(SequentialReader):
                 yield from self._flush(groups)
                 self._check_end(stream)
                 return
-            member, stored = self._member(header, raw)
+            member = self._member(header, raw)
             size = header.file_size
             # A file that shares its inode with another.
             key = (header.dev, header.ino)
@@ -257,21 +255,21 @@ class CpioReader(SequentialReader):
                 elif size == 0 and self._defers_link_data():
                     # newc keeps the data with the last link: hold this one back,
                     # counted toward the listing's limits while it waits.
-                    self._context.hold(member, stored_name=stored, reason=_HELD)
-                    group.held.append((member, stored))
+                    self._context.hold(member, reason=_HELD)
+                    group.held.append(member)
                     stream.skip(size + self._data_pad(header))
                     continue
                 else:
                     group.name = member.name
-            yield MemberSpan(member, size, self._digests(header, member), stored)
+            yield MemberSpan(member, size, self._digests(header, member))
             stream.skip(self._data_pad(header))
             if member.type is MemberType.FILE and header.nlink > 1:
                 group = groups[key]
-                for link, link_stored in group.held:
+                for link in group.held:
                     link.type = MemberType.HARDLINK
                     link.link_target = member.name
                     link.size = None
-                    yield MemberSpan(link, 0, stored_name=link_stored)
+                    yield MemberSpan(link, 0)
                 group.held.clear()
 
     def _flush(
@@ -282,14 +280,14 @@ class CpioReader(SequentialReader):
         for group in groups.values():
             if not group.held:
                 continue
-            (first, first_stored), *rest = group.held
+            first, *rest = group.held
             first.size = 0
-            yield MemberSpan(first, 0, stored_name=first_stored)
-            for link, link_stored in rest:
+            yield MemberSpan(first, 0)
+            for link in rest:
                 link.type = MemberType.HARDLINK
                 link.link_target = first.name
                 link.size = None
-                yield MemberSpan(link, 0, stored_name=link_stored)
+                yield MemberSpan(link, 0)
 
     def _defers_link_data(self) -> bool:
         return self._variant in (Variant.NEWC, Variant.CRC)
@@ -451,11 +449,9 @@ class CpioReader(SequentialReader):
 
     # Members ------------------------------------------------------------------------
 
-    def _member(self, header: Header, raw: bytes) -> tuple[ArchiveMember, str]:
-        """The member a header describes, its name normalized (so a report names it as
-        callers see it), and the name it was stored under."""
+    def _member(self, header: Header, raw: bytes) -> ArchiveMember:
+        """The member a header describes, named as the archive stores it."""
         context = self._context
-        stored = context.decode_name(raw)
         kind = header.mode & _S_IFMT
         member_type = _TYPES.get(kind)
         special = _SPECIAL.get(kind)
@@ -466,7 +462,7 @@ class CpioReader(SequentialReader):
             member_type = MemberType.FILE if size else MemberType.OTHER
         member = ArchiveMember(
             type=member_type,
-            name=context.normalize_name(stored, member_type),
+            name=context.decode_name(raw),
             raw_name=raw,
             size=size if member_type is MemberType.FILE else None,
             modified=_time(header.mtime),
@@ -497,7 +493,7 @@ class CpioReader(SequentialReader):
                 ),
                 member=member,
             )
-        return member, stored
+        return member
 
     def _digests(
         self, header: Header, member: ArchiveMember
