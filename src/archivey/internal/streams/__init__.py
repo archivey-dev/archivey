@@ -34,6 +34,8 @@ Package map:
   reading through on a forward seek and reopening it on a backward one.
 - :mod:`.blocks` — ``BlockStream``: a file stored as fixed-size blocks that each
   decode on their own, for ``archivey.formats.block_stream``.
+- :mod:`.read_hints` — the span of the archive a plugin's view (or a decoder over
+  one) reads, carried on the stream for the range hint archivey gives.
 - :mod:`.crypto` — AES decrypt stage (``[recommended]``) + 7z-local KDF helpers.
 - :mod:`.counting` — measurement wrappers (bytes / seeks).
 """

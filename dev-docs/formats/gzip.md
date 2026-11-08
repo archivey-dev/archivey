@@ -486,7 +486,7 @@ the end lands there, and the rest is reported as `ARCHIVE_TRAILING_DATA`, as wit
 stream when the end shows up, and they cannot be taken back; there the decode goes on stream
 by stream up to the delivered length, and that output is accepted (§5). Whichever decode
 runs must reproduce the delivered bytes; failing that, the read or seek that reached the end
-raises `_StreamChecksumError`, a `CorruptionError`. The TAR end-of-archive scan, which
+raises `StreamChecksumError`, a `CorruptionError`. The TAR end-of-archive scan, which
 otherwise ignores a tail that fails to decode, re-raises it, because the checksum covers
 members it already handed out. A stream never read to its end is not checked, and the
 standard library does not check one either: it verifies the trailer only when it consumes
