@@ -2716,6 +2716,8 @@ class ExtractionCoordinator:
         resolved_parents = self._state.resolved_parents
         rel_parent = resolved_parents.get(parent)
         if rel_parent is None:
+            rel_parent = self._extend_resolved_parent(parent)
+        if rel_parent is None:
             root = os.fspath(self._state.dest_root)
             try:
                 resolved = os.fspath(resolve_or_raise_on_loop(Path(parent)))
@@ -2730,6 +2732,41 @@ class ExtractionCoordinator:
                 return None
             resolved_parents[parent] = rel_parent
         return rel_parent + name
+
+    def _extend_resolved_parent(self, parent: str) -> str | None:
+        """``_physical_rel``'s answer for the directory ``parent`` from its own
+        parent's cached answer, with one ``lstat``; ``None`` when that needs the full
+        resolution.
+
+        Resolving each directory of a deep chain from the root costs one ``lstat`` per
+        level, so creating the chain cost its depth squared, and a small archive of
+        ``a/a/…/a/f`` took minutes. A last component that is not a symlink adds itself
+        to its parent's resolution, as the full walk does (a missing one is kept as a
+        name there too), and follows no link, so a loop is counted as before. POSIX
+        only: on Windows the resolution also takes the spelling the volume stores."""
+        if os.name == "nt":
+            return None
+        head, last = os.path.split(parent)
+        if last in ("", ".", ".."):
+            return None
+        rel_head = self._state.resolved_parents.get(head)
+        if rel_head is None:
+            return None
+        try:
+            # Without a trailing "/", which would follow a symlink at ``last``.
+            mode = os.lstat(
+                long_path(os.path.join(self._state.dest_root, rel_head + last))
+            ).st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except OSError:
+            return None
+        else:
+            if stat.S_ISLNK(mode):
+                return None
+        rel_parent = f"{rel_head}{last}/"
+        self._state.resolved_parents[parent] = rel_parent
+        return rel_parent
 
     def _physical_path(self, path: Path) -> Path:
         """Where ``path`` is, under the destination as given, with its parent
@@ -3924,7 +3961,9 @@ class ExtractionCoordinator:
                     ) from exc
             raise
         self._state.created_dirs.update(missing)
-        for component in missing:
+        # Nearest the root first, so each resolution extends its parent's
+        # (``_extend_resolved_parent``).
+        for component in reversed(missing):
             self._note_run_directory(component)
 
     def _is_callers_directory(self, path: Path) -> bool:

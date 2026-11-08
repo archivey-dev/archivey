@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import archivey.internal.dry_run as dry_run_module
+import archivey.internal.filters as filters_module
 from archivey import ExtractionStatus, OverwritePolicy, open_archive
 from archivey.internal.dry_run import remove_scratch
 from archivey.internal.long_paths import make_dirs
@@ -206,3 +207,27 @@ def test_make_dirs_raises_what_makedirs_raises(tmp_path: Path) -> None:
         with pytest.raises(OSError) as theirs:
             os.makedirs(tmp_path / path, exist_ok=True)
         assert type(ours.value) is type(theirs.value)
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+def test_a_deep_chain_of_implied_directories_is_resolved_once_per_level(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool
+) -> None:
+    # Each directory the run creates is resolved from its parent's cached answer, not
+    # from the root again: resolving every level from the root cost the depth squared
+    # in lookups, and minutes for a small archive 1500 levels deep.
+    walks: list[str] = []
+    real_walk = filters_module._realpath_posix
+
+    def counted(path: str, asked: str, *, start: str = "") -> str:
+        walks.append(path)
+        return real_walk(path, asked, start=start)
+
+    monkeypatch.setattr(filters_module, "_realpath_posix", counted)
+    statuses = _extract(
+        _deep_tar(directory_members=False), tmp_path / "out", dry_run=dry_run
+    )
+    assert set(statuses) == {ExtractionStatus.EXTRACTED}
+    # A few per run and per member (the destination, each member's parent check, the
+    # first level created), none per level: one per level would be DEPTH of them.
+    assert len(walks) < 20

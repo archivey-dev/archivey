@@ -1139,16 +1139,16 @@ def test_long_path_errors_name_the_plain_path(
     _fake_long_paths(monkeypatch)
     dest = tmp_path / "out"
     dest.mkdir()
-    real_makedirs = os.makedirs
+    real_mkdir = os.mkdir
 
     def refuse_taken(name: str, *args: object, **kwargs: object) -> None:
         # The filesystem refuses the folder, as a read-only one would refuse a
         # caller that is not root. ``name`` is the long form.
         if str(name).endswith("/taken"):
             raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), name)
-        real_makedirs(name, *args, **kwargs)  # type: ignore[arg-type]
+        real_mkdir(name, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(os, "makedirs", refuse_taken)
+    monkeypatch.setattr(os, "mkdir", refuse_taken)
     report = open_and_extract(
         io.BytesIO(_tar([("file", "taken/f", b"x")])),
         dest,
@@ -1545,13 +1545,13 @@ def _another_writer_takes(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     ``name`` as a file between the existence check and the landing, and the landing
     refused with access denied, as Windows refuses it (seen with two extractions into
     one folder) and POSIX does in a sticky directory. ``os.symlink`` and
-    ``os.makedirs`` refuse a taken name on every OS. Under ERROR a FILE or HARDLINK
+    ``os.mkdir`` refuse a taken name on every OS. Under ERROR a FILE or HARDLINK
     lands with ``os.rename`` on Windows, whose refusal is the clash; on POSIX with
     ``os.link``, whose access-denied refusal hands the landing to ``os.replace``, whose
     refusal is the clash. A plain taken-name refusal (``FileExistsError``) is
     ``_another_writer_takes_before_the_landing``'s case."""
     real_replace = os.replace
-    real_makedirs = os.makedirs
+    real_mkdir = os.mkdir
     real_link = os.link
     real_rename = os.rename
 
@@ -1581,15 +1581,15 @@ def _another_writer_takes(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
         take(dst)
         raise FileExistsError(errno.EEXIST, "File exists", str(dst))
 
-    def makedirs(path: str, mode: int = 0o777, exist_ok: bool = False) -> None:
+    def mkdir(path: str, mode: int = 0o777, **kwargs: object) -> None:
         if os.path.basename(str(path)) == name:
             take(path)
             raise FileExistsError(errno.EEXIST, "File exists", str(path))
-        real_makedirs(path, mode, exist_ok)
+        real_mkdir(path, mode, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(os, "replace", replace)
     monkeypatch.setattr(os, "symlink", symlink)
-    monkeypatch.setattr(os, "makedirs", makedirs)
+    monkeypatch.setattr(os, "mkdir", mkdir)
     monkeypatch.setattr(os, "link", link)
     monkeypatch.setattr(os, "rename", rename)
 

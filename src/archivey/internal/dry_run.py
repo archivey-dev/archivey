@@ -71,9 +71,13 @@ def _fold(name: str) -> str:
 
 
 def _with_ancestors(into: set[str], rel: str) -> None:
-    """Add ``rel``, a ``/``-separated path, and each of its ancestors to ``into``."""
-    parts = rel.split("/")
-    into.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
+    """Add ``rel``, a ``/``-separated path, and each of its ancestors to ``into``.
+
+    Nearest first, stopping at one already there, as its ancestors are too: adding
+    every ancestor of every path in a deep tree built strings for the depth squared."""
+    while rel and rel not in into:
+        into.add(rel)
+        rel = rel.rpartition("/")[0]
 
 
 def scratch_tree(
