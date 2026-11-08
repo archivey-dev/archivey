@@ -5464,7 +5464,14 @@ class RarReader(BaseArchiveReader):
         already holds its derivation.
         """
         password = self._unrar_password
-        assert password is not None, "an -hp archive lists only with its password"
+        if password is None:
+            # The listing decrypted with the empty password, which ``unrar`` takes
+            # as no password at all. Only a damaged archive gets this far: a crypt
+            # header with no password check, after plain headers.
+            raise EncryptionError(
+                "RAR archive's headers are encrypted, and the empty password that "
+                "listed them cannot be handed to unrar"
+            )
         return HeaderKeys(self._kdf_cache, password)
 
     def _synthetic_spawner(
