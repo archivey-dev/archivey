@@ -149,8 +149,8 @@ def _checksum(data: bytes, seed: int = 0) -> int:
 
     The words are read as one little-endian integer and folded in halves cut on a word
     boundary until one word is left: each fold XORs words in pairs, which keeps the
-    XOR of them all. About seven times faster than XORing the words one by one on a
-    32 KiB block, where the per-word loop took more time than the block's inflate.
+    XOR of them all. One Python-level XOR per word is about seven times slower on a
+    32 KiB block, and slower than inflating the block.
     """
     whole = len(data) & ~3
     value = int.from_bytes(memoryview(data)[:whole], "little")
