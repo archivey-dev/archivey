@@ -79,10 +79,8 @@ class BoxesReader(SequentialReader):
                 member = span.member
                 member.name = f"{box}/{member.name}"
                 if member.type is MemberType.HARDLINK and member.link_target:
-                    target = self._context.normalize_name(
-                        member.link_target, MemberType.FILE
-                    )
-                    member.link_target = f"{box}/{target}"
+                    # As the inner archive stores it: archivey normalizes it.
+                    member.link_target = f"{box}/{member.link_target}"
                 yield span
             box += 1
 

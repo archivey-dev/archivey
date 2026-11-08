@@ -10,7 +10,7 @@ registered as a built-in the way ISO, CPIO and ar are.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/squashfs_reader.py`, a `SquashfsHandler` (`FormatHandler`) and a `SquashfsReader` (`IndexedReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/squashfs_reader.py`, a `SquashfsHandler` (`IndexedFormatHandler`) and a `SquashfsReader` (`IndexedReader`), registered with `register_builtin_format` |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file or a stream that can seek. Not a pipe: the directory and inode tables come after the data |
 | Listing cost | From the index (the inode and directory tables) |

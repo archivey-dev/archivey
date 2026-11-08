@@ -218,7 +218,7 @@ def _same_outcome(got: tuple[object, ...], expected: tuple[object, ...]) -> bool
     return data.startswith(long_data) or long_data.startswith(data)
 
 
-_DAMAGE = {"CorruptionError", "_StreamChecksumError"}
+_DAMAGE = {"CorruptionError", "StreamChecksumError"}
 
 
 def _same_damage(got: tuple[object, ...], expected: tuple[object, ...]) -> bool:
