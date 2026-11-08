@@ -205,7 +205,8 @@ only if it checks `config.formats.allows_library(name)` itself.
 
 `only_libraries=` is the allowlist form, as `only=` is of `exclude=`: every optional package it
 doesn't list is turned off, including any that a later archivey release adds. `only_libraries=set()`
-runs on the standard library alone:
+runs with no optional package. On Python 3.14 that also turns off the standard library's
+`compression.zstd`, which is listed as an optional package; list it to keep zstd:
 
 ```python
 STDLIB_ONLY = ArchiveyConfig(formats=FormatPolicy(only_libraries=set()))

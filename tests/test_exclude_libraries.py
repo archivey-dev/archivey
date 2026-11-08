@@ -16,7 +16,7 @@ import sys
 import textwrap
 import threading
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -59,15 +59,24 @@ _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
 # How ``_excluding`` turns its packages off: ``exclude_libraries=`` naming them, or
 # ``only_libraries=`` naming every other one. Each test that builds its config with
-# ``_excluding`` runs under both, so the allowlist is held to every rule here.
+# ``_excluding`` carries ``@_both_forms`` and runs under both, so the allowlist is held
+# to every rule here; a test that builds its ``FormatPolicy`` directly runs once.
 _FORM = "exclude"
 
 
-@pytest.fixture(autouse=True, params=["exclude", "only"])
+@pytest.fixture
 def _policy_form(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sys.modules[__name__], "_FORM", request.param)
+
+
+def _both_forms(test: Callable[..., None]) -> Callable[..., None]:
+    """Run ``test`` once per form of ``_excluding``."""
+    test = pytest.mark.parametrize("_policy_form", ["exclude", "only"], indirect=True)(
+        test
+    )
+    return pytest.mark.usefixtures("_policy_form")(test)
 
 
 def _excluding(
@@ -125,6 +134,7 @@ def test_anything_but_an_optional_library_is_refused(value: object, match: str) 
         FormatPolicy(exclude_libraries=value)  # type: ignore[arg-type]
 
 
+@_both_forms
 @pytest.mark.parametrize("field", ["use_rapidgzip", "use_indexed_bzip2"])
 def test_an_accelerator_set_on_conflicts_with_excluding_it(field: str) -> None:
     with pytest.raises(ArchiveyUsageError, match=f"{field}=ON"):
@@ -150,6 +160,7 @@ def test_a_plugin_listed_in_only_that_needs_an_excluded_package_is_refused(
         FormatPolicy(only={plugin.format.container}, exclude_libraries={L.CRYPTOGRAPHY})
 
 
+@_both_forms
 @requires("cryptography")
 def test_an_unnamed_plugin_that_needs_an_excluded_package_reads_as_none(
     clean_registry: None, tmp_path: Path
@@ -168,6 +179,7 @@ def test_an_unnamed_plugin_that_needs_an_excluded_package_reads_as_none(
     assert exc_info.value.missing == availability.missing
 
 
+@_both_forms
 @requires("cryptography")
 def test_a_plugin_requiring_a_submodule_of_an_excluded_package_reads_as_none(
     clean_registry: None,
@@ -183,6 +195,7 @@ def test_a_plugin_requiring_a_submodule_of_an_excluded_package_reads_as_none(
         FormatPolicy(only={plugin.format.container}, exclude_libraries={L.CRYPTOGRAPHY})
 
 
+@_both_forms
 def test_a_plugin_probe_does_not_run_when_its_package_is_excluded(
     clean_registry: None,
 ) -> None:
@@ -218,6 +231,7 @@ def _ppmd_and_lzma2_7z(tmp_path: Path) -> Path:
     return path
 
 
+@_both_forms
 @requires("pyppmd")
 @requires_binary("7z")
 def test_an_excluded_pyppmd_refuses_only_the_ppmd_member(tmp_path: Path) -> None:
@@ -243,6 +257,7 @@ def test_an_excluded_pyppmd_refuses_only_the_ppmd_member(tmp_path: Path) -> None
         assert stream.read() == b"ppmd member\n" * 100
 
 
+@_both_forms
 @requires("pyppmd")
 @requires_binary("7z")
 def test_threads_with_and_without_the_exclusion_get_their_own_answer(
@@ -274,6 +289,7 @@ def test_threads_with_and_without_the_exclusion_get_their_own_answer(
     assert results["plain"] == b"ppmd member\n" * 100
 
 
+@_both_forms
 @requires_zstd()
 def test_excluding_the_zstd_module_in_use_turns_zstd_off(tmp_path: Path) -> None:
     in_use = deps.zstd_library
@@ -291,6 +307,7 @@ def test_excluding_the_zstd_module_in_use_turns_zstd_off(tmp_path: Path) -> None
     assert [m.name for m in availability.missing] == [in_use]
 
 
+@_both_forms
 def test_an_excluded_package_that_is_not_installed_is_reported_as_excluded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -303,6 +320,7 @@ def test_an_excluded_package_that_is_not_installed_is_reported_as_excluded(
     _assert_refused_by_policy(exc_info.value, L.LZ4)
 
 
+@_both_forms
 @requires("rapidgzip")
 def test_an_excluded_rapidgzip_under_auto_falls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -358,6 +376,7 @@ def test_an_excluded_lazy_package_is_never_imported() -> None:
     assert proc.stdout.split("\n")[:2] == ["refused True", "imported False"]
 
 
+@_both_forms
 @requires("brotli")
 def test_detection_does_not_probe_with_an_excluded_package(
     monkeypatch: pytest.MonkeyPatch,
@@ -383,6 +402,7 @@ def test_detection_does_not_probe_with_an_excluded_package(
 # --- whole formats ----------------------------------------------------------------------
 
 
+@_both_forms
 @requires("pycdlib")
 def test_an_excluded_pycdlib_refuses_iso(tmp_path: Path) -> None:
     from tests.test_audit2_iso_dir_detect import _iso_image
@@ -438,6 +458,7 @@ def _encrypted(tmp_path: Path, kind: str) -> Path:
     return path
 
 
+@_both_forms
 @requires("cryptography")
 @requires_binary("7z")
 @pytest.mark.parametrize("kind", ["zip", "7z"])
@@ -460,6 +481,7 @@ def test_an_excluded_cryptography_refuses_aes_members(
         assert reader.read("secret.txt") == b"secret\n" * 10
 
 
+@_both_forms
 @requires("cryptography")
 def test_an_excluded_cryptography_refuses_a_stored_rar_member() -> None:
     config = _excluding(L.CRYPTOGRAPHY, rar_decompressor=RarDecompressor.NONE)
@@ -471,6 +493,7 @@ def test_an_excluded_cryptography_refuses_a_stored_rar_member() -> None:
     _assert_refused_by_policy(exc_info.value, L.CRYPTOGRAPHY)
 
 
+@_both_forms
 @requires("cryptography")
 def test_an_excluded_cryptography_refuses_rar_header_decryption() -> None:
     path = _RAR_FIXTURES / "encrypted_header__.rar"
@@ -542,3 +565,19 @@ def test_every_crypto_entry_call_passes_the_excluded_set() -> None:
                 offenders.append(f"{rel}:{node.lineno} {name}")
     assert sites > 10, "the scan found almost no call sites, so it guards nothing"
     assert not offenders, "crypto entry without the policy: " + ", ".join(offenders)
+
+
+def test_every_test_that_uses_excluding_runs_under_both_forms() -> None:
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    missing = [
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name.startswith("test_")
+        and any(
+            isinstance(call, ast.Call) and ast.unparse(call.func) == "_excluding"
+            for call in ast.walk(node)
+        )
+        and "_both_forms" not in [ast.unparse(d) for d in node.decorator_list]
+    ]
+    assert missing == []

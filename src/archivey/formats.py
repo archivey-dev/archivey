@@ -439,8 +439,9 @@ class ForwardStream:
 
         The caller's ``FormatPolicy`` holds here as for a member: under
         ``plugins=False`` a ``PluginStream`` raises ``UnsupportedFeatureError``, and a
-        package ``exclude_libraries`` turns off reads as missing. ``only`` and
-        ``exclude`` do not apply, since they check only the file the call opens.
+        package the policy turns off (``exclude_libraries`` or ``only_libraries``)
+        reads as missing. ``only`` and ``exclude`` do not apply, since they check only
+        the file the call opens.
 
         Raises ``ValueError`` for a format that is not a compression stream
         (``UNCOMPRESSED``), and ``ArchiveyUsageError`` when this stream has already
@@ -677,8 +678,9 @@ class ReaderContext:
         closed when Python collects it, and at the latest when the archive is closed.
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
-        format is read by its replacement, and ``exclude_libraries`` holds; ``only``
-        and ``exclude`` check only the file the call opens. A format that needs a
+        format is read by its replacement, and ``exclude_libraries`` and
+        ``only_libraries`` hold; ``only`` and ``exclude`` check only the file the call
+        opens. A format that needs a
         seekable source (7z, RAR) raises ``UnsupportedFeatureError``, and so does an
         archive nested more than 8 deep (an inner reader calling ``open_nested`` in
         turn). What the inner reader attaches to a member while its data is read
@@ -753,9 +755,10 @@ class ReaderContext:
 
         The caller's ``FormatPolicy`` holds for each member: under ``plugins=False`` a
         ``PluginStream`` raises ``UnsupportedFeatureError`` before the codec runs, and
-        a package ``exclude_libraries`` turns off raises ``PackageNotInstalledError``.
-        ``only`` and ``exclude`` do not apply: they check only the file the call opens,
-        so a member stored with ``StreamFormat.XZ`` decodes under
+        a package the policy turns off (``exclude_libraries`` or ``only_libraries``)
+        raises ``PackageNotInstalledError``. ``only`` and ``exclude`` do not apply:
+        they check only the file the call opens, so a member stored with
+        ``StreamFormat.XZ`` decodes under
         ``exclude={StreamFormat.XZ}``.
 
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data

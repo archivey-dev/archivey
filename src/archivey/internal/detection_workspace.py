@@ -84,7 +84,7 @@ class PrefixWorkspace:
         self._budget = budget
         # The caller's ``process_isolation``: where the probes' trial decodes run.
         self.isolation = isolation
-        # The caller's ``FormatPolicy.exclude_libraries``: a probe does not decode with
+        # The caller's ``FormatPolicy._libraries_off``: a probe does not decode with
         # a package it names.
         self.excluded_libraries = excluded_libraries
         # A caller-supplied receipt accumulates across workspaces: ``detect_format``

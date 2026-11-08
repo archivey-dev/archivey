@@ -263,7 +263,7 @@ def crypto_missing(
     source_format: ArchiveFormat | None = None,
 ) -> PackageNotInstalledError:
     """The refusal for AES without ``cryptography``: absent, or turned off by
-    ``excluded`` (the call's ``FormatPolicy.exclude_libraries``)."""
+    ``excluded`` (the call's ``FormatPolicy._libraries_off``)."""
     requirement = as_reported(CRYPTO_REQUIREMENT, excluded)
     return PackageNotInstalledError(
         requirement.message(purpose),
@@ -281,7 +281,7 @@ def get_crypto_backend(
 
     This is the single entry point to crypto for the whole library; format parsers call it
     rather than importing any crypto library themselves. ``excluded`` is the call's
-    ``FormatPolicy.exclude_libraries``: naming ``cryptography`` refuses as if it were
+    ``FormatPolicy._libraries_off``: naming ``cryptography`` refuses as if it were
     absent. Every caller passes it, which ``tests/test_exclude_libraries.py`` checks.
     """
     if CRYPTO_PACKAGE in excluded or not _crypto_available():

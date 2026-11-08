@@ -14,8 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyUsageError, FormatPolicy, OptionalLibrary
+from archivey import ArchiveyUsageError, ContainerFormat, FormatPolicy, OptionalLibrary
+from archivey.internal.format_adapter import registration_scope
+from tests.test_format_api import _plugin_with
+from tests.test_format_policy import StdlibZipPlugin
 
+C = ContainerFormat
 L = OptionalLibrary
 _SRC = Path(__file__).resolve().parents[1] / "src" / "archivey"
 
@@ -71,6 +75,38 @@ def test_a_module_that_is_not_an_optional_library_is_allowed() -> None:
     policy = FormatPolicy(only_libraries=set())
     assert policy.allows_library("zlib")
     assert policy.allows_library("my_plugin_codec")
+
+
+def test_allows_library_refuses_a_non_string_and_is_case_sensitive() -> None:
+    policy = FormatPolicy(only_libraries=set())
+    for value in (None, b"lz4", 3):
+        with pytest.raises(ArchiveyUsageError, match="allows_library"):
+            policy.allows_library(value)  # type: ignore[arg-type]
+    assert not policy.allows_library("lz4")
+    # An exact import name only: another spelling is not an OptionalLibrary.
+    assert policy.allows_library("LZ4")
+
+
+class _NeedsCrypto(StdlibZipPlugin):
+    requires = ("cryptography",)
+
+
+def test_a_named_replacement_the_allowlist_leaves_without_its_package_is_refused() -> (
+    None
+):
+    # Construction checks a named plugin's ``requires`` against both lists, so this
+    # fails if it is checked against ``exclude_libraries`` alone.
+    with pytest.raises(ArchiveyUsageError, match="_NeedsCrypto, which requires"):
+        FormatPolicy(replace={C.ZIP: _NeedsCrypto}, only_libraries=set())
+    FormatPolicy(replace={C.ZIP: _NeedsCrypto}, only_libraries={L.CRYPTOGRAPHY})
+
+
+def test_a_plugin_listed_in_only_without_its_allowlisted_package_is_refused() -> None:
+    with registration_scope():
+        plugin = _plugin_with("needy", requires=("cryptography",))
+        with pytest.raises(ArchiveyUsageError, match="only= lists"):
+            FormatPolicy(only={plugin.format.container}, only_libraries=set())
+        FormatPolicy(only={plugin.format.container}, only_libraries={L.CRYPTOGRAPHY})
 
 
 def test_the_allowlist_takes_part_in_equality_and_survives_pickle() -> None:

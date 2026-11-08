@@ -182,7 +182,7 @@ def is_codec_available(
     codec: CodecId, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
 ) -> bool:
     """Whether ``codec``'s decompression backend is importable right now, and
-    ``excluded`` (a call's ``FormatPolicy.exclude_libraries``) does not turn it off.
+    ``excluded`` (a call's ``FormatPolicy._libraries_off``) does not turn it off.
 
     A codec with no ``requirement`` is stdlib-backed and always available; an optional codec
     reports on its backing package's live sentinel. Used by the registry to compute a

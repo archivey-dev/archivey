@@ -655,7 +655,7 @@ class BackendRegistry:
         backend cannot read here: ``UnsupportedFeatureError`` for no backend or a
         recognised-only format, ``PackageNotInstalledError`` for a missing package, a
         replacement plugin's ``requires`` included, and one in ``excluded`` (the
-        caller's ``FormatPolicy.exclude_libraries``). The caller has already refused a
+        caller's ``FormatPolicy._libraries_off``). The caller has already refused a
         format the policy does not allow.
         """
         if replacement is not None:
@@ -761,11 +761,12 @@ def format_availability(
     ``check_programs=False`` runs no program: missing programs are then not counted,
     and RAR reports as it would with ``unrar`` installed.
 
-    Without ``config`` the answer is what this environment provides. With it, two
-    fields of ``config.formats`` change it, and no other: a package in
-    ``exclude_libraries`` counts as absent, listed in ``missing`` with the policy as its
-    ``reason``, and a container in ``replace`` is answered for the plugin that reads it,
-    whose ``requires`` count as a registered plugin's do. Whether the format may open is
+    Without ``config`` the answer is what this environment provides. With it, three
+    fields of ``config.formats`` change it, and no other: a package that
+    ``exclude_libraries`` lists or ``only_libraries`` leaves out counts as absent,
+    listed in ``missing`` with the policy as its ``reason``, and a container in
+    ``replace`` is answered for the plugin that reads it, whose ``requires`` count as a
+    registered plugin's do. Whether the format may open is
     another question, answered by ``config.formats.allows(fmt)``; a caller needs both.
     """
     # A non-ArchiveFormat used to fall through to a fabricated record — NONE with an

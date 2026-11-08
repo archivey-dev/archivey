@@ -1,4 +1,4 @@
-"""The optional packages a call's ``FormatPolicy.exclude_libraries`` turns off.
+"""The optional packages a call's ``FormatPolicy`` turns off (``_libraries_off``).
 
 An excluded package reads as not installed for that call only. Nothing process-wide
 changes: every availability check takes the call's excluded set, carried on the reader's

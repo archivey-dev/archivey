@@ -239,8 +239,8 @@ class FormatPolicy:
     Otherwise the policy decides which reader runs, not what detection reads: magic,
     the self-extracting archive scan and the built-in content probes still run on every
     input, within ``ArchiveyConfig.detection_budget``. The one exception is a content
-    probe whose format needs a package ``exclude_libraries`` turns off, which does not
-    run, so the package is not called.
+    probe whose format needs a package the policy turns off (``exclude_libraries`` or
+    ``only_libraries``), which does not run, so the package is not called.
 
     ``replace=`` reads a built-in container with a plugin instead of the built-in
     reader (see :attr:`replace`)::
@@ -264,7 +264,7 @@ class FormatPolicy:
     Only the file the call opens is checked. ``exclude={S.XZ}`` refuses a ``.xz`` or
     ``.tar.xz`` file, but an xz-compressed ZIP member, or a plugin's xz payload, still
     decodes. To turn off the code that decodes, use ``plugins`` or
-    ``exclude_libraries``, which hold for every member."""
+    ``exclude_libraries``/``only_libraries``, which hold for every member."""
 
     plugins: bool
     """Whether registered plugin formats and plugin codecs may run in this call. Use
@@ -326,7 +326,9 @@ class FormatPolicy:
     The allowlist form of :attr:`exclude_libraries`, as ``only`` is of ``exclude``:
     every :class:`~archivey.OptionalLibrary` it does not list reads as not installed in
     this call, with the same effects, including on a package a later archivey release
-    adds. ``only_libraries=set()`` runs on the standard library alone. Both may be set,
+    adds. ``only_libraries=set()`` runs with no optional package; on Python 3.14 that
+    also turns off the standard library's ``compression.zstd``, which is listed as one.
+    Both may be set,
     as long as no package is in both.
 
     It covers archivey's own optional packages. A plugin's own modules are not
@@ -437,9 +439,15 @@ class FormatPolicy:
         ``False`` when :attr:`exclude_libraries` lists the package ``module`` is or is
         part of (``lz4.block`` is part of ``lz4``), or :attr:`only_libraries` does not
         list it. A name that is not an :class:`~archivey.OptionalLibrary`, such as a
-        plugin's own module or ``zlib``, is always allowed. A plugin reader that imports
-        an optional package outside its ``requires`` asks this before it imports it.
+        plugin's own module or ``zlib``, is always allowed. ``module`` is the exact
+        import name and is case-sensitive (``"LZ4"`` is not ``lz4``); a non-string raises
+        ``ArchiveyUsageError``. A plugin reader that
+        imports an optional package outside its ``requires`` asks this before it imports
+        it.
         """
+        check_instance(
+            module, str, call="FormatPolicy.allows_library(module=…)", allow_none=False
+        )
         return not is_excluded_module(str(module), self._libraries_off)
 
     def _refusal(self, fmt: ArchiveFormat) -> str | None:

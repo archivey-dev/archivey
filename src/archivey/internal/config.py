@@ -103,7 +103,7 @@ class StreamConfig:
     :class:`~archivey.internal.resource_usage.ResourceUsageRecorder`: a codec passes it
     to :func:`check_decoder_memory`, which notes each declaration there. A detection
     probe builds its config without one, so a probe's sizes are never recorded.
-    ``excluded_libraries`` is the caller's ``FormatPolicy.exclude_libraries``: a codec
+    ``excluded_libraries`` is the caller's ``FormatPolicy._libraries_off``: a codec
     whose package it names opens as if the package were not installed.
     """
 

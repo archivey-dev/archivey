@@ -1111,10 +1111,9 @@ class ArchiveyConfig:
                 if getattr(self, field_name) is AcceleratorMode.ON:
                     raise ArchiveyUsageError(
                         f"ArchiveyConfig({field_name}=ON) cannot be combined with "
-                        "a formats=FormatPolicy that turns rapidgzip off (exclude_libraries= or "
-                        "only_libraries=), "
-                        "which turns that accelerator off. Use AUTO or OFF, or drop "
-                        "the exclusion."
+                        "a formats=FormatPolicy that turns rapidgzip off "
+                        "(exclude_libraries= or only_libraries=), which turns that "
+                        "accelerator off. Use AUTO or OFF, or let rapidgzip run."
                     )
 
 

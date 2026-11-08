@@ -1545,7 +1545,7 @@ class RarReader(BaseArchiveReader):
         kdf_budget = KeyDerivationBudget(self._config.decoder_limits)
         self._usage.watch_key_derivation(kdf_budget)
         self._kdf_cache = RarKdfCache(budget=kdf_budget)
-        # The call's ``FormatPolicy.exclude_libraries``: ``cryptography`` there reads
+        # The call's ``FormatPolicy._libraries_off``: ``cryptography`` there reads
         # as not installed for this reader.
         self._excluded = self._config.formats._libraries_off
         # The first member whose PswCheck can judge a candidate, found once on first
@@ -2659,7 +2659,7 @@ class RarReader(BaseArchiveReader):
 
     def _crypto_usable(self) -> bool:
         """Whether ``cryptography`` can decrypt here: installed, and not turned off by
-        the call's ``FormatPolicy.exclude_libraries``."""
+        the call's ``FormatPolicy._libraries_off``."""
         return CRYPTO_PACKAGE not in self._excluded and _crypto_available()
 
     def _natively_decryptable(self, raw: RarMemberInfo) -> bool:

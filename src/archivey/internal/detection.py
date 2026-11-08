@@ -499,9 +499,9 @@ def _probe_inner_container(
 
     ``formats`` leaves out what it leaves out of an uncompressed source: a plugin
     format it turns off, judged as the pair ``(container, stream_format)``, and a probe
-    whose backend needs a package ``exclude_libraries`` lists. The off plugin's code
-    does not run and its magic cannot claim the decoded bytes. When the probe runs
-    with an off plugin left out, ``inner_tar`` is also recorded as
+    whose backend needs a package ``FormatPolicy._libraries_off`` lists. The off
+    plugin's code does not run and its magic cannot claim the decoded bytes. When the
+    probe runs with an off plugin left out, ``inner_tar`` is also recorded as
     ``NOT_ENABLED_BY_POLICY``, as the uncompressed tiers record theirs; a probe left
     out for an excluded package is not, as there. That record is separate from the one
     reason above and can sit next to it: the policy left the plugin out, and the
