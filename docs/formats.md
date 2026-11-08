@@ -17,7 +17,8 @@ The maintainer handbook has more depth on
 compressors: what they share in
 [single-file.md](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/single-file.md), then
 [gzip](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/gzip.md),
-[bzip2](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/bzip2.md), [xz, lzip and LZMA
+[bzip2](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/bzip2.md),
+[bzip3](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/bzip3.md), [xz, lzip and LZMA
 Alone](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xz.md), [zstd and
 LZ4](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
 [Brotli](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/brotli.md) and
@@ -35,7 +36,7 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   3.14. Listing: from its index; from a pipe, header by header. Members: direct. Readable from a pipe.
 - **TAR:** core. Listing: header by header. Members: direct. Readable from a pipe.
 - **Compressed TAR** (`.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.lz`, `.tar.lzma`, `.tar.zz`,
-  `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`, `.tar.lzo`): needs what its compressor needs
+  `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`, `.tar.lzo`, `.tar.bz3`): needs what its compressor needs
   (below).
   Listing: needs decompression. Members: solid. Readable from a pipe.
 - **7z:** core for LZMA, LZMA2, Deflate, BZip2, Delta and the executable filters (BCJ, BCJ2,
@@ -72,7 +73,7 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
-  files and Brotli need `[recommended]`. One member. Members: direct. Readable from a pipe. Seeking inside the member
+  files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. One member. Members: direct. Readable from a pipe. Seeking inside the member
   needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
 - **UDIF disk images** (`.dmg`): recognised and refused ([Disk images](#disk-images)).
 
@@ -726,12 +727,16 @@ On a compressed tar, the stream's own checksum adds three cases:
 - **AES with stored data, and neither a block digest nor a member CRC:** 7z has no password check
   value, so a wrong password can give garbage, as in 7-Zip. Archivey reports `DIGEST_UNVERIFIABLE`
   (`reason="no_integrity_anchor"`). Treat the data as unchecked.
-- **Confirming a password on an encrypted block** decodes only until it can decide: the first
-  member CRC covering at least 4 bytes, or 64 KiB of output for a compressed block, whose codec
-  rejects a wrong key within a few bytes. Peak memory is one 64 KiB chunk. Time grows with the
-  block's size only for stored-plus-AES (or PPMd) blocks whose only CRC is at the end, with several
-  candidates, since nothing rejects a wrong key before that CRC. Give a single known password there
-  when you can. `ExtractionLimits` do not apply to this step.
+- **Confirming a password on an encrypted block** first decrypts the block's last 32 bytes. 7-Zip
+  and `py7zr` pad the encrypted data with zeros, and when the padding is 4 bytes or more (about three
+  blocks in four), zero padding confirms the password without decoding anything. It proves the
+  password, not the data: a block with no CRC still reports `DIGEST_UNVERIFIABLE`. Padding that is
+  shorter or not zero proves nothing and rejects no password. Then archivey decodes only until it can
+  decide: the first member CRC covering at least 4 bytes, or 64 KiB of output for a compressed block,
+  whose codec rejects a wrong key within a few bytes. Peak memory is one 64 KiB chunk. Time grows
+  with the block's size only for stored-plus-AES (or PPMd) blocks whose only CRC is at the end, with
+  several candidates, and whose padding confirmed nothing. Give a single known password there when
+  you can. `ExtractionLimits` do not apply to this step.
 - **Partial reads after an unconfirmed password** report `ENCRYPTED_MEMBER_UNVERIFIED`. When
   confirmation stopped at its 64 KiB budget without reaching a CRC, the member's own CRC at its end
   is the only check, and a stream closed before the end skips it.
@@ -1353,6 +1358,12 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   decodes LZO1X with liblzo2 when the `python-lzo` package is installed, and otherwise in Python,
   more than 25 times slower on text. `python-lzo` is not in an extra: it is GPL, and has no Linux
   wheels, so installing it needs the liblzo2 headers.
+- **bzip3** (`.bz3`, the format the `bzip3` tool writes) needs `[bzip3]`, which is in neither
+  `[recommended]` nor `[all]` and does not install on macOS, PyPy or Python 3.15
+  ([Install](install.md#bzip3)). It decodes in a child process unless `process_isolation` is
+  `NONE`. A file is a header and a run of blocks, each with its own CRC-32, which is checked as
+  the block decodes. Nothing marks the end of the file: a file cut between two blocks reads
+  short with no error. A cut inside the header or a block raises `TruncatedError`.
 - **mozlz4** is the format Firefox keeps its session, add-on and search files in
   (`sessionstore.jsonlz4`, `search.json.mozlz4`, `recovery.baklz4`, `addonStartup.json.lz4`):
   one LZ4 block behind a `mozLz40` header that stores the decoded size. archivey finds it by that
@@ -1372,7 +1383,7 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 ### Size and stored values
 
 - **`size` arrives with the first full read** when listing left it `None`: always for `.gz`,
-  `.bz2`, `.zz`, `.br`, `.zst`, `.lz4` and `.Z` (a zstd or LZ4 frame's content-size field is not
+  `.bz2`, `.zz`, `.br`, `.zst`, `.lz4`, `.bz3` and `.Z` (a zstd or LZ4 frame's content-size field is not
   used), and for `.xz`, `.lz` and `.lzma` when their size is absent or out of reach (an `.xz` from a
   pipe, an `.lzma` written with an unknown size). A read that reaches the end, having returned every
   byte from the start, which the decoder finishes without error, sets `member.size` on the member
@@ -1385,15 +1396,19 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 - **`.xz` size and `.lz` CRC-32** come from the stream's index or the lzip trailer whenever the
   source can seek: a file path and an in-memory stream both qualify, a pipe does not.
   `seekable_members=True` makes no difference, since reading the trailer is a bounded backward peek
-  at open. For a `.xz` or `.lz` opened from another archive's member stream, archivey reads
-  neither, seekable or not: it never reports the CRC-32, and its size arrives only from a full
-  read.
+  at open. A `.xz` or `.lz` opened from another archive's member stream gets both when the
+  member stream is seekable and is a stored ZIP entry or an uncompressed TAR member, whose end is
+  as cheap to reach as a file's. From a deflated member, a member of a compressed TAR whose decoder
+  cannot resume near it, a member that cannot seek, or a standard-library `GzipFile`, `BZ2File`,
+  `LZMAFile` or `ZipExtFile`, archivey reads neither: it does not report the CRC-32, and the size
+  arrives only from a full read.
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries a name (`FNAME`).
 - `.lzo` exposes `extra["lzop.original_filename"]` when its header stores a name, and the
   modification time and permission bits the header stores.
 - mozlz4 sets `member.size` at listing, from its header.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is cheap to
-  reach (a path or an in-memory stream; not a pipe or another archive's member). It is the size
+  reach (a path, an in-memory stream, a seekable stored ZIP entry or uncompressed TAR member; not a
+  pipe, a deflated member or a standard-library decompressor). It is the size
   modulo 2^32 only for a file of one gzip member with nothing after it. A file of several members
   stores the last member's size there (a bgzip file stores 0), so it never becomes `member.size`.
 - `.gz` has no `member.hashes` entry, before or after a read. The trailer's CRC-32 covers the whole
@@ -1411,7 +1426,7 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   frame usually does; archivey checks it when it is there. The legacy LZ4 format (`lz4 -l`, used
   for Linux kernel images) is read as `.lz4` and has no checksum either. Archivey does not report a
   diagnostic on each such file, because there is no check to skip.
-- **No end mark:** a `.Z` file, and a legacy LZ4 file, can be cut between two blocks and read short
+- **No end mark:** a `.Z` file, a `.bz3` file and a legacy LZ4 file can be cut between two blocks and read short
   with no error. `.Z` truncation is best effort: leftover bits that are not zero after the last
   complete code raise `TruncatedError` on the next `read()` after the bytes that could be decoded;
   a cut that leaves no such bits goes unnoticed.
@@ -1458,6 +1473,9 @@ read that reaches it raises `DiagnosticRaisedError`. The same check runs on a co
   again, which needs a source that can seek. From a pipe, bytes after a Brotli stream raise
   `CorruptionError`, and how much data comes before that error depends on how the bytes arrive.
 - `.Z` is not covered: it has no end marker, so appended bytes decode as more data.
+- `.bz3` is not covered either: bytes after the last block are read as the next block, and
+  raise `CorruptionError`, or `TruncatedError` when fewer than 8 bytes follow. A second `.bz3`
+  file after the first raises `CorruptionError`, as the `bzip3` tool refuses it.
 
 ### From a pipe held open
 
@@ -1477,11 +1495,12 @@ compressed bytes have arrived. It waits for the sender to close the pipe in thes
 - A read past the last byte of data, and the end of a compressed tar's listing, since another
   stream or trailing bytes could still follow.
 
-bzip2 is the exception to decoding what has arrived: it decompresses nothing until a whole block
-has arrived (up to 900 KB of original data), at any file size, so its reads wait for the end of
-each block. `open_archive` waits for the end of the first block of a `.tar.bz2`, which it decodes
-for the first header, and of a `.bz2` when it detects the format, which decodes the start of the
-file; with `format=`, a `.bz2` opens at once. Close the sending side when the file is done.
+bzip2 and bzip3 are the exceptions to decoding what has arrived: they decompress nothing until a
+whole block has arrived (up to 900 KB of original data for bzip2, 16 MiB by default for bzip3), at
+any file size, so their reads wait for the end of each block. `open_archive` waits for the end of
+the first block of a `.tar.bz2` or `.tar.bz3`, which it decodes for the first header, and of a
+`.bz2` or `.bz3` when it detects the format, which decodes the start of the file; with `format=`,
+they open at once. Close the sending side when the file is done.
 
 ### Limits and accelerators
 
@@ -1497,6 +1516,15 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   twice the size, and a size over the cap raises `ResourceLimitError`.
   A size larger than the block can decode to raises `CorruptionError` before anything is
   allocated, and so does a block longer than the declared size can encode to.
+- A `.bz3` header declares a block size, from 65 KiB to 511 MiB, and the decoder needs about 10
+  times that. `DecoderLimits.max_decoder_memory` caps it, so the 2 GiB default reads blocks up
+  to about 200 MiB, the `bzip3` tool's 16 MiB default among them; a larger block size raises
+  `ResourceLimitError` before the decoder is built. Each block's sizes are checked against the
+  block size before the block is read. Detection does not build a decoder for blocks over
+  16 MiB or wait for a first block over 1 MiB compressed: it reports the inner TAR test as
+  skipped (`CAPABILITY_UNAVAILABLE`), and the file opens as a `.bz3` of one member. Pass
+  `format=ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP3)` to read such a `.tar.bz3` as
+  a TAR.
 - With the `[seekable]` rapidgzip accelerator on a seekable `.gz` (by default from 16 MiB, with
   `seekable_members=True`, or on Linux and macOS without it when the file compresses 3:1 or
   less), archivey adds its own checks, because rapidgzip can end a cut file with no error. If

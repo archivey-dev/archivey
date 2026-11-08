@@ -677,6 +677,7 @@ _INDEX_SOURCES = {
     "lzip": "lzip member trailers",
     "zstd": "zstd seek table",
     "gzip": "BGZF or mgzip block sizes",
+    "bzip3": "bzip3 block headers",
 }
 
 

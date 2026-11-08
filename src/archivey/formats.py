@@ -109,17 +109,13 @@ class MemberRecord(NamedTuple, Generic[LocatorT]):
     """One member, as :meth:`IndexedReader.iter_members` yields it."""
 
     member: ArchiveMember
-    """The member, with its public fields filled in. ``name`` is decoded; archivey
-    normalizes it and reports the change, as for a built-in format."""
+    """The member, with its public fields filled in. ``name`` is decoded, as the
+    archive stores it; archivey normalizes it and reports the change, as for a
+    built-in format, and normalizes a hard link's ``link_target`` the same way."""
 
     locator: LocatorT
     """Anything the reader needs to find the member's data again. archivey stores it
     and hands it back to :meth:`IndexedReader.open_member`."""
-
-    stored_name: str | None = None
-    """The decoded name before :meth:`ReaderContext.normalize_name`, when the reader
-    normalized ``member.name`` itself so that a report it made while listing names
-    the member as callers see it. archivey reports the change from this name."""
 
 
 class Hasher(Protocol):
@@ -206,9 +202,10 @@ class MemberSpan(NamedTuple):
     of its decoded data (``data``)."""
 
     member: ArchiveMember
-    """The member, with its public fields filled in. ``name`` is decoded; archivey
-    normalizes it and reports the change, as for a built-in format. A ``FILE`` listed
-    with no ``size`` gets ``data_length``."""
+    """The member, with its public fields filled in. ``name`` is decoded, as the
+    archive stores it; archivey normalizes it and reports the change, as for a
+    built-in format, and normalizes a hard link's ``link_target`` the same way. A
+    ``FILE`` listed with no ``size`` gets ``data_length``."""
 
     data_length: int = 0
     """How many bytes after the header, from where the stream is when the span is
@@ -222,10 +219,6 @@ class MemberSpan(NamedTuple):
     """Checksums the header stores for the member's data, checked as
     :attr:`MemberData.digests` are. One with a ``HashAlgorithm`` name is also listed
     in ``ArchiveMember.hashes``."""
-
-    stored_name: str | None = None
-    """As :attr:`MemberRecord.stored_name`: the decoded name, when the reader
-    normalized ``member.name`` itself to report on the member before yielding it."""
 
     data: BinaryIO | io.RawIOBase | None = None
     """The member's decoded bytes, for a format whose library decodes each member
@@ -530,7 +523,7 @@ class ReaderContext:
             [DiagnosticCode, str, DiagnosticContext, ArchiveMember | None], None
         ],
         link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None],
-        hold: Callable[[ArchiveMember, str | None, str | None], None],
+        hold: Callable[[ArchiveMember, str | None], None],
         open_nested: Callable[[BinaryIO, ArchiveFormat], Iterator[MemberSpan]]
         | None = None,
     ) -> None:
@@ -575,8 +568,18 @@ class ReaderContext:
         mismatch raises ``ArchiveyUsageError``. Leave ``archive_name`` and
         ``member_id`` in ``details`` unset: archivey fills them in. With ``member``,
         the report is attached to that member as well: pass the member being listed,
-        before it is yielded, or the member being opened. The caller's
-        ``DiagnosticPolicy`` applies, so a code it raises on raises here.
+        before it is yielded, or the member being opened.
+
+        A report on a member being listed is held until the member is yielded, and
+        sent then: archivey sets the ``member_name`` of ``details`` to the name the
+        member is listed by, normalized, so a reader reports with the name as the
+        archive stores it. The ``message`` is sent as written. The caller's
+        ``DiagnosticPolicy`` applies when the report is sent, so a code it raises on
+        raises then, from the listing. A report on a member that is never yielded is
+        sent when the walk ends, under the reader's name and with no member id; it
+        raises only from a walk that reached its end, and is recorded without raising
+        when the walk was stopped part-way or ended by an error. In a walk archivey
+        starts over to reach member data, a report names the member as listed.
 
         For ``SYMLINK_TARGET_UNAVAILABLE`` use :meth:`link_target_unavailable`.
         """
@@ -603,7 +606,6 @@ class ReaderContext:
         self,
         member: ArchiveMember,
         *,
-        stored_name: str | None = None,
         reason: str | None = None,
     ) -> None:
         """Count a member the reader holds back to yield later, as if it were listed.
@@ -613,21 +615,19 @@ class ReaderContext:
         meanwhile, where the listing's limits do not see it. ``hold()`` counts it
         now, against the same ``max_members`` and ``max_metadata_bytes`` as the
         members already listed, and raises ``ResourceLimitError`` when it would cross
-        either. ``stored_name`` is the name the member will be yielded with as
-        ``stored_name``, weighed too when it differs from ``member.name``.
-        ``reason`` names what the held members are, for that error ("CPIO hard links
-        waiting for their data").
+        either. ``reason`` names what the held members are, for that error ("CPIO
+        hard links waiting for their data").
 
         Call it from ``walk()`` or ``iter_members()``, as the members are listed.
         The charge is on that member object: yielding the same object takes it off
         before archivey counts it as listed, so it is counted once. Yield a copy
         instead and both count until the walk ends. A member never yielded stays
-        counted until the walk ends. In a walk archivey starts over to reach a member's data again,
-        every member was counted when listed, and ``hold()`` does nothing. A call
-        from anywhere else (at open, in ``open_member``), or for a member held
-        already, raises ``ArchiveyUsageError``.
+        counted until the walk ends. In a walk archivey starts over to reach a
+        member's data again, every member was counted when listed, and ``hold()``
+        does nothing. A call from anywhere else (at open, in ``open_member``), or for
+        a member held already, raises ``ArchiveyUsageError``.
         """
-        self._hold(member, stored_name, reason)
+        self._hold(member, reason)
 
     def open_nested(
         self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat
@@ -649,12 +649,9 @@ class ReaderContext:
         the next one: the inner reader numbers its members as the outer listing will,
         so its reports name the right member. The walk may change a span's member
         before yielding it: rename it, under a prefix say (and the ``link_target`` of
-        a hard link with it), or add ``MemberSpan.digests``. A hard link's
-        ``link_target`` comes as the inner archive stores it (``./usr/bin/x``):
-        archivey normalizes the names the walk yields but not link targets, so a walk
-        passes it through :meth:`normalize_name`. Stop early by closing the
-        iterator; one left open is closed when Python collects it, and at the latest
-        when the archive is closed.
+        a hard link with it; archivey normalizes both), or add
+        ``MemberSpan.digests``. Stop early by closing the iterator; one left open is
+        closed when Python collects it, and at the latest when the archive is closed.
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
         format is read by its replacement, and ``exclude_libraries`` holds; ``only``
@@ -676,10 +673,10 @@ class ReaderContext:
         """The name archivey gives a member: ``./a//b`` becomes ``a/b``, and a
         directory's name ends in ``/``.
 
-        archivey normalizes every name a reader yields, so most readers never call
-        this. A reader that reports on a member before yielding it calls it first, so
-        the report and the member carry one name: it sets ``member.name`` to the
-        result and yields the name it started from as ``MemberRecord.stored_name``.
+        archivey normalizes every name a reader yields, and every hard link's
+        ``link_target``, so a reader yields names as the archive stores them. It
+        calls this only to match a name from elsewhere in the archive with the name
+        a member is listed by: a checksum list that names files, say.
         """
         return normalize_member_name(name, member_type, backslash_is_separator=False)
 

@@ -44,6 +44,7 @@ field archivey.ArchiveFormat.stream: StreamFormat | PluginStream
 attribute archivey.ArchiveFormat.AR = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BROTLI = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZ2 = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.BZIP3 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.CAB = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.CPIO = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DEB = ArchiveFormat(...)
@@ -529,6 +530,7 @@ value archivey.OptionalLibrary.RAPIDGZIP = 'rapidgzip'
 value archivey.OptionalLibrary.PYCDLIB = 'pycdlib'
 value archivey.OptionalLibrary.CRYPTOGRAPHY = 'cryptography'
 value archivey.OptionalLibrary.LZO = 'lzo'
+value archivey.OptionalLibrary.BZIP3 = 'bz3'
 class archivey.OverwritePolicy(Enum)
 enum archivey.OverwritePolicy
 value archivey.OverwritePolicy.ERROR = 'error'
@@ -589,6 +591,7 @@ value archivey.StreamFormat.ZLIB = 'zz'
 value archivey.StreamFormat.BROTLI = 'br'
 value archivey.StreamFormat.UNIX_COMPRESS = 'Z'
 value archivey.StreamFormat.LZOP = 'lzo'
+value archivey.StreamFormat.BZIP3 = 'bz3'
 value archivey.StreamFormat.MOZLZ4 = 'mozlz4'
 class archivey.StreamNotSeekableError(OpenError)
 init archivey.StreamNotSeekableError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
@@ -1077,14 +1080,12 @@ field archivey.formats.MemberDigest.new: Callable[[], Hasher] | None
 class archivey.formats.MemberRecord(tuple, Generic[LocatorT])
 field archivey.formats.MemberRecord.locator: LocatorT
 field archivey.formats.MemberRecord.member: ArchiveMember
-field archivey.formats.MemberRecord.stored_name: str | None
 class archivey.formats.MemberSpan(tuple)
 field archivey.formats.MemberSpan.checked: bool
 field archivey.formats.MemberSpan.data: BinaryIO | io.RawIOBase | None
 field archivey.formats.MemberSpan.data_length: int
 field archivey.formats.MemberSpan.digests: tuple[MemberDigest, ...]
 field archivey.formats.MemberSpan.member: ArchiveMember
-field archivey.formats.MemberSpan.stored_name: str | None
 reexport archivey.formats.PluginContainer = archivey.PluginContainer
 reexport archivey.formats.PluginStream = archivey.PluginStream
 class archivey.formats.ReaderArchiveInfo(tuple)
@@ -1098,7 +1099,7 @@ property archivey.formats.ReaderContext.config: ArchiveyConfig
 method archivey.formats.ReaderContext.decode_name(self, raw: bytes) -> str
 method archivey.formats.ReaderContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat | PluginStream, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
 property archivey.formats.ReaderContext.encoding: str | None
-method archivey.formats.ReaderContext.hold(self, member: ArchiveMember, *, stored_name: str | None = None, reason: str | None = None) -> None
+method archivey.formats.ReaderContext.hold(self, member: ArchiveMember, *, reason: str | None = None) -> None
 method archivey.formats.ReaderContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
 method archivey.formats.ReaderContext.normalize_name(self, name: str, member_type: MemberType) -> str
 method archivey.formats.ReaderContext.open_nested(self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat) -> Iterator[MemberSpan]

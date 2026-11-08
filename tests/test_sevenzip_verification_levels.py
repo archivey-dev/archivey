@@ -517,9 +517,13 @@ _SMALL = random.Random(8).randbytes(2_000)
 def _aes_lzma2_folder(
     payload: bytes, password: str
 ) -> tuple[bytes, bytes, list[list[int]]]:
-    """``(folder, packed, coder unpack sizes)`` for one AES + LZMA2 folder."""
+    """``(folder, packed, coder unpack sizes)`` for one AES + LZMA2 folder.
+
+    Padded with residue, not zeros, so the tail key check cannot confirm the
+    password: these folders are the ones whose key only a CRC can prove.
+    """
     compressed = _lzma2(payload, 1 << 20)
-    packed = _aes_encrypt(compressed, password)
+    packed = _aes_encrypt(compressed, password, pad=b"\xa5")
     coders = [_coder(_AES, props=b"\x00"), _coder(_LZMA2, props=bytes([16]))]
     return _linear(coders), packed, [[len(compressed), len(payload)]]
 

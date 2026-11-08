@@ -77,8 +77,11 @@ from archivey.internal.backends.sevenzip_parser import (
     read_signature_and_next_header,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
+    aes_tail_confirms,
+    check_aes_tail_sizes,
     decode_encoded_header,
     encoded_header_needs_password,
+    folder_aes_tail,
     open_folder_pipeline,
 )
 from archivey.internal.base_reader import (
@@ -339,14 +342,17 @@ def load_sevenzip_archive(
     collector: DiagnosticCollector | None = None,
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
+    will_read: Callable[[int, int], None] | None = None,
 ) -> SevenZipArchive:
     """Two-phase header load: parse → decode encoded → re-parse → materialize.
 
     The one open flow: :class:`SevenZipReader` and the fuzz harnesses both call it.
     ``fp`` starts at the signature header. ``max_members`` and ``max_metadata_bytes``
     are the reader's ``ListingLimits``; both hold at open (``None`` disables one).
+    ``will_read`` takes the next-header range hint
+    (:func:`~archivey.internal.backends.sevenzip_parser.read_signature_and_next_header`).
     """
-    signature = read_signature_and_next_header(fp)
+    signature = read_signature_and_next_header(fp, will_read=will_read)
     if not signature.header_data:
         return empty_archive(signature)
 
@@ -988,6 +994,9 @@ class SevenZipReader(BaseArchiveReader):
             collector=self._diagnostics_collector,
             max_members=self._config.listing_limits.max_members,
             max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
+            will_read=lambda start, end: self._will_read(
+                self._origin + start, self._origin + end
+            ),
         )
 
     def _report_trailing_data(self) -> None:
@@ -1575,7 +1584,14 @@ class SevenZipReader(BaseArchiveReader):
             pack_offset = (
                 self._archive.pack_pos + self._archive.pack_positions[pack_index]
             )
-            views.append(self._view(pack_offset, self._archive.pack_sizes[pack_index]))
+            size = self._archive.pack_sizes[pack_index]
+            if pack_index == first:
+                # The folder's first pack stream, from its start: one request on a
+                # remote source (a solid folder decodes from there whatever the
+                # member).
+                origin = self._origin + pack_offset
+                self._will_read(origin, origin + size)
+            views.append(self._view(pack_offset, size))
         return views
 
     def _open_folder_stream(
@@ -1803,17 +1819,41 @@ class SevenZipReader(BaseArchiveReader):
         if folder_index in self._folder_passwords:
             return self._folder_passwords[folder_index]
 
+        tail = folder_aes_tail(folder)
+        tail_pack_size = 0
+        if tail is not None:
+            tail_pack_size = self._archive.pack_sizes[
+                self._folder_pack_starts[folder_index]
+            ]
+            check_aes_tail_sizes(tail, tail_pack_size)
+
         plan = self._folder_password_confirm_plan(folder_index)
         # The plan that walks to the folder's end anchor whatever the codec: it settles
         # a candidate the bounded plan could only call inconclusive, when several
         # candidates survive the bounded one.
         full_plan = self._folder_password_confirm_plan(folder_index, full=True)
 
+        def tail_confirms(kdf_password: bytes) -> bool:
+            # Rung 1 of the ladder, the cheap key check: zero padding in the last AES
+            # block. Confirm-only, so a False goes on to the anchor plan.
+            if tail is None:
+                return False
+            return aes_tail_confirms(
+                self._folder_pack_views(folder_index)[0],
+                tail_pack_size,
+                tail,
+                password=kdf_password,
+                key_cache=self._key_cache,
+                excluded=self._stream_config.excluded_libraries,
+            )
+
         # The callbacks below run once per candidate password, inside
         # ``attempt_with_confirm``: each judges the candidate against the folder,
         # raising the wrong-password error to move on.
         def probe(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
             kdf_password = _password_to_kdf_bytes(candidate)
+            if tail_confirms(kdf_password):
+                return kdf_password, PasswordConfirmVerdict.CONFIRMED
             return kdf_password, self._confirm_folder_password(
                 folder_index, kdf_password, plan
             )
@@ -1843,9 +1883,10 @@ class SevenZipReader(BaseArchiveReader):
     ) -> PasswordConfirmPlan:
         """The confirm ladder's plan for one encrypted folder (rungs 2 and 3).
 
-        7z AES has no password check value, so rung 1 is empty here and the ladder
-        starts at the integrity anchor: member CRCs in substream order, then the folder
-        digest. The earliest anchor covering at least 4 bytes wins; one past
+        7z AES has no password check value. Rung 1 is the AES tail-padding check,
+        which ``_password_for_folder`` runs before this plan; this plan covers a
+        candidate that check did not confirm, starting at the integrity anchor: member
+        CRCs in substream order, then the folder digest. The earliest anchor covering at least 4 bytes wins; one past
         ``PASSWORD_CONFIRM_PREFIX_BYTES`` is walked only when no decoder in the chain rejects
         random input, or when ``full`` asks for the walk (several candidates survived
         the bounded plan, and only the anchor can tell them apart).

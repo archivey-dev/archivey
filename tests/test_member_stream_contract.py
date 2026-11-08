@@ -911,6 +911,13 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "no corpus builder for Firefox mozlz4; tests/test_mozlz4.py seeks in a file",
     ),
     (
+        "bzip3",
+        (
+            "no corpus builder (the bzip3 package is an opt-in extra); "
+            "tests/test_bzip3.py seeks in a file"
+        ),
+    ),
+    (
         "ar",
         (
             "no corpus builder: the corpus trees hold directories, which ar cannot; "
@@ -958,6 +965,8 @@ _UNTESTED_FORMATS = {
     **{ArchiveFormat(ContainerFormat.CPIO, s): "cpio" for s in StreamFormat},
     **{ArchiveFormat(ContainerFormat.DEB, s): "deb" for s in StreamFormat},
     ArchiveFormat.SQUASHFS: "squashfs",
+    ArchiveFormat.BZIP3: "bzip3",
+    ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP3): "bzip3",
     ArchiveFormat.XAR: "xar",
     ArchiveFormat.CAB: "cab",
     **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},

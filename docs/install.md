@@ -8,6 +8,7 @@ pip install archivey                 # no dependencies
 pip install "archivey[recommended]"  # every format and compression method that installs everywhere
 pip install "archivey[seekable]"     # faster seeking and reading in large gzip, bzip2 and DEFLATE data
 pip install "archivey[all]"          # recommended and seekable together
+pip install "archivey[bzip3]"        # .bz3 files; not part of [recommended] or [all]
 ```
 
 If you only want the `archivey` command, `uvx archivey-cli` runs it with everything
@@ -24,10 +25,21 @@ methods.
 | --- | --- |
 | `archivey` | ZIP, TAR and 7z with their common compression methods, and directories. gzip, bzip2, xz, LZMA, zlib, lzip and `.Z` files, alone or inside a TAR, and Zstandard too on Python 3.14 and later. RAR archives can be listed, and their uncompressed, unencrypted files read. |
 | `[recommended]` adds | ISO images, and LZ4, Brotli and Zstandard files (Zstandard only before Python 3.14). PPMd, Deflate64 and Zstandard inside 7z and ZIP, and Brotli and LZ4 inside 7z. AES decryption for 7z, RAR and WinZip AES ZIP files. Progress bars in the command-line tool. |
+| `[bzip3]` adds | `.bz3` files, alone or inside a TAR ([bzip3](#bzip3)). |
 | `[seekable]` adds | No new format. Faster seeking inside large gzip, zlib and bzip2 data, and large DEFLATE members in ZIP and 7z, when you open with `seekable_members=True`. On Linux and macOS, also faster reading of large DEFLATE data that compresses 3:1 or less, without that option. |
 
 Compressed RAR files, and a few encrypted ones, also need an outside program, which no extra can
 install. The next section covers it.
+
+### bzip3
+
+`.bz3` files need `pip install "archivey[bzip3]"`, which installs the `bzip3` package. It is
+kept out of `[recommended]` and `[all]` for two reasons. The `bzip3` package publishes wheels
+only for CPython 3.11 to 3.14 on Linux and Windows, and no source package, so the extra
+doesn't install on macOS, on PyPy or on Python 3.15. And libbzip3 is young: its 2023 releases
+fixed several memory-safety bugs, so archivey decodes `.bz3` data in a child process unless you
+set `process_isolation=ProcessIsolation.NONE`
+([Decoders in a child process](security.md#decoders-in-a-child-process)).
 
 ## RAR needs an outside program
 

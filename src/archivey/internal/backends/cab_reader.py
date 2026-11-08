@@ -271,10 +271,7 @@ class CabReader(IndexedReader[_Location]):
                     ),
                 ),
             )
-            stored_name = None
             if member.modified is None and stamp:
-                stored_name = name
-                member.name = context.normalize_name(name, MemberType.FILE)
                 context.report(
                     DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
                     f"Invalid cabinet date for {quoted(member.name)}: 0x{stamp:08x}",
@@ -286,7 +283,7 @@ class CabReader(IndexedReader[_Location]):
                     ),
                     member=member,
                 )
-            yield MemberRecord(member, _Location(folder, offset), stored_name)
+            yield MemberRecord(member, _Location(folder, offset))
 
     # ── Data ─────────────────────────────────────────────────────────────────────────
 

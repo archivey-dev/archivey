@@ -189,7 +189,9 @@ Each record holds an `ArchiveMember` and a locator. The member carries the publi
 your format stores: at least `type`, `name` and, for a file, `size`. The name is decoded
 but not cleaned up. archivey normalizes it (`./a//b` becomes `a/b`) and reports
 `MEMBER_NAME_NORMALIZED` when that changes it, as for a built-in format. A leading `./`
-alone, or a directory's added `/`, is not reported.
+alone, or a directory's added `/`, is not reported. A hard link's `link_target` names
+another member, so archivey normalizes it the same way: give it as the archive stores
+it too.
 `ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
 UTF-8 wins, then the caller's `encoding=`, then UTF-8 with no byte lost.
 
@@ -545,12 +547,13 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
   limits and decoder limits are the caller's, and what it reports (a TAR header it had
   to guess at, bytes after its end) goes into the outer reader's diagnostics, naming
   the member as the caller sees it, and reaches that member's `diagnostics`, while the
-  data is read too. Its errors raise from the walk. Names are checked
-  once, by the outer listing, after the walk renames them.
+  data is read too. Its errors raise from the walk. Names are checked once, by the
+  outer listing, after the walk renames them.
 - **Yield every span, in order.** The inner reader numbers its members as the outer
   listing will, so yield each span before taking the next. The walk may change the
-  member first: rename it (and a hard link's `link_target` with it), or add
-  `MemberSpan.digests` from a checksum list the outer archive keeps.
+  member first: rename it (and a hard link's `link_target` with it, as the inner
+  archive stores it; archivey normalizes both), or add `MemberSpan.digests` from a
+  checksum list the outer archive keeps.
 - **Cost.** Inner members are decoded data, so the rules of the next section hold: a
   pass reads them once, and `open()` of one afterwards walks the archive again to it.
   Have `archive_info()` return `ReaderArchiveInfo(is_solid=True)`.
@@ -681,14 +684,18 @@ self._context.report(
 
 Leave `archive_name` and `member_id` unset: archivey fills them in. Pass `member` to
 attach the report to a member, either while listing it (before it is yielded) or while
-opening it. The caller's `DiagnosticPolicy` applies, so a code the caller raises on
-raises from `report()`.
+opening it.
 
-A report made while listing a member should name it as callers will see it, and
-archivey normalizes names only after `iter_members()` yields them. So normalize the
-name first with `ReaderContext.normalize_name()`, set `member.name` to the result, and
-yield the name you started from as `MemberRecord(member, locator, stored_name=...)`.
-archivey then reports the change from that name, as it would have.
+Name the member in the report as the archive stores it, the same name you give
+`member.name`. archivey normalizes names only once `iter_members()` or `walk()` yields
+them, so it holds a report made while listing until then, and sends it with the
+normalized name as the context's `member_name`. The message goes out as you wrote it.
+The caller's `DiagnosticPolicy` applies when the report is sent, so a code the caller
+raises on raises from the listing. A report on a member you never yield is sent when
+the walk ends, under your name and with no member id. It raises only if the walk
+reached its end: when the caller stopped the listing early, or damage ended it, the
+report is recorded and the policy does not raise. In a walk archivey starts over to
+reach member data, a report names the member as listed.
 
 A symlink whose target cannot be read is reported with
 `ReaderContext.link_target_unavailable()`, which also leaves `link_target` unset and
@@ -701,13 +708,12 @@ limits to the members it is handed in any case.
 A reader that keeps members back to yield them later, such as a CPIO hard link held
 until the link that carries its data, passes each one to `ReaderContext.hold()` when it
 keeps it, from `walk()` or `iter_members()`; a call made anywhere else raises
-`ArchiveyUsageError`. The member then counts toward `max_members` and `max_metadata_bytes` with the
-members already listed, and `hold()` raises `ResourceLimitError` when it would cross
-either. Pass the name you will yield it with as `stored_name=`, and what the held
-members are as `reason=`, for the error. Yielding that same member object takes the
-hold off before archivey lists it, so it is counted once; a copy would count twice
-until the walk ends. In a walk archivey starts over to reach a
-member's data, `hold()` does nothing.
+`ArchiveyUsageError`. The member then counts toward `max_members` and
+`max_metadata_bytes` with the members already listed, and `hold()` raises
+`ResourceLimitError` when it would cross either. Pass what the held members are as
+`reason=`, for the error. Yielding that same member object takes the hold off before
+archivey lists it, so it is counted once; a copy would count twice until the walk
+ends. In a walk archivey starts over to reach a member's data, `hold()` does nothing.
 
 ## Archive details
 

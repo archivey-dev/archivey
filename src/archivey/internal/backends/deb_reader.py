@@ -200,6 +200,7 @@ class DebReader(SequentialReader):
             inner = member.name
             member.name = CONTROL_DIR if inner == "." else CONTROL_DIR + inner
             if member.type is MemberType.HARDLINK and member.link_target:
+                # Normalized before the prefix, so "./x" does not become "DEBIAN/./x".
                 target = context.normalize_name(member.link_target, MemberType.FILE)
                 member.link_target = CONTROL_DIR + target
             if member.type is MemberType.FILE and inner in ("control", "md5sums"):
@@ -215,13 +216,7 @@ class DebReader(SequentialReader):
         context = self._context
         for span in context.open_nested(data, fmt):
             member = span.member
-            if member.type is MemberType.HARDLINK and member.link_target:
-                # The nested reader hands the target over as the tar stores it
-                # ("./usr/bin/x"), and the listing normalizes names, not targets.
-                member.link_target = context.normalize_name(
-                    member.link_target, MemberType.FILE
-                )
-            elif member.type is MemberType.FILE:
+            if member.type is MemberType.FILE:
                 digest = self._md5.get(member.name)
                 if digest is not None:
                     member.hashes = {**member.hashes, HashAlgorithm.MD5: digest}
