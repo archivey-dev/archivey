@@ -78,6 +78,14 @@ stays whole. `modified` is the DOS date and time, naive; an invalid one is `None
 `MEMBER_TIMESTAMP_INVALID`. `compression` is `STORED`, `DEFLATE` (MSZIP), `LZX` or
 `QUANTUM`. `ArchiveInfo.format_version` is `major.minor`.
 
+The members come in table order, unless reading them in that order would decode a block
+twice (§2.3); then they come sorted by folder and offset, the order of their bytes. To
+decide, `iter_members` reads the whole table before the first member comes (at most
+65 535 records, each read once from the table: about 6 MiB more at the peak for 65 535
+files) and replays the kept decoder over it (`_decodes_twice`). A cabinet that lists one
+name twice keeps table order, since the entry listed last is the current one. A damaged
+table keeps table order: the members before the damage come, then the error.
+
 ### 2.3 Read
 
 The first open of a member in a folder reads that folder's `CFDATA` headers (one 8-byte
@@ -96,10 +104,14 @@ must end its deflate stream with exactly the decoded size. LZX decodes 32 KiB fr
 the last one up to the folder's total, whatever size each block says.
 
 When a member stream closes, the reader keeps its folder decoder; the next member of the
-same folder at a later offset continues from it. So `stream_members()` and members read
-in order decode each folder once. Only one decoder is kept: memory stays at one LZX window
-(at most 2 MiB), and the window is checked against `max_decoder_memory` before a member of
-the folder opens. A member of size 0 reads as empty and decodes nothing.
+same folder, at or after where that one stopped, continues from it. Any other member of a
+compressed folder decodes the folder again from its first block. Writers list files in
+data order, so `stream_members()` and `extract_all` decode each folder once; a table in
+an order that would decode a block twice is sorted into data order first (§2.2, §6).
+Members whose bytes overlap still decode their folder again in any order. Only one
+decoder is kept: memory stays at one LZX window (at most 2 MiB), and the window is
+checked against `max_decoder_memory` before a member of the folder opens. A member of
+size 0 reads as empty and decodes nothing.
 
 A member is `checked` (`Verification.CHECKSUM` once read to the end) when every block
 from the folder's start through its last byte has a checksum. LZX history means an
@@ -130,3 +142,27 @@ repeated offsets, all three block types, the E8 translation, and code-length run
 decoder is not checked only against its own reading. Four cabinets from libarchive's test
 suite, written by `makecab.exe`, are in `tests/fixtures/external/cab_libarchive/`: stored,
 MSZIP, LZX and a cp932 name.
+
+## 6. Decisions
+
+(Numbered as in the handbook template, so citations stay valid when the missing sections
+are added.)
+
+- **Data order over table order, only when table order would decode a block twice.**
+  The maintainer's call (2026-11-08), the same rule as for SquashFS fragments
+  ([SquashFS §6](squashfs.md#6-decisions)). A file table in reverse data order made
+  `stream_members()` and `extract_all` decode the folder from its start for each
+  member, so the cost grew with the square of the member count: 400 files of 32 KiB in
+  one LZX folder streamed in 12.6 s reversed against 0.1 s forward (MSZIP 2.0 s against
+  0.05 s); sorted, the reversed table takes 0.1 s. Table order is kept whenever the
+  replay of the one kept decoder says each block decodes once, which is every cabinet
+  whose writer lists files in data order, and any table whose members of each folder
+  are in order, whatever the order of the folders. Like SquashFS, the order changes for
+  `members()` too: there is one member order, and it is the one the stream pass reads.
+  A cabinet that lists a name twice keeps table order. Rejected: keeping more than one
+  decoder (a crafted table interleaves one folder more), and sorting every table (it
+  changes the order of cabinets that read well as they are). 7z needs no such rule:
+  its parser assigns a folder's members in data order. Reopen if a writer is found
+  whose table order matters to its users and still decodes a block twice, or if
+  overlapping members, which decode their folder again in any order, turn up outside
+  crafted input.

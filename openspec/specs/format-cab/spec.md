@@ -22,9 +22,10 @@ decoded by archivey's own decoder, in Python. The format handbook is
 
 ### Requirement: Read a cabinet's files from a seekable source
 
-The CAB backend SHALL list one `FILE` member per `CFFILE` record, in table order, named
-as stored with `\` turned into `/` after decoding, with its size, the DOS date and time
-as a naive `modified`, its attributes as `windows_attrs` (without the cabinet-only bits
+The CAB backend SHALL list one `FILE` member per `CFFILE` record, in table order (sorted
+by folder and offset instead when reading in table order would decode a block twice),
+named as stored with `\` turned into `/` after decoding, with its size, the DOS date and
+time as a naive `modified`, its attributes as `windows_attrs` (without the cabinet-only bits
 `0x40` and `0x80`), and its folder's method as
 `compression`. It SHALL read stored, MSZIP and LZX folders (LZX windows 2^15 to 2^21),
 check each data block's checksum when it is not 0, and report a member whose blocks from
@@ -40,7 +41,7 @@ with `StreamNotSeekableError`.
 | A cabinet with a stored, MSZIP or LZX folder (verbatim, aligned and uncompressed blocks, E8 translation, every window size) | The same members and bytes; each member `CHECKSUM` |
 | `makecab.exe` cabinets, stored, MSZIP and LZX (libarchive's test files) | The same members and bytes |
 | A cp932 name opened with `encoding="cp932"` | The Japanese name, whole |
-| Members read in order from one LZX folder | Each 32 KiB frame decoded once |
+| Members streamed from a table in data order, reversed, or with folders interleaved | Table order kept unless it would decode a block twice, then by folder and offset; each block decoded once |
 | A member in the middle of a stored folder | The blocks before it not read |
 | Header, folder and data reserve areas | Skipped |
 | A block whose checksum is 0 | The member read, `LENGTH` |

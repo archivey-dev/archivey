@@ -1185,6 +1185,10 @@ what `makecab` and `gcab` write.
 - **Reading members:** a cabinet groups its files into folders, and each folder is one
   compressed stream, so a compressed folder is solid: reaching a file decodes the folder from
   its start. Files read in order decode each folder once. A stored folder is direct.
+- **Member order:** the order of the cabinet's file table, which writers keep in the order
+  the files' bytes are stored. When reading the files in table order would decode part of a
+  folder twice (a table that is crafted or edited, for example reversed), the files are
+  listed by folder and by position in the folder instead, so each folder is decoded once.
 - **From a pipe:** no; the file table points at folders anywhere in the file, so the cabinet
   needs a source that can seek.
 - `ArchiveInfo.format_version` is the cabinet's version, `"1.3"` for every current writer.
