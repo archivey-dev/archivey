@@ -591,7 +591,7 @@ def test_zip_index_only_listing_leaves_symlink_unresolved(tmp_path: Path) -> Non
         assert link_resolved.link_target_member is not None
         assert link_resolved.link_target_member.name == "target.txt"
         assert ar.read("link") == b"payload"
-        ar.extract_all(tmp_path / "out")
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
         assert (tmp_path / "out" / "target.txt").read_bytes() == b"payload"
 
 
@@ -994,7 +994,9 @@ def test_trusted_applies_the_directory_owner_from_a_pipe(
     monkeypatch.setattr(ExtractionCoordinator, "_apply_metadata", record)
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     with open_archive(source, streaming=piped) as ar:
-        ar.extract_all(tmp_path / "out", policy=ExtractionPolicy.TRUSTED)
+        ar.extract_all(
+            tmp_path / "out", policy=ExtractionPolicy.TRUSTED, on_blocked="skip"
+        )
     assert applied == [owner]
 
 
@@ -1010,7 +1012,7 @@ def test_trusted_as_root_owner_matches_from_a_pipe(
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     dest = tmp_path / "out"
     with open_archive(source, streaming=piped) as ar:
-        ar.extract_all(dest, policy=ExtractionPolicy.TRUSTED)
+        ar.extract_all(dest, policy=ExtractionPolicy.TRUSTED, on_blocked="skip")
     st = (dest / "owned.txt").stat()
     expected = (os.geteuid(), os.getegid()) if owner == (None, None) else owner
     assert (st.st_uid, st.st_gid) == expected
@@ -1696,7 +1698,9 @@ def test_an_overlapping_entry_fails_alone_under_strict_and_continue(
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     data = _second_entry_over_the_first_header()
     with open_archive(io.BytesIO(data), config=config) as ar:
-        report = ar.extract_all(tmp_path / "out", on_error="continue")
+        report = ar.extract_all(
+            tmp_path / "out", on_error="continue", on_blocked="skip"
+        )
     statuses = {r.member.name: r.status for r in report.results}
     assert statuses == {
         "m0.txt": ExtractionStatus.EXTRACTED,
@@ -2240,7 +2244,7 @@ def test_a_member_typed_twice_is_one_finding(tmp_path: Path) -> None:
         } == expected
 
     with open_archive(archive) as opened:
-        opened.extract_all(tmp_path / "out")
+        opened.extract_all(tmp_path / "out", on_blocked="skip")
         assert {
             code: opened.diagnostics.counts.get(code) for code in expected
         } == expected
@@ -2257,7 +2261,7 @@ def test_an_inferred_encoding_is_one_finding_per_member(tmp_path: Path) -> None:
     """The same, for the name-encoding inference, which has its own emit."""
     code = DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
     with open_archive(_EXTERNAL_DIR / "encoding_infozip_jules.zip") as opened:
-        opened.extract_all(tmp_path)
+        opened.extract_all(tmp_path, on_blocked="skip")
         assert opened.diagnostics.counts.get(code) == 4
         for member in opened.members():
             (reported,) = [d for d in member.diagnostics if d.code is code]
@@ -2343,7 +2347,7 @@ def test_name_flagged_utf8_that_is_not_decodes_as_unflagged(
     data = _stored_zip(raw, utf8_flag=True, comment=b"caf\xe9ine")
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
     with open_archive(source, encoding=encoding, streaming=streaming) as ar:
-        ar.extract_all(tmp_path)
+        ar.extract_all(tmp_path, on_blocked="skip")
         report = ar.members_report_if_available()
         assert report is not None
         (member,) = report.members
@@ -2383,7 +2387,7 @@ def test_two_stored_names_that_decode_alike_are_duplicates(tmp_path: Path) -> No
         data = data.replace(placeholder, raw)
     with open_archive(io.BytesIO(data)) as ar:
         first, second = ar.members()
-        ar.extract_all(tmp_path)
+        ar.extract_all(tmp_path, on_blocked="skip")
     assert (first.name, second.name) == ("é.txt", "é.txt")
     assert (first.raw_name, second.raw_name) == (b"\xc3\xa9.txt", b"\x82.txt")
     assert (first.is_current, second.is_current) == (False, True)
@@ -2411,7 +2415,7 @@ def test_a_flag_overridden_name_collides_as_a_duplicate(
     data = bytes(data).replace(b"Y.txt", e_acute + b".txt")
     with open_archive(io.BytesIO(data), encoding=encoding) as ar:
         first, second = ar.members()
-        ar.extract_all(tmp_path)
+        ar.extract_all(tmp_path, on_blocked="skip")
     assert (first.name, second.name) == ("é.txt", "é.txt")
     assert (first.raw_name, second.raw_name) == (b"\xc3\xa9.txt", e_acute + b".txt")
     assert (first.is_current, second.is_current) == (False, True)
@@ -2736,7 +2740,7 @@ def test_unix_special_file_without_data_is_other(
         assert dev.extra["special_file_type"] == special
         assert "special_file_type" not in ar.get("f.txt").extra
         assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in ar.diagnostics.counts
-        ar.extract_all(tmp_path / "out")
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
     assert not (tmp_path / "out" / "dev").exists()
     assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
 
@@ -2770,7 +2774,7 @@ def test_unix_special_file_with_data_is_a_file(
             "size": 3,
         }
         assert special.replace("_", " ") in diag.message
-        ar.extract_all(tmp_path / "out")
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
     assert (tmp_path / "out" / "dev").read_bytes() == b"xyz"
     assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
 
@@ -2857,7 +2861,7 @@ def test_info_zip_fifo_content_reads_as_a_file(tmp_path: Path) -> None:
         assert member.extra["special_file_type"] == "fifo"
         assert member.size == 16
         assert ar.read(member) == b"hello from fifo\n"
-        ar.extract_all(tmp_path / "out")
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
     assert (tmp_path / "out" / "pipe1").read_bytes() == b"hello from fifo\n"
 
 
@@ -2925,7 +2929,7 @@ def test_directory_data_is_reported_and_readable_but_not_extracted(
         assert ar.read("d/f.txt") == b"visible"
         with pytest.raises(ArchiveyUsageError, match="not a file"):
             ar.read("jar/")
-        report = ar.extract_all(tmp_path / "out")
+        report = ar.extract_all(tmp_path / "out", on_blocked="skip")
     statuses = {r.member.name: r.status for r in report.results}
     assert statuses["d/"] is ExtractionStatus.EXTRACTED
     assert (tmp_path / "out" / "d").is_dir()

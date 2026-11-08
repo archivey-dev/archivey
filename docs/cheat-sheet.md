@@ -58,8 +58,9 @@ What each call returns, and the errors you're most likely to meet. The
   `None` for links and most directories, and works only until the loop moves on.
   [Read everything in one pass](index.md#read-everything-in-one-pass)
 - **`archive.extract_all(dest)`** returns an [`ExtractionReport`][archivey.ExtractionReport]
-  with one result per member. A refused member, such as `../evil.txt`, is skipped and recorded
-  in the report with the status `BLOCKED`, without raising. By default the first member that
+  with one result per member. A refused member, such as `../evil.txt`, isn't written, and the
+  rest still extracts. Then the call raises `FilterRejectionError`, whose `report` attribute is
+  the full report; pass `on_blocked="skip"` to get the report back instead. By default the first member that
   fails raises and ends the extraction: `ExtractionError` for a file already at the destination,
   `CorruptionError` for damaged data. [Extracting](extracting.md)
 - **`open_stream(source)`** returns a file object with the decompressed contents. On a

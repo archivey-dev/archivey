@@ -90,6 +90,7 @@ report instead of stopping at the first problem:
 | --- | --- | --- |
 | A file with the member's name is already there | writes the member as `photo (1).jpg` | raises an error |
 | A member fails | reports it, carries on, and exits with `1` at the end | raises an error at once |
+| A member is refused | reports it and carries on | writes the rest, then raises `FilterRejectionError` |
 
 `--overwrite error --stop-on-error` makes the command behave like the library. `--overwrite` also
 takes `skip` (keep the file that's there) and `replace` (write over it).

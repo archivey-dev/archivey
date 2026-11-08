@@ -73,6 +73,7 @@ from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
     EncryptionError,
+    FilterRejectionError,
     LinkTargetNotFoundError,
     LinkTargetNotFoundReason,
     PackageNotInstalledError,
@@ -180,6 +181,7 @@ from archivey.types import (
     ExtractionPolicy,
     ExtractionPolicyStr,
     ExtractionProgress,
+    ExtractionStatus,
     HashAlgorithm,
     MagicSignature,
     MemberFilter,
@@ -187,6 +189,8 @@ from archivey.types import (
     MemberStreams,
     MemberType,
     MissingComponent,
+    OnBlocked,
+    OnBlockedStr,
     OnError,
     OnErrorStr,
     OptionalLibrary,
@@ -303,6 +307,30 @@ def _settle_listing(
             member._link_target_unread = False
         if links_too or sizes_too:
             member._size_unread = False
+
+
+def _raise_if_blocked(report: ExtractionReport, archive_name: str | None) -> None:
+    """Raise once an extraction ended with refused members (``OnBlocked.RAISE``).
+
+    The error names the first refused member and carries the whole report, so a
+    caller that catches it loses nothing a returned report would have told it. The
+    first refusal's own error is its ``__cause__``.
+    """
+    blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
+    if not blocked:
+        return
+    first = blocked[0]
+    reason = raw_message_of(first.error) if first.error is not None else "refused"
+    count = len(blocked)
+    others = f", and {count - 1} more" if count > 1 else ""
+    error = FilterRejectionError(
+        f"A safety check refused this member{others}, so it was not written; the "
+        f"rest of the archive was extracted. First refusal: {reason}",
+        archive_name=archive_name,
+        member_name=first.member.name,
+        report=report,
+    )
+    raise error from first.error
 
 
 class SolidRun(NamedTuple):
@@ -4563,6 +4591,7 @@ class BaseArchiveReader(ArchiveReader):
         policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
         on_error: OnError | OnErrorStr = OnError.STOP,
+        on_blocked: OnBlocked | OnBlockedStr = OnBlocked.RAISE,
         abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         limits: ExtractionLimits | None = None,
@@ -4579,6 +4608,9 @@ class BaseArchiveReader(ArchiveReader):
         )
         on_error = coerce_enum(
             on_error, OnError, call="extract_all()", param="on_error="
+        )
+        on_blocked = coerce_enum(
+            on_blocked, OnBlocked, call="extract_all()", param="on_blocked="
         )
         abort_on = coerce_enum_collection(
             abort_on, AbortOn, call="extract_all()", param="abort_on="
@@ -4656,7 +4688,7 @@ class BaseArchiveReader(ArchiveReader):
                 run_ratio.limits = outer
         finally:
             self._state.release_pass(token)
-        return ExtractionReport(
+        report = ExtractionReport(
             results=tuple(results),
             diagnostics=scope.summary(),
             _dry_run_top_level=coordinator.dry_run_top_level,
@@ -4664,6 +4696,9 @@ class BaseArchiveReader(ArchiveReader):
             _dry_run_entries=coordinator.dry_run_entries,
             _resource_usage=self._resource_usage(),
         )
+        if on_blocked is OnBlocked.RAISE:
+            _raise_if_blocked(report, self._archive_name)
+        return report
 
     @override
     def close(self) -> None:

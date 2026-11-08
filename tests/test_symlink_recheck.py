@@ -90,7 +90,7 @@ def _extract(
     dest = tmp_path / "out"
     kwargs.setdefault("on_error", "continue")
     with archivey.open_archive(archive, streaming=streaming) as reader:
-        report = reader.extract_all(dest, **kwargs)
+        report = reader.extract_all(dest, **{"on_blocked": "skip", **kwargs})
     by_name: dict[str, archivey.ExtractionResult] = {}
     for result in report.results:
         by_name[result.member.name.rstrip("/")] = result
