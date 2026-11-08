@@ -305,6 +305,29 @@ def test_name_damage(files: list[XarFile], message: str) -> None:
         _open(write_xar(files))
 
 
+def test_a_name_repeated_the_same_is_one_name() -> None:
+    """Apple's productbuild writes each top-level file's <name> twice, the same both
+    times: every real installer package seen (Node.js 22, GitHub CLI 2.62, Miniconda)
+    was refused before. The repeat is one name, as xar and pkgutil read it, also for a
+    directory and the files under it."""
+    files = [
+        XarFile("Distribution", b"<installer/>", extra="<name>Distribution</name>"),
+        XarFile(
+            "Resources",
+            type="directory",
+            extra="<name>Resources</name>",
+            children=[XarFile("LICENSE", b"text", extra="<name>LICENSE</name>")],
+        ),
+    ]
+    with _open(write_xar(files)) as reader:
+        assert [m.name for m in reader.members()] == [
+            "Distribution",
+            "Resources/",
+            "Resources/LICENSE",
+        ]
+        assert reader.read("Resources/LICENSE") == b"text"
+
+
 def test_a_directory_listing_files_before_its_name_is_refused() -> None:
     xml = (
         b'<xar><toc><file id="1"><type>directory</type>'

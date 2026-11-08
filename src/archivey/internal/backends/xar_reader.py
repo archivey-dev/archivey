@@ -158,6 +158,7 @@ class _Frame:
         "id",
         "index",
         "link",
+        "name_xml",
         "path",
         "raw_path",
     )
@@ -174,6 +175,9 @@ class _Frame:
         self.has_data = False
         self.path: str | None = None
         self.raw_path = b""
+        # The first <name>'s text, as stored: a repeat of it is accepted
+        # (``_set_path``).
+        self.name_xml: str | None = None
 
 
 class _TocParser:
@@ -280,7 +284,14 @@ class _TocParser:
 
     def _set_path(self, frame: _Frame, text: str) -> None:
         if frame.path is not None:
+            # Apple's productbuild writes each top-level file's <name> twice, the
+            # same both times (Node.js, GitHub CLI and Miniconda installers do this);
+            # xar and pkgutil read it as one name. Two different names stay refused:
+            # nothing says which one the file is.
+            if text == frame.name_xml:
+                return
             raise CorruptionError(f"XAR file {quoted(frame.path)} has two names")
+        frame.name_xml = text
         if self._name_base64:
             try:
                 raw = base64.b64decode(text, validate=True)
