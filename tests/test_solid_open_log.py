@@ -289,6 +289,30 @@ def test_raise_on_stops_every_redecoding_open_and_closes_its_stream() -> None:
             reader.read("b.txt")
         # The guard does not disarm after the first raise. That this open gets as far
         # as the policy, rather than an ArchiveyUsageError for a second live stream,
-        # shows the refused open closed its stream.
+        # shows the refused open released its slot.
         with pytest.raises(DiagnosticRaisedError):
             reader.read("c.txt")
+
+
+def test_a_refused_open_decodes_nothing_and_is_not_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.SOLID_OPEN_REDECOMPRESSES})
+    config = ArchiveyConfig(diagnostic_policy=policy)
+    with open_archive(_SOLID_7Z, config=config) as reader:
+        assert reader.read("a.txt") == _data("a.txt")
+        opened: list[str] = []
+        real = type(reader)._open_member_handle
+
+        def spy(self, member):
+            opened.append(member.name)
+            return real(self, member)
+
+        monkeypatch.setattr(type(reader), "_open_member_handle", spy)
+        with pytest.raises(DiagnosticRaisedError):
+            reader.read("b.txt")
+        # Refused before the member's open, which decodes the folder's prefix.
+        assert opened == []
+        # The refused open did not decode, so reading a again decodes nothing again.
+        assert reader.read("a.txt") == _data("a.txt")
+        assert opened == ["a.txt"]

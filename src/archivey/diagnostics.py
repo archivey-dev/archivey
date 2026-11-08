@@ -1191,8 +1191,8 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nineteen codes are deliberately **out**,
-and the reasons are part of the contract rather than an oversight:
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nineteen codes are deliberately
+**out**, and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
   treating zero members as an error.
@@ -1274,7 +1274,8 @@ _INFO_LOG_CODES: frozenset[DiagnosticCode] = frozenset(
 
 ``STREAM_REWIND_REDECOMPRESSES`` and ``SOLID_OPEN_REDECOMPRESSES`` report the caller's
 access pattern, not the archive: the reason they are out of
-:data:`ARCHIVE_INTEGRITY_CODES` too (maintainer, 2026-10-23). ``MEMBER_NAME_DUPLICATE`` and ``MEMBER_READERS_DISAGREE`` report shapes
+:data:`ARCHIVE_INTEGRITY_CODES` too (maintainer, 2026-10-23). ``MEMBER_NAME_DUPLICATE``
+and ``MEMBER_READERS_DISAGREE`` report shapes
 of ordinary archives that only matter to a caller comparing readers, who asks for them
 through the policy. ``SOURCE_CHANGE_UNDETECTABLE`` is recorded at every open of a
 remote archive whose store cannot pin a version, so a warning would fire on every one.

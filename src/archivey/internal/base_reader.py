@@ -3995,18 +3995,19 @@ class BaseArchiveReader(ArchiveReader):
             stream: ArchiveStreamImpl | None = None
             try:
                 opened: list[ArchiveMember] = []
+                # Before the member's open, which can decode its solid prefix at once
+                # (a 7z folder that cannot seek): a policy that raises on
+                # SOLID_OPEN_REDECOMPRESSES refuses the open before it decodes.
                 stream = self._open_with_link_follow(
-                    member, visited=set(), opened=opened
+                    member,
+                    visited=set(),
+                    opened=opened,
+                    before_open=self._check_solid_open,
                 )
                 self._hold_to_ratio(stream, opened[0])
                 stream._level_member = self._level_member(opened[0])
                 # An eager open may have proved the password already.
                 stream._sync_member_level()
-                # Before the bind: a policy that raises on SOLID_OPEN_REDECOMPRESSES
-                # still closes the stream (``finally`` below).
-                run = self._solid_run(opened[0])
-                if run is not None:
-                    self._note_solid_open(opened[0], run)
                 registered = self._register_public_stream(stream, token=reservation)
                 bound = True
                 return registered
@@ -4050,6 +4051,12 @@ class BaseArchiveReader(ArchiveReader):
         del member
         return None
 
+    def _check_solid_open(self, member: ArchiveMember) -> None:
+        """Run :meth:`_note_solid_open` for an ``open()`` of ``member`` about to start."""
+        run = self._solid_run(member)
+        if run is not None:
+            self._note_solid_open(member, run)
+
     def _note_solid_open(self, member: ArchiveMember, run: SolidRun) -> None:
         """Report when an ``open()`` decodes again what an earlier open decoded.
 
@@ -4066,7 +4073,8 @@ class BaseArchiveReader(ArchiveReader):
         caller may have chosen the pattern, and ``reader.cost`` and the ``open()``
         docstring already carry the cost. Every later one is passed to the policy only
         (``escalate_only``), so ``raise_on`` stops each such open. Called before the
-        stream is handed out, so a raise here closes it.
+        member is opened, so a refused open decodes nothing, and only an open that goes
+        ahead is kept in the per-run record.
         """
         end = run.offset + run.size
         with self._solid_decoded_lock:
@@ -4074,11 +4082,11 @@ class BaseArchiveReader(ArchiveReader):
             again = min(run.offset, decoded_to) + max(
                 0, min(end, discarded_to) - run.offset
             )
-            self._solid_decoded[run.key] = (
-                max(decoded_to, end),
-                max(discarded_to, run.offset),
-            )
             if again <= 0:
+                self._solid_decoded[run.key] = (
+                    max(decoded_to, end),
+                    max(discarded_to, run.offset),
+                )
                 return
             first = not self._solid_redecode_reported
             self._solid_redecode_reported = True
@@ -4110,16 +4118,26 @@ class BaseArchiveReader(ArchiveReader):
                 message=message,
                 context=context,
             )
+        # Not refused: the open goes ahead and decodes through ``end``.
+        with self._solid_decoded_lock:
+            decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
+            self._solid_decoded[run.key] = (
+                max(decoded_to, end),
+                max(discarded_to, run.offset),
+            )
 
     def _open_with_link_follow(
         self,
         member: ArchiveMember,
         visited: set[int],
         opened: list[ArchiveMember] | None = None,
+        before_open: Callable[[ArchiveMember], None] | None = None,
     ) -> ArchiveStreamImpl:
         """Open ``member``, following links hop by hop until a non-link member.
 
         ``opened``, when given, receives the member whose data the stream reads.
+        ``before_open``, when given, is called with that member just before it is
+        opened, and may raise to refuse the open.
 
         A loop, not recursion: an archive's chain can be longer than the interpreter's
         recursion limit, and ``RecursionError`` is outside the library's error contract.
@@ -4190,6 +4208,8 @@ class BaseArchiveReader(ArchiveReader):
             )
         if opened is not None:
             opened.append(current)
+        if before_open is not None:
+            before_open(current)
         return self._open_member_handle(current)
 
     @override
