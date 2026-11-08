@@ -224,6 +224,19 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
             ),
         ]
 
+    # A program path must be absolute: a relative one would depend on the current
+    # directory, so it is no pin.
+    for program_field in ("unrar_path", "unar_path"):
+        for bad in ("", "unrar", 0, b"/usr/bin/unrar", "/bin/un\0rar"):
+            rows.append(
+                _case(
+                    "ArchiveyConfig",
+                    program_field,
+                    bad,
+                    lambda b=bad, f=program_field: ArchiveyConfig(**{f: b}),
+                )
+            )
+
     # Object shape of detection_budget=, not preset spellings. ``"balanced"`` is a real
     # DetectionBudgetPreset value, coerced by ``enum_args`` and asserted in
     # ``tests/test_enum_arguments.py``; the values below are none of the three types.

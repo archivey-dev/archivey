@@ -738,7 +738,7 @@ def test_7z_partial_without_lz4(monkeypatch: pytest.MonkeyPatch) -> None:
 def _hide_rarlab_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
     from archivey.internal.backends import rar_unrar
 
-    def _missing() -> str:
+    def _missing(_program: str | None = None) -> str:
         # As the real finder raises: the refusal text and the component it names.
         component = MissingComponent("unrar", "no unrar here")
         raise PackageNotInstalledError("no unrar here", missing=(component,))
@@ -806,7 +806,9 @@ def test_check_programs_false_runs_no_program(
 def test_rar_full_with_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
     from archivey.internal.backends import rar_unrar
 
-    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/usr/bin/unrar")
+    monkeypatch.setattr(
+        rar_unrar, "find_rarlab_unrar", lambda _program=None: "/usr/bin/unrar"
+    )
     avail = format_availability(ArchiveFormat.RAR)
     assert avail.support is FormatSupport.FULL
     assert avail.missing == ()

@@ -501,13 +501,14 @@ class ReadBackend(ABC):
     INSTALL_HINT: str | None = None
 
     @classmethod
-    def missing_programs(cls) -> tuple[MissingComponent, ...]:
+    def missing_programs(cls, config: ArchiveyConfig) -> tuple[MissingComponent, ...]:
         """External programs this backend can use that are not usable here.
 
         A backend that still opens and lists without them makes its format ``PARTIAL``
         in the public ``format_availability()`` query. Only that query calls this: a
         backend may run a program once to identify it, and ``open_archive`` must not
-        pay for that. Empty for backends that run no external program.
+        pay for that. Empty for backends that run no external program. ``config`` is the
+        one the query was passed, for a setting that names a program to run.
         """
         return ()
 

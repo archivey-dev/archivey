@@ -51,7 +51,9 @@ def test_archive_path_follows_a_switch_terminator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``--`` sits directly before the path, after every switch and the mask."""
-    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/stub/unrar")
+    monkeypatch.setattr(
+        rar_unrar, "find_rarlab_unrar", lambda _program=None: "/stub/unrar"
+    )
     seen: list[list[str]] = []
 
     class _Refuse(Exception):
@@ -252,7 +254,9 @@ def test_a_mask_the_reader_never_sends_is_refused_before_spawning(
 ) -> None:
     """Only placeholders and plain names reach ``open_unrar_p``; anything else is
     refused rather than handed to ``unrar``."""
-    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/stub/unrar")
+    monkeypatch.setattr(
+        rar_unrar, "find_rarlab_unrar", lambda _program=None: "/stub/unrar"
+    )
 
     def no_popen(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("unrar must not be spawned")

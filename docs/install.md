@@ -64,7 +64,7 @@ archivey doesn't use. Other Linux distributions have a package of RARLAB's UnRAR
 name.
 
 On Windows, download the command-line UnRAR from [RARLAB](https://www.rarlab.com/rar_add.htm) and
-put `UnRAR.exe` on your `PATH`.
+put `UnRAR.exe` on your `PATH`, or pass its full path as `ArchiveyConfig(unrar_path=...)`.
 
 On macOS, Homebrew no longer ships `unrar`. You can install it from an unofficial Homebrew tap,
 which builds or downloads RARLAB's program:
