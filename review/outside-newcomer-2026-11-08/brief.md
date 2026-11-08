@@ -1,6 +1,6 @@
 # Outside review 1: a newcomer evaluates archivey 0.3.0
 
-Run 2026-11-08 outside this repository's tooling, with ChatGPT in agent mode (a non-Claude
+Run 2026-11-08 outside this repository's tooling, with ChatGPT (GPT-6.1 Sol, medium effort) in agent mode (a non-Claude
 model with a terminal and a browser). It installed archivey 0.3.0 from PyPI and read only the
 published docs and `llms-full.txt`: no repository source, design notes, issues or pull requests.
 Prompt A produced [`newcomer-review.md`](newcomer-review.md); prompt B, sent in the same chat,
