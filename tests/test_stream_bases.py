@@ -461,6 +461,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
         counting.OutputCountingStream,
+        counting.BudgetDrawStream,  # the decoded stream's offsets
         bomb_tracker.DecodeRatioGuard,  # the codec's offsets
         bomb_tracker.MemberRatioGuard,  # the member stream's offsets
         readahead.ReadAheadStream,  # the inner's offsets
@@ -712,6 +713,7 @@ def test_delegating_stream_close_inventory() -> None:
         fullcount.FullCountStream,
         counting.CountingReader,
         counting.OutputCountingStream,
+        counting.BudgetDrawStream,
         counting.SeekCountingStream,
         bomb_tracker._RatioGuard,
         bomb_tracker.DecodeRatioGuard,

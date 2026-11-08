@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import threading
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import ClassVar
+from typing import ClassVar, NoReturn
 
 from archivey.detection_cost import (
     BALANCED_BUDGET,
@@ -25,6 +26,7 @@ from archivey.internal.arg_checks import (
 )
 from archivey.internal.config_copy import copying_config
 from archivey.internal.enum_args import coerce_enum
+from archivey.internal.overrides import override
 from archivey.types import ArchiveMember, OptionalLibrary
 
 
@@ -766,6 +768,158 @@ class SpoolLimits:
 SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
 
 
+class Budget:
+    """A pool of decoded bytes and members that every reader given it draws from.
+
+    The limits on :class:`ListingLimits`, :class:`DecoderLimits` and
+    :class:`ExtractionLimits` hold each reader on its own. An upload can hold archives
+    that each stay inside them and together do not: a ZIP of a hundred ZIPs, each
+    expanding to the limit, or the same archive opened in many threads. A budget is
+    one count for all of them. Pass the same ``Budget`` as
+    :attr:`ArchiveyConfig.budget` to every reader that should share it (the readers
+    opened from one upload's nested archives, or the threads serving one request), and
+    each draws from it as it works:
+
+    - every byte a decoder delivers counts against ``max_decoded_bytes``: the member
+      reads of ``open()``, ``stream_members()``, ``read()``, ``extract_all`` and
+      ``verify_all``, the folder or block a solid 7z or RAR member is decoded from, and
+      the bytes a forward seek in a member skips over. A byte read again after a seek
+      back counts again: it was decoded again;
+    - every member a listing registers counts against ``max_members``, once per reader
+      however often it is listed.
+
+    The read, seek or listing step that would take the total past a limit raises
+    :exc:`~archivey.exceptions.ResourceLimitError`, from every reader sharing the
+    budget, and extraction stops there rather than going on to the next member. The
+    budget does not refill: build a new one for the next upload.
+
+    A compressed TAR's listing decodes the archive stream to walk its headers; that
+    decode is held by :attr:`DecoderLimits.max_ratio` and the listing limits, not by
+    this budget, which counts the members' bytes as they are read. A nested archive's
+    bytes count twice, once as the outer member read and again as what the inner
+    reader decodes from them. Decoder memory stays a per-decoder limit
+    (:attr:`DecoderLimits.max_decoder_memory`), and time and memory as a whole belong
+    to a child process the caller runs archivey in (``docs/security.md``).
+
+    ``None`` on a field leaves that count unlimited. A budget is safe to share between
+    threads. It cannot be pickled, since a copy in another process would be a
+    separate pool, and ``copy.copy`` and ``copy.deepcopy`` return the budget itself,
+    so a copied config still shares it.
+    """
+
+    __slots__ = (
+        "_decoded_bytes",
+        "_lock",
+        "_max_decoded_bytes",
+        "_max_members",
+        "_members",
+    )
+
+    def __init__(
+        self,
+        *,
+        max_decoded_bytes: int | None = None,
+        max_members: int | None = None,
+    ) -> None:
+        check_limit(max_decoded_bytes, cls="Budget", field_name="max_decoded_bytes")
+        check_limit(max_members, cls="Budget", field_name="max_members")
+        self._max_decoded_bytes = max_decoded_bytes
+        self._max_members = max_members
+        self._decoded_bytes = 0
+        self._members = 0
+        self._lock = threading.Lock()
+
+    @property
+    def max_decoded_bytes(self) -> int | None:
+        """Most bytes the readers sharing this budget may decode, all together."""
+        return self._max_decoded_bytes
+
+    @property
+    def max_members(self) -> int | None:
+        """Most members the readers sharing this budget may list, all together."""
+        return self._max_members
+
+    @property
+    def decoded_bytes(self) -> int:
+        """Bytes decoded so far by the readers sharing this budget."""
+        return self._decoded_bytes
+
+    @property
+    def members(self) -> int:
+        """Members listed so far by the readers sharing this budget."""
+        return self._members
+
+    @override
+    def __repr__(self) -> str:
+        return (
+            f"Budget(max_decoded_bytes={self._max_decoded_bytes!r}, "
+            f"max_members={self._max_members!r}; decoded_bytes={self._decoded_bytes}, "
+            f"members={self._members})"
+        )
+
+    def __copy__(self) -> Budget:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, object]) -> Budget:
+        return self
+
+    @override
+    def __reduce__(self) -> NoReturn:
+        raise TypeError(
+            "a Budget cannot be pickled: a copy in another process would not share "
+            "its counts. Build one in each process instead."
+        )
+
+    def _bytes_room(self) -> int | None:
+        """Bytes left before ``max_decoded_bytes`` (``None``: no limit). Read without
+        the lock: it only sizes a read, and ``_draw_bytes`` judges."""
+        cap = self._max_decoded_bytes
+        return None if cap is None else max(0, cap - self._decoded_bytes)
+
+    def _check_bytes_left(self) -> None:
+        """Raise if the readers sharing this budget have already decoded past it, so
+        a read after the one that crossed it decodes nothing."""
+        cap = self._max_decoded_bytes
+        if cap is not None and self._decoded_bytes > cap:
+            self._draw_bytes(0, force=True)
+
+    def _draw_bytes(self, n: int, *, force: bool = False) -> None:
+        """Count ``n`` decoded bytes; raise once the total passes the limit. The bytes
+        stay counted: they were decoded. ``force`` judges the total even for none."""
+        if n <= 0 and not force:
+            return
+        with self._lock:
+            self._decoded_bytes += n
+            total = self._decoded_bytes
+        cap = self._max_decoded_bytes
+        if cap is not None and total > cap:
+            raise _budget_error(
+                f"Budget exhausted: max_decoded_bytes={cap} (the readers sharing "
+                f"this ArchiveyConfig.budget have decoded {total} bytes)"
+            )
+
+    def _draw_members(self, n: int) -> None:
+        """Count ``n`` listed members; raise, counting none, if that passes the limit."""
+        with self._lock:
+            total = self._members + n
+            cap = self._max_members
+            if cap is not None and total > cap:
+                raise _budget_error(
+                    f"Budget exhausted: max_members={cap} (the readers sharing this "
+                    f"ArchiveyConfig.budget would list {total} members)"
+                )
+            self._members = total
+
+
+def _budget_error(message: str) -> Exception:
+    """The error a spent :class:`Budget` raises: a ``ResourceLimitError`` that stops an
+    extraction, as the archive-wide ratio does, rather than failing one member."""
+    # Imported here: ``bomb_tracker`` imports this module's limits.
+    from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
+
+    return AlwaysStopResourceLimitError(message)
+
+
 @dataclass(frozen=True)
 class ArchiveyConfig:
     """Library tuning knobs passed as ``config=`` to :func:`open_archive`,
@@ -957,6 +1111,13 @@ class ArchiveyConfig:
     30 ms at 50 MB/s). ``0`` fetches only the bytes a read needs.
     """
 
+    budget: Budget | None = None
+    """A pool of decoded bytes and members shared with every other reader given the
+    same :class:`Budget` (``None``: none). Set it to hold an upload's nested archives,
+    or the readers of one request, to one total; the per-reader limits still apply
+    to each reader as well.
+    """
+
     def __post_init__(self) -> None:
         """Check the fields at construction, and convert the two that hold enums.
 
@@ -1002,6 +1163,9 @@ class ArchiveyConfig:
                 call=f"ArchiveyConfig({field_name}=…)",
                 allow_none=False,
             )
+        check_instance(
+            self.budget, Budget, call="ArchiveyConfig(budget=…)", allow_none=True
+        )
         if not isinstance(self.detection_budget, DetectionBudget):
             # A preset member, or its name, is converted here so the field always
             # holds the budget detection reads. The annotation stays the budget alone,

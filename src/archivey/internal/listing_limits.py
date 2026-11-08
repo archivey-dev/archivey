@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from archivey.config import ListingLimits
+from archivey.config import Budget, ListingLimits
 from archivey.exceptions import ResourceLimitError
 from archivey.types import ArchiveMember
 
@@ -111,8 +111,12 @@ def archive_comment_bytes(comment: str | None) -> int:
 class ListingLimitTracker:
     """Accumulate member count + retained metadata; optionally raise when caps are crossed."""
 
-    def __init__(self, limits: ListingLimits) -> None:
+    def __init__(self, limits: ListingLimits, *, budget: Budget | None = None) -> None:
         self._limits = limits
+        # The shared pool members are also drawn from, and how many this reader has
+        # drawn: a listing walked again after ``reset`` draws only past that.
+        self._budget = budget
+        self._budget_members = 0
         self.member_count = 0
         self.metadata_bytes = 0
         self._archive_comment_counted = False
@@ -171,6 +175,10 @@ class ListingLimitTracker:
             max_meta = limits.max_metadata_bytes
             if max_meta is not None and next_bytes > max_meta:
                 self._check_metadata(next_bytes)
+        budget = self._budget
+        if budget is not None and enforce and next_count > self._budget_members:
+            budget._draw_members(next_count - self._budget_members)
+            self._budget_members = next_count
         # Raises before storing, so a refused member changes neither total.
         self.metadata_bytes = next_bytes
         self.member_count = next_count

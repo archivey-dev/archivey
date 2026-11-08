@@ -297,6 +297,21 @@ The costs were measured on one 2.8 GHz core.
 
 Going over a limit raises `ResourceLimitError`.
 
+These limits hold for one reader. To hold a whole job to one total, such as an upload with archives
+inside it, or a batch of archives read on several threads, put an `archivey.Budget` in the config:
+
+```python
+budget = archivey.Budget(max_decoded_bytes=1 * 2**30, max_members=100_000)
+config = archivey.ArchiveyConfig(budget=budget)
+```
+
+Every reader opened with that config, or with a copy of it, draws the bytes it decodes and the
+members it lists from the one budget, so the total is shared across readers, nested archives and
+threads. A read that would go past it raises `ResourceLimitError`, and an extraction stops there.
+The per-reader limits still apply. Decoder memory stays a per-decoder limit, and time and memory
+use are bounded by running the job in a process you can stop. See the
+[archives inside the upload](recipes.md#archives-inside-the-upload) recipe.
+
 If you know which formats you accept, a [`FormatPolicy`](opening.md#configuration) with an
 `only=` list refuses the rest before any reader runs on them, including formats a later archivey
 release adds and plugin formats that another library registers. An `exclude=` list refuses only

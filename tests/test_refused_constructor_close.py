@@ -295,6 +295,7 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.bomb_tracker._RatioGuard": "plain assignments only",
     "archivey.internal.streams.counting.CountingReader": "plain assignments only",
     "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
+    "archivey.internal.streams.counting.BudgetDrawStream": "plain assignments only",
     "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",
     "archivey.internal.streams.codecs.zlib_codec._DeflateEndCheckStream": (
         "plain assignments only"

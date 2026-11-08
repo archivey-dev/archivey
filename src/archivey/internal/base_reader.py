@@ -813,7 +813,9 @@ class BaseArchiveReader(ArchiveReader):
         self._unconfirmed_failure_emitted: bool = False
         # Makes the test-and-set of ``_unconfirmed_failure_emitted`` one step.
         self._unconfirmed_failure_lock = threading.Lock()
-        self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
+        self._listing_tracker = ListingLimitTracker(
+            self._config.listing_limits, budget=self._config.budget
+        )
         # How close this reader came to each reader-lifetime limit (private; read by
         # the scan script and ``archivey extract --dry-run``).
         self._usage = ResourceUsageRecorder()
@@ -1320,16 +1322,28 @@ class BaseArchiveReader(ArchiveReader):
         return None
 
     def _track_decompressed(self, stream: BinaryIO) -> BinaryIO:
-        """Wrap ``stream`` to count decoded/output bytes when measurement is on.
+        """Wrap ``stream`` to count decoded/output bytes when measurement is on, and to
+        draw them from the config's :class:`~archivey.Budget` when it holds one.
 
         Backends call this on the stream that *is* the decompressor (or stored-data)
         output: member streams for ZIP/TAR/single-file, folder/solid-block streams for
-        solid 7z/RAR. Identity when measurement is off.
+        solid 7z/RAR. Identity when measurement is off and there is no budget.
         """
         counter = self._decompressed_counter
-        if counter is None:
-            return stream
-        return OutputCountingStream(stream, counter)
+        if counter is not None:
+            stream = OutputCountingStream(stream, counter)
+        budget = self._config.budget
+        if budget is not None:
+            # Imported here, as the other wrappers built only on request.
+            from archivey.internal.streams.counting import BudgetDrawStream
+
+            if isinstance(stream, ArchiveStreamImpl):
+                # A codec's own handle stays one, so the member's handle collapses it
+                # and takes over its checks; the draw goes on its inner stream.
+                stream._hold_inner(lambda inner: BudgetDrawStream(inner, budget))
+            else:
+                stream = BudgetDrawStream(stream, budget)
+        return stream
 
     def _seek_handle_wrapper(self) -> Callable[[BinaryIO], BinaryIO] | None:
         """Return a ``SharedSource(wrap_handle=…)`` callback when measurement is on."""

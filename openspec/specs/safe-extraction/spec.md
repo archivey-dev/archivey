@@ -971,6 +971,42 @@ turns it off.
 | `DecoderLimits(max_ratio=None)` in the reader's config | Reads, lists and extracts unchanged |
 | Deprecated `extract_all(limits=ExtractionLimits(max_ratio=None))` | Extracts; reads of the same reader stay held |
 
+### Requirement: A shared budget holds many readers to one total
+
+`ArchiveyConfig.budget` SHALL take an `archivey.Budget(max_decoded_bytes=,
+max_members=)` or `None` (the default: no shared budget). Every reader opened with a
+config holding a budget SHALL draw from it, whether the readers run one after another,
+nest, or run on several threads; copies of the config (`copy`, `deepcopy`,
+`dataclasses.replace`) SHALL share the same budget, and a budget SHALL refuse to be
+pickled.
+
+- **Bytes.** Every byte a member stream delivers (a read, `stream_members()`, an
+  extraction's writes) SHALL be drawn, and so SHALL the gap a forward seek skips past
+  the furthest offset reached. A read that would cross `max_decoded_bytes` SHALL
+  decode at most one byte past what is left, then raise the always-stop
+  `ResourceLimitError`, so an extraction stops at that member. Once spent, a budget
+  SHALL refuse every later read before it decodes.
+- **Members.** Each member a reader lists SHALL be drawn once per reader. The listing
+  that would pass `max_members` SHALL raise `ResourceLimitError`, and the refused
+  member SHALL NOT be counted.
+- The per-reader limits SHALL still apply. Decoder memory stays per decoder.
+
+#### Scenario: Two readers share one budget
+
+- **GIVEN** `Budget(max_decoded_bytes=350_000)` and a ZIP of five 100 000-byte members
+- **WHEN** one reader reads two members, closes, and a second reader with the same
+  config reads two more
+- **THEN** the second reader's second read raises `ResourceLimitError` naming
+  `max_decoded_bytes=350000`
+- **AND** the budget has drawn 350 001 bytes
+
+#### Scenario: Extraction stops at a spent budget
+
+- **GIVEN** `Budget(max_decoded_bytes=2 * 100_000 + 10)` and the same ZIP
+- **WHEN** `extract_all` runs
+- **THEN** it raises `ResourceLimitError`, two members are written whole, and no later
+  member is opened
+
 ### Requirement: Progress Reporting via on_progress Callback
 
 The system SHALL accept optional `on_progress` callbacks on both extraction APIs
