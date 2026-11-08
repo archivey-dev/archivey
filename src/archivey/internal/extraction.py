@@ -2738,9 +2738,9 @@ class ExtractionCoordinator:
         parent's cached answer, with one ``lstat``; ``None`` when that needs the full
         resolution.
 
-        Resolving each directory of a deep chain from the root costs one ``lstat`` per
-        level, so creating the chain cost its depth squared, and a small archive of
-        ``a/a/…/a/f`` took minutes. A last component that is not a symlink adds itself
+        Resolving each directory of a deep chain from the root would cost one
+        ``lstat`` per level, the depth squared for the chain (about 20 s for a member
+        1500 levels deep). A last component that is not a symlink adds itself
         to its parent's resolution, as the full walk does (a missing one is kept as a
         name there too), and follows no link, so a loop is counted as before. POSIX
         only: on Windows the resolution also takes the spelling the volume stores."""
@@ -3936,15 +3936,10 @@ class ExtractionCoordinator:
                 return
         except OSError:
             pass
-        # The components that do not exist yet: this run creates them, so a directory
-        # member naming one later is not the caller's (``_is_callers_directory``).
-        missing: list[Path] = []
-        probe = path
-        while probe != probe.parent and not os.path.lexists(long_path(probe)):
-            missing.append(probe)
-            probe = probe.parent
         try:
-            make_dirs(path)
+            # The directories this run creates, nearest the root first: a directory
+            # member naming one later is not the caller's (``_is_callers_directory``).
+            made = [Path(component) for component in make_dirs(path)]
         except (FileExistsError, NotADirectoryError, FileNotFoundError) as exc:
             # FileNotFoundError too: Windows can report a directory created under a file
             # as a missing path. Nearest the root first, because that component is the
@@ -3960,10 +3955,10 @@ class ExtractionCoordinator:
                         member_name=member.name,
                     ) from exc
             raise
-        self._state.created_dirs.update(missing)
+        self._state.created_dirs.update(made)
         # Nearest the root first, so each resolution extends its parent's
         # (``_extend_resolved_parent``).
-        for component in reversed(missing):
+        for component in made:
             self._note_run_directory(component)
 
     def _is_callers_directory(self, path: Path) -> bool:

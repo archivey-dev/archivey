@@ -22,7 +22,6 @@ file the short form would.
 
 from __future__ import annotations
 
-import contextlib
 import ntpath
 import os
 
@@ -77,12 +76,13 @@ def plain(path: str) -> str:
     return path
 
 
-def make_dirs(path: str | os.PathLike[str]) -> None:
+def make_dirs(path: str | os.PathLike[str]) -> list[str]:
     """``os.makedirs(path, exist_ok=True)`` as a loop, each call through
-    :func:`long_path`.
+    :func:`long_path`; returns the directories it made, nearest the root first, as
+    spelled from ``path``.
 
     ``os.makedirs`` recurses once per missing parent, so a directory deeper than the
-    interpreter's recursion limit (an archive member named ``a/a/a/…/f``) raises
+    interpreter's recursion limit (an archive member named ``a/a/a/…/f``) would raise
     ``RecursionError`` there, which is outside the library's error contract. Like
     ``os.makedirs``, an existing directory, or a symlink to one, is accepted at every
     level, and anything else in the way raises the ``OSError`` that ``os.mkdir`` gives.
@@ -97,13 +97,20 @@ def make_dirs(path: str | os.PathLike[str]) -> None:
             break
         missing.append(head)
         probe = head
+    made = []
     for ancestor in reversed(missing):
         # As in os.makedirs, an ancestor that is there after all (made since the
         # check, or a link that does not resolve) is left for the next mkdir to report.
-        with contextlib.suppress(FileExistsError):
+        try:
             os.mkdir(long_path(ancestor))
+        except FileExistsError:
+            continue
+        made.append(ancestor)
     try:
         os.mkdir(long_path(target))
     except OSError:
         if not os.path.isdir(long_path(target)):
             raise
+    else:
+        made.append(target)
+    return made

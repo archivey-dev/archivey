@@ -453,10 +453,10 @@ def test_junction_falls_back_to_the_reparse_tag_without_is_junction() -> None:
     ``st_reparse_tag`` says it instead, so a junction is not walked as a directory."""
     from types import SimpleNamespace
 
-    from archivey.internal.backends.directory_reader import _is_junction
     from archivey.internal.windows_reparse import (
         IO_REPARSE_TAG_MOUNT_POINT,
         IO_REPARSE_TAG_SYMLINK,
+        entry_is_junction,
     )
 
     old_entry = SimpleNamespace()  # no is_junction attribute, as on 3.11
@@ -466,12 +466,12 @@ def test_junction_falls_back_to_the_reparse_tag_without_is_junction() -> None:
         (0, False),
     ):
         st = SimpleNamespace(st_reparse_tag=tag)
-        assert _is_junction(old_entry, st) is expected  # type: ignore[arg-type]
+        assert entry_is_junction(old_entry, st) is expected  # type: ignore[arg-type]
     # No st_reparse_tag at all (every platform but Windows).
-    assert _is_junction(old_entry, SimpleNamespace()) is False  # type: ignore[arg-type]
+    assert entry_is_junction(old_entry, SimpleNamespace()) is False  # type: ignore[arg-type]
     # Where is_junction() exists, it decides.
     new_entry = SimpleNamespace(is_junction=lambda: True)
-    assert _is_junction(new_entry, SimpleNamespace()) is True  # type: ignore[arg-type]
+    assert entry_is_junction(new_entry, SimpleNamespace()) is True  # type: ignore[arg-type]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows-only")

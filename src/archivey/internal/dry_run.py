@@ -31,7 +31,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, plain
-from archivey.internal.windows_reparse import IO_REPARSE_TAG_MOUNT_POINT
+from archivey.internal.windows_reparse import entry_is_junction
 from archivey.paths import numbered_name
 from archivey.types import ArchiveMember, ExtractionResult, MemberType
 
@@ -73,8 +73,8 @@ def _fold(name: str) -> str:
 def _with_ancestors(into: set[str], rel: str) -> None:
     """Add ``rel``, a ``/``-separated path, and each of its ancestors to ``into``.
 
-    Nearest first, stopping at one already there, as its ancestors are too: adding
-    every ancestor of every path in a deep tree built strings for the depth squared."""
+    Nearest first, stopping at one already there, as its ancestors are too, so a deep
+    tree costs one string per entry rather than one per entry and level."""
     while rel and rel not in into:
         into.add(rel)
         rel = rel.rpartition("/")[0]
@@ -143,8 +143,8 @@ def remove_scratch(root: Path) -> None:
 
     The walk is a loop over an explicit stack, not ``os.fwalk``, ``os.walk`` or
     ``shutil.rmtree``: before Python 3.13 those recurse once per level, so a tree
-    deeper than the interpreter's recursion limit (an archive of ``a/a/a/…/f``) raised
-    ``RecursionError``.
+    deeper than the interpreter's recursion limit (an archive of ``a/a/a/…/f``) would
+    raise ``RecursionError``.
     """
     try:
         # In the long-path form throughout, so the walk can reach a deep entry.
@@ -165,9 +165,10 @@ def _remove_tree_by_descriptor(top: str) -> None:
 
     Relative to each directory's descriptor: links in the archive can build a tree
     whose full paths pass PATH_MAX, which no path-based call reaches. (``scratch_tree``
-    keeps the path form; a tree it cannot list is reported as ``None``.) One descriptor
-    is open at a time, whatever the depth: the walk goes back up through ``..``, and
-    checks that it is the directory it came from.
+    keeps the path form; a tree it cannot list is reported as ``None``.) At most three
+    descriptors are open, whatever the depth: the walk holds only the current
+    directory's (plus the next one while it moves, and the copy ``os.scandir`` makes),
+    goes back up through ``..``, and checks that it is the directory it came from.
     """
     fd = os.open(top, _DIR_FLAGS)
     try:
@@ -269,10 +270,9 @@ def _clear_files(directory: str) -> list[str]:
 def _is_link(entry: os.DirEntry[str]) -> bool:
     """Whether ``entry`` is a symlink or a Windows junction: an entry that a walk
     removes without entering."""
-    if entry.is_symlink():
-        return True
-    st = entry.stat(follow_symlinks=False)
-    return getattr(st, "st_reparse_tag", 0) == IO_REPARSE_TAG_MOUNT_POINT
+    return entry.is_symlink() or entry_is_junction(
+        entry, entry.stat(follow_symlinks=False)
+    )
 
 
 class _Copy(NamedTuple):
