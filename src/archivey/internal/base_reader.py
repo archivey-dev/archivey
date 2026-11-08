@@ -322,10 +322,14 @@ def _raise_if_blocked(report: ExtractionReport, archive_name: str | None) -> Non
     first = blocked[0]
     reason = raw_message_of(first.error) if first.error is not None else "refused"
     count = len(blocked)
-    others = f", and {count - 1} more" if count > 1 else ""
+    refused = (
+        "Extraction refused this member and did not write it"
+        if count == 1
+        else f"Extraction refused this member and {count - 1} more, and wrote none of them"
+    )
     error = FilterRejectionError(
-        f"A safety check refused this member{others}, so it was not written; the "
-        f"rest of the archive was extracted. First refusal: {reason}",
+        f"{refused}. The error's report holds what happened to every other member. "
+        f"First refusal: {reason}",
         archive_name=archive_name,
         member_name=first.member.name,
         report=report,

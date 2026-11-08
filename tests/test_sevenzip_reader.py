@@ -3052,7 +3052,7 @@ def test_real_7z_cli_fifo_is_other_and_not_extracted(tmp_path: Path) -> None:
     with open_archive(archive) as reader:
         types = {m.name: m.type for m in reader.members()}
         assert types == {"fifo": MemberType.OTHER, "reg.txt": MemberType.FILE}
-        reader.extract_all(tmp_path / "out")
+        reader.extract_all(tmp_path / "out", on_blocked="skip")
     assert not (tmp_path / "out" / "fifo").exists()
     assert (tmp_path / "out" / "reg.txt").read_bytes() == b"hi"
 

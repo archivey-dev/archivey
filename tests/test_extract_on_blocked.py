@@ -47,8 +47,9 @@ def test_the_default_raises_after_extracting_every_safe_member(tmp_path: Path) -
     assert (dest / "good2.txt").read_bytes() == b"good2.txt"
     assert not (tmp_path / "escape.txt").exists()
     assert error.member_name == "../escape.txt"
-    assert "the rest of the archive was extracted" in str(error)
-    assert "and " not in error.raw_message.split("First refusal")[0]
+    assert error.raw_message.startswith(
+        "Extraction refused this member and did not write it. "
+    )
     report = error.report
     assert report is not None
     assert not report.ok
@@ -71,7 +72,9 @@ def test_the_message_counts_the_other_refusals(tmp_path: Path) -> None:
     blocked = [r for r in error.report if r.status is ExtractionStatus.BLOCKED]
     assert len(blocked) >= 2
     assert error.member_name == blocked[0].member.name
-    assert f", and {len(blocked) - 1} more" in error.raw_message
+    assert f"this member and {len(blocked) - 1} more, and wrote none" in (
+        error.raw_message
+    )
 
 
 @pytest.mark.parametrize("on_blocked", ["skip", OnBlocked.SKIP])
@@ -114,6 +117,8 @@ def test_a_dry_run_raises_the_same_way(tmp_path: Path) -> None:
         reader.extract_all(dest, dry_run=True)
     assert info.value.report is not None
     assert not dest.exists()
+    # The message claims nothing about what was written.
+    assert "extracted" not in info.value.raw_message
 
 
 def test_the_raised_error_survives_pickle_and_copy(tmp_path: Path) -> None:
@@ -140,3 +145,27 @@ def test_an_unknown_on_blocked_is_refused(tmp_path: Path) -> None:
         pytest.raises(ValueError, match="on_blocked="),
     ):
         reader.extract_all(tmp_path / "out", on_blocked="ignore")  # type: ignore[arg-type]
+
+
+def test_a_failed_member_under_continue_is_not_called_extracted(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("a.txt", b"payload-bytes")
+        z.writestr("../x.txt", b"x")
+    data = bytearray(path.read_bytes())
+    at = data.index(b"payload-bytes")
+    data[at] ^= 0xFF  # the CRC no longer matches
+    path.write_bytes(bytes(data))
+    with (
+        open_archive(path) as reader,
+        pytest.raises(FilterRejectionError) as info,
+    ):
+        reader.extract_all(tmp_path / "out", on_error="continue")
+    error = info.value
+    assert error.report is not None
+    statuses = {r.member.name: r.status for r in error.report}
+    assert statuses == {
+        "a.txt": ExtractionStatus.FAILED,
+        "../x.txt": ExtractionStatus.BLOCKED,
+    }
+    assert "extracted" not in error.raw_message

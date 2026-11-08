@@ -1610,7 +1610,9 @@ class ExtractionReport:
     def raise_for_failure(self) -> None:
         """Raise the error of the first ``BLOCKED`` or ``FAILED`` member, in order.
 
-        Does nothing when ``ok`` is ``True``.
+        Does nothing when ``ok`` is ``True``. The error raised is the result's own
+        object, as ``concurrent.futures.Future.result()`` raises its exception, so
+        each call adds to its traceback.
         """
         for result in self.results:
             if (

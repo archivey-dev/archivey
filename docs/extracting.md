@@ -267,6 +267,7 @@ with archivey.open_archive("download.zip") as archive:
         report = archive.extract_all("out/")
     except archivey.FilterRejectionError as e:
         report = e.report
+        assert report is not None  # always set on the end-of-call error
         for result in report:
             if result.status is archivey.ExtractionStatus.BLOCKED:
                 print(result.member.name, result.error)

@@ -122,6 +122,7 @@ with archivey.open_archive("download.zip") as archive:
         policy="strict",    # portable names; no setuid bits or group and other write
         overwrite="error",  # an existing file fails the member
         on_error="stop",    # the first failed member raises
+        on_blocked="raise", # a refused member raises once the rest are done
         limits=archivey.ExtractionLimits(
             max_extracted_bytes=2 * 2**30,  # 2 GiB written in total
             max_entries=262_144,            # files, folders and links created
