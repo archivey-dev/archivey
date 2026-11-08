@@ -76,7 +76,6 @@ request, on a typical object store. It matters most when listing an archive with
 store where each request is slow and bytes are cheap, and a smaller one a store that charges for
 the bytes.
 
-
 ## What archivey takes from an `OpenFile`
 
 An `OpenFile` carries some options that change the bytes it would give if it were opened.
