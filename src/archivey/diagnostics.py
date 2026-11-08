@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import ClassVar, Literal, TypeVar
+from typing import ClassVar, Literal, NoReturn, TypeVar
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
 from archivey.internal.enum_args import coerce_enum_collection
@@ -1620,9 +1620,9 @@ class VerifyReport:
 
     ``ok`` is the one answer to "did every check pass": no member failed and nothing
     stopped the walk through the archive. The fields keep the detail. The report is
-    not a sequence, so ``if not reader.verify_all():`` cannot pass a damaged archive by
-    looking only at the members: test ``ok``, or read ``failures`` and
-    ``structure_error`` yourself.
+    not a sequence, and testing its truth raises ``TypeError``, so the 0.3.0 idiom
+    ``if not reader.verify_all():`` fails loudly instead of quietly reading the report
+    as true: test ``ok``, or read ``failures`` and ``structure_error`` yourself.
 
     Diagnostics do not count toward ``ok``: :class:`DiagnosticPolicy` already decides
     which of them are errors, and a code it raises on stops ``verify_all()`` with
@@ -1649,6 +1649,12 @@ class VerifyReport:
     def ok(self) -> bool:
         """``True`` when no member failed and the walk reached the end of the archive."""
         return not self.failures and self.structure_error is None
+
+    def __bool__(self) -> NoReturn:
+        raise TypeError(
+            "test VerifyReport.ok, not the report itself: a report is not empty or "
+            "true when every check passed"
+        )
 
     def raise_for_failure(self) -> None:
         """Raise ``structure_error`` if there is one, else the first member's error.

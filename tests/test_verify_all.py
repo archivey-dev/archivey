@@ -433,15 +433,17 @@ def test_an_intact_archive_reports_ok(tmp_path: Path) -> None:
     report.raise_for_failure()  # does nothing
 
 
+@pytest.mark.parametrize("streaming", [False, True])
 def test_a_cut_central_directory_is_not_ok_with_no_member_failure(
-    tmp_path: Path,
+    tmp_path: Path, streaming: bool
 ) -> None:
     # The outside review's case: no member failed, but the walk stopped early, so an
-    # empty failure list alone would have passed a damaged archive.
+    # empty failure list alone would have passed a damaged archive. A streaming reader
+    # takes ``structure_error`` from the pass ``verify_all()`` itself ran.
     path = _zip(tmp_path)
     data = path.read_bytes()
     path.write_bytes(data[: len(data) - 30])
-    with open_archive(path) as reader:
+    with open_archive(path, streaming=streaming) as reader:
         report = reader.verify_all()
         assert report.failures == ()
         assert isinstance(report.structure_error, TruncatedError)
@@ -468,6 +470,8 @@ def test_the_report_is_not_a_sequence(tmp_path: Path) -> None:
         report = reader.verify_all()
     assert not hasattr(report, "__len__")
     assert not hasattr(report, "__iter__")
+    with pytest.raises(TypeError, match=r"VerifyReport\.ok"):
+        bool(report)
 
 
 def test_diagnostics_are_the_calls_own_and_do_not_affect_ok(tmp_path: Path) -> None:
@@ -485,3 +489,9 @@ def test_diagnostics_are_the_calls_own_and_do_not_affect_ok(tmp_path: Path) -> N
         report = reader.verify_all()
     assert report.ok
     assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING in report.diagnostics.counts
+    # Listed before the call: the diagnostic stays the reader's, not the call's.
+    with open_archive(path) as reader:
+        reader.members()
+        report = reader.verify_all()
+        assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING in reader.diagnostics.counts
+    assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING not in report.diagnostics.counts
