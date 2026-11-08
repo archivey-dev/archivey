@@ -101,7 +101,9 @@ and `--abort-on name-sanitized` when a name had to be changed to be written. `--
 given more than once. Files written before the stop stay on disk.
 
 `--dry-run` runs every check and reads every member, but writes nothing. It prints the same report
-and exits with the same code as a real extraction into an empty folder. Before the summary it
+and exits with the same code as a real extraction into the destination as it is now: a member that
+would clash with a file already there fails under the default `--overwrite error`, as it would for
+real. Before the summary it
 adds one line, `peak use of the reader limits:`. It gives the largest decoder allocation
 archivey checked and what it was for, the bytes spooled to a temporary file at their peak, and
 two totals: the key-derivation rounds and the listing's members and metadata bytes. These are

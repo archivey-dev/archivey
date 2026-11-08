@@ -98,7 +98,7 @@ from archivey.internal.streams.codecs import (
     single_file_codecs,
 )
 from archivey.internal.streams.codecs.registry import save_codec_state
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.decompressor_stream import StreamChecksumError
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
@@ -501,7 +501,7 @@ class _PluginAdapter(BaseArchiveReader):
         try:
             yield from self._walk_members()
             ended = True
-        except _StreamChecksumError:
+        except StreamChecksumError:
             # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
             # it stays the ceiling of the members it covers, which verify_all()
             # returns. An xz or bzip2 check failure reads as damage, handled below.
