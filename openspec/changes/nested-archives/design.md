@@ -77,8 +77,8 @@ learns the reader it reads inside while it is built (`archivey.internal.nesting`
 - **`max_metadata_bytes`.** An inner reader's members reach the outermost listing as
   copies that share their strings, and the outermost tracker counts them there, so an
   inner tracker counts its members for itself only. What an inner level keeps beyond
-  them (a held member, an archive comment, a link target weighed late, a TAR sparse map)
-  is charged to the outermost tracker as well, whose checks count it until the inner
+  them (a held member, a `charge_metadata` table, an archive comment, a link target
+  weighed late, a TAR sparse map) is charged to the outermost tracker as well, whose checks count it until the inner
   reader closes (`ListingLimitTracker._charge_outward`).
 - **`max_decoder_memory`.** The decoders of the levels run at once: the inner archive's
   bytes come out of the outer decoder. An inner reader gets the outer reader's config

@@ -117,9 +117,9 @@ class ListingLimitTracker:
     nesting"), kept by the outermost tracker. An inner tracker counts its members
     itself only: each of them reaches the outermost listing as a member that tracker
     counts, with the same strings. What an inner level keeps beyond the members it
-    hands out (a held member, an archive comment, a link target weighed late, a TAR
-    sparse map) is charged to the outermost tracker too, while the inner level is
-    open, and its checks count it.
+    hands out (a held member, a walk charge, an archive comment, a link target
+    weighed late, a TAR sparse map) is charged to the outermost tracker too, while
+    the inner level is open, and its checks count it.
     """
 
     def __init__(
@@ -141,6 +141,9 @@ class ListingLimitTracker:
         # each was charged, by identity, until ``release_member`` takes it off.
         self._held: dict[int, tuple[ArchiveMember, int]] = {}
         self._held_bytes = 0
+        # What a reader keeps while it walks, beyond its members (``charge_walk``),
+        # taken off when the walk ends.
+        self._walk_bytes = 0
 
     def reset(self) -> None:
         self.member_count = 0
@@ -148,6 +151,7 @@ class ListingLimitTracker:
         self._archive_comment_counted = False
         self._held = {}
         self._held_bytes = 0
+        self._walk_bytes = 0
         self.leave_nest()
 
     def leave_nest(self) -> None:
@@ -177,6 +181,24 @@ class ListingLimitTracker:
             )
         root._nested_bytes += nbytes
         self._charged_outward += nbytes
+
+    def charge_walk(self, nbytes: int, what: str) -> None:
+        """Charge ``nbytes`` a reader keeps while it walks (a name table, a header)
+        to ``max_metadata_bytes``, with the members, and refuse them before the
+        reader allocates them. ``what`` names them, for the refusal. The charge
+        stays until :meth:`release_held`, at the walk's end. An inner tracker
+        charges them to the outermost one too (``_charge_outward``)."""
+        next_bytes = self.metadata_bytes + nbytes
+        max_meta = self._limits.max_metadata_bytes
+        if max_meta is not None and next_bytes + self._nested_bytes > max_meta:
+            raise metadata_limit_error(
+                max_meta,
+                f"retained {next_bytes + self._nested_bytes} bytes, {nbytes} of them "
+                f"for {what}",
+            )
+        self._charge_outward(nbytes, enforce=True, what=what)
+        self.metadata_bytes = next_bytes
+        self._walk_bytes += nbytes
 
     def account_archive_comment(
         self, comment: str | None, *, enforce: bool = True
@@ -208,11 +230,9 @@ class ListingLimitTracker:
         self.metadata_bytes = next_bytes
         self.member_count = next_count
 
-    def hold_member(
-        self, member: ArchiveMember, stored_name: str | None, reason: str
-    ) -> None:
+    def hold_member(self, member: ArchiveMember, reason: str) -> None:
         """Charge a member a reader holds back before yielding it, as one member and
-        its metadata, with ``stored_name`` weighed too when it differs from the name.
+        its metadata.
 
         ``reason`` says what the held members wait for, for the refusal. The charge
         stays until :meth:`release_member`, called when the member is yielded and
@@ -222,8 +242,6 @@ class ListingLimitTracker:
         if key in self._held:
             raise ValueError(f"member {member.name!r} is already held")
         nbytes = member_metadata_bytes(member)
-        if stored_name is not None and stored_name != member.name:
-            nbytes += _str_retained_bytes(stored_name)
         held = len(self._held) + 1
         held_bytes = self._held_bytes + nbytes
         next_count = self.member_count + 1
@@ -257,10 +275,17 @@ class ListingLimitTracker:
             self._uncharge(entry[1])
 
     def release_held(self) -> None:
-        """Take off every charge still held: the walk that held them has ended."""
+        """Take off every charge still held, and what the walk kept beyond its
+        members (:meth:`charge_walk`): the walk that held them has ended."""
         held, self._held = self._held, {}
         for _, nbytes in held.values():
             self._uncharge(nbytes)
+        self.metadata_bytes -= self._walk_bytes
+        root = self._root
+        if root is not self:
+            root._nested_bytes -= self._walk_bytes
+            self._charged_outward -= self._walk_bytes
+        self._walk_bytes = 0
 
     def _uncharge(self, nbytes: int) -> None:
         self._held_bytes -= nbytes

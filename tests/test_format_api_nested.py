@@ -88,10 +88,8 @@ class BoxesReader(SequentialReader):
                 member = span.member
                 member.name = f"{box}/{member.name}"
                 if member.type is MemberType.HARDLINK and member.link_target:
-                    target = self._context.normalize_name(
-                        member.link_target, MemberType.FILE
-                    )
-                    member.link_target = f"{box}/{target}"
+                    # As the inner archive stores it: archivey normalizes it.
+                    member.link_target = f"{box}/{member.link_target}"
                 yield span
             box += 1
 
@@ -546,6 +544,56 @@ def test_what_inner_levels_keep_counts_against_one_metadata_budget(
         ) as reader:
             assert [m.name for m in reader.members()] == ["0/0/0/a"]
             # The inner levels' charges came off when they closed.
+            tracker = reader._listing_tracker  # type: ignore[attr-defined]
+            assert tracker._nested_bytes == 0
+
+
+class ChargingBoxesContainer(PluginContainer):
+    CHARGING_BOXES = "charging-boxes"
+
+
+class ChargingBoxesReader(BoxesReader):
+    """BOXES, but the walk keeps a 400-byte name table, charged with
+    ``charge_metadata()``, until it ends."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        self._context.charge_metadata(400, what="a name table")
+        yield from super().walk(stream)
+
+
+class ChargingBoxesHandler(BoxesHandler):
+    format = ArchiveFormat(
+        ChargingBoxesContainer.CHARGING_BOXES, StreamFormat.UNCOMPRESSED
+    )
+    magic = ()
+
+    def open_sequential(self, context: ReaderContext) -> BoxesReader:
+        return ChargingBoxesReader(context)
+
+
+@pytest.mark.parametrize(("limit", "refused"), [(1000, True), (1500, False)])
+def test_walk_charges_of_inner_levels_count_against_one_metadata_budget(
+    monkeypatch: pytest.MonkeyPatch, limit: int, refused: bool
+) -> None:
+    """3 levels each charge a 400-byte table with ``charge_metadata``: 1200 in all,
+    over a 1000-byte limit each level alone fits."""
+    monkeypatch.setitem(_KINDS, b"C", ChargingBoxesHandler.format)
+    data = _boxes((b"C", _boxes((b"C", _boxes((b"T", _tar([("a", b"a")])))))))
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=limit))
+    with registration_scope():
+        register_format(ChargingBoxesHandler)
+        if refused:
+            with pytest.raises(
+                ResourceLimitError,
+                match="max_metadata_bytes=1000.*inner archive for a name table",
+            ):
+                _names(data, ChargingBoxesHandler.format, config)
+            return
+        with open_archive(
+            io.BytesIO(data), format=ChargingBoxesHandler.format, config=config
+        ) as reader:
+            assert [m.name for m in reader.members()] == ["0/0/0/a"]
+            # The inner levels' walk charges came off when their walks ended.
             tracker = reader._listing_tracker  # type: ignore[attr-defined]
             assert tracker._nested_bytes == 0
 

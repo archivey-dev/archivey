@@ -440,7 +440,7 @@ class GzipDecoder(_KeepsOutputBeforeErrors):
             # Corrupt deflate body (bad CRC/data check inside a member) raises
             # CorruptionError here so a raw GzipDecompressorStream does not leak
             # zlib.error (GzipCodec.translate maps it too, but the decoder must stand
-            # on its own). A failed CRC-32/ISIZE check is a _StreamChecksumError.
+            # on its own). A failed CRC-32/ISIZE check is a StreamChecksumError.
             produced = self._inflate_step(data, limit, gzip_error)
             if produced:
                 if self._pending_point is not None:
