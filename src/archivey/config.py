@@ -851,22 +851,6 @@ class ArchiveyConfig:
     RAR 1.5-4 comments.
     """
 
-    unrar_path: str | os.PathLike[str] | None = None
-    """The RARLAB ``unrar`` or ``rar`` program to run, as an absolute path, or ``None``
-    to look for ``unrar`` and then ``rar`` on ``PATH``.
-
-    When set, archivey runs that file and no other RARLAB program: ``PATH`` is not
-    searched, so a program put there later cannot be picked up. It is still identified
-    before it first runs, and one that is not RARLAB's, or older than 6.0, is refused as
-    a missing one is. A relative path is refused, since it would depend on the current
-    directory. Stored as a ``str``. :func:`~archivey.format_availability` answers for it
-    when passed the config."""
-
-    unar_path: str | os.PathLike[str] | None = None
-    """The ``unar`` program to run, as an absolute path, or ``None`` to look for
-    ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
-    ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
-
     read_link_targets: bool = True
     """Whether the reader reads a symlink's target when the format stores it as member
     data (ZIP, 7z, RAR3/4) rather than in the header.
@@ -974,6 +958,22 @@ class ArchiveyConfig:
     the break-even of one request against its bytes on a typical object store (about
     30 ms at 50 MB/s). ``0`` fetches only the bytes a read needs.
     """
+
+    unrar_path: str | os.PathLike[str] | None = None
+    """The RARLAB ``unrar`` or ``rar`` program to run, as an absolute path, or ``None``
+    to look for ``unrar`` and then ``rar`` on ``PATH``.
+
+    When set, archivey runs that file and no other RARLAB program: ``PATH`` is not
+    searched, so a program put there later cannot be picked up. It is still identified
+    before it first runs, and one that is not RARLAB's, or older than 6.0, is refused as
+    a missing one is. A relative path is refused, since it would depend on the current
+    directory. Stored as a ``str``. :func:`~archivey.format_availability` answers for it
+    when passed the config."""
+
+    unar_path: str | os.PathLike[str] | None = None
+    """The ``unar`` program to run, as an absolute path, or ``None`` to look for
+    ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
+    ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
 
     def __post_init__(self) -> None:
         """Check the fields at construction, and convert the two that hold enums.
