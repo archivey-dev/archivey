@@ -1355,7 +1355,10 @@ class TarWalker:
             got = len(self._stream.read(want))
             self._stream_pos += got
             count -= got
-            if got < want:
+            # Only an empty read is the cut: after a short one the loop reads again,
+            # so that an error the stream holds for its next read (a codec's verdict
+            # on the bytes after those it handed back) comes out as itself.
+            if not got:
                 raise TruncatedError(
                     f"TAR archive is truncated: a member's data runs to offset "
                     f"{self._stream_pos + count}, but the archive ends at "
@@ -1382,7 +1385,14 @@ class TarWalker:
             assert held[0] == offset, (held[0], offset)
             return held[1]
         self._seek(offset)
-        return self._read(BLOCKSIZE)
+        block = self._read(BLOCKSIZE)
+        if block and len(block) < BLOCKSIZE:
+            # A short read is the end (ADR 0014), but a codec stream hands back the
+            # bytes before damage and raises on the next read. Without that read a
+            # corrupt compressed TAR reads as one cut inside a header: a warning on a
+            # seekable source, where a pipe raises the codec's error.
+            block += self._read(BLOCKSIZE - len(block))
+        return block
 
     def _read_zeros(self, count: int) -> tuple[bool, int]:
         """Read up to ``count`` bytes from the current position, stopping after the
