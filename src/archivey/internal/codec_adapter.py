@@ -69,10 +69,11 @@ class PluginCodec(StreamCodec):
         # are listed. A codec archivey ships through the plugin interface is
         # archivey's own code, so only its packages are listed.
         name = handler_name(self.handler)
-        libraries = tuple(("library", module) for module in self.handler.requires)
-        if name == "archivey":
-            return libraries
-        return (("codec", name), *libraries)
+        uses: list[tuple[BackendKindStr, str]] = []
+        if name != "archivey":
+            uses.append(("codec", name))
+        uses.extend(("library", module) for module in self.handler.requires)
+        return tuple(uses)
 
     def detection_error_level(self) -> int:
         """The level to log the decoder's exception at when detection takes it as no
