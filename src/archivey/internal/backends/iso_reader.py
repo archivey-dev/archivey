@@ -960,11 +960,8 @@ def _tf_modify_access_fields() -> tuple[str, str]:
 
     RRIP 1.12 (4.1.6) and the Linux kernel give flag bit 1 to the modification time
     and bit 2 to the access time. pycdlib 1.x names the bits the other way round, so
-    its ``access_time`` holds the modification time. Every Rock Ridge image genisoimage,
-    xorriso or mkisofs writes stores both, and the modification time read from
-    ``modification_time`` was the file's access time when the image was made.
-    Asked of pycdlib once, with a record that sets bit 1 only, so a pycdlib that
-    fixes the order is read right too.
+    its ``access_time`` holds the modification time. Asked of pycdlib once, with a
+    record that sets bit 1 only, so a pycdlib that fixes the order is read right too.
     """
     from pycdlib import rockridge as rr_mod
 

@@ -1403,7 +1403,6 @@ def test_rock_ridge_tf_times_are_read_in_rrip_order(tmp_path: Path) -> None:
     time, as xorriso, genisoimage and the Linux kernel do. pycdlib 1.x names them the
     other way round, so ``modified`` used to be the file's access time when the image
     was made (Ubuntu 4.10's install CD: 1083 files 50 s off what xorriso extracts)."""
-    import os
     from datetime import UTC, datetime
 
     src = tmp_path / "src"
