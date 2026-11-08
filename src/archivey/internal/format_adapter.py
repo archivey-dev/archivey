@@ -530,7 +530,8 @@ class _PluginAdapter(BaseArchiveReader):
         part-way, or ended by an error. Closing archivey's own generator does not
         close it on every interpreter (PyPy's collector does, later), so its
         ``finally`` blocks would run after the archive closed. An error from it is
-        dropped: the one that stopped the walk stands."""
+        dropped: on a walk an error ended, that error stands; on one the caller
+        stopped, nothing is raised or reported, as when the collector closed it."""
         close = getattr(steps, "close", None)
         if close is not None:
             with suppress(Exception), guard:
