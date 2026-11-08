@@ -613,13 +613,18 @@ class _MemberStream(io.RawIOBase):
 
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
+        # Full-count (ADR 0014): archivey takes a short read from its own stream as
+        # the member's end, and a folder read stops at each block's end (32 KiB), so
+        # read on until the buffer is full or the member ends.
         with memoryview(b) as outer, outer.cast("B") as view:
-            if self._left == 0 or self._folder is None or not len(view):
-                return 0
-            data = self._folder.read(min(len(view), self._left))
-            n = len(data)
-            view[:n] = data
-            self._left -= n
+            n = 0
+            while n < len(view) and self._left > 0 and self._folder is not None:
+                data = self._folder.read(min(len(view) - n, self._left))
+                if not data:
+                    break
+                view[n : n + len(data)] = data
+                n += len(data)
+                self._left -= len(data)
             return n
 
     @override
