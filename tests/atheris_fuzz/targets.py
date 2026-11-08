@@ -1057,4 +1057,18 @@ def iter_target_specs() -> list[dict]:
             }
         )
 
+    # Oracle targets: two reads of the same input must agree (oracles.py). Each
+    # input is opened two to four times, so it gets that many stream slices.
+    from tests.atheris_fuzz.oracles import ORACLE_TARGETS, oracle_seeds
+
+    for name, fn in ORACLE_TARGETS.items():
+        specs.append(
+            {
+                "name": name,
+                "fn": fn,
+                "seeds": oracle_seeds,
+                "fixup": None,
+                "per_input_timeout": 4 * stream_timeout,
+            }
+        )
     return specs

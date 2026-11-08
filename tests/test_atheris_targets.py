@@ -17,6 +17,7 @@ import pytest
 
 from archivey import ArchiveFormat, ArchiveyError, open_archive
 from tests.atheris_fuzz import TARGET_NAMES, seeds as fuzz_seeds
+from tests.atheris_fuzz.oracles import ORACLE_TARGETS, oracle_seeds
 from tests.atheris_fuzz.seeds import (
     _compressed_tar_seeds,
     _koly_block,
@@ -185,3 +186,16 @@ def test_soak_workflow_runs_every_accelerator_target() -> None:
     accel = [name for name in TARGET_NAMES if name.endswith("_accel")]
     assert accel
     assert [name for name in accel if name not in matrix] == []
+
+
+@pytest.mark.parametrize("name", sorted(ORACLE_TARGETS))
+def test_oracle_targets_agree_on_every_seed(name: str) -> None:
+    # Each oracle reads a seed two to four ways; a seed they disagree on would fail
+    # every run on its first iteration.
+    target = ORACLE_TARGETS[name]
+    for seed in oracle_seeds():
+        target(seed)
+
+
+def test_oracle_targets_are_registered() -> None:
+    assert set(ORACLE_TARGETS) <= set(TARGET_NAMES)
