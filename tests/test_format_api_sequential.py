@@ -624,8 +624,7 @@ def test_a_listing_stopped_by_a_limit_walks_again(
 
 class _HoldingReader(ToysReader):
     """Holds back every member with no data until the end header, as a reader that
-    must see later headers to finish a member does, and lists it by its normalized
-    name."""
+    must see later headers to finish a member does."""
 
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         held: list[MemberSpan] = []
@@ -633,11 +632,8 @@ class _HoldingReader(ToysReader):
             if span.data_length:
                 yield span
                 continue
-            member = span.member
-            stored = member.name
-            member.name = self._context.normalize_name(stored, member.type)
-            self._context.hold(member, stored_name=stored, reason="toys held back")
-            held.append(MemberSpan(member, 0, stored_name=stored))
+            self._context.hold(span.member, reason="toys held back")
+            held.append(span)
         yield from held
 
 
@@ -659,14 +655,15 @@ def _holding_listing(
 
 def test_a_held_member_is_counted_once(toys: ArchiveFormat, tmp_path: Path) -> None:
     """A member held and then yielded is counted as one member: limits equal to the
-    peak the listing reaches are not crossed. The peak is the listed weight plus
-    the stored names ``a//b`` and ``d``, which weigh only while their members are
-    held; were a held member still charged once listed, it would be higher."""
+    peak the listing reaches are not crossed. Held, ``a//b`` and ``d`` weigh their
+    names as the reader holds them (4 and 1 bytes), listed ``a/b`` and ``d/`` (3 and
+    2): the same total, so the peak is the listed weight. Were a held member still
+    charged once listed, it would be higher."""
     fmt = _variant(_HoldingReader, ToysContainer.HOLDING)
     path = _write(tmp_path, build_toys(_HOLDING_ENTRIES))
     members = _holding_listing(fmt, path)
     assert [m.name for m in members] == ["c.txt", "e.txt", "a/b", "d/"]
-    peak = sum(member_metadata_bytes(m) for m in members) + len("a//b") + len("d")
+    peak = sum(member_metadata_bytes(m) for m in members)
     assert len(_holding_listing(fmt, path, max_members=4, max_metadata_bytes=peak))
     with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
         _holding_listing(fmt, path, max_metadata_bytes=peak - 1)
@@ -691,20 +688,20 @@ def test_held_members_count_with_listed_ones(
         _holding_listing(fmt, path, max_members=3)
 
 
-def test_a_held_member_weighs_its_stored_name(
+def test_a_held_member_weighs_its_name_as_held(
     toys: ArchiveFormat, tmp_path: Path
 ) -> None:
-    """While held, a member also weighs the name it will be yielded with when that
-    differs from its normalized name: ``a/b`` (3), ``a//b`` (4) and its raw bytes (4)."""
+    """While held, a member weighs the name the reader holds it under, before
+    archivey normalizes it: ``a//b`` (4) and its raw bytes (4)."""
     fmt = _variant(_HoldingReader, ToysContainer.HOLDING)
     path = _write(tmp_path, build_toys(_HOLDING_ENTRIES[:1], end=False))
     with pytest.raises(
         ResourceLimitError,
-        match=r"max_metadata_bytes=10 \(retained 11 bytes, 11 of them for 1 toys",
+        match=r"max_metadata_bytes=7 \(retained 8 bytes, 8 of them for 1 toys",
     ):
-        _holding_listing(fmt, path, max_metadata_bytes=10)
+        _holding_listing(fmt, path, max_metadata_bytes=7)
     with pytest.raises(TruncatedError):
-        _holding_listing(fmt, path, max_metadata_bytes=11)
+        _holding_listing(fmt, path, max_metadata_bytes=8)
 
 
 class _HoldingTwiceReader(ToysReader):

@@ -2008,10 +2008,10 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         ):
             if not record.is_dir() and record.data_length:
                 listed_extents.add(record.extent_location())
-            member, stored_name = self._make_member(
+            member = self._make_member(
                 ns_path, raw_path, record, index, superseded=superseded
             )
-            yield MemberRecord(member, record, stored_name=stored_name)
+            yield MemberRecord(member, record)
         self._report_files_in_other_trees(listed_extents)
 
     # --- the image's other trees ---------------------------------------------------
@@ -2169,8 +2169,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         index: int,
         *,
         superseded: bool = False,
-    ) -> tuple[ArchiveMember, str]:
-        """The member, and its name as presented before normalization."""
+    ) -> ArchiveMember:
+        """The member, named as the image presents it; archivey normalizes the name."""
         rr = getattr(record, "rock_ridge", None)
         raw_mode, uid, gid = self._px(rr)
 
@@ -2199,7 +2199,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
         # ECMA-119 gives a version only to a file identifier. A directory's ``;N`` is
         # part of its name, and its children's paths keep it.
-        presented, version = (
+        name, version = (
             (ns_path.lstrip("/"), None)
             if member_type is MemberType.DIRECTORY
             else self._split_version(ns_path)
@@ -2210,11 +2210,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # matching ``raw_name``, and ``is_current=False`` so extraction skips it.
             # The newest version takes the bare name. Keeping the stored spelling also
             # keeps ``FOO.;1`` and ``FOO;1`` apart when both are superseded.
-            presented = ns_path.lstrip("/")
-        # Normalized here, not left to the adapter, so the reports made while
-        # listing name the member as callers see it; the adapter reports the change
-        # from ``presented``.
-        name = self._context.normalize_name(presented, member_type)
+            name = ns_path.lstrip("/")
         raw_name = raw_path
         extra = (
             MemberExtra({"iso.version": version})
@@ -2274,8 +2270,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         self._emit_system_use_cut(member, rr, index)
         if special is not None and member.type is MemberType.FILE:
             self._context.report(*special_file_has_data_report(member), member=member)
-        # The message names the normalized name, so it is built here, not in
-        # ``_timestamps``.
+        # The message names the member, so it is built here, not in ``_timestamps``.
         for field, source, value_repr in invalid_dates:
             message = f"Invalid ISO 9660 date for {quoted(member.name)}: {value_repr}"
             issue = TimestampIssue(
@@ -2358,7 +2353,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 ),
                 member=member,
             )
-        return member, presented
+        return member
 
     def _zisofs_entry(self, record: DirectoryRecord) -> _ZisofsEntry | None:
         rr = getattr(record, "rock_ridge", None)
