@@ -375,8 +375,9 @@ data its pass keeps for link targets beside it.
   `max_metadata_bytes` both the decoded table's size (from the header, before
   decoding) and every full path it builds there, since nested directories make the
   paths grow with the square of the depth before any member exists (`xar_reader.py`).
-  makeself weighs its shell header against `max_metadata_bytes` as it reads it, and
-  refuses one past 2 MiB; the header is parsed, never run (`makeself_reader.py`).
+  makeself weighs its shell header against `max_metadata_bytes` as it reads it, parses
+  it in one pass and keeps only the variables it uses; the header is parsed, never run
+  (`makeself_reader.py`).
   CAB weighs the block tables it keeps, one per folder read, against
   `max_metadata_bytes` as they are read, at 256 bytes a block: folders may all name one
   run of block headers, so the tables are not bounded by the file (`cab_reader.py`).

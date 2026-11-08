@@ -72,9 +72,6 @@ from archivey.types import (
 )
 
 MAGIC = b"#!/bin/sh\n# This script was generated using Makeself "
-# The longest header read. makeself sets none; the license text is the one part that
-# can be long, and a header past this is refused rather than buffered.
-HEADER_MAX = 2 * 1024 * 1024
 _CHUNK = 16 * 1024
 # How far past the last payload the check for trailing bytes reads: makeself writes
 # nothing there, so this only bounds a report.
@@ -84,6 +81,32 @@ _READ_SIZE = 64 * 1024
 # A function definition at the start of a line ends the variable block.
 _FUNCTION = re.compile(rb"[A-Za-z_][A-Za-z0-9_]*\(\)[ \t]*")
 _ASSIGNMENT = re.compile(rb'([A-Za-z_][A-Za-z0-9_]*)="')
+# A double-quoted value's text up to its closing quote, or up to the end of what is
+# read; it never stops between a backslash and the byte it escapes.
+_VALUE = re.compile(rb'(?:[^"\\]|\\.)*', re.DOTALL)
+# An assignment whose value closes on its line, the common case, matched at once.
+_LINE_ASSIGNMENT = re.compile(
+    rb'([A-Za-z_][A-Za-z0-9_]*)="((?:[^"\\\n]|\\.)*)"([^\n]*)\n'
+)
+# The variables the reader uses; the others (licensetxt, the long one) are passed
+# over, not kept.
+_USED = frozenset(
+    {
+        b"CRCsum",
+        b"MD5",
+        b"SHA",
+        b"label",
+        b"script",
+        b"targetdir",
+        b"filesizes",
+        b"totalsize",
+        b"decrypt_cmd",
+        b"skip",
+        b"SIGNATURE",
+    }
+)
+# The escapes the shell undoes inside double quotes, and a backslash-newline.
+_ESCAPE = re.compile(rb'\\([$`"\\\n])')
 # makeself 2.2.0 to 2.4.0: the header's line count, written into the script.
 _OLD_OFFSET = re.compile(
     rb'^[ \t]*offset=`head -n ([0-9]+) "\$[01]" \| wc -c \| tr -d " "`[ \t]*$',
@@ -217,23 +240,25 @@ class MakeselfReader(SequentialReader):
     # The header ---------------------------------------------------------------------
 
     def _read_header(self, stream: ForwardStream, pending: _Pending) -> _Header:
-        budget = self._context.config.listing_limits.max_metadata_bytes
-        limit = HEADER_MAX if budget is None else min(HEADER_MAX, budget)
+        # The header is metadata, buffered whole: max_metadata_bytes bounds it. Each
+        # step below goes on from where the last chunk left it, so the work is linear
+        # in the header's length.
+        limit = self._context.config.listing_limits.max_metadata_bytes
         buffer = bytearray()
+        parser = _VariableParser()
+        lines = _LineCounter()
         variables: dict[bytes, bytes] | None = None
         block_end = 0
         skip: int | None = None
         end: int | None = None
         scanned = 0
-        while end is None:
-            if variables is None:
-                parsed = _parse_variables(buffer)
-                if parsed is not None:
-                    variables, block_end = parsed
-                    scanned = block_end
-                    stated = variables.get(b"skip")
-                    if stated is not None:
-                        skip = _number(stated, "skip")
+        while True:
+            if variables is None and parser.feed(buffer):
+                variables, block_end = parser.variables, parser.block_end
+                scanned = block_end
+                stated = variables.get(b"skip")
+                if stated is not None:
+                    skip = _number(stated, "skip")
             if variables is not None and skip is None:
                 # makeself 2.2.0 to 2.4.0: the count is in the script's offset lines.
                 found = _OLD_OFFSET.search(buffer, scanned)
@@ -244,18 +269,15 @@ class MakeselfReader(SequentialReader):
                     # its start.
                     scanned = max(block_end, buffer.rfind(b"\n") + 1)
             if skip is not None:
-                end = _after_lines(buffer, skip)
+                end = lines.after(buffer, skip)
                 if end is not None:
                     break
-            if len(buffer) >= limit:
-                if budget is not None and budget < HEADER_MAX:
-                    raise ResourceLimitError(
-                        f"makeself header longer than max_metadata_bytes={budget}"
-                    )
-                raise UnsupportedFeatureError(
-                    f"makeself header longer than {HEADER_MAX} bytes"
+            if limit is not None and len(buffer) >= limit:
+                raise ResourceLimitError(
+                    f"makeself header longer than max_metadata_bytes={limit}"
                 )
-            chunk = stream.read(min(_CHUNK, limit - len(buffer)))
+            want = _CHUNK if limit is None else min(_CHUNK, limit - len(buffer))
+            chunk = stream.read(want)
             if not chunk:
                 raise TruncatedError(
                     "makeself header: the file ends "
@@ -319,6 +341,14 @@ class MakeselfReader(SequentialReader):
         crcs = [_number(t, "CRCsum") for t in _required(variables, b"CRCsum")]
         md5s = [_hex(t, "MD5", 32) for t in _required(variables, b"MD5")]
         shas = [_hex(t, "SHA", 64) for t in variables.get(b"SHA", b"").split()]
+        # makeself writes one CRC and one MD5 per payload, zeros where it computed
+        # none. 2.4.0's --append leaves SHA at one entry; an entry there that is not
+        # zeros could be any payload's, so only a list of zeros may be short.
+        for name, listed in ((b"CRCsum", crcs), (b"MD5", md5s)):
+            if len(listed) != len(sizes):
+                raise CorruptionError(_count_mismatch(name, len(listed), len(sizes)))
+        if len(shas) not in (0, len(sizes)) and any(v != _ZERO_SHA for v in shas):
+            raise CorruptionError(_count_mismatch(b"SHA", len(shas), len(sizes)))
         header = _Header(
             version=version,
             sizes=sizes,
@@ -391,78 +421,114 @@ class MakeselfReader(SequentialReader):
 # Parsing ------------------------------------------------------------------------------
 
 
-def _parse_variables(buffer: bytearray) -> tuple[dict[bytes, bytes], int] | None:
+class _VariableParser:
     """The variable block's double-quoted assignments, and where the block ends (the
-    start of the first function definition); ``None`` while ``buffer`` does not
-    reach that far.
+    start of the first function definition), read from a buffer that grows.
 
     A value is read as the shell reads a double-quoted word, with ``\\$``, ``\\```,
     ``\\"`` and ``\\\\`` unescaped and a backslash-newline dropped, so it may span
     lines and nothing inside it is taken for a variable. Other lines (``umask 077``,
-    ``if ...``) are skipped. A variable assigned twice is damage: the shell would take
-    the last, and a reader should not have to guess which one makeself wrote.
+    ``if ...``) are skipped. Only the variables in ``_USED`` are kept, so memory does
+    not grow with the header. One of those assigned twice is damage: the shell would
+    take the last, and a reader should not have to guess which one makeself wrote.
+
+    ``feed`` goes on from where the last call stopped: the start of the line it could
+    not finish, or inside a value, the point the value was read to.
     """
-    pos = buffer.find(b"\n", len(MAGIC)) + 1
-    if pos == 0:
-        return None
-    variables: dict[bytes, bytes] = {}
-    size = len(buffer)
-    while True:
-        eol = buffer.find(b"\n", pos)
-        if eol < 0:
-            return None
-        if _FUNCTION.fullmatch(buffer, pos, eol):
-            return variables, pos
-        match = _ASSIGNMENT.match(buffer, pos, eol)
-        if match is None:
-            pos = eol + 1
-            continue
-        value = bytearray()
-        at = match.end()
+
+    def __init__(self) -> None:
+        self.variables: dict[bytes, bytes] = {}
+        self.block_end = 0
+        self._pos = -1  # the start of the next line; -1 before the magic line ends
+        self._name: bytes | None = None  # the variable whose value is being read
+        self._value_start = 0
+        self._value_end = 0
+
+    def feed(self, buffer: bytearray) -> bool:
+        """Read on in ``buffer``; ``True`` once the variable block has ended."""
+        if self._pos < 0:
+            found = buffer.find(b"\n", len(MAGIC))
+            if found < 0:
+                return False
+            self._pos = found + 1
         while True:
-            if at >= size:
-                return None
-            byte = buffer[at]
-            if byte == 0x5C:  # backslash
-                if at + 1 >= size:
-                    return None
-                following = buffer[at + 1]
-                if following in b'$`"\\':
-                    value.append(following)
-                elif following != 0x0A:
-                    value += b"\\"
-                    value.append(following)
-                at += 2
-                continue
-            if byte == 0x22:  # the closing quote
-                break
-            value.append(byte)
-            at += 1
-        eol = buffer.find(b"\n", at)
-        if eol < 0:
-            return None
+            if self._name is None:
+                whole = _LINE_ASSIGNMENT.match(buffer, self._pos)
+                if whole is not None:
+                    self._keep(whole.group(1), whole.group(2), whole.group(3))
+                    self._pos = whole.end()
+                    continue
+                eol = buffer.find(b"\n", self._pos)
+                if eol < 0:
+                    return False
+                if _FUNCTION.fullmatch(buffer, self._pos, eol):
+                    self.block_end = self._pos
+                    return True
+                match = _ASSIGNMENT.match(buffer, self._pos, eol)
+                if match is None:
+                    self._pos = eol + 1
+                    continue
+                self._name = bytes(match.group(1))
+                self._value_start = self._value_end = match.end()
+            # The value: go on from the last stop, which is never inside an escape.
+            read = _VALUE.match(buffer, self._value_end)
+            assert read is not None  # it matches the empty string
+            stop = read.end()
+            if stop >= len(buffer) or buffer[stop] != 0x22:  # no closing quote yet
+                self._value_end = stop
+                return False
+            eol = buffer.find(b"\n", stop)
+            if eol < 0:
+                self._value_end = stop
+                return False
+            self._keep(
+                self._name, buffer[self._value_start : stop], buffer[stop + 1 : eol]
+            )
+            self._name = None
+            self._pos = eol + 1
+
+    def _keep(
+        self, name: bytes, raw: bytes | bytearray, after: bytes | bytearray
+    ) -> None:
+        """One assignment: ``raw`` is the value as quoted, ``after`` the rest of the
+        line after its closing quote."""
+        name = bytes(name)
         # makeself writes ``; export USER_PWD`` after one value; a quote there would
         # open a word this parse does not follow.
-        if any(quote in buffer[at + 1 : eol] for quote in (b'"', b"'", b"`")):
+        if any(quote in after for quote in (b'"', b"'", b"`")):
             raise CorruptionError(
-                f"makeself header: a quote after the value of {_shown(match.group(1))}"
+                f"makeself header: a quote after the value of {_shown(name)}"
             )
-        name = bytes(match.group(1))
-        if name in variables:
+        if name not in _USED:
+            return
+        if name in self.variables:
             raise CorruptionError(f"makeself header assigns {_shown(name)} twice")
-        variables[name] = bytes(value)
-        pos = eol + 1
+        self.variables[name] = _ESCAPE.sub(_unescape_one, bytes(raw))
 
 
-def _after_lines(buffer: bytearray, lines: int) -> int | None:
-    """The offset after the ``lines``-th newline, or ``None`` before it is read."""
-    pos = 0
-    for _ in range(lines):
-        found = buffer.find(b"\n", pos)
-        if found < 0:
+def _unescape_one(match: re.Match[bytes]) -> bytes:
+    escaped = match.group(1)
+    return b"" if escaped == b"\n" else escaped
+
+
+class _LineCounter:
+    """The offset after a buffer's ``lines``-th newline, counted as the buffer grows."""
+
+    def __init__(self) -> None:
+        self._counted = 0  # newlines before ``_pos``
+        self._pos = 0
+
+    def after(self, buffer: bytearray, lines: int) -> int | None:
+        """That offset, or ``None`` while ``buffer`` holds fewer newlines."""
+        new = buffer.count(b"\n", self._pos)
+        if self._counted + new < lines:
+            self._counted += new
+            self._pos = len(buffer)
             return None
-        pos = found + 1
-    return pos
+        pos = self._pos
+        for _ in range(lines - self._counted):
+            pos = buffer.index(b"\n", pos) + 1
+        return pos
 
 
 def _unescape(raw: bytes) -> bytes:
@@ -534,13 +600,21 @@ def _shown(raw: bytes) -> str:
 # Payloads ----------------------------------------------------------------------------
 
 
+def _count_mismatch(name: bytes, listed: int, payloads: int) -> str:
+    return (
+        f"makeself header: {name.decode()} lists {listed} "
+        f"value{'' if listed == 1 else 's'} for {payloads} "
+        f"payload{'' if payloads == 1 else 's'}"
+    )
+
+
 def _digests_for(header: _Header, index: int) -> _Digests:
     """The hashers for the digests the header states for payload ``index``."""
     digests = _Digests()
-    if index < len(header.crcs) and header.crcs[index] != _NO_CRC:
+    if header.crcs[index] != _NO_CRC:
         digests.crc = _Cksum()
         digests.hashers.append(digests.crc)
-    if index < len(header.md5s) and header.md5s[index] != _ZERO_MD5:
+    if header.md5s[index] != _ZERO_MD5:
         digests.md5 = hashlib.md5(usedforsecurity=False)
         digests.hashers.append(digests.md5)
     if index < len(header.shas) and header.shas[index] != _ZERO_SHA:
@@ -666,8 +740,9 @@ _NOT_BASE64 = bytes(sorted(set(range(256)) - set(_BASE64_ALPHABET)))
 
 
 class _Base64Reader(io.RawIOBase):
-    """A base64 payload decoded, ignoring line breaks and other bytes outside the
-    alphabet as ``base64 -d -i`` does."""
+    """A base64 payload decoded as ``base64 -d -i`` decodes it: bytes outside the
+    alphabet (line breaks) are skipped, and text after a padded group of four is
+    decoded on, as the start of more base64."""
 
     def __init__(self, raw: BinaryIO, index: int) -> None:
         self._raw = raw
@@ -696,7 +771,7 @@ class _Base64Reader(io.RawIOBase):
             whole = len(text) - len(text) % 4
             self._carry = text[whole:]
             try:
-                self._out = binascii.a2b_base64(text[:whole], strict_mode=False)
+                self._out = _decode_base64(text[:whole])
             except binascii.Error as e:
                 raise CorruptionError(
                     f"makeself payload {self._index + 1} is not valid base64"
@@ -705,6 +780,22 @@ class _Base64Reader(io.RawIOBase):
         self._out = self._out[len(data) :]
         buffer[: len(data)] = data
         return len(data)
+
+
+def _decode_base64(text: bytes) -> bytes:
+    """Whole groups of four from the alphabet, decoded; a group with padding ends a
+    run, and the next group starts another (``binascii`` alone would drop the rest).
+    Padding that is not at the end of its group is damage."""
+    if b"=" not in text:
+        return binascii.a2b_base64(text, strict_mode=True)
+    out = []
+    start = 0
+    while (pad := text.find(b"=", start)) >= 0:
+        end = pad - pad % 4 + 4
+        out.append(binascii.a2b_base64(text[start:end], strict_mode=True))
+        start = end
+    out.append(binascii.a2b_base64(text[start:], strict_mode=True))
+    return b"".join(out)
 
 
 class MakeselfHandler(SequentialFormatHandler):

@@ -237,6 +237,24 @@ def test_a_variable_set_twice_is_damage() -> None:
         ),
         (b'filesizes="224"\n', b"", CorruptionError, "no filesizes"),
         (
+            b'MD5="5ff768fef803869ef92ad9422d26cee0"',
+            b'MD5="5ff768fef803869ef92ad9422d26cee0 5ff768fef803869ef92ad9422d26cee0"',
+            CorruptionError,
+            "MD5 lists 2 values for 1 payload",
+        ),
+        (
+            b'CRCsum="3396037462"',
+            b'CRCsum="3396037462 1"',
+            CorruptionError,
+            "CRCsum lists 2 values for 1 payload",
+        ),
+        (
+            b'SHA="' + b"0" * 64 + b'"',
+            b'SHA="' + b"1" * 64 + b" " + b"1" * 64 + b'"',
+            CorruptionError,
+            "SHA lists 2 values for 1 payload",
+        ),
+        (
             b'        eval "gzip -cd"\n',
             b'        eval "brotli -d"\n',
             CorruptionError,
@@ -286,10 +304,65 @@ def test_the_header_is_charged_to_max_metadata_bytes() -> None:
         open_archive(DATA / "gzip-2.7.1.run", config=config)
 
 
-def test_a_header_past_the_cap_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(makeself_reader, "HEADER_MAX", 8192)
-    with pytest.raises(UnsupportedFeatureError, match="longer than 8192 bytes"):
-        open_archive(DATA / "gzip-2.7.1.run")
+def test_an_unlimited_budget_reads_a_long_license() -> None:
+    """No cap of the reader's own: max_metadata_bytes alone bounds the header."""
+    licence = b'licensetxt="' + b"Terms of use.\n" * (3 * 2**20 // 14) + b'"'
+    data = _edited(b'licensetxt=""', licence)
+    assert len(data) > 3 * 2**20
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=None))
+    with open_archive(io.BytesIO(data), config=config) as reader:
+        assert _contents(reader) == FILES
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            b'label="' + b"x" * 79 + b"\n" + (b"x" * 79 + b"\n") * 2**15,
+            id="value-never-closed",
+        ),
+        pytest.param(
+            b"".join(b'v%d="x"\n' % i for i in range(2**18)), id="no-function"
+        ),
+    ],
+)
+def test_the_header_is_read_in_one_pass(
+    body: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each chunk is parsed once: the parse goes on from where the last one stopped,
+    so a header that never ends costs time in proportion to its length. Counted as
+    the bytes the parse's patterns match over."""
+    scanned = [0]
+
+    class Counting:
+        def __init__(self, pattern: re.Pattern[bytes]) -> None:
+            self._pattern = pattern
+
+        def match(self, buffer: bytearray, pos: int, *end: int) -> re.Match[bytes]:
+            found = self._pattern.match(buffer, pos, *end)
+            scanned[0] += (found.end() if found else pos) - pos + 1
+            return found
+
+    for name in ("_VALUE", "_LINE_ASSIGNMENT"):
+        monkeypatch.setattr(
+            makeself_reader, name, Counting(getattr(makeself_reader, name))
+        )
+    data = b"#!/bin/sh\n# This script was generated using Makeself 2.7.1\n" + body
+    with pytest.raises(TruncatedError, match="before its variables end"):
+        open_archive(io.BytesIO(data), format=MAKESELF)
+    assert scanned[0] <= 2 * len(data)
+
+
+def test_base64_reads_on_after_padding_as_gnu_base64_does() -> None:
+    """``base64 -d -i`` decodes text after a padded group as more base64."""
+    assert makeself_reader._decode_base64(b"QQ==QUJD") == b"AABC"
+    assert makeself_reader._decode_base64(b"QUJD") == b"ABC"
+
+
+def test_base64_padding_inside_a_group_is_damage() -> None:
+    reader = makeself_reader._Base64Reader(io.BytesIO(b"Q=Q=QUJD"), 0)
+    with pytest.raises(CorruptionError, match="not valid base64"):
+        reader.read()
 
 
 # A forced format ---------------------------------------------------------------------

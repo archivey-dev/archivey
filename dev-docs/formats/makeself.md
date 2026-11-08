@@ -63,21 +63,25 @@ archive (a seekable source only: a pipe's first bytes are gone).
 ### 2.2 Parse the header
 
 The header is read in 16 KiB chunks until `skip` lines are in, bounded by
-`min(HEADER_MAX, max_metadata_bytes)`; what was read past it starts the first payload.
-`_parse_variables` reads the block as shell double-quoted assignments only, so text
-inside a value (a license holding `skip="3"`) is never taken for a variable. A variable
-assigned twice, text with a quote after a value, numbers that are not numbers, digests
-of the wrong length, `totalsize` not the sum of `filesizes`, old offset lines that
-disagree, and payload commands that differ are `CorruptionError`. A command archivey
-does not know is `UnsupportedFeatureError` naming it.
+`max_metadata_bytes` alone; what was read past it starts the first payload.
+`_VariableParser` reads the block as shell double-quoted assignments only, so text
+inside a value (a license holding `skip="3"`) is never taken for a variable. It goes on
+from where the last chunk stopped (`_LineCounter` likewise for the `skip` lines), so a
+hostile header costs time linear in its length, and it keeps only the variables in
+`_USED`, so memory does not grow with it. A used variable assigned twice, text with a
+quote after a value, numbers that are not numbers, digests of the wrong length or count,
+`totalsize` not the sum of `filesizes`, old offset lines that disagree, and payload
+commands that differ are `CorruptionError`. A command archivey does not know is
+`UnsupportedFeatureError` naming it.
 
 ### 2.3 Read the payloads
 
 Each payload is a `_Payload` stream (left-over header bytes, then `ForwardStream.take`),
 which feeds the digests as it is read, base64-decoded by `_Base64Reader` when the header
-says so, and handed to `ReaderContext.open_nested` as a TAR in the payload's compressor.
-After the TAR's last member the rest of the payload is read for the digests. Bytes after
-the last payload that are not zero are `ARCHIVE_TRAILING_DATA`.
+says so (text after a padded group decodes on, as GNU `base64 -d -i` does), and handed
+to `ReaderContext.open_nested` as a TAR in the payload's compressor. After the TAR's
+last member the rest of the payload is read for the digests. Bytes after the last
+payload that are not zero are `ARCHIVE_TRAILING_DATA`.
 
 ## 3. The payload digests
 
@@ -100,7 +104,6 @@ walk passes the check. The POSIX `cksum` CRC is CRC-32 MSB first, computed with
 | The listing is what the TARs hold, not what running the script does | **format** | Threat model §4 "A self-extracting archive's stub is not run" |
 | An old archive lists `.` as a directory member | **format** | makeself before 2.4.2 tars `.` itself |
 | openssl and gpg payloads are refused | **archivey** | openssl decryption is the next change |
-| A header past 2 MiB is refused | **archivey** | `HEADER_MAX`; a license text is the only long part |
 | A member is `CHECKSUM` only after the walk reaches its payload's end | **format** | The digest is over the whole payload |
 
 ## 5. Decisions

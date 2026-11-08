@@ -502,13 +502,23 @@ class _TakenBytes(io.RawIOBase):
         return got
 
 
+class _SpanningCheck(Protocol):
+    """A check over the data of several members, which a built-in reader runs itself
+    (a makeself payload's digests). The adapter's ``SpanningCheck`` implements it."""
+
+    def cover(self, member: ArchiveMember) -> None: ...
+
+    def passed(self) -> None: ...
+
+    def failed(self, message: str) -> ArchiveyError: ...
+
+
 class ReaderContext:
     """What an open archive needs from archivey. archivey builds it."""
 
-    # A check over the data of several members that a built-in reader runs itself (a
-    # makeself payload's digests): ``_spanning_check(key)`` returns the adapter's
-    # ``SpanningCheck`` for it. Internal, set by the adapter; not for plugins.
-    _spanning_check: Callable[[object], Any] | None = None
+    # ``_spanning_check(key)`` returns the check for one spanning check of the
+    # archive. Internal, set by the adapter; not for plugins.
+    _spanning_check: Callable[[object], _SpanningCheck] | None = None
 
     def __init__(
         self,
