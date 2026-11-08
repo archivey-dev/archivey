@@ -1539,6 +1539,48 @@ def test_a_block_stream_hints_each_view_block_as_it_reads_it(
     assert hints == [(start + i * 256, start + (i + 1) * 256) for i in range(4)]
 
 
+def test_a_block_stream_hints_each_decoded_block_as_it_reads_it(
+    clean_registry: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each block a decoder over a view: the hint is the block's compressed span."""
+    payload = _ENTRIES[2][2]
+    packed: list[bytes] = []
+    for i in range(4):
+        squeeze = zlib.compressobj(wbits=-15)
+        packed.append(squeeze.compress(payload[i * 256 : (i + 1) * 256]))
+        packed[-1] += squeeze.flush()
+    starts = [sum(len(b) for b in packed[:i]) for i in range(5)]
+
+    class Decoded(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            offset, size = locator
+            return MemberData(
+                block_stream(
+                    size,
+                    256,
+                    lambda i: self._context.decompress(
+                        self._source.view(offset + starts[i], len(packed[i])),
+                        CompressionAlgorithm.DEFLATE,
+                        size=256,
+                    ),
+                )
+            )
+
+    _plugin_with("decodedhint", reader=Decoded)
+    stored = b"".join(packed)
+    entries = [*_ENTRIES[:2], ("b.bin", MemberType.FILE, stored)]
+    data = build_toya(entries, sizes={2: len(payload)}, crcs={2: zlib.crc32(payload)})
+    base = data.index(stored)
+    hints = _spy_hints(monkeypatch)
+    with open_archive(_write(tmp_path, data, "t.decodedhint")) as reader:
+        reader.members()
+        hints.clear()
+        assert reader.read("b.bin") == payload
+    assert hints == [(base + starts[i], base + starts[i + 1]) for i in range(4)]
+
+
 def test_read_exact_raises_truncated_at_the_end(
     clean_registry: None, tmp_path: Path
 ) -> None:
