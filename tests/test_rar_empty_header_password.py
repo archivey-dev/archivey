@@ -1,10 +1,12 @@
-"""A damaged ``-hp`` archive listed with the empty password raises an ArchiveyError.
+"""A damaged ``-hp`` archive listed with the empty password raises CorruptionError.
 
 The fuzz input below holds plain RAR5 headers, then a crypt header with no password
 check, so every candidate "decrypts" it, the empty one included. Reading a member then
 needs the header password for ``unrar``. ``unrar`` takes the empty password as none, so
 the reader kept no password, and an assertion that the listing must have had one
-raised ``AssertionError``. Found by the RAR fuzz target.
+raised ``AssertionError``. The file is damaged, and no password can help, so the read
+raises ``CorruptionError``, the same class a non-empty first candidate gets. Found by
+the RAR fuzz target.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import io
 
 import pytest
 
-from archivey import ArchiveFormat, ArchiveyError, EncryptionError, open_archive
+from archivey import ArchiveFormat, ArchiveyError, CorruptionError, open_archive
 from tests.conftest import requires_binary
 
 _INPUT = bytes.fromhex(
@@ -27,13 +29,20 @@ _INPUT = bytes.fromhex(
 
 
 @requires_binary("unrar")
-def test_reading_a_member_listed_with_the_empty_password_raises() -> None:
+@pytest.mark.parametrize(
+    "password",
+    [["", "password"], "", b"", "password", ["password", ""]],
+    ids=["empty-first", "empty", "empty-bytes", "nonempty", "nonempty-first"],
+)
+def test_reading_a_member_raises_corruption_whatever_the_candidate(
+    password: str | bytes | list[str],
+) -> None:
     with open_archive(
-        io.BytesIO(_INPUT), format=ArchiveFormat.RAR, password=["", "password"]
+        io.BytesIO(_INPUT), format=ArchiveFormat.RAR, password=password
     ) as reader:
         member = next(iter(reader))
         assert member.is_file
-        with pytest.raises(EncryptionError, match="empty password"):
+        with pytest.raises(CorruptionError):
             reader.open(member).read()
 
 
