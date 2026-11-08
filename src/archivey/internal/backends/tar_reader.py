@@ -428,7 +428,9 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
     def __init__(self, inner: BinaryIO) -> None:
         super().__init__()
         self._inner = inner
-        # The question is about the codec, which stays the same for the walk's life.
+        # Asked once. A standard-library takeover can replace the rapidgzip layer
+        # later; the walk then reads through where it could have seeked, which is
+        # never wrong.
         self._restarts_skip_decoding = not restarts_follow_decoding(inner)
 
     @override
