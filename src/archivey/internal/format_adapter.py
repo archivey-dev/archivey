@@ -256,6 +256,10 @@ class _PluginAdapter(BaseArchiveReader):
         # ``_LISTING`` charges the listing, ``_REWALK`` (a walk started over to reach
         # member data) charges nothing, and ``None`` (no step) is a plugin bug.
         self._walk_step: str | None = None
+        # Reports on a member being listed, held until it is yielded and named
+        # (``_send_held_reports``), by the member's id(): each sends one, naming the
+        # member as it is named when called, with the member id it is given.
+        self._held_reports: dict[int, list[Callable[[int | None], None]]] = {}
         context = ReaderContext(
             encoding=encoding,
             archive_name=archive_name,
@@ -398,23 +402,104 @@ class _PluginAdapter(BaseArchiveReader):
             validate_code_context(code, details)
         except ValueError as exc:
             raise ArchiveyUsageError(f"ReaderContext.report(): {exc}") from None
+        if member is None:
+            self._send_report(code, message, details, None, None)
+        elif self._walk_step == _REWALK:
+            # A walk started over yields fresh members under their stored names:
+            # report on the one the listing named.
+            name = normalize_member_name(
+                member.name, member.type, backslash_is_separator=False
+            )
+            listed = self._listed_named(name)
+            member_id = listed[0]._member_id if len(listed) == 1 else None
+            self._send_report(code, message, _named(details, name), member, member_id)
+        elif not self._hold_report(
+            member,
+            lambda member_id: self._send_report(
+                code, message, _named(details, member.name), member, member_id
+            ),
+        ):
+            self._send_report(code, message, details, member, self._member_id(member))
+
+    def _hold_report(
+        self, member: ArchiveMember, send: Callable[[int | None], None]
+    ) -> bool:
+        """Hold ``send`` until ``member`` is yielded, if the listing has not yielded
+        it yet: until then it is not named as callers see it. ``send`` takes the
+        member's id, ``None`` for a member never yielded."""
+        if member._member_id is not None or self._walk_step != _LISTING:
+            return False
+        self._held_reports.setdefault(id(member), []).append(send)
+        return True
+
+    def _send_report(
+        self,
+        code: DiagnosticCode,
+        message: str,
+        details: DiagnosticContext,
+        member: ArchiveMember | None,
+        member_id: int | None,
+    ) -> None:
         fill: dict[str, object] = {}
         if getattr(details, "archive_name", "") is None:
             fill["archive_name"] = self._archive_name
-        if getattr(details, "member_id", "") is None and member is not None:
-            fill["member_id"] = self._member_id(member)
+        if getattr(details, "member_id", "") is None and member_id is not None:
+            fill["member_id"] = member_id
         self._diagnostics_collector.emit(
             code=code,
             message=message,
-            context=replace(details, **fill) if fill else details,  # type: ignore[type-var]
+            context=_with_fields(details, fill),
             member=member,
             attach_to_member=member is not None,
         )
 
+    def _send_held_reports(self, member: ArchiveMember) -> None:
+        """Send the reports held for ``member`` (``_hold_report``), now that archivey
+        has named it and the walk is at it."""
+        sends = self._held_reports.pop(id(member), ())
+        if sends:
+            member_id = self._member_id(member)
+            for send in sends:
+                send(member_id)
+
+    def _send_unyielded_reports(self, *, may_raise: bool) -> None:
+        """Send the reports held for members the walk never yielded, under the names
+        the reader gave them and with no member id: archivey listed no such member.
+
+        A report the caller's policy raises on raises only when ``may_raise`` (the
+        walk ended normally). On a walk closed part-way, or ended by an error, the
+        report is still recorded, but its raise is dropped: it would replace the
+        error, or be lost in a generator's close."""
+        with self._diagnostics_collector.deferring_raises() as first_held:
+            while self._held_reports:
+                _key, sends = self._held_reports.popitem()
+                for send in sends:
+                    send(None)
+        held = first_held()
+        if may_raise and held is not None:
+            raise held
+
+    def _name_member(self, member: ArchiveMember, index: int) -> None:
+        """Give a listed member the names callers see, and send what was reported on
+        it before: the name normalized, and a hard link's target the same way, since
+        a link names another member by its listed name."""
+        presented = member.name
+        member.name = normalize_member_name(
+            presented, member.type, backslash_is_separator=False
+        )
+        if member.type is MemberType.HARDLINK and member.link_target:
+            member.link_target = normalize_member_name(
+                member.link_target, MemberType.FILE, backslash_is_separator=False
+            )
+        self._send_held_reports(member)
+        self._report_listed(member, presented, index)
+
     @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
+        ended = False
         try:
             yield from self._walk_members()
+            ended = True
         except _StreamChecksumError:
             # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
             # it stays the ceiling of the members it covers, which verify_all()
@@ -431,6 +516,7 @@ class _PluginAdapter(BaseArchiveReader):
             # Members held and never yielded stop counting with the walk that held
             # them, however it ends: at its end, on damage, or closed part-way.
             self._listing_tracker.release_held()
+            self._send_unyielded_reports(may_raise=ended)
 
     def _walk_members(self) -> Iterator[ArchiveMember]:
         """The listing walk of the reader's shape (``_iter_members``)."""
@@ -446,9 +532,7 @@ class _PluginAdapter(BaseArchiveReader):
         finally:
             self._walk_step = None
 
-    def _hold(
-        self, member: ArchiveMember, stored_name: str | None, reason: str | None
-    ) -> None:
+    def _hold(self, member: ArchiveMember, reason: str | None) -> None:
         """``ReaderContext.hold()``: charge a held member to the listing's limits.
         A walk started over to reach member data was listed already: no charge."""
         step = self._walk_step
@@ -466,7 +550,7 @@ class _PluginAdapter(BaseArchiveReader):
             )
         try:
             self._listing_tracker.hold_member(
-                member, stored_name, reason or "members held back by the reader"
+                member, reason or "members held back by the reader"
             )
         except ValueError:
             raise ArchiveyUsageError(
@@ -560,13 +644,18 @@ class _PluginAdapter(BaseArchiveReader):
         target_in_archive: bool,
     ) -> None:
         member.link_target = None
-        self._emit_link_target_unavailable(
-            member,
-            reason=reason,
-            message=message,
-            target_in_archive=target_in_archive,
-            member_id=self._member_id(member),
-        )
+
+        def send(member_id: int | None) -> None:
+            self._emit_link_target_unavailable(
+                member,
+                reason=reason,
+                message=message,
+                target_in_archive=target_in_archive,
+                member_id=member_id,
+            )
+
+        if not self._hold_report(member, send):
+            send(self._member_id(member))
 
     @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
@@ -782,16 +871,8 @@ class IndexedReaderAdapter(_PluginAdapter):
                 )
             # A held member is counted as listed from here on, not twice.
             tracker.release_member(member)
-            # A reader that reports while listing normalizes the name itself, and
-            # hands over the one it started from.
-            presented = (
-                record.stored_name if record.stored_name is not None else member.name
-            )
-            member.name = normalize_member_name(
-                presented, member.type, backslash_is_separator=False
-            )
             member._raw = record.locator
-            self._report_listed(member, presented, index)
+            self._name_member(member, index)
             index += 1
             yield member
 
@@ -1005,14 +1086,29 @@ class _Span:
         self.decoded = decoded
 
 
-def _span_names(span: MemberSpan) -> tuple[str, str]:
-    """The name a span's member was presented by, and the one archivey lists it by:
-    the same in the listing walk and in every walk started over."""
+def _named(details: DiagnosticContext, name: str) -> DiagnosticContext:
+    """``details`` naming its member ``name``, when it names a member."""
+    if getattr(details, "member_name", None) is None:
+        return details
+    return _with_fields(details, {"member_name": name})
+
+
+def _with_fields(
+    details: DiagnosticContext, fields: Mapping[str, object]
+) -> DiagnosticContext:
+    """``details`` with ``fields`` replaced: only fields the caller checked
+    ``details`` has (``getattr``). ``DiagnosticContext`` is a union of dataclasses,
+    some without those fields, so ``replace`` is called on it as ``Any``."""
+    if not fields:
+        return details
+    return cast(DiagnosticContext, replace(cast(Any, details), **fields))
+
+
+def _listed_name(span: MemberSpan) -> str:
+    """The name archivey lists a span's member by: the same in the listing walk
+    (``_name_member``) and in every walk started over."""
     member = span.member
-    presented = span.stored_name if span.stored_name is not None else member.name
-    return presented, normalize_member_name(
-        presented, member.type, backslash_is_separator=False
-    )
+    return normalize_member_name(member.name, member.type, backslash_is_separator=False)
 
 
 def _full_count(data: BinaryIO | io.RawIOBase) -> BinaryIO:
@@ -1798,7 +1894,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                         f"and data_length {length}: a member's data is stored as it is"
                     )
                 )
-        presented, member.name = _span_names(span)
+        self._name_member(member, index)
         expected: dict[HashAlgorithm, bytes] | None = None
         custom: CustomDigests | None = None
         if span.digests:
@@ -1810,7 +1906,6 @@ class SequentialReaderAdapter(_PluginAdapter):
         forward = layer.forward
         record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
         member._raw = record
-        self._report_listed(member, presented, index)
         if (
             member.type is MemberType.SYMLINK
             and self._sequential.link_target_in_data
@@ -2067,7 +2162,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     decoded.name,
                 )
             # A member on the way, read past under the name it is listed by.
-            name = _span_names(span)[1]
+            name = _listed_name(span)
             with self._translated_errors(name), guard:
                 if data is not None:
                     _Decoded(
@@ -2097,7 +2192,7 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _check_rewalked(self, span: MemberSpan, decoded: _Decoded) -> None:
         """Refuse a walk started over that does not yield, at the member's place, the
         member the listing walk did: ``walk()`` must repeat itself."""
-        found = _span_names(span)[1]
+        found = _listed_name(span)
         if found != decoded.name:
             raise _plugin_bug(
                 ValueError(

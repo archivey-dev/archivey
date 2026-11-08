@@ -2122,29 +2122,173 @@ def test_bounded_long_stream_is_cut_at_the_size(
         assert reader.read("b.bin") == bytes(range(256)) * 4
 
 
-def test_a_reader_can_normalize_names_itself(
+def _report_on_every_member(context: ReaderContext, member: ArchiveMember) -> None:
+    context.report(
+        DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+        f"bad date for {member.name}",
+        MemberTimestampContext(
+            member_name=member.name, field="modified", source="toya", value_repr="0"
+        ),
+        member=member,
+    )
+
+
+class _ReportingWhileListing(ToyReader):
+    """Reports on each member before yielding it, under the name the archive
+    stores."""
+
+    def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+        for record in super().iter_members():
+            _report_on_every_member(self._context, record.member)
+            yield record
+
+
+def test_a_report_made_while_listing_names_the_listed_member(
     clean_registry: None, tmp_path: Path
 ) -> None:
-    """A reader that names a member in a report while listing normalizes the name
-    first; archivey still reports the change, from ``stored_name``."""
-
-    class SelfNormalizing(ToyReader):
-        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
-            for record in super().iter_members():
-                member = record.member
-                stored = member.name
-                member.name = self._context.normalize_name(stored, member.type)
-                yield MemberRecord(member, record.locator, stored_name=stored)
-
-    _plugin_with("selfnorm", reader=SelfNormalizing)
+    """A reader reports with the name as stored; archivey sends the report once the
+    member is yielded, with the normalized name as ``member_name``, and reports the
+    name's change once. The message stays as the reader wrote it."""
+    _plugin_with("reportlist", reader=_ReportingWhileListing)
     data = build_toya(
         [("./a//b.txt", MemberType.FILE, b"b"), ("d", MemberType.DIRECTORY, b"")]
     )
-    with open_archive(_write(tmp_path, data, "t.selfnorm")) as reader:
-        assert [m.name for m in reader.members()] == ["a/b.txt", "d/"]
+    with open_archive(_write(tmp_path, data, "t.reportlist")) as reader:
+        members = reader.members()
+        assert [m.name for m in members] == ["a/b.txt", "d/"]
+        (dated, normalized) = members[0].diagnostics
+        assert dated.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        assert dated.context.member_name == "a/b.txt"  # type: ignore[union-attr]
+        assert dated.context.member_id == members[0].member_id  # type: ignore[union-attr]
+        assert dated.message == "bad date for ./a//b.txt"
+        assert normalized.code is DiagnosticCode.MEMBER_NAME_NORMALIZED
+        (dir_dated,) = members[1].diagnostics
+        assert dir_dated.context.member_name == "d/"  # type: ignore[union-attr]
         # A directory's trailing slash is not a reported change.
         counts = reader.diagnostics.counts
         assert counts.get(archivey.DiagnosticCode.MEMBER_NAME_NORMALIZED) == 1
+
+
+def test_a_report_made_while_listing_raises_under_the_policy(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A held report still raises where the caller's policy says so: from the
+    listing, before the member is handed over."""
+    _plugin_with("reportraise", reader=_ReportingWhileListing)
+    data = build_toya([("./a//b.txt", MemberType.FILE, b"b")])
+    config = archivey.ArchiveyConfig(
+        diagnostic_policy=archivey.DiagnosticPolicy(
+            raise_on={DiagnosticCode.MEMBER_TIMESTAMP_INVALID}
+        )
+    )
+    path = _write(tmp_path, data, "t.reportraise")
+    with (
+        open_archive(path, config=config) as reader,
+        pytest.raises(archivey.DiagnosticRaisedError, match="bad date"),
+    ):
+        reader.members()
+
+
+def test_a_report_on_a_member_never_yielded_is_sent(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A member the reader reports on and then drops was never named by archivey:
+    its report is sent when the walk ends, under the reader's name."""
+
+    class Dropping(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                _report_on_every_member(self._context, record.member)
+                if record.member.name != "./dropped":
+                    yield record
+
+    _plugin_with("reportdrop", reader=Dropping)
+    data = build_toya(
+        [("./dropped", MemberType.FILE, b"x"), ("kept", MemberType.FILE, b"y")]
+    )
+    with open_archive(_write(tmp_path, data, "t.reportdrop")) as reader:
+        assert [m.name for m in reader.members()] == ["kept"]
+        (kept,) = reader.members()
+        pairs = [
+            (d.context.member_name, d.context.member_id)  # type: ignore[union-attr]
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        ]
+        # archivey listed no member "./dropped", so its report names no member id.
+        assert sorted(pairs, key=str) == [("./dropped", None), ("kept", kept.member_id)]
+
+
+def test_a_list_from_iter_members_gives_each_report_its_member_id(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """``iter_members`` may build its whole list before archivey takes the first
+    record: a report, and a link target reported unavailable, made then still carry
+    the id of the member they are on. Fails with ``link_target_unavailable`` taking
+    the id when it is called."""
+
+    class Listing(ToyReader):
+        def iter_members(  # type: ignore[override]
+            self,
+        ) -> list[MemberRecord[tuple[int, int]]]:
+            records = list(super().iter_members())
+            for record in records:
+                member = record.member
+                _report_on_every_member(self._context, member)
+                if member.name == "sym":
+                    member.type = MemberType.SYMLINK
+                    member.size = None
+                    self._context.link_target_unavailable(
+                        member,
+                        reason="damaged",
+                        message="no target",
+                        target_in_archive=True,
+                    )
+            return records
+
+    _plugin_with("reportlistall", reader=Listing)
+    data = build_toya(
+        [
+            ("a", MemberType.FILE, b"a"),
+            ("b", MemberType.FILE, b"b"),
+            ("sym", MemberType.FILE, b""),
+        ]
+    )
+    with open_archive(_write(tmp_path, data, "t.reportlistall")) as reader:
+        sym = reader.get("sym")
+        ids = {
+            d.code: d.context.member_id  # type: ignore[union-attr]
+            for d in sym.diagnostics
+        }
+    assert ids == {
+        DiagnosticCode.MEMBER_TIMESTAMP_INVALID: sym.member_id,
+        DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: sym.member_id,
+    }
+
+
+def test_a_hard_link_target_is_normalized_as_names_are(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A reader hands a hard link's target over as stored; archivey normalizes it
+    the way it normalizes the name it names, so the link resolves."""
+
+    class Linking(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                member = record.member
+                if member.name == "link":
+                    member.type = MemberType.HARDLINK
+                    member.link_target = "./a//b.txt"
+                    member.size = None
+                yield record
+
+    _plugin_with("hardlinks", reader=Linking)
+    data = build_toya(
+        [("./a//b.txt", MemberType.FILE, b"b"), ("link", MemberType.FILE, b"")]
+    )
+    with open_archive(_write(tmp_path, data, "t.hardlinks")) as reader:
+        link = reader.get("link")
+        assert link.link_target == "a/b.txt"
+        assert reader.read("link") == b"b"
 
 
 def test_a_directory_with_data_is_reported(

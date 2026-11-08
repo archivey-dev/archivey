@@ -514,7 +514,7 @@ class XarReader(IndexedReader[_Location]):
         if target is not None:
             member.link_target = target
         data = entry.data if member.is_file else None
-        return MemberRecord(member, _Location(data), entry.path)
+        return MemberRecord(member, _Location(data))
 
     def _member(self, entry: _Entry) -> ArchiveMember:
         fields = entry.fields
@@ -527,7 +527,7 @@ class XarReader(IndexedReader[_Location]):
             kind = MemberType.FILE if entry.data is not None else MemberType.OTHER
         member = ArchiveMember(
             type=kind,
-            name=self._context.normalize_name(entry.path, kind),
+            name=entry.path,
             raw_name=entry.raw_path,
         )
         if kind is MemberType.FILE:
