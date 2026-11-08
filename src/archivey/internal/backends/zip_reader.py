@@ -461,6 +461,8 @@ _ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
 )
 # The same, plus the typed errors the parser raises for a damaged local header and the
 # overlap guard raises, so a member open stamps them with the member's name.
+_SPECULATIVE_MAX = 64 * 1024
+
 _LOCAL_HEADER_ERRORS: tuple[type[Exception], ...] = (
     ArchiveyError,
     *_ZIP_MEMBER_READ_ERRORS,
@@ -4371,7 +4373,57 @@ class ZipReader(BaseArchiveReader):
         # layer -> fused CRC/size verify.
         if _is_encrypted_entry(loc.flags, loc.method):
             return self._open_encrypted_member(loc, member)
+        fast = self._speculative_small_member(loc, member)
+        if fast is not None:
+            return fast
         return self._open_codec_member(loc, member)
+
+    def _speculative_small_member(
+        self, loc: _ZipLocator, member: ArchiveMember
+    ) -> MemberStreamParts | None:
+        """PROTOTYPE: decode a small stored/deflate member whole, checked; ``None`` to
+        take the general path (which then gives the exact result or error)."""
+        if (
+            loc.method not in (0, 8)
+            or loc.compressed_size > _SPECULATIVE_MAX
+            or loc.file_size > _SPECULATIVE_MAX
+            or self._stream_config.seekable
+            or loc.size_unknown is not None
+        ):
+            return None
+        try:
+            data_start, length = self._local_data_region(loc, member)
+        except _LOCAL_HEADER_ERRORS:
+            return None
+        if length != loc.compressed_size:
+            return None
+        with self._lock:
+            fp = self._fp
+            if fp is None:
+                return None
+            fp.seek(data_start)
+            raw = fp.read(length)
+        if len(raw) != length:
+            return None
+        if loc.method == 0:
+            data = raw
+        else:
+            d = zlib.decompressobj(-zlib.MAX_WBITS)
+            try:
+                data = d.decompress(raw, loc.file_size + 1)
+            except zlib.error:
+                return None
+            if not d.eof or d.unused_data or d.unconsumed_tail:
+                return None
+        if len(data) != loc.file_size or zlib.crc32(data) != loc.crc:
+            return None
+        return self._verified_member_parts(
+            io.BytesIO(data),
+            member,
+            translate=None,
+            rewind_warning=None,
+            seekable=False,
+        )
 
     @override
     def _archive_comment(self) -> str | None:
