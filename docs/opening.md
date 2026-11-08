@@ -11,8 +11,10 @@ open file objects, you can pass a list of them, in order. A ZIP split by 7-Zip i
 archive. A RAR set with a volume missing still opens, as `unrar` would, but `members()` raises
 `TruncatedError` naming the missing volume, and so does reading a member with data in it. A part
 archivey finds on its own that is a symbolic link is refused with `OpenError`; pass the parts as a
-list to read it. If archivey can't list the folder, or a server refuses to list it for a remote
-file, it finds no other volumes: the path opens alone, and a missing part is reported as above.
+list to read it. If listing the folder fails with an `OSError`, such as no permission to list it,
+or a server refuses the listing for a remote file (an HTTP 4xx status), archivey finds no other
+volumes: the path opens alone, and a missing part is reported as above. Any other error from the
+listing is raised as is.
 `ArchiveyConfig(discover_volumes=False)` turns the search off, so a path opens only the file it
 names ([Security](security.md#hardening) says when that is worth it).
 

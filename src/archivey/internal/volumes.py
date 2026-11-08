@@ -26,8 +26,6 @@ from typing import (
 )
 
 from archivey.exceptions import (
-    ArchiveyError,
-    ArchiveyUsageError,
     OpenError,
     ResourceUnavailableError,
     StreamNotSeekableError,
@@ -402,17 +400,23 @@ def _old_rar_listed_file(
     return candidates[0] if candidates else None
 
 
-# Discovery is best-effort: a directory it cannot list (a local one of mode ``0711``, an
-# HTTP server that refuses the request), or a file whose first bytes it cannot read,
-# reads as "no sibling there". The file the caller named then opens alone, as with
-# ``discover_volumes=False``, and a part it needs is reported missing by the check that
-# refuses an incomplete set. An ``fsspec`` file system raises whatever its transport
-# raises (``aiohttp.ClientResponseError`` for an HTTP 403, a cloud SDK's own errors),
-# not only ``OSError``, so these steps catch ``Exception``, except for the types below.
-# Archivey's own errors say something definite (a ``SourceChangedError`` from a file
-# system that reads through archivey, a usage error), and ``MemoryError`` is not a
-# missing sibling. ``KeyboardInterrupt`` and ``SystemExit`` are not ``Exception``.
-_NOT_A_DISCOVERY_MISS = (ArchiveyError, ArchiveyUsageError, MemoryError)
+# Discovery is best-effort when it is refused: a directory it may not list (a local one of
+# mode ``0711``, a store or HTTP server that refuses the request) or a file whose first
+# bytes it may not read reads as "no sibling there". The file the caller named then
+# opens alone, as with ``discover_volumes=False``, and a part it needs is reported
+# missing by the check that refuses an incomplete set. What counts: any ``OSError`` (a
+# refusal is ``PermissionError`` or ``FileNotFoundError``; a ``TimeoutError`` is an
+# ``OSError`` too and counts the same), a file system with no ``ls``
+# (``NotImplementedError``), and an HTTP 4xx answer, which fsspec's HTTP file system
+# raises as ``aiohttp.ClientResponseError`` for every status but 404. That one is
+# recognised by its integer ``status``, so that core does not import ``aiohttp``.
+# Anything else (a 5xx, a bug in a file system, ``MemoryError``, an archivey error)
+# propagates, as DR-15a rules for an unknown exception.
+def _is_discovery_miss(exc: Exception) -> bool:
+    if isinstance(exc, (OSError, NotImplementedError)):
+        return True
+    status = getattr(exc, "status", None)
+    return type(status) is int and 400 <= status < 500
 
 
 def _log_discovery_miss(what: str, path: object, exc: BaseException) -> None:
@@ -425,13 +429,14 @@ def _log_discovery_miss(what: str, path: object, exc: BaseException) -> None:
 
 
 def _listed(parent: _VP) -> list[_VP]:
-    """The entries of ``parent``, or none when it cannot be listed (best-effort, as
-    above). A ``RemoteVolumePath`` handles its own failure, in ``_listing``."""
+    """The entries of ``parent``, or none when listing it is refused
+    (:func:`_is_discovery_miss`). A ``RemoteVolumePath`` handles its own failure, in
+    ``_listing``."""
     try:
         return list(parent.iterdir())
-    except _NOT_A_DISCOVERY_MISS:
-        raise
-    except Exception as exc:  # noqa: BLE001 -- best-effort, see above
+    except Exception as exc:
+        if not _is_discovery_miss(exc):
+            raise
         _log_discovery_miss("list", _shown(parent), exc)
         return []
 
@@ -495,11 +500,10 @@ class RemoteVolumePath:
         if listing is None:
             try:
                 entries = self.fs.ls(self.path, detail=True)
-            except _NOT_A_DISCOVERY_MISS:
-                raise
-            except Exception as exc:  # noqa: BLE001 -- best-effort, see ``_listed``
-                # A refused request, a timeout, expired credentials or a file system
-                # with no ``ls``: no siblings to offer.
+            except Exception as exc:
+                # Refused, or no ``ls``: no siblings to offer (``_is_discovery_miss``).
+                if not _is_discovery_miss(exc):
+                    raise
                 _log_discovery_miss("list", str(self), exc)
                 entries = []
             listing = {
@@ -579,17 +583,17 @@ def rar_volume_number(name: str) -> int | None:
 
 
 def _starts_like_rar(path: Path | RemoteVolumePath) -> bool:
-    """Whether ``path`` starts with a RAR signature; ``False`` when it cannot be read
-    (best-effort, as ``_listed``)."""
+    """Whether ``path`` starts with a RAR signature; ``False`` when reading it is
+    refused (:func:`_is_discovery_miss`)."""
     try:
         if isinstance(path, Path):
             with path.open("rb") as handle:
                 head = handle.read(len(_RAR_MARKER_PREFIX))
         else:
             head = path.head(len(_RAR_MARKER_PREFIX))
-    except _NOT_A_DISCOVERY_MISS:
-        raise
-    except Exception as exc:  # noqa: BLE001 -- best-effort, see ``_listed``
+    except Exception as exc:
+        if not _is_discovery_miss(exc):
+            raise
         _log_discovery_miss("read", _shown(path), exc)
         return False
     return head == _RAR_MARKER_PREFIX

@@ -192,9 +192,13 @@ def test_a_remote_set_with_a_gap_is_refused_as_a_local_one_is(
 
 
 class ClientResponseError(Exception):
-    """Stands in for ``aiohttp.ClientResponseError``, which an HTTP file system raises
-    when the server refuses a request, so the test needs no ``aiohttp``. It is not an
-    ``OSError``."""
+    """Stands in for ``aiohttp.ClientResponseError``, which fsspec's HTTP file system
+    raises for an error status other than 404, so the test needs no ``aiohttp``. It is
+    not an ``OSError``; its ``status`` is an ``int``, as aiohttp's is."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"{status}, message='refused'")
+        self.status = status
 
 
 class BrokenFS(CountingMemoryFS):
@@ -209,7 +213,7 @@ class BrokenFS(CountingMemoryFS):
         unreadable: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
-        self.error = error or ClientResponseError("403, message='Forbidden'")
+        self.error = error or ClientResponseError(403)
         self.listable = listable
         self.unreadable = unreadable
 
@@ -228,11 +232,11 @@ def _single_rar() -> bytes:
     return (FIXTURES / "basic_nonsolid__.rar").read_bytes()
 
 
-def test_a_listing_that_fails_with_any_error_opens_the_named_file_alone(
+def test_a_listing_refused_over_http_opens_the_named_file_alone(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Discovery is best-effort: a refused HTTP listing is not ``OSError``, and the
-    file the caller named opens as with ``discover_volumes=False``."""
+    """An HTTP 403 for the listing is not an ``OSError``, but it is a refusal: the file
+    the caller named opens as with ``discover_volumes=False``."""
     fs = BrokenFS()
     fs.pipe("/d/a.rar", _single_rar())
     with open_archive(FIXTURES / "basic_nonsolid__.rar") as local:
@@ -242,12 +246,12 @@ def test_a_listing_that_fails_with_any_error_opens_the_named_file_alone(
         open_archive(OpenFile(fs, "/d/a.rar", mode="rb")) as reader,
     ):
         assert [m.name for m in reader.members()] == expected
-    assert "403, message='Forbidden'" in caplog.text
+    assert "403, message='refused'" in caplog.text
 
 
-def test_a_signature_peek_that_fails_leaves_the_part_out() -> None:
+def test_a_signature_peek_that_is_refused_leaves_the_part_out() -> None:
     """``a.r05`` past a gap is taken only when its first bytes read as RAR; a peek
-    that fails reads as "not RAR", and ``a.rar`` opens alone."""
+    that is refused reads as "not RAR", and ``a.rar`` opens alone."""
     fs = BrokenFS(listable=True, unreadable=("/d/a.r05",))
     fs.pipe("/d/a.rar", _single_rar())
     fs.pipe("/d/a.r05", RAR_HEAD)
@@ -260,7 +264,7 @@ def test_a_signature_peek_that_fails_leaves_the_part_out() -> None:
     "named",
     ["tinyvol.part1.rar", "tinyvol_rnn.rar"],
 )
-def test_a_first_part_whose_listing_fails_is_refused_as_a_lone_part(
+def test_a_first_part_whose_listing_is_refused_is_refused_as_a_lone_part(
     fs: CountingMemoryFS, named: str
 ) -> None:
     """The later parts are there but cannot be found: the error is the one for a
@@ -281,7 +285,7 @@ def test_a_first_part_whose_listing_fails_is_refused_as_a_lone_part(
     assert failure(OpenFile(broken, f"/d/{named}", mode="rb")) == alone
 
 
-def test_a_numbered_first_part_whose_listing_fails_is_refused_as_a_lone_part() -> None:
+def test_a_numbered_first_part_whose_listing_is_refused_is_refused_alone() -> None:
     fs = BrokenFS()
     parts, _ = _zip_parts(3)
     for index, part in enumerate(parts, 1):
@@ -293,18 +297,29 @@ def test_a_numbered_first_part_whose_listing_fails_is_refused_as_a_lone_part() -
 @pytest.mark.parametrize(
     "error",
     [
+        RuntimeError("expired credentials"),
+        AttributeError("'NoneType' object has no attribute 'session'"),
+        ClientResponseError(503),
         MemoryError(),
         SourceChangedError("changed"),
         _UsageValueError("bad call"),
     ],
-    ids=["MemoryError", "SourceChangedError", "ArchiveyUsageError"],
+    ids=[
+        "RuntimeError",
+        "AttributeError",
+        "HTTP503",
+        "MemoryError",
+        "SourceChangedError",
+        "ArchiveyUsageError",
+    ],
 )
 @pytest.mark.parametrize("step", ["ls", "cat_file"])
-def test_a_discovery_failure_that_means_something_propagates(
+def test_a_discovery_failure_that_is_not_a_refusal_propagates(
     error: BaseException, step: str
 ) -> None:
-    """Out of memory, or an archivey error from a file system that wraps archivey, is
-    not "no siblings"."""
+    """Only a refusal (``OSError``, no ``ls``, an HTTP 4xx) means "no siblings". An
+    unknown error, a server error or out of memory propagates (DR-15a), so a complete
+    set is not reported as one with parts missing."""
     if step == "ls":
         fs = BrokenFS(error)
     else:

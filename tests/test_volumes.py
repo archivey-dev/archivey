@@ -2677,9 +2677,7 @@ def test_a_directory_that_cannot_be_listed_opens_the_named_file_alone(
     full.mkdir()
     alone_dir.mkdir()
     if named == "x.zip.001":
-        parts, _ = _zip_parts_for_listing()
-        for index, part in enumerate(parts, 1):
-            (full / f"x.zip.{index:03d}").write_bytes(part)
+        _split_zip(full)
     else:
         shutil.copy(_RAR_FIXTURES / named, full)
         if named == "tinyvol.part1.rar":
@@ -2707,13 +2705,3 @@ def test_a_directory_that_cannot_be_listed_opens_the_named_file_alone(
     assert outcome(full) == alone
     if named != "basic_nonsolid__.rar":
         assert isinstance(alone, tuple) and issubclass(alone[0], TruncatedError)
-
-
-def _zip_parts_for_listing() -> tuple[list[bytes], bytes]:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        for i in range(4):
-            zf.writestr(f"m{i}.txt", f"member {i}\n".encode() * 200)
-    data = buf.getvalue()
-    step = -(-len(data) // 3)
-    return [data[i : i + step] for i in range(0, len(data), step)], data
