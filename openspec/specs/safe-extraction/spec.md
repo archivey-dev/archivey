@@ -507,6 +507,15 @@ a solid archive decodes the solid stream a second time. A hardlink that merely p
 its selected source is linked after the source is written, with one read and one
 bomb-limit count for the source bytes.
 
+A link held back for the second pass SHALL hold its name from its place in archive
+order, so the outcome is the one a link made there would give. A later member that
+collides with it meets the overwrite policy against that link: refused under `ERROR`,
+skipped under `SKIP`, given a free name under `RENAME`, and under `REPLACE` it replaces
+the link, which the second pass then does not make (the link and the member it would
+have replaced are `OVERWRITTEN`). A directory meets the held-back link only at the
+link's own path, as directories take no part in the collision map. If the second pass
+cannot make the link, no other member gets the name, as with any refused member.
+
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
 bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the
 whole rule for the target: the target string is a member name, never a path, so it
@@ -559,6 +568,9 @@ refuses its links; any other is recovered as above.
 | HARDLINK `hl` → SYMLINK with no target (`/s` under `STRICT`, or `s`) | `hl` `FAILED`, not refused for `/s`'s name: `ExtractionError` naming the source's type when the listing was read first, else `LinkTargetNotFoundError` |
 | HARDLINK whose target names no earlier member (`../x`, `C:x`, `/abs` with no such member) | `LinkTargetNotFoundError`, a failure; the target string is never refused as a path |
 | Caller filter rewrites a HARDLINK's `link_target` | Ignored; the link is made to the member the stored target names |
+| `S`, `s` (not written: same key as `S` under `STRICT`), HARDLINK `h` → `s` (held back), then `H`, seekable | `h` written with `s`'s bytes in the second pass; `H` meets `h` as an existing link: `FAILED` under `ERROR`, `NOT_OVERWRITTEN` under `SKIP`, `H (1)` under `RENAME` |
+| HARDLINK `H` → an excluded source (held back), then a file `h`, `REPLACE` | `h` replaces the held-back link: `H` `OVERWRITTEN`, never made; `h` `EXTRACTED` |
+| Directory `H/` after a held-back HARDLINK `h`, case-sensitive filesystem | Both written |
 | `REPLACE` routes a HARDLINK onto a path that holds its own source's content: `a`, then `A` → `a` under `STRICT`/`STANDARD`, either mode; or, in the seekable second pass, two links `L`, `l` whose source was excluded | The earlier member `OVERWRITTEN`, the link `EXTRACTED` at that path; the file is left as it is, content intact. On a forward-only stream the `L`, `l` links fail as the "Excluded source on a forward-only stream" row says |
 
 ### Requirement: Policy-Specific Metadata Transforms

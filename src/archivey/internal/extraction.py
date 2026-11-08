@@ -467,6 +467,11 @@ class _Orphan:
     dest_path: Path
     source: ArchiveMember
     spelled_from: ArchiveMember | None = None
+    # The claim this link's reservation (``_reserve_orphan``) took the key from, put
+    # back when the second pass releases it; and whether a later member replaced the
+    # link before the second pass made it.
+    previous_claim: _Claim | None = None
+    cancelled: bool = False
 
 
 @dataclass
@@ -573,6 +578,10 @@ class _RunState:
     written_dirs: dict[str, list[int]] = field(default_factory=dict)
     # Hardlinks whose source was not on disk yet, for the second pass.
     orphans: list[_Orphan] = field(default_factory=list)
+    # The names those hardlinks hold until the second pass makes them, by collision
+    # key (``_reserve_orphan``): a later member meets the name as taken, as it would
+    # had the link been made at its place in archive order.
+    reservations: dict[str, _Orphan] = field(default_factory=dict)
     # Superseded copies the filesystem refused to remove, by archive name, as in
     # ``_MemberState.parked``: the next member of that name parks them again.
     unremoved: dict[str, dict[Path, int]] = field(default_factory=dict)
@@ -2172,9 +2181,11 @@ class ExtractionCoordinator:
         if transformed.type == MemberType.DIRECTORY:
             existed = self._occupied(dest_path)
             callers = self._is_callers_directory(dest_path)
-            if not self._make_room_for_parents(
-                transformed, dest_path
-            ) or not self._prepare_destination(transformed, dest_path):
+            if (
+                not self._meet_reservation(transformed, dest_path)
+                or not self._make_room_for_parents(transformed, dest_path)
+                or not self._prepare_destination(transformed, dest_path)
+            ):
                 return ExtractionResult(
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                 )
@@ -2259,9 +2270,11 @@ class ExtractionCoordinator:
         rule across both calls: the parent's own skip check runs before it removes
         anything, and once it has replaced the parent nothing is left at
         ``dest_path`` for ``_prepare_destination`` to skip."""
-        if not self._make_room_for_parents(
-            transformed, dest_path
-        ) or not self._prepare_destination(transformed, dest_path, atomic=atomic):
+        if (
+            not self._meet_reservation(transformed, dest_path)
+            or not self._make_room_for_parents(transformed, dest_path)
+            or not self._prepare_destination(transformed, dest_path, atomic=atomic)
+        ):
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
@@ -3242,24 +3255,89 @@ class ExtractionCoordinator:
                 member_name=transformed.name,
             )
         # Re-readable: resolve in the second pass.
-        self._state.orphans.append(
-            _Orphan(
-                result_index,
-                original,
-                transformed,
-                dest_path,
-                source,
-                spelled_from=self._current.spelled_from,
-            )
+        orphan = _Orphan(
+            result_index,
+            original,
+            transformed,
+            dest_path,
+            source,
+            spelled_from=self._current.spelled_from,
         )
+        self._state.orphans.append(orphan)
+        self._reserve_orphan(orphan)
         return ExtractionResult(original, None, ExtractionStatus.FAILED, None)
+
+    def _reserve_orphan(self, orphan: _Orphan) -> None:
+        """Hold ``orphan``'s name from its place in archive order until the second
+        pass makes it. First in archive order wins a name, so a later member that
+        collides with it meets the overwrite policy as it would meet the link already
+        made: refused under ``ERROR`` and ``SKIP``, given another name under
+        ``RENAME``, and under ``REPLACE`` it replaces the link, which the second pass
+        then does not make (``_meet_reservation``). Without this, the later member
+        took the name and the link, made after it, was the one refused."""
+        state = self._state
+        key = self._collision_key(orphan.dest_path)
+        previous = state.reservations.get(key)
+        if previous is not None:
+            # Two held-back links of one name: the earlier keeps it, and this one
+            # fails in the second pass against it, as a made link would refuse it.
+            return
+        orphan.previous_claim = state.collision_map.get(key)
+        self._claim(orphan.dest_path, orphan.result_index)
+        state.reservations[key] = orphan
+
+    def _meet_reservation(self, member: ArchiveMember, dest_path: Path) -> bool:
+        """Apply the overwrite policy to a held-back link's name that ``member`` lands
+        on (``_reserve_orphan``), as ``_prepare_destination`` would to the link once
+        made; False to skip ``member``. Under ``REPLACE`` the link is replaced: its
+        result and the one it would have replaced become OVERWRITTEN, and the second
+        pass leaves it out. A directory meets the link only at the link's own path,
+        as directories take no part in the collision map."""
+        state = self._state
+        if not state.reservations:
+            return True
+        orphan = state.reservations.get(self._collision_key(dest_path))
+        if orphan is None or (
+            member.type is MemberType.DIRECTORY and orphan.dest_path != dest_path
+        ):
+            return True
+        key = self._collision_key(dest_path)
+        if self._overwrite is OverwritePolicy.ERROR:
+            raise self._already_exists(dest_path, member)
+        if self._overwrite is OverwritePolicy.SKIP:
+            return False
+        if self._overwrite is OverwritePolicy.REPLACE:
+            del state.reservations[key]
+            orphan.cancelled = True
+            self._revise_to_overwritten(orphan.result_index)
+            if orphan.previous_claim is not None:
+                self._revise_to_overwritten(orphan.previous_claim.result_index)
+        return True
+
+    def _release_reservations(self) -> None:
+        """Give each held-back link's name back to the claim it took it from, so the
+        second pass resolves the link as the first pass would have."""
+        state = self._state
+        for key, orphan in state.reservations.items():
+            claim = state.collision_map.get(key)
+            if claim is not None and claim.result_index == orphan.result_index:
+                del state.collision_map[key]
+                if orphan.previous_claim is not None:
+                    state.collision_map[key] = orphan.previous_claim
+        state.reservations.clear()
+        state.rename_next.clear()
 
     # --- orphan (second pass) ------------------------------------------------------
 
     def _resolve_orphans(self, reader: BaseArchiveReader) -> None:
+        self._release_reservations()
         orphans_by_source: dict[int, list[_Orphan]] = {}
         for orphan in self._state.orphans:
+            if orphan.cancelled:
+                continue
             orphans_by_source.setdefault(orphan.source.member_id, []).append(orphan)
+        if not orphans_by_source:
+            return
 
         # A source that was written LATER in the first pass (a link preceding its source in
         # archive order) is already on disk: just link against it — re-reading its bytes

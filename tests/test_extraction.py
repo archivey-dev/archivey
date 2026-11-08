@@ -5012,12 +5012,101 @@ def test_o2_orphan_hardlink_honours_collision_map(tmp_path: Path) -> None:
                 m.name != "src.bin"
             ),  # exclude the source -> readme orphans
         )
-    # One casefold-equivalent file, not README + readme.
-    assert sorted(p.name for p in dest.iterdir()) == ["README"]
-    # The deferred link won the contested destination, so the first-pass writer is the
-    # one revised to OVERWRITTEN — the second pass revises results just like the first.
+    # One casefold-equivalent file, not README + readme. The deferred link holds its
+    # name from its place in archive order, so the later README replaces it there, as
+    # it would replace the link had it been made in the first pass.
+    assert sorted(p.name for p in dest.iterdir()) == ["readme"]
+    assert (dest / "readme").read_bytes() == b"other"
     assert len(_overwritten(report)) == 1
-    assert _overwritten(report)[0].member.name == "README"
+    assert _overwritten(report)[0].member.name == "readme"
+
+
+# A link whose source lost its name to an earlier member is held back for the second
+# pass. It still holds its own name from its place in archive order, so a later member
+# that collides with it meets the policy as it would meet the link already made.
+_HELD_BACK_LINK_THEN_LATER_NAME = [
+    ("file", "S", b"first-S"),
+    ("file", "s", b"lost-s"),  # same key as S under STRICT: not written
+    ("hard", "h", "s"),  # held back: s is not on disk
+    ("file", "H", b"later-H"),  # same key as h
+]
+
+
+@pytest.mark.parametrize(
+    ("overwrite", "files", "statuses"),
+    [
+        (
+            OverwritePolicy.ERROR,
+            {"S": b"first-S", "h": b"lost-s"},
+            ["EXTRACTED", "FAILED", "EXTRACTED", "FAILED"],
+        ),
+        (
+            OverwritePolicy.SKIP,
+            {"S": b"first-S", "h": b"lost-s"},
+            ["EXTRACTED", "NOT_OVERWRITTEN", "EXTRACTED", "NOT_OVERWRITTEN"],
+        ),
+        (
+            OverwritePolicy.RENAME,
+            {"S": b"first-S", "s (1)": b"lost-s", "h": b"lost-s", "H (1)": b"later-H"},
+            ["EXTRACTED", "EXTRACTED", "EXTRACTED", "EXTRACTED"],
+        ),
+    ],
+)
+def test_a_held_back_link_keeps_its_name_from_a_later_member(
+    tmp_path: Path, overwrite: OverwritePolicy, files: dict, statuses: list
+) -> None:
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(_tar_bytes(_HELD_BACK_LINK_THEN_LATER_NAME))) as r:
+        report = r.extract_all(dest, overwrite=overwrite, on_error=OnError.CONTINUE)
+    assert [r.status.name for r in report.results] == statuses
+    assert {p.name: p.read_bytes() for p in dest.iterdir()} == files
+
+
+def test_a_later_member_replaces_a_held_back_link(tmp_path: Path) -> None:
+    # The link is never made: the later member replaces it, and the file it would
+    # have replaced, as REPLACE in archive order would.
+    archive = _tar_bytes(
+        [
+            ("file", "src.bin", b"data"),
+            ("file", "h", b"first-h"),
+            ("hard", "H", "src.bin"),  # held back: src.bin excluded
+            ("file", "h", b"later-h"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            members=lambda m: m.name != "src.bin",
+        )
+    assert [(r.member.name, r.status.name) for r in report.results] == [
+        ("h", "SUPERSEDED"),
+        ("H", "OVERWRITTEN"),
+        ("h", "EXTRACTED"),
+    ]
+    assert {p.name: p.read_bytes() for p in dest.iterdir()} == {"h": b"later-h"}
+
+
+def test_a_directory_beside_a_held_back_link_is_written(tmp_path: Path) -> None:
+    # Directories take no part in the collision map, so `H/` beside the held-back
+    # `h` is written, as it is beside a link already made.
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if not case_sensitive(dest):
+        pytest.skip("needs a case-sensitive filesystem, where H/ and h are two entries")
+    archive = _tar_bytes(
+        [
+            ("file", "S", b"first-S"),
+            ("file", "s", b"lost-s"),
+            ("hard", "h", "s"),
+            ("dir", "H", None),
+        ]
+    )
+    with open_archive(io.BytesIO(archive)) as reader:
+        reader.extract_all(dest, on_error=OnError.CONTINUE)
+    assert sorted(p.name for p in dest.iterdir()) == ["H", "S", "h"]
+    assert (dest / "h").read_bytes() == b"lost-s"
 
 
 def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> None:
