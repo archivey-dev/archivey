@@ -255,13 +255,13 @@
     },
     "tar_gz_extract_all_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 1020196,
+      "bytes_fetched": 1036576,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "extract_all",
-      "overfetch": 2.0,
+      "overfetch": 2.032,
       "range_requests": 11
     },
     "tar_gz_list_default": {
@@ -288,13 +288,13 @@
     },
     "tar_gz_list_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 1020196,
+      "bytes_fetched": 1036576,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "list",
-      "overfetch": 2.0,
+      "overfetch": 2.032,
       "range_requests": 11
     },
     "tar_gz_read_first_default": {
@@ -321,13 +321,13 @@
     },
     "tar_gz_read_first_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 1085732,
+      "bytes_fetched": 1102112,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "read_first",
-      "overfetch": 2.128,
+      "overfetch": 2.161,
       "range_requests": 12
     },
     "tar_gz_read_last_default": {
@@ -354,13 +354,13 @@
     },
     "tar_gz_read_last_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 1530292,
+      "bytes_fetched": 1546672,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "read_last",
-      "overfetch": 3.0,
+      "overfetch": 3.032,
       "range_requests": 19
     },
     "tar_gz_read_middle_default": {
@@ -387,13 +387,13 @@
     },
     "tar_gz_read_middle_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 1282340,
+      "bytes_fetched": 1298720,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "read_middle",
-      "overfetch": 2.514,
+      "overfetch": 2.546,
       "range_requests": 15
     },
     "tar_gz_stream_members_default": {
@@ -420,13 +420,13 @@
     },
     "tar_gz_stream_members_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 1020196,
+      "bytes_fetched": 1036576,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "stream_members",
-      "overfetch": 2.0,
+      "overfetch": 2.032,
       "range_requests": 11
     },
     "tar_list_default": {

@@ -64,6 +64,12 @@ The `ArchiveSource` built from an `OpenFile` SHALL settle its facts once, at ope
 | `path`, `volume_paths` | `None` |
 | `name` | `of.path` |
 | `seek_is_expensive` | `True` |
+| A seek to the tail | Decodes nothing (`nearest_resume_offset(target)` is `target`) and costs one range request |
+
+The reads that look at the end of a source (detection's UDIF trailer and PE tail
+probe, the xz index, the lzip trailer, the gzip ISIZE) SHALL run on an `OpenFile`
+source as they run on a path, so the same bytes give the same detected format and the
+same member facts.
 
 A backend that needs a local path SHALL treat the source as any non-path stream (RAR's
 spool under `SpoolLimits`). Closing the reader SHALL NOT close the `OpenFile`'s file
@@ -76,6 +82,9 @@ system.
 | `detect_format(fsspec.open("memory://d/data.tar.zst"))` | The name `d/data.tar.zst` drives the name-keyed checks as a path's name does |
 | Object grows after open | Reads stop at the open-time size; detecting the change is the planner's (`fsspec-integration`) |
 | RAR, compressed member, `OpenFile` source | The archive is spooled under `SpoolLimits`, with the existing cost note |
+| A bzip2 stream that ends in a UDIF `koly` block | `DMG`, as from a path |
+| A `.xz` file | The member's `size` from the stream index, as from a path |
+| A `.gz` file | `extra["gzip.isize"]` from the trailer, as from a path |
 
 ## MODIFIED Requirements
 

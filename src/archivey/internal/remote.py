@@ -431,6 +431,13 @@ class WindowPool:
             length = need
         else:
             length = max(need, self._fetch_size(fetches, runs))
+            if run is None and not hinted and start + length > source.size:
+                # A new run that the end would cut short starts earlier, so its
+                # window still holds the minimum fetch (design D2 rule 5). A tail read comes
+                # in pieces that step backward (the xz footer, then its index), and
+                # each piece would otherwise be a request of its own.
+                start = max(0, source.size - length)
+                need = at - start + want
         if hinted:
             assert hint is not None
             length = max(length, hint[1] - start)
@@ -591,10 +598,22 @@ class RangeSource(io.RawIOBase):
 
     @property
     def seek_is_expensive(self) -> bool:
-        """A seek may cost a request: detection and the tail probes stay off it, as
+        """A seek may cost a request, so detection's mid-file probes stay off it, as
         they do for a member stream (``archivey.internal.source.seek_is_expensive``).
+        A read of the tail costs one request and no decode
+        (:meth:`nearest_resume_offset`), so the tail reads run, as on a local file
+        (design D1).
         """
         return True
+
+    def nearest_resume_offset(self, target: int) -> int:
+        """``target``: a range request starts at any offset, so a seek decodes nothing.
+
+        This lets ``seeks_to_end_are_cheap`` answer ``True``. The detection trailer,
+        the single-file tail probes and the gzip ISIZE read then each cost one request,
+        and the same bytes give the same result as from a path (design D1).
+        """
+        return target
 
     def fetch(self, start: int, end: int) -> bytes:
         """One range request, ``[start, end)``, which lies inside the size read at open.

@@ -32,7 +32,11 @@ from archivey.detection_cost import (
 )
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
-from archivey.internal.source import ArchiveSource, seek_is_expensive
+from archivey.internal.source import (
+    ArchiveSource,
+    seek_is_expensive,
+    seeks_to_end_are_cheap,
+)
 from archivey.internal.streams.streamtools import (
     is_seekable,
     read_arrived,
@@ -387,6 +391,20 @@ class PrefixWorkspace:
             return None
         return self._handle
 
+    def _cheap_tail_handle(self) -> BinaryIO | None:
+        """Handle for :meth:`read_tail`'s one seek to the end, or ``None``.
+
+        Wider than :meth:`_cheap_random_access_handle`: a stream whose seek may cost
+        something still qualifies when a seek to its tail decodes nothing
+        (``seeks_to_end_are_cheap``). A remote source costs one request for the
+        tail (fsspec-integration design D1), and a stored ZIP entry or an
+        uncompressed TAR member is a slice of its archive. A deflated member does not
+        qualify: reaching its end decodes all of it.
+        """
+        if self._handle is None or not seeks_to_end_are_cheap(self._handle):
+            return None
+        return self._handle
+
     def _read_at_via_seek(self, handle: BinaryIO, offset: int, length: int) -> bytes:
         assert self._entry_pos is not None
         entry = self._entry_pos
@@ -411,11 +429,14 @@ class PrefixWorkspace:
         A path or a plain seekable stream seeks there and restores the handle, the
         same way :meth:`read_at` does, and does not grow the prefix through the
         middle of the file. The part the prefix already holds is taken from it, not
-        fetched again, and the fetched bytes count in ``unique_bytes_read``. A
-        non-seekable source, and an ``ArchiveStream`` whose backward seek may
-        re-decode, returns ``None`` rather than buffering the whole source to reach
-        the end. Those declines record ``tier`` as ``CAPABILITY_UNAVAILABLE``: the
-        source has a tail detection did not look at. The trailer step passes
+        fetched again, and the fetched bytes count in ``unique_bytes_read``. So
+        does a source whose seek to the tail decodes nothing
+        (``seeks_to_end_are_cheap``): a remote source, at one range request, and a
+        stored ZIP entry or an uncompressed TAR member. A non-seekable source, and
+        an ``ArchiveStream`` that would re-decode to reach its tail, returns
+        ``None`` rather than buffering the whole source to reach the end. Those
+        declines record ``tier`` as ``CAPABILITY_UNAVAILABLE``: the source has a
+        tail detection did not look at. The trailer step passes
         ``"trailer"``; the PE tail probe passes ``"sfx_tail"`` and the payload end.
 
         Ending at the end of the source, a source shorter than ``length`` has no
@@ -439,7 +460,7 @@ class PrefixWorkspace:
         held = len(self._buf)
         if end <= held:
             return bytes(self._buf[origin:end])
-        handle = self._cheap_random_access_handle()
+        handle = self._cheap_tail_handle()
         if handle is None:
             self.record_skip(tier, TierSkipReason.CAPABILITY_UNAVAILABLE)
             return None

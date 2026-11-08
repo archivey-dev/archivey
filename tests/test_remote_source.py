@@ -9,16 +9,19 @@ refused ``OpenFile`` fields, and the facts the source settles at open.
 
 from __future__ import annotations
 
+import bz2
 import dataclasses
+import gzip
 import io
 import logging
+import lzma
 import random
 import subprocess
 import sys
 import threading
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 import pytest
 
@@ -46,6 +49,8 @@ from archivey.internal.remote import (  # noqa: E402
     WindowPool,
     planner_constants,
 )
+from archivey.internal.source import seeks_to_end_are_cheap  # noqa: E402
+from archivey.internal.volumes import ConcatenatedFile  # noqa: E402
 from tests.sample_archives import (  # noqa: E402
     corpus_archive_path,
     skip_unless_runnable,
@@ -1010,3 +1015,136 @@ def test_7z_hints_the_folder_pack_stream_before_a_member_read(
         listed = list(hints)
         assert reader.read(member) == payload
     assert hints[len(listed) :] == [(32, 32 + 300_000)]
+
+
+# --- tail reads (design D1) -------------------------------------------------------------
+
+
+def _udif_after_bzip2() -> bytes:
+    """A bzip2 stream with a UDIF ``koly`` block at the end: an image whose first
+    block is bzip2. The ``koly`` block is past the detection prefix."""
+    koly = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
+    payload = random.Random(44).randbytes(200_000)
+    return bz2.compress(payload) + koly + bytes(512 - len(koly))
+
+
+_TAIL_CASES = {
+    "f.xz": lzma.compress(b"hello" * 1000),
+    "f.gz": gzip.compress(b"x" * 100_000),
+    "img.dmg": _udif_after_bzip2(),
+}
+
+
+def _listing(source: Any) -> list[tuple[str, int | None, dict]]:
+    with open_archive(source) as reader:
+        return [(m.name, m.size, dict(m.extra)) for m in reader.members()]
+
+
+@pytest.mark.parametrize("name", sorted(_TAIL_CASES))
+def test_a_remote_archive_detects_as_a_local_one(
+    name: str, tmp_path: Path, memfs: Any
+) -> None:
+    """The tail reads run on a remote source: the UDIF ``koly`` block outranks the
+    bzip2 hit, as from a path. Red when a range source declines the tail."""
+    data = _TAIL_CASES[name]
+    path = tmp_path / name
+    path.write_bytes(data)
+    memfs.pipe(f"/t/{name}", data)
+    local = detect_format(path)
+    remote = detect_format(fsspec.open(f"memory://t/{name}"))
+    assert remote.format == local.format
+    assert remote.unavailable_tiers == local.unavailable_tiers
+    if name == "img.dmg":
+        assert remote.format == ArchiveFormat.DMG
+
+
+@pytest.mark.parametrize("name", ["f.gz", "f.xz"])
+def test_a_remote_single_file_lists_as_a_local_one(
+    name: str, tmp_path: Path, memfs: Any
+) -> None:
+    """The ``.xz`` index gives ``size`` and the gzip trailer gives ``gzip.isize``
+    from an ``OpenFile`` too. Red when a range source declines the tail."""
+    data = _TAIL_CASES[name]
+    path = tmp_path / name
+    path.write_bytes(data)
+    memfs.pipe(f"/t/{name}", data)
+    local = _listing(path)
+    assert _listing(fsspec.open(f"memory://t/{name}")) == local
+    (entry,) = local
+    if name == "f.xz":
+        assert entry[1] == 5000
+    else:
+        assert entry[2] == {"gzip.isize": 100_000}
+
+
+@pytest.mark.parametrize(
+    ("name", "requests"),
+    [
+        # The head, then the 512-byte koly block: one request for the tail.
+        ("img.dmg", 2),
+        # Detection's head holds the whole file: the tail reads cost nothing more.
+        ("f.gz", 1),
+        ("f.xz", 1),
+    ],
+)
+def test_tail_reads_cost_one_request_each(name: str, requests: int) -> None:
+    """The ruling's price: a tail read is one range request, never a walk."""
+    data = _TAIL_CASES[name]
+    fs = RecordingFS(data)
+    source = OpenFile(fs, f"/{name}", mode="rb")
+    if name == "img.dmg":
+        detect_format(source)
+    else:
+        _listing(source)
+    assert len(fs.fetches) == requests
+
+
+def test_a_large_remote_xz_reads_its_index_from_the_tail() -> None:
+    """A ``.xz`` past the detection head: the stream footer and the index are read
+    from the tail, so ``size`` is known without decoding it. The tail is one
+    request (the minimum fetch, ending at the end) beside the two the head takes
+    with or without it."""
+    payload = random.Random(45).randbytes(300_000)
+    data = lzma.compress(payload, preset=0)
+    fs = RecordingFS(data)
+    config = ArchiveyConfig(max_read_through=16 * KIB)
+    with (
+        planner_constants(SMALL),
+        open_archive(OpenFile(fs, "/big.xz", mode="rb"), config=config) as reader,
+    ):
+        (member,) = reader.members()
+    assert member.size == len(payload)
+    assert fs.fetches == [
+        (0, 16 * KIB),
+        (len(data) - 16 * KIB, len(data)),
+        (16 * KIB, 64 * KIB),
+    ]
+
+
+def test_a_new_run_at_the_end_keeps_the_minimum_fetch() -> None:
+    """A tail read that steps backward (a footer, then the index before it) is one
+    request: the first window ends at the end and holds the minimum fetch. Red when
+    the window starts at the read and holds only the bytes to the end."""
+    source, fs = _source(DATA)
+    source.seek(len(DATA) - 12)
+    assert source.read(12) == DATA[-12:]
+    source.seek(len(DATA) - 5000)
+    assert source.read(100) == DATA[-5000:-4900]
+    assert fs.fetches == [(len(DATA) - 16 * KIB, len(DATA))]
+
+
+def test_a_range_source_resumes_at_any_offset() -> None:
+    source, _ = _source(DATA)
+    assert source.nearest_resume_offset(12_345) == 12_345
+    assert seeks_to_end_are_cheap(cast("BinaryIO", source))
+
+
+def test_a_joined_set_of_range_sources_asks_the_volume_that_holds_the_target() -> None:
+    pool = WindowPool(SMALL)
+    first, _ = _source(DATA[:1000], pool=pool)
+    second, _ = _source(DATA[1000:5000], pool=pool)
+    joined = ConcatenatedFile([cast("BinaryIO", first), cast("BinaryIO", second)])
+    assert joined.seek_is_expensive
+    assert joined.nearest_resume_offset(3000) == 3000
+    assert joined.nearest_resume_offset(5000) == 5000
+    assert seeks_to_end_are_cheap(cast("BinaryIO", joined))

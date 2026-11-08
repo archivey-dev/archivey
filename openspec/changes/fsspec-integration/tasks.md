@@ -44,6 +44,11 @@
 - [x] 2.3 `ArchiveSource` uses `RangeSource` for an `OpenFile`; `seek_is_expensive` is
       `True`; `close()` drops the fetched windows, and nothing of the caller's is closed
       (no file object is ever opened).
+- [x] 2.3a Tail reads run on a remote source (design D1, maintainer 2026-11-08):
+      `RangeSource.nearest_resume_offset` answers the target, a joined set asks the
+      volume that holds it, detection's tail read asks `seeks_to_end_are_cheap`, and a
+      new run at the end keeps the minimum fetch (D2 rule 5). Tested from a path and
+      from an `OpenFile`: a bzip2-first UDIF image, a `.xz` size, a `.gz` ISIZE.
 - [x] 2.4 Run the full corpus and the short-returning-source tests through a memory-backed
       `OpenFile`: identical listings and bytes to a path source.
 - [x] 2.5 Change detection, tier 3 (design D7): `SourceChangedError`, the size

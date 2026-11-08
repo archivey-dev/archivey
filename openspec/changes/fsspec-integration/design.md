@@ -120,8 +120,33 @@ other way or refuses them, rather than drop them in silence (DR-1, DR-15):
 | `size_hint` | The same value |
 | `path`, `volume_paths` | `None`: there is no local file. A backend that needs a path (RAR's `unrar`) spools, under `SpoolLimits`, as it does for any stream |
 | `name` | `of.path`. Detection's name checks and volume discovery (D4) read it |
-| `seek_is_expensive` | `True` |
+| `seek_is_expensive` | `True`: a seek may cost a request, so detection's probe reads at an offset grow the prefix instead (`detection.md` §4.2) |
+| `nearest_resume_offset(target)` | `target`: a range request starts anywhere and decodes nothing, so the tail reads run as on a path, one request each (below) |
 | Ownership | Nothing to close: the planner holds `(fs, path, size)` and its fetched windows, and `close()` drops the windows. The caller's file system object is never closed |
+
+**Tail reads run** (maintainer, 2026-11-08). Three reads look at the end of the
+source: detection's 512-byte UDIF `koly` block (and the ZIP tail probe behind a PE),
+the single-file probes (the xz index, the lzip trailer) and the gzip ISIZE read. Each
+asks `seeks_to_end_are_cheap`. The first version of this change set
+`seek_is_expensive` and nothing else, which turned all three off for a remote source,
+so the same bytes gave another result than from a path: a UDIF image whose first block
+is bzip2 was detected as `BZ2`, a `.xz` member had no `size`, and a `.gz` member had no
+`gzip.isize`. The ruling: a remote archive lists like a local one, and the one extra
+request each read costs is accepted. `RangeSource.nearest_resume_offset` answers the
+target, a joined volume set asks the volume that holds the target, and detection's tail
+read uses `seeks_to_end_are_cheap` (as the single-file probes already did), not
+`seek_is_expensive`. A tail read that steps backward (the xz footer, then the index
+before it) stays one request: a new run that the end would cut short starts earlier, so
+its window holds the minimum fetch (D2 rule 5). Detection's probe reads at an offset
+still do not seek a remote source: each would be a request, and they grow the prefix.
+
+Rejected:
+
+- **Skip the tail reads on a remote source** (the first version). A request is cheap
+  next to a different answer for the same bytes.
+- **Set `seek_is_expensive` to `False`.** The probe reads at an offset would then each
+  cost a request too, and `seek_is_expensive` also tells the size rules that the source
+  is not a caller's plain stream.
 
 ```python
 import fsspec, archivey
@@ -221,6 +246,13 @@ a thin planner that decides each fetch's start and length:
    count, which is the honest place for it. Remote benchmark cases with more streams than
    windows, and with more than the window limit under the seam, pin both rules
    (`tasks.md` 1.3).
+
+5. **A run at the end keeps the minimum fetch.** A new run, with no hint, whose
+   window the end of the object would cut short starts earlier instead, so the window
+   still holds `_MIN_FETCH` and ends at the end. A tail read comes in pieces that step
+   backward (the xz stream footer, then its index; the gzip ISIZE, then nothing), and
+   without this each piece would be a request of its own. It costs up to `_MIN_FETCH`
+   bytes before the read (D1, tail reads).
 
 `_MIN_FETCH`, `_MAX_FETCH` and `_POOL_BYTES` are internal. They are fixed bounds per
 reader that do not grow with input, so DR-9 does not ask for a new public limit. If the

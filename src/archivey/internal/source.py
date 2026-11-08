@@ -521,7 +521,9 @@ class ArchiveSource(ReadOnlyIOStream):
         ``OpenFile``.
 
         Its size is a fact (``fs.size`` at open), its reads are full-count, and a seek
-        may cost a request, so it is marked ``seek_is_expensive``. It has no path: a
+        may cost a request, so it is marked ``seek_is_expensive``. A seek decodes
+        nothing (:meth:`nearest_resume_offset` answers the target), so the tail reads
+        run as on a path, one request each (design D1). It has no path: a
         backend that needs one spools, as for any stream. Closing this source closes the
         range source, which drops its fetched windows; nothing of the caller's is
         closed, since no file object was ever opened.
@@ -705,10 +707,12 @@ class ArchiveSource(ReadOnlyIOStream):
         (:attr:`seek_is_expensive`) passes the question to that stream, under any
         pass-through buffer: a stored ZIP entry or an uncompressed TAR member, a slice
         of its archive's bytes, answers ``target``, and a decoder answers where it
-        would restart.
-        ``None`` when nothing answers (a remote file, a joined set, a stream with no
-        such method) and on a source that cannot seek. Offsets are the borrowed
-        stream's own, as :meth:`seek`'s are.
+        would restart. A remote source (a ``RangeSource``) answers ``target``: a
+        range request starts anywhere. A joined set asks the volume that holds
+        ``target``.
+        ``None`` when nothing answers (a stream with no such method) and on a source
+        that cannot seek. Offsets are the borrowed stream's own, as :meth:`seek`'s
+        are.
         """
         if not self._seekable:
             return None
@@ -1196,9 +1200,10 @@ def seeks_to_end_are_cheap(stream: BinaryIO) -> bool:
     the last bytes, where the trailers sit; the middle, which an index walk may cross;
     and the current position, which the probe restores. A stored ZIP entry or an
     uncompressed TAR member, a slice of its archive's bytes, answers every target
-    itself. A member of a compressed TAR is a slice of decoded data and answers its
-    decoder's resume point. A resume at 0 for a later target is not cheap, since a
-    member view clamps a point behind its own start to 0. The end itself is not
+    itself, and so does a remote source, whose tail costs one range request
+    (fsspec-integration design D1). A member of a compressed TAR is a slice of decoded
+    data and answers its decoder's resume point. A resume at 0 for a later target is
+    not cheap, since a member view clamps a point behind its own start to 0. The end itself is not
     asked: a decoder can resume there, with nothing left to decode, and still decode
     everything before it. A stream that has no cheap length or does not answer is not
     cheap.

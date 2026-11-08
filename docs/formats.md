@@ -1297,6 +1297,8 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 
 - An uncompressed image whose disk is an ISO 9660 filesystem is read as that ISO: `CD001` at byte
   32 769 is checked first.
+- The end is read from a file, an in-memory stream, an fsspec `OpenFile` (one more range request),
+  and a stored ZIP entry or uncompressed TAR member opened with `seekable_members=True`.
 - A pipe is not rewound to read the end. A short image from a pipe is still refused, because
   detection has already read through to its end. A longer one whose first block is bzip2 or xz
   opens as that stream. One whose first block is zlib fails with `FormatDetectionError`, because no
@@ -1361,7 +1363,8 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   cannot see fills in the size of the cut data. `member_state_final` reads `False` until the size
   is filled in, a `streaming=True` pass ends, or the reader closes.
 - **`.xz` size and `.lz` CRC-32** come from the stream's index or the lzip trailer whenever the
-  source can seek: a file path and an in-memory stream both qualify, a pipe does not.
+  source can seek: a file path, an in-memory stream and an fsspec `OpenFile` (one more range
+  request) qualify, a pipe does not.
   `seekable_members=True` makes no difference, since reading the trailer is a bounded backward peek
   at open. A `.xz` or `.lz` opened from another archive's member stream gets both when the
   member stream is seekable and is a stored ZIP entry or an uncompressed TAR member, whose end is
@@ -1374,7 +1377,8 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   modification time and permission bits the header stores.
 - mozlz4 sets `member.size` at listing, from its header.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is cheap to
-  reach (a path, an in-memory stream, a seekable stored ZIP entry or uncompressed TAR member; not a
+  reach (a path, an in-memory stream, an fsspec `OpenFile`, a seekable stored ZIP entry or
+  uncompressed TAR member; not a
   pipe, a deflated member or a standard-library decompressor). It is the size
   modulo 2^32 only for a file of one gzip member with nothing after it. A file of several members
   stores the last member's size there (a bgzip file stores 0), so it never becomes `member.size`.

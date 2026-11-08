@@ -14,6 +14,7 @@ start and length itself:
 | Sequential run | The first two reads of a run fetch what they ask for, and at least a fixed minimum fetch size (64 KiB). From the third read that continues the last fetch, each fetch doubles, up to a fixed maximum fetch size |
 | Short forward gap | A forward seek no longer than `ArchiveyConfig.max_read_through` (default 1 MiB; `archive-reading` §"Explicit configuration object") continues the run instead of starting a new request |
 | Jump | A backward seek, or a longer forward one, starts a new run at the minimum fetch size |
+| Run at the end | A new run with no hint that the end of the object would cut short starts earlier, so its fetch still holds the minimum fetch size and ends at the end: a tail read that steps backward is one request |
 | Backend range hint | A span the backend declares it will read next is fetched in one request, up to the maximum fetch size, then continued as a run |
 | Known spans of a whole-archive pass | Merged across gaps of at most `max_read_through`, and fetched with `cat_ranges` in groups whose total is at most the pass's maximum fetch; the next group is fetched once the previous one is consumed |
 
@@ -46,6 +47,7 @@ listed are held by its baseline.
 | 7z, solid | ≤ 2 requests | bytes fetched ≤ (member end − folder start) + `F` |
 | ISO, member within `F` | baseline | list + 1 request |
 | RAR5, TAR, compressed TAR | bytes fetched ≤ archive size + `F` | the same; a compressed RAR member also spools the archive |
+| A single compressed file (`.xz`, `.gz`) or a UDIF image larger than the first fetch, past the read-through distance | The tail reads add 1 request | the same |
 
 #### Scenario: concurrent streams share the pool
 
