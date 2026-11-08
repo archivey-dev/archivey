@@ -22,7 +22,7 @@ import lzma
 import threading
 import weakref
 from collections.abc import Callable, Generator, Iterator, Mapping
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import fields, replace
 from typing import Any, BinaryIO, ClassVar, NoReturn, TypeVar, cast
 
@@ -523,6 +523,20 @@ class _PluginAdapter(BaseArchiveReader):
         """The listing walk of the reader's shape (``_iter_members``)."""
         raise NotImplementedError
 
+    def _close_steps(
+        self, steps: Iterator[object], guard: AbstractContextManager[object]
+    ) -> None:
+        """Close the plugin's walk when the listing stops before its end: closed
+        part-way, or ended by an error. Closing archivey's own generator does not
+        close it on every interpreter (PyPy's collector does, later), so its
+        ``finally`` blocks would run after the archive closed. An error from it is
+        dropped: on a walk an error ended, that error stands; on one the caller
+        stopped, nothing is raised or reported, as when the collector closed it."""
+        close = getattr(steps, "close", None)
+        if close is not None:
+            with suppress(Exception), guard:
+                close()
+
     def _walk_next(self, steps: Iterator[object], step: str = _LISTING) -> object:
         """The next step of a walk, or ``_END`` once it ends: the listing's, during
         which a ``hold()`` is charged, or with ``step=_REWALK`` a data walk's, during
@@ -850,7 +864,21 @@ class IndexedReaderAdapter(_PluginAdapter):
                 records = iter(self._indexed.iter_members())
             finally:
                 self._walk_step = None
+        try:
+            yield from self._walk_records(records, boundary, guard)
+        except BaseException:
+            self._close_steps(records, guard)
+            raise
+
+    def _walk_records(
+        self,
+        records: Iterator[object],
+        boundary: AbstractContextManager[object],
+        guard: AbstractContextManager[object],
+    ) -> Iterator[ArchiveMember]:
+        """The members of the plugin's ``iter_members()`` steps, typed and named."""
         index = 0
+        tracker = self._listing_tracker
         while True:
             self._walk_index = index
             with boundary, guard:
@@ -1719,6 +1747,20 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._walk_index = 0
             with boundary, guard:
                 span = self._walk_next(walk)
+        try:
+            yield from self._walk_spans(walk, span, boundary, guard)
+        except BaseException:
+            self._close_steps(walk, guard)
+            raise
+
+    def _walk_spans(
+        self,
+        walk: Iterator[object],
+        span: object,
+        boundary: AbstractContextManager[object],
+        guard: AbstractContextManager[object],
+    ) -> Iterator[ArchiveMember]:
+        """The members of the plugin's ``walk()`` steps, from ``span`` on."""
         index = 0
         # Decoded bytes of the members walked so far (``_Decoded.prefix``).
         prefix = 0

@@ -575,11 +575,19 @@ def test_a_directory_listing_a_size_it_does_not_store_raises_on_read(
 
 
 class _ClosingReader(ToysReader):
-    """Records its close() and when the walk's cleanup ran, against it."""
+    """Records its close() and when the walk's cleanup ran, against it. It keeps
+    each walk it returns alive, so a walk is closed only when archivey closes it,
+    on CPython as on PyPy, whose collector need not free it at once."""
 
     events: ClassVar[list[str]] = []
+    walks: ClassVar[list[Iterator[MemberSpan]]] = []
 
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        steps = self._steps(stream)
+        self.walks.append(steps)
+        return steps
+
+    def _steps(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         try:
             yield from super().walk(stream)
         finally:
@@ -605,6 +613,30 @@ def test_an_unlisted_walk_ends_before_close(
     _ClosingReader.events = []
     with open_archive(_write(tmp_path, build_toys(_ENTRIES)), format=fmt):
         pass
+    assert _ClosingReader.events == ["walk done", "close"]
+
+
+@pytest.mark.parametrize(
+    ("streaming", "data_pass"),
+    [(True, False), (True, True), (False, True)],
+    ids=["streaming-iter", "streaming-stream-members", "random-stream-members"],
+)
+def test_a_walk_stopped_part_way_ends_before_close(
+    toys: ArchiveFormat, tmp_path: Path, streaming: bool, data_pass: bool
+) -> None:
+    """Closing the reader closes a walk the caller stopped part-way, before the
+    reader's close(): its cleanup does not wait for the collector, which on PyPy
+    need not get to it on one gc.collect(). A random-access ``stream_members()`` of
+    a sequential format reads through the walk, so it can stop it part-way too."""
+    fmt = _variant(_ClosingReader, ToysContainer.CLOSING)
+    _ClosingReader.events = []
+    _ClosingReader.walks = []
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    with open_archive(path, format=fmt, streaming=streaming) as reader:
+        members = reader.stream_members() if data_pass else iter(reader)
+        with members:
+            next(members)
+        assert _ClosingReader.events == []
     assert _ClosingReader.events == ["walk done", "close"]
 
 

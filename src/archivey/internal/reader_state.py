@@ -510,6 +510,25 @@ class ReaderState:
             self._workers.add(token)
             return token
 
+    def acquire_peek(self, name: str) -> OperationToken:
+        """Worker token for an index-only peek (``members_report_if_available()``).
+
+        Admitted beside any pass, as the peek is: it may run inside a streaming loop's
+        body. It still refuses a closed reader and a callback's re-entry, and while it
+        is held a close() is refused like during any worker call: from a callback on
+        this thread as re-entry, and from another thread as an overlap, so teardown
+        never runs under the walk the peek drains. Release it with
+        :meth:`release_worker`.
+        """
+        with self._lock:
+            self._require_admissible_locked(name)
+            if not self._internal_opens_active_locked():
+                # The library's own call under its pass (extract_all) is not re-entry.
+                self._reject_same_thread_reentry_locked(f"call {name!r}")
+            token = OperationToken(name=name, kind="worker")
+            self._workers.add(token)
+            return token
+
     def release_worker(self, token: OperationToken) -> None:
         with self._lock:
             if token._released:
