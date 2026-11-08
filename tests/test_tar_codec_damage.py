@@ -1,9 +1,9 @@
 """A damaged codec stream under a TAR raises the codec's error, not a cut.
 
 A codec stream hands back the bytes before damage and raises on the next read (ADR
-0014). Three TAR reads took that short read as the end of the archive and never read
-again: the header read, a member read with no size, and the forward walk's skip over
-member data. So a corrupt ``.tar.gz`` or ``.tar.xz`` listed with only a warning about
+0014). Four TAR reads took that short read as the end of the archive and never read
+again: the header read, the extended-header read, a member read with no size, and the
+forward walk's skip over member data. So a corrupt ``.tar.gz`` or ``.tar.xz`` listed with only a warning about
 a missing end-of-archive marker, a full read of a member raised ``TruncatedError``,
 and on a pipe the skip raised ``TruncatedError``. Each now raises the codec's
 ``CorruptionError``. Found by fuzzing seekable against pipe reads.
@@ -92,4 +92,23 @@ def test_skipping_a_damaged_member_on_a_pipe_raises_the_codec_error() -> None:
     ):
         for _member, _stream in reader.stream_members():
             pass
+    _raises_corruption(exc_info)
+
+
+@pytest.mark.parametrize("cut", [700, 2000])
+def test_damage_inside_an_extended_header_raises_the_codec_error(cut: int) -> None:
+    # Two members with 2001-character names, so each has a pax header; the damage
+    # falls inside the first member's pax data.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for i in range(2):
+            info = tarfile.TarInfo(f"{i}" + "n" * 2000)
+            info.size = 3000
+            tar.addfile(info, io.BytesIO(random.Random(i).randbytes(3000)))
+    data = _gzip_damaged_at(buf.getvalue(), cut)
+    with (
+        pytest.raises(CorruptionError) as exc_info,
+        archivey.open_archive(io.BytesIO(data)) as reader,
+    ):
+        list(reader)
     _raises_corruption(exc_info)
