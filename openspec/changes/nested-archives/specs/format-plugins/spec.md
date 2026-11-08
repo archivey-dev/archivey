@@ -19,6 +19,15 @@ too; its errors SHALL raise from the walk. Name checks SHALL run once, on the me
 outer listing lists. An archive nested more than 8 deep (`MAX_NESTED_DEPTH`) SHALL be
 refused with `UnsupportedFeatureError`.
 
+The levels of one nest SHALL share one budget for each limit, not one each. What an
+inner reader keeps beyond the members it hands out (a member it holds back, an archive
+comment, a link target) SHALL count against `max_metadata_bytes` together with the
+outermost listing, until the inner reader closes. The decoders of the levels SHALL share
+`max_decoder_memory`: an inner reader's decoders SHALL get the cap less the largest
+working set each enclosing level declared before it opened. Every level's decoded bytes
+SHALL be held to `max_ratio` of the outermost archive's compressed size, or of the
+compressed bytes taken from it so far when that size is unknown.
+
 #### Scenario: nested reads
 
 | Case | Expected |
@@ -33,3 +42,6 @@ refused with `UnsupportedFeatureError`.
 | `open_nested` called outside `walk()` | `ArchiveyUsageError` |
 | A format that names itself as its inner format, 9 levels deep | `UnsupportedFeatureError` |
 | A `take` stream read after the walk moved on, one byte read before | `ArchiveyUsageError` |
+| 3 levels each hold back a 400-byte member, `max_metadata_bytes=1000` | `ResourceLimitError`; with 1500, the members |
+| 3 levels each decode with a 1 MiB LZMA or xz dictionary, `max_decoder_memory` 2.5 MiB | `ResourceLimitError`; with 3.5 MiB, the members |
+| An xz level holds a gzip level that skips 8 MiB of zeros, under 2000:1 to its own input and over 2000:1 to the outermost archive, `max_ratio=2000` | `ResourceLimitError`; with no ratio limit, the members |

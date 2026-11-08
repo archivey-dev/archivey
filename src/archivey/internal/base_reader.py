@@ -118,6 +118,7 @@ from archivey.internal.naming import (
     name_controls_possible,
     resolve_link_target_name,
 )
+from archivey.internal.nesting import enclosing_reader
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import is_unverified_data_error
 from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
@@ -688,6 +689,9 @@ class BaseArchiveReader(ArchiveReader):
         # (``ReaderContext.open_nested``) knows its depth from the start, so the checks
         # its open makes already skip what the outer listing checks.
         self._nested_depth = self._diagnostics_collector.nesting_depth
+        # The reader this one reads inside, or ``None`` at the top: the readers of one
+        # nest share their budgets (``archivey.internal.nesting``).
+        self._nest_outer: BaseArchiveReader | None = enclosing_reader()
         self._member_streams = member_streams
         self._open_site = open_site
         self._state = ReaderState(member_streams=member_streams, open_site=open_site)
@@ -813,7 +817,12 @@ class BaseArchiveReader(ArchiveReader):
         self._unconfirmed_failure_emitted: bool = False
         # Makes the test-and-set of ``_unconfirmed_failure_emitted`` one step.
         self._unconfirmed_failure_lock = threading.Lock()
-        self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
+        self._listing_tracker = ListingLimitTracker(
+            self._config.listing_limits,
+            outer=None
+            if self._nest_outer is None
+            else self._nest_outer._listing_tracker,
+        )
         # How close this reader came to each reader-lifetime limit (private; read by
         # the scan script and ``archivey extract --dry-run``).
         self._usage = ResourceUsageRecorder()
@@ -959,6 +968,8 @@ class BaseArchiveReader(ArchiveReader):
             # BaseException: an interrupt propagates alone, through the finally.
             teardown_exc = exc
         finally:
+            # What a reader inside another one kept is no longer the nest's.
+            self._listing_tracker.leave_nest()
             # Also on an interrupt: teardown is never retried, so it is complete either way.
             self._state.complete_teardown()
         if pending is not None and teardown_exc is not None:
@@ -3537,7 +3548,15 @@ class BaseArchiveReader(ArchiveReader):
         complements. A seekable source's hint counts, and so does a member stream's
         declared length (``seek_is_expensive``), itself unchecked until the member ends.
         A caller's non-seekable stream's ``size`` does not.
+
+        A reader inside another one (``ReaderContext.open_nested``) answers with the
+        outermost archive's: every level of a nest is held to ``max_ratio`` of the
+        compressed bytes the caller handed over, so a nest of ``n`` levels decodes at
+        most ``n`` times that ratio in all, and not the ratio to the ``n``-th power.
         """
+        outer = self._nest_outer
+        if outer is not None:
+            return outer._trusted_source_size()
         src = self._source
         if src is None:
             return None
@@ -3579,7 +3598,13 @@ class BaseArchiveReader(ArchiveReader):
         forward-only bytes, so a guard built before a backend installs its counter loses
         nothing by keeping the source's count. The furthest offset counts a byte read
         again once, so it never passes the archive's size.
+
+        A reader inside another one answers with the outermost archive's, as
+        :meth:`_trusted_source_size` does.
         """
+        outer = self._nest_outer
+        if outer is not None:
+            return outer._live_consumed()
         counter = self._compressed_input_counter
         if counter is not None:
             return lambda: counter.bytes_read

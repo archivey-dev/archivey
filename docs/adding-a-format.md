@@ -543,9 +543,12 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
   own bytes can be made to reach. Under `FormatPolicy(plugins=False)` a plugin format
   inside raises it too. Call it from `walk()` only. Stop early by closing the
   iterator it returns; archivey closes one left open when the archive closes.
-- **One archive to the caller.** The inner reader works for the outer one: its listing
-  limits and decoder limits are the caller's, and what it reports (a TAR header it had
-  to guess at, bytes after its end) goes into the outer reader's diagnostics, naming
+- **One archive to the caller.** The inner reader works for the outer one: it shares the
+  outer archive's limits rather than getting its own. What it keeps counts toward the
+  same `max_metadata_bytes`, its decoders get the `max_decoder_memory` the outer levels
+  left, and its `max_ratio` is to the outer archive's compressed size. What it reports
+  (a TAR header it had to guess at, bytes after its end) goes into the outer reader's
+  diagnostics, naming
   the member as the caller sees it, and reaches that member's `diagnostics`, while the
   data is read too. Its errors raise from the walk. Names are checked
   once, by the outer listing, after the walk renames them.

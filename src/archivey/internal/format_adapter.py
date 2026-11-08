@@ -78,6 +78,7 @@ from archivey.internal.format_args import (
 )
 from archivey.internal.logs import detection as detection_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.nesting import reading_inside
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
@@ -523,7 +524,8 @@ class _PluginAdapter(BaseArchiveReader):
         """The spans of the inner archive ``data``: its members, numbered from
         ``first`` in what it reports, and their decoded data."""
         collector = self._diagnostics_collector
-        with collector.member_ids_from(first):
+        config = self._nested_config()
+        with collector.member_ids_from(first), reading_inside(self):
             reader = backend_cls().open_read(
                 ArchiveSource.for_stream(data),
                 format=fmt,
@@ -531,7 +533,7 @@ class _PluginAdapter(BaseArchiveReader):
                 passwords=None,
                 encoding=self._encoding,
                 archive_name=self._archive_name,
-                config=self._config,
+                config=config,
                 collector=collector,
             )
         try:
@@ -554,6 +556,32 @@ class _PluginAdapter(BaseArchiveReader):
         finally:
             with collector.member_ids_from(first):
                 reader.close()
+
+    def _nested_config(self) -> ArchiveyConfig:
+        """The configuration of a reader inside this one: this one's, with
+        ``max_decoder_memory`` less the largest working set a decoder of this archive
+        has declared so far.
+
+        The decoders of a nest's levels run at once: an inner archive's bytes come
+        out of the outer archive's decoder while the inner one decodes them. So the
+        levels share one ``max_decoder_memory`` (maintainer ruling, 2026-11-08:
+        "charge across the nesting"), and each level counts as one decoder holding
+        the largest working set it declared before the inner archive opened. That
+        counts a decoder that has ended too, which can only refuse more, never less.
+        Within one level the cap stays one decoder's, as it is for an archive that
+        is not nested. The inner reader's codecs, those that hand the cap to their
+        library (xz, LZMA Alone, zstd) too, see what is left.
+        """
+        config = self._config
+        limits = config.decoder_limits
+        cap = limits.max_decoder_memory
+        held = self._usage.snapshot().decoder_memory
+        if cap is None or not held:
+            return config
+        return replace(
+            config,
+            decoder_limits=replace(limits, max_decoder_memory=max(cap - held, 0)),
+        )
 
     def _link_target_unavailable(
         self,

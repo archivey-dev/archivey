@@ -35,6 +35,7 @@ from archivey.internal.streams.codecs.base import (
     ProbeReadAt,
     StreamCodec,
 )
+from archivey.internal.streams.codecs.declared_memory import noting
 from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
     StreamStart,
@@ -133,6 +134,7 @@ class XzCodec(_SizedLzmaCodec):
             refuse_input_after_end=config.refuse_input_after_end,
             initial_index=config.seek_index,
             natives=config.natives,
+            usage=config.usage,
         )
 
 
@@ -354,6 +356,13 @@ def _new_alone_decompressor(
     return _ClampedAloneDecompressor(read_bound, natives)
 
 
+def _alone_dictionary(header: bytes) -> int | None:
+    """The dictionary an LZMA Alone header declares, after its properties byte."""
+    if len(header) < 5:
+        return None
+    return int.from_bytes(header[1:5], "little")
+
+
 class LzmaAloneCodec(_LzmaErrorCodec):
     """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW.
 
@@ -370,10 +379,19 @@ class LzmaAloneCodec(_LzmaErrorCodec):
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
-        return _new_alone_decompressor(
+        decompressor = _new_alone_decompressor(
             config.probe_read_bound,
             config.decoder_limits,
             config.natives,
+        )
+        if config.probe_read_bound is not None:
+            return decompressor
+        return noting(
+            decompressor,
+            config.usage,
+            header_size=_ALONE_HEADER_SIZE,
+            declared=_alone_dictionary,
+            what="an LZMA Alone header's dictionary",
         )
 
     @override

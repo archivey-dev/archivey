@@ -9,6 +9,7 @@ inner archive. A length of 0 ends it. The walk lists inner archive ``n``'s membe
 
 from __future__ import annotations
 
+import gzip
 import inspect
 import io
 import lzma
@@ -23,12 +24,16 @@ from archivey import (
     ArchiveMember,
     ArchiveyConfig,
     ArchiveyUsageError,
+    CompressionAlgorithm,
     ContainerFormat,
     CorruptionError,
+    DecoderLimits,
     FormatPolicy,
+    ListingLimits,
     MemberType,
     PluginContainer,
     PluginStream,
+    ResourceLimitError,
     StreamFormat,
     TruncatedError,
     UnsupportedFeatureError,
@@ -487,3 +492,248 @@ def test_a_plugin_format_inside_is_refused_under_plugins_false(
         open_archive(io.BytesIO(data), format=BoxesHandler.format, config=config) as r,
     ):
         r.members()
+
+
+# One nest of archives has one budget for each limit (maintainer ruling, 2026-11-08:
+# "charge across the nesting"). Each test below builds a nest of 3 levels in which
+# every level alone fits the limit, and all 3 together do not.
+
+
+class HoldingBoxesContainer(PluginContainer):
+    HOLDING_BOXES = "holding-boxes"
+
+
+class HoldingBoxesReader(BoxesReader):
+    """BOXES, but the walk keeps a 400-byte name, charged with ``hold()``, until it
+    ends, as a reader keeps a manifest it never yields."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        kept = ArchiveMember(name="m" * 400, type=MemberType.FILE)
+        self._context.hold(kept, reason="manifests")
+        yield from super().walk(stream)
+
+
+class HoldingBoxesHandler(BoxesHandler):
+    format = ArchiveFormat(
+        HoldingBoxesContainer.HOLDING_BOXES, StreamFormat.UNCOMPRESSED
+    )
+    magic = ()
+
+    def open_sequential(self, context: ReaderContext) -> BoxesReader:
+        return HoldingBoxesReader(context)
+
+
+@pytest.mark.parametrize(("limit", "refused"), [(1000, True), (1500, False)])
+def test_what_inner_levels_keep_counts_against_one_metadata_budget(
+    monkeypatch: pytest.MonkeyPatch, limit: int, refused: bool
+) -> None:
+    """3 levels keep 400 bytes each: 1200 in all, over a 1000-byte limit each level
+    alone fits."""
+    monkeypatch.setitem(_KINDS, b"H", HoldingBoxesHandler.format)
+    data = _boxes((b"H", _boxes((b"H", _boxes((b"T", _tar([("a", b"a")])))))))
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=limit))
+    with registration_scope():
+        register_format(HoldingBoxesHandler)
+        if refused:
+            with pytest.raises(
+                ResourceLimitError, match="max_metadata_bytes=1000.*inner archive"
+            ):
+                _names(data, HoldingBoxesHandler.format, config)
+            return
+        with open_archive(
+            io.BytesIO(data), format=HoldingBoxesHandler.format, config=config
+        ) as reader:
+            assert [m.name for m in reader.members()] == ["0/0/0/a"]
+            # The inner levels' charges came off when they closed.
+            tracker = reader._listing_tracker  # type: ignore[attr-defined]
+            assert tracker._nested_bytes == 0
+
+
+def _names(data: bytes, fmt: ArchiveFormat, config: ArchiveyConfig) -> list[str]:
+    with open_archive(io.BytesIO(data), format=fmt, config=config) as reader:
+        return [m.name for m in reader.members()]
+
+
+class LzmaBoxesContainer(PluginContainer):
+    LZMA_BOXES = "lzma-boxes"
+
+
+# lc=3, lp=0, pb=2: the LZMA properties byte xz and 7-Zip write by default.
+_LZMA_LCLPPB = (2 * 5 + 0) * 9 + 3
+
+
+def _lzma_box(kind: bytes, inner: bytes, dict_size: int) -> bytes:
+    """One LZMA_BOXES box: ``inner`` as raw LZMA1 with a ``dict_size`` dictionary."""
+    packed = lzma.compress(
+        inner,
+        format=lzma.FORMAT_RAW,
+        filters=[{"id": lzma.FILTER_LZMA1, "dict_size": dict_size}],
+    )
+    properties = bytes([_LZMA_LCLPPB]) + dict_size.to_bytes(4, "little")
+    return b"%08d%08d" % (len(packed), len(inner)) + kind + properties + packed
+
+
+class LzmaBoxesReader(BoxesReader):
+    """BOXES, but each box is raw LZMA1 that the walk decodes with
+    ``ReaderContext.decompress``, which checks the dictionary the box declares."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        if stream.read_exact(5) != b"BOXES":
+            raise CorruptionError("not BOXES")
+        box = 0
+        while True:
+            packed = int(stream.read_exact(8))
+            if not packed:
+                return
+            size = int(stream.read_exact(8))
+            kind = _KINDS[stream.read_exact(1)]
+            properties = stream.read_exact(5)
+            decoded = self._context.decompress(
+                stream.take(packed),
+                CompressionAlgorithm.LZMA,
+                size=size,
+                properties=properties,
+            )
+            for span in self._context.open_nested(decoded, kind):
+                span.member.name = f"{box}/{span.member.name}"
+                yield span
+            box += 1
+
+
+class LzmaBoxesHandler(BoxesHandler):
+    format = ArchiveFormat(LzmaBoxesContainer.LZMA_BOXES, StreamFormat.UNCOMPRESSED)
+    magic = ()
+
+    def open_sequential(self, context: ReaderContext) -> BoxesReader:
+        return LzmaBoxesReader(context)
+
+
+@pytest.mark.parametrize(
+    ("limit", "refused"), [(5 * 2**20 // 2, True), (7 * 2**20 // 2, False)]
+)
+def test_decoders_of_every_level_count_against_one_decoder_memory_budget(
+    monkeypatch: pytest.MonkeyPatch, limit: int, refused: bool
+) -> None:
+    """Each level declares a 1 MiB dictionary, and its decoder runs while the levels
+    inside it decode: 3 MiB in all, over a 2.5 MiB limit each level alone fits."""
+    monkeypatch.setitem(_KINDS, b"L", LzmaBoxesHandler.format)
+    mib = 2**20
+    level3 = b"BOXES" + _lzma_box(b"T", _tar([("a", b"a")]), mib) + b"00000000"
+    level2 = b"BOXES" + _lzma_box(b"L", level3, mib) + b"00000000"
+    data = b"BOXES" + _lzma_box(b"L", level2, mib) + b"00000000"
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=limit))
+    with registration_scope():
+        register_format(LzmaBoxesHandler)
+        if refused:
+            with pytest.raises(ResourceLimitError, match="max_decoder_memory="):
+                _names(data, LzmaBoxesHandler.format, config)
+        else:
+            assert _names(data, LzmaBoxesHandler.format, config) == ["0/0/0/a"]
+
+
+@pytest.mark.usefixtures("boxes")
+@pytest.mark.parametrize(
+    ("limit", "refused"), [(5 * 2**20 // 2, True), (7 * 2**20 // 2, False)]
+)
+def test_xz_levels_count_against_one_decoder_memory_budget(
+    monkeypatch: pytest.MonkeyPatch, limit: int, refused: bool
+) -> None:
+    """The same with xz, whose dictionary liblzma reads and checks itself: a BOXES.xz
+    holds a BOXES.xz, which holds a tar.xz, each with a 1 MiB dictionary."""
+    monkeypatch.setitem(
+        _KINDS, b"W", ArchiveFormat(BoxesContainer.BOXES, StreamFormat.XZ)
+    )
+    filters = [{"id": lzma.FILTER_LZMA2, "dict_size": 2**20}]
+
+    def xz(data: bytes) -> bytes:
+        return lzma.compress(data, filters=filters)
+
+    level4 = xz(_tar([("a", b"a")]))
+    level3 = xz(_boxes((b"X", level4)))
+    data = _boxes((b"W", xz(_boxes((b"W", level3)))))
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=limit))
+    if refused:
+        with pytest.raises(ResourceLimitError, match="max_decoder_memory="):
+            _names(data, BoxesHandler.format, config)
+    else:
+        assert _names(data, BoxesHandler.format, config) == ["0/0/0/a"]
+
+
+class PaddedBoxesContainer(PluginContainer):
+    PADDED_BOXES = "padded-boxes"
+
+
+class PaddedBoxesReader(BoxesReader):
+    """BOXES whose kind ``P`` box is padding the walk skips."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        if stream.read_exact(5) != b"BOXES":
+            raise CorruptionError("not BOXES")
+        box = 0
+        while True:
+            size = int(stream.read_exact(8))
+            if not size:
+                return
+            letter = stream.read_exact(1)
+            if letter == b"P":
+                stream.skip(size)
+                continue
+            for span in self._context.open_nested(stream.take(size), _KINDS[letter]):
+                span.member.name = f"{box}/{span.member.name}"
+                yield span
+            box += 1
+
+
+class PaddedBoxesHandler(BoxesHandler):
+    format = ArchiveFormat(PaddedBoxesContainer.PADDED_BOXES, StreamFormat.UNCOMPRESSED)
+    magic = ()
+
+    def open_sequential(self, context: ReaderContext) -> BoxesReader:
+        return PaddedBoxesReader(context)
+
+
+@pytest.mark.parametrize(("max_ratio", "refused"), [(2000.0, True), (None, False)])
+def test_every_level_is_held_to_the_ratio_of_the_outermost_archive(
+    monkeypatch: pytest.MonkeyPatch, max_ratio: float | None, refused: bool
+) -> None:
+    """An xz level holds a gzip level, which holds 8 MiB of padding its walk skips.
+    Each level decodes less than 2000 times its own input, and the gzip level more
+    than 2000 times the bytes the caller handed over."""
+    monkeypatch.setitem(
+        _KINDS,
+        b"G",
+        ArchiveFormat(PaddedBoxesContainer.PADDED_BOXES, StreamFormat.GZIP),
+    )
+    padding = 8 * 2**20
+    level3 = gzip.compress(
+        b"BOXES"
+        + b"%08dP" % padding
+        + bytes(padding)
+        + b"%08dT" % len(_TAR_A)
+        + _TAR_A
+        + b"00000000",
+        mtime=0,
+    )
+    level2 = lzma.compress(_boxes((b"G", level3)))
+    data = _boxes((b"X", level2))
+    assert padding < 2000 * len(level3)
+    assert len(level3) < 2000 * len(level2)
+    assert padding > 2000 * len(data)
+    monkeypatch.setitem(
+        _KINDS, b"X", ArchiveFormat(PaddedBoxesContainer.PADDED_BOXES, StreamFormat.XZ)
+    )
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(
+            max_ratio=max_ratio,
+            ratio_activation_threshold=2**20,
+            live_ratio_activation_threshold=2**20,
+        )
+    )
+    with registration_scope():
+        register_format(PaddedBoxesHandler)
+        if refused:
+            with pytest.raises(ResourceLimitError, match="max_ratio"):
+                _names(data, PaddedBoxesHandler.format, config)
+        else:
+            names = _names(data, PaddedBoxesHandler.format, config)
+            assert names == ["0/0/0/a", "0/0/0/b"]

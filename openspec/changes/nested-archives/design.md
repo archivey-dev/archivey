@@ -48,7 +48,7 @@ on its own.
 A nested reader (`_nested_depth` above 0) skips the presentation checks at registration
 (deceptive names, duplicates, NUL); the outer listing makes them on the renamed member,
 across all the inner archives. Each inner reader still applies the listing limits to
-its own members.
+its own members. The budgets are shared across the levels (§8).
 
 ### 6. `take()`
 
@@ -67,6 +67,35 @@ opened it, and `open_nested` refuses past `MAX_NESTED_DEPTH` (8) with
 reads its inner format from its own bytes could otherwise recurse until Python's
 recursion limit, a bare `RecursionError` on a 19 KB input. The iterators `open_nested`
 returns are kept in a weak set and closed with the archive at the latest.
+
+### 8. One budget for the nest
+
+Maintainer ruling, 2026-11-08: "charge across the nesting". With `open_nested` the
+library recurses, not the caller, so 8 levels must not get 8 times each cap. A reader
+learns the reader it reads inside while it is built (`archivey.internal.nesting`).
+
+- **`max_metadata_bytes`.** An inner reader's members reach the outermost listing as
+  copies that share their strings, and the outermost tracker counts them there, so an
+  inner tracker counts its members for itself only. What an inner level keeps beyond
+  them (a held member, an archive comment, a link target weighed late, a TAR sparse map)
+  is charged to the outermost tracker as well, whose checks count it until the inner
+  reader closes (`ListingLimitTracker._charge_outward`).
+- **`max_decoder_memory`.** The decoders of the levels run at once: the inner archive's
+  bytes come out of the outer decoder. An inner reader gets the outer reader's config
+  with `max_decoder_memory` less the largest working set the outer reader recorded
+  (`_PluginAdapter._nested_config`). A level thus counts as one decoder holding its
+  largest declaration, which over-counts a decoder that has ended and so can only refuse
+  more. Inside one level the cap stays one decoder's, as for an archive that is not
+  nested. The working sets liblzma and libzstd check themselves are recorded too: an xz
+  stream's first block dictionary, an LZMA Alone header's dictionary, a zstd frame's
+  window.
+- **`max_ratio`.** An inner reader's ratio guards divide by the outermost archive's
+  compressed size (or its live count of bytes taken), not by the bytes of the inner
+  archive. Dividing by the inner archive's own bytes lets each level expand its input
+  by the ratio again, so a nest of `n` levels decodes up to the ratio to the `n`-th
+  power. With the outermost denominator each level decodes at most the ratio times
+  what the caller handed over, and the nest at most `n` times that. The members the
+  walk yields stay counted by the outermost reader's own guards as before.
 
 ## Risks
 

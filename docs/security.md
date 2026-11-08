@@ -117,7 +117,9 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   index leaves nothing of its own in the destination.
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
-  careful if you extract archives found inside other archives.
+  careful if you extract archives found inside other archives. An archive that a format reads
+  inside its own, through a format plugin's `open_nested`, is different: it shares the outer
+  archive's limits.
 - **Accelerators are on by default for large streams.** If you open an archive with
   `seekable_members=True` and the `seekable` extra is installed, archivey reads bzip2 data of 1 MiB
   or more compressed, and DEFLATE data of 16 MiB or more, through rapidgzip. On Linux and macOS it
