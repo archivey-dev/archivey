@@ -172,7 +172,7 @@ def test_a_codec_with_no_check_never_sets_a_checksum_ceiling(streaming: bool) ->
     plain = _tar("w")
     data = lzma.compress(plain, format=lzma.FORMAT_XZ, check=lzma.CHECK_NONE)
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         members = [m for m in reader.members_report().members if m.is_file]
     assert {(m.verified, m.verifiable) for m in members} == {
         (Verification.LENGTH, Verification.LENGTH)
@@ -210,7 +210,7 @@ def test_damage_that_ends_the_walk_keeps_the_ceiling_and_fails_the_files(
     # returns them as failures.
     data = gzip.compress(_tar("w"), mtime=0)[:-20]
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         report = reader.members_report()
     assert sorted(m.name for m, _e in failures) == ["a", "b"]
     assert "did not run" in str(failures[0][1])
@@ -228,7 +228,7 @@ def test_damage_found_while_listing_still_fails_the_files_later(cut: int) -> Non
     with open_archive(io.BytesIO(data)) as reader:
         reader.members_report()
         for _ in range(2):
-            failures = reader.verify_all()
+            failures = reader.verify_all().failures
             assert sorted(m.name for m, _e in failures) == ["a", "b"]
 
 
@@ -239,7 +239,7 @@ def test_a_trailer_that_fails_stays_the_ceiling_of_its_failures(
     data = bytearray(gzip.compress(_tar("w"), mtime=0))
     data[-8] ^= 0xFF  # the gzip trailer's CRC-32
     with open_archive(io.BytesIO(bytes(data)), streaming=streaming) as reader:
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
     assert sorted(m.name for m, _e in failures) == ["a", "b"]
     assert {m.verifiable for m, _e in failures} == {Verification.CHECKSUM}
 
@@ -254,7 +254,7 @@ def test_an_xz_check_that_fails_keeps_the_ceiling(streaming: bool) -> None:
     data = bytearray(lzma.compress(_tar("w"), check=lzma.CHECK_CRC64))
     data[-13] ^= 0xFF  # the last byte of the block's CRC-64, before the index
     with open_archive(io.BytesIO(bytes(data)), streaming=streaming) as reader:
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         files = [m for m in reader.members_report().members if m.is_file]
     assert {m.verifiable for m in files} == {Verification.CHECKSUM}
     failed = {id(m) for m, _e in failures}

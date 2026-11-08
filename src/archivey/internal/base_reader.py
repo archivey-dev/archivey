@@ -65,6 +65,7 @@ from archivey.diagnostics import (
     SpecialFileDataContext,
     SymlinkTargetContext,
     UnconfirmedFormatContext,
+    VerifyReport,
     raw_name_to_base64,
 )
 from archivey.exceptions import (
@@ -4208,7 +4209,20 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     @override
-    def verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
+    def verify_all(self) -> VerifyReport:
+        # The report covers only the emits this call makes, on its own thread, as
+        # extract_all's does.
+        with self._diagnostics_collector.scoped() as scope:
+            failures = self._verify_all_failures()
+            structure_error = self.members_report().error
+        return VerifyReport(
+            failures=failures,
+            structure_error=structure_error,
+            diagnostics=scope.summary(),
+        )
+
+    def _verify_all_failures(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
+        """Read every member that has something left to prove; the ones that failed."""
         failures: list[tuple[ArchiveMember, ArchiveyError]] = []
         spanning: list[SpanningCheckError] = []
         retry_next: set[int] = set()

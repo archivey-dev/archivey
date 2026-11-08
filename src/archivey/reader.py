@@ -14,8 +14,12 @@ from typing import Any, Self, TypeVar, cast
 from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
-from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
-from archivey.exceptions import ArchiveyError
+from archivey.diagnostics import (
+    DiagnosticSummary,
+    ExtractionReport,
+    MemberListReport,
+    VerifyReport,
+)
 from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.types import (
@@ -695,35 +699,43 @@ class ForwardArchiveReader(ABC):
         ...
 
     @abstractmethod
-    def verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
-        """Read every member's data to run its checks; return the members that failed.
+    def verify_all(self) -> VerifyReport:
+        """Read every member's data to run its checks; report what failed.
+
+        Returns a :class:`~archivey.VerifyReport`. Its ``ok`` is ``True`` only when
+        every check passed: no member failed, and nothing stopped the walk through the
+        archive. ``report.raise_for_failure()`` raises the first problem instead.
 
         Each member is read as :meth:`ArchiveStream.verify` reads one, with
         ``verifiable`` as the target, and a member that fails does not stop the call:
-        it is returned with its error, and the next member is read. A failed check
-        that covers several members (a 7z folder CRC) returns each member it covers,
-        each paired with the same error object, whichever member's read reached the
-        check; that error's ``member_name`` is the member whose read reached it, not
-        the member it is paired with. Afterwards every
-        listed member has ``verified == verifiable`` except the ones returned. A member
-        whose password the password input did not supply is returned with its
-        ``EncryptionError``. The levels are raised on the members in place, so
+        it goes in ``report.failures`` with its error, and the next member is read. A
+        failed check that covers several members (a 7z folder CRC) puts each member it
+        covers in ``failures``, each paired with the same error object, whichever
+        member's read reached the check; that error's ``member_name`` is the member
+        whose read reached it, not the member it is paired with. Afterwards every
+        listed member has ``verified == verifiable`` except the ones in ``failures``.
+        A member whose password the password input did not supply is a failure with
+        its ``EncryptionError``. The levels are raised on the members in place, so
         :meth:`~ArchiveReader.members` and :meth:`members_report` show them, and so do
         streams of those members opened later.
 
-        Damage to the archive's structure that stops the listing ends the call without
-        raising: :meth:`members_report` returns it as ``error``. A failed checksum over
-        the whole compressed archive (the gzip trailer of a ``.tar.gz``) ends it the
-        same way, and every listed file is returned with that error. The checksum may
+        Damage to the archive's structure that stops the walk (a ZIP cut inside its
+        central directory, a TAR cut inside a member) ends the call without raising:
+        it is ``report.structure_error``, the same error as
+        ``members_report().error``, and ``ok`` is ``False``. A failed checksum over the
+        whole compressed archive (the gzip trailer of a ``.tar.gz``) ends it the same
+        way, and every listed file is a failure with that error too. The checksum may
         cover only some of the files (a concatenated ``.tar.gz``, a ``.tar.zst`` of
-        several frames) and nothing says which, so all are returned rather than pass
-        a damaged one. When damage keeps such a check from running at all (a 7z
-        folder whose decode stops early, a ``.tar.gz`` cut before its trailer), each
-        member only that check would prove is returned too, with an error that says
-        so: damage does not lower ``verifiable``. Archive-level findings,
-        such as a missing end-of-archive marker, are in ``reader.diagnostics``. To check
-        everything about an archive, call ``verify_all()``, then look at
-        ``members_report()`` and ``diagnostics``.
+        several frames) and nothing says which, so all are failures rather than pass a
+        damaged one. When damage keeps such a check from running at all (a 7z folder
+        whose decode stops early, a ``.tar.gz`` cut before its trailer), each member
+        only that check would prove is a failure too, with an error that says so:
+        damage does not lower ``verifiable``.
+
+        ``report.diagnostics`` holds the diagnostics this call emitted. They do not
+        count toward ``ok``: the :class:`~archivey.DiagnosticPolicy` decides which
+        codes are errors, and a code it raises on stops the call with
+        :class:`~archivey.DiagnosticRaisedError`.
 
         On a random-access reader a second call reads again the members that failed
         (asking the password input again), the members whose ``verifiable`` is

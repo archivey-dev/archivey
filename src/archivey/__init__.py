@@ -63,6 +63,7 @@ from archivey.diagnostics import (
     ExtractionReport,
     MemberListReport,
     OnDiagnostic,
+    VerifyReport,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -210,6 +211,7 @@ __all__ = [
     "TruncatedError",
     "UnsupportedFeatureError",
     "Verification",
+    "VerifyReport",
     "__version__",
     "detect_format",
     "format_availability",

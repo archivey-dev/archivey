@@ -154,8 +154,8 @@ as its member, whether or not it has started reading, and an `open_stream()` str
 member, reports its own.
 
 !!! warning "Experimental"
-    `Verification`, `verified`, `verifiable`, `stream.verify()` and `reader.verify_all()` are
-    experimental and outside the
+    `Verification`, `verified`, `verifiable`, `stream.verify()`, `reader.verify_all()` and the
+    `VerifyReport` it returns are experimental and outside the
     [stability policy](how-it-is-built.md#versioning-and-stability): any release, a patch
     release included, may change or remove them, their levels, names or meaning. The checks
     themselves are not experimental: a read that fails one raises as before, whatever level
@@ -266,25 +266,39 @@ with archive.open(member) as stream:  # can't seek by default: verify() consumes
         ...  # a check this member carries didn't run
 ```
 
-To check every member, call `reader.verify_all()`. It reads each member as `verify()` does,
-keeps going when one fails, and returns the members that failed, each with its error. Afterwards
-every other member has `verified == verifiable`. A member it had no password for comes back with
-its `EncryptionError`; a second call reads the failed members again and asks the password input
-again. To check everything about an archive:
+To check every member, call `reader.verify_all()`. It reads each member as `verify()` does and
+keeps going when one fails. It returns a `VerifyReport`, whose `ok` is `True` only when every
+check passed:
 
 ```python
-failures = reader.verify_all()        # (member, error) for each member that failed
-report = reader.members_report()      # report.error: damage that stopped the listing
-findings = reader.diagnostics         # archive-level findings, such as a missing end marker
+report = reader.verify_all()
+if not report.ok:
+    for member, error in report.failures:   # each member that failed, with its error
+        print(member.name, error)
+    if report.structure_error:              # damage that stopped the walk through the archive
+        print(report.structure_error)
+# Or, to raise the first problem instead:
+reader.verify_all().raise_for_failure()
 ```
 
-Damage that stops archivey finding the next member ends `verify_all()` without raising, and
-`members_report().error` holds it. When a checksum over the whole compressed archive fails, such
-as the gzip trailer of a `.tar.gz`, `verify_all()` returns every file with that error. The
-checksum may cover only some of the files, as in a concatenated `.tar.gz` or a `.tar.zst` of
-several frames, and nothing says which ones, so archivey returns them all rather than pass a
-damaged file. On a streaming reader `verify_all()` is the one pass, and
+Afterwards every member that didn't fail has `verified == verifiable`. A member it had no
+password for is a failure with its `EncryptionError`; a second call reads the failed members
+again and asks the password input again.
+
+Damage that stops archivey finding the next member, such as a ZIP cut inside its list of members,
+ends `verify_all()` without raising. It's `report.structure_error`, the same error as
+`members_report().error`, and the members after it were never checked. When a checksum over the
+whole compressed archive fails, such as the gzip trailer of a `.tar.gz`, every file is a failure
+with that error. The checksum may cover only some of the files, as in a concatenated `.tar.gz` or
+a `.tar.zst` of several frames, and nothing says which ones, so archivey reports them all rather
+than pass a damaged file. On a streaming reader `verify_all()` is the one pass, and
 `members_report()` returns what it listed without reading again.
+
+`report.diagnostics` holds the diagnostics recorded during the call; the ones recorded earlier,
+such as while opening or listing the archive, stay in `reader.diagnostics`. Diagnostics don't make
+`ok` false: your [diagnostic policy](#raising-or-quieting-a-diagnostic)
+decides which ones are errors, and one it raises on stops `verify_all()` with
+`DiagnosticRaisedError`.
 
 [Damaged members](extracting.md#damaged-members) covers what extraction does.
 
