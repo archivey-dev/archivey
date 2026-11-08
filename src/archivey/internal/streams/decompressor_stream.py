@@ -79,13 +79,13 @@ class StreamChecksumError(CorruptionError):
     """A whole-stream checksum failed after the stream's bytes were delivered.
 
     Not exported: callers catch :class:`CorruptionError`. The name has no leading
-    underscore because it is the type name a user sees in a traceback. A reader that tolerates a decode
-    failure past the end of its own data (the TAR end-of-archive scan) re-raises this
-    one, because the checksum covers bytes it has already handed out. Raised for a
-    checksum over the whole decoded stream (or a member of it): gzip CRC-32 and ISIZE,
-    zlib Adler-32, the zstd and lz4 content checksums, lzip CRC-32 and data size. Not
-    for a check that covers one block, and not for xz, whose integrity-check failure
-    liblzma reports with the same message as any corrupt input.
+    underscore because it is the type name a user sees in a traceback. A reader that
+    tolerates a decode failure past the end of its own data (the TAR end-of-archive
+    scan) re-raises this one, because the checksum covers bytes it has already handed
+    out. Raised for a checksum over the whole decoded stream (or a member of it): gzip
+    CRC-32 and ISIZE, zlib Adler-32, the zstd and lz4 content checksums, lzip CRC-32 and
+    data size. Not for a check that covers one block, and not for xz, whose
+    integrity-check failure liblzma reports with the same message as any corrupt input.
     """
 
 
