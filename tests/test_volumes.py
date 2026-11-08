@@ -2661,3 +2661,57 @@ def test_an_internal_probe_keeps_discovery_off() -> None:
     assert (
         probe_config(ArchiveyConfig(discover_volumes=False)).discover_volumes is False
     )
+
+
+@pytest.mark.parametrize(
+    "named",
+    ["basic_nonsolid__.rar", "tinyvol.part1.rar", "x.zip.001"],
+)
+def test_a_directory_that_cannot_be_listed_opens_the_named_file_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named: str
+) -> None:
+    """A file the caller can read, in a directory they cannot list (mode ``0711``),
+    opens as the same file with no siblings beside it does: discovery is
+    best-effort, and a first part on its own is refused as an incomplete set."""
+    full, alone_dir = tmp_path / "full", tmp_path / "alone"
+    full.mkdir()
+    alone_dir.mkdir()
+    if named == "x.zip.001":
+        parts, _ = _zip_parts_for_listing()
+        for index, part in enumerate(parts, 1):
+            (full / f"x.zip.{index:03d}").write_bytes(part)
+    else:
+        shutil.copy(_RAR_FIXTURES / named, full)
+        if named == "tinyvol.part1.rar":
+            shutil.copy(_RAR_FIXTURES / "tinyvol.part2.rar", full)
+    shutil.copy(full / named, alone_dir)
+
+    def outcome(directory: Path) -> object:
+        try:
+            with open_archive(directory / named) as reader:
+                return [
+                    (m.name, reader.read(m) if m.is_file else None)
+                    for m in reader.members()
+                ]
+        except TruncatedError as exc:
+            return type(exc), str(exc).replace(str(directory), "<dir>")
+
+    alone = outcome(alone_dir)
+
+    def refused(self: Path) -> Any:
+        raise PermissionError(errno.EACCES, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "iterdir", refused)
+    assert outcome(full) == alone
+    if named != "basic_nonsolid__.rar":
+        assert isinstance(alone, tuple) and issubclass(alone[0], TruncatedError)
+
+
+def _zip_parts_for_listing() -> tuple[list[bytes], bytes]:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(4):
+            zf.writestr(f"m{i}.txt", f"member {i}\n".encode() * 200)
+    data = buf.getvalue()
+    step = -(-len(data) // 3)
+    return [data[i : i + step] for i in range(0, len(data), step)], data

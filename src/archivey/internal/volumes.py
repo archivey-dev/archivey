@@ -26,6 +26,8 @@ from typing import (
 )
 
 from archivey.exceptions import (
+    ArchiveyError,
+    ArchiveyUsageError,
     OpenError,
     ResourceUnavailableError,
     StreamNotSeekableError,
@@ -38,6 +40,7 @@ from archivey.internal.arg_checks import (
     raise_if_text_stream,
     reject_source,
 )
+from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
 from archivey.internal.remote import (
     DEFAULT_MAX_READ_THROUGH,
@@ -399,6 +402,40 @@ def _old_rar_listed_file(
     return candidates[0] if candidates else None
 
 
+# Discovery is best-effort: a directory it cannot list (a local one of mode ``0711``, an
+# HTTP server that refuses the request), or a file whose first bytes it cannot read,
+# reads as "no sibling there". The file the caller named then opens alone, as with
+# ``discover_volumes=False``, and a part it needs is reported missing by the check that
+# refuses an incomplete set. An ``fsspec`` file system raises whatever its transport
+# raises (``aiohttp.ClientResponseError`` for an HTTP 403, a cloud SDK's own errors),
+# not only ``OSError``, so these steps catch ``Exception``, except for the types below.
+# Archivey's own errors say something definite (a ``SourceChangedError`` from a file
+# system that reads through archivey, a usage error), and ``MemoryError`` is not a
+# missing sibling. ``KeyboardInterrupt`` and ``SystemExit`` are not ``Exception``.
+_NOT_A_DISCOVERY_MISS = (ArchiveyError, ArchiveyUsageError, MemoryError)
+
+
+def _log_discovery_miss(what: str, path: object, exc: BaseException) -> None:
+    logger.debug(
+        "Volume discovery could not %s %s, so it looks for no volumes there: %r",
+        what,
+        path,
+        exc,
+    )
+
+
+def _listed(parent: _VP) -> list[_VP]:
+    """The entries of ``parent``, or none when it cannot be listed (best-effort, as
+    above). A ``RemoteVolumePath`` handles its own failure, in ``_listing``."""
+    try:
+        return list(parent.iterdir())
+    except _NOT_A_DISCOVERY_MISS:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- best-effort, see above
+        _log_discovery_miss("list", _shown(parent), exc)
+        return []
+
+
 class RemoteVolumePath:
     """A path on an ``fsspec`` file system, for volume discovery.
 
@@ -458,12 +495,12 @@ class RemoteVolumePath:
         if listing is None:
             try:
                 entries = self.fs.ls(self.path, detail=True)
-            except (OSError, NotImplementedError):
-                # A file system that cannot list a directory (a store that refuses
-                # the request, which fsspec raises as PermissionError or
-                # FileNotFoundError, or one with no ``ls``) has no siblings to
-                # offer: the named file opens alone, as a lone local volume does. Any
-                # other failure (a timeout, expired credentials) propagates.
+            except _NOT_A_DISCOVERY_MISS:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- best-effort, see ``_listed``
+                # A refused request, a timeout, expired credentials or a file system
+                # with no ``ls``: no siblings to offer.
+                _log_discovery_miss("list", str(self), exc)
                 entries = []
             listing = {
                 posixpath.basename(str(entry["name"]).rstrip("/")): entry
@@ -542,13 +579,18 @@ def rar_volume_number(name: str) -> int | None:
 
 
 def _starts_like_rar(path: Path | RemoteVolumePath) -> bool:
+    """Whether ``path`` starts with a RAR signature; ``False`` when it cannot be read
+    (best-effort, as ``_listed``)."""
     try:
         if isinstance(path, Path):
             with path.open("rb") as handle:
                 head = handle.read(len(_RAR_MARKER_PREFIX))
         else:
             head = path.head(len(_RAR_MARKER_PREFIX))
-    except (OSError, NotImplementedError):  # as ``RemoteVolumePath._listing``
+    except _NOT_A_DISCOVERY_MISS:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- best-effort, see ``_listed``
+        _log_discovery_miss("read", _shown(path), exc)
         return False
     return head == _RAR_MARKER_PREFIX
 
@@ -574,7 +616,7 @@ def _collect_old_rar_volumes(parent: _VP, base: str) -> list[_VP] | None:
     ``notes.t01``; the contiguous walk from volume 1 needs no such check, as before.
     """
     by_name: dict[str, list[_VP]] = {}
-    for candidate in parent.iterdir():
+    for candidate in _listed(parent):
         by_name.setdefault(candidate.name.lower(), []).append(candidate)
     first = None
     for suffix in _OLD_RAR_FIRST_VOLUME_SUFFIXES:
@@ -622,7 +664,7 @@ def _siblings_with_base(parent: _VP, pattern: re.Pattern[str], base: str) -> lis
     folded = base.lower()
     return [
         candidate
-        for candidate in parent.iterdir()
+        for candidate in _listed(parent)
         if (match := pattern.match(candidate.name)) is not None
         and match.group("base").lower() == folded
         and candidate.is_file()

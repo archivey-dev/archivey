@@ -99,6 +99,7 @@ system that cannot list a directory SHALL be treated as having no siblings.
 | `memory://d/x.7z.001` with `x.7z.002`, `x.7z.003` beside it | One reader over all three; one `ls` of `memory://d` |
 | `memory://d/q.part1.rar` with `q.part2.rar` and `q.part02.rar` | The same choice of part 2 as local discovery |
 | HTTP first volume, server cannot list | Opens as a lone first volume, as a local lone volume does |
+| The listing, or the read of a candidate's RAR signature, fails with an error that is not `OSError` (`aiohttp.ClientResponseError` for an HTTP 403, a timeout) | The same: no sibling there, logged at DEBUG on `archivey.detection`. Archivey's own errors and `MemoryError` propagate |
 
 ### Requirement: ArchiveyFileSystem exposes an archive as a read-only fsspec file system
 
