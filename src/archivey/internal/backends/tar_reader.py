@@ -129,7 +129,10 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.decompressor_stream import StreamChecksumError
-from archivey.internal.streams.resume import ask_resume_offset
+from archivey.internal.streams.resume import (
+    ask_resume_offset,
+    restarts_follow_decoding,
+)
 from archivey.internal.streams.streamtools import (
     LockedStream,
     ReadAheadStream,
@@ -413,7 +416,11 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
     members (``TarReader._raise_members_the_codec_checked``). This handle reads those
     bytes instead, at the same decoding cost, and keeps the proof. A skip that a
     restart point can jump (an indexed codec: bgzip, Seekable Zstandard) still seeks,
-    since its bytes are never decoded. Any other seek passes through.
+    since its bytes are never decoded. A restart point of rapidgzip's index does not
+    count: rapidgzip indexes only output its prefetch has decoded, so that seek would
+    skip no decoding and would lose the proof (``restarts_follow_decoding``). Reading
+    those bytes is also faster than asking the child for a restart point at every
+    member. Any other seek passes through.
 
     Borrows the codec stream: the reader closes it, never this handle.
     """
@@ -421,6 +428,8 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
     def __init__(self, inner: BinaryIO) -> None:
         super().__init__()
         self._inner = inner
+        # The question is about the codec, which stays the same for the walk's life.
+        self._restarts_skip_decoding = not restarts_follow_decoding(inner)
 
     @override
     def read(self, n: int = -1, /) -> bytes:
@@ -432,7 +441,11 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
         if whence == io.SEEK_SET:
             here = inner.tell()
             if offset > here:
-                resume = ask_resume_offset(inner, offset)
+                resume = (
+                    ask_resume_offset(inner, offset)
+                    if self._restarts_skip_decoding
+                    else None
+                )
                 if resume is None or resume <= here:
                     remaining = offset - here
                     while remaining > 0:
