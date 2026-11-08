@@ -357,9 +357,9 @@ SCRIPT_TESTS = "scripts/tests/"
 #   light: the skills and commands (`.claude/`, `.cursor/`, so they are not listed here)
 #   and the files in NOT_LIGHT.
 # - Neither is a gate inside a light folder: the skip markers and the benchmark gate.
-# - Neither are the user docs (`docs/`, the README): their reviews stay Opus (davitf,
-#   2026-10-21), and only the standard and deep tiers get the Opus round
-#   (`review_loop_gate.OPUS_PASS_TIERS`).
+# - Neither are the user docs (`docs/`, the README, the CHANGELOG, SECURITY.md): Opus
+#   reviews them (design-rules.md DR-22b), and only the standard and deep tiers get the
+#   Opus round (`review_loop_gate.OPUS_PASS_TIERS`).
 # `openspec/` is not light either, because a spec is a contract.
 LIGHT_PREFIXES = (
     "dev-docs/",
@@ -377,9 +377,11 @@ NOT_LIGHT = (
     "dev-docs/threat-model.md",
     "dev-docs/api-surface.txt",
     "dev-docs/review-loop.md",
-    # User docs, which Opus reviews
+    # User docs, which Opus reviews (DR-22b)
     "docs/",
     "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
     # Gates
     "tests/conftest.py",
     "benchmarks/wall_baseline.py",

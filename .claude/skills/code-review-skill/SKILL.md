@@ -103,8 +103,8 @@ each path is on its list, live in that script.
 - **Light** — every changed path is maintainer prose, tests or benchmarks. An agent's
   instructions and contracts are never light (skills, commands, `AGENTS.md`,
   `CONTRIBUTING.md`, the design rules, the threat model, the API surface), and neither
-  are the gates among the tests and benchmarks, or the user docs (`docs/`, the README),
-  which get the Opus round. Read the diff and the files it touches. Open `CONTRIBUTING.md`,
+  are the gates among the tests and benchmarks, or the user docs (`docs/`, the README,
+  the CHANGELOG, SECURITY.md), which get the Opus round (design rules DR-22b). Read the diff and the files it touches. Open `CONTRIBUTING.md`,
   the handbook and the domain checklist only for what a change reaches into. Finding
   discipline does not change: what you find is still reported and labeled. The verdict
   is 🔄 only for a 🔴 (§4), so a light PR ends in one round otherwise.
