@@ -575,11 +575,19 @@ def test_a_directory_listing_a_size_it_does_not_store_raises_on_read(
 
 
 class _ClosingReader(ToysReader):
-    """Records its close() and when the walk's cleanup ran, against it."""
+    """Records its close() and when the walk's cleanup ran, against it. It keeps
+    each walk it returns alive, so a walk is closed only when archivey closes it,
+    on CPython as on PyPy, whose collector need not free it at once."""
 
     events: ClassVar[list[str]] = []
+    walks: ClassVar[list[Iterator[MemberSpan]]] = []
 
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        steps = self._steps(stream)
+        self.walks.append(steps)
+        return steps
+
+    def _steps(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         try:
             yield from super().walk(stream)
         finally:
@@ -622,6 +630,7 @@ def test_a_walk_stopped_part_way_ends_before_close(
     a sequential format reads through the walk, so it can stop it part-way too."""
     fmt = _variant(_ClosingReader, ToysContainer.CLOSING)
     _ClosingReader.events = []
+    _ClosingReader.walks = []
     path = _write(tmp_path, build_toys(_ENTRIES))
     with open_archive(path, format=fmt, streaming=streaming) as reader:
         members = reader.stream_members() if data_pass else iter(reader)
