@@ -745,9 +745,10 @@ def test_a_read_returns_every_byte_asked_for(
     method: str, seekable_members: bool
 ) -> None:
     # Full-count (ADR 0014): a short read is the member's end. A folder read stops at
-    # each 32 KiB block, and the member stream returned that short read as it was, so
-    # read(n) past a block boundary lost the rest of the member. Found by fuzzing a
-    # seek and a read against the bytes of a sequential read.
+    # the end of each data block or LZX frame, and the member stream returned that
+    # short read as it was, so read(n) past a block boundary lost the rest of the
+    # member. Found by fuzzing a seek and a read against the bytes of a sequential
+    # read.
     data = random.Random(7).randbytes(100_000)
     cab = write_cab([CabFile("a", data)], [CabFolder(method=method)])
     with archivey.open_archive(
