@@ -258,8 +258,8 @@ class _PluginAdapter(BaseArchiveReader):
         self._walk_step: str | None = None
         # Reports on a member being listed, held until it is yielded and named
         # (``_send_held_reports``), by the member's id(): each sends one, naming the
-        # member as it is named when called.
-        self._held_reports: dict[int, list[Callable[[], None]]] = {}
+        # member as it is named when called, with the member id it is given.
+        self._held_reports: dict[int, list[Callable[[int | None], None]]] = {}
         context = ReaderContext(
             encoding=encoding,
             archive_name=archive_name,
@@ -402,16 +402,31 @@ class _PluginAdapter(BaseArchiveReader):
             validate_code_context(code, details)
         except ValueError as exc:
             raise ArchiveyUsageError(f"ReaderContext.report(): {exc}") from None
-        if member is not None and self._hold_report(
+        if member is None:
+            self._send_report(code, message, details, None, None)
+        elif self._walk_step == _REWALK:
+            # A walk started over yields fresh members under their stored names:
+            # report on the one the listing named.
+            name = normalize_member_name(
+                member.name, member.type, backslash_is_separator=False
+            )
+            listed = self._listed_named(name)
+            member_id = listed[0]._member_id if len(listed) == 1 else None
+            self._send_report(code, message, _named(details, name), member, member_id)
+        elif not self._hold_report(
             member,
-            lambda: self._send_report(code, message, _named(details, member), member),
+            lambda member_id: self._send_report(
+                code, message, _named(details, member.name), member, member_id
+            ),
         ):
-            return
-        self._send_report(code, message, details, member)
+            self._send_report(code, message, details, member, self._member_id(member))
 
-    def _hold_report(self, member: ArchiveMember, send: Callable[[], None]) -> bool:
+    def _hold_report(
+        self, member: ArchiveMember, send: Callable[[int | None], None]
+    ) -> bool:
         """Hold ``send`` until ``member`` is yielded, if the listing has not yielded
-        it yet: until then it is not named as callers see it."""
+        it yet: until then it is not named as callers see it. ``send`` takes the
+        member's id, ``None`` for a member never yielded."""
         if member._member_id is not None or self._walk_step != _LISTING:
             return False
         self._held_reports.setdefault(id(member), []).append(send)
@@ -423,33 +438,46 @@ class _PluginAdapter(BaseArchiveReader):
         message: str,
         details: DiagnosticContext,
         member: ArchiveMember | None,
+        member_id: int | None,
     ) -> None:
         fill: dict[str, object] = {}
         if getattr(details, "archive_name", "") is None:
             fill["archive_name"] = self._archive_name
-        if getattr(details, "member_id", "") is None and member is not None:
-            fill["member_id"] = self._member_id(member)
+        if getattr(details, "member_id", "") is None and member_id is not None:
+            fill["member_id"] = member_id
         self._diagnostics_collector.emit(
             code=code,
             message=message,
-            context=replace(details, **fill) if fill else details,  # type: ignore[type-var]
+            context=_with_fields(details, fill),
             member=member,
             attach_to_member=member is not None,
         )
 
     def _send_held_reports(self, member: ArchiveMember) -> None:
         """Send the reports held for ``member`` (``_hold_report``), now that archivey
-        has named it."""
-        for send in self._held_reports.pop(id(member), ()):
-            send()
-
-    def _send_unyielded_reports(self) -> None:
-        """Send the reports held for members the walk never yielded, under the names
-        the reader gave them."""
-        while self._held_reports:
-            _key, sends = self._held_reports.popitem()
+        has named it and the walk is at it."""
+        sends = self._held_reports.pop(id(member), ())
+        if sends:
+            member_id = self._member_id(member)
             for send in sends:
-                send()
+                send(member_id)
+
+    def _send_unyielded_reports(self, *, may_raise: bool) -> None:
+        """Send the reports held for members the walk never yielded, under the names
+        the reader gave them and with no member id: archivey listed no such member.
+
+        A report the caller's policy raises on raises only when ``may_raise`` (the
+        walk ended normally). On a walk closed part-way, or ended by an error, the
+        report is still recorded, but its raise is dropped: it would replace the
+        error, or be lost in a generator's close."""
+        with self._diagnostics_collector.deferring_raises() as first_held:
+            while self._held_reports:
+                _key, sends = self._held_reports.popitem()
+                for send in sends:
+                    send(None)
+        held = first_held()
+        if may_raise and held is not None:
+            raise held
 
     def _name_member(self, member: ArchiveMember, index: int) -> None:
         """Give a listed member the names callers see, and send what was reported on
@@ -468,8 +496,10 @@ class _PluginAdapter(BaseArchiveReader):
 
     @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
+        ended = False
         try:
             yield from self._walk_members()
+            ended = True
         except _StreamChecksumError:
             # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
             # it stays the ceiling of the members it covers, which verify_all()
@@ -486,7 +516,7 @@ class _PluginAdapter(BaseArchiveReader):
             # Members held and never yielded stop counting with the walk that held
             # them, however it ends: at its end, on damage, or closed part-way.
             self._listing_tracker.release_held()
-            self._send_unyielded_reports()
+            self._send_unyielded_reports(may_raise=ended)
 
     def _walk_members(self) -> Iterator[ArchiveMember]:
         """The listing walk of the reader's shape (``_iter_members``)."""
@@ -614,9 +644,8 @@ class _PluginAdapter(BaseArchiveReader):
         target_in_archive: bool,
     ) -> None:
         member.link_target = None
-        member_id = self._member_id(member)
 
-        def send() -> None:
+        def send(member_id: int | None) -> None:
             self._emit_link_target_unavailable(
                 member,
                 reason=reason,
@@ -626,7 +655,7 @@ class _PluginAdapter(BaseArchiveReader):
             )
 
         if not self._hold_report(member, send):
-            send()
+            send(self._member_id(member))
 
     @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
@@ -1057,11 +1086,22 @@ class _Span:
         self.decoded = decoded
 
 
-def _named(details: DiagnosticContext, member: ArchiveMember) -> DiagnosticContext:
-    """``details`` naming ``member`` as it is named now, when it names a member."""
+def _named(details: DiagnosticContext, name: str) -> DiagnosticContext:
+    """``details`` naming its member ``name``, when it names a member."""
     if getattr(details, "member_name", None) is None:
         return details
-    return replace(details, member_name=member.name)  # type: ignore[type-var]
+    return _with_fields(details, {"member_name": name})
+
+
+def _with_fields(
+    details: DiagnosticContext, fields: Mapping[str, object]
+) -> DiagnosticContext:
+    """``details`` with ``fields`` replaced: only fields the caller checked
+    ``details`` has (``getattr``). ``DiagnosticContext`` is a union of dataclasses,
+    some without those fields, so ``replace`` is called on it as ``Any``."""
+    if not fields:
+        return details
+    return cast(DiagnosticContext, replace(cast(Any, details), **fields))
 
 
 def _listed_name(span: MemberSpan) -> str:
