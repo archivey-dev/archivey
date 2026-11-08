@@ -35,7 +35,11 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.iso_reader import IsoHandler, _strip_version
+from archivey.internal.backends.iso_reader import (
+    IsoHandler,
+    _strip_version,
+    _tf_modify_access_fields,
+)
 from archivey.internal.format_adapter import IndexedReaderAdapter
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
@@ -1380,7 +1384,10 @@ def test_rock_ridge_tf_modification_time_wins_over_record_date() -> None:
     tf_date = DirectoryRecordDate()
     tf_date.parse(struct.pack("=BBBBBBb", 101, 1, 2, 3, 4, 5, 0))
     record = iso.get_record(rr_path="/a.txt")
-    record.rock_ridge.dr_entries.tf_record.modification_time = tf_date
+    # pycdlib names TF flag bit 1, which RRIP gives the modification time,
+    # ``access_time`` (``_tf_modify_access_fields``).
+    modify_field, _access_field = _tf_modify_access_fields()
+    setattr(record.rock_ridge.dr_entries.tf_record, modify_field, tf_date)
     image = io.BytesIO()
     iso.write_fp(image)
     iso.close()
@@ -1388,6 +1395,43 @@ def test_rock_ridge_tf_modification_time_wins_over_record_date() -> None:
     with open_archive(io.BytesIO(image.getvalue())) as archive:
         (member,) = [m for m in archive.members() if m.name == "a.txt"]
     assert member.modified == datetime(2001, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+
+@requires_binary("xorriso")
+def test_rock_ridge_tf_times_are_read_in_rrip_order(tmp_path: Path) -> None:
+    """RRIP 1.12 gives TF flag bit 1 to the modification time and bit 2 to the access
+    time, as xorriso, genisoimage and the Linux kernel do. pycdlib 1.x names them the
+    other way round, so ``modified`` used to be the file's access time when the image
+    was made (Ubuntu 4.10's install CD: 1083 files 50 s off what xorriso extracts)."""
+    import os
+    from datetime import UTC, datetime
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "f.txt").write_bytes(b"hi")
+    mtime = datetime(2020, 1, 2, 3, 4, 5, tzinfo=UTC)
+    atime = datetime(2023, 6, 7, 8, 9, 10, tzinfo=UTC)
+    os.utime(src / "f.txt", (atime.timestamp(), mtime.timestamp()))
+    path = tmp_path / "t.iso"
+    subprocess.run(
+        ["xorriso", "-as", "mkisofs", "-quiet", "-R", "-o", str(path), str(src)],
+        check=True,
+        capture_output=True,
+    )
+    with open_archive(path) as archive:
+        member = archive.get("f.txt")
+    assert member.modified == mtime
+    assert member.accessed == atime
+
+
+def test_the_tf_field_probe_names_bit_1_the_modification_time() -> None:
+    import pycdlib.rockridge
+
+    record = pycdlib.rockridge.RRTFRecord()
+    record.parse(b"TF\x0c\x01\x02" + bytes((101, 1, 2, 3, 4, 5, 0)))
+    modify_field, access_field = _tf_modify_access_fields()
+    assert getattr(record, modify_field) is not None
+    assert getattr(record, access_field, None) is None
 
 
 # --- data the directory record's own inode does not cover -----------------------------
