@@ -2208,12 +2208,61 @@ def test_a_report_on_a_member_never_yielded_is_sent(
     )
     with open_archive(_write(tmp_path, data, "t.reportdrop")) as reader:
         assert [m.name for m in reader.members()] == ["kept"]
-        names = [
-            d.context.member_name  # type: ignore[union-attr]
+        (kept,) = reader.members()
+        pairs = [
+            (d.context.member_name, d.context.member_id)  # type: ignore[union-attr]
             for d in reader.diagnostics.retained
             if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
         ]
-        assert sorted(names) == ["./dropped", "kept"]
+        # archivey listed no member "./dropped", so its report names no member id.
+        assert sorted(pairs, key=str) == [("./dropped", None), ("kept", kept.member_id)]
+
+
+def test_a_list_from_iter_members_gives_each_report_its_member_id(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """``iter_members`` may build its whole list before archivey takes the first
+    record: a report, and a link target reported unavailable, made then still carry
+    the id of the member they are on. Fails with ``link_target_unavailable`` taking
+    the id when it is called."""
+
+    class Listing(ToyReader):
+        def iter_members(  # type: ignore[override]
+            self,
+        ) -> list[MemberRecord[tuple[int, int]]]:
+            records = list(super().iter_members())
+            for record in records:
+                member = record.member
+                _report_on_every_member(self._context, member)
+                if member.name == "sym":
+                    member.type = MemberType.SYMLINK
+                    member.size = None
+                    self._context.link_target_unavailable(
+                        member,
+                        reason="damaged",
+                        message="no target",
+                        target_in_archive=True,
+                    )
+            return records
+
+    _plugin_with("reportlistall", reader=Listing)
+    data = build_toya(
+        [
+            ("a", MemberType.FILE, b"a"),
+            ("b", MemberType.FILE, b"b"),
+            ("sym", MemberType.FILE, b""),
+        ]
+    )
+    with open_archive(_write(tmp_path, data, "t.reportlistall")) as reader:
+        sym = reader.get("sym")
+        ids = {
+            d.code: d.context.member_id  # type: ignore[union-attr]
+            for d in sym.diagnostics
+        }
+    assert ids == {
+        DiagnosticCode.MEMBER_TIMESTAMP_INVALID: sym.member_id,
+        DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: sym.member_id,
+    }
 
 
 def test_a_hard_link_target_is_normalized_as_names_are(

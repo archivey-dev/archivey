@@ -596,10 +596,13 @@ class ReaderContext:
         A report on a member being listed is held until the member is yielded, and
         sent then: archivey sets the ``member_name`` of ``details`` to the name the
         member is listed by, normalized, so a reader reports with the name as the
-        archive stores it. The ``message`` is sent as written. A report on a member
-        that is never yielded is sent when the walk ends. The caller's
+        archive stores it. The ``message`` is sent as written. The caller's
         ``DiagnosticPolicy`` applies when the report is sent, so a code it raises on
-        raises then, from the listing.
+        raises then, from the listing. A report on a member that is never yielded is
+        sent when the walk ends, under the reader's name and with no member id; it
+        raises only from a walk that reached its end, and is recorded without raising
+        when the walk was stopped part-way or ended by an error. In a walk archivey
+        starts over to reach member data, a report names the member as listed.
 
         For ``SYMLINK_TARGET_UNAVAILABLE`` use :meth:`link_target_unavailable`.
         """
@@ -635,17 +638,17 @@ class ReaderContext:
         meanwhile, where the listing's limits do not see it. ``hold()`` counts it
         now, against the same ``max_members`` and ``max_metadata_bytes`` as the
         members already listed, and raises ``ResourceLimitError`` when it would cross
-        either. ``reason`` names what the held members are, for that error ("CPIO hard links
-        waiting for their data").
+        either. ``reason`` names what the held members are, for that error ("CPIO
+        hard links waiting for their data").
 
         Call it from ``walk()`` or ``iter_members()``, as the members are listed.
         The charge is on that member object: yielding the same object takes it off
         before archivey counts it as listed, so it is counted once. Yield a copy
         instead and both count until the walk ends. A member never yielded stays
-        counted until the walk ends. In a walk archivey starts over to reach a member's data again,
-        every member was counted when listed, and ``hold()`` does nothing. A call
-        from anywhere else (at open, in ``open_member``), or for a member held
-        already, raises ``ArchiveyUsageError``.
+        counted until the walk ends. In a walk archivey starts over to reach a
+        member's data again, every member was counted when listed, and ``hold()``
+        does nothing. A call from anywhere else (at open, in ``open_member``), or for
+        a member held already, raises ``ArchiveyUsageError``.
         """
         self._hold(member, reason)
 
@@ -669,9 +672,9 @@ class ReaderContext:
         the next one: the inner reader numbers its members as the outer listing will,
         so its reports name the right member. The walk may change a span's member
         before yielding it: rename it, under a prefix say (and the ``link_target`` of
-        a hard link with it; archivey normalizes both), or add ``MemberSpan.digests``. Stop early by closing the
-        iterator; one left open is closed when Python collects it, and at the latest
-        when the archive is closed.
+        a hard link with it; archivey normalizes both), or add
+        ``MemberSpan.digests``. Stop early by closing the iterator; one left open is
+        closed when Python collects it, and at the latest when the archive is closed.
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
         format is read by its replacement, and ``exclude_libraries`` holds; ``only``

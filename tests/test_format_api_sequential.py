@@ -10,6 +10,7 @@ their data, as CPIO's do. Each test registers it on a registry restored afterwar
 from __future__ import annotations
 
 import bz2
+import dataclasses
 import gzip
 import io
 import lzma
@@ -47,7 +48,7 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.formats import (
     ForwardStream,
     Magic,
@@ -84,6 +85,8 @@ class ToysContainer(PluginContainer):
     HOLDING = "toys-holding"
     HOLDING_DECODED = "toys-holding-decoded"
     YIELDS_NONE = "toys-yields-none"
+    REPORTS_LATE = "toys-reports-late"
+    REPORTING_DECODED = "toys-reporting-decoded"
 
 
 TOYS = ArchiveFormat(ToysContainer.TOYS, StreamFormat.UNCOMPRESSED)
@@ -2324,3 +2327,118 @@ def test_decoded_data_listed_again_counts_once(
         for _ in range(3):
             assert [m.name for m in reader.members()] == ["m"]
         assert reader.read("m") == bytes(size)
+
+
+def _bad_date(context: ReaderContext, member: ArchiveMember) -> None:
+    context.report(
+        DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+        f"bad date for {member.name}",
+        MemberTimestampContext(
+            member_name=member.name, field="modified", source="toys", value_repr="0"
+        ),
+        member=member,
+    )
+
+
+class _ReportsOnLate(ToysReader):
+    """Reports on a member it holds and yields only after every other one."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        late = ArchiveMember(type=MemberType.DIRECTORY, name="late")
+        _bad_date(self._context, late)
+        self._context.hold(late)
+        yield from super().walk(stream)
+        yield MemberSpan(late, 0)
+
+
+_RAISE_ON_DATES = archivey.ArchiveyConfig(
+    diagnostic_policy=archivey.DiagnosticPolicy(
+        raise_on={DiagnosticCode.MEMBER_TIMESTAMP_INVALID}
+    )
+)
+
+
+def test_a_held_report_raises_from_a_listing_that_reaches_its_member(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    fmt = _variant(_ReportsOnLate, ToysContainer.REPORTS_LATE)
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    with (
+        open_archive(path, format=fmt, config=_RAISE_ON_DATES) as reader,
+        pytest.raises(archivey.DiagnosticRaisedError, match="bad date for late"),
+    ):
+        reader.members()
+
+
+def test_a_listing_stopped_early_records_a_held_report_without_raising(
+    toys: ArchiveFormat, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The caller stops before the held member: its report is recorded under the
+    reader's name with no member id, and the policy's raise is dropped rather than
+    lost as an "Exception ignored" in the walk's close. Fails with the report sent
+    outside ``deferring_raises``."""
+    import gc
+    import sys
+
+    unraisable: list[object] = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+    seen: list[archivey.Diagnostic] = []
+    config = dataclasses.replace(_RAISE_ON_DATES, on_diagnostic=seen.append)
+    fmt = _variant(_ReportsOnLate, ToysContainer.REPORTS_LATE)
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    with open_archive(path, format=fmt, config=config, streaming=True) as reader:
+        for _member in reader:
+            break
+    # The walk closes when it is collected.
+    del reader, _member
+    gc.collect()
+    (late,) = [d for d in seen if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID]
+    assert late.context.member_name == "late"  # type: ignore[union-attr]
+    assert late.context.member_id is None  # type: ignore[union-attr]
+    assert unraisable == []
+
+
+def test_damage_ending_the_walk_is_not_replaced_by_a_held_report(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    fmt = _variant(_ReportsOnLate, ToysContainer.REPORTS_LATE)
+    path = _write(tmp_path, build_toys(_ENTRIES, end=False))
+    with (
+        open_archive(path, format=fmt, config=_RAISE_ON_DATES) as reader,
+        pytest.raises(archivey.TruncatedError),
+    ):
+        reader.members()
+
+
+class _ReportingDecodedReader(_DecodedReader):
+    """Reports on every member as it walks to it, under the name as stored."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        for span in super().walk(stream):
+            _bad_date(self._context, span.member)
+            yield span
+
+
+def test_a_report_in_a_walk_started_over_names_the_listed_member(
+    tmp_path: Path,
+) -> None:
+    """A walk started over for data yields fresh members under their stored names;
+    a report on one names the member as listed, with its id."""
+    with registration_scope():
+        fmt = _variant(_ReportingDecodedReader, ToysContainer.REPORTING_DECODED)
+        entries = [
+            ("./x//a", MemberType.FILE, b"alpha"),
+            ("./y//b", MemberType.FILE, b"beta"),
+        ]
+        path = _write(tmp_path, build_decoded(entries))
+        with open_archive(path, format=fmt) as reader:
+            listed = {m.name: m.member_id for m in reader.members()}
+            assert reader.read("y/b") == b"beta"
+            assert reader.read("x/a") == b"alpha"
+            pairs = [
+                (d.context.member_name, d.context.member_id)  # type: ignore[union-attr]
+                for d in reader.diagnostics.retained
+                if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+            ]
+    assert len(pairs) > 2  # the reads walked again
+    assert set(pairs) == set(listed.items())
