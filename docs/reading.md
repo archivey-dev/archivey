@@ -17,9 +17,12 @@ compressed TAR is solid, and so are most 7z archives, since 7-Zip creates solid 
 default. RAR archives are solid only when created with that option. On a solid archive,
 reading members by name can decompress the same data again and again. `stream_members`
 decompresses it once. archivey tells you when this happens: on a solid 7z or RAR archive, the
-first open that decompresses data an earlier open already decompressed logs one INFO message
-on the `archivey.backends` logger. Reading the same member twice counts only the data before it in the archive. The message
-shows only if your application turns logging on.
+first open that decompresses data an earlier open already decompressed records the diagnostic
+`SOLID_OPEN_REDECOMPRESSES`, once per reader. Reading the same member twice counts only the data
+before it in the archive. The diagnostic is in `reader.diagnostics` and logged at INFO on the
+`archivey.backends` logger, so the message shows only if your application turns logging on. To
+make it an error instead, pass `DiagnosticPolicy(raise_on={"solid_open_redecompresses"})`: every
+open that would decompress data again then raises `DiagnosticRaisedError`.
 
 If your code needs to know whether an archive is solid, `archive.cost` tells you before you read
 anything. Its `access_cost` is `AccessCost.SOLID` when reaching a member means decompressing others

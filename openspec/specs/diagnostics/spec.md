@@ -66,6 +66,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `ENCRYPTED_MEMBER_UNVERIFIED` | `EncryptedVerificationContext`: `kind="encrypted_verification"`, `archive_name`, `member_name`, `member_id`, `check`, `reason` |
 | `SEEK_INDEX_DEGRADED` | `SeekIndexContext`: `kind="seek_index"`, `archive_name`, `member_name`, `member_id`, `codec`, `scan`, `error_type` |
 | `STREAM_REWIND_REDECOMPRESSES` | `StreamRewindContext`: `kind="stream_rewind"`, `archive_name`, `member_name`, `member_id`, `codec`, `from_offset`, `to_offset`, `accelerator` |
+| `SOLID_OPEN_REDECOMPRESSES` | `SolidReopenContext`: `kind="solid_reopen"`, `archive_name`, `member_name`, `member_id`, `bytes_again` |
 
 (`str | None` / `int | None` as in the typed variants.) `DiagnosticContext` is
 exactly this union — no backend-defined variants. `observed_kind` ∈
