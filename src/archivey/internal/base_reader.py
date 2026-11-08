@@ -1958,7 +1958,10 @@ class BaseArchiveReader(ArchiveReader):
                 self._account_archive_comment()
                 self._walk = self._iter_members()
             # Read once for the batch: only ``_end_walk`` and ``_abandon_walk`` drop
-            # ``_walk``, and the loop leaves right after either.
+            # ``_walk`` while it is pulled, and the loop leaves right after either.
+            # Teardown's ``_close_walk`` drops it too, but no close() reaches
+            # teardown during a pull: every caller holds a pass or worker token, so a
+            # callback's close() is refused as re-entry.
             walk = self._walk
             streaming = self._streaming
             member: ArchiveMember | None = None
@@ -3855,8 +3858,14 @@ class BaseArchiveReader(ArchiveReader):
         stopped by a listing limit, ``None``, as on a reader with no index.
         """
         if not self._state.concurrent:
-            self._state.require_open("members_report_if_available()")
-            return self._members_report_if_available()
+            # Admitted inside a pass's loop body, unlike a worker call, but held so a
+            # callback's close() during the drain is refused as re-entry instead of
+            # tearing the walk down under it.
+            token = self._state.acquire_peek("members_report_if_available()")
+            try:
+                return self._members_report_if_available()
+            finally:
+                self._state.release_worker(token)
         # A worker token, as members() takes: close() then waits for the walk below
         # instead of closing the archive under it.
         token = self._state.acquire_worker("members_report_if_available()")
