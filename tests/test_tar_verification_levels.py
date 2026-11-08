@@ -221,6 +221,9 @@ def test_damage_that_ends_the_walk_keeps_the_ceiling_and_fails_the_files(
     }
 
 
+_NOISE = random.Random(0).randbytes(6000)
+
+
 def _plain_tar(files: dict[str, bytes]) -> bytes:
     out = io.BytesIO()
     with tarfile.open(fileobj=out, mode="w") as tar:
@@ -236,9 +239,13 @@ def _plain_tar(files: dict[str, bytes]) -> bytes:
     [
         # The read ends early: no error stopped the check.
         pytest.param(_tar("w"), 20, "ends early", id="ended"),
-        # The cut lands inside the deflate data: an error stopped the check.
+        # The cut lands inside b's data, which does not compress, so it stays inside
+        # it whichever zlib build made the stream: an error stopped the check.
         pytest.param(
-            _plain_tar({"a": b"x" * 3000, "b": b"y"}), 30, "truncated", id="error"
+            _plain_tar({"a": _NOISE[:3000], "b": _NOISE[3000:]}),
+            100,
+            "truncated",
+            id="error",
         ),
     ],
 )
