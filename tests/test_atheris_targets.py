@@ -10,14 +10,21 @@ from __future__ import annotations
 import io
 import shutil
 import subprocess
+import tarfile
+import tempfile
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveFormat, ArchiveyError, open_archive
+from archivey import ArchiveFormat, ArchiveyError, ContainerFormat, open_archive
 from tests.atheris_fuzz import TARGET_NAMES, seeds as fuzz_seeds
-from tests.atheris_fuzz.oracles import ORACLE_TARGETS, oracle_seeds
+from tests.atheris_fuzz.oracles import (
+    ORACLE_TARGETS,
+    _compare,
+    extract_diff_one,
+    oracle_seeds,
+)
 from tests.atheris_fuzz.seeds import (
     _compressed_tar_seeds,
     _koly_block,
@@ -199,3 +206,66 @@ def test_oracle_targets_agree_on_every_seed(name: str) -> None:
 
 def test_oracle_targets_are_registered() -> None:
     assert set(ORACLE_TARGETS) <= set(TARGET_NAMES)
+
+
+def _tar_with_modes(*entries: tuple[str, int]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, mode in entries:
+            info = tarfile.TarInfo(name)
+            info.mode = mode
+            if name.endswith("/"):
+                info.type = tarfile.DIRTYPE
+                tar.addfile(info)
+            else:
+                info.size = 1
+                tar.addfile(info, io.BytesIO(b"x"))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        (("f", 0o000),),
+        (("d/", 0o500), ("d/f", 0o644)),
+    ],
+    ids=["unreadable-file", "read-only-dir"],
+)
+def test_extract_diff_reads_and_removes_restrictive_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entries: tuple[tuple[str, int]]
+) -> None:
+    # As a user that is not root (CI), a member at mode 000 could not be read, and a
+    # read-only directory could not be emptied, so it leaked into the next input.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    data = _tar_with_modes(*entries)
+    for policy_byte in range(3):
+        # The first byte picks the policy: name it so all three run.
+        extract_diff_one(bytes([ord("a") + policy_byte]) + data[1:])
+    assert list(tmp_path.iterdir()) == []
+
+
+_ROW = (("a", "FILE", None), "0123456789abcdef:1")
+_ERR_ROW = (("a", "FILE", None), "ERR:CorruptionError")
+
+
+def test_compare_flags_a_member_that_fails_in_one_mode_only() -> None:
+    with pytest.raises(AssertionError, match="differ at member 0"):
+        _compare(
+            "t", ContainerFormat.TAR, ([_ROW], True, None), ([_ERR_ROW], True, None)
+        )
+    with pytest.raises(AssertionError, match="differ at member 0"):
+        _compare(
+            "t",
+            ContainerFormat.TAR,
+            ([_ERR_ROW], True, None),
+            ([_ROW], True, None),
+            second_may_fail=True,
+        )
+    # A pipe may fail where the seekable read has the bytes.
+    _compare(
+        "t",
+        ContainerFormat.TAR,
+        ([_ROW], True, None),
+        ([_ERR_ROW], True, None),
+        second_may_fail=True,
+    )

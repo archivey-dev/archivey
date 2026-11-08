@@ -39,7 +39,8 @@ jobs:
   fuzz:
     name: Atheris (${{ inputs.short && format('short {0}/3', matrix.shard) || 'full' }})
     runs-on: ubuntu-latest
-    # Short shards: ~6–7 targets × ~30s startup + short fuzz. Nightly: full partition.
+    # Short shards: a third of the targets each, ~30s startup per target + short fuzz.
+    # Nightly: full partition.
     timeout-minutes: ${{ inputs.short && 15 || 60 }}
     strategy:
       fail-fast: false

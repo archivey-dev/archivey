@@ -11,31 +11,31 @@ input and fail with ``AssertionError`` when the reads disagree:
 - ``seek_member``: with ``seekable_members=True``, seeks and reads (``SEEK_SET``,
   ``SEEK_CUR``, ``SEEK_END``) return the bytes of a sequential read.
 - ``extract_diff``: ``extract_all`` from a seekable reader and from a streaming reader
-  leaves the same tree, under a policy the input picks.
+  leaves the same tree, under a policy the input picks, and writes nothing outside
+  its destination.
 - ``tiny_limits``: tiny listing, metadata and decoder limits with
   ``DiagnosticPolicy.PEDANTIC``, so the limit and diagnostic paths raise only typed
   errors.
 
-Reads compare only when both are clean. When one raises and the other does not, that
-is a finding too, except where the source decides by design (below).
-
-Found with these targets on 2026-11-08: CAB and ISO zisofs member reads short at each
-block (a cut file with no error), a corrupt compressed TAR read as cut on a seekable
-source, and a quadratic hard-link extraction (the scaling sweep, not these targets).
+When both opens succeed, the listings compare member by member, and a member read
+that raises is a row of its own (``ERR:<type>``), so a member that fails in one mode
+only is a finding. When one open raises and the other read is clean, that is a
+finding too, except where the source decides by design (below).
 
 Known by-design differences that the targets leave out:
 
 - A ZIP from a pipe yields the members its local headers name, and the central
   directory at the end can drop some of them (with a warning) or retype a symlink
   that a local header cannot mark. A damaged data descriptor fails on a pipe but not
-  from a file, where the central directory gives the sizes. So the forward and pipe
-  comparisons skip ZIP; the short-read seekable comparison still covers it.
+  from a file, where the central directory gives the sizes. So the pipe comparison
+  skips ZIP. A forward reader over a seekable source reads the central directory,
+  so the forward comparison covers ZIP.
 - A codec over a pipe cannot decode the bytes before damage again, so it raises at
   the read that meets the damage. From a seekable source the codec hands those bytes
   back first, and damage past the TAR's end-of-archive marker is only a warning (the
   codec reports a failed check the same way as junk after the stream). So a pipe
-  may raise where the forward read on a seekable source is clean; the opposite, and
-  two clean reads that differ, still fail.
+  may raise, at open or at a member, where the forward read on a seekable source is
+  clean; the opposite, and two clean reads that differ, still fail.
 - RAR runs ``unrar`` for every member, too slow for these targets; ``rar`` covers it.
 """
 
@@ -44,7 +44,6 @@ from __future__ import annotations
 import hashlib
 import io
 import os
-import shutil
 import stat
 import tempfile
 from collections.abc import Callable
@@ -63,6 +62,7 @@ from archivey import (
 )
 from archivey.detection_cost import BALANCED_BUDGET
 from archivey.diagnostics import DiagnosticPolicy
+from archivey.types import ExtractionPolicyStr
 from tests.atheris_fuzz.targets import _FUZZ_DECODER_LIMITS, _PASSWORD_CANDIDATES
 from tests.streams_util import ShortReadBytesIO, ShortReadNonSeekable
 
@@ -82,8 +82,8 @@ _TINY_CONFIG = ArchiveyConfig(
     listing_limits=ListingLimits(max_members=5, max_metadata_bytes=2048),
     diagnostic_policy=DiagnosticPolicy.PEDANTIC,
 )
-# Formats a forward reader and a pipe can read.
-_FORWARD = frozenset(
+# Formats a pipe can read in one pass and give the same listing as a file.
+_PIPE = frozenset(
     {
         ContainerFormat.TAR,
         ContainerFormat.RAW_STREAM,
@@ -91,12 +91,10 @@ _FORWARD = frozenset(
         ContainerFormat.CPIO,
         ContainerFormat.RPM,
     }
-    | {
-        getattr(ContainerFormat, name)
-        for name in ("DEB", "MAKESELF")
-        if hasattr(ContainerFormat, name)
-    }
 )
+# Formats a forward reader over a seekable source reads like a seekable one.
+_FORWARD = _PIPE | {ContainerFormat.ZIP}
+_POLICIES: tuple[ExtractionPolicyStr, ...] = ("strict", "standard", "trusted")
 _MAX_MEMBERS = 2000
 _MEMBER_CAP = 1 << 20
 _TOTAL_CAP = 8 << 20
@@ -108,7 +106,10 @@ _SEEK_FILES = 4
 _SEEKS = 6
 
 Row = tuple[tuple[str, str, str | None], str | None]
+# Rows (None when the open or the walk raised), whether the listing is complete
+# (False past _MAX_MEMBERS), and the open or walk error's type name.
 Listing = tuple[list[Row] | None, bool, str | None]
+_ERR = "ERR:"
 
 
 def _container(data: bytes) -> ContainerFormat | None:
@@ -162,7 +163,6 @@ def _listing_seekable(
     source: Any, container: ContainerFormat, config: ArchiveyConfig = _CONFIG
 ) -> tuple[list[Row], bool]:
     rows: list[Row] = []
-    clean = True
     total = 0
     with open_archive(source, config=config, password=_password(container)) as reader:
         for i, member in enumerate(reader):
@@ -176,17 +176,15 @@ def _listing_seekable(
                     total += len(data)
                     digest = _digest(data)
                 except ArchiveyError as exc:
-                    digest = f"ERR:{type(exc).__name__}"
-                    clean = False
+                    digest = f"{_ERR}{type(exc).__name__}"
             rows.append(((member.name, member.type.name, member.link_target), digest))
-    return rows, clean
+    return rows, True
 
 
 def _listing_forward(
     source: Any, container: ContainerFormat, config: ArchiveyConfig = _CONFIG
 ) -> tuple[list[Row], bool]:
     seen: list[tuple[Any, str | None]] = []
-    clean = True
     total = 0
     with open_archive(
         source, config=config, password=_password(container), streaming=True
@@ -201,24 +199,33 @@ def _listing_forward(
                     total += len(data)
                     digest = _digest(data)
                 except ArchiveyError as exc:
-                    digest = f"ERR:{type(exc).__name__}"
-                    clean = False
+                    digest = f"{_ERR}{type(exc).__name__}"
             seen.append((member, digest))
     # A member is final only once the pass is over: compare that state.
     return [
         ((m.name, m.type.name, m.link_target), digest if m.is_file else None)
         for m, digest in seen
-    ], clean
+    ], True
 
 
 def _run(
     fn: Callable[..., tuple[list[Row], bool]], *args: Any, **kwargs: Any
 ) -> Listing:
     try:
-        rows, clean = fn(*args, **kwargs)
+        rows, complete = fn(*args, **kwargs)
     except ArchiveyError as exc:
-        return None, False, type(exc).__name__
-    return rows, clean, None
+        return None, True, type(exc).__name__
+    return rows, complete, None
+
+
+def _clean(listing: Listing) -> bool:
+    rows, complete, error = listing
+    return (
+        rows is not None
+        and complete
+        and error is None
+        and not any(d is not None and d.startswith(_ERR) for _, d in rows)
+    )
 
 
 def _compare(
@@ -229,30 +236,41 @@ def _compare(
     *,
     second_may_fail: bool = False,
 ) -> None:
-    rows_a, clean_a, error_a = a
-    rows_b, clean_b, error_b = b
+    """Fail when two reads of one input disagree.
+
+    With ``second_may_fail``, ``b`` may raise where ``a`` is clean: at open, or as a
+    member read (``ERR:``) where ``a`` has the member's bytes, after which the rest
+    of ``b`` is not compared.
+    """
+    rows_a, complete_a, error_a = a
+    rows_b, complete_b, error_b = b
     name = container.name
-    if clean_a and clean_b:
-        if rows_a != rows_b:
-            assert rows_a is not None and rows_b is not None
-            at = next(
-                (
-                    i
-                    for i, (x, y) in enumerate(zip(rows_a, rows_b, strict=False))
-                    if x != y
-                ),
-                min(len(rows_a), len(rows_b)),
-            )
+    if not (complete_a and complete_b):
+        return
+    if rows_a is not None and rows_b is not None:
+        for at in range(max(len(rows_a), len(rows_b))):
+            x = rows_a[at] if at < len(rows_a) else None
+            y = rows_b[at] if at < len(rows_b) else None
+            if x == y:
+                continue
+            if (
+                second_may_fail
+                and x is not None
+                and y is not None
+                and x[0] == y[0]
+                and y[1] is not None
+                and y[1].startswith(_ERR)
+            ):
+                return
             raise AssertionError(
                 f"{name} {tag}: listings differ at member {at}: "
-                f"{rows_a[at] if at < len(rows_a) else '-'} vs "
-                f"{rows_b[at] if at < len(rows_b) else '-'}"
+                f"{x if x is not None else '-'} vs {y if y is not None else '-'}"
             )
-    elif clean_a and error_b and not second_may_fail:
+    elif _clean(a) and error_b and not second_may_fail:
         raise AssertionError(
             f"{name} {tag}: the first read is clean, the second raised {error_b}"
         )
-    elif clean_b and error_a:
+    elif _clean(b) and error_a:
         raise AssertionError(
             f"{name} {tag}: the first read raised {error_a}, the second is clean"
         )
@@ -275,7 +293,7 @@ def diff_modes_one(data: bytes) -> None:
     if container in _FORWARD:
         forward = _run(_listing_forward, io.BytesIO(data), container)
         _compare("forward", container, base, forward)
-        if small:
+        if small and container in _PIPE:
             pipe = ShortReadNonSeekable(data, max_chunk=chunk)
             _compare(
                 "pipe",
@@ -337,13 +355,30 @@ def _check_seeks(stream: Any, ref: bytes, pick: bytes, k: int, what: str) -> Non
     assert stream.read() == ref[back:], f"{what}: read after SEEK_CUR"
 
 
-_EXTRACT_ROOT = Path(tempfile.mkdtemp(prefix="archivey-fuzz-extract-"))
+def _make_accessible(root: Path) -> None:
+    """Give the owner access to every path under ``root``, so it can be read and removed.
+
+    Extraction applies member modes: a file at ``0o000`` cannot be read, and a
+    directory at ``0o500`` cannot be emptied, by a user that is not root.
+    """
+    if not root.exists() or root.is_symlink():
+        return
+    os.chmod(root, 0o700)
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            path = Path(dirpath) / name
+            mode = os.lstat(path).st_mode
+            if stat.S_ISDIR(mode):
+                os.chmod(path, 0o700)
+            elif stat.S_ISREG(mode):
+                os.chmod(path, 0o600)
 
 
 def _tree(root: Path) -> list[tuple[str, str, str | None]]:
     out: list[tuple[str, str, str | None]] = []
     if not root.exists():
         return out
+    _make_accessible(root)
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()
         for name in sorted(dirnames + filenames):
@@ -360,9 +395,13 @@ def _tree(root: Path) -> list[tuple[str, str, str | None]]:
 
 
 def _extract(
-    data: bytes, container: ContainerFormat, *, streaming: bool, dest: Path, policy: str
+    data: bytes,
+    container: ContainerFormat,
+    *,
+    streaming: bool,
+    dest: Path,
+    policy: ExtractionPolicyStr,
 ) -> tuple[list[tuple[str, str, str | None]], str | None]:
-    shutil.rmtree(dest, ignore_errors=True)
     try:
         with open_archive(
             io.BytesIO(data),
@@ -370,7 +409,7 @@ def _extract(
             password=_password(container),
             streaming=streaming,
         ) as reader:
-            reader.extract_all(dest, on_error="continue", policy=policy)  # type: ignore[arg-type]
+            reader.extract_all(dest, on_error="continue", policy=policy)
     except ArchiveyError as exc:
         return _tree(dest), type(exc).__name__
     return _tree(dest), None
@@ -380,20 +419,30 @@ def extract_diff_one(data: bytes) -> None:
     container = _container(data)
     if container is None:
         return
-    policy = ("strict", "standard", "trusted")[data[0] % 3]
-    seekable_dest = _EXTRACT_ROOT / "seekable"
-    streaming_dest = _EXTRACT_ROOT / "streaming"
-    try:
-        tree_a, error_a = _extract(
-            data, container, streaming=False, dest=seekable_dest, policy=policy
-        )
-        tree_b, error_b = _extract(
-            data, container, streaming=True, dest=streaming_dest, policy=policy
-        )
-    finally:
-        shutil.rmtree(seekable_dest, ignore_errors=True)
-        shutil.rmtree(streaming_dest, ignore_errors=True)
+    policy = _POLICIES[data[0] % len(_POLICIES)]
     name = container.name
+    # A fresh parent per input: nothing one input leaves can change the next, and
+    # anything in the parent besides the two destinations was written outside them.
+    with tempfile.TemporaryDirectory(prefix="archivey-fuzz-extract-") as tmp:
+        parent = Path(tmp)
+        dests: dict[str, Path] = {
+            "seekable": parent / "seekable",
+            "streaming": parent / "streaming",
+        }
+        try:
+            tree_a, error_a = _extract(
+                data, container, streaming=False, dest=dests["seekable"], policy=policy
+            )
+            tree_b, error_b = _extract(
+                data, container, streaming=True, dest=dests["streaming"], policy=policy
+            )
+            outside = sorted(p.name for p in parent.iterdir() if p.name not in dests)
+            assert not outside, (
+                f"{name}: policy={policy}: extraction wrote outside its destination: "
+                f"{outside[:4]}"
+            )
+        finally:
+            _make_accessible(parent)
     if error_a is None and error_b is None:
         assert tree_a == tree_b, (
             f"{name}: policy={policy}: seekable and streaming extraction leave "
@@ -413,7 +462,7 @@ def tiny_limits_one(data: bytes) -> None:
         _listing_seekable(io.BytesIO(data), container, _TINY_CONFIG)
     except ArchiveyError:
         pass
-    if container in _FORWARD or container is ContainerFormat.ZIP:
+    if container in _FORWARD:
         try:
             _listing_forward(io.BytesIO(data), container, _TINY_CONFIG)
         except ArchiveyError:
