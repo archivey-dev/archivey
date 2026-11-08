@@ -38,6 +38,7 @@ from tests.cab_util import (
     _Token,
     block_checksum,
     canonical_codes,
+    code_lengths,
     write_cab,
 )
 
@@ -881,3 +882,21 @@ def test_a_cabinet_cut_inside_a_block_header_reads_the_blocks_before_it() -> Non
             assert reader.read("a.txt") == b"alpha" * 20
             with pytest.raises(TruncatedError):
                 reader.read("b.bin")
+
+
+def test_lzx_length_codes_longer_than_the_lookup_table() -> None:
+    """Length codes past the decoder's 10-bit first table go through its second
+    level: twelve lengths used 1, 1, 2, 4, ... 1024 times make an 11-bit code."""
+    tokens: list[_Token] = []
+    expected = bytearray()
+    counts = [1 << k for k in range(10, -1, -1)] + [1]
+    for i, count in enumerate(counts):
+        length = 9 + i
+        for j in range(count):
+            byte = 65 + (i + j) % 26
+            # A literal, then a match at R0 = 1 that repeats it.
+            tokens += [_Token(literal=byte), _Token(length=length, slot=0)]
+            expected += bytes([byte]) * (length + 1)
+    freqs = counts + [0] * (249 - len(counts))
+    assert max(code_lengths(freqs, 16)) > lzx_decoder._ROOT_BITS
+    assert _decode(_lzx_stream(tokens, len(expected)), len(expected)) == expected
