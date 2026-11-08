@@ -192,15 +192,21 @@ def _describe_floor_refusal(path: str, version: tuple[int, int] | None) -> str:
 
 
 def _unrar_floor_message(
-    refusals: list[tuple[str, tuple[int, int] | None]],
+    refusals: list[tuple[str, tuple[int, int] | None]], *, pinned: bool = False
 ) -> str:
     floor = f"{_UNRAR_VERSION_FLOOR[0]}.{_UNRAR_VERSION_FLOOR[1]}"
     found = "; ".join(
         _describe_floor_refusal(path, version) for path, version in refusals
     )
+    fix = (
+        "archivey does not look on PATH when ArchiveyConfig.unrar_path is set; point "
+        f"it at RARLAB unrar or rar {floor} or later."
+        if pinned
+        else f"Install RARLAB unrar or rar {floor} or later."
+    )
     return (
         f"RARLAB unrar or rar {floor} or later is required to read RAR member data, "
-        f"but {found}. Install RARLAB unrar or rar {floor} or later."
+        f"but {found}. {fix}"
     )
 
 
@@ -371,7 +377,7 @@ def find_rarlab_unrar(program: str | None = None) -> str:
             _note_floor(candidate, banner.version)
 
     if floor_refusals:
-        raise _unrar_missing(_unrar_floor_message(floor_refusals))
+        raise _unrar_missing(_unrar_floor_message(floor_refusals, pinned=pinned))
     if timed_out:
         message = _unrar_timeout_message(timed_out, pinned=pinned)
         if run_cause is not None:

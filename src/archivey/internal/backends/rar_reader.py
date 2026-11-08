@@ -310,7 +310,11 @@ def _rar_member_copy_notes(
 
 
 def _program_path(value: str | os.PathLike[str] | None) -> str | None:
-    """A config program path as the ``str`` the finders take (the config stores one)."""
+    """A config program path as the ``str`` the finders take (the config stores one).
+
+    The fields hold a ``str`` once constructed, but are annotated wider so that passing
+    a ``Path`` type-checks at construction; this narrows the annotation back.
+    """
     return None if value is None else os.fspath(value)
 
 

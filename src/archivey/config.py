@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -976,7 +977,8 @@ class ArchiveyConfig:
     ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
 
     def __post_init__(self) -> None:
-        """Check the fields at construction, and convert the two that hold enums.
+        """Check the fields at construction, and convert the two that hold enums and
+        the two program paths.
 
         A config field is read wherever it is needed, which is never where it was
         written: ``ArchiveyConfig(extraction_limits="none")`` builds fine and then
@@ -1155,7 +1157,9 @@ def _coerce_program_path(field_name: str, value: object) -> str | None:
         raise _UsageTypeError(
             f"ArchiveyConfig({field_name}=) takes a str path, got a bytes one."
         )
-    if not path or not os.path.isabs(path):
+    # ``PurePath.is_absolute`` needs a drive or share on Windows on every version;
+    # ``os.path.isabs`` before 3.13 accepts a root-relative ``/usr/bin/unrar``.
+    if not path or not pathlib.PurePath(path).is_absolute():
         raise _UsageValueError(
             f"ArchiveyConfig({field_name}=) takes an absolute path, got {quoted(path)}: a "
             "relative one would depend on the current directory."

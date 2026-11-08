@@ -8,6 +8,7 @@ binary is held to the same identification as one found there. Every read, and
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,15 @@ from tests.test_unar_probe import GOOD_UNAR_EXTRACT, _stand_in
 
 # Non-solid, with compressed members, so a named read spawns unrar.
 _RAR = Path(__file__).parent / "fixtures" / "rar" / "hostile_argv__.rar"
+
+
+# The stand-in programs are shell scripts, and Windows looks a program up on PATH by
+# its PATHEXT extension, so the tests that run one or search PATH are POSIX-only.
+_posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="uses POSIX shell scripts as stand-in binaries"
+)
+# Absolute on this platform (``C:\usr\bin\unrar`` on Windows).
+_ABSOLUTE = os.path.abspath("/usr/bin/unrar")
 
 
 def _executable(path: Path) -> Path:
@@ -78,9 +88,11 @@ def test_a_path_is_stored_as_a_str(field: str, tmp_path: Path) -> None:
     [
         ("unrar", ValueError, "absolute path"),
         ("", ValueError, "absolute path"),
-        (b"/usr/bin/unrar", TypeError, "str or os.PathLike"),
+        # Root-relative on Windows: no drive, so it hangs on the current one.
+        ("\\usr\\bin\\unrar", ValueError, "absolute path"),
+        (_ABSOLUTE.encode(), TypeError, "str or os.PathLike"),
         (3, TypeError, "str or os.PathLike"),
-        ("/usr/bin/un\0rar", ValueError, "NUL"),
+        (_ABSOLUTE.replace("unrar", "un\0rar"), ValueError, "NUL"),
     ],
 )
 def test_a_wrong_path_is_refused(
@@ -95,6 +107,7 @@ def test_a_wrong_path_is_refused(
 # --- unrar ---------------------------------------------------------------------
 
 
+@_posix_only
 def test_a_pinned_unrar_wins_over_path(rarlab_on_path: Path, tmp_path: Path) -> None:
     pinned = _executable(tmp_path / "pinned-unrar")
     assert rar_unrar.find_rarlab_unrar(str(pinned)) == str(pinned)
@@ -136,10 +149,14 @@ def test_a_pinned_unrar_under_the_floor_is_refused(
         "_is_rarlab_unrar",
         lambda _path: rar_unrar._UnrarBanner(is_rarlab=True, version=(5, 0)),
     )
-    with pytest.raises(PackageNotInstalledError, match=r"6\.0 or later"):
+    with pytest.raises(PackageNotInstalledError, match=r"6\.0 or later") as info:
         rar_unrar.find_rarlab_unrar(str(pinned))
+    # Installing another unrar would put it on PATH, which a pin does not search.
+    assert "ArchiveyConfig.unrar_path" in str(info.value)
+    assert "Install" not in str(info.value)
 
 
+@_posix_only
 def test_availability_answers_for_the_pinned_unrar(
     rarlab_on_path: Path, tmp_path: Path
 ) -> None:
@@ -180,6 +197,7 @@ def test_a_member_read_runs_the_pinned_unrar(
 # --- unar ----------------------------------------------------------------------
 
 
+@_posix_only
 def test_a_pinned_unar_is_used_off_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -194,6 +212,35 @@ def test_a_pinned_unar_is_used_off_path(
     assert unar.find_unar(purpose="for a test", program=str(binary)) == str(binary)
 
 
+def _assert_names_the_unar_pin(exc: PackageNotInstalledError) -> None:
+    message = str(exc)
+    assert "ArchiveyConfig.unar_path" in message
+    assert "does not look on PATH" in message
+    assert "brew install" not in message
+
+
+@_posix_only
+def test_a_pinned_unar_under_the_floor_names_the_setting(tmp_path: Path) -> None:
+    binary = tmp_path / "unar"
+    binary.write_text(
+        "#!/bin/sh\n"
+        'echo "unar v1.9, a tool for extracting the contents of archive files."\n'
+    )
+    binary.chmod(0o755)
+    with pytest.raises(PackageNotInstalledError, match="reports version 1.9") as info:
+        unar.find_unar(purpose="for a test", program=str(binary))
+    _assert_names_the_unar_pin(info.value)
+
+
+@_posix_only
+def test_a_pinned_unar_that_fails_the_check_names_the_setting(tmp_path: Path) -> None:
+    binary, _log = _stand_in(tmp_path, "printf 'xxxxxxxxxxxxxxxxxxxxxxxx'\n")
+    with pytest.raises(PackageNotInstalledError, match="wrote more than") as info:
+        unar.find_unar(purpose="for a test", program=str(binary))
+    _assert_names_the_unar_pin(info.value)
+
+
+@_posix_only
 def test_a_missing_pinned_unar_does_not_fall_back_to_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -206,6 +253,7 @@ def test_a_missing_pinned_unar_does_not_fall_back_to_path(
     assert "does not look on PATH" in str(info.value)
 
 
+@_posix_only
 def test_auto_resolves_with_the_pinned_programs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
