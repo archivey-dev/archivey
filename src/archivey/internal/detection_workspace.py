@@ -464,6 +464,13 @@ class PrefixWorkspace:
         if handle is None:
             self.record_skip(tier, TierSkipReason.CAPABILITY_UNAVAILABLE)
             return None
+        # A remote source then fetches the tail as a run of its own, rather than
+        # read through to it from the prefix and drop the prefix's window, which
+        # the backend reads next (``ArchiveSource.will_read``).
+        will_read = getattr(handle, "will_read", None)
+        if callable(will_read):
+            assert self._entry_pos is not None
+            will_read(self._entry_pos + max(origin, held), self._entry_pos + end)
         if origin < held:
             return bytes(self._buf[origin:held]) + self._read_at_via_seek(
                 handle, held, end - held

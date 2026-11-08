@@ -431,18 +431,23 @@ class WindowPool:
             length = need
         else:
             length = max(need, self._fetch_size(fetches, runs))
-            if run is None and not hinted and start + length > source.size:
-                # A new run that the end would cut short starts earlier, so its
-                # window still holds the minimum fetch (design D2 rule 5). A tail read comes
-                # in pieces that step backward (the xz footer, then its index), and
-                # each piece would otherwise be a request of its own.
-                start = max(0, source.size - length)
-                need = at - start + want
         if hinted:
             assert hint is not None
             length = max(length, hint[1] - start)
             # The run continues from the span as if it had doubled to that size.
             fetches = max(fetches, 2 + (length // c.min_fetch).bit_length())
+        if (
+            run is None
+            and source.max_read_through != 0
+            and start + length > source.size
+        ):
+            # A new run that the end would cut short starts earlier, so its window
+            # still holds the minimum fetch (design D2 rule 5). A tail read comes in
+            # pieces that step backward (the xz footer, then its index), and each
+            # piece would otherwise be a request of its own. A hinted span ends at
+            # or before the end, so the window still holds all of it.
+            start = max(0, source.size - length)
+            need = at - start + want
         length = min(length, source.size - start)
         if need > cap:
             # A read longer than any window: fetch exactly it, keep nothing. The run

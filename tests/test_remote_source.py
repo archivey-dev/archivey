@@ -1121,6 +1121,18 @@ def test_a_large_remote_xz_reads_its_index_from_the_tail() -> None:
     ]
 
 
+def test_the_tail_read_does_not_take_over_the_head_window() -> None:
+    """With the production constants the tail of a 300 KB ``.xz`` lies within the
+    read-through distance of the head. Detection hints the tail, so it is a run of
+    its own: the head's window survives for the reader, and the listing is the head
+    and the tail. Red without the hint: the run reads through to the end, drops the
+    head, and the reader fetches the head again."""
+    data = lzma.compress(random.Random(45).randbytes(300_000), preset=0)
+    fs = RecordingFS(data)
+    _listing(OpenFile(fs, "/big.xz", mode="rb"))
+    assert fs.fetches == [(0, 64 * KIB), (len(data) - 64 * KIB, len(data))]
+
+
 def test_a_new_run_at_the_end_keeps_the_minimum_fetch() -> None:
     """A tail read that steps backward (a footer, then the index before it) is one
     request: the first window ends at the end and holds the minimum fetch. Red when

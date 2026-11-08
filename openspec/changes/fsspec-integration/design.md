@@ -137,8 +137,11 @@ target, a joined volume set asks the volume that holds the target, and detection
 read uses `seeks_to_end_are_cheap` (as the single-file probes already did), not
 `seek_is_expensive`. A tail read that steps backward (the xz footer, then the index
 before it) stays one request: a new run that the end would cut short starts earlier, so
-its window holds the minimum fetch (D2 rule 5). Detection's probe reads at an offset
-still do not seek a remote source: each would be a request, and they grow the prefix.
+its window holds the minimum fetch (D2 rule 5). Detection hints its tail read (D2 rule
+3), so on an object within the read-through distance the tail is a run of its own and
+does not read through from the head and drop the head's window, which the backend reads
+next. Detection's probe reads at an offset still do not seek a remote source: each
+would be a request, and they grow the prefix.
 
 Rejected:
 
@@ -247,12 +250,13 @@ a thin planner that decides each fetch's start and length:
    windows, and with more than the window limit under the seam, pin both rules
    (`tasks.md` 1.3).
 
-5. **A run at the end keeps the minimum fetch.** A new run, with no hint, whose
+5. **A run at the end keeps the minimum fetch.** A new run whose
    window the end of the object would cut short starts earlier instead, so the window
    still holds `_MIN_FETCH` and ends at the end. A tail read comes in pieces that step
    backward (the xz stream footer, then its index; the gzip ISIZE, then nothing), and
    without this each piece would be a request of its own. It costs up to `_MIN_FETCH`
-   bytes before the read (D1, tail reads).
+   bytes before the read (D1, tail reads). A hinted span ends at or before the end,
+   so the window still holds all of it.
 
 `_MIN_FETCH`, `_MAX_FETCH` and `_POOL_BYTES` are internal. They are fixed bounds per
 reader that do not grow with input, so DR-9 does not ask for a new public limit. If the
