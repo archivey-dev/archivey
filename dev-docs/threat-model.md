@@ -1204,7 +1204,11 @@ where an ordinary directory lists at about 5 ns, because each signature is check
 swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). An LZX stream in a
 cabinet made of nothing but block headers decodes at about 2 µs an input byte (0.5 MB/s),
 producing nothing, since each header builds its trees
-([CAB §2.4](formats/cab.md#24-the-lzx-decoder)). On declared seek demand,
+([CAB §2.4](formats/cab.md#24-the-lzx-decoder)). A cabinet whose file table is out of
+data order is listed in data order, so each folder decodes once, unless a name is listed
+twice: then table order is kept, and each member can decode its folder again from the
+start (150 members of 32 KiB in one LZX folder, reversed: 58 s against under 1 s)
+([CAB §6](formats/cab.md#6-decisions)). On declared seek demand,
 a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
 Zstandard seek table, and a forward seek past the known points or a `SEEK_END` walks a
 BGZF file's members. Both scans are linear but run one

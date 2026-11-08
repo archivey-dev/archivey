@@ -83,7 +83,8 @@ twice (§2.3); then they come sorted by folder and offset, the order of their by
 decide, `iter_members` reads the whole table before the first member comes (at most
 65 535 records, each read once from the table: about 6 MiB more at the peak for 65 535
 files) and replays the kept decoder over it (`_decodes_twice`). A cabinet that lists one
-name twice keeps table order, since the entry listed last is the current one. A damaged
+name twice keeps table order, since the entry listed last is the current one, and then
+pays a folder decode per member if that order needs it (§6). A damaged
 table yields the members before the damage, sorted by the same rule, then the error: one
 bad record at the end of a crafted table does not turn the sort off.
 
@@ -108,7 +109,8 @@ When a member stream closes, the reader keeps its folder decoder; the next membe
 same folder, at or after where that one stopped, continues from it. Any other member of a
 compressed folder decodes the folder again from its first block. Writers list files in
 data order, so `stream_members()` and `extract_all` decode each folder once; a table in
-an order that would decode a block twice is sorted into data order first (§2.2, §6).
+an order that would decode a block twice is sorted into data order first, unless a name
+is listed twice (§2.2, §6).
 Members whose bytes overlap still decode their folder again in any order. Only one
 decoder is kept: memory stays at one LZX window (at most 2 MiB), and the window is
 checked against `max_decoder_memory` before a member of the folder opens. A member of
@@ -160,10 +162,20 @@ are added.)
   whose writer lists files in data order, and any table whose members of each folder
   are in order, whatever the order of the folders. Like SquashFS, the order changes for
   `members()` too: there is one member order, and it is the one the stream pass reads.
-  A cabinet that lists a name twice keeps table order. Rejected: keeping more than one
+  A cabinet that lists a name twice keeps table order: see the next decision. Rejected:
+  keeping more than one
   decoder (a crafted table interleaves one folder more), and sorting every table (it
   changes the order of cabinets that read well as they are). 7z needs no such rule:
   its parser assigns a folder's members in data order. Reopen if a writer is found
   whose table order matters to its users and still decodes a block twice, or if
   overlapping members, which decode their folder again in any order, turn up outside
   crafted input.
+
+- **A name listed twice keeps table order, and the cost stays.** The maintainer's call
+  (2026-11-08), on round 1 of the review of this order. The entry listed last is the
+  current one, so sorting would change which of the two a reader and extraction take.
+  The price is a residual: a crafted table that repeats one name and is out of data
+  order decodes its folder again for each member (150 members of 32 KiB in one LZX
+  folder, reversed: 58 s against under 1 s), as the threat model's "No CPU or
+  wall-clock bound" records. Rejected: sorting anyway (another entry becomes current).
+  Reopen if a real writer is found that repeats names in a cabinet.
