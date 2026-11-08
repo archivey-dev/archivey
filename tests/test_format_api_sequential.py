@@ -82,6 +82,9 @@ class ToysContainer(PluginContainer):
     SIZED_EMPTY_DIRECTORY = "toys-sized-empty-directory"
     PROBED = "toys-probed"
     HOLDING = "toys-holding"
+    CHARGING = "toys-charging"
+    CHARGING_AT_OPEN = "toys-charging-at-open"
+    CHARGING_BAD_SIZE = "toys-charging-bad-size"
     HOLDING_DECODED = "toys-holding-decoded"
     YIELDS_NONE = "toys-yields-none"
 
@@ -725,6 +728,63 @@ def test_holding_a_member_twice_is_a_plugin_bug(
         open_archive(path, format=fmt) as reader,
     ):
         reader.members()
+
+
+class _ChargingReader(ToysReader):
+    """Keeps a 100-byte table for the whole walk, charged before its first member,
+    as an ar long-name table is."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        self._context.charge_metadata(100, what="the toy table")
+        yield from super().walk(stream)
+
+
+def test_a_walk_charge_counts_with_the_members(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    """``charge_metadata`` adds to the total the members are counted in, so a limit
+    the members alone fit under refuses them with the table, and the refusal names
+    what was charged. Reads after the listing are not refused by it."""
+    fmt = _variant(_ChargingReader, ToysContainer.CHARGING)
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    with open_archive(path, format=TOYS) as plain:
+        weight = sum(member_metadata_bytes(m) for m in plain.members())
+    assert _holding_listing(fmt, path, max_metadata_bytes=weight + 100)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=99 .*toy table"):
+        _holding_listing(fmt, path, max_metadata_bytes=99)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        _holding_listing(fmt, path, max_metadata_bytes=weight + 99)
+    config = archivey.ArchiveyConfig(
+        listing_limits=archivey.ListingLimits(max_metadata_bytes=weight + 100)
+    )
+    with open_archive(path, format=fmt, config=config) as reader:
+        reader.members()
+        assert reader.read("b.bin") == _DATA["b.bin"]
+        assert reader.read("docs/a.txt") == _DATA["docs/a.txt"]
+
+
+class _ChargingAtOpen(ToysReader):
+    def __init__(self, context: ReaderContext) -> None:
+        super().__init__(context)
+        context.charge_metadata(1, what="nothing")
+
+
+class _ChargingBadSize(ToysReader):
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        self._context.charge_metadata(-1, what="a negative size")
+        yield from super().walk(stream)
+
+
+def test_a_charge_outside_a_walk_or_of_a_bad_size_is_a_plugin_bug(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    fmt = _variant(_ChargingAtOpen, ToysContainer.CHARGING_AT_OPEN)
+    with pytest.raises(ArchiveyUsageError, match="only while walk"):
+        open_archive(path, format=fmt).close()
+    fmt = _variant(_ChargingBadSize, ToysContainer.CHARGING_BAD_SIZE)
+    with pytest.raises(ArchiveyUsageError, match="size of 0 or more"):
+        open_archive(path, format=fmt).close()
 
 
 class _Sum16:

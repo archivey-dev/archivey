@@ -120,6 +120,9 @@ class ListingLimitTracker:
         # each was charged, by identity, until ``release_member`` takes it off.
         self._held: dict[int, tuple[ArchiveMember, int]] = {}
         self._held_bytes = 0
+        # What a reader keeps while it walks, beyond its members (``charge_walk``),
+        # taken off when the walk ends.
+        self._walk_bytes = 0
 
     def reset(self) -> None:
         self.member_count = 0
@@ -127,6 +130,22 @@ class ListingLimitTracker:
         self._archive_comment_counted = False
         self._held = {}
         self._held_bytes = 0
+        self._walk_bytes = 0
+
+    def charge_walk(self, nbytes: int, what: str) -> None:
+        """Charge ``nbytes`` a reader keeps while it walks (a name table, a header)
+        to ``max_metadata_bytes``, with the members, and refuse them before the
+        reader allocates them. ``what`` names them, for the refusal. The charge
+        stays until :meth:`release_held`, at the walk's end."""
+        next_bytes = self.metadata_bytes + nbytes
+        max_meta = self._limits.max_metadata_bytes
+        if max_meta is not None and next_bytes > max_meta:
+            raise metadata_limit_error(
+                max_meta,
+                f"retained {next_bytes} bytes, {nbytes} of them for {what}",
+            )
+        self.metadata_bytes = next_bytes
+        self._walk_bytes += nbytes
 
     def account_archive_comment(
         self, comment: str | None, *, enforce: bool = True
@@ -204,10 +223,13 @@ class ListingLimitTracker:
             self._uncharge(entry[1])
 
     def release_held(self) -> None:
-        """Take off every charge still held: the walk that held them has ended."""
+        """Take off every charge still held, and what the walk kept beyond its
+        members (:meth:`charge_walk`): the walk that held them has ended."""
         held, self._held = self._held, {}
         for _, nbytes in held.values():
             self._uncharge(nbytes)
+        self.metadata_bytes -= self._walk_bytes
+        self._walk_bytes = 0
 
     def _uncharge(self, nbytes: int) -> None:
         self._held_bytes -= nbytes

@@ -531,6 +531,7 @@ class ReaderContext:
         ],
         link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None],
         hold: Callable[[ArchiveMember, str | None, str | None], None],
+        charge_metadata: Callable[[int, str], None],
         open_nested: Callable[[BinaryIO, ArchiveFormat], Iterator[MemberSpan]]
         | None = None,
     ) -> None:
@@ -541,6 +542,7 @@ class ReaderContext:
         self._report = report
         self._link_target_unavailable = link_target_unavailable
         self._hold = hold
+        self._charge_metadata = charge_metadata
         self._open_nested = open_nested
 
     @property
@@ -628,6 +630,25 @@ class ReaderContext:
         already, raises ``ArchiveyUsageError``.
         """
         self._hold(member, stored_name, reason)
+
+    def charge_metadata(self, nbytes: int, *, what: str) -> None:
+        """Count ``nbytes`` the walk keeps in memory beyond its members, a long-name
+        table or a package header say, against ``max_metadata_bytes``.
+
+        The bytes count with the members already listed, and ``ResourceLimitError``
+        is raised when they would cross the limit, so call it before reading them,
+        with the size the archive declares. ``what`` names them, for that error
+        ("the long-name table"). The charge lasts until the walk ends; text that
+        becomes a member's name is not charged again here, since archivey charges
+        the member.
+
+        Call it from ``walk()`` or ``iter_members()``, as :meth:`hold` is called. In
+        a walk archivey starts over to reach a member's data, the bytes were counted
+        when listed, and it does nothing. A call from anywhere else (at open, in
+        ``open_member``) raises ``ArchiveyUsageError``; a reader that keeps a table
+        for the life of the archive bounds it by ``config.listing_limits`` itself.
+        """
+        self._charge_metadata(nbytes, what)
 
     def open_nested(
         self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat

@@ -250,9 +250,11 @@ class Header:
 
 
 def _read_header(
-    stream: ForwardStream, what: str, budget: int | None
+    stream: ForwardStream, what: str, context: ReaderContext
 ) -> tuple[Header, int]:
-    """A header at the stream's position, and how many bytes it took."""
+    """A header at the stream's position, and how many bytes it took. The walk keeps
+    it, so its index and data store are charged to ``max_metadata_bytes`` before
+    they are read."""
     offset = stream.offset
     intro = stream.read_exact(16)
     if intro[:4] != HEADER_MAGIC:
@@ -264,10 +266,7 @@ def _read_header(
             "of data, over rpm's own bounds"
         )
     total = 16 * count + size
-    if budget is not None and total > budget:
-        raise ResourceLimitError(
-            f"RPM {what} of {total} bytes, over max_metadata_bytes={budget}"
-        )
+    context.charge_metadata(total, what=f"the RPM {what}")
     index = stream.read_exact(16 * count)
     data = stream.read_exact(size)
     entries: dict[int, _Entry] = {}
@@ -387,12 +386,9 @@ class RpmReader(SequentialReader):
         major = lead[4]
         if major not in (3, 4):
             raise UnsupportedFeatureError(f"RPM lead version {major}")
-        budget = self._context.config.listing_limits.max_metadata_bytes
-        signature, used = _read_header(stream, "signature header", budget)
+        signature, used = _read_header(stream, "signature header", self._context)
         stream.skip(-used % 8)
-        if budget is not None:
-            budget -= used
-        header, _ = _read_header(stream, "header", budget)
+        header, _ = _read_header(stream, "header", self._context)
         payload_format = header.string(TAG_PAYLOADFORMAT)
         if payload_format not in (None, b"cpio"):
             raise UnsupportedFeatureError(

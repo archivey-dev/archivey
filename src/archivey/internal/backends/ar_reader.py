@@ -42,7 +42,6 @@ from datetime import UTC, datetime
 
 from archivey.exceptions import (
     CorruptionError,
-    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -182,12 +181,7 @@ class ArReader(SequentialReader):
                         f"ar archive has a second long-name table at offset {offset}"
                     )
                 # The table is held for the whole walk: text the listing retains.
-                limit = self._context.config.listing_limits.max_metadata_bytes
-                if limit is not None and size > limit:
-                    raise ResourceLimitError(
-                        f"ar long-name table of {size} bytes, over "
-                        f"max_metadata_bytes={limit}"
-                    )
+                self._context.charge_metadata(size, what="the ar long-name table")
                 names = stream.read_exact(size)
                 stream.read(size & 1)
                 continue

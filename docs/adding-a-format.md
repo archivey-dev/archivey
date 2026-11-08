@@ -709,6 +709,14 @@ hold off before archivey lists it, so it is counted once; a copy would count twi
 until the walk ends. In a walk archivey starts over to reach a
 member's data, `hold()` does nothing.
 
+A walk that keeps something in memory beyond its members, such as an ar long-name
+table or an RPM header, passes its size to `ReaderContext.charge_metadata(nbytes,
+what=...)` before reading it. The bytes count toward `max_metadata_bytes` with the
+members, and the call raises `ResourceLimitError` when they would cross it. The charge
+lasts until the walk ends. Like `hold()`, it is called from `walk()` or
+`iter_members()` only. Text that becomes a member's name needs no charge, since
+archivey counts the member.
+
 ## Archive details
 
 `archive_info()` returns a `ReaderArchiveInfo` with what archivey cannot work out itself:
