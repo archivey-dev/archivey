@@ -97,6 +97,8 @@ class Codec(Enum):
     LZOP = "lzop"  # the .lzo file format
     MOZLZ4 = "mozlz4"  # Firefox's mozLz40 files: one raw LZ4 block
     BZIP3 = "bzip3"  # the .bz3 files the bzip3 tool writes
+    UU = "uu"  # uuencoded files, and their begin-base64 variant
+    BASE64 = "base64"  # bare base64 text
     LZO = "lzo"  # raw LZO1X (a SquashFS block)
     # Filter-only (composed with raw LZMA; see LZMA_FILTER_IDS).
     DELTA = "delta"

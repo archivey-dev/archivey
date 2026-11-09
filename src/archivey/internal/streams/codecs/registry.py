@@ -49,6 +49,7 @@ from archivey.internal.streams.codecs.lzo_codec import Lzo1xCodec, LzopCodec
 from archivey.internal.streams.codecs.mozlz4_codec import MozLz4Codec
 from archivey.internal.streams.codecs.ppmd_codec import PpmdCodec
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
+from archivey.internal.streams.codecs.text_codecs import Base64Codec, UuCodec
 from archivey.internal.streams.codecs.unix_compress_codec import UnixCompressCodec
 from archivey.internal.streams.codecs.zip_legacy_codec import (
     DclImplodeCodec,
@@ -107,6 +108,8 @@ _STREAM_CODECS: list[StreamCodec] = [
     MozLz4Codec(),
     Bzip3Codec(),
     Lzo1xCodec(),
+    UuCodec(),
+    Base64Codec(),
 ]
 
 _BY_CODEC: dict[CodecId, StreamCodec] = {c.codec: c for c in _STREAM_CODECS}

@@ -2,7 +2,8 @@
 
 ## Purpose
 
-Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z, LZOP, mozlz4, BZ3) are exposed
+Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z, LZOP, mozlz4, BZ3), and the
+uuencode and base64 text wrappers, are exposed
 as one-member pseudo-archives through the unified `ArchiveReader`
 interface. Each source contains exactly one file member whose
 name is inferred from the source filename.
@@ -29,14 +30,14 @@ checksum trailer.
 ### Requirement: Present each compressor as a one-member archive
 
 The system SHALL present any GZ, BZ2, XZ, ZST, LZ4, LZIP, LZMA Alone, ZLIB, BR,
-Z, LZOP, mozlz4 or BZ3 source as an archive containing exactly one `ArchiveMember` of type
+Z, LZOP, mozlz4, BZ3, UU or BASE64 source as an archive containing exactly one `ArchiveMember` of type
 `MemberType.FILE`. No directory members SHALL be synthesized.
 
 The member name SHALL be inferred from the source filename:
 
 | Source filename | Member name |
 | --- | --- |
-| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, `.Z`, `.lzo`, `.mozlz4` or `.bz3` (case-insensitive) | Strip exactly that recognized compression extension |
+| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, `.Z`, `.lzo`, `.mozlz4`, `.bz3`, `.uu`, `.uue`, `.b64` or `.base64` (case-insensitive) | Strip exactly that recognized compression extension |
 | Ends in `.tgz`, `.tbz2`, `.tbz`, `.txz`, `.tzst`, `.tlz` or `.tzo` (case-insensitive) | Replace that suffix with `.tar`, as `gzip -d` and `xz -d` do |
 | Ends in `.jsonlz4` or `.baklz4` (case-insensitive), Firefox's mozlz4 names | Replace that suffix with `.json` or `.bak` |
 | Ends in a recognized extension, but the remaining stem is entirely dots and spaces (`..gz`, `....gz`, ` .gz`) | Append `.uncompressed` instead; `.` and `..` are not member names, and an all-dots segment is refused under `STRICT` and `STANDARD` |
@@ -564,3 +565,34 @@ process unless `process_isolation` is `NONE`.
 | Source cut inside the header or a block | `TruncatedError` |
 | A second `.bz3` file after the first | `CorruptionError` |
 | `.tar.bz3` whose first block is over 1 MiB compressed | Detected as `.bz3` with the inner TAR test skipped; `format=` TAR+BZIP3 reads the TAR |
+
+### Requirement: uuencode and base64 are read as single files
+
+uuencode (`.uu`, `.uue`) and bare base64 (`.b64`, `.base64`) text SHALL be read as one-member
+archives like the compressors, and a TAR inside either SHALL be listed as the TAR.
+
+uuencode SHALL be read from its first `begin MODE NAME` line to its `end` line, or from a
+`begin-base64` line to `====`. Detection SHALL accept a `begin` line at offset 0 followed by a
+valid encoded line as magic, for any name. With a `.uu` or `.uue` name, text before the `begin`
+line SHALL be skipped, up to 64 KiB; past that the source SHALL be refused with
+`CorruptionError`. Bytes after the end line other than whitespace SHALL be trailing data. The
+stored name SHALL be surfaced as `raw_name` and `extra["uu.original_filename"]` and SHALL NOT
+choose the member's name; the stored mode SHALL be the member's `mode`.
+
+Base64 SHALL be decoded with line breaks and spaces skipped, ending at `=` padding or the end
+of the input; any other character SHALL raise `CorruptionError`. Without a `.b64` or `.base64`
+name, a source SHALL be detected as base64 only when its first four or more lines have one
+length of at least 40 characters, all base64 characters, and decode to a known format's magic.
+
+#### Scenario: uuencode and base64
+
+| Source | Expected |
+| --- | --- |
+| `uuencode` output, any name | Detected by magic; reads the original bytes |
+| A mail post with a uuencoded file, named `.uu` | Reads the file; the signature after `end` is `ARCHIVE_TRAILING_DATA` |
+| The same post with no name | Not detected |
+| A `begin` line followed by prose | Not detected |
+| A uuencoded file with no `end` line | `TruncatedError` |
+| Base64 of a ZIP, no name | Detected as base64 by magic |
+| Base64 of random bytes, a hex dump or a column of IDs, no name | Not detected |
+| Base64 with a character outside the alphabet | `CorruptionError` |

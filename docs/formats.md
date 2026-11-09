@@ -73,7 +73,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
-  files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. One member. Members: direct. Readable from a pipe. Seeking inside the member
+  files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. uuencode and base64 text in core.
+  One member. Members: direct. Readable from a pipe. Seeking inside the member
   needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
 - **UDIF disk images** (`.dmg`): recognised and refused ([Disk images](#disk-images)).
 
@@ -1390,6 +1391,21 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   has no checksum, and it decodes only when the whole file has arrived, so the first byte from a
   pipe waits for the end of the input. The decoded size must match the header, or the read raises
   `CorruptionError`.
+- **uuencode and base64** compress nothing, but they wrap a file as text the way a compressor
+  wraps it, so archivey peels them the same way: `files.tar.uu` lists the tar.
+  - **uuencode** (`.uu`, `.uue`): a `begin 644 name` line, encoded lines, then `end`; the
+    `begin-base64` variant (`uuencode -m`) ends at `====`. A file is recognised by its `begin`
+    line at the start, whatever its name. With a `.uu` or `.uue` name, text before `begin` (a
+    mail or news post) is skipped, up to 64 KiB. Only the first file is read, and text after its
+    end line is reported as `ARCHIVE_TRAILING_DATA`. The stored name is
+    `extra["uu.original_filename"]` and `raw_name`, and the stored mode is `mode`; the member
+    keeps the name it gets from the file's own name, so the stored name never picks a path.
+  - **base64** (`.b64`, `.base64`): bare base64 text, in lines of one length or one long line,
+    with or without `=` padding. Base64 has no signature, and plain text is often made of base64
+    characters, so without such a name a file is taken as base64 only when its first lines are
+    of one length and decode to the start of a format archivey knows (a pasted ZIP, gzip or tar).
+  - Neither has a checksum, so a damaged character changes the output with no error unless it is
+    not a valid character. A missing `end` or `====` line raises `TruncatedError`.
 - **Listing:** one synthetic member, named from the source path, or `data` for a source with no
   name. `.jsonlz4` and `.baklz4` become `.json` and `.bak` (`sessionstore.jsonlz4` holds
   `sessionstore.json`). `encoding=` has no effect, and passing it reports `ENCODING_ARGUMENT_UNUSED`.

@@ -39,12 +39,6 @@ Each idea carries a status:
   would find a data track that is not first (CD-Extra puts audio first) and the last
   session of a multisession disc, whose filesystem addresses absolute sectors (map the
   track starts the cue lists, as an OS mount does). EDC/ECC verification is also left.
-- **UU and Base64 wrappers as single-file formats.** *Open idea.* **Good first
-  contribution.** `uuencode` files (`.uu`, `.uue`, including `begin-base64`) turn up in
-  old mail and Usenet drops. They fit the one-member single-file backend: peel one
-  wrapper and yield the payload. The decoder is trivial; the work is in weak detection
-  (`begin `), in trusting the embedded name and mode, and in a ratio guard that expects
-  data to shrink. Bare single-file only, not transparent `uu → gz → tar`.
 - **Opt-in legacy name-encoding detection.** *Needs design (post-1.0).* Names with no
   Unicode marker that are not valid UTF-8 decode via `surrogateescape` today: honest and
   lossless, but garbled. Codepages have no oracle and filenames are too short for a
