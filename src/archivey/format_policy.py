@@ -271,7 +271,9 @@ class FormatPolicy:
 
     ``False`` turns a plugin codec off everywhere in the call: as the compression of
     the file opened, and inside an archive, when a reader (a ``replace=`` plugin, for
-    example) asks ``ReaderContext.decompress`` for it. Each refusal raises
+    example) asks ``ReaderContext.decompress`` for it. A plugin format, or a format
+    with a plugin codec, is off inside an archive too: ``ReaderContext.open_nested``
+    refuses it. Each refusal raises
     :class:`~archivey.UnsupportedFeatureError` that names this setting, before the
     codec's code runs. A ``replace=`` reader is not a plugin format, so it still opens.
 
@@ -415,6 +417,28 @@ class FormatPolicy:
                 "inside an archive as for a whole file"
             )
         return None
+
+    def _nested_refusal(self, fmt: ArchiveFormat) -> str | None:
+        """The refusal text for ``fmt`` read as an archive inside an open
+        (``ReaderContext.open_nested``), or ``None``.
+
+        As for :meth:`_codec_refusal`, only ``plugins`` reaches that far here: a
+        plugin container or plugin codec does not run under ``plugins=False``.
+        ``exclude_libraries`` holds in the reader lookup.
+        """
+        if self.plugins:
+            return None
+        reasons: list[str] = []
+        if isinstance(fmt.container, PluginContainer):
+            reasons.append("plugins=False turns off every plugin format")
+        if isinstance(fmt.stream, PluginStream):
+            reasons.append("plugins=False turns off every plugin codec")
+        if not reasons:
+            return None
+        return (
+            f"ArchiveyConfig.formats does not allow {fmt.display_name} inside an "
+            f"archive: {', and '.join(reasons)}."
+        )
 
     def _reasons(self, fmt: ArchiveFormat) -> list[str]:
         """Why ``fmt`` is refused, one reason per setting to change, so a format that

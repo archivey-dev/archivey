@@ -613,6 +613,9 @@ class _PluginAdapter(BaseArchiveReader):
             )
         registry = get_registry()
         policy = self._config.formats
+        refusal = policy._nested_refusal(fmt)
+        if refusal is not None:
+            raise UnsupportedFeatureError(refusal, source_format=fmt)
         backend_cls = registry.reader_for_format(
             fmt,
             replacement=policy._replacement_for(fmt),
@@ -1063,6 +1066,9 @@ def _outer_copy(member: ArchiveMember) -> ArchiveMember:
     copy.extra = type(member.extra)(member.extra)
     copy.hashes = dict(member.hashes)
     copy._diagnostics = member._diagnostics
+    # The inner listing settled the target (an empty one it reported): the outer
+    # listing does not look for it in the data, nor report it again.
+    copy._link_target_resolved = member._link_target_resolved
     return copy
 
 
@@ -2024,6 +2030,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             member.type is MemberType.SYMLINK
             and self._sequential.link_target_in_data
             and member.link_target is None
+            and not member._link_target_resolved
         ):
             if decoded is not None:
                 with self._translated_errors(member.name), self._handle_guard():

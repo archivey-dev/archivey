@@ -207,5 +207,6 @@ only if it checks `config.formats.exclude_libraries` itself.
 compressed with xz as a whole, such as a `.xz` or `.tar.xz` file, not the xz codec: a ZIP member
 compressed with xz can still be read under `exclude={S.XZ}`, because the file is a ZIP.
 `plugins=False` and `exclude_libraries=` are different, since they turn off the code that
-decodes, wherever it runs. Under `plugins=False`, no plugin codec runs in the call, even for a
-member inside an archive: reading a member that needs one raises `UnsupportedFeatureError`.
+decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format runs in the
+call, even for a member or an archive inside an archive: reading a member that needs one raises
+`UnsupportedFeatureError`.

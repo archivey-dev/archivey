@@ -370,6 +370,9 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.read() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
+        if not n:
+            # Moves no bytes, so an open take() stays open.
+            return b""
         self._end_take()
         data = self._read_fn(n)
         self._offset += len(data)
@@ -399,6 +402,8 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.skip() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
+        if not n:
+            return
         self._end_take()
         self._skip_fn(self._offset, n)
         self._offset += n
@@ -411,7 +416,9 @@ class ForwardStream:
         is held in memory. It ends after ``n`` bytes, or raises ``TruncatedError`` where
         the archive ends first. The walk resumes after the ``n`` bytes: the next
         :meth:`read`, :meth:`skip`, :meth:`take` or :meth:`decompress` first skips what
-        the stream left unread, and the stream reads nothing after that.
+        the stream left unread, and the stream reads nothing after that. A
+        :meth:`read` or :meth:`skip` of 0 bytes moves nothing and leaves the stream
+        open.
         """
         if n < 0:
             raise ValueError(f"ForwardStream.take() takes a size of 0 or more, got {n}")
@@ -693,8 +700,9 @@ class ReaderContext:
         closed when Python collects it, and at the latest when the archive is closed.
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
-        format is read by its replacement, and ``exclude_libraries`` holds; ``only``
-        and ``exclude`` check only the file the call opens. A format that needs a
+        format is read by its replacement, ``exclude_libraries`` holds, and under
+        ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``;
+        ``only`` and ``exclude`` check only the file the call opens. A format that needs a
         seekable source (7z, RAR) raises ``UnsupportedFeatureError``, and so does an
         archive nested more than 8 deep (an inner reader calling ``open_nested`` in
         turn). What the inner reader attaches to a member while its data is read
