@@ -9,8 +9,10 @@ argv) and optional ``-n./member`` include masks. Never ``x`` / extract-to-disk.
 
 :mod:`.rar_reader` calls :func:`open_unrar_p` for every member read and solid pass
 that runs ``unrar``, and :func:`decompress_rar3_blob` for a compressed RAR 1.5-4
-comment. :func:`find_rarlab_unrar` is the 6.0 banner probe that
-``format_availability`` also runs.
+comment. :func:`find_rarlab_unrar` is the 6.0 banner probe: :func:`open_unrar_p`
+runs it before each spawn, :mod:`.rar_reader` runs it to resolve
+``RarDecompressor.AUTO``, and ``format_availability`` runs it through
+:func:`rarlab_unrar_missing`.
 """
 
 from __future__ import annotations

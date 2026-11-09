@@ -166,7 +166,9 @@ class FileCopySources:
             self._close_file()
 
     def _release(self, kept: _Kept) -> None:
-        """Let go of a source: free its bytes, and stop waiting for any still due."""
+        """Let go of a source: free its memory, or its share of the temporary file
+        (deleted at the next :meth:`advance` once no source holds any), and stop
+        waiting for bytes still due."""
         if kept in self._pending:
             # Its copies were all skipped before the pipe passed it.
             self._pending.remove(kept)
