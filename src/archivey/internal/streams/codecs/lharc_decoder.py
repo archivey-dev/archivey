@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.overrides import override
 
 # Output is handed over in pieces of about this size.
 _CHUNK = 1 << 16
@@ -220,6 +221,7 @@ class Lh1Decoder(_Decoder):
             if c == 0:
                 break
 
+    @override
     def _decode(self, want: int) -> None:
         out = self._out
         t = _LH1_NODES
@@ -263,6 +265,7 @@ class Lh1Decoder(_Decoder):
         self._finish()
         self._check_overread()
 
+    @override
     def _trim(self) -> None:
         if self._start > _LH1_WINDOW + 4 * _CHUNK:
             cut = self._start - _LH1_WINDOW
@@ -283,6 +286,7 @@ class LzsDecoder(_Decoder):
         self._ring = bytearray(b" " * self._RING)
         self._at = self._RING - 17
 
+    @override
     def _decode(self, want: int) -> None:
         out = self._out
         ring = self._ring
@@ -345,6 +349,7 @@ class Lz5Decoder(_Decoder):
         self._nbits -= 8
         return (self._bits >> self._nbits) & 0xFF
 
+    @override
     def _decode(self, want: int) -> None:
         out = self._out
         ring = self._ring
