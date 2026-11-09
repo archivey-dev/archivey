@@ -2476,6 +2476,26 @@ def _parse_rar3_old_comment_subblocks(
 # ---------------------------------------------------------------------------
 
 
+class _Rar3Block(NamedTuple):
+    """One RAR 1.5-4 block header, read and framed but not yet checked or acted on."""
+
+    start: int
+    """Where the block starts in the volume, before the salt of an encrypted header."""
+    encrypted: bool
+    header_offset: int
+    header_crc: int
+    block_type: int
+    flags: int
+    header_size: int
+    hdata: bytes
+    """The whole header, its CRC field included."""
+    data_offset: int
+    add_size: int
+    """The data-area size the common header declares (``LONG_BLOCK``), else 0."""
+    pos: int
+    """Where the type-specific fields start in ``hdata``."""
+
+
 def _parse_rar3(
     source: BinaryIO,
     *,
@@ -2489,32 +2509,122 @@ def _parse_rar3(
     name_encoding: str | None = None,
     password_proven: bool = False,
 ) -> RarArchive:
+    """Walk one RAR 1.5-4 volume from its signature to its end block (:class:`_Rar3Walk`)."""
     _require_exact(source, len(RAR_ID), "RAR3 signature")
+    return _Rar3Walk(
+        source,
+        password=password,
+        kdf_cache=kdf_cache,
+        excluded=excluded,
+        sfx_offset=sfx_offset,
+        volume_index=volume_index,
+        max_members=max_members,
+        max_metadata_bytes=max_metadata_bytes,
+        name_encoding=name_encoding,
+        password_proven=password_proven,
+    ).run()
 
-    is_solid = False
-    is_volume = False
-    old_volume_naming = False
-    has_header_encryption = False
-    comment: str | _Rar3Comment | None = None
-    members = _MemberList()
-    needs_next_volume = False
-    truncated: str | None = None
-    damaged: str | None = None
-    main_seen = False
-    end_block_damaged_at: int | None = None
-    trailing_at: int | None = None
-    # Set once an encrypted header decrypted with a matching CRC16, in this volume or
-    # an earlier one of the set (the caller passes that in). The walk treats a
-    # mismatch as proof of a wrong password, so a match proves the password the same
-    # way. From then on a header that fails is damage or a cut, not a wrong password.
-    # Each header has its own salt, so the proof says nothing about a later salt: a
-    # damaged one decrypts a garbage header, which is reported as damage too.
 
-    while True:
+class _Rar3Walk:
+    """The header walk over one RAR 1.5-4 volume.
+
+    A volume is a chain of blocks, each a header and an optional data area. The walk
+    reads one header at a time and skips its data area to reach the next:
+
+    1. ``MARK`` is the signature block, skipped.
+    2. ``MAIN`` says whether the archive is solid, a volume of a set, and whether
+       every later header is encrypted. It may carry an old-style comment.
+    3. ``FILE`` is a member. ``SUB`` is a service header: ``UOW`` holds the owner of
+       the file before it, and ``CMT`` holds the archive comment, or a solid file's
+       comment.
+    4. ``ENDARC`` ends the volume and says whether another volume follows.
+
+    Any other block type is skipped. A file that ends where a header should start is
+    a clean end: RAR 1.5-4 writers may omit ``ENDARC``. A cut or a damaged header
+    after ``MAIN`` stops the walk and keeps the members listed before it
+    (``RarArchive.truncated`` / ``RarArchive.damaged``).
+    """
+
+    def __init__(
+        self,
+        source: BinaryIO,
+        *,
+        password: str | bytes | None,
+        kdf_cache: RarKdfCache,
+        excluded: frozenset[OptionalLibrary],
+        sfx_offset: int,
+        volume_index: int,
+        max_members: int | None,
+        max_metadata_bytes: int | None,
+        name_encoding: str | None,
+        password_proven: bool,
+    ) -> None:
+        self.source = source
+        self.password = password
+        self.kdf_cache = kdf_cache
+        self.excluded = excluded
+        self.sfx_offset = sfx_offset
+        self.volume_index = volume_index
+        self.max_members = max_members
+        self.max_metadata_bytes = max_metadata_bytes
+        self.name_encoding = name_encoding
+        # Set once an encrypted header decrypted with a matching CRC16, in this volume
+        # or an earlier one of the set (the caller passes that in). The walk treats a
+        # mismatch as proof of a wrong password, so a match proves the password the
+        # same way. From then on a header that fails is damage or a cut, not a wrong
+        # password. Each header has its own salt, so the proof says nothing about a
+        # later salt: a damaged one decrypts a garbage header, which is reported as
+        # damage too.
+        self.password_proven = password_proven
+
+        self.is_solid = False
+        self.is_volume = False
+        self.old_volume_naming = False
+        self.has_header_encryption = False
+        self.comment: str | _Rar3Comment | None = None
+        self.members = _MemberList()
+        self.needs_next_volume = False
+        self.truncated: str | None = None
+        self.damaged: str | None = None
+        self.main_seen = False
+        self.end_block_damaged_at: int | None = None
+        self.trailing_at: int | None = None
+
+    def run(self) -> RarArchive:
+        """Walk the blocks after the signature and return what they describe."""
+        source = self.source
+        while True:
+            block = self._read_block()
+            if block is None:
+                break
+            if block.block_type == _RAR3_MARK:
+                _seek_after_packed(source, block.data_offset, block.add_size)
+                continue
+            if block.block_type == _RAR3_MAIN:
+                self._on_main(block)
+                continue
+            if block.block_type == _RAR3_ENDARC:
+                self._on_end_block(block)
+                break
+            if block.block_type in (_RAR3_FILE, _RAR3_SUB):
+                if not self._on_file_header(block):
+                    break
+                continue
+            # Unknown / skippable block
+            _seek_after_packed(source, block.data_offset, block.add_size)
+        return self._result()
+
+    def _read_block(self) -> _Rar3Block | None:
+        """Read the next header, decrypting it when headers are encrypted.
+
+        Returns ``None`` when the walk ends here, with ``truncated`` set for a cut.
+        """
+        source = self.source
         header_fd: _Readable = source
-        block_encrypted = has_header_encryption
+        block_encrypted = self.has_header_encryption
         header_start = source.tell()
-        if has_header_encryption:
+        if self.has_header_encryption:
+            password = self.password
             assert password is not None  # MAIN raised without one
             # Nothing here depends on the password being right: the salt read and the
             # key derivation fail the same way for every candidate, so their errors
@@ -2526,20 +2636,22 @@ def _parse_rar3(
             # omit ENDARC, and unrar lists such a file and exits 0 (rar.md §1).
             salt = read_exact(source, 8)
             if len(salt) < 8:
-                truncated = _no_header(source, header_start, encrypted_cut=bool(salt))
-                break
+                self.truncated = _no_header(
+                    source, header_start, encrypted_cut=bool(salt)
+                )
+                return None
             header_fd = _rar3_decrypt_header(
-                source, salt, password, kdf_cache, excluded=excluded
+                source, salt, password, self.kdf_cache, excluded=self.excluded
             )
 
         try:
             header_offset = _archive_offset(header_fd)
             buf = read_exact(header_fd, _S_BLK_HDR.size)
             if not buf:
-                truncated = _no_header(
+                self.truncated = _no_header(
                     source, header_start, encrypted_cut=block_encrypted
                 )
-                break
+                return None
             if len(buf) < _S_BLK_HDR.size:
                 raise _RarHeaderCutError(
                     "Unexpected EOF while reading RAR3 block header"
@@ -2559,12 +2671,16 @@ def _parse_rar3(
                 hdata = buf
         except CorruptionError as exc:
             # ``header_fd`` is the decrypt stream exactly when ``block_encrypted``.
-            truncated = _header_failure(
-                exc, header_fd, header_start, proven=password_proven, version="RAR3"
+            self.truncated = _header_failure(
+                exc,
+                header_fd,
+                header_start,
+                proven=self.password_proven,
+                version="RAR3",
             )
-            if truncated is None:
+            if self.truncated is None:
                 raise
-            break
+            return None
         data_offset = _archive_offset(header_fd)
 
         pos = _S_BLK_HDR.size
@@ -2572,255 +2688,304 @@ def _parse_rar3(
             add_size, pos = _load_le32(hdata, pos)
         else:
             add_size = 0
+        return _Rar3Block(
+            start=header_start,
+            encrypted=block_encrypted,
+            header_offset=header_offset,
+            header_crc=header_crc,
+            block_type=block_type,
+            flags=flags,
+            header_size=header_size,
+            hdata=hdata,
+            data_offset=data_offset,
+            add_size=add_size,
+            pos=pos,
+        )
 
-        if block_type == _RAR3_MARK:
-            _seek_after_packed(source, data_offset, add_size)
-            continue
+    def _on_main(self, block: _Rar3Block) -> None:
+        """Read the archive flags, and the old-style comment, from ``MAIN``."""
+        flags = block.flags
+        crc_pos = rar3_main_crc_end(flags)
+        self.is_solid = bool(flags & _RAR3_MAIN_SOLID)
+        self.is_volume = bool(flags & _RAR3_MAIN_VOLUME)
+        self.old_volume_naming = self.is_volume and not flags & _RAR3_MAIN_NEW_NUMBERING
+        if flags & _RAR3_MAIN_PASSWORD:
+            self.has_header_encryption = True
+            if self.password is None:
+                raise EncryptionError(
+                    "RAR archive has encrypted headers but no password was provided"
+                )
+        self.password_proven = _check_rar3_crc(
+            block.header_crc,
+            block.hdata[2:crc_pos],
+            "MAIN",
+            encrypted=block.encrypted,
+            proven=self.password_proven,
+        )
+        self.main_seen = True
+        if flags & _RAR3_MAIN_COMMENT:
+            self.comment = _parse_rar3_old_comment_subblocks(
+                block.hdata, crc_pos, encoding=self.name_encoding
+            )
+        _seek_after_packed(self.source, block.data_offset, block.add_size)
 
-        if block_type == _RAR3_MAIN:
-            crc_pos = rar3_main_crc_end(flags)
-            is_solid = bool(flags & _RAR3_MAIN_SOLID)
-            is_volume = bool(flags & _RAR3_MAIN_VOLUME)
-            old_volume_naming = is_volume and not flags & _RAR3_MAIN_NEW_NUMBERING
-            if flags & _RAR3_MAIN_PASSWORD:
-                has_header_encryption = True
-                if password is None:
-                    raise EncryptionError(
-                        "RAR archive has encrypted headers but no password was provided"
-                    )
-            password_proven = _check_rar3_crc(
-                header_crc,
+    def _on_end_block(self, block: _Rar3Block) -> None:
+        """Finish the walk at ``ENDARC``: record whether a volume follows."""
+        source = self.source
+        hdata = block.hdata
+        header_size = block.header_size
+        flags = block.flags
+        # The type was read from the same unverified bytes, so a MAIN or FILE
+        # header with one flipped byte reads as ENDARC too. Only a header shaped
+        # as an end block, with nothing but zeros after it, is one. Damage after
+        # the last member keeps the listing, and the flags, the next-volume flag among
+        # them, are not read. unrar lists such an archive and tests every member
+        # OK, then reports one error. An unproven key still reads as a wrong
+        # password, through _check_rar3_crc.
+        if (
+            block.header_crc != _crc32(hdata[2:header_size]) & 0xFFFF
+            and (self.password_proven or not block.encrypted)
+            and _rar3_end_block_shaped(flags, header_size)
+            and _only_zeros_after(source, block.data_offset)
+        ):
+            self.end_block_damaged_at = block.start
+            return
+        try:
+            self.password_proven = _check_rar3_crc(
+                block.header_crc,
+                hdata[2:header_size],
+                "ENDARC",
+                encrypted=block.encrypted,
+                proven=self.password_proven,
+            )
+        except _RarHeaderCrcError as exc:
+            # Not an end block, so a header whose type byte is damaged.
+            if not self.main_seen:
+                raise
+            self.damaged = _damaged_header(exc, block.start)
+            return
+        self.needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
+        volume_number = _rar3_end_block_volume_number(hdata, flags, header_size)
+        if self.volume_index == 0 and self.is_volume and volume_number:
+            # A later volume whose first member starts on its boundary: no
+            # member continues from an earlier volume, so only this number
+            # tells it from volume 1 (RAR5 reads MAIN's instead).
+            raise UnsupportedFeatureError(
+                "Need first volume of multi-volume RAR archive"
+            )
+        self.trailing_at = _scan_after_end_block(
+            source, _packed_span_end(block.data_offset, block.add_size)
+        )
+
+    def _on_file_header(self, block: _Rar3Block) -> bool:
+        """Handle a ``FILE`` or ``SUB`` header; ``False`` ends the walk at damage."""
+        parsed = self._parse_file_header(block)
+        if parsed is None:
+            return False
+        member, crc_pos = parsed
+
+        # The data size is PACK_SIZE (with HIGH_PACK_SIZE for a >4 GiB member),
+        # whatever LONG_BLOCK says, as unrar reads it. ``add_size`` is the same
+        # low 32 bits when LONG_BLOCK is set and 0 when it is clear, and skipping
+        # 0 parsed a member's data as more headers, listing members unrar does
+        # not have.
+        packed_size = member.compress_size
+        if block.block_type == _RAR3_FILE:
+            # RAR 1.5 / 2.x use the same block layout as RAR3 for headers we
+            # care about; member data is always left to RARLAB ``unrar``.
+            # Do not reject extract_version ≤ 20 — that also false-positives
+            # modern RAR3 archives whose stored/small members advertise
+            # unp_ver=20.
+            # File-version history rows (FILE_VERSION) are kept as members.
+            if block.flags & _RAR3_FILE_COMMENT:
+                member.comment = _parse_rar3_old_comment_subblocks(
+                    block.hdata, crc_pos, encoding=self.name_encoding
+                )
+            if _emit_file_member(
+                self.members,
+                member,
+                max_members=self.max_members,
+                max_metadata_bytes=self.max_metadata_bytes,
+            ):
+                self.needs_next_volume = True
+        elif member.filename == RAR3_UOW_NAME and self.members:
+            self._attach_owner(member)
+        elif self._is_readable_comment(member, block.data_offset, packed_size):
+            self._read_comment_service(member, block.data_offset, packed_size)
+
+        _seek_after_packed(self.source, block.data_offset, packed_size)
+        return True
+
+    def _parse_file_header(self, block: _Rar3Block) -> tuple[RarMemberInfo, int] | None:
+        """Parse a ``FILE`` or ``SUB`` header and check its CRC16.
+
+        Returns the member and where the CRC stops, or ``None`` for a damaged header
+        after ``MAIN`` (``damaged`` set).
+        """
+        flags = block.flags
+        hdata = block.hdata
+        header_size = block.header_size
+        # FILE header re-reads pack_size as first field when LONG_BLOCK was set.
+        file_pos = block.pos - 4 if (flags & _RAR3_LONG_BLOCK) else block.pos
+        member: RarMemberInfo | None = None
+        try:
+            member, crc_pos = _parse_rar3_file_header(
+                hdata,
+                file_pos,
+                flags=flags,
+                header_offset=block.header_offset,
+                header_size=header_size,
+                data_offset=block.data_offset,
+                volume_index=self.volume_index,
+                is_service=(block.block_type == _RAR3_SUB),
+                name_encoding=self.name_encoding,
+            )
+        except CorruptionError:
+            # The fields are parsed before the CRC can be checked, since they
+            # say how many bytes it covers. A field that does not parse in a
+            # header whose CRC also fails is the same damage as a bad CRC.
+            # Once the fields failed, the true end of the CRC is unknown, so
+            # this checks the whole header: a deliberate approximation. It is
+            # exact except for a FILE_COMMENT header, whose CRC stops before
+            # the comment, so there the check cannot match and invalid fields
+            # under a valid CRC read as damage too. Either way it is a
+            # CorruptionError; only its timing differs (after the listing,
+            # not at open), and reaching it needs a crafted CRC.
+            if block.header_crc == _crc32(hdata[2:header_size]) & 0xFFFF:
+                raise
+            crc_pos = header_size
+        try:
+            self.password_proven = _check_rar3_crc(
+                block.header_crc,
                 hdata[2:crc_pos],
-                "MAIN",
-                encrypted=block_encrypted,
-                proven=password_proven,
+                "FILE",
+                encrypted=block.encrypted,
+                proven=self.password_proven,
             )
-            main_seen = True
-            if flags & _RAR3_MAIN_COMMENT:
-                comment = _parse_rar3_old_comment_subblocks(
-                    hdata, crc_pos, encoding=name_encoding
-                )
-            _seek_after_packed(source, data_offset, add_size)
-            continue
+        except _RarHeaderCrcError as exc:
+            if not self.main_seen:
+                raise
+            self.damaged = _damaged_header(exc, block.start)
+            return None
+        # A parse error leaves it unset only with a CRC that fails, raised above.
+        assert member is not None
+        return member, crc_pos
 
-        if block_type == _RAR3_ENDARC:
-            # The type was read from the same unverified bytes, so a MAIN or FILE
-            # header with one flipped byte reads as ENDARC too. Only a header shaped
-            # as an end block, with nothing but zeros after it, is one. Damage after
-            # the last member keeps the listing, and the flags, the next-volume flag among
-            # them, are not read. unrar lists such an archive and tests every member
-            # OK, then reports one error. An unproven key still reads as a wrong
-            # password, through _check_rar3_crc.
-            if (
-                header_crc != _crc32(hdata[2:header_size]) & 0xFFFF
-                and (password_proven or not block_encrypted)
-                and _rar3_end_block_shaped(flags, header_size)
-                and _only_zeros_after(source, data_offset)
-            ):
-                end_block_damaged_at = header_start
-                break
-            try:
-                password_proven = _check_rar3_crc(
-                    header_crc,
-                    hdata[2:header_size],
-                    "ENDARC",
-                    encrypted=block_encrypted,
-                    proven=password_proven,
-                )
-            except _RarHeaderCrcError as exc:
-                # Not an end block, so a header whose type byte is damaged.
-                if not main_seen:
-                    raise
-                damaged = _damaged_header(exc, header_start)
-                break
-            needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
-            volume_number = _rar3_end_block_volume_number(hdata, flags, header_size)
-            if volume_index == 0 and is_volume and volume_number:
-                # A later volume whose first member starts on its boundary: no
-                # member continues from an earlier volume, so only this number
-                # tells it from volume 1 (RAR5 reads MAIN's instead).
-                raise UnsupportedFeatureError(
-                    "Need first volume of multi-volume RAR archive"
-                )
-            trailing_at = _scan_after_end_block(
-                source, _packed_span_end(data_offset, add_size)
+    def _attach_owner(self, uow: RarMemberInfo) -> None:
+        """Give the owner a ``UOW`` service header records to the member before it."""
+        # ``rar -ow`` writes a UOW header right after the file it describes.
+        # The file was weighed when it was appended, so the names are here.
+        members = self.members
+        owner = uow.owner
+        if owner is None:
+            _add_skipped_uow(members[-1], uow.skipped_header_records)
+            return
+        _set_uow_owner(members[-1], owner)
+        if self.max_metadata_bytes is not None:
+            _charge_metadata(
+                members,
+                text_bytes(owner.uname) + text_bytes(owner.gname),
+                self.max_metadata_bytes,
+                count=len(members),
             )
-            break
 
-        if block_type in (_RAR3_FILE, _RAR3_SUB):
-            # FILE header re-reads pack_size as first field when LONG_BLOCK was set.
-            file_pos = pos - 4 if (flags & _RAR3_LONG_BLOCK) else pos
-            member: RarMemberInfo | None = None
-            try:
-                member, crc_pos = _parse_rar3_file_header(
-                    hdata,
-                    file_pos,
-                    flags=flags,
-                    header_offset=header_offset,
-                    header_size=header_size,
-                    data_offset=data_offset,
-                    volume_index=volume_index,
-                    is_service=(block_type == _RAR3_SUB),
-                    name_encoding=name_encoding,
-                )
-            except CorruptionError:
-                # The fields are parsed before the CRC can be checked, since they
-                # say how many bytes it covers. A field that does not parse in a
-                # header whose CRC also fails is the same damage as a bad CRC.
-                # Once the fields failed, the true end of the CRC is unknown, so
-                # this checks the whole header: a deliberate approximation. It is
-                # exact except for a FILE_COMMENT header, whose CRC stops before
-                # the comment, so there the check cannot match and invalid fields
-                # under a valid CRC read as damage too. Either way it is a
-                # CorruptionError; only its timing differs (after the listing,
-                # not at open), and reaching it needs a crafted CRC.
-                if header_crc == _crc32(hdata[2:header_size]) & 0xFFFF:
-                    raise
-                crc_pos = header_size
-            try:
-                password_proven = _check_rar3_crc(
-                    header_crc,
-                    hdata[2:crc_pos],
-                    "FILE",
-                    encrypted=block_encrypted,
-                    proven=password_proven,
-                )
-            except _RarHeaderCrcError as exc:
-                if not main_seen:
-                    raise
-                damaged = _damaged_header(exc, header_start)
-                break
-            # A parse error leaves it unset only with a CRC that fails, raised above.
-            assert member is not None
+    def _is_readable_comment(
+        self, member: RarMemberInfo, data_offset: int, packed_size: int
+    ) -> bool:
+        """Whether a service header is a ``CMT`` comment the walk can read now.
 
-            # The data size is PACK_SIZE (with HIGH_PACK_SIZE for a >4 GiB member),
-            # whatever LONG_BLOCK says, as unrar reads it. ``add_size`` is the same
-            # low 32 bits when LONG_BLOCK is set and 0 when it is clear, and skipping
-            # 0 parsed a member's data as more headers, listing members unrar does
-            # not have.
-            packed_size = member.compress_size
-            if block_type == _RAR3_FILE:
-                # RAR 1.5 / 2.x use the same block layout as RAR3 for headers we
-                # care about; member data is always left to RARLAB ``unrar``.
-                # Do not reject extract_version ≤ 20 — that also false-positives
-                # modern RAR3 archives whose stored/small members advertise
-                # unp_ver=20.
-                # File-version history rows (FILE_VERSION) are kept as members.
-                if flags & _RAR3_FILE_COMMENT:
-                    member.comment = _parse_rar3_old_comment_subblocks(
-                        hdata, crc_pos, encoding=name_encoding
-                    )
-                if _emit_file_member(
+        That is a plain, unsplit, non-empty one, stored or small enough for a
+        compressed comment, whose data the file holds in full.
+        """
+        return (
+            member.filename == "CMT"
+            and not member.is_encrypted
+            and not member.split_before
+            and not member.split_after
+            and packed_size > 0
+            and (
+                member.is_stored
+                or (
+                    member.file_size <= RAR3_MAX_COMMENT_SIZE
+                    and packed_size <= RAR3_MAX_COMMENT_SIZE
+                )
+            )
+            and _span_in_file(self.source, data_offset, packed_size)
+        )
+
+    def _read_comment_service(
+        self, member: RarMemberInfo, data_offset: int, packed_size: int
+    ) -> None:
+        """Read a ``CMT`` service header's data as the archive or solid file comment."""
+        source = self.source
+        # The span the walk skips below, so no byte is read both as
+        # comment data and as a later header, which let a stack of small
+        # CMT headers each re-read the rest of the archive.
+        source.seek(data_offset)
+        raw = _read_comment(
+            source, packed_size, "RAR3 comment", self.max_metadata_bytes
+        )
+        utf16 = bool(
+            member.mode is not None and member.mode & _RAR3_SUBHEAD_CMT_UNICODE
+        )
+        cmt: str | _Rar3Comment
+        if member.is_stored:
+            cmt = decode_rar3_cmt_text(raw, utf16=utf16, encoding=self.name_encoding)
+        else:
+            # Compressed: ``unrar`` decodes it in the reader layer, as it
+            # does a compressed RAR 1.5-2.x comment, once the listing
+            # budget has weighed the declared size.
+            # A RAR3 FILE or SUB header always carries FILE_CRC.
+            assert member.crc32 is not None
+            cmt = _Rar3Comment(
+                packed=raw,
+                unpacked_size=member.file_size,
+                extract_version=member.extract_version or 0,
+                compress_type=member.compress_type,
+                flags=member.flags,
+                crc16=member.crc32 & 0xFFFF,
+                crc32=member.crc32,
+                utf16=utf16,
+            )
+        members = self.members
+        if member.file_solid and members:
+            # The member was weighed when it was appended, before this
+            # comment arrived, so the comment is weighed here.
+            members[-1].comment = cmt
+            if self.max_metadata_bytes is not None:
+                _charge_metadata(
                     members,
-                    member,
-                    max_members=max_members,
-                    max_metadata_bytes=max_metadata_bytes,
-                ):
-                    needs_next_volume = True
-            elif (
-                block_type == _RAR3_SUB and member.filename == RAR3_UOW_NAME and members
-            ):
-                # ``rar -ow`` writes a UOW header right after the file it describes.
-                # The file was weighed when it was appended, so the names are here.
-                owner = member.owner
-                if owner is None:
-                    _add_skipped_uow(members[-1], member.skipped_header_records)
-                else:
-                    _set_uow_owner(members[-1], owner)
-                    if max_metadata_bytes is not None:
-                        _charge_metadata(
-                            members,
-                            text_bytes(owner.uname) + text_bytes(owner.gname),
-                            max_metadata_bytes,
-                            count=len(members),
-                        )
-            elif (
-                block_type == _RAR3_SUB
-                and member.filename == "CMT"
-                and not member.is_encrypted
-                and not member.split_before
-                and not member.split_after
-                and packed_size > 0
-                and (
-                    member.is_stored
-                    or (
-                        member.file_size <= RAR3_MAX_COMMENT_SIZE
-                        and packed_size <= RAR3_MAX_COMMENT_SIZE
-                    )
+                    comment_metadata_bytes(cmt),
+                    self.max_metadata_bytes,
+                    count=len(members),
                 )
-                and _span_in_file(source, data_offset, packed_size)
-            ):
-                # The span the walk skips below, so no byte is read both as
-                # comment data and as a later header, which let a stack of small
-                # CMT headers each re-read the rest of the archive.
-                source.seek(data_offset)
-                raw = _read_comment(
-                    source, packed_size, "RAR3 comment", max_metadata_bytes
-                )
-                utf16 = bool(
-                    member.mode is not None and member.mode & _RAR3_SUBHEAD_CMT_UNICODE
-                )
-                cmt: str | _Rar3Comment
-                if member.is_stored:
-                    cmt = decode_rar3_cmt_text(raw, utf16=utf16, encoding=name_encoding)
-                else:
-                    # Compressed: ``unrar`` decodes it in the reader layer, as it
-                    # does a compressed RAR 1.5-2.x comment, once the listing
-                    # budget has weighed the declared size.
-                    # A RAR3 FILE or SUB header always carries FILE_CRC.
-                    assert member.crc32 is not None
-                    cmt = _Rar3Comment(
-                        packed=raw,
-                        unpacked_size=member.file_size,
-                        extract_version=member.extract_version or 0,
-                        compress_type=member.compress_type,
-                        flags=member.flags,
-                        crc16=member.crc32 & 0xFFFF,
-                        crc32=member.crc32,
-                        utf16=utf16,
-                    )
-                if member.file_solid and members:
-                    # The member was weighed when it was appended, before this
-                    # comment arrived, so the comment is weighed here.
-                    members[-1].comment = cmt
-                    if max_metadata_bytes is not None:
-                        _charge_metadata(
-                            members,
-                            comment_metadata_bytes(cmt),
-                            max_metadata_bytes,
-                            count=len(members),
-                        )
-                else:
-                    comment = cmt
+        else:
+            self.comment = cmt
 
-            _seek_after_packed(source, data_offset, packed_size)
-            continue
-
-        # Unknown / skippable block
-        _seek_after_packed(source, data_offset, add_size)
-
-    return RarArchive(
-        version=4,
-        is_solid=is_solid,
-        has_header_encryption=has_header_encryption,
-        comment=comment,
-        members=members,
-        sfx_offset=sfx_offset,
-        is_volume=is_volume,
-        needs_next_volume=needs_next_volume,
-        old_volume_naming=old_volume_naming,
-        truncated=truncated,
-        damaged=damaged,
-        end_block_damaged_volumes=(
-            {volume_index: end_block_damaged_at}
-            if end_block_damaged_at is not None
-            else {}
-        ),
-        trailing_data_volumes=(
-            {volume_index: trailing_at} if trailing_at is not None else {}
-        ),
-        password_proven=password_proven,
-    )
+    def _result(self) -> RarArchive:
+        volume_index = self.volume_index
+        return RarArchive(
+            version=4,
+            is_solid=self.is_solid,
+            has_header_encryption=self.has_header_encryption,
+            comment=self.comment,
+            members=self.members,
+            sfx_offset=self.sfx_offset,
+            is_volume=self.is_volume,
+            needs_next_volume=self.needs_next_volume,
+            old_volume_naming=self.old_volume_naming,
+            truncated=self.truncated,
+            damaged=self.damaged,
+            end_block_damaged_volumes=(
+                {volume_index: self.end_block_damaged_at}
+                if self.end_block_damaged_at is not None
+                else {}
+            ),
+            trailing_data_volumes=(
+                {volume_index: self.trailing_at} if self.trailing_at is not None else {}
+            ),
+            password_proven=self.password_proven,
+        )
 
 
 def _rar3_decrypt_header(
@@ -3498,6 +3663,24 @@ def _qo_unmatched_copies(
     )
 
 
+class _Rar5Block(NamedTuple):
+    """One RAR5 block header, read and CRC-checked (:func:`_read_rar5_block`)."""
+
+    block_type: int
+    flags: int
+    hdata: bytes
+    """The whole header, from its CRC field to its last extra record."""
+    pos: int
+    """Where the type-specific fields start in ``hdata``."""
+    header_offset: int
+    header_size: int
+    data_offset: int
+    add_size: int
+    """The size of the data area after the header, 0 when it has none."""
+    extra_size: int
+    """The size of the extra area at the end of the header, 0 when it has none."""
+
+
 def _parse_rar5(
     source: BinaryIO,
     *,
@@ -3510,299 +3693,404 @@ def _parse_rar5(
     max_members: int | None,
     max_metadata_bytes: int | None,
 ) -> RarArchive:
+    """Walk one RAR5 volume from its signature to its end block (:class:`_Rar5Walk`)."""
     _require_exact(source, len(RAR5_ID), "RAR5 signature")
+    return _Rar5Walk(
+        source,
+        password=password,
+        kdf_cache=kdf_cache,
+        excluded=excluded,
+        sfx_offset=sfx_offset,
+        volume_index=volume_index,
+        use_qo=use_qo,
+        max_members=max_members,
+        max_metadata_bytes=max_metadata_bytes,
+    ).run()
 
-    is_solid = False
-    is_volume = False
-    comment: str | None = None
-    members = _MemberList()
-    hdr_enc: _Rar5HdrEnc | None = None
-    # Whether a check value positively confirmed the header password; see
-    # _header_failure and _check_rar5_password.
-    password_proven = False
-    needs_next_volume = False
-    seen_file_offsets: set[int] = set()
-    qo_by_off: dict[int, RarMemberInfo] = {}
-    damaged_service_headers: list[DamagedServiceHeader] = []
-    damaged_service_headers_omitted = 0
-    truncated: str | None = None
-    damaged: str | None = None
-    main_seen = False
-    end_block_seen = False
-    end_block_damaged_at: int | None = None
-    trailing_at: int | None = None
-    # Only the first MAIN of a volume is asked for the quick-open table. unrar
-    # accepts a repeated MAIN, and each try reads a QO payload of up to
-    # _RAR5_QO_PAYLOAD_MAX, so trying on every MAIN would let a 17-byte header buy
-    # that read again.
-    qo_tried = not use_qo
 
-    while True:
-        header_fd: _Readable = source
-        header_start = source.tell()
-        if hdr_enc is not None:
-            assert password is not None  # the ENCRYPTION block raised without one
-            # See the RAR3 walk: the IV read and key derivation do not depend on the
-            # password, so their errors are not a wrong password. No IV at all is the
-            # walk's end, as for a plain header; part of one is a cut.
-            iv = read_exact(source, 16)
-            if len(iv) < 16:
-                truncated = _no_header(source, header_start, encrypted_cut=bool(iv))
+class _Rar5Walk:
+    """The header walk over one RAR5 volume.
+
+    A volume is a chain of blocks, each a header and an optional data area. The walk
+    reads one header at a time and skips its data area to reach the next:
+
+    1. ``ENCRYPTION``, when present, comes first: every header after it is
+       encrypted, each behind its own IV.
+    2. ``MAIN`` says whether the archive is solid and which volume of a set this is.
+       It may point at a quick-open (``QO``) service header near the end, which
+       holds copies of the FILE headers. When those copies are readable, the walk
+       uses them in place of reading the FILE headers they copy (§1.1 of
+       ``dev-docs/formats/rar.md``).
+    3. ``FILE`` is a member. ``SERVICE`` carries extra data: ``CMT`` is the archive
+       comment, and a damaged one is reported.
+    4. ``ENDARC`` ends the volume and says whether another volume follows.
+
+    Any other block type is skipped. A cut or a damaged header after ``MAIN`` stops
+    the walk and keeps the members listed before it (``RarArchive.truncated`` /
+    ``RarArchive.damaged``).
+    """
+
+    def __init__(
+        self,
+        source: BinaryIO,
+        *,
+        password: str | bytes | None,
+        kdf_cache: RarKdfCache,
+        excluded: frozenset[OptionalLibrary],
+        sfx_offset: int,
+        volume_index: int,
+        use_qo: bool,
+        max_members: int | None,
+        max_metadata_bytes: int | None,
+    ) -> None:
+        self.source = source
+        self.password = password
+        self.kdf_cache = kdf_cache
+        self.excluded = excluded
+        self.sfx_offset = sfx_offset
+        self.volume_index = volume_index
+        self.max_members = max_members
+        self.max_metadata_bytes = max_metadata_bytes
+
+        self.is_solid = False
+        self.is_volume = False
+        self.comment: str | None = None
+        self.members = _MemberList()
+        self.hdr_enc: _Rar5HdrEnc | None = None
+        # Whether a check value positively confirmed the header password; see
+        # _header_failure and _check_rar5_password.
+        self.password_proven = False
+        self.needs_next_volume = False
+        # Header offsets of the FILE headers listed, from a QO copy or from the walk.
+        self.seen_file_offsets: set[int] = set()
+        # The QO copies by the header offset of the FILE header each one copies.
+        self.qo_by_off: dict[int, RarMemberInfo] = {}
+        self.damaged_service_headers: list[DamagedServiceHeader] = []
+        self.damaged_service_headers_omitted = 0
+        self.truncated: str | None = None
+        self.damaged: str | None = None
+        self.main_seen = False
+        self.end_block_seen = False
+        self.end_block_damaged_at: int | None = None
+        self.trailing_at: int | None = None
+        # Only the first MAIN of a volume is asked for the quick-open table. unrar
+        # accepts a repeated MAIN, and each try reads a QO payload of up to
+        # _RAR5_QO_PAYLOAD_MAX, so trying on every MAIN would let a 17-byte header buy
+        # that read again.
+        self.qo_tried = not use_qo
+
+    def run(self) -> RarArchive:
+        """Walk the blocks after the signature and return what they describe."""
+        source = self.source
+        while True:
+            header_start = source.tell()
+            header_fd = self._open_header(header_start)
+            if header_fd is None:
                 break
-            header_fd = _rar5_decrypt_header(
-                source, iv, hdr_enc, password, kdf_cache, excluded=excluded
+
+            skipped = _emit_and_skip_qo_run(
+                source,
+                qo_by_off=self.qo_by_off,
+                members=self.members,
+                seen_file_offsets=self.seen_file_offsets,
+                max_members=self.max_members,
+                max_metadata_bytes=self.max_metadata_bytes,
             )
+            if skipped is not None:
+                if skipped:
+                    self.needs_next_volume = True
+                continue
 
-        skipped = _emit_and_skip_qo_run(
-            source,
-            qo_by_off=qo_by_off,
-            members=members,
-            seen_file_offsets=seen_file_offsets,
-            max_members=max_members,
-            max_metadata_bytes=max_metadata_bytes,
+            block = self._read_block(header_fd, header_start)
+            if block is None:
+                break
+            if block.block_type == _RAR5_MAIN:
+                self._on_main(block)
+                continue
+            if block.block_type == _RAR5_ENCRYPTION:
+                self._on_encryption(block)
+                continue
+            if block.block_type == _RAR5_ENDARC:
+                endarc_flags = _load_vint_or_zero(block.hdata, block.pos)[0]
+                self.needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
+                self.end_block_seen = True
+                self.trailing_at = _scan_after_end_block(
+                    source, _packed_span_end(block.data_offset, block.add_size)
+                )
+                break
+            if block.block_type in (_RAR5_FILE, _RAR5_SERVICE):
+                self._on_file_or_service(block)
+                continue
+            # Unknown block — skip data area.
+            _seek_after_packed(source, block.data_offset, block.add_size)
+
+        self._report_unmatched_qo_copies()
+        return self._result()
+
+    def _open_header(self, header_start: int) -> _Readable | None:
+        """The stream the next header is read from: the source, or a decrypt stream.
+
+        Returns ``None`` when an encrypted walk ends here, with ``truncated`` set
+        for a cut.
+        """
+        source = self.source
+        hdr_enc = self.hdr_enc
+        if hdr_enc is None:
+            return source
+        password = self.password
+        assert password is not None  # the ENCRYPTION block raised without one
+        # See the RAR3 walk: the IV read and key derivation do not depend on the
+        # password, so their errors are not a wrong password. No IV at all is the
+        # walk's end, as for a plain header; part of one is a cut.
+        iv = read_exact(source, 16)
+        if len(iv) < 16:
+            self.truncated = _no_header(source, header_start, encrypted_cut=bool(iv))
+            return None
+        return _rar5_decrypt_header(
+            source, iv, hdr_enc, password, self.kdf_cache, excluded=self.excluded
         )
-        if skipped is not None:
-            if skipped:
-                needs_next_volume = True
-            continue
 
+    def _read_block(self, header_fd: _Readable, header_start: int) -> _Rar5Block | None:
+        """Read the next header; ``None`` ends the walk, with the reason recorded.
+
+        A cut sets ``truncated``, a damaged header after ``MAIN`` sets ``damaged``,
+        and a damaged end block with only zeros after it sets
+        ``end_block_damaged_at``. Any other failure raises.
+        """
+        source = self.source
         try:
-            parsed = _read_rar5_block(header_fd)
+            block = _read_rar5_block(header_fd)
         except CorruptionError as exc:
             # A plain cut includes one inside the CRC or the size vint.
-            truncated = _header_failure(
-                exc, header_fd, header_start, proven=password_proven, version="RAR5"
+            self.truncated = _header_failure(
+                exc,
+                header_fd,
+                header_start,
+                proven=self.password_proven,
+                version="RAR5",
             )
-            if truncated is not None:
-                break
+            if self.truncated is not None:
+                return None
             if isinstance(exc, _RarEndBlockCrcError):
                 # As in the RAR3 walk: only a block with nothing but zeros after it is
                 # the end block. Damage after the last member keeps the listing, and
                 # the block's next-volume flag is not read.
                 if _only_zeros_after(source, exc.data_offset):
-                    end_block_seen = True
-                    end_block_damaged_at = header_start
-                    break
-                if not main_seen:
+                    self.end_block_seen = True
+                    self.end_block_damaged_at = header_start
+                    return None
+                if not self.main_seen:
                     raise exc.generic from None
                 # Not an end block, so a member header whose type byte is damaged.
-                damaged = _damaged_header(exc.generic, header_start)
-                break
-            if isinstance(exc, _RarHeaderCrcError) and main_seen:
-                damaged = _damaged_header(exc, header_start)
-                break
+                self.damaged = _damaged_header(exc.generic, header_start)
+                return None
+            if isinstance(exc, _RarHeaderCrcError) and self.main_seen:
+                self.damaged = _damaged_header(exc, header_start)
+                return None
             raise
-        if parsed is None:
-            truncated = _no_header(
-                source, header_start, encrypted_cut=hdr_enc is not None
+        if block is None:
+            self.truncated = _no_header(
+                source, header_start, encrypted_cut=self.hdr_enc is not None
             )
-            break
-        (
-            block_type,
-            block_flags,
-            hdata,
-            pos,
-            header_offset,
-            header_size,
-            data_offset,
-            add_size,
-            extra_size,
-        ) = parsed
+        return block
 
-        if block_type == _RAR5_MAIN:
-            main_flags, pos = _load_vint_or_zero(hdata, pos)
-            if main_flags & _RAR5_MAIN_HAS_VOLNR:
-                volnr, pos = _load_vint_or_zero(hdata, pos)
-                # RAR5: first volume omits the field (implicit 0); later volumes
-                # store 1 for the second volume, 2 for the third, …
-                if volume_index == 0 and volnr != 0:
-                    raise UnsupportedFeatureError(
-                        "Need first volume of multi-volume RAR archive"
-                    )
-                if volume_index > 0 and volnr != volume_index:
-                    raise TruncatedError(
-                        f"Out-of-order RAR volume: expected volume index "
-                        f"{volume_index}, got {volnr}"
-                    )
-            elif volume_index > 0:
-                raise TruncatedError(
-                    f"Out-of-order RAR volume: expected volume index {volume_index}, "
-                    f"got first-volume header"
-                )
-            is_solid = bool(main_flags & _RAR5_MAIN_SOLID)
-            is_volume = bool(main_flags & _RAR5_MAIN_ISVOL)
-            main_seen = True
-            _seek_after_packed(source, data_offset, add_size)
-            # Header-encrypted QO stores IV+ciphertext header copies and
-            # file-encrypts the QO payload; reconstructed data_offset then
-            # misses AES padding. Treat that QO as unreadable (FILE walk).
-            if hdr_enc is None and not qo_tried:
-                qo_tried = True
-                qopen_abs = _rar5_locator_qopen_abs(hdata, extra_size, header_offset)
-                if qopen_abs is not None:
-                    resume_pos = source.tell()
-                    listed = _try_list_via_rar5_qo(
-                        source,
-                        qopen_abs=qopen_abs,
-                        volume_index=volume_index,
-                        min_file_offset=resume_pos,
-                        max_members=max_members,
-                        max_metadata_bytes=max_metadata_bytes,
-                    )
-                    if listed is not None:
-                        qo_members, _qo_end = listed
-                        qo_by_off = {m.header_offset: m for m in qo_members}
-                        # Back to after MAIN. CMT is a normal SERVICE on the
-                        # walk; a FILE in the skip map is emitted from the copy.
-                        _seek_to(source, resume_pos)
-                        continue
-                    _seek_to(source, resume_pos)
-            continue
-
-        if block_type == _RAR5_ENCRYPTION:
-            algo, pos = load_vint(hdata, pos)
-            enc_flags, pos = load_vint(hdata, pos)
-            kdf_count, pos = _load_byte(hdata, pos)
-            salt, pos = _load_bytes(hdata, 16, pos)
-            check_value = None
-            if enc_flags & _RAR5_ENC_HAS_CHECKVAL:
-                check_value, pos = _load_bytes(hdata, 12, pos)
-            if algo != _RAR5_XENC_AES256:
+    def _on_main(self, block: _Rar5Block) -> None:
+        """Read the archive flags from ``MAIN``, then try the quick-open copies."""
+        source = self.source
+        volume_index = self.volume_index
+        hdata = block.hdata
+        main_flags, pos = _load_vint_or_zero(hdata, block.pos)
+        if main_flags & _RAR5_MAIN_HAS_VOLNR:
+            volnr, pos = _load_vint_or_zero(hdata, pos)
+            # RAR5: first volume omits the field (implicit 0); later volumes
+            # store 1 for the second volume, 2 for the third, …
+            if volume_index == 0 and volnr != 0:
                 raise UnsupportedFeatureError(
-                    f"Unsupported RAR5 header encryption cipher: {algo}"
+                    "Need first volume of multi-volume RAR archive"
                 )
-            if password is None:
-                raise EncryptionError(
-                    "RAR archive has encrypted headers but no password was provided"
+            if volume_index > 0 and volnr != volume_index:
+                raise TruncatedError(
+                    f"Out-of-order RAR volume: expected volume index "
+                    f"{volume_index}, got {volnr}"
                 )
-            if check_value is not None:
-                password_proven = _check_rar5_password(
-                    check_value, kdf_count, salt, password, kdf_cache=kdf_cache
-                )
-            hdr_enc = _Rar5HdrEnc(
-                algo=algo,
-                flags=enc_flags,
-                kdf_count=kdf_count,
-                salt=salt,
-                check_value=check_value,
+        elif volume_index > 0:
+            raise TruncatedError(
+                f"Out-of-order RAR volume: expected volume index {volume_index}, "
+                f"got first-volume header"
             )
-            _seek_after_packed(source, data_offset, add_size)
-            continue
+        self.is_solid = bool(main_flags & _RAR5_MAIN_SOLID)
+        self.is_volume = bool(main_flags & _RAR5_MAIN_ISVOL)
+        self.main_seen = True
+        _seek_after_packed(source, block.data_offset, block.add_size)
+        # Header-encrypted QO stores IV+ciphertext header copies and
+        # file-encrypts the QO payload; reconstructed data_offset then
+        # misses AES padding. Treat that QO as unreadable (FILE walk).
+        if self.hdr_enc is None and not self.qo_tried:
+            self.qo_tried = True
+            self._load_qo_copies(block)
 
-        if block_type == _RAR5_ENDARC:
-            endarc_flags = _load_vint_or_zero(hdata, pos)[0]
-            needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
-            end_block_seen = True
-            trailing_at = _scan_after_end_block(
-                source, _packed_span_end(data_offset, add_size)
-            )
-            break
+    def _load_qo_copies(self, main: _Rar5Block) -> None:
+        """Fill ``qo_by_off`` from the QO header MAIN points at, when it is usable.
 
-        if block_type in (_RAR5_FILE, _RAR5_SERVICE):
-            member = _parse_rar5_file_block(
-                hdata,
-                pos,
-                block_flags=block_flags,
-                extra_size=extra_size,
-                header_offset=header_offset,
-                header_size=header_size,
-                data_offset=data_offset,
-                add_size=add_size,
-                volume_index=volume_index,
+        The read position is left after MAIN either way. CMT is a normal SERVICE on
+        the walk; a FILE in ``qo_by_off`` is emitted from the copy.
+        """
+        source = self.source
+        qopen_abs = _rar5_locator_qopen_abs(
+            main.hdata, main.extra_size, main.header_offset
+        )
+        if qopen_abs is None:
+            return
+        resume_pos = source.tell()
+        listed = _try_list_via_rar5_qo(
+            source,
+            qopen_abs=qopen_abs,
+            volume_index=self.volume_index,
+            min_file_offset=resume_pos,
+            max_members=self.max_members,
+            max_metadata_bytes=self.max_metadata_bytes,
+        )
+        if listed is not None:
+            qo_members, _qo_end = listed
+            self.qo_by_off = {m.header_offset: m for m in qo_members}
+        _seek_to(source, resume_pos)
+
+    def _on_encryption(self, block: _Rar5Block) -> None:
+        """Set up header decryption from ``ENCRYPTION``, checking the password."""
+        hdata = block.hdata
+        algo, pos = load_vint(hdata, block.pos)
+        enc_flags, pos = load_vint(hdata, pos)
+        kdf_count, pos = _load_byte(hdata, pos)
+        salt, pos = _load_bytes(hdata, 16, pos)
+        check_value = None
+        if enc_flags & _RAR5_ENC_HAS_CHECKVAL:
+            check_value, pos = _load_bytes(hdata, 12, pos)
+        if algo != _RAR5_XENC_AES256:
+            raise UnsupportedFeatureError(
+                f"Unsupported RAR5 header encryption cipher: {algo}"
             )
-            if block_type == _RAR5_FILE:
-                # File-version history rows (extra 0x04) are kept as members.
-                # QO copies are emitted in `_emit_and_skip_qo_run` before this
-                # read; this branch is holes, FILE after QO, and the no-QO walk.
-                if member.header_offset not in seen_file_offsets:
-                    if _emit_file_member(
-                        members,
-                        member,
-                        max_members=max_members,
-                        max_metadata_bytes=max_metadata_bytes,
-                    ):
-                        needs_next_volume = True
-                    seen_file_offsets.add(member.header_offset)
-            elif block_type == _RAR5_SERVICE:
-                if (
-                    member.skipped_header_records or member.header_walk_stop_reason
-                ) and not _append_damaged_service_header(
-                    damaged_service_headers, member
+        if self.password is None:
+            raise EncryptionError(
+                "RAR archive has encrypted headers but no password was provided"
+            )
+        if check_value is not None:
+            self.password_proven = _check_rar5_password(
+                check_value, kdf_count, salt, self.password, kdf_cache=self.kdf_cache
+            )
+        self.hdr_enc = _Rar5HdrEnc(
+            algo=algo,
+            flags=enc_flags,
+            kdf_count=kdf_count,
+            salt=salt,
+            check_value=check_value,
+        )
+        _seek_after_packed(self.source, block.data_offset, block.add_size)
+
+    def _on_file_or_service(self, block: _Rar5Block) -> None:
+        """List a ``FILE`` header, or read a ``SERVICE`` header's comment or damage."""
+        source = self.source
+        member = _parse_rar5_file_block(
+            block.hdata,
+            block.pos,
+            block_flags=block.flags,
+            extra_size=block.extra_size,
+            header_offset=block.header_offset,
+            header_size=block.header_size,
+            data_offset=block.data_offset,
+            add_size=block.add_size,
+            volume_index=self.volume_index,
+        )
+        if block.block_type == _RAR5_FILE:
+            # File-version history rows (extra 0x04) are kept as members.
+            # QO copies are emitted in `_emit_and_skip_qo_run` before this
+            # read; this branch is holes, FILE after QO, and the no-QO walk.
+            if member.header_offset not in self.seen_file_offsets:
+                if _emit_file_member(
+                    self.members,
+                    member,
+                    max_members=self.max_members,
+                    max_metadata_bytes=self.max_metadata_bytes,
                 ):
-                    damaged_service_headers_omitted += 1
-                if _is_stored_rar5_cmt(member) and _span_in_file(
-                    source, data_offset, member.compress_size
-                ):
-                    source.seek(data_offset)
-                    # The packed size, as for any stored payload: the unpacked one
-                    # is only a claim, and bytes past the packed span belong to the
-                    # next header.
-                    raw = _read_comment(
-                        source,
-                        member.compress_size,
-                        "RAR5 comment",
-                        max_metadata_bytes,
-                    )
-                    comment = _decode_rar5_cmt_bytes(raw)
-            _seek_after_packed(source, data_offset, add_size)
-            continue
+                    self.needs_next_volume = True
+                self.seen_file_offsets.add(member.header_offset)
+        else:
+            if (
+                member.skipped_header_records or member.header_walk_stop_reason
+            ) and not _append_damaged_service_header(
+                self.damaged_service_headers, member
+            ):
+                self.damaged_service_headers_omitted += 1
+            if _is_stored_rar5_cmt(member) and _span_in_file(
+                source, block.data_offset, member.compress_size
+            ):
+                source.seek(block.data_offset)
+                # The packed size, as for any stored payload: the unpacked one
+                # is only a claim, and bytes past the packed span belong to the
+                # next header.
+                raw = _read_comment(
+                    source,
+                    member.compress_size,
+                    "RAR5 comment",
+                    self.max_metadata_bytes,
+                )
+                self.comment = _decode_rar5_cmt_bytes(raw)
+        _seek_after_packed(source, block.data_offset, block.add_size)
 
-        # Unknown block — skip data area.
-        _seek_after_packed(source, data_offset, add_size)
+    def _report_unmatched_qo_copies(self) -> None:
+        """Report QO copies a clean walk never reached (:func:`_qo_unmatched_copies`)."""
+        # A cut or a damaged header stops the walk early, so copies past it are
+        # unreached for that reason alone; both end the walk before
+        # ``end_block_seen`` is set, so that flag alone withholds the report for
+        # them. A damaged end block stops nothing, but the archive is already
+        # corrupt and the QO claim would rest on a header whose CRC failed, so it
+        # is withheld there too. The entry bypasses the cap
+        # (_is_qo_unmatched_copies).
+        if self.end_block_seen and self.end_block_damaged_at is None:
+            unmatched = _qo_unmatched_copies(self.qo_by_off, self.seen_file_offsets)
+            if unmatched is not None:
+                self.damaged_service_headers.append(unmatched)
 
-    # A cut or a damaged header stops the walk early, so copies past it are unreached
-    # for that reason alone; both break out of the loop before ``end_block_seen`` is
-    # set, so that flag alone withholds the report for them. A damaged end block
-    # stops nothing, but the archive is already corrupt and the QO claim would rest
-    # on a header whose CRC failed, so it is withheld there too. The entry bypasses
-    # the cap (_is_qo_unmatched_copies).
-    if end_block_seen and end_block_damaged_at is None:
-        unmatched = _qo_unmatched_copies(qo_by_off, seen_file_offsets)
-        if unmatched is not None:
-            damaged_service_headers.append(unmatched)
-
-    return RarArchive(
-        version=5,
-        is_solid=is_solid,
-        has_header_encryption=hdr_enc is not None,
-        rar5_header_crypt=(
-            {volume_index: (hdr_enc.salt, hdr_enc.kdf_count)}
-            if hdr_enc is not None
-            else {}
-        ),
-        comment=comment,
-        members=members,
-        sfx_offset=sfx_offset,
-        is_volume=is_volume,
-        needs_next_volume=needs_next_volume,
-        damaged_service_headers=damaged_service_headers,
-        damaged_service_headers_omitted=damaged_service_headers_omitted,
-        truncated=truncated,
-        damaged=damaged,
-        end_block_missing_volumes=(
-            [volume_index]
-            if not end_block_seen and truncated is None and damaged is None
-            else []
-        ),
-        end_block_damaged_volumes=(
-            {volume_index: end_block_damaged_at}
-            if end_block_damaged_at is not None
-            else {}
-        ),
-        trailing_data_volumes=(
-            {volume_index: trailing_at} if trailing_at is not None else {}
-        ),
-    )
+    def _result(self) -> RarArchive:
+        volume_index = self.volume_index
+        hdr_enc = self.hdr_enc
+        return RarArchive(
+            version=5,
+            is_solid=self.is_solid,
+            has_header_encryption=hdr_enc is not None,
+            rar5_header_crypt=(
+                {volume_index: (hdr_enc.salt, hdr_enc.kdf_count)}
+                if hdr_enc is not None
+                else {}
+            ),
+            comment=self.comment,
+            members=self.members,
+            sfx_offset=self.sfx_offset,
+            is_volume=self.is_volume,
+            needs_next_volume=self.needs_next_volume,
+            damaged_service_headers=self.damaged_service_headers,
+            damaged_service_headers_omitted=self.damaged_service_headers_omitted,
+            truncated=self.truncated,
+            damaged=self.damaged,
+            end_block_missing_volumes=(
+                [volume_index]
+                if not self.end_block_seen
+                and self.truncated is None
+                and self.damaged is None
+                else []
+            ),
+            end_block_damaged_volumes=(
+                {volume_index: self.end_block_damaged_at}
+                if self.end_block_damaged_at is not None
+                else {}
+            ),
+            trailing_data_volumes=(
+                {volume_index: self.trailing_at} if self.trailing_at is not None else {}
+            ),
+        )
 
 
-def _read_rar5_block(
-    fd: _Readable,
-) -> tuple[int, int, bytes, int, int, int, int, int, int] | None:
-    """Read one RAR5 block.
-
-    Returns
-    ``(type, flags, hdata, pos_after_common, header_offset, header_size,
-    data_offset, add_size, extra_size)`` or ``None`` at EOF.
+def _read_rar5_block(fd: _Readable) -> _Rar5Block | None:
+    """Read one RAR5 block header and check its CRC; ``None`` at EOF.
 
     Reads the size vint byte-at-a-time rather than prefetching a large window and
     seeking back: :class:`_HeaderDecryptStream` has no ``seek``, and its ``tell``
@@ -3857,16 +4145,16 @@ def _read_rar5_block(
         extra_size, pos = load_vint(hdata, pos)
     if block_flags & _RAR5_FLAG_DATA:
         add_size, pos = load_vint(hdata, pos)
-    return (
-        block_type,
-        block_flags,
-        hdata,
-        pos,
-        header_offset,
-        header_size,
-        data_offset,
-        add_size,
-        extra_size,
+    return _Rar5Block(
+        block_type=block_type,
+        flags=block_flags,
+        hdata=hdata,
+        pos=pos,
+        header_offset=header_offset,
+        header_size=header_size,
+        data_offset=data_offset,
+        add_size=add_size,
+        extra_size=extra_size,
     )
 
 
@@ -3930,6 +4218,206 @@ def _rar5_dictionary_size(compress_info: int) -> int:
     return size
 
 
+@dataclass(slots=True)
+class _Rar5FileExtras:
+    """What the extra records of a RAR5 FILE or SERVICE header add to its fixed fields.
+
+    :func:`_walk_rar5_file_extras` fills it; a field no record set keeps its default.
+    """
+
+    mtime: datetime | None
+    """Starts as the fixed fields' mtime; a time record can replace it."""
+    ctime: datetime | None = None
+    atime: datetime | None = None
+    blake2sp_hash: bytes | None = None
+    file_redir: tuple[int, int, str] | None = None
+    file_encryption: RarEncryptionInfo | None = None
+    file_version: int | None = None
+    owner: RarOwner | None = None
+    flags: int = 0
+    """RAR3-style member flags: ``_RAR3_FILE_PASSWORD`` for an encryption record."""
+    skipped_records: list[tuple[str, int | None, str]] = field(default_factory=list)
+    timestamp_issues: list[TimestampIssue] = field(default_factory=list)
+    stop_reason: str | None = None
+    """Why the walk stopped, or ``None`` if it ran to the end. Four exits reach it
+    and they are not the same fault, so the diagnostic must not name one of them
+    for all four: a single zero-size record is not "more than sixteen malformed"."""
+
+
+def _walk_rar5_file_extras(
+    hdata: bytes,
+    pos: int,
+    *,
+    extra_size: int,
+    header_offset: int,
+    filename: str,
+    extras: _Rar5FileExtras,
+) -> None:
+    """Read the extra records of a RAR5 FILE or SERVICE header into ``extras``.
+
+    ``pos`` is where the fixed fields end. A record that cannot be read is dropped
+    and listed in ``extras.skipped_records``, except the encryption record, whose
+    failure raises: a member listed as plaintext when it is not is a wrong answer,
+    not a missing one. A walk that cannot go on sets ``extras.stop_reason``.
+    """
+    unplaced_bytes = 0
+    # The extra area is the header's last ``extra_size`` bytes, wherever the
+    # fixed fields end — the same rule as the MAIN locator walk, and the one
+    # ``unrar`` applies (``ProcessExtra50``). Walking on from the end of the
+    # name instead reads the wrong bytes as records whenever the two disagree.
+    extra_start = len(hdata) - extra_size
+    if extra_start <= 0:
+        # ``unrar`` 7.00 checks ``ExtraSize >= HeadSize`` when it reads the
+        # size and reports "Corrupt header": an extra area that does not fit
+        # in its own header is not one a walk can place. Both sizes count the
+        # whole header, its CRC and size vint included, which is ``hdata``;
+        # the oracle rows at ``len(hdata) - 1`` and ``len(hdata)`` pin it.
+        raise CorruptionError(
+            f"RAR5 header at offset {header_offset} declares an extra area of "
+            f"{extra_size} bytes in a {len(hdata)}-byte header"
+        )
+    if extra_start < pos:
+        # The area would overlap the fields already read. ``unrar`` ignores
+        # the extras then and lists the member from its fixed fields. Do the
+        # same, but through the stop reason: an unread area may hold the
+        # encryption record, so the member is ``encryption_unknown`` rather
+        # than silently plaintext.
+        extras.stop_reason = "its extra area overlaps the header's fixed fields"
+        pos = len(hdata)
+    else:
+        # A writer leaves no room here: the fixed fields end where the extra
+        # area starts. ``unrar`` skips any bytes in between without a word and
+        # lists the member, and so does this walk; but bytes no writer puts
+        # there mean the header is damaged or crafted, which is what the
+        # diagnostic (and a strict policy) is for. Should a later RAR add a
+        # fixed field this parser does not read, this fires on every such
+        # header and is the place to teach it.
+        unplaced_bytes = extra_start - pos
+        pos = extra_start
+    # Walk extras until near end (allow 1 byte of padding like rarfile).
+    while pos < len(hdata) - 1:
+        if len(extras.skipped_records) >= _MAX_SKIPPED_HEADER_RECORDS:
+            # Still inside the loop, so bytes remain; a member whose last
+            # skipped record is also its last extra never gets here.
+            extras.stop_reason = (
+                f"more than {_MAX_SKIPPED_HEADER_RECORDS} of its extra "
+                f"records were malformed"
+            )
+            break
+        try:
+            xsize, pos = load_vint(hdata, pos)
+        except CorruptionError as exc:
+            # ``load_vint`` does not advance ``pos`` on failure, so the
+            # next record has no boundary. Stop, and say so.
+            extras.skipped_records.append(("unknown", None, raw_message_of(exc)))
+            extras.stop_reason = "an extra record's size could not be read"
+            break
+        if xsize < 1:
+            # A record's body opens with its type vint, so one byte is the
+            # smallest legal record: a type with no payload, which is what an
+            # unimplemented record looks like. A declared size of zero names
+            # nothing, so the size vint is wrong and the offset it puts the
+            # next record at is wrong with it. It is also one attacker byte
+            # per record, which is what made a crafted extra area expensive
+            # rather than merely damaged. ``unrar`` 7.00 does carry on here
+            # and gets a wrong answer for it — one such record in front of an
+            # encrypted member and ``unrar l`` reports it as plaintext — so
+            # the oracle that justifies the leniency above does not reach
+            # this case.
+            extras.skipped_records.append(
+                ("unknown", None, "extra record declares a size of zero")
+            )
+            extras.stop_reason = "an extra record declared a size of zero"
+            break
+        if pos + xsize > len(hdata):
+            extras.skipped_records.append(
+                ("unknown", None, "extra record overruns the extra area")
+            )
+            extras.stop_reason = "an extra record overran the extra area"
+            break
+        xdata, pos = _load_bytes(hdata, xsize, pos)
+        try:
+            xtype, xpos = load_vint(xdata, 0)
+        except CorruptionError as exc:
+            # A body of the declared length whose type vint has no terminating
+            # byte. The framing is intact — the next record's offset is known —
+            # so this is a dropped record like any other, not a reason to stop.
+            # Two attacker bytes apiece, which is what the cap at the loop head
+            # keeps from becoming one retained tuple per extra byte.
+            extras.skipped_records.append(("unknown", None, raw_message_of(exc)))
+            continue
+        try:
+            if xtype == _RAR5_XFILE_TIME:
+                extras.mtime, extras.ctime, extras.atime = _parse_rar5_xtime(
+                    xdata,
+                    xpos,
+                    extras.mtime,
+                    extras.ctime,
+                    extras.atime,
+                    filename=filename,
+                    issues=extras.timestamp_issues,
+                )
+            elif xtype == _RAR5_XFILE_ENCRYPTION:
+                # Deliberately *not* skippable. Dropping this record would
+                # leave ``file_encryption`` unset and the member would list as
+                # plaintext, which is a wrong answer rather than a missing one
+                # — the failure class this library treats as the worst. A
+                # member whose encryption parameters cannot be read is not a
+                # member that can be presented at all.
+                extras.file_encryption = _parse_rar5_file_encryption(xdata, xpos)
+                extras.flags |= _RAR3_FILE_PASSWORD
+            elif xtype == _RAR5_XFILE_HASH:
+                hash_type, xpos = load_vint(xdata, xpos)
+                if hash_type == _RAR5_XHASH_BLAKE2SP:
+                    extras.blake2sp_hash, xpos = _load_bytes(xdata, 32, xpos)
+            elif xtype == _RAR5_XFILE_REDIR:
+                redir_type, xpos = load_vint(xdata, xpos)
+                redir_flags, xpos = load_vint(xdata, xpos)
+                redir_name, xpos = _load_vstr(xdata, xpos)
+                if redir_type != _RAR5_XREDIR_NONE:
+                    extras.file_redir = (
+                        redir_type,
+                        redir_flags,
+                        redir_name.decode("utf8", "surrogateescape"),
+                    )
+            elif xtype == _RAR5_XFILE_VERSION:
+                _vflags, xpos = load_vint(xdata, xpos)
+                extras.file_version, xpos = load_vint(xdata, xpos)
+            elif xtype == _RAR5_XFILE_OWNER:
+                extras.owner = _parse_rar5_owner(xdata, xpos)
+            # SERVICE / unknown: ignore
+        except CorruptionError as exc:
+            if xtype == _RAR5_XFILE_ENCRYPTION:
+                raise
+            # Drop this record and keep the member. The walk already ignores a
+            # record type it does not know; a *known* type it cannot parse is
+            # the same amount of missing information, and refusing the archive
+            # over it loses every member that parsed. ``unrar`` 7.00 lists such
+            # an archive. The caller surfaces this as a diagnostic, which under
+            # a strict policy raises — so strictness stays available without
+            # being the default. Whatever the record would have set keeps the
+            # value it had; nothing half-written is committed, because each
+            # branch assigns only on its own last statement.
+            extras.skipped_records.append(
+                (_RAR5_XNAMES.get(xtype, "unknown"), xtype, raw_message_of(exc))
+            )
+
+    if unplaced_bytes:
+        # Added after the walk so the cap on malformed records counts records
+        # only, and first because the bytes come first in the header.
+        extras.skipped_records.insert(
+            0,
+            (
+                RAR5_UNPLACED_BYTES,
+                None,
+                (
+                    f"{unplaced_bytes} bytes between its fixed fields and its "
+                    "declared extra area"
+                ),
+            ),
+        )
+
+
 def _parse_rar5_file_block(
     hdata: bytes,
     pos: int,
@@ -3942,6 +4430,12 @@ def _parse_rar5_file_block(
     add_size: int,
     volume_index: int,
 ) -> RarMemberInfo:
+    """Build the member a RAR5 FILE or SERVICE header describes.
+
+    Three steps: the fixed fields from ``pos`` (sizes, mode, name), the extra records
+    at the end of the header (:func:`_walk_rar5_file_extras`), then the member, with
+    the redirect record deciding whether it is a link.
+    """
     file_flags, pos = load_vint(hdata, pos)
     file_size, pos = load_vint(hdata, pos)
     mode, pos = load_vint(hdata, pos)
@@ -3968,181 +4462,20 @@ def _parse_rar5_file_block(
     split_before = bool(block_flags & _RAR5_FLAG_SPLIT_BEFORE)
     split_after = bool(block_flags & _RAR5_FLAG_SPLIT_AFTER)
 
-    blake2sp_hash: bytes | None = None
-    file_redir: tuple[int, int, str] | None = None
-    file_encryption: RarEncryptionInfo | None = None
-    file_version: int | None = None
-    owner: RarOwner | None = None
-    flags = 0
-    ctime: datetime | None = None
-    atime: datetime | None = None
-    skipped_records: list[tuple[str, int | None, str]] = []
-    timestamp_issues: list[TimestampIssue] = []
-    # Why the walk stopped, or ``None`` if it ran to the end. Four exits reach it
-    # and they are not the same fault, so the diagnostic must not name one of them
-    # for all four: a single zero-size record is not "more than sixteen malformed".
-    stop_reason: str | None = None
-    unplaced_bytes = 0
-
+    extras = _Rar5FileExtras(mtime=mtime)
     if extra_size:
-        # The extra area is the header's last ``extra_size`` bytes, wherever the
-        # fixed fields end — the same rule as the MAIN locator walk, and the one
-        # ``unrar`` applies (``ProcessExtra50``). Walking on from the end of the
-        # name instead reads the wrong bytes as records whenever the two disagree.
-        extra_start = len(hdata) - extra_size
-        if extra_start <= 0:
-            # ``unrar`` 7.00 checks ``ExtraSize >= HeadSize`` when it reads the
-            # size and reports "Corrupt header": an extra area that does not fit
-            # in its own header is not one a walk can place. Both sizes count the
-            # whole header, its CRC and size vint included, which is ``hdata``;
-            # the oracle rows at ``len(hdata) - 1`` and ``len(hdata)`` pin it.
-            raise CorruptionError(
-                f"RAR5 header at offset {header_offset} declares an extra area of "
-                f"{extra_size} bytes in a {len(hdata)}-byte header"
-            )
-        if extra_start < pos:
-            # The area would overlap the fields already read. ``unrar`` ignores
-            # the extras then and lists the member from its fixed fields. Do the
-            # same, but through the stop reason: an unread area may hold the
-            # encryption record, so the member is ``encryption_unknown`` rather
-            # than silently plaintext.
-            stop_reason = "its extra area overlaps the header's fixed fields"
-            pos = len(hdata)
-        else:
-            # A writer leaves no room here: the fixed fields end where the extra
-            # area starts. ``unrar`` skips any bytes in between without a word and
-            # lists the member, and so does this walk; but bytes no writer puts
-            # there mean the header is damaged or crafted, which is what the
-            # diagnostic (and a strict policy) is for. Should a later RAR add a
-            # fixed field this parser does not read, this fires on every such
-            # header and is the place to teach it.
-            unplaced_bytes = extra_start - pos
-            pos = extra_start
-        # Walk extras until near end (allow 1 byte of padding like rarfile).
-        while pos < len(hdata) - 1:
-            if len(skipped_records) >= _MAX_SKIPPED_HEADER_RECORDS:
-                # Still inside the loop, so bytes remain; a member whose last
-                # skipped record is also its last extra never gets here.
-                stop_reason = (
-                    f"more than {_MAX_SKIPPED_HEADER_RECORDS} of its extra "
-                    f"records were malformed"
-                )
-                break
-            try:
-                xsize, pos = load_vint(hdata, pos)
-            except CorruptionError as exc:
-                # ``load_vint`` does not advance ``pos`` on failure, so the
-                # next record has no boundary. Stop, and say so.
-                skipped_records.append(("unknown", None, raw_message_of(exc)))
-                stop_reason = "an extra record's size could not be read"
-                break
-            if xsize < 1:
-                # A record's body opens with its type vint, so one byte is the
-                # smallest legal record: a type with no payload, which is what an
-                # unimplemented record looks like. A declared size of zero names
-                # nothing, so the size vint is wrong and the offset it puts the
-                # next record at is wrong with it. It is also one attacker byte
-                # per record, which is what made a crafted extra area expensive
-                # rather than merely damaged. ``unrar`` 7.00 does carry on here
-                # and gets a wrong answer for it — one such record in front of an
-                # encrypted member and ``unrar l`` reports it as plaintext — so
-                # the oracle that justifies the leniency above does not reach
-                # this case.
-                skipped_records.append(
-                    ("unknown", None, "extra record declares a size of zero")
-                )
-                stop_reason = "an extra record declared a size of zero"
-                break
-            if pos + xsize > len(hdata):
-                skipped_records.append(
-                    ("unknown", None, "extra record overruns the extra area")
-                )
-                stop_reason = "an extra record overran the extra area"
-                break
-            xdata, pos = _load_bytes(hdata, xsize, pos)
-            try:
-                xtype, xpos = load_vint(xdata, 0)
-            except CorruptionError as exc:
-                # A body of the declared length whose type vint has no terminating
-                # byte. The framing is intact — the next record's offset is known —
-                # so this is a dropped record like any other, not a reason to stop.
-                # Two attacker bytes apiece, which is what the cap at the loop head
-                # keeps from becoming one retained tuple per extra byte.
-                skipped_records.append(("unknown", None, raw_message_of(exc)))
-                continue
-            try:
-                if xtype == _RAR5_XFILE_TIME:
-                    mtime, ctime, atime = _parse_rar5_xtime(
-                        xdata,
-                        xpos,
-                        mtime,
-                        ctime,
-                        atime,
-                        filename=filename,
-                        issues=timestamp_issues,
-                    )
-                elif xtype == _RAR5_XFILE_ENCRYPTION:
-                    # Deliberately *not* skippable. Dropping this record would
-                    # leave ``file_encryption`` unset and the member would list as
-                    # plaintext, which is a wrong answer rather than a missing one
-                    # — the failure class this library treats as the worst. A
-                    # member whose encryption parameters cannot be read is not a
-                    # member that can be presented at all.
-                    file_encryption = _parse_rar5_file_encryption(xdata, xpos)
-                    flags |= _RAR3_FILE_PASSWORD
-                elif xtype == _RAR5_XFILE_HASH:
-                    hash_type, xpos = load_vint(xdata, xpos)
-                    if hash_type == _RAR5_XHASH_BLAKE2SP:
-                        blake2sp_hash, xpos = _load_bytes(xdata, 32, xpos)
-                elif xtype == _RAR5_XFILE_REDIR:
-                    redir_type, xpos = load_vint(xdata, xpos)
-                    redir_flags, xpos = load_vint(xdata, xpos)
-                    redir_name, xpos = _load_vstr(xdata, xpos)
-                    if redir_type != _RAR5_XREDIR_NONE:
-                        file_redir = (
-                            redir_type,
-                            redir_flags,
-                            redir_name.decode("utf8", "surrogateescape"),
-                        )
-                elif xtype == _RAR5_XFILE_VERSION:
-                    _vflags, xpos = load_vint(xdata, xpos)
-                    file_version, xpos = load_vint(xdata, xpos)
-                elif xtype == _RAR5_XFILE_OWNER:
-                    owner = _parse_rar5_owner(xdata, xpos)
-                # SERVICE / unknown: ignore
-            except CorruptionError as exc:
-                if xtype == _RAR5_XFILE_ENCRYPTION:
-                    raise
-                # Drop this record and keep the member. The walk already ignores a
-                # record type it does not know; a *known* type it cannot parse is
-                # the same amount of missing information, and refusing the archive
-                # over it loses every member that parsed. ``unrar`` 7.00 lists such
-                # an archive. The caller surfaces this as a diagnostic, which under
-                # a strict policy raises — so strictness stays available without
-                # being the default. Whatever the record would have set keeps the
-                # value it had; nothing half-written is committed, because each
-                # branch assigns only on its own last statement.
-                skipped_records.append(
-                    (_RAR5_XNAMES.get(xtype, "unknown"), xtype, raw_message_of(exc))
-                )
-
-    if unplaced_bytes:
-        # Added after the walk so the cap on malformed records counts records
-        # only, and first because the bytes come first in the header.
-        skipped_records.insert(
-            0,
-            (
-                RAR5_UNPLACED_BYTES,
-                None,
-                (
-                    f"{unplaced_bytes} bytes between its fixed fields and its "
-                    "declared extra area"
-                ),
-            ),
+        _walk_rar5_file_extras(
+            hdata,
+            pos,
+            extra_size=extra_size,
+            header_offset=header_offset,
+            filename=filename,
+            extras=extras,
         )
 
     is_symlink = False
     is_hardlink_or_copy = False
+    file_redir = extras.file_redir
     if file_redir is not None:
         rtype = file_redir[0]
         if rtype in (
@@ -4169,15 +4502,15 @@ def _parse_rar5_file_block(
         compress_size=add_size,
         compress_type=compress_type,
         crc32=crc32,
-        blake2sp_hash=blake2sp_hash,
-        mtime=mtime,
-        ctime=ctime,
-        atime=atime,
+        blake2sp_hash=extras.blake2sp_hash,
+        mtime=extras.mtime,
+        ctime=extras.ctime,
+        atime=extras.atime,
         mode=mode,
         host_os=host_os,
-        flags=flags,
+        flags=extras.flags,
         file_redir=file_redir,
-        file_encryption=file_encryption,
+        file_encryption=extras.file_encryption,
         header_offset=header_offset,
         header_size=header_size,
         data_offset=data_offset,
@@ -4191,22 +4524,24 @@ def _parse_rar5_file_block(
         # "not encrypted" — it is *unknown*, which is ``encryption_unknown``
         # rather than this flag. Keeping the two apart is what stops one
         # damaged member from reporting a whole plaintext archive as encrypted.
-        is_encrypted=file_encryption is not None,
+        is_encrypted=extras.file_encryption is not None,
         volume_index=volume_index,
         split_before=split_before,
         split_after=split_after,
         size_unknown=bool(file_flags & _RAR5_FILE_UNKNOWN_SIZE),
-        file_version=file_version,
-        owner=owner,
+        file_version=extras.file_version,
+        owner=extras.owner,
         # RAR5 keeps the directory flag apart from the dictionary bits, so a
         # directory-flagged link reports what its compression info declares.
         dictionary_size=0
         if is_directory and not is_symlink
         else _rar5_dictionary_size(compress_info),
         rar5_algorithm_version=compress_info & _RAR5_ALGO_MASK,
-        skipped_header_records=tuple(skipped_records),
-        header_walk_stop_reason=stop_reason,
-        timestamp_issues=tuple(timestamp_issues) if timestamp_issues else (),
+        skipped_header_records=tuple(extras.skipped_records),
+        header_walk_stop_reason=extras.stop_reason,
+        timestamp_issues=tuple(extras.timestamp_issues)
+        if extras.timestamp_issues
+        else (),
     )
     _settle_unknown_stored_size(member)
     return member
