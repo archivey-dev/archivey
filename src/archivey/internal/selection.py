@@ -1,9 +1,9 @@
 """Member selection normalization shared by streaming and extraction.
 
-Every public call that takes ``members=`` (``extract_all``, ``stream_members``, ...)
-passes it through :func:`normalize_member_selector` once, and gets back a predicate
-over :class:`~archivey.types.ArchiveMember`. For the collection form that predicate is
-a :class:`CollectionSelector`, which the pass asks at the end which entries matched no
+``extract_all`` and ``stream_members`` pass ``members=`` through
+:func:`normalize_member_selector` once. It returns ``None`` for no selection, or else a
+predicate over :class:`~archivey.types.ArchiveMember`. For the collection form that
+predicate is a :class:`CollectionSelector`, which the pass asks at the end which entries matched no
 member, to report them.
 """
 
@@ -177,9 +177,10 @@ def normalize_member_selector(
     if isinstance(members, (str, bytes)):
         # A str is an iterable of one-character strings, so `members="notes.txt"`
         # would select the set {"n", "o", "t", "e", "s", ".", "x"}: no member would
-        # match, and the call would report a clean extraction of nothing. Refused rather than
-        # wrapped: guessing that a string meant [string] would make the plural
-        # parameter accept a singular, and the caller is one bracket from correct.
+        # match, and the call would report a clean extraction of nothing. Refused
+        # rather than wrapped: guessing that a string meant [string] would make the
+        # plural parameter accept a singular, and the caller is one bracket from
+        # correct.
         # bytes gets no list-wrapping advice: Pass [b'notes.txt'] is itself a
         # usage error (names are str). The str branch is the common slip.
         if isinstance(members, bytes):

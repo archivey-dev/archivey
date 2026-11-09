@@ -469,11 +469,11 @@ def _check_member_name(member: ArchiveMember) -> None:
     # name reaching here was not re-rooted: STRICT, or a filter that returned one (see
     # reroot_absolute).
     # A name the platform filesystem encoding cannot represent can never be
-    # materialized under dest, and it would otherwise crash the parent-resolution
-    # below with a raw UnicodeEncodeError. The extraction coordinator passes the
-    # member through ``disk_spelled`` first, so a lone surrogate reaches here as
-    # bytes on POSIX; a caller of this function that does not still gets a
-    # rejection. (Windows' surrogatepass encoding represents lone surrogates.)
+    # materialized under dest, and it would otherwise crash ``_resolve_parent_within``
+    # with a raw UnicodeEncodeError. The extraction coordinator passes the member
+    # through ``disk_spelled`` first, so a lone surrogate reaches here as bytes on
+    # POSIX; a caller of this function that does not still gets a rejection.
+    # (Windows' surrogatepass encoding represents lone surrogates.)
     _check_path_string(name, member_name=name, what="member name")
     if _is_absolute(name):
         raise FilterRejectionError("Absolute path not allowed", member_name=name)

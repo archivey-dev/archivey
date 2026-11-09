@@ -281,11 +281,12 @@ def infer_member_name_from_archive(
       its replacement to the stem (``.tgz`` → ``.tar``).
     - Otherwise → ``basename + \".uncompressed\"``.
 
-    A stem of only dots and spaces (``\"..gz\"`` → ``\".\"``) is not a name: extraction
-    refuses it and the caller gets an empty directory for an intact payload. Those fall
-    through to the ``.uncompressed`` spelling, which the length guard already gives
-    ``\".gz\"``. The rule does not depend on the policy: ``\"....gz\"`` presents
-    ``\"....gz.uncompressed\"`` even though ``STANDARD`` and ``TRUSTED`` could write
+    A stem of only dots and spaces (``\"..gz\"`` → ``\".\"``) is not a usable name (see
+    :func:`_is_usable_stem` for which policies refuse which stems): extracted, it would
+    give the caller an empty directory for an intact payload. Those fall through to the
+    ``.uncompressed`` spelling, which the length guard already gives ``\".gz\"``. The
+    rule does not depend on the policy: ``\"....gz\"`` presents
+    ``\"....gz.uncompressed\"`` under every policy, even though ``TRUSTED`` could write
     ``\"...\"``.
     """
     if archive_name is None:
