@@ -162,8 +162,9 @@ def _infer_member_name(archive_name: str | None) -> str:
 
     A known compressor extension is stripped (``notes.txt.gz`` gives ``notes.txt``),
     a one-word suffix in ``_SUFFIX_REPLACEMENTS`` is swapped (``a.tgz`` gives
-    ``a.tar``), and any other name gets ``.uncompressed`` appended. The full table,
-    edge cases included, is in the ``format-single-file-compressors`` spec.
+    ``a.tar``), and any other name gets ``.uncompressed`` appended. With no usable
+    source name (a pipe, a nameless stream) the member is called ``data``. The full
+    table, edge cases included, is in the ``format-single-file-compressors`` spec.
     """
     return infer_member_name_from_archive(
         archive_name,
@@ -445,10 +446,10 @@ class SingleFileReader(BaseArchiveReader):
         trust: both carry an unchecked ``size`` claim, and the seekable one's is
         reported. On a pipe there is no ``SEEK_END`` to answer, so it reports ``None``.
         The value is not only metadata. Two extraction ratio guards divide by a source
-        length: the per-member guard by ``compressed_size``,
-        and the archive-wide guard by ``BaseArchiveReader.compressed_source_size``
-        (``_trusted_source_size``). Both follow this rule, so a pipe's ``size`` claim
-        reaches neither, and the live byte counter stays. Nothing here checks a
+        length: the per-member guard by ``compressed_size``, and the archive-wide guard
+        by ``BaseArchiveReader.compressed_source_size`` (``_trusted_source_size``). Both
+        follow this rule, so a pipe's ``size`` claim reaches neither, and the live byte
+        counter stays. Nothing here checks a
         member stream's declared length, and a ``SEEK_END`` could not do better: a TAR
         member stream answers it from the same declared length. A ZIP member that holds
         fewer bytes than it declares is refused with ``TruncatedError`` only after its

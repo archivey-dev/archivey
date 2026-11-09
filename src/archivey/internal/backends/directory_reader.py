@@ -11,9 +11,10 @@ no magic or extension to detect. Listing is a depth-first ``os.scandir`` walk th
 turns each entry's ``lstat`` into a member: a regular file, a directory, a symlink (a
 Windows junction lists as one too), a hardlink to the first name of a multiply-linked
 file, or ``OTHER`` for devices, FIFOs and sockets. The tree can change between listing
-and reading, so both the walk and ``DirectoryReader._open_member`` check that a path
-still holds what was listed. A symlink swapped in then cannot lead a read out of the
-root (threat-model O21).
+and reading, so ``DirectoryReader._open_member``, and the walk where the platform has
+the descriptor calls (``_SCAN_BY_FD``), check that a path still holds what was listed.
+On POSIX a symlink swapped in then cannot lead a read out of the root. Windows has no
+``O_NOFOLLOW`` and is weaker: see threat-model O21 and its Windows residual.
 """
 
 from __future__ import annotations
