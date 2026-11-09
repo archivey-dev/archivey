@@ -127,6 +127,7 @@ from archivey.internal.reader_state import (
     LiveStreamReservation,
     ReaderState,
 )
+from archivey.internal.remote import source_change
 from archivey.internal.resource_usage import ResourceUsage, ResourceUsageRecorder
 from archivey.internal.selection import (
     CollectionSelector,
@@ -1982,9 +1983,11 @@ class BaseArchiveReader(ArchiveReader):
                     else:
                         member = self._pull_replayable(position)
                 except StopIteration:
+                    self._raise_source_change()
                     self._end_walk(None)
                     return None
                 except CorruptionError as exc:
+                    self._raise_source_change(exc)
                     self._end_walk(exc)
                     return None
                 self._register_member(position, member)
@@ -1994,6 +1997,8 @@ class BaseArchiveReader(ArchiveReader):
             return member
         except BaseException as exc:
             self._abandon_walk(exc)
+            if isinstance(exc, Exception):
+                self._raise_source_change(exc)
             raise
         finally:
             self._walk_pulling = False
@@ -2034,6 +2039,24 @@ class BaseArchiveReader(ArchiveReader):
             return self._walk_built[position]
         self._walk_built.append(member)
         return member
+
+    def _raise_source_change(self, cause: BaseException | None = None) -> None:
+        """Raise ``SourceChangedError`` when the remote object this reader reads has
+        changed (``fsspec-integration`` design D7), with ``cause`` as its cause.
+
+        The walk ends here, in place of a clean end, an incomplete listing or another
+        error. A backend handler built for damage (TAR's scan past the end-of-archive
+        marker, a salvage path, a metadata probe) can take the change for damage and
+        go on, and what it then reports describes no archive. The source raises the
+        change again on every later read, so a later call raises it too.
+        """
+        source = self._source
+        if source is None:
+            return
+        changed = source_change(source.remote_sources, cause)
+        if changed is not None:
+            self._stamp_error_context(changed)
+            raise changed from cause
 
     def _end_walk(self, error: CorruptionError | None) -> None:
         """Record that the walk ended, and stamp last-entry-wins once, over what it listed.

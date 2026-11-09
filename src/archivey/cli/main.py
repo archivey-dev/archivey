@@ -1,4 +1,13 @@
-"""``archivey`` CLI entry point: argparse grammar + verb dispatch."""
+"""``archivey`` CLI entry point: argparse grammar + verb dispatch.
+
+:func:`main` is the console script. It wraps the output streams so a closed pipe or
+an unencodable character cannot crash the run, then :func:`_parse_and_dispatch`
+inserts the default ``list`` verb when none is given (:func:`_inject_default_list`),
+parses the arguments with the parser :func:`build_parser` defines, and calls the
+verb's ``run_*`` function from its own ``*_cmd`` module. Faults that end a run are
+printed here, as ``archivey: …`` lines, and turned into exit codes
+(:mod:`archivey.cli.exit_codes`).
+"""
 
 from __future__ import annotations
 
@@ -308,12 +317,11 @@ def _cli_spelling(enum_cls: type[Enum]) -> Callable[[str], str]:
     case, and the CLI should not be the narrower of the two.
 
     The fold applies **only when it lands on a real choice**. argparse quotes the
-    post-``type=`` value in ``invalid choice:``, so folding unconditionally made a
-    refusal echo a string the caller never wrote — ``--policy Trusted_`` was refused as
-    ``'trusted-'``, a spelling that is not legal anywhere, sending the reader after a
-    trailing dash they did not type. Passing an unrecognised value through untouched
-    keeps the message about what they actually typed, which is the whole point of a fold
-    that says case and separator are not the mistake.
+    post-``type=`` value in ``invalid choice:``, so a fold applied to every value would
+    make a refusal echo a string the caller never wrote: ``--policy Trusted_`` would be
+    refused as ``'trusted-'``, a spelling that is not legal anywhere, sending the reader
+    after a trailing dash they did not type. Passing an unrecognised value through
+    untouched keeps the message about what they actually typed.
     """
     choices = cli_choices(enum_cls)
 
@@ -462,36 +470,11 @@ def _add_verb(
     return p
 
 
-def build_parser() -> argparse.ArgumentParser:
-    # Two parent instances: action objects are shared if the same instance is reused,
-    # so SUPPRESS on a single parent would also wipe the main parser's defaults.
-    common = _common_parent(suppress_defaults=False)
-    common_sub = _common_parent(suppress_defaults=True)
-    parser = _ArchiveyArgumentParser(
-        prog="archivey",
-        description=(
-            "Inspect, verify, and safely extract archives. "
-            "Bare invocation defaults to list. "
-            "Forthcoming: hash, create, convert."
-        ),
-        epilog=_TOP_EPILOG,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        parents=[common],
-        conflict_handler="resolve",
-        allow_abbrev=False,
-    )
-    parser.add_argument(
-        "--version",
-        action="store_true",
-        help="print version and exit (-v adds format availability)",
-    )
-
-    sub = parser.add_subparsers(
-        dest="verb",
-        metavar="VERB",
-        parser_class=_ArchiveyArgumentParser,
-    )
-
+def _add_list_verb(
+    sub: argparse._SubParsersAction[_ArchiveyArgumentParser],
+    common_sub: _ArchiveyArgumentParser,
+) -> None:
+    """Define ``list`` / ``l``: the default verb."""
     p_list = _add_verb(
         sub,
         "list",
@@ -519,6 +502,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="print every stored field of each member as key: value lines",
     )
 
+
+def _add_test_verb(
+    sub: argparse._SubParsersAction[_ArchiveyArgumentParser],
+    common_sub: _ArchiveyArgumentParser,
+) -> None:
+    """Define ``test`` / ``t``."""
     p_test = _add_verb(
         sub,
         "test",
@@ -539,6 +528,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_filter_args(p_test)
 
+
+def _add_extract_verb(
+    sub: argparse._SubParsersAction[_ArchiveyArgumentParser],
+    common_sub: _ArchiveyArgumentParser,
+) -> None:
+    """Define ``extract`` / ``x``."""
     p_extract = _add_verb(
         sub,
         "extract",
@@ -618,6 +613,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_filter_args(p_extract)
 
+
+def _add_info_verb(
+    sub: argparse._SubParsersAction[_ArchiveyArgumentParser],
+    common_sub: _ArchiveyArgumentParser,
+) -> None:
+    """Define ``info`` / ``i`` / ``detect``."""
     p_info = _add_verb(
         sub,
         "info",
@@ -628,6 +629,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_info.add_argument("archive", help="archive path")
 
+
+def _add_cat_verb(
+    sub: argparse._SubParsersAction[_ArchiveyArgumentParser],
+    common_sub: _ArchiveyArgumentParser,
+) -> None:
+    """Define ``cat``."""
     p_cat = _add_verb(
         sub,
         "cat",
@@ -648,6 +655,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_filter_args(p_cat)
 
+
+def _add_reserved_verbs(
+    sub: argparse._SubParsersAction[_ArchiveyArgumentParser],
+    common_sub: _ArchiveyArgumentParser,
+) -> None:
+    """Define the verbs reserved for later, which refuse to run (``_refuse_reserved``)."""
     for name, hint in (
         ("hash", "hash emission is not implemented yet"),
         ("create", "archive creation is not implemented yet"),
@@ -662,6 +675,45 @@ def build_parser() -> argparse.ArgumentParser:
         )
         p.add_argument("archive", nargs="?", default=None)
         p.set_defaults(_reserved_message=hint)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """The ``archivey`` parser: the shared options, then one subparser per verb."""
+    # Two parent instances: action objects are shared if the same instance is reused,
+    # so SUPPRESS on a single parent would also wipe the main parser's defaults.
+    common = _common_parent(suppress_defaults=False)
+    common_sub = _common_parent(suppress_defaults=True)
+    parser = _ArchiveyArgumentParser(
+        prog="archivey",
+        description=(
+            "Inspect, verify, and safely extract archives. "
+            "Bare invocation defaults to list. "
+            "Forthcoming: hash, create, convert."
+        ),
+        epilog=_TOP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[common],
+        conflict_handler="resolve",
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="print version and exit (-v adds format availability)",
+    )
+
+    sub = parser.add_subparsers(
+        dest="verb",
+        metavar="VERB",
+        parser_class=_ArchiveyArgumentParser,
+    )
+
+    _add_list_verb(sub, common_sub)
+    _add_test_verb(sub, common_sub)
+    _add_extract_verb(sub, common_sub)
+    _add_info_verb(sub, common_sub)
+    _add_cat_verb(sub, common_sub)
+    _add_reserved_verbs(sub, common_sub)
 
     return parser
 

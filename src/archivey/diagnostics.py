@@ -1,5 +1,16 @@
 """Public diagnostic value types — structured advisories as queryable data.
 
+A reader reports something odd but not fatal, such as a renamed member or a missing
+end-of-archive marker, as a :class:`Diagnostic` with a :class:`DiagnosticCode`.
+Readers emit them through ``archivey.internal.diagnostics_collector``, which applies
+the caller's :class:`DiagnosticPolicy` (ignore, collect or raise
+:exc:`~archivey.DiagnosticRaisedError`) and calls ``ArchiveyConfig.on_diagnostic``.
+Callers read the collected records from ``reader.diagnostics``, a stream's
+``ArchiveStream.diagnostics``, ``ArchiveMember.diagnostics``,
+``FormatInfo.diagnostics`` after detection, an :class:`ExtractionReport` or a
+:class:`MemberListReport`. A raised record is on the error, as
+``DiagnosticRaisedError.diagnostic``.
+
 See ``openspec/specs/diagnostics`` (and the ``diagnostics-warnings-as-data`` change)
 for the lifecycle, retention, and policy contracts.
 
@@ -198,7 +209,9 @@ class DiagnosticCode(StrEnum):
     """The archive is read by range requests from an ``fsspec`` file system that
     archivey cannot pin to one version of the object, so a replacement of the same
     length, or a longer one, while it reads would go unseen. A shorter one raises
-    :class:`~archivey.SourceChangedError` on the first fetch past its end. Advisory: it
+    :class:`~archivey.SourceChangedError` on the first fetch past its end. An
+    ``OpenFile`` with ``compression=`` records it too: it is read through fsspec's
+    decompressing file, and archivey checks nothing about the object. Advisory: it
     describes how the archive arrives, not its bytes."""
     MEMBER_READERS_DISAGREE = "member_readers_disagree"
     """A member takes a shape that real writers produce but readers make different
@@ -978,7 +991,9 @@ class SourceChangeContext(_JsonSafeContext):
 
     ``protocol`` is the first protocol of the ``fsspec`` file system the archive is
     read from (``"s3"``, ``"https"``, ``"memory"``). ``reason`` says why neither a
-    pinned version nor a conditional request guards the reads.
+    pinned version nor a conditional request guards the reads, or that the archive is
+    read through fsspec's decompressing file (``compression=``), which archivey cannot
+    check at all.
     """
 
     kind: Literal["source_change"] = "source_change"
