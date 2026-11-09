@@ -12,6 +12,22 @@ the choice in ``ArchiveInfo.extra["iso.namespace"]``:
 - Joliet / plain — those fields are ``None``; plain names are upper-case 8.3 with a
   ``;version`` suffix
 
+How a listing is built:
+
+1. ``IsoReader.__init__`` hands the image to pycdlib's ``open_fp``, which parses every
+   directory tree the image has, under the hooks listed below, and then picks the
+   namespace.
+2. :meth:`IsoReader._walk_records` walks that namespace's tree record by record and
+   renders each record's path. :meth:`IsoReader._record_name` says which name wins: in
+   Rock Ridge the ``NM`` name, else the ISO 9660 identifier. Bytes that are not UTF-8
+   decode with ``encoding=``, else take the name of the same file in the Joliet tree,
+   else keep their bytes as ``surrogateescape``.
+3. :meth:`IsoReader._make_member` turns each record into an ``ArchiveMember``: mode,
+   owner and times come from the Rock Ridge ``PX`` and ``TF`` entries when present, the
+   modification time from the directory record's date otherwise.
+4. :meth:`IsoReader._report_files_in_other_trees` reports each file that only a tree
+   archivey did not list holds.
+
 The directory tree lives in the header region → ``INDEXED`` listing and ``DIRECT``
 random access. A non-seekable source is rejected (trailing metadata; no streaming).
 Write is out of scope (``UnsupportedFeatureError``). ``pycdlib`` uses absolute
@@ -131,6 +147,7 @@ from archivey.types import (
     MemberType,
     MissingComponent,
     OptionalLibrary,
+    SpecialFileType,
 )
 
 _PYCDLIB_REQUIREMENT = MissingComponent(
@@ -226,16 +243,19 @@ class _SystemUseNotes:
         SUSP has a reader ignore it; a ``ZF`` entry (zisofs, or zisofs2 at version 2)
         or a ``Z2`` entry (zisofs2 under the tag libisofs offers for kernels that
         misread a version 2 ``ZF``) is kept here first, even when it is too short to
-        parse, so the file is refused rather than read as its compressed bytes. The first entry whose own header is malformed (a length
-        under 4 or past the area, or a version other than 1 on a type pycdlib parses) ends
-        the area there, and the reason is kept for a diagnostic: everything after it is
-        read at an offset that cannot be trusted. genisoimage writes such an area for a
-        long symlink target (from about 400 bytes with 1.1.11): the ``SL`` length wraps past 255, and the
-        next entry is read from inside the target text. ``isoinfo`` and ``xorriso`` stop
-        at the same place. Entries after ``ST`` are not entries and are left out.
+        parse, so the file is refused rather than read as its compressed bytes.
+
+        The first entry whose own header is malformed (a length under 4 or past the
+        area, or a version other than 1 on a type pycdlib parses) ends the area there,
+        and the reason is kept for a diagnostic: everything after it is read at an
+        offset that cannot be trusted. genisoimage writes such an area for a long
+        symlink target (from about 400 bytes with 1.1.11): the ``SL`` length wraps past
+        255, and the next entry is read from inside the target text. ``isoinfo`` and
+        ``xorriso`` stop at the same place. Entries after ``ST`` are not entries and
+        are left out.
 
         Anything else pycdlib refuses, it still refuses, and the image fails to open as
-        before. The ``skip`` bytes before the first entry are pycdlib's to interpret.
+        it would without this filter. The ``skip`` bytes before the first entry are pycdlib's to interpret.
         """
         out = bytearray(record[:skip])
         offset = skip
@@ -1285,6 +1305,26 @@ def _is_entry(child: DirectoryRecord | None) -> TypeGuard[DirectoryRecord]:
     return child is not None and not child.is_dot() and not child.is_dotdot()
 
 
+def _identifier_runs(children: list[DirectoryRecord]) -> dict[int, tuple[int, int]]:
+    """The runs of records with one identifier among a directory's ``children``.
+
+    Each run is ``(start, end)`` in ``children``, keyed by ``id`` of its first record.
+    pycdlib keeps equal identifiers adjacent, as ``_yield_children`` relies on, so one
+    pass finds them, and a directory with no repeated identifier allocates none.
+    """
+    runs: dict[int, tuple[int, int]] = {}
+    start = 0
+    for index in range(1, len(children) + 1):
+        if (
+            index == len(children)
+            or children[index].file_ident != children[start].file_ident
+        ):
+            if index - start > 1:
+                runs[id(children[start])] = (start, index)
+            start = index
+    return runs
+
+
 def _yield_children(
     record: DirectoryRecord, rock_ridge: bool
 ) -> Iterator[DirectoryRecord]:
@@ -1668,8 +1708,9 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         Nothing in the image says which charset these bytes are in: a Rock Ridge name
         is whatever the writer's locale was. UTF-8 is tried first; bytes that are not
         valid UTF-8 are decoded with ``encoding=`` when the caller gave one, as TAR
-        does for its names, then by the name of the Joliet counterpart of the Rock Ridge
-        record ``rr_record`` when one is given (``_joliet_name``), and with UTF-8 and ``surrogateescape`` otherwise.
+        does for its names, then by the name of the Joliet counterpart of the Rock
+        Ridge record ``rr_record`` when one is given (``_joliet_name``), and with UTF-8
+        and ``surrogateescape`` otherwise.
 
         Decoding always returns. A codec ``open_archive`` accepted can still fail on
         these bytes (``utf-32`` on a length that is not a multiple of four, or
@@ -1797,11 +1838,16 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
 
     @staticmethod
     def _joliet_text(record: DirectoryRecord) -> str:
+        """A Joliet identifier as text, without its version; never raises."""
         name = _decode_joliet(bytes(record.file_identifier()))
         return _strip_version(name, iso9660=False)[0]
 
     def _record_name(self, record: DirectoryRecord) -> tuple[str, bytes]:
         """One directory record's own name in the selected namespace, and its bytes.
+
+        In the Rock Ridge namespace the ``NM`` name wins, and the record's ISO 9660
+        identifier stands in when there is none (:func:`_nm_name`). Either is bytes in
+        no declared charset, decoded as :meth:`_decode_bytes_name` says.
 
         Decoding never raises: a name that is not valid in its namespace's encoding is
         rendered (surrogateescape for the byte namespaces; for Joliet's UTF-16, a lone
@@ -1870,21 +1916,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             dirpath, raw_dirpath, dir_record = stack.pop()
             dirs: list[tuple[str, bytes, DirectoryRecord]] = []
             files: list[tuple[str, bytes, DirectoryRecord]] = []
-            # The runs of records with one identifier, as (start, end) in ``children``
-            # keyed by ``id`` of the run's first record. pycdlib keeps equal
-            # identifiers adjacent, as ``_yield_children`` relies on, so one pass
-            # finds them, and a directory with no repeated identifier allocates none.
             children = dir_record.children
-            runs: dict[int, tuple[int, int]] = {}
-            start = 0
-            for index in range(1, len(children) + 1):
-                if (
-                    index == len(children)
-                    or children[index].file_ident != children[start].file_ident
-                ):
-                    if index - start > 1:
-                        runs[id(children[start])] = (start, index)
-                    start = index
+            runs = _identifier_runs(children)
             for first in _yield_children(dir_record, use_rr):
                 if (
                     use_rr
@@ -2001,26 +2034,26 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
 
     @override
     def iter_members(self) -> Iterator[MemberRecord[DirectoryRecord]]:
-        # Pinned-pycdlib audit (tar-concurrent-open 2.7 / concurrent-member-streams 5.4):
-        # the record walk traverses in-memory parsed catalog records and reads nothing
-        # from the image, except in two cases. For a repeated identifier
-        # (``_entries_sharing_identifier``) or a file whose data ends at the end of
-        # the image (``_make_member``), ``_raw_directory`` re-reads the directory's
-        # extent with ``self._source.read_at``, which takes the ``SharedSource`` lock,
-        # not through pycdlib's handle. The
-        # Joliet name fallback reads nothing either: ``has_joliet()`` tests a parsed
-        # descriptor, ``get_record(joliet_path="/")`` looks among parsed records, and
-        # ``_yield_children`` on the Joliet tree walks them. The comparison after the walk
-        # (``_report_files_in_other_trees``) reads nothing either: it walks the Joliet
-        # and plain ISO 9660 trees with ``get_record`` and ``_yield_children``, and the
-        # UDF tree through the parsed File Entries' ``fi_descs`` and ``alloc_descs``,
-        # all built inside ``open_fp``. Following a link target
-        # (``_rock_ridge_child``) is the walk's own ``_yield_children`` over Rock Ridge
-        # records already parsed, and ``_nm_name`` reads the parsed ``NM`` records
-        # (``dr_entries``/``ce_entries``). Any other image read added to listing must
-        # also go through ``self._source`` (``read_at`` or a view), whose reads take
-        # the ``SharedSource`` lock. If a future pycdlib version gains handle access
-        # in the walk, lock the complete call.
+        # Audit against the pinned pycdlib: the record walk traverses in-memory
+        # parsed catalog records and reads nothing from the image, except in two
+        # cases. For a repeated identifier (``_entries_sharing_identifier``) or a file
+        # whose data ends at the end of the image (``_file_size``, from
+        # ``_make_member``), ``_raw_directory`` re-reads the directory's extent with
+        # ``self._source.read_at``, which takes the ``SharedSource`` lock, not through
+        # pycdlib's handle. The Joliet name fallback reads nothing either:
+        # ``has_joliet()`` tests a parsed descriptor, ``get_record(joliet_path="/")``
+        # looks among parsed records, and ``_yield_children`` on the Joliet tree walks
+        # them. The comparison after the walk (``_report_files_in_other_trees``) reads
+        # nothing either: it walks the Joliet and plain ISO 9660 trees with
+        # ``get_record`` and ``_yield_children``, and the UDF tree through the parsed
+        # File Entries' ``fi_descs`` and ``alloc_descs``, all built inside
+        # ``open_fp``. Following a link target (``_rock_ridge_child``) is the walk's
+        # own ``_yield_children`` over Rock Ridge records already parsed, and
+        # ``_nm_name`` reads the parsed ``NM`` records (``dr_entries``/``ce_entries``).
+        # Any other image read added to listing must also go through ``self._source``
+        # (``read_at`` or a view), whose reads take the ``SharedSource`` lock. If a
+        # future pycdlib version gains handle access in the walk, lock the complete
+        # call.
         # ``index`` is each member's position in the walk, the id registration
         # stamps, so a diagnostic raised while typing can name it.
         listed_extents: set[int] = set()
@@ -2191,48 +2224,30 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         *,
         superseded: bool = False,
     ) -> ArchiveMember:
-        """The member, named as the image presents it; archivey normalizes the name."""
+        """The member for one walked record, named as the image presents it.
+
+        ``ns_path`` is the path :meth:`_walk_records` rendered in the selected
+        namespace (:meth:`_record_name` says which name source wins), and ``raw_path``
+        its bytes. Where each other field comes from:
+
+        - type: a Rock Ridge symlink, else the record's directory flag, else a special
+          file when a Rock Ridge ``PX`` mode names one on an empty extent
+          (:meth:`_member_type`);
+        - mode, uid and gid: the Rock Ridge ``PX`` entry; ``None`` without one
+          (:meth:`_px`);
+        - times: the Rock Ridge ``TF`` entry, with the directory record's date as the
+          fallback for the modification time (:meth:`_timestamps`);
+        - size and compression: the extents as declared on disc, or the size a zisofs
+          ``ZF`` entry declares (:meth:`_stored_data`).
+
+        The member's diagnostics are reported once it is built, since each names it.
+        archivey normalizes the name after this returns.
+        """
         rr = getattr(record, "rock_ridge", None)
         raw_mode, uid, gid = self._px(rr)
-
         special = special_file_type(raw_mode) if raw_mode is not None else None
-        if rr is not None and rr.is_symlink():
-            member_type = MemberType.SYMLINK
-        elif record.is_dir():
-            member_type = MemberType.DIRECTORY
-        elif (
-            special is not None or (raw_mode is not None and not stat.S_ISREG(raw_mode))
-        ) and self._file_size(record) == 0:
-            # A Rock Ridge PX mode names a device, FIFO or socket, and the extent is
-            # empty (genisoimage and xorriso write a FIFO so): OTHER. A non-empty extent
-            # under such a mode is a FILE whose bytes are the content (DR-25), with
-            # ``extra["special_file_type"]`` keeping the stored type. ``== 0``, not
-            # ``not``: ``_file_size`` is ``None`` for a non-empty extent whose length
-            # was lost, and that record is a FILE with ``size=None`` like a regular one.
-            # Defence, not tested behaviour: the lost length needs a record pycdlib
-            # walked that its parent directory's bytes on disc do not list with a
-            # length reaching the image end (``_layout``), and no image the suite can
-            # build does that, so no test tells ``== 0`` from ``not``.
-            member_type = MemberType.OTHER
-        else:
-            member_type = MemberType.FILE
-
-        # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
-        # ECMA-119 gives a version only to a file identifier. A directory's ``;N`` is
-        # part of its name, and its children's paths keep it.
-        name, version = (
-            (ns_path.lstrip("/"), None)
-            if member_type is MemberType.DIRECTORY
-            else self._split_version(ns_path)
-        )
-        if superseded:
-            # An older version is presented as its stored identifier (``FOO.;1``), as
-            # RAR presents a file-version history row: a distinct name to read it by,
-            # matching ``raw_name``, and ``is_current=False`` so extraction skips it.
-            # The newest version takes the bare name. Keeping the stored spelling also
-            # keeps ``FOO.;1`` and ``FOO;1`` apart when both are superseded.
-            name = ns_path.lstrip("/")
-        raw_name = raw_path
+        member_type = self._member_type(record, rr, raw_mode, special)
+        name, version = self._member_name(ns_path, member_type, superseded)
         extra = (
             MemberExtra({"iso.version": version})
             if version is not None
@@ -2241,37 +2256,18 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         if special is not None:
             # Only a mode that names a special or unknown file type: a non-regular mode
             # that is a directory's (``S_IFDIR`` on a file record) still makes OTHER
-            # above but recorded no special file, so it gets no key.
+            # in ``_member_type`` but recorded no special file, so it gets no key.
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
 
         modified, accessed, created, ctime, invalid_dates = self._timestamps(record, rr)
         mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
         link_target = self._symlink_target(member_type, record, rr)
-
-        size = self._file_size(record) if member_type == MemberType.FILE else None
-        compressed_size = size
-        compression = (
-            (CompressionMethod(algo=CompressionAlgorithm.STORED),)
-            if member_type == MemberType.FILE
-            else ()
-        )
-        zisofs = self._zisofs_entry(record) if member_type == MemberType.FILE else None
-        if zisofs is not None:
-            # Rock Ridge transparent compression: the extent holds zisofs blocks of
-            # zlib data, and the ZF entry declares the size they decode to.
-            size = zisofs.uncompressed_size
-            # A variant this reader refuses to decode is not reported as deflate.
-            algo = (
-                CompressionAlgorithm.DEFLATE
-                if _zisofs_refusal(zisofs) is None
-                else CompressionAlgorithm.UNKNOWN
-            )
-            compression = (CompressionMethod(algo=algo),)
+        size, compressed_size, compression = self._stored_data(record, member_type)
 
         member = ArchiveMember(
             type=member_type,
             name=name,
-            raw_name=raw_name,
+            raw_name=raw_path,
             size=size,
             # The stored length; for a zisofs member ``size`` is the decoded one.
             compressed_size=compressed_size,
@@ -2291,7 +2287,88 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         self._emit_system_use_cut(member, rr, index)
         if special is not None and member.type is MemberType.FILE:
             self._context.report(*special_file_has_data_report(member), member=member)
-        # The message names the member, so it is built here, not in ``_timestamps``.
+        self._report_invalid_dates(member, invalid_dates)
+        self._report_name_fallbacks(member, record, rr, index)
+        return member
+
+    def _member_type(
+        self,
+        record: DirectoryRecord,
+        rr: RockRidge | None,
+        raw_mode: int | None,
+        special: SpecialFileType | None,
+    ) -> MemberType:
+        """The member type of a record; ``raw_mode`` and ``special`` come from its
+        Rock Ridge ``PX`` entry, when it has one."""
+        if rr is not None and rr.is_symlink():
+            return MemberType.SYMLINK
+        if record.is_dir():
+            return MemberType.DIRECTORY
+        if (
+            special is not None or (raw_mode is not None and not stat.S_ISREG(raw_mode))
+        ) and self._file_size(record) == 0:
+            # A Rock Ridge PX mode names a device, FIFO or socket, and the extent is
+            # empty (genisoimage and xorriso write a FIFO so): OTHER. A non-empty extent
+            # under such a mode is a FILE whose bytes are the content (DR-25), with
+            # ``extra["special_file_type"]`` keeping the stored type. ``== 0``, not
+            # ``not``: ``_file_size`` is ``None`` for a non-empty extent whose length
+            # was lost, and that record is a FILE with ``size=None`` like a regular one.
+            # Defence, not tested behaviour: the lost length needs a record pycdlib
+            # walked that its parent directory's bytes on disc do not list with a
+            # length reaching the image end (``_layout``), and no image the suite can
+            # build does that, so no test tells ``== 0`` from ``not``.
+            return MemberType.OTHER
+        return MemberType.FILE
+
+    def _member_name(
+        self, ns_path: str, member_type: MemberType, superseded: bool
+    ) -> tuple[str, int | None]:
+        """The member name for ``ns_path``, and the plain ISO 9660 file version."""
+        # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
+        # ECMA-119 gives a version only to a file identifier. A directory's ``;N`` is
+        # part of its name, and its children's paths keep it.
+        if member_type is MemberType.DIRECTORY:
+            return ns_path.lstrip("/"), None
+        name, version = self._split_version(ns_path)
+        if superseded:
+            # An older version is presented as its stored identifier (``FOO.;1``), as
+            # RAR presents a file-version history row: a distinct name to read it by,
+            # matching ``raw_name``, and ``is_current=False`` so extraction skips it.
+            # The newest version takes the bare name. Keeping the stored spelling also
+            # keeps ``FOO.;1`` and ``FOO;1`` apart when both are superseded.
+            name = ns_path.lstrip("/")
+        return name, version
+
+    def _stored_data(
+        self, record: DirectoryRecord, member_type: MemberType
+    ) -> tuple[int | None, int | None, tuple[CompressionMethod, ...]]:
+        """``(size, compressed_size, compression)`` of a member; only a file has data."""
+        if member_type != MemberType.FILE:
+            return None, None, ()
+        size = self._file_size(record)
+        compressed_size = size
+        compression = (CompressionMethod(algo=CompressionAlgorithm.STORED),)
+        zisofs = self._zisofs_entry(record)
+        if zisofs is not None:
+            # Rock Ridge transparent compression: the extent holds zisofs blocks of
+            # zlib data, and the ZF entry declares the size they decode to.
+            size = zisofs.uncompressed_size
+            # A variant this reader refuses to decode is not reported as deflate.
+            algo = (
+                CompressionAlgorithm.DEFLATE
+                if _zisofs_refusal(zisofs) is None
+                else CompressionAlgorithm.UNKNOWN
+            )
+            compression = (CompressionMethod(algo=algo),)
+        return size, compressed_size, compression
+
+    def _report_invalid_dates(
+        self, member: ArchiveMember, invalid_dates: list[tuple[str, str, str]]
+    ) -> None:
+        """Report each stored date ``_timestamps`` could not read.
+
+        The message names the member, so it is built here, not in ``_timestamps``.
+        """
         for field, source, value_repr in invalid_dates:
             message = f"Invalid ISO 9660 date for {quoted(member.name)}: {value_repr}"
             issue = TimestampIssue(
@@ -2308,6 +2385,21 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 ),
                 member=member,
             )
+
+    def _report_name_fallbacks(
+        self,
+        member: ArchiveMember,
+        record: DirectoryRecord,
+        rr: RockRidge | None,
+        index: int,
+    ) -> None:
+        """Report a member whose name did not come from where its namespace puts it.
+
+        Three cases: a Rock Ridge name that is not UTF-8 and was taken from the Joliet
+        tree; a record in a Rock Ridge image with no Rock Ridge entries at all; and a
+        Rock Ridge ``NM`` entry that spells an empty name. The last two leave the
+        member under its ISO 9660 name.
+        """
         if id(record) in self._joliet_named:
             self._context.report(
                 DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
@@ -2335,13 +2427,13 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             self._context.report(
                 DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
                 (
-                    f"Directory record {quoted(name)} carries no Rock Ridge "
+                    f"Directory record {quoted(member.name)} carries no Rock Ridge "
                     "entries; the member is listed under its ISO 9660 name without "
                     "Rock Ridge name, mode, owner or link data."
                 ),
                 MemberHeaderRecordContext(
                     archive_name=self._archive_name,
-                    member_name=name,
+                    member_name=member.name,
                     member_id=index,
                     record="rock_ridge",
                     reason="no Rock Ridge entries in the System Use area",
@@ -2374,9 +2466,9 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 ),
                 member=member,
             )
-        return member
 
     def _zisofs_entry(self, record: DirectoryRecord) -> _ZisofsEntry | None:
+        """The zisofs entry the System Use filter kept for ``record``, if any."""
         rr = getattr(record, "rock_ridge", None)
         return None if rr is None else self._system_use.zisofs_entry(rr)
 
@@ -2644,8 +2736,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
 
         pycdlib's own inode gives it when it describes the file as written. The layout
         worked out while listing is used otherwise, never worked out again here, so
-        opening a member reads no directory. Three cases need the layout: a file of 4 GiB or more, whose
-        inode covers only its first extent; the El Torito boot catalog, which pycdlib
+        opening a member reads no directory. Three cases need the layout: a file of
+        4 GiB or more, whose inode covers only its first extent; the El Torito boot catalog, which pycdlib
         keeps in memory and gives no inode at all, though its extent still holds its
         bytes on disc, which is what a mounted image shows; and a file pycdlib
         clamped at the end of the image.
