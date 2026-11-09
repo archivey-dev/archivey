@@ -1144,6 +1144,8 @@ class LocalHeaderWalk:
         return f"after member #{self._index - 1}"
 
     def _start(self) -> None:
+        """Position the walk at the first ZIP record, scanning past a stub when
+        ``find_start`` allows it; refuse a stream with no ZIP record in reach."""
         # Anything next_entry knows how to handle opens the stream: a local header, the
         # directory or end records of an archive whose members are gone, or the Strong
         # Encryption record it names. Only other bytes are a stub to scan past.
@@ -1239,6 +1241,11 @@ class LocalHeaderWalk:
             window.extend(more)
 
     def _read_local_header(self) -> LocalEntry:
+        """Consume the local header at the current position and return its entry.
+
+        A header with bit 3 clear that defers a size to a ZIP64 extra field must hold
+        it there, since nothing after the data would supply it.
+        """
         offset = self.source.offset
         fixed = self.source.read(LOCAL_HEADER_SIZE)
         if len(fixed) != LOCAL_HEADER_SIZE:
@@ -1361,6 +1368,13 @@ class LocalHeaderWalk:
         crc: int | None,
         file_size: int | None,
     ) -> DataDescriptor:
+        """Consume the data descriptor that follows ``entry``'s data, which ended
+        after ``compressed_size`` bytes.
+
+        ``crc`` and ``file_size`` are what the decoded data gave, when known. A
+        descriptor whose values disagree with them is still returned, found by its
+        size alone, for the caller to judge.
+        """
         buffer = self.source.read(_DESCRIPTOR_LOOKAHEAD)
         at_end = len(buffer) < _DESCRIPTOR_LOOKAHEAD
         descriptor = match_descriptor(
