@@ -6,10 +6,17 @@ CONTRIBUTING). Any exception raised while opening or reading the wrapped stream 
 through a per-library *translator* (raw third-party exception → ``ArchiveyError`` subclass
 or ``None`` to let it propagate), then *stamped* with format/archive/member context.
 
-Member digest/length verification (formerly a separate ``VerifyingStream`` layer) is
-optional state on this handle — see ``expected_hashes`` / ``expected_size`` — so a
-member is served by one public stream that collapses nested codec ``ArchiveStream``s
-and hashes/bounds in the same ``read()``.
+It is the top of a member's stream stack, the object the caller reads. Under it sit,
+from the top down: the member's checks (a ``MemberVerifier`` from ``verify.py``, held
+on this handle in most cases; a ``VerifyingStream`` layer of its own holds it over an
+accelerated codec, as a length backstop, and under ZIP's wrapper, for a ZipCrypto
+member's CRC); the codec stream, most often a
+:class:`~archivey.internal.streams.decompressor_stream.DecompressorStream`, and none
+for a stored member; a decrypt stage for an encrypted member (``crypto.py``); and the
+member's bytes in the archive source, most often a slice of it (``streamtools``). A
+codec stream opened on its own is an ``ArchiveStreamImpl`` as well; opening a member
+collapses it into the member's handle, so the caller gets one wrapper, which hashes and
+bounds the bytes in the same ``read()`` that translates errors.
 """
 
 from __future__ import annotations
@@ -321,18 +328,35 @@ class ArchiveStreamImpl(ArchiveStream):
 
     # Per-stream state that starts the same on every stream, as class defaults: an
     # instance assigns one only when it changes, which keeps the constructor cheap
-    # (``stream_members()`` builds a stream per member). Each is documented where
-    # ``__init__`` or the method that changes it sets it.
+    # (``stream_members()`` builds a stream per member).
+    # The error a failed lazy open raised, kept without its frames (``kept_errors``):
+    # a retry raises it again instead of calling ``open_fn`` a second time.
     _open_error: KeptError | None = None
+    # The type of a ``BaseException`` (``KeyboardInterrupt``) that stopped the lazy
+    # open. Not the stream's error, so it is not raised again; a retry names it.
     _open_interrupted_by: type[BaseException] | None = None
     _inner: BinaryIO | None = None
     _rewind_warned = False
     # Set while ``verify()`` seeks: its own rewinds are not the caller's access pattern.
     _rewind_quiet = False
+    # Set by ``close()`` before it takes the inner down: a read that fails on another
+    # thread because of that close raises the closed-file error
+    # (``_fail_unless_closed``).
     _closing = False
+    # The content verdict this stream raised, if any, kept without its frames
+    # (``kept_errors``). Every later read and seek raises it again (see ``_fail``),
+    # caused by its first raise, where the damage was found.
     _verdict: KeptError | None = None
+    # Whether the caller has seeked since the verdict last raised. A seek restarts the
+    # decode, so the prefix reads again; the read that reaches the end raises.
     _verdict_rewound = False
+    # The stream is in one run from position 0: no seek since it opened, or since the
+    # last seek to 0, may have skipped bytes (``_seek`` sets it). A codec's own checksum
+    # (``checks_content``) counts only for a read to the end in such a run: a seek
+    # through an index skips bytes the decoder never saw.
     _uninterrupted = True
+    # A read reached the end during an uninterrupted run. Like the verifier's flags it
+    # survives a rewind.
     _ended_from_start = False
     # Set when a call raises through ``_fail``, cleared by a seek the inner takes: a
     # seek in place after a failure still goes to the inner, which may restart a
@@ -407,11 +431,6 @@ class ArchiveStreamImpl(ArchiveStream):
             self._open_fn: MemberOpener | None = None
         else:
             self._open_fn = open_fn
-        # ``_open_error``: the error a failed lazy open raised, kept without its
-        # frames (``kept_errors``): a retry raises it again instead of calling
-        # ``open_fn`` a second time. ``_open_interrupted_by``: the type of a ``BaseException``
-        # (``KeyboardInterrupt``) that stopped the lazy open. Not the stream's error,
-        # so it is not raised again; a retry names it.
         self._translate = translate
         self._stamp = stamp if stamp is not None else _noop_stamp
         self._open_lock = threading.Lock()
@@ -422,30 +441,16 @@ class ArchiveStreamImpl(ArchiveStream):
         self._size = size
         self._diagnostics_collector = collector
         self._on_close = on_close
-        # ``_closing``: ``close()`` reads it. It is a class default, so it is set
-        # before the verifier build below, which can raise (a digest diagnostic under
-        # a RAISE policy): ``IOBase.__del__`` still calls ``close()`` on an instance
-        # whose ``__init__`` raised.
         self._verifier = verifier
-        # ``_verdict``: the content verdict this stream raised, if any, kept without its
-        # frames (``kept_errors``). Every later read and seek raises it again (see
-        # ``_fail``), caused by its first raise, where the damage was found.
-        # ``_verdict_rewound``: whether
-        # the caller has seeked since the verdict last raised. A seek restarts the
-        # decode, so the prefix reads again; the read that reaches the end raises.
-        # False for a stream that only a reader's own views read. A read seeks the
-        # shared handle when it is not already there. Some reads still seek, and one
-        # seek is enough to mark the stream rewound, so a short read that ends at the
-        # damage would lose its prefix. The member streams over those views keep theirs.
+        # Whether a content verdict is kept and raised again (``_verdict``). False for
+        # a stream that only a reader's own views read. A read seeks the shared handle
+        # when it is not already there. Some reads still seek, and one seek is enough
+        # to mark the stream rewound, so a short read that ends at the damage would
+        # lose its prefix. The member streams over those views keep theirs.
         self._repeat_verdict = repeat_verdict
-        # The verification level (``verified``). ``checks_content``: the decoder checks
-        # every byte against a checksum of its own when it decodes from the start to
-        # the end (a gzip, bzip2, lzip or zlib codec stream). That check counts only
-        # for a read that reached the end with no seek since position 0
-        # (``_uninterrupted``): a seek through an index skips bytes the decoder never
-        # saw. ``_ended_from_start`` keeps that such a read happened; like the
-        # verifier's flags it survives a rewind. ``_uninterrupted`` and
-        # ``_ended_from_start`` start as class defaults (``True``, ``False``).
+        # For the verification level (``verified``): the decoder checks every byte
+        # against a checksum of its own when it decodes from the start to the end (a
+        # gzip, bzip2, lzip or zlib codec stream). See ``_uninterrupted``.
         self._checks_content = checks_content
         # A stream's diagnostics are what its own calls emit, from this constructor on:
         # ``read``, ``seek`` and ``close`` enter this scope, on whichever thread calls.
@@ -1080,7 +1085,12 @@ class ArchiveStreamImpl(ArchiveStream):
 
         ``frames=False`` leaves out a codec's per-frame checks (``_frame_verdict``).
         """
-        below = ask_verification_proofs(self._inner)
+        return self._proofs_over(ask_verification_proofs(self._inner), frames=frames)
+
+    def _proofs_over(
+        self, below: VerificationProofs, *, frames: bool = True
+    ) -> VerificationProofs:
+        """This stream's proofs on top of ``below``, the layers' answer under it."""
         ended = self._ended_from_start
         frames_content, frames_possible = (
             self._frame_verdict(below) if frames else (False, False)
@@ -1144,12 +1154,7 @@ class ArchiveStreamImpl(ArchiveStream):
     def _ceiling_now(self, *, frames: bool = True) -> Verification:
         """The most a read to the end can prove, from the layers' proofs (without a
         codec's per-frame checks with ``frames=False``)."""
-        proofs = self._verification_proofs(frames=frames)
-        if proofs.content_possible:
-            return Verification.CHECKSUM
-        if proofs.key_in_doubt:
-            return Verification.NONE
-        return Verification.LENGTH
+        return _ceiling_of(self._verification_proofs(frames=frames))
 
     def _sync_member_level(self) -> None:
         """Raise the member to what this stream has proved (``raise_member_level``).
@@ -1163,11 +1168,13 @@ class ArchiveStreamImpl(ArchiveStream):
             return
         if self._inner is None:
             return
+        # The layers are asked once: a sync runs on every open, end of data and close,
+        # and each answer walks the whole stack.
         below = ask_verification_proofs(self._inner)
         without: Verification | None = None
         if below.per_frame:
             possible = self._frame_verdict(below)[1]
-            without = self._ceiling_now(frames=False)
+            without = _ceiling_of(self._proofs_over(below, frames=False))
             if not possible:
                 note_frame_unchecked(member, without)
             # A frame read later can lower the ceiling only while the frames' checks
@@ -1179,8 +1186,10 @@ class ArchiveStreamImpl(ArchiveStream):
             )
             if self._frames_pending and self._frame_watch is None:
                 self._frame_watch = find_frame_watch(self._inner)
+        # After ``note_frame_unchecked``: the frames' verdict reads the member's flag.
+        proofs = self._proofs_over(below)
         raise_member_level(
-            member, self._level_now(), self._ceiling_now(), without_frames=without
+            member, _level_of(proofs), _ceiling_of(proofs), without_frames=without
         )
 
     def _sync_frame_unchecked(self) -> None:
@@ -1188,7 +1197,7 @@ class ArchiveStreamImpl(ArchiveStream):
 
         That is the only change a read short of the end can make to the member's
         ceiling (``_frames_pending``), so such a read asks only the codec layer
-        (``find_frame_watch``), not every layer three times as a full sync does.
+        (``find_frame_watch``), not the whole stack as a full sync does.
         """
         watch = self._frame_watch
         if watch is not None and watch():
@@ -1198,16 +1207,7 @@ class ArchiveStreamImpl(ArchiveStream):
         """The level the layers' proofs add up to."""
         if self._inner is None:
             return Verification.NONE
-        proofs = self._verification_proofs()
-        # A checksum that matched every byte proves the key as well: a wrong key does
-        # not decrypt to data that matches it.
-        if proofs.ended and proofs.content:
-            return Verification.CHECKSUM
-        if proofs.key_in_doubt:
-            return Verification.NONE
-        if proofs.ended:
-            return Verification.LENGTH
-        return Verification.UNLOCKED
+        return _level_of(self._verification_proofs())
 
     @override
     def nearest_resume_offset(self, target: int) -> int | None:
@@ -1221,7 +1221,7 @@ class ArchiveStreamImpl(ArchiveStream):
         *can* carry an index does not always *have* a useful one: a single-block ``.xz``
         has one seek point (the origin) and restarts from byte zero exactly like a codec
         with no index, and an engaged ``rapidgzip`` can hold an index sparse enough for
-        the same thing. Keying on codec identity was silent on both.
+        the same thing. A rule keyed on the codec would report neither.
 
         **The cost is what the rewind throws away**, not what the seek call itself
         decodes: ``before - nearest_resume_offset(after)`` — the bytes that must be
@@ -1239,8 +1239,7 @@ class ArchiveStreamImpl(ArchiveStream):
         # A stream that cannot answer has no seek-point table to answer *from*, which for
         # a decompressing stream (the only kind that carries a RewindWarning at all — see
         # StoredCodec) means the decoder restarts at the origin. Falling back to 0 keeps
-        # the index-less codecs — stdlib LZMA Alone, brotli, lz4 — reporting, which is
-        # the behaviour this change must not lose while replacing the codec-name rule.
+        # the index-less codecs — stdlib LZMA Alone, brotli, lz4 — reporting.
         resume = self.nearest_resume_offset(after) or 0
         distance = max(before - resume, warning.min_redecode_bytes)
         if distance < REWIND_REDECODE_WARN_BYTES:
@@ -1534,3 +1533,25 @@ def _is_content_verdict(error: BaseException) -> bool:
         seen.add(id(current))
         current = current.__cause__
     return False
+
+
+def _level_of(proofs: VerificationProofs) -> Verification:
+    """The level ``proofs`` add up to, for a stream that has opened its data."""
+    # A checksum that matched every byte proves the key as well: a wrong key does not
+    # decrypt to data that matches it.
+    if proofs.ended and proofs.content:
+        return Verification.CHECKSUM
+    if proofs.key_in_doubt:
+        return Verification.NONE
+    if proofs.ended:
+        return Verification.LENGTH
+    return Verification.UNLOCKED
+
+
+def _ceiling_of(proofs: VerificationProofs) -> Verification:
+    """The most a read to the end can prove, given ``proofs``."""
+    if proofs.content_possible:
+        return Verification.CHECKSUM
+    if proofs.key_in_doubt:
+        return Verification.NONE
+    return Verification.LENGTH

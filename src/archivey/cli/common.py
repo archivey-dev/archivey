@@ -105,6 +105,7 @@ def outer_layer_format(fmt: ArchiveFormat) -> ArchiveFormat | None:
         in (
             ContainerFormat.TAR,
             ContainerFormat.AR,
+            ContainerFormat.DEB,
             ContainerFormat.CPIO,
             ContainerFormat.RPM,
         )

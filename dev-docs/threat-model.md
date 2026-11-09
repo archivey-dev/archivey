@@ -969,13 +969,10 @@ writes itself) is exercised against mutated and coverage-guided input.
    decode with it off raised. zlib and raw DEFLATE inputs carry a declared size, as a
    ZIP member or 7z coder does, since `AUTO` engages rapidgzip on them only with one.
    libFuzzer's own `-timeout` and `-rss_limit_mb` bound those targets: unlike a Python
-   alarm, they fire while the main thread is inside native code. A
-   short partition runs on every merge-queue group that changes a library, test, dependency
-   or CI path (`scripts/ci/ci_scope.py`; the fuzz targets live under `tests/`, so a change to
-   one always counts); the full one on a change-guarded nightly
-   and on `workflow_dispatch` (`.github/workflows/atheris-fuzz.yml`,
-   `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
-   group only.
+   alarm, they fire while the main thread is inside native code. The full partition runs
+   on a change-guarded nightly and on `workflow_dispatch`, which the release gates use
+   (`.github/workflows/atheris-fuzz.yml`, `openspec/specs/testing-contract/spec.md`).
+   `atheris` is in the `fuzz` dependency group only.
 
 pycdlib before 1.22 looped forever when corrupt directory records formed a back-edge,
 in any namespace `open_fp` walks, UDF included, where it also allocated on every pass. A
@@ -1434,6 +1431,16 @@ RARLAB binary is found. A read that needs no password passes none
 (`_member_needs_password`): the member and the headers are plaintext, and in a solid
 archive no encrypted member comes before it.
 Public: [hardening](../docs/security.md#hardening).
+
+### A file system's own error can carry a URL's credentials
+
+archivey removes a URL's `user:password@`, and an http(s) query, from the names and
+messages it writes itself (`display_url` in `internal/remote.py`). An I/O error the fsspec
+file system raises propagates unchanged
+([DR-15a](design-rules.md#dr-15a-translate-archive-problems-let-io-problems-through)), so
+a missing object's `FileNotFoundError` can carry the URL as given, secrets included.
+Contract: `openspec/changes/fsspec-integration/specs/archive-reading/spec.md`
+§"OpenFile facts".
 
 ## 5. Open design gaps
 

@@ -25,6 +25,7 @@ import pytest
 fsspec = pytest.importorskip("fsspec")
 
 from fsspec.core import OpenFile  # noqa: E402
+from fsspec.implementations.memory import MemoryFileSystem  # noqa: E402
 
 from archivey import (  # noqa: E402
     ArchiveFormat,
@@ -34,6 +35,7 @@ from archivey import (  # noqa: E402
     DiagnosticCode,
     DiagnosticPolicy,
     DiagnosticRaisedError,
+    FormatDetectionError,
     ReadError,
     SourceChangedError,
     detect_format,
@@ -44,6 +46,7 @@ from archivey.internal.remote import (  # noqa: E402
     PlannerConstants,
     RangeSource,
     WindowPool,
+    display_url,
     planner_constants,
 )
 from tests.sample_archives import (  # noqa: E402
@@ -58,6 +61,7 @@ from tests.test_short_read_sources import (  # noqa: E402
 )
 
 KIB = 1024
+MIB = 1024 * KIB
 SMALL = PlannerConstants(min_fetch=16 * KIB, max_fetch=128 * KIB, pool_bytes=128 * KIB)
 
 
@@ -426,24 +430,64 @@ def test_a_compressed_open_file_reads_the_archive_inside(
     assert "compression=None" in warnings[0].getMessage()
 
 
-def test_a_compressed_open_file_closes_with_the_reader(memfs, monkeypatch):
+@pytest.mark.parametrize("how", ["read", "refused", "detected"])
+def test_a_compressed_open_file_closes_the_file_under_its_decoder(
+    memfs, monkeypatch, how: str
+):
+    """archivey opens fsspec's file and its decompressor, so it closes both: a
+    decompressor handed a file object leaves it open. The caller's ``OpenFile`` is not
+    entered, so its own ``close()`` cannot close a stream archivey is reading."""
+    import gzip
+
+    from archivey import FormatDetectionError
+
+    memfs.pipe("/t/x.zip.gz", gzip.compress(_zip_bytes(MEMBERS)))
+    memfs.pipe("/t/y.txt.gz", gzip.compress(b"no archive"))
+    opened: list[io.BytesIO] = []
+    real_open = type(memfs).open
+
+    def spy(self: Any, *args: Any, **kwargs: Any) -> Any:
+        # A file of its own: the memory file system hands out the object it stores,
+        # whose close() does nothing, so it could not tell a close.
+        f = io.BytesIO(real_open(self, *args, **kwargs).getvalue())
+        opened.append(f)
+        return f
+
+    monkeypatch.setattr(type(memfs), "open", spy)
+    if how == "read":
+        of = fsspec.open("memory://t/x.zip.gz", compression="infer")
+        with open_archive(of) as reader:
+            assert {m.name for m in reader.members() if m.is_file} == set(MEMBERS)
+            assert opened
+            assert not any(f.closed for f in opened)
+    elif how == "refused":
+        of = fsspec.open("memory://t/y.txt.gz", compression="infer")
+        with pytest.raises(FormatDetectionError):
+            open_archive(of)
+    else:
+        of = fsspec.open("memory://t/x.zip.gz", compression="infer")
+        assert detect_format(of).format == ArchiveFormat.ZIP
+    assert opened
+    assert all(f.closed for f in opened)
+    assert of.fobjects == []
+
+
+def test_a_compressed_open_file_records_that_no_change_is_checked(memfs):
     import gzip
 
     memfs.pipe("/t/x.zip.gz", gzip.compress(_zip_bytes(MEMBERS)))
-    of = fsspec.open("memory://t/x.zip.gz", compression="infer")
-    opened = []
-    real_open = type(of).open
-
-    def spy(self):
-        stream = real_open(self)
-        opened.append(stream)
-        return stream
-
-    monkeypatch.setattr(type(of), "open", spy)
+    of = fsspec.open("memory://t/x.zip.gz", compression="gzip")
     with open_archive(of) as reader:
-        reader.members()
-    assert len(opened) == 1
-    assert opened[0].closed
+        (diag,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE
+        ]
+    assert diag.context.protocol == "memory"
+    assert "compression='gzip'" in diag.context.reason
+    assert "compression='gzip'" in diag.message
+    info = detect_format(of)
+    assert info.diagnostics.counts.get(DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE) == 1
 
 
 def test_a_compressed_open_file_holding_no_archive_names_fsspec_decoding(memfs):
@@ -591,6 +635,151 @@ def test_committed_fixture_reads_the_same_through_the_planner(
         assert _probe(_open_file(memfs, data), (FIXTURE_PASSWORD,)) == baseline
 
 
+# --- credentials in a URL ----------------------------------------------------------------
+
+
+class _URLMemoryFS(MemoryFileSystem):
+    """A memory file system whose paths are whole URLs, as fsspec's HTTP one keeps
+    them: ``user:password@`` and the query reach ``OpenFile.path`` unchanged."""
+
+    protocol = ("fakehttps",)
+    root_marker = ""
+
+    @classmethod
+    def _strip_protocol(cls, path: Any) -> Any:
+        return path
+
+    def unstrip_protocol(self, name: str) -> str:
+        return name
+
+
+_SECRETS = ("alice", "S3cretPW", "X-Amz-Signature", "deadbeef")
+_CRED_URL = "https://alice:S3cretPW@example.invalid/d/{name}?X-Amz-Signature=deadbeef"
+
+
+@pytest.fixture
+def urlfs() -> Any:
+    fs = _URLMemoryFS(skip_instance_cache=True)
+    yield fs
+    fs.store.clear()
+
+
+def _assert_no_secret(text: str) -> None:
+    for secret in _SECRETS:
+        assert secret not in text, text
+
+
+@pytest.mark.parametrize(
+    ("url", "shown"),
+    [
+        ("https://alice:pw@host:8080/a.zip", "https://host:8080/a.zip"),
+        ("http://alice@host/a.zip?sig=1&b=2#frag", "http://host/a.zip"),
+        ("https://a:b@c@host?x=1", "https://host"),
+        ("s3://bucket/key@v1/a.zip", "s3://bucket/key@v1/a.zip"),
+        ("s3://bucket/what?.zip", "s3://bucket/what?.zip"),
+        ("memory:///alice:pw@x/a.zip", "memory:///alice:pw@x/a.zip"),
+        ("/t/a.zip", "/t/a.zip"),
+    ],
+)
+def test_display_url_drops_userinfo_and_an_http_query(url: str, shown: str):
+    assert display_url(url) == shown
+
+
+def test_a_url_with_credentials_reads_but_never_shows_them(urlfs):
+    url = _CRED_URL.format(name="a.zip")
+    urlfs.pipe(url, _zip_bytes(MEMBERS))
+    seen: list[Any] = []
+    with open_archive(
+        OpenFile(urlfs, url), config=ArchiveyConfig(on_diagnostic=seen.append)
+    ) as reader:
+        # The real URL still does the I/O.
+        assert {m.name: reader.read(m) for m in reader.members() if m.is_file} == (
+            MEMBERS
+        )
+        assert [d.code for d in seen] == [DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE]
+        _assert_no_secret(repr(seen))
+        assert "https://example.invalid/d/a.zip" in seen[0].message
+        _assert_no_secret(repr(reader.diagnostics.retained))
+    _assert_no_secret(repr(detect_format(OpenFile(urlfs, url))))
+
+
+def test_errors_on_a_url_with_credentials_never_show_them(urlfs):
+    url = _CRED_URL.format(name="bad.zip")
+    unnamed = _CRED_URL.format(name="bad")
+    for name in (url, unnamed):
+        urlfs.pipe(name, b"\x01" * 300)
+    cases: list[tuple[type[Exception], Any]] = [
+        (CorruptionError, lambda: open_archive(OpenFile(urlfs, url))),
+        (
+            CorruptionError,
+            lambda: open_archive(OpenFile(urlfs, url), format=ArchiveFormat.ZIP),
+        ),
+        (
+            CorruptionError,
+            lambda: open_archive([OpenFile(urlfs, url), OpenFile(urlfs, url)]),
+        ),
+        (FormatDetectionError, lambda: open_archive(OpenFile(urlfs, unnamed))),
+        (FormatDetectionError, lambda: detect_format(OpenFile(urlfs, unnamed))),
+    ]
+    for error, call in cases:
+        with pytest.raises(error) as info:
+            call()
+        assert "https://example.invalid/d/bad" in str(info.value)
+        _assert_no_secret(str(info.value))
+        _assert_no_secret("".join(getattr(info.value, "__notes__", [])))
+
+
+class _NoSizeURLMemoryFS(_URLMemoryFS):
+    """A URL file system that cannot tell an object's size."""
+
+    def size(self, path: Any) -> Any:
+        return None
+
+
+def test_a_missing_size_on_a_url_with_credentials_never_shows_them():
+    fs = _NoSizeURLMemoryFS(skip_instance_cache=True)
+    url = _CRED_URL.format(name="a.zip")
+    fs.pipe(url, _zip_bytes(MEMBERS))
+    try:
+        with pytest.raises(OSError, match="gave no size") as info:
+            open_archive(OpenFile(fs, url))
+    finally:
+        fs.store.clear()
+    assert "https://example.invalid/d/a.zip" in str(info.value)
+    _assert_no_secret(str(info.value))
+
+
+def test_a_fetch_error_on_a_url_with_credentials_never_shows_them(urlfs):
+    url = _CRED_URL.format(name="a.zip")
+    urlfs.pipe(url, DATA)
+    source = RangeSource(
+        urlfs, url, size=len(DATA), pool=WindowPool(SMALL), max_read_through=1
+    )
+    _assert_no_secret(repr(source))
+    _assert_no_secret(source.name)
+    urlfs.pipe(url, DATA[:100])
+    with pytest.raises(SourceChangedError) as info:
+        source.read(1000)
+    source.close()
+    _assert_no_secret(str(info.value))
+
+
+def test_a_compressed_open_file_with_credentials_never_shows_them(urlfs, caplog):
+    import gzip
+
+    url = _CRED_URL.format(name="y.txt.gz")
+    urlfs.pipe(url, gzip.compress(b"hello"))
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.streams"),
+        pytest.raises(FormatDetectionError) as info,
+    ):
+        open_archive(OpenFile(urlfs, url, compression="gzip"))
+    assert any("compression='gzip'" in r.getMessage() for r in caplog.records)
+    _assert_no_secret(caplog.text)
+    _assert_no_secret(str(info.value))
+    _assert_no_secret("".join(getattr(info.value, "__notes__", [])))
+
+
 # --- a changed object (design D7, tier 3) ------------------------------------------------
 
 
@@ -629,6 +818,142 @@ def test_a_planner_fetch_of_another_length_raises():
     fs.data = DATA[:100]
     with pytest.raises(SourceChangedError, match="changed while it was read"):
         src.read(10)
+
+
+def test_a_change_stays_seen_by_every_later_read():
+    """A handler that takes the first ``SourceChangedError`` for damage cannot make the
+    source read on: each later read raises again, a read a window still holds too."""
+    src, fs = _source(DATA)
+    assert src.read(10) == DATA[:10]  # leaves a window over the start
+    fs.data = DATA[:100]
+    src.seek(500_000)
+    with pytest.raises(SourceChangedError):
+        src.read(10)
+    fs.data = DATA
+    src.seek(0)
+    with pytest.raises(SourceChangedError, match="changed while it was read"):
+        src.read(10)
+
+
+def _cut_on_fetch(monkeypatch: pytest.MonkeyPatch, memfs: Any, past: int) -> dict:
+    """The first fetch that starts at or past ``past`` while ``armed["on"]`` finds the
+    object cut to the bytes before it, and the original is back for every later fetch:
+    the object was replaced by a shorter one and then replaced again. So only that one
+    fetch can see the change, and a handler that swallows it leaves later reads with
+    nothing to raise on."""
+    real = type(memfs).cat_file
+    armed = {"on": True}
+
+    def cat_file(self: Any, path: str, start: Any = None, end: Any = None, **kw: Any):
+        if armed["on"] and start is not None and start >= past:
+            armed["on"] = False
+            whole = real(self, path)
+            self.pipe(path, whole[:start])
+            try:
+                return real(self, path, start=start, end=end, **kw)
+            finally:
+                self.pipe(path, whole)
+        return real(self, path, start=start, end=end, **kw)
+
+    monkeypatch.setattr(type(memfs), "cat_file", cat_file)
+    return armed
+
+
+def _stored_tar_gz(payload: bytes, tail: int = 0) -> bytes:
+    import gzip
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo("a")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    # Level 0: the deflate is stored, so offsets in the gzip follow the TAR's.
+    return gzip.compress(buf.getvalue() + b"\0" * tail, 0)
+
+
+def test_a_change_during_detection_raises_rather_than_another_format(
+    memfs, monkeypatch
+):
+    """The gzip inner-container probe reads past the first fetch, and the change it
+    meets must not make the answer GZ instead of TAR_GZ."""
+    memfs.pipe("/t/x.tar.gz", _stored_tar_gz(random.randbytes(200_000)))
+    _cut_on_fetch(monkeypatch, memfs, past=1)
+    with pytest.raises(SourceChangedError):
+        detect_format(
+            fsspec.open("memory://t/x.tar.gz"),
+            config=ArchiveyConfig(max_read_through=0),
+        )
+
+
+def test_a_change_while_a_single_compressed_file_opens_raises(memfs, monkeypatch):
+    """A lone ``.gz``: the change meets detection's inner-container probe, and the
+    open must raise it rather than go on as if the gzip held no archive."""
+    import gzip
+
+    memfs.pipe("/t/x.bin.gz", gzip.compress(random.randbytes(200_000), 0))
+    _cut_on_fetch(monkeypatch, memfs, past=1)
+    with pytest.raises(SourceChangedError) as info:
+        open_archive(
+            fsspec.open("memory://t/x.bin.gz"),
+            config=ArchiveyConfig(max_read_through=0),
+        )
+    # Named as every other open error is, though detection raised it.
+    assert info.value.archive_name == "/t/x.bin.gz"
+
+
+def test_a_change_swallowed_while_the_reader_is_built_is_stamped(memfs, monkeypatch):
+    """A backend that takes the change for damage while it is built: the error that
+    ends the open names the archive and the format, as the open's other errors do."""
+    from archivey.internal.base_reader import BaseArchiveReader
+
+    data = _zip_bytes(MEMBERS)
+    memfs.pipe("/t/a.zip", data)
+
+    def swallowing_validate(self: Any) -> None:
+        # In place of the reader's own check, which would list the members and end
+        # with the change at the walk's end instead.
+        armed["on"] = True
+        source = self._source
+        source.seek(0)
+        try:
+            source.read(len(data))
+        except SourceChangedError:
+            pass  # a handler built for damage
+
+    monkeypatch.setattr(BaseArchiveReader, "_validate_at_open", swallowing_validate)
+    armed = _cut_on_fetch(monkeypatch, memfs, past=1)
+    armed["on"] = False
+    with pytest.raises(SourceChangedError) as info:
+        open_archive(
+            fsspec.open("memory://t/a.zip"),
+            format=ArchiveFormat.ZIP,
+            config=ArchiveyConfig(max_read_through=0),
+        )
+    assert info.value.archive_name == "/t/a.zip"
+    assert info.value.source_format == ArchiveFormat.ZIP
+
+
+@pytest.mark.parametrize(
+    "policy", [DiagnosticPolicy(), DiagnosticPolicy.STRICT], ids=["default", "strict"]
+)
+def test_a_change_during_the_tar_end_scan_raises(memfs, monkeypatch, policy):
+    """The scan past the TAR end-of-archive marker takes a ``ReadError`` from the codec
+    for a tail that fails to decode, and reports ``DIGEST_UNVERIFIABLE``; a change of
+    the object is not that, and the pass ends with it. Under ``STRICT`` that report
+    raises inside the handler, and the change still wins."""
+    payload = random.randbytes(200_000)
+    memfs.pipe("/t/x.tar.gz", _stored_tar_gz(payload, tail=3 * 2**20))
+    config = ArchiveyConfig(diagnostic_policy=policy, max_read_through=0)
+    armed = _cut_on_fetch(monkeypatch, memfs, past=400_000)
+    armed["on"] = False
+    with open_archive(fsspec.open("memory://t/x.tar.gz"), config=config) as reader:
+        armed["on"] = True
+        with pytest.raises(SourceChangedError):
+            for member, stream in reader.stream_members():
+                assert member.name == "a"
+                assert stream is not None
+                assert stream.read() == payload
 
 
 def _volume_bytes(data: bytes, parts: int) -> list[bytes]:
@@ -719,7 +1044,7 @@ def test_a_hint_inside_a_window_fetches_nothing():
     src, fs = _source(DATA)
     src.read(10)
     src.will_read(100, 200)
-    assert src.pending_hint is None
+    assert src.pending_hints == []
     src.seek(150)
     src.read(10)
     assert fs.fetches == [(0, 16 * KIB)]
@@ -749,6 +1074,47 @@ def test_a_hint_past_a_runs_window_starts_its_own_run():
     first, second = fs.fetches
     assert first == (0, 16 * KIB)
     assert second[0] == 20 * KIB
+
+
+def test_spans_with_small_gaps_between_them_keep_one_growing_run():
+    # Spans that lie almost back to back (an ISO extent's padding, a span that leaves
+    # out a header): a stream that read its window to the end continues the run
+    # through the gap, so the fetches grow as for one sequential read. Before, each
+    # span past the window started a run of its own: one request per member.
+    data = DATA * 16  # 16 MiB
+    src, fs = _source(data, constants=PlannerConstants(), gap=MIB)
+    member, gap, pos = 100_000, 30, 0
+    while pos + gap + member <= len(data):
+        start = pos + gap
+        src.will_read(start, start + member)
+        src.seek(start)
+        assert src.read(member) == data[start : start + member]
+        pos = start + member
+    # The default constants: fetches that double to 8 MiB, not one per member (167).
+    assert len(fs.fetches) <= 10
+
+
+def test_members_read_side_by_side_each_keep_their_hint():
+    # Two streams hint their members before either reads: the second hint does not
+    # replace the first, so each member comes in one request.
+    src, fs = _source(DATA)
+    src.will_read(100 * KIB, 150 * KIB)
+    src.will_read(300 * KIB, 350 * KIB)
+    src.seek(100 * KIB)
+    assert src.read(50 * KIB) == DATA[100 * KIB : 150 * KIB]
+    src.seek(300 * KIB)
+    assert src.read(50 * KIB) == DATA[300 * KIB : 350 * KIB]
+    assert fs.fetches == [(100 * KIB, 150 * KIB), (300 * KIB, 350 * KIB)]
+
+
+def test_a_source_keeps_only_its_latest_hints():
+    from archivey.internal.remote import MAX_PENDING_HINTS
+
+    src, _ = _source(DATA)
+    for i in range(MAX_PENDING_HINTS + 2):
+        src.will_read(i * 20 * KIB, i * 20 * KIB + 10)
+    assert len(src.pending_hints) == MAX_PENDING_HINTS
+    assert src.pending_hints[0][0] == 2 * 20 * KIB
 
 
 def test_a_hint_never_changes_the_bytes():
@@ -834,3 +1200,138 @@ def test_7z_hints_the_folder_pack_stream_before_a_member_read(
         listed = list(hints)
         assert reader.read(member) == payload
     assert hints[len(listed) :] == [(32, 32 + 300_000)]
+
+
+def _iso_bytes(members: dict[str, bytes]) -> bytes:
+    pycdlib = pytest.importorskip("pycdlib")
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    for name, data in members.items():
+        iso.add_fp(io.BytesIO(data), len(data), f"/{name.upper()};1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+def test_iso_reads_a_member_within_the_max_fetch_in_one_request():
+    """The spec ceiling: list + 1. The ISO reader names the member's extent in
+    ``MemberData.ranges``, so the read is one fetch from the extent's start rather than
+    a ramp from the minimum fetch. Red with the ranges removed (3 fetches)."""
+    rng = random.Random(9)
+    # The default constants: under SMALL the cap shrinks with the listing's windows.
+    payload = rng.randbytes(400_000)
+    data = _iso_bytes({"a.bin": rng.randbytes(50_000), "b.bin": payload})
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, "/a.iso", mode="rb")) as reader:
+        member = reader.get("B.BIN")
+        listed = len(fs.fetches)
+        # Small reads, as a consumer streaming the member does: without the hint the
+        # first one starts a run at the minimum fetch, which then doubles.
+        with reader.open(member) as stream:
+            assert b"".join(iter(lambda: stream.read(4096), b"")) == payload
+    extent = data.index(payload[:64])
+    assert fs.fetches[listed:] == [(extent, extent + len(payload))]
+
+
+def test_a_plugins_ranges_reach_the_range_source(monkeypatch: pytest.MonkeyPatch):
+    """``MemberData.ranges`` reach the range source as hints, offsets unchanged."""
+    rng = random.Random(10)
+    payload = rng.randbytes(20_000)
+    data = _iso_bytes({"b.bin": payload})
+    hints: list[tuple[int, int]] = []
+    original = RangeSource.will_read
+
+    def spy(self: RangeSource, start: int, end: int) -> None:
+        hints.append((start, end))
+        original(self, start, end)
+
+    monkeypatch.setattr(RangeSource, "will_read", spy)
+    with open_archive(OpenFile(RecordingFS(data), "/a.iso", mode="rb")) as reader:
+        assert reader.read(reader.get("B.BIN")) == payload
+    extent = data.index(payload[:64])
+    assert hints == [(extent, extent + len(payload))]
+
+
+def test_a_raw_sector_images_ranges_name_raw_sectors(monkeypatch: pytest.MonkeyPatch):
+    """A raw CD image's hints name the whole raw sectors that hold the extent, not the
+    extent's offsets in the user data. Red with ``IsoReader.open_member``'s mapping
+    removed (the hint is the cooked range)."""
+    from tests.test_iso_raw_sectors import to_raw
+
+    rng = random.Random(11)
+    payload = rng.randbytes(20_000)
+    iso = _iso_bytes({"b.bin": payload})
+    data = to_raw(iso)
+    hints: list[tuple[int, int]] = []
+    original = RangeSource.will_read
+
+    def spy(self: RangeSource, start: int, end: int) -> None:
+        hints.append((start, end))
+        original(self, start, end)
+
+    monkeypatch.setattr(RangeSource, "will_read", spy)
+    with open_archive(OpenFile(RecordingFS(data), "/a.bin", mode="rb")) as reader:
+        assert reader.read(reader.get("B.BIN")) == payload
+    sector = iso.index(payload[:64]) // 2048
+    sectors = -(-len(payload) // 2048)
+    assert hints == [(sector * 2352, (sector + sectors) * 2352)]
+
+
+@pytest.mark.parametrize("encoding", ["none", "gzip"])
+def test_a_plugin_view_is_hinted_without_ranges(
+    encoding: str, monkeypatch: pytest.MonkeyPatch
+):
+    """XAR declares no ``MemberData.ranges``: its data is a view, or a
+    ``decompress()`` over one, and archivey hints the view's span itself. Red with
+    the view's mark removed (no hint after the listing)."""
+    from tests.xar_util import ENCODINGS, XarFile, write_xar
+
+    rng = random.Random(12)
+    payload = rng.randbytes(20_000)
+    data = write_xar([XarFile("b.bin", payload, encoding=encoding)])
+    stored = ENCODINGS[encoding][1](payload)
+    hints: list[tuple[int, int]] = []
+    original = RangeSource.will_read
+
+    def spy(self: RangeSource, start: int, end: int) -> None:
+        hints.append((start, end))
+        original(self, start, end)
+
+    monkeypatch.setattr(RangeSource, "will_read", spy)
+    with open_archive(OpenFile(RecordingFS(data), "/a.xar", mode="rb")) as reader:
+        member = reader.get("b.bin")
+        listed = len(hints)
+        assert reader.read(member) == payload
+    start = data.index(stored)
+    assert hints[listed:] == [(start, start + len(stored))]
+
+
+def test_ranges_that_are_not_offset_pairs_are_a_plugin_bug(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from archivey.internal.backends.iso_reader import IsoReader
+
+    data = _iso_bytes({"b.bin": b"x" * 100})
+    original = IsoReader.open_member
+
+    def bad(self: IsoReader, member: Any, locator: Any) -> Any:
+        return original(self, member, locator)._replace(ranges=[(0, "10")])
+
+    monkeypatch.setattr(IsoReader, "open_member", bad)
+    with open_archive(OpenFile(RecordingFS(data), "/a.iso", mode="rb")) as reader:
+        member = reader.get("B.BIN")
+        with pytest.raises(TypeError, match=r"MemberData\.ranges"):
+            reader.read(member)
+
+
+def test_iso_extract_all_reads_members_in_growing_runs(tmp_path: Path):
+    """An ISO's extents lie almost back to back (sector padding between them). Each is
+    a hinted span; a pass over every member keeps one growing run. Red with each span
+    past a window starting a run of its own: one request per member (151 here)."""
+    rng = random.Random(11)
+    data = _iso_bytes({f"f{i}.bin": rng.randbytes(100_000) for i in range(150)})
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, "/a.iso", mode="rb")) as reader:
+        reader.extract_all(tmp_path)
+    assert len(fs.fetches) <= 12

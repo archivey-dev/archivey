@@ -460,6 +460,33 @@ def pytest_exception_interact(node, call, report) -> None:
         tr.write_line(msg, red=True, bold=True)
 
 
+def _put_winrar_on_path() -> None:
+    """Put a WinRAR install the finder would fall back to on ``PATH`` for this run.
+
+    Many tests point ``PATH`` at a folder of fake binaries and expect archivey to
+    find nothing else, so :func:`_no_winrar_fallback` turns the Windows fallback off
+    in every test. A machine whose RARLAB programs live only in WinRAR's folder would
+    then skip or fail its RAR data tests; with the folder on ``PATH`` they run as on a
+    machine where ``unrar`` is installed there. Child processes inherit it too.
+    """
+    from archivey.internal.backends.rar_unrar import winrar_install_candidates
+
+    folders = dict.fromkeys(os.path.dirname(p) for p in winrar_install_candidates())
+    if folders:
+        os.environ["PATH"] = os.pathsep.join([*folders, os.environ.get("PATH", "")])
+
+
+@pytest.fixture(autouse=True)
+def _no_winrar_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the RARLAB finder look on ``PATH`` only (see :func:`_put_winrar_on_path`).
+
+    The fallback's own tests restore it with ``monkeypatch.setattr``.
+    """
+    from archivey.internal.backends import rar_unrar
+
+    monkeypatch.setattr(rar_unrar, "winrar_install_candidates", list)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register the shared Hypothesis settings profile used by property-safety tests.
 
@@ -468,7 +495,10 @@ def pytest_configure(config: pytest.Config) -> None:
     the mutation harness's ``ARCHIVEY_FUZZ_MUTATIONS`` pattern. Hypothesis is a ``dev``
     dependency; under ``[core-only]`` the import is absent and this is a no-op (the
     property module itself skips collection).
+
+    It also puts a WinRAR install on ``PATH`` first (:func:`_put_winrar_on_path`).
     """
+    _put_winrar_on_path()
     try:
         from hypothesis import settings
     except ImportError:
@@ -487,6 +517,16 @@ def pytest_configure(config: pytest.Config) -> None:
         derandomize=True,
     )
     settings.load_profile("archivey")
+
+
+@pytest.fixture
+def zip_general_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open every ZIP member through the codec layer: no small member is read whole at
+    open (``ZipReader._speculative_small_member``). For tests that inject faults into,
+    or count, what that layer builds."""
+    from archivey.internal.backends import zip_reader
+
+    monkeypatch.setattr(zip_reader, "_SPECULATIVE_MAX", -1)
 
 
 @pytest.fixture

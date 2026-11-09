@@ -2,7 +2,8 @@
 
 No RAR structure knowledge beyond argv safety — metadata/listing is
 :mod:`.rar_parser`. Locates a RARLAB decompressor on ``PATH`` (``unrar`` first,
-then the trialware writer ``rar``; not ``unrar-free`` / ``unar`` / ``7z``) and
+then the trialware writer ``rar``; not ``unrar-free`` / ``unar`` / ``7z``), or on
+Windows in WinRAR's Program Files folder, and
 spawns ``<binary> p`` with the password on stdin (bare ``-p``, secret not in
 argv) and optional ``-n./member`` include masks. Never ``x`` / extract-to-disk.
 """
@@ -18,7 +19,7 @@ import sys
 import tempfile
 import threading
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -62,6 +63,17 @@ _UNRAR_VERSION_FLOOR: tuple[int, int] = (6, 0)
 # under a different PATH name (Ubuntu ``apt install rar`` Suggests ``unrar``
 # and does not put ``unrar`` on PATH).
 _RARLAB_BINARY_NAMES: tuple[str, ...] = ("unrar", "rar")
+# On Windows, WinRAR's installer puts both programs in its own folder and does not
+# add that folder to PATH, so the finder also looks there when PATH has no usable
+# program. The variables name the 64-bit and the 32-bit Program Files folders;
+# writing there needs administrator rights.
+_ON_WINDOWS = sys.platform == "win32"
+_WINRAR_EXE_NAMES: tuple[str, ...] = ("UnRAR.exe", "Rar.exe")
+_WINDOWS_PROGRAM_FILES_VARS: tuple[str, ...] = (
+    "ProgramW6432",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+)
 # Bound the digit runs: an unbounded run then ``int()`` raises ``ValueError``
 # past CPython's 4300-digit limit, and that must not cross ``open_archive``.
 # ``[0-9]`` and ``[ \t]``, not ``\d`` and ``\s``: those match Unicode digits and
@@ -139,8 +151,9 @@ UNAR_BY_POSITION_HINT = (
 
 _NOT_INSTALLED_MSG = (
     "RARLAB unrar or rar is required to read RAR member data, but neither was found "
-    "on PATH (or the unrar/rar on PATH is not a RARLAB binary). Install RARLAB unrar "
-    "or rar 6.0 or later; unrar-free, 7z and 7zz are not substitutes. With "
+    "on PATH or, on Windows, in WinRAR's folder under Program Files (or the one found "
+    "is not a RARLAB binary). Install RARLAB unrar or rar 6.0 or later and put it on "
+    "PATH; unrar-free, 7z and 7zz are not substitutes. With "
     "ArchiveyConfig.rar_decompressor 'auto' or 'unar', a unar 1.10 or later that "
     "passes archivey's RAR5 check reads most RAR data too; Debian and Ubuntu packages "
     "before 1.10.8+ds1-10 fail that check and are not used."
@@ -208,8 +221,8 @@ def _unrar_timeout_message(paths: list[str]) -> str:
     shown = " and ".join(display_path(path) for path in paths)
     them = "it" if len(paths) == 1 else "them"
     return (
-        f"RARLAB unrar or rar is required to read RAR member data. Found {shown} on "
-        f"PATH, but the identification probe got no answer from {them} within "
+        f"RARLAB unrar or rar is required to read RAR member data. Found {shown}, "
+        f"but the identification probe got no answer from {them} within "
         f"{_PROBE_TIMEOUT_SECONDS:g} seconds. archivey does not probe an unchanged "
         "binary again in this process; fix or replace it, or put a working RARLAB "
         "unrar or rar on PATH."
@@ -262,12 +275,68 @@ def rarlab_unrar_missing() -> tuple[MissingComponent, ...]:
     return ()
 
 
+def winrar_install_candidates() -> list[str]:
+    """``UnRAR.exe`` then ``Rar.exe`` in each Program Files ``WinRAR`` folder that has them.
+
+    Empty off Windows. Only files that exist are listed; the caller still probes
+    each one's banner, as it does a ``PATH`` hit.
+    """
+    if not _ON_WINDOWS:
+        return []
+    folders: list[str] = []
+    for var in _WINDOWS_PROGRAM_FILES_VARS:
+        base = os.environ.get(var)
+        if base:
+            folders.append(os.path.join(base, "WinRAR"))
+    found: list[str] = []
+    seen: set[str] = set()
+    for exe in _WINRAR_EXE_NAMES:
+        for folder in folders:
+            candidate = os.path.abspath(os.path.join(folder, exe))
+            key = os.path.normcase(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if os.path.isfile(candidate):
+                found.append(candidate)
+    return found
+
+
+def _rarlab_candidates(path_env: str) -> Iterator[str]:
+    """Absolute paths to probe, best first: ``unrar`` then ``rar`` on ``PATH``, then
+    :func:`winrar_install_candidates`.
+
+    Lazy, so the WinRAR folders are looked at only when no ``PATH`` hit is usable.
+    A path already yielded is not yielded again.
+    """
+    seen: set[str] = set()
+
+    def _first_time(candidate: str) -> bool:
+        key = os.path.normcase(candidate)
+        if key in seen:
+            return False
+        seen.add(key)
+        return True
+
+    for name in _RARLAB_BINARY_NAMES:
+        hit = shutil.which(name, path=path_env)
+        if hit is not None:
+            candidate = os.path.abspath(hit)
+            if _first_time(candidate):
+                yield candidate
+    for candidate in winrar_install_candidates():
+        if _first_time(candidate):
+            yield candidate
+
+
 def find_rarlab_unrar() -> str:
     """Return path to RARLAB ``unrar`` or ``rar`` 6.0+, or raise PackageNotInstalledError.
 
     ``unrar`` wins when both names resolve to a usable binary. A lookalike or
-    too-old ``unrar`` does not hide a usable ``rar``. A ``which`` miss is never
-    cached. Spawn sites still only run ``p`` (see :func:`open_unrar_p`).
+    too-old ``unrar`` does not hide a usable ``rar``. ``PATH`` comes first; on
+    Windows, WinRAR's own folder is tried after it (:func:`winrar_install_candidates`).
+    A ``which`` miss is never cached. Spawn sites still only run ``p`` (see
+    :func:`open_unrar_p`).
     """
     path_env = os.environ.get("PATH", "")
     # Sample PATH once and pass it to ``which`` so a concurrent ``os.environ``
@@ -281,12 +350,7 @@ def find_rarlab_unrar() -> str:
             return
         floor_refusals.append((path, version))
 
-    for name in _RARLAB_BINARY_NAMES:
-        candidate = shutil.which(name, path=path_env)
-        if candidate is None:
-            continue
-        candidate = os.path.abspath(candidate)
-
+    for candidate in _rarlab_candidates(path_env):
         try:
             identity = _stat_identity(candidate)
         except PackageNotInstalledError as exc:
@@ -529,6 +593,22 @@ def unrar_mask_carries_non_ascii() -> bool:
     without one a non-ASCII mask never matches its own member.
     """
     return sys.platform == "win32" or _utf8_locale_name() is not None
+
+
+def unrar_expands_wildcards(path: str | Path) -> bool:
+    """Whether ``unrar`` reads ``path``, given as the archive, as a wildcard mask.
+
+    ``unrar`` expands ``*`` and ``?`` in an archive name, and ``--`` does not stop
+    that: ``rep*.rar`` also opens a ``rep-a.rar`` beside it, and a FIFO that the
+    mask matches blocks the open forever. Those are the only two wildcard
+    characters (``IsWildcard`` in unrar's ``pathfn.cpp``; ``[`` is literal). On
+    Windows it skips the ``\\\\?\\`` long-path prefix before it looks, and a
+    Windows name cannot hold either character, so only that prefix is exempt.
+    """
+    text = str(path)
+    if sys.platform == "win32" and text.startswith("\\\\?\\"):
+        text = text[4:]
+    return "*" in text or "?" in text
 
 
 def unrar_member_refusal(member: str) -> str | None:
