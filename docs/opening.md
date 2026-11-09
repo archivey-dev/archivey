@@ -40,7 +40,10 @@ signature matched where the format puts it, `PROBABLE` when a test of its conten
 self-extracting archive, where the archive starts after a program, and for any other archive found
 behind leading bytes; `payload_offset` says where reading starts. Test `prefixed`, not
 `payload_offset > 0`, to ask whether the archive came after something else: a ZIP whose own
-offsets count from the start of the file starts at 0 even behind a program. For a signed Windows
+offsets count from the start of the file starts at 0 even behind a program. `prefixed` says what
+detection found, so `False` is not proof that nothing comes first: a file named for its format
+whose first bytes are neither an archive signature nor a program or `#!` header is taken at its
+name's word, with no search for leading bytes. For a signed Windows
 program, `payload_end` is where its signature starts, and archivey reads the archive only up to
 there. A file in no format archivey knows raises `FormatDetectionError`. The confidence grade is
 for a person reading it and may change between releases, so decide what to do from the format,
@@ -207,5 +210,6 @@ only if it checks `config.formats.exclude_libraries` itself.
 compressed with xz as a whole, such as a `.xz` or `.tar.xz` file, not the xz codec: a ZIP member
 compressed with xz can still be read under `exclude={S.XZ}`, because the file is a ZIP.
 `plugins=False` and `exclude_libraries=` are different, since they turn off the code that
-decodes, wherever it runs. Under `plugins=False`, no plugin codec runs in the call, even for a
-member inside an archive: reading a member that needs one raises `UnsupportedFeatureError`.
+decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format runs in the
+call, even for a member or an archive inside an archive: reading a member that needs one raises
+`UnsupportedFeatureError`.

@@ -83,6 +83,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     _UsageTypeError,
     _UsageValueError,
+    exception_detail,
     raw_message_of,
 )
 from archivey.internal.arg_checks import (
@@ -127,6 +128,7 @@ from archivey.internal.reader_state import (
     LiveStreamReservation,
     ReaderState,
 )
+from archivey.internal.remote import source_change
 from archivey.internal.resource_usage import ResourceUsage, ResourceUsageRecorder
 from archivey.internal.selection import (
     CollectionSelector,
@@ -709,6 +711,10 @@ class BaseArchiveReader(ArchiveReader):
         # SOLID_OPEN_REDECOMPRESSES (an INFO log line); later ones only escalate it,
         # the rule for every once-per-reader code (``escalate_only``).
         self._solid_decoded: dict[Hashable, tuple[int, int]] = {}
+        # Per run, the ``(offset, end)`` of every open judged but not yet settled:
+        # ``_note_solid_open`` adds it, ``_settle_solid_open`` moves it into
+        # ``_solid_decoded`` once the open succeeded, or drops it when it failed.
+        self._solid_inflight: dict[Hashable, list[tuple[int, int]]] = {}
         self._solid_redecode_reported = False
         self._solid_decoded_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
@@ -898,6 +904,8 @@ class BaseArchiveReader(ArchiveReader):
         return _TranslatedErrorBoundary(self, member_name, stamp_encryption)
 
     def _seek_declared(self) -> bool:
+        """Whether the caller asked for seekable member streams
+        (``open_archive(seekable_members=True)``): the most a member stream may offer."""
         return self._state.seekable
 
     def _register_public_stream(
@@ -1676,6 +1684,11 @@ class BaseArchiveReader(ArchiveReader):
         chosen_by: Literal["argument", "extension"],
         detected_format: str | None,
     ) -> None:
+        """Report an empty listing under a format the bytes never confirmed: one the
+        caller's ``format=`` (``"argument"``) or the file extension chose.
+        ``detected_format`` is what content detection names instead, or ``None`` when it
+        refuses the bytes or cannot read them. An extension pick passes ``None`` without
+        running detection again: detection had already declined the bytes."""
         format_name = self._format.display_name
         detected_text = detected_format or "nothing (detection refuses these bytes)"
         self._diagnostics_collector.emit(
@@ -1717,6 +1730,11 @@ class BaseArchiveReader(ArchiveReader):
             return self._publish_materialized(error=error)
 
     def _publish_materialized(self, *, error: ArchiveyError | None) -> _Materialized:
+        """Settle the walk's members and publish them as the reader's listing.
+
+        ``error`` is the damage the walk ended on, kept on the report. Runs under the
+        walk lock, after the links are resolved (:meth:`_finalize_and_publish`).
+        """
         members = self._listed
         # Links are resolved to members now, and is_current was stamped when the walk
         # ended, so nothing changes these members from here. Not when the walk ends: a
@@ -1984,9 +2002,11 @@ class BaseArchiveReader(ArchiveReader):
                     else:
                         member = self._pull_replayable(position)
                 except StopIteration:
+                    self._raise_source_change()
                     self._end_walk(None)
                     return None
                 except CorruptionError as exc:
+                    self._raise_source_change(exc)
                     self._end_walk(exc)
                     return None
                 self._register_member(position, member)
@@ -1996,6 +2016,8 @@ class BaseArchiveReader(ArchiveReader):
             return member
         except BaseException as exc:
             self._abandon_walk(exc)
+            if isinstance(exc, Exception):
+                self._raise_source_change(exc)
             raise
         finally:
             self._walk_pulling = False
@@ -2036,6 +2058,24 @@ class BaseArchiveReader(ArchiveReader):
             return self._walk_built[position]
         self._walk_built.append(member)
         return member
+
+    def _raise_source_change(self, cause: BaseException | None = None) -> None:
+        """Raise ``SourceChangedError`` when the remote object this reader reads has
+        changed (``fsspec-integration`` design D7), with ``cause`` as its cause.
+
+        The walk ends here, in place of a clean end, an incomplete listing or another
+        error. A backend handler built for damage (TAR's scan past the end-of-archive
+        marker, a salvage path, a metadata probe) can take the change for damage and
+        go on, and what it then reports describes no archive. The source raises the
+        change again on every later read, so a later call raises it too.
+        """
+        source = self._source
+        if source is None:
+            return
+        changed = source_change(source.remote_sources, cause)
+        if changed is not None:
+            self._stamp_error_context(changed)
+            raise changed from cause
 
     def _end_walk(self, error: CorruptionError | None) -> None:
         """Record that the walk ended, and stamp last-entry-wins once, over what it listed.
@@ -2633,6 +2673,8 @@ class BaseArchiveReader(ArchiveReader):
             self._resolve_link_target_locked(member)
 
     def _resolve_link_target_locked(self, member: ArchiveMember) -> None:
+        """:meth:`_resolve_link_target` under its lock: read the target, report what it
+        found, and memo that the member is done."""
         if member.link_target is not None or member._link_target_resolved:
             return
         try:
@@ -3232,6 +3274,8 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def _index_member_name(self, member: ArchiveMember) -> None:
+        """Add ``member`` to ``_listed_by_name`` under its name, after any member
+        listed under it before."""
         index = self._listed_by_name
         held = index.get(member.name)
         if held is None:
@@ -3279,6 +3323,8 @@ class BaseArchiveReader(ArchiveReader):
         return (held,)
 
     def _last_by_exact_name(self, name: str) -> ArchiveMember | None:
+        """The member listed last under exactly ``name``, which a lookup by name
+        returns, or ``None``."""
         held = self._listed_by_name.get(name)
         if isinstance(held, list):
             return held[-1]
@@ -3445,6 +3491,7 @@ class BaseArchiveReader(ArchiveReader):
         return self._progressive_gen
 
     def _guard_forward_pass_entry(self, op: str) -> None:
+        """Refuse ``op`` once a streaming reader's one forward pass has started."""
         if self._streaming and self._forward_pass_started:
             raise ArchiveyUsageError(
                 f"{op} is not available after a streaming reader's forward pass has "
@@ -3453,6 +3500,7 @@ class BaseArchiveReader(ArchiveReader):
             )
 
     def _enter_forward_pass(self, op: str) -> None:
+        """Start a streaming reader's one forward pass for ``op``, or refuse it."""
         self._guard_forward_pass_entry(op)
         self._forward_pass_started = True
 
@@ -3743,6 +3791,9 @@ class BaseArchiveReader(ArchiveReader):
         return MemberPassImpl(self._iter_pass())
 
     def _iter_pass(self) -> Generator[ArchiveMember, None, None]:
+        """``iter(reader)``. A streaming reader yields its one forward pass as it walks.
+        A random-access reader lists the archive first and yields that listing, then
+        raises the damage the listing stopped at, if any."""
         self._state.require_open("__iter__")
         if self._streaming:
             token = self._state.acquire_pass("__iter__")
@@ -3972,11 +4023,11 @@ class BaseArchiveReader(ArchiveReader):
                 member = found
             else:
                 # Checked before the identity comparison below, which reads a private
-                # attribute: without this, `open(0)` failed as
-                # `AttributeError: 'int' object has no attribute '_archive_id'` —
-                # a private field name crossing the public boundary in place of an
-                # answer. `in` raises TypeError here (a spec'd escape for the operator
-                # protocol); this is an ordinary argument, so it takes the usage error.
+                # attribute: otherwise `open(0)` would fail with an AttributeError
+                # naming `_archive_id`, a private field crossing the public boundary
+                # in place of an answer. `in` raises TypeError here (a spec'd escape
+                # for the operator protocol); this is an ordinary argument, so it
+                # takes the usage error.
                 if not isinstance(member, ArchiveMember):
                     raise _UsageTypeError(
                         f"reader.open() takes a member name (str) or an ArchiveMember "
@@ -4000,6 +4051,16 @@ class BaseArchiveReader(ArchiveReader):
             reservation = self._state.reserve_live_stream()
             bound = False
             stream: ArchiveStreamImpl | None = None
+            # The solid run this open was judged against, once ``_note_solid_open``
+            # holds it in flight; settled below, committed or dropped.
+            judged: list[SolidRun] = []
+
+            def before_open(target: ArchiveMember) -> None:
+                run = self._solid_run(target)
+                if run is not None:
+                    self._note_solid_open(target, run)
+                    judged.append(run)
+
             try:
                 opened: list[ArchiveMember] = []
                 # Before the member's open, which can decode its solid prefix at once
@@ -4009,8 +4070,12 @@ class BaseArchiveReader(ArchiveReader):
                     member,
                     visited=set(),
                     opened=opened,
-                    before_open=self._check_solid_open,
+                    before_open=before_open,
                 )
+                # The open succeeded: its run is now decoded through the member's end.
+                if judged:
+                    self._settle_solid_open(judged[0], decoded=True)
+                    judged.clear()
                 self._hold_to_ratio(stream, opened[0])
                 stream._level_member = self._level_member(opened[0])
                 # An eager open may have proved the password already.
@@ -4021,6 +4086,9 @@ class BaseArchiveReader(ArchiveReader):
             finally:
                 if not bound:
                     pending = sys.exception()
+                    if judged:
+                        # The open failed: see ``_settle_solid_open``.
+                        self._settle_solid_open(judged[0], decoded=False)
                     if stream is not None:
                         try:
                             stream.close()
@@ -4058,11 +4126,31 @@ class BaseArchiveReader(ArchiveReader):
         del member
         return None
 
-    def _check_solid_open(self, member: ArchiveMember) -> None:
-        """Note an ``open()`` of ``member`` that is about to start."""
-        run = self._solid_run(member)
-        if run is not None:
-            self._note_solid_open(member, run)
+    def _settle_solid_open(self, run: SolidRun, *, decoded: bool) -> None:
+        """Take the open :meth:`_note_solid_open` judged against ``run`` off the
+        in-flight ledger, into the run's record when ``decoded``, else dropped.
+
+        An open that fails is not recorded. Most fail before decoding (a member the
+        backend refuses, a wrong password: 7z raises ``EncryptionError`` from
+        ``open()``), and recording them would make the next open of the run report a
+        re-decode, or be refused under ``raise_on``, for bytes never decoded. One
+        that fails after decoding part of its run (a 7z folder that cannot seek and
+        hits damage) is not recorded either, so a later re-decode of that part goes
+        unreported. That miss is accepted: it loses an advisory, where recording it
+        could refuse an open.
+        """
+        end = run.offset + run.size
+        with self._solid_decoded_lock:
+            entries = self._solid_inflight[run.key]
+            entries.remove((run.offset, end))
+            if not entries:
+                del self._solid_inflight[run.key]
+            if decoded:
+                decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
+                self._solid_decoded[run.key] = (
+                    max(decoded_to, end),
+                    max(discarded_to, run.offset),
+                )
 
     def _note_solid_open(self, member: ArchiveMember, run: SolidRun) -> None:
         """Report when an ``open()`` decodes again what an earlier open decoded.
@@ -4080,20 +4168,27 @@ class BaseArchiveReader(ArchiveReader):
         caller may have chosen the pattern, and ``reader.cost`` and the ``open()``
         docstring already carry the cost. Every later one is passed to the policy only
         (``escalate_only``), so ``raise_on`` stops each such open. Called before the
-        member is opened, so a refused open decodes nothing, and only an open that goes
-        ahead is kept in the per-run record.
+        member is opened, so a refused open decodes nothing.
+
+        The judgement counts the opens still in flight on the run as decoded, and
+        puts this one among them in the same locked step, so two opens judged while
+        neither has finished see each other, as they would see a finished one. The
+        caller then settles it with :meth:`_settle_solid_open`: into the run's record
+        once the open succeeded, dropped when it failed, or here when the policy
+        refuses it.
         """
         end = run.offset + run.size
         with self._solid_decoded_lock:
             decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
+            inflight = self._solid_inflight.setdefault(run.key, [])
+            for other_offset, other_end in inflight:
+                decoded_to = max(decoded_to, other_end)
+                discarded_to = max(discarded_to, other_offset)
+            inflight.append((run.offset, end))
             again = min(run.offset, decoded_to) + max(
                 0, min(end, discarded_to) - run.offset
             )
             if again <= 0:
-                self._solid_decoded[run.key] = (
-                    max(decoded_to, end),
-                    max(discarded_to, run.offset),
-                )
                 return
             first = not self._solid_redecode_reported
             self._solid_redecode_reported = True
@@ -4112,26 +4207,24 @@ class BaseArchiveReader(ArchiveReader):
             bytes_again=again,
         )
         collector = self._diagnostics_collector
-        if first:
-            collector.emit(
-                code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
-                message=message,
-                context=context,
-                logger=logger,
-            )
-        else:
-            collector.escalate_only(
-                code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
-                message=message,
-                context=context,
-            )
-        # Not refused: the open goes ahead and decodes through ``end``.
-        with self._solid_decoded_lock:
-            decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
-            self._solid_decoded[run.key] = (
-                max(decoded_to, end),
-                max(discarded_to, run.offset),
-            )
+        try:
+            if first:
+                collector.emit(
+                    code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
+                    message=message,
+                    context=context,
+                    logger=logger,
+                )
+            else:
+                collector.escalate_only(
+                    code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
+                    message=message,
+                    context=context,
+                )
+        except BaseException:
+            # Refused: the open does not happen, so nothing is decoded.
+            self._settle_solid_open(run, decoded=False)
+            raise
 
     def _open_with_link_follow(
         self,
@@ -4334,7 +4427,7 @@ class BaseArchiveReader(ArchiveReader):
                 c for c in error.covers if c.verified is not Verification.CHECKSUM
             )
             if pending:
-                spanning.append(SpanningCheckError(str(error), covers=pending))
+                spanning.append(SpanningCheckError(error.raw_message, covers=pending))
                 spanning[-1].__cause__ = error.__cause__
                 spanning[-1].archive_name = error.archive_name
         self._spanning_retry = retry_next
@@ -4393,7 +4486,7 @@ class BaseArchiveReader(ArchiveReader):
             "the read did not reach that check, most likely because the archive "
             "ends early"
             if cause is None
-            else str(cause)
+            else exception_detail(cause)
         )
         error = SpanningCheckError(
             f"A check over several members did not run, so nothing confirms the data "
@@ -4478,6 +4571,16 @@ class BaseArchiveReader(ArchiveReader):
         *,
         hold_to_ratio: bool = False,
     ) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
+        """The ``stream_members()`` pass around the backend's :meth:`_iter_with_data`.
+
+        What it adds, the same for every backend: the pass token, one live-stream slot
+        for all the pass's streams, a file copy's stream closed unopened (the member
+        comes through with ``None``) unless ``copies.streams``, the ``selector``,
+        forward-only member streams, the ratio hold when ``hold_to_ratio``, and closing
+        each stream when the pass moves on. When the pass reaches the end, ``report``
+        records the selector's entries no member matched. A ``close()`` that finds the
+        pass suspended at a yield winds it down (``wind_down``).
+        """
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStreamImpl | None = None
         source_closer: Callable[[], None] | None = None

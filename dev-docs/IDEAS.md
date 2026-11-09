@@ -34,11 +34,11 @@ Each idea carries a status:
   directory). Its parser's per-entry disk number is what reading spanned
   `.z01`…`.zip` sets would follow (by resolving each (disk, offset) pair). See
   [`formats/zip.md`](formats/zip.md) §5.
-- **Read raw CD sector images (`.bin`).** *Open idea.* 0.2.0 recognizes a raw image and
-  refuses it (`iso_reader.refuse_raw_sector_image`). Mode 1 and Mode 2 Form 1 images
-  strip to a byte-identical `.iso`, so a slicing stream that skips the sector headers
-  would let the ISO reader read them. Out of scope: multi-track images that need the
-  `.cue`, and EDC/ECC verification (which the docs must then say is skipped).
+- **Read `.cue` sheets for raw CD images.** *Open idea.* Single-track Mode 1 and Mode 2
+  Form 1 `.bin` images are read (`backends/cd_sectors.py`), first track only. The `.cue`
+  would find a data track that is not first (CD-Extra puts audio first) and the last
+  session of a multisession disc, whose filesystem addresses absolute sectors (map the
+  track starts the cue lists, as an OS mount does). EDC/ECC verification is also left.
 - **UU and Base64 wrappers as single-file formats.** *Open idea.* **Good first
   contribution.** `uuencode` files (`.uu`, `.uue`, including `begin-base64`) turn up in
   old mail and Usenet drops. They fit the one-member single-file backend: peel one

@@ -352,7 +352,7 @@ class ResourceUnavailableError(ResourceLimitError):
 class UnsupportedFeatureError(ArchiveyError):
     """The archive is recognized, but uses something archivey cannot handle.
 
-    A variant, codec or layout of a known format (a raw CD sector image, a UDIF disk
+    A variant, codec or layout of a known format (a Mode 2 Form 2 CD image, a UDIF disk
     image, a 7z coder graph that is not a tree of chains, a multi-volume set where the
     format has none),
     or a request this archive or backend cannot serve (a password ``unrar`` cannot be
