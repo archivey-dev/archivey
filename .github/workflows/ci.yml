@@ -120,7 +120,7 @@ jobs:
         run: uv run --no-sync pytest scripts/tests -q -n auto --no-cov
 
   test:
-    name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}${{ matrix.python-source && format(' {0}', matrix.python-source) || '' }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
     runs-on: ${{ matrix.os }}
@@ -138,6 +138,9 @@ jobs:
     # `test-steps`. Check names stay `os / pyX / install` in both.
     env: &test-env
       UV_PYTHON: ${{ matrix.python-version }}
+      # A python.org leg (matrix.python-source) runs on the interpreter setup-python put
+      # on PATH, never on a uv-managed one; every other leg keeps uv's default.
+      UV_PYTHON_PREFERENCE: ${{ matrix.python-source == 'python.org' && 'only-system' || 'managed' }}
     strategy:
       fail-fast: false
       matrix:
@@ -155,6 +158,13 @@ jobs:
           # expression: `matrix.coverage && '' || '--no-cov'` would give --no-cov here too.
           - { os: ubuntu-latest, python-version: "3.15", install: all, coverage: true }
           - { os: windows-latest, python-version: "3.15", install: all }
+          # python.org builds (actions/setup-python), on macOS and Windows. uv-managed
+          # Pythons bundle a recent liblzma, zlib, bz2 and OpenSSL; the python.org ones
+          # bundle their own, older ones (liblzma 5.2.3 on macOS, 3.11 to 3.14), and most
+          # users on these systems run them. The other legs cannot see a bug that depends
+          # on those libraries, as the LZMA Alone end-marker one did (PR #1420).
+          - { os: macos-latest, python-version: "3.11", install: all, python-source: python.org }
+          - { os: windows-latest, python-version: "3.14", install: all, python-source: python.org }
 
     steps: &test-steps
       - uses: actions/checkout@v4
@@ -166,7 +176,15 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Set up Python ${{ matrix.python-version }}
+        if: matrix.python-source != 'python.org'
         run: uv python install ${{ matrix.python-version }}
+
+      - name: Set up Python ${{ matrix.python-version }} (python.org)
+        id: setup-python
+        if: matrix.python-source == 'python.org'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
 
       # The encrypted-ZIP corpus rows shell out to ``7z`` to build their fixtures
       # (stdlib ``zipfile`` cannot write encryption). Without this the rows skip, and
@@ -423,6 +441,31 @@ jobs:
           uv run --python ${{ matrix.python-version }} --no-sync python -c
           "import sys; exp=tuple(map(int, '${{ matrix.python-version }}'.split('.')));
           got=sys.version_info[:2]; assert got==exp, (got, exp); print(sys.version)"
+
+      # A python.org leg must test the setup-python interpreter: fail if uv picked another
+      # one (the macOS image also has Homebrew Pythons). Prints the liblzma version, which
+      # Windows links statically and so cannot report.
+      - name: Assert the venv is on the python.org Python
+        if: matrix.python-source == 'python.org'
+        shell: bash
+        env:
+          SETUP_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+        run: |
+          want=$("$SETUP_PYTHON" -c "import sys; print(sys.base_prefix)")
+          got=$(uv run --python ${{ matrix.python-version }} --no-sync python -c "import sys; print(sys.base_prefix)")
+          echo "setup-python: $want"
+          echo "venv base:    $got"
+          test "$want" = "$got"
+          uv run --python ${{ matrix.python-version }} --no-sync python - <<'PY'
+          import ctypes, _lzma, ssl, zlib
+          print("zlib", zlib.ZLIB_RUNTIME_VERSION, "| ssl", ssl.OPENSSL_VERSION)
+          try:
+              lib = ctypes.CDLL(_lzma.__file__)
+              lib.lzma_version_string.restype = ctypes.c_char_p
+              print("liblzma", lib.lzma_version_string().decode())
+          except (OSError, AttributeError) as exc:  # statically linked, or symbol hidden
+              print("liblzma version unknown:", exc)
+          PY
 
       # Process isolation for intermittent Linux [all] heap corruption (rapidgzip /
       # pyppmd natives). Separate steps — not a multiline script with shell
