@@ -25,6 +25,7 @@ from archivey import (
     detect_format,
     open_archive,
 )
+from archivey.diagnostics import MemberTimestampContext, UnknownMemberTypeContext
 from tests.streams_util import NonSeekableBytesIO
 from tests.xar_util import ENCODINGS, HEADER, XarFile, pack_xar, write_xar
 
@@ -125,6 +126,43 @@ def test_every_file_checksum_is_a_member_hash(digest: str) -> None:
         assert list(member.hashes) == [HashAlgorithm(digest)]
         assert reader.read("a.txt") == TEXT
         assert member.verified is Verification.CHECKSUM
+
+
+@pytest.mark.parametrize(
+    ("attrs", "style"),
+    [(' style="sha224"', "sha224"), ("", ""), (' style=""', "")],
+    ids=["unsupported style", "no style", "empty style"],
+)
+def test_a_file_checksum_archivey_cannot_check_is_reported(
+    attrs: str, style: str
+) -> None:
+    digest = hashlib.sha224(b"0123456789").hexdigest()
+    toc = (
+        '<?xml version="1.0"?><xar><toc><file id="1"><name>a</name><type>file</type>'
+        "<data><length>10</length><offset>0</offset><size>10</size>"
+        '<encoding style="application/octet-stream"/>'
+        f"<extracted-checksum{attrs}>{digest}</extracted-checksum></data>"
+        "</file></toc></xar>"
+    ).encode()
+    with _open(pack_xar(toc, b"0123456789", algorithm=0)) as reader:
+        (member,) = reader.members()
+        assert member.hashes == {}
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code is DiagnosticCode.DIGEST_UNVERIFIABLE
+        assert diagnostic.context.algorithm == style  # type: ignore[union-attr]
+        assert reader.read("a") == b"0123456789"
+        assert member.verified is Verification.LENGTH
+
+
+def test_a_file_with_no_checksum_reports_nothing() -> None:
+    toc = (
+        b'<?xml version="1.0"?><xar><toc><file id="1"><name>a</name><type>file</type>'
+        b"<data><length>10</length><offset>0</offset><size>10</size>"
+        b'<encoding style="application/octet-stream"/></data></file></toc></xar>'
+    )
+    with _open(pack_xar(toc, b"0123456789", algorithm=0)) as reader:
+        (member,) = reader.members()
+        assert not member.diagnostics
 
 
 def test_a_file_that_fails_its_checksum_is_reported() -> None:
@@ -594,3 +632,124 @@ def test_compressed_members_seek() -> None:
         assert stream.read(20) == TEXT[1000:1020]
         stream.seek(10)
         assert stream.read(5) == TEXT[10:15]
+
+
+# --- edges the mutation sweep found untested ---------------------------------------
+
+
+def test_extended_attributes_do_not_replace_a_files_checksum() -> None:
+    """Apple's xar writes ``<ea>`` elements inside ``<file>``, after ``<data>``, each
+    with its own ``<name>`` and ``<extracted-checksum>``: they are skipped."""
+    digest = hashlib.sha1(b"alpha").hexdigest()
+    toc = (
+        '<xar><toc><file id="1"><name>a.txt</name><type>file</type>'
+        "<data><length>5</length><offset>0</offset><size>5</size>"
+        '<encoding style="application/octet-stream"/>'
+        f'<extracted-checksum style="sha1">{digest}</extracted-checksum></data>'
+        '<ea id="0"><name>com.apple.quarantine</name><length>4</length>'
+        "<offset>5</offset><size>4</size>"
+        '<extracted-checksum style="md5">' + "0" * 32 + "</extracted-checksum>"
+        "</ea></file></toc></xar>"
+    ).encode()
+    with _open(pack_xar(toc, b"alpha1234", algorithm=0)) as reader:
+        (member,) = reader.members()
+        assert member.name == "a.txt"
+        assert member.hashes == {HashAlgorithm.SHA1: bytes.fromhex(digest)}
+        assert reader.read("a.txt") == b"alpha"
+
+
+def test_toc_level_elements_beside_the_checksum_are_skipped() -> None:
+    """xar writes ``<creation-time>`` in the TOC, before or after its checksum."""
+    head = "<creation-time>2024-03-01T12:00:00</creation-time>"
+    for checksum in ("none", "sha1"):
+        raw = write_xar(TREE, checksum=checksum, toc_head=head)
+        with _open(raw) as reader:
+            assert len(reader.members()) == 3
+
+
+def test_the_toc_checksum_is_read_at_its_heap_offset() -> None:
+    """The TOC names where in the heap its checksum sits; it need not be first."""
+    toc = (
+        b'<xar><toc><checksum style="sha1"><offset>5</offset><size>20</size>'
+        b'</checksum><file id="1"><name>a</name><type>directory</type></file>'
+        b"</toc></xar>"
+    )
+    digest = hashlib.sha1(zlib.compress(toc)).digest()
+    with _open(pack_xar(toc, b"\xff" * 5 + digest)) as reader:
+        assert [m.name for m in reader.members()] == ["a/"]
+    with pytest.raises(CorruptionError, match="fails its checksum"):
+        _open(pack_xar(toc, digest + b"\xff" * 5))
+
+
+@pytest.mark.parametrize(
+    "data_xml",
+    [
+        "<length>-4</length><offset>0</offset><size>4</size>",
+        "<length>4</length><offset>0</offset><size>-4</size>",
+    ],
+    ids=["length", "size"],
+)
+def test_a_negative_length_or_size_is_refused(data_xml: str) -> None:
+    with pytest.raises(CorruptionError, match="'a' has a negative data field"):
+        _open(_single(data_xml), format=ArchiveFormat.XAR)
+
+
+def test_a_named_algorithm_needs_room_for_its_name() -> None:
+    """Algorithm 3 names its hash after the 28 header bytes: a 28-byte header has no
+    name, which is damage, not an unknown hash."""
+    xml = b"<xar><toc></toc></xar>"
+    with pytest.raises(CorruptionError, match="^XAR checksum algorithm 3"):
+        _open(pack_xar(xml, b"", algorithm=3), format=ArchiveFormat.XAR)
+
+
+def test_an_unknown_algorithm_number_is_damage_even_with_a_longer_header() -> None:
+    xml = b"<xar><toc></toc></xar>"
+    raw = pack_xar(xml, b"", algorithm=9, header_extra=b"sha256".ljust(36, b"\0"))
+    with pytest.raises(CorruptionError, match="^XAR checksum algorithm 9"):
+        _open(raw, format=ArchiveFormat.XAR)
+
+
+def test_elements_nested_to_the_depth_cap_are_read() -> None:
+    """2048 open elements, ``<xar>`` included, is the deepest TOC read."""
+    deep = b"<xar>" + b"<toc>" * 2047 + b"</toc>" * 2047 + b"</xar>"
+    with _open(pack_xar(deep, b"", algorithm=0), format=ArchiveFormat.XAR) as reader:
+        assert reader.members() == []
+
+
+def test_a_file_reports_its_stored_size() -> None:
+    raw = write_xar([XarFile("a", b"a" * 1000, encoding="gzip")])
+    with _open(raw) as reader:
+        (member,) = reader.members()
+    assert member.size == 1000
+    assert member.compressed_size == len(zlib.compress(b"a" * 1000))
+
+
+def test_an_unknown_type_diagnostic_names_the_member_type_and_size() -> None:
+    raw = write_xar([XarFile("odd", b"12345", type="whiteout")])
+    with _open(raw) as reader:
+        (member,) = reader.members()
+        (diagnostic,) = member.diagnostics
+    assert diagnostic.code is DiagnosticCode.MEMBER_TYPE_UNKNOWN
+    context = diagnostic.context
+    assert isinstance(context, UnknownMemberTypeContext)
+    assert (context.member_name, context.stored_type, context.size) == (
+        "odd",
+        "whiteout",
+        5,
+    )
+
+
+@pytest.mark.parametrize(
+    ("stored", "attr"),
+    [("mtime", "modified"), ("atime", "accessed"), ("ctime", "ctime")],
+)
+def test_an_unreadable_time_diagnostic_names_its_field(stored: str, attr: str) -> None:
+    raw = write_xar([XarFile("a", b"x", extra=f"<{stored}>soon</{stored}>")])
+    with _open(raw) as reader:
+        (member,) = reader.members()
+        (diagnostic,) = member.diagnostics
+    assert diagnostic.message.startswith(f"Invalid XAR {stored} for 'a': 'soon'")
+    context = diagnostic.context
+    assert isinstance(context, MemberTimestampContext)
+    assert context.member_name == "a"
+    assert (context.field, context.source, context.value_repr) == (attr, "xar", "soon")

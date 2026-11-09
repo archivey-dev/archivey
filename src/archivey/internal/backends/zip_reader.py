@@ -108,6 +108,7 @@ from archivey.internal.backends.zip_detect import (
     validate_zip_local_header,
 )
 from archivey.internal.backends.zip_local_walk import (
+    _METHOD_STORED,
     DataDescriptor,
     LocalEntry,
     LocalHeaderWalk,
@@ -186,6 +187,7 @@ from archivey.internal.streams.codecs import (
     open_codec_raw,
     open_codec_stream,
 )
+from archivey.internal.streams.codecs.base import RAW_DEFLATE_WBITS
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     SharedView,
@@ -283,9 +285,14 @@ _STRONG_ENCRYPTION_MSG = (
 _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     0: CompressionAlgorithm.STORED,
     1: CompressionAlgorithm.SHRINK,
+    2: CompressionAlgorithm.REDUCE,
+    3: CompressionAlgorithm.REDUCE,
+    4: CompressionAlgorithm.REDUCE,
+    5: CompressionAlgorithm.REDUCE,
     6: CompressionAlgorithm.IMPLODE,
     8: CompressionAlgorithm.DEFLATE,
     9: CompressionAlgorithm.DEFLATE64,
+    10: CompressionAlgorithm.DCL_IMPLODE,
     12: CompressionAlgorithm.BZIP2,
     14: CompressionAlgorithm.LZMA,
     93: CompressionAlgorithm.ZSTD,
@@ -306,9 +313,14 @@ _UNKNOWN_COMPRESSION = (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
 _ZIP_METHOD_CODECS: dict[int, Codec] = {
     0: Codec.STORED,
     1: Codec.SHRINK,
+    2: Codec.REDUCE,  # methods 2 to 5 are compression factors 1 to 4
+    3: Codec.REDUCE,
+    4: Codec.REDUCE,
+    5: Codec.REDUCE,
     6: Codec.IMPLODE,  # settings from general-purpose bits 1 and 2
     8: Codec.DEFLATE,
     9: Codec.DEFLATE64,
+    10: Codec.DCL_IMPLODE,
     12: Codec.BZIP2,
     14: Codec.LZMA,  # after peeling the ZIP LZMA header (see _open_codec_member)
     93: Codec.ZSTD,
@@ -465,8 +477,13 @@ _LOCAL_HEADER_ERRORS: tuple[type[Exception], ...] = (
     ArchiveyError,
     *_ZIP_MEMBER_READ_ERRORS,
 )
+# The largest member (stored and decoded size) that ``ZipReader._speculative_small_member``
+# reads whole at open. Bounds the memory one open member stream holds, and what a
+# member that falls back to the general path reads twice.
+_SPECULATIVE_MAX = 64 * 1024
 #: WinZip AES: the real method sits in the 0x9901 extra field.
 _WINZIP_AES_METHOD = 99
+_METHOD_DEFLATE = 8
 #: The code each ``LocalHeaderContext.field`` reports under.
 _LOCAL_HEADER_CODES: dict[str, DiagnosticCode] = {
     "name": DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
@@ -1086,7 +1103,7 @@ def _wrapped_size(entry: CentralEntry) -> tuple[int | None, _UnknownSize | None]
     """
     stored = entry.file_size
     compressed = entry.compressed_size
-    if entry.method == 0:
+    if entry.method == _METHOD_STORED:
         if compressed % OFFSET_WRAP == stored:
             return compressed, None
         return stored, None
@@ -3566,10 +3583,13 @@ class ZipReader(BaseArchiveReader):
             # (93) reads every frame instead, as a .zst file and a 7z coder do: RFC
             # 8878 defines Zstd data as one or more frames.
             return CodecParams(single_stream=True)
-        if method in (1, 6):  # Shrink, Implode: no end marker, so the size ends them
+        if 1 <= method <= 6:
+            # Shrink, Reduce, Implode: no end marker, so the size ends them.
             known = size if size is not None and size >= 0 else None
             if method == 1:
                 return CodecParams(unpack_size=known)
+            if method <= 5:
+                return CodecParams(unpack_size=known, reduce_factor=method - 1)
             return CodecParams(
                 unpack_size=known,
                 implode_large_window=bool(loc.flags & _ZIP_MASK_IMPLODE_8K_WINDOW),
@@ -3820,7 +3840,7 @@ class ZipReader(BaseArchiveReader):
             )
         if (
             not cipher.is_aes
-            and cipher.method == 0  # STORED
+            and cipher.method == _METHOD_STORED
             and cipher.crc_anchor is not None
             and min(loc.file_size, loc.compressed_size - ZIPCRYPTO_HEADER_LEN)
             >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES
@@ -4368,10 +4388,82 @@ class ZipReader(BaseArchiveReader):
             )
         loc = self._with_local_method(loc, member)
         # Every member reads as raw payload -> decrypt stage (if encrypted) -> codec
-        # layer -> fused CRC/size verify.
+        # layer -> fused CRC/size verify; a small unencrypted stored or deflated member
+        # is read and checked whole first (``_speculative_small_member``), with the
+        # codec layer as its fallback.
         if _is_encrypted_entry(loc.flags, loc.method):
             return self._open_encrypted_member(loc, member)
+        fast = self._speculative_small_member(loc, member)
+        if fast is not None:
+            return fast
         return self._open_codec_member(loc, member)
+
+    def _speculative_small_member(
+        self, loc: _ZipLocator, member: ArchiveMember
+    ) -> MemberStreamParts | None:
+        """A small stored or deflated member, read and checked whole; ``None`` when the
+        general path (:meth:`_open_codec_member`) must open it.
+
+        Opening a member through the codec layer costs about a hundred microseconds,
+        against about two for the checks themselves. A member of at most
+        ``_SPECULATIVE_MAX`` bytes, read under no seek demand, is read in one call and
+        decoded with the general path's checks: the whole payload in the file, a
+        deflate stream that ends exactly at the payload's end, the declared size and
+        the CRC. The member stream then serves the bytes, through the same verifier
+        and ratio guard as any member. On any doubt this returns ``None`` and the
+        general path opens the member from scratch, with its own result, error and
+        diagnostics: nothing has reached the caller yet, so the outcome is the general
+        path's in every case. A doubt costs one more read of at most
+        ``_SPECULATIVE_MAX`` bytes.
+
+        Called after :meth:`_with_local_method`, so the local header has been read,
+        checked and reported, and ``loc`` carries its data start and method.
+        """
+        if (
+            loc.method not in (_METHOD_STORED, _METHOD_DEFLATE)
+            or not 0 <= loc.compressed_size <= _SPECULATIVE_MAX
+            or not 0 <= loc.file_size <= _SPECULATIVE_MAX
+            or loc.size_unknown is not None
+            or loc.data_start is None
+            or self._stream_config.seekable
+        ):
+            return None
+        with self._lock:
+            fp = self._fp
+            if fp is None:
+                return None
+            # The local header check usually leaves the handle at the data's start:
+            # a seek there would cost a request on a remote source for nothing.
+            try:
+                if fp.tell() != loc.data_start:
+                    fp.seek(loc.data_start)
+                raw = read_exact(fp, loc.compressed_size)
+            except _LOCAL_HEADER_ERRORS:
+                # An error from the source is a doubt like any other: the general path
+                # reads again and raises it where it raises it, translated and stamped
+                # with the member. ``OSError`` propagates as it does there.
+                return None
+        if len(raw) != loc.compressed_size:
+            return None
+        if loc.method == _METHOD_STORED:
+            data = raw
+        else:
+            decoder = zlib.decompressobj(RAW_DEFLATE_WBITS)
+            try:
+                data = decoder.decompress(raw, loc.file_size + 1)
+            except zlib.error:
+                return None
+            if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+                return None
+        if len(data) != loc.file_size or zlib.crc32(data) != loc.crc:
+            return None
+        return self._verified_member_parts(
+            io.BytesIO(data),
+            member,
+            translate=None,
+            rewind_warning=None,
+            seekable=False,
+        )
 
     @override
     def _archive_comment(self) -> str | None:
