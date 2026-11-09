@@ -279,9 +279,9 @@ def check_limit(
     The guards these fields drive are all comparisons, so a wrong-typed one is not
     found until something is actually being counted — ``ListingLimits(max_members="x")``
     would build fine and then fail mid-listing as ``TypeError: '>' not supported
-    between instances of 'int' and 'str'``, naming neither the field nor the class. A limit is
-    a promise about a future operation; checking it where the caller wrote it is the
-    only place the message can still name what they wrote.
+    between instances of 'int' and 'str'``, naming neither the field nor the class. A
+    limit is a promise about a future operation; checking it where the caller wrote it
+    is the only place the message can still name what they wrote.
 
     ``bool`` is refused explicitly: it is an ``int`` subclass, so ``max_members=True``
     would otherwise pass and cap the listing at one member. The type test is spelled

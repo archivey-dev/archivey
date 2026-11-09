@@ -50,11 +50,16 @@ __all__ = [
 class StreamConfig:
     """Options that influence how compressed streams are opened.
 
-    Built from the caller's :class:`~archivey.config.ArchiveyConfig` by
-    :func:`stream_config_from_archivey`, then narrowed per member or per probe with
-    ``dataclasses.replace``. Fields that say where reports and records go rather than
-    how the stream decodes (``collector``, ``seek_index``, ``usage``) are left out of
-    equality.
+    Usually built from the caller's :class:`~archivey.config.ArchiveyConfig` by
+    :func:`stream_config_from_archivey`; detection and tests build one directly. It is
+    copied per member or per probe with
+    :func:`~archivey.internal.dataclass_copy.copy_with` or ``dataclasses.replace``.
+    ``copy_with`` passes the fields by position, and keeps that fast path only while
+    the constructor takes exactly the fields, in field order.
+
+    ``collector``, ``seek_index`` and ``usage`` are left out of equality: none of them
+    changes what the stream decodes. ``collector`` and ``usage`` say where reports and
+    records go, and ``seek_index`` is a scan already made of the same source.
     """
 
     streaming: bool = False
@@ -66,7 +71,12 @@ class StreamConfig:
     resolution and index construction key off it."""
 
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
+    """The caller's ``ArchiveyConfig.use_rapidgzip``: whether a gzip stream may go
+    through rapidgzip (``AUTO`` applies the gates the size fields below feed)."""
+
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    """The caller's ``ArchiveyConfig.use_indexed_bzip2``: whether a bzip2 stream may go
+    through indexed_bzip2."""
 
     compressed_input_size: int | None = None
     """The known compressed byte length of the source (path size, slice length, …),
@@ -84,8 +94,9 @@ class StreamConfig:
     the last member)."""
 
     gzip_isize: int | None = None
-    """That trailer's value, which AUTO's ratio gate for a sequential read uses as an
-    estimate of the decoded size and nothing else."""
+    """The gzip ISIZE trailer's value (see ``gzip_isize_backstop``), which AUTO's ratio
+    gate for a sequential read uses as an estimate of the decoded size and nothing
+    else."""
 
     source_seekable: bool = False
     """Set by :func:`open_codec_stream` when the source is a path or a stream that can
