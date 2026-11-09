@@ -9,6 +9,8 @@ import lzma
 import random
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -313,8 +315,8 @@ def test_long_name_entry_ends_at_its_first_terminator(tmp_path: Path) -> None:
 def test_long_name_lookup_does_not_copy_the_rest_of_the_table(tmp_path: Path) -> None:
     # Each lookup sliced the table from the entry to its end before searching for
     # the terminator, so a 16 MiB table read by 50 000 members took 60 s to list.
-    # Each copy is freed before the next, so the peak shows one: about twice the
-    # table, against about one table now.
+    # Each copy is freed before the next, so the peak showed one: about twice the
+    # table, against about one table without the copy.
     table_size = 4 << 20
     # At offset 1: a slice from 0 is the table itself, not a copy.
     table = b"\nm.o/\n" + b"x" * (table_size - 6)
@@ -328,6 +330,36 @@ def test_long_name_lookup_does_not_copy_the_rest_of_the_table(tmp_path: Path) ->
     walk()
     peak = traced_peak(walk)
     assert peak < table_size * 1.5, peak
+
+
+class _ScanSpy(bytes):
+    """A long-name table that records how far each search may run."""
+
+    scans: list[int]
+
+    def _note(self, start: int | None, stop: int | None) -> None:
+        start = 0 if start is None else start
+        stop = len(self) if stop is None else stop
+        self.scans.append(stop - start)
+
+    def find(self, sub, start=None, stop=None):  # type: ignore[no-untyped-def,override]
+        self._note(start, stop)
+        return super().find(sub, start, stop)
+
+    def index(self, sub, start=None, stop=None):  # type: ignore[no-untyped-def,override]
+        self._note(start, stop)
+        return super().index(sub, start, stop)
+
+
+def test_long_name_lookup_scans_only_its_entry() -> None:
+    # A NUL-terminated entry (the Windows .lib spelling) before a long tail with no
+    # newline: a search for the newline first ran to the table's end for every
+    # member, 70 s to list a 63 MiB archive of 50 000 members.
+    table = _ScanSpy(b"\0a.o\0" + b"x" * (1 << 20))
+    table.scans = []
+    reader = cast("ArReader", SimpleNamespace(_dialect=None))
+    assert ArReader._short_name(reader, b"/1", table, 0) == b"a.o"
+    assert all(scan <= 16 for scan in table.scans), table.scans
 
 
 def test_blank_fields(tmp_path: Path) -> None:
