@@ -35,7 +35,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack, suppress
 from dataclasses import dataclass
 from datetime import datetime
-from typing import BinaryIO
+from typing import BinaryIO, NamedTuple
 
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -491,16 +491,18 @@ def _decode_encoded_header_block(
         raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
 
 
+class _RecordTimes(NamedTuple):
+    modified: datetime | None
+    accessed: datetime | None
+    created: datetime | None
+    ctime: datetime | None
+    issues: list[TimestampIssue]
+
+
 def _record_times(
     record: SevenZipFileRecord, presented_name: str, *, written_on_unix: bool
-) -> tuple[
-    datetime | None,
-    datetime | None,
-    datetime | None,
-    datetime | None,
-    list[TimestampIssue],
-]:
-    """``(modified, accessed, created, ctime, issues)`` from a record's FILETIMEs.
+) -> _RecordTimes:
+    """A member's timestamps from a record's FILETIMEs.
 
     A Unix writer (7-Zip, p7zip, libarchive on Linux and macOS) fills "Created" from
     ``st_ctime``, so on a record ``written_on_unix`` that slot is ``ctime`` and
@@ -536,7 +538,7 @@ def _record_times(
             ctime = stamp
         else:
             created = stamp
-    return modified, accessed, created, ctime, issues
+    return _RecordTimes(modified, accessed, created, ctime, issues)
 
 
 def _infer_nameless_member_name(archive_name: str | None) -> str:
@@ -1478,7 +1480,7 @@ class SevenZipReader(BaseArchiveReader):
             hashes[HashAlgorithm.CRC32] = crc32_digest(record.crc32)
         reparse_fallback = self._reparse_fallback_type(record)
         mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
-        modified, accessed, created, ctime, ts_issues = _record_times(
+        times = _record_times(
             record, presented_name, written_on_unix=unix_mode is not None
         )
         # Folder/substream indices live on ``_raw``; skip the unused public extra
@@ -1498,10 +1500,10 @@ class SevenZipReader(BaseArchiveReader):
             raw_name=raw_name,
             size=record.uncompressed_size,
             compressed_size=record.compressed_size,
-            modified=modified,
-            accessed=accessed,
-            created=created,
-            ctime=ctime,
+            modified=times.modified,
+            accessed=times.accessed,
+            created=times.created,
+            ctime=times.ctime,
             mode=mode,
             compression=compression,
             is_encrypted=record.is_encrypted,
@@ -1531,7 +1533,7 @@ class SevenZipReader(BaseArchiveReader):
             # data turns out not to be a link buffer is re-typed later, when the
             # target is resolved, and `_apply_reparse_data` emits for it then.
             self._emit_special_file_has_data(member, index)
-        for issue in ts_issues:
+        for issue in times.issues:
             self._emit_timestamp_invalid(member, index, issue)
         self._report_unauthenticated_decryption(record, member, index)
         return member
@@ -1955,10 +1957,11 @@ class SevenZipReader(BaseArchiveReader):
         7z AES has no password check value. Rung 1 is the AES tail-padding check,
         which ``_password_for_folder`` runs before this plan; this plan covers a
         candidate that check did not confirm, starting at the integrity anchor: member
-        CRCs in substream order, then the folder digest. The earliest anchor covering at least 4 bytes wins; one past
-        ``PASSWORD_CONFIRM_PREFIX_BYTES`` is walked only when no decoder in the chain rejects
-        random input, or when ``full`` asks for the walk (several candidates survived
-        the bounded plan, and only the anchor can tell them apart).
+        CRCs in substream order, then the folder digest. The earliest anchor covering
+        at least 4 bytes wins; one past ``PASSWORD_CONFIRM_PREFIX_BYTES`` is walked
+        only when no decoder in the chain rejects random input, or when ``full`` asks
+        for the walk (several candidates survived the bounded plan, and only the
+        anchor can tell them apart).
         """
         folder = self._archive.folders[folder_index]
         substreams: list[tuple[int, int | None]] = []

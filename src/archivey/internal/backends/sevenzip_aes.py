@@ -150,7 +150,9 @@ class SevenZipKeyCache:
     ) -> AesParams:
         """The key and IV for one AES coder, from its properties and the password.
 
-        ``password`` is already UTF-16LE. Raises as
+        ``password`` is already the key-derivation bytes (UTF-16LE for a UTF-8
+        password, the raw bytes otherwise; see the 7z reader's
+        ``_password_to_kdf_bytes``). Raises as
         :func:`parse_sevenzip_aes_properties` does.
         """
         cycles, salt, iv = parse_sevenzip_aes_properties(properties)

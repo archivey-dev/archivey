@@ -27,7 +27,8 @@ not “is LZMA”: Delta and BCJ are batched with LZMA1/2 here.
 Two phases: :func:`plan_folder` resolves stages (pure — no I/O); then
 :func:`open_folder_pipeline` / :func:`_execute_stage` fold stages onto the packed
 sources. ``SevenZipReader`` calls :func:`open_folder_pipeline` with one view per
-pack stream and gets the folder's whole decoded output, which it slices into members. Encoded-header decode also lives here (parser stays structure-only); the
+pack stream and gets the folder's whole decoded output, which it slices into
+members. Encoded-header decode also lives here (parser stays structure-only); the
 archive-open flow that uses it is ``load_sevenzip_archive`` in ``sevenzip_reader``.
 The encoded header stays linear-only: no writer puts BCJ2 there.
 """
@@ -541,7 +542,7 @@ def _decode_lzma_properties(coder: SevenZipCoder, filter_id: int) -> dict:
 
 
 def _lzma_filter(coder: SevenZipCoder) -> dict:
-    """The liblzma filter dict for one LZMA-family coder, options from its properties."""
+    """The liblzma filter dict for one LZMA-family coder, built from its properties."""
     method = require(coder.method)
     if method is METHOD_LZMA or method is METHOD_LZMA2:
         assert method.lzma_filter_id is not None
