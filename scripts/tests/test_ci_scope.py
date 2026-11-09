@@ -20,7 +20,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "ci" / "ci_scope.py"
 CI = ROOT / ".github" / "workflows" / "ci.yml"
-QUEUE_ONLY = ("test-queue", "unar-distro-packages", "pypy", "atheris")
+QUEUE_ONLY = ("test-queue", "unar-distro-packages", "pypy")
 #: The pull request set's library legs: a pull request push skips them when `scope`
 #: says ``full=false``; the merge queue always runs them.
 PR_LIBRARY = ("test", "free-threaded-concurrency", "benchmark", "lzo-oracle")
@@ -132,9 +132,10 @@ def test_the_script_writes_a_github_output_line() -> None:
             check=True,
         ).stdout
 
-    assert run("AGENTS.md\n\n") == "full=false\n"
-    assert run("AGENTS.md\nsrc/archivey/core.py\n") == "full=true\n"
-    assert run("AGENTS.md\n", "--truncated") == "full=true\n"
+    assert run("AGENTS.md\n\n") == "full=false\nlowest=false\n"
+    assert run("AGENTS.md\nsrc/archivey/core.py\n") == "full=true\nlowest=false\n"
+    assert run("AGENTS.md\nuv.lock\n") == "full=true\nlowest=true\n"
+    assert run("AGENTS.md\n", "--truncated") == "full=true\nlowest=true\n"
 
 
 def test_the_full_paths_exist() -> None:
@@ -240,7 +241,70 @@ def test_the_queue_only_jobs_wait_on_scope_and_run_when_it_did_not() -> None:
     # Besides those, only the pull request set's library legs wait on scope; lint,
     # which runs the script tests, starts at once.
     waiting = {n for n, j in jobs.items() if "scope" in _needs(j)}
-    assert waiting - {"gate"} == {*QUEUE_ONLY, *PR_LIBRARY}
+    assert waiting - {"gate"} == {*QUEUE_ONLY, *PR_LIBRARY, "test-lowest"}
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["pyproject.toml"],
+        ["uv.lock"],
+        [".github/workflows/ci.yml"],
+        [".python-version"],
+    ],
+)
+def test_a_dependency_or_ci_change_runs_the_minimum_versions(paths: list[str]) -> None:
+    assert scope.needs_lowest(paths)
+    assert scope.needs_full(paths)
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["src/archivey/core.py"],
+        ["tests/test_zip.py"],
+        ["packages/archivey-cli/src/archivey_cli/main.py"],
+        ["pyproject.toml.bak"],
+    ],
+)
+def test_a_code_change_alone_skips_the_minimum_versions(paths: list[str]) -> None:
+    assert not scope.needs_lowest(paths)
+
+
+def test_an_unknown_diff_runs_the_minimum_versions() -> None:
+    assert scope.needs_lowest([])
+    assert scope.needs_lowest(["src/archivey/core.py"], truncated=True)
+
+
+def test_every_minimum_versions_path_is_a_full_path() -> None:
+    """So ``lowest=true`` never comes with ``full=false``."""
+    for path in scope.DEPS:
+        assert scope.needs_full([path]), path
+        assert (ROOT / path).exists(), path
+
+
+def test_the_minimum_versions_leg_runs_unless_scope_said_lowest_false() -> None:
+    """`test-lowest` never runs on a pull request; in the merge queue it runs when
+    `scope` found a dependency or CI path (or failed); the daily run and a dispatch
+    skip `scope` and run it. The gate needs it, so a failure ejects the group."""
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load(CI.read_text())["jobs"]
+    job = jobs["test-lowest"]
+    assert _needs(job) == ["scope"]
+    assert job["if"] == (
+        "${{ !cancelled() && github.event_name != 'pull_request' "
+        "&& needs.scope.outputs.lowest != 'false' }}"
+    )
+    assert "test-lowest" in _needs(jobs["gate"])
+    assert jobs["scope"]["outputs"]["lowest"] == "${{ steps.scope.outputs.lowest }}"
+    rows = job["strategy"]["matrix"]["include"]
+    assert [row["install"] for row in rows] == ["all-lowest"]
+    others = [
+        row
+        for name in ("test", "test-queue", "test-daily")
+        for row in jobs[name]["strategy"]["matrix"]["include"]
+    ]
+    assert all(row["install"] != "all-lowest" for row in others)
 
 
 def test_a_script_only_pull_request_skips_the_library_legs_only_there() -> None:
@@ -263,3 +327,48 @@ def test_a_script_only_pull_request_skips_the_library_legs_only_there() -> None:
     )
     assert "github.event.pull_request.base.sha" in env["BASE"]
     assert "github.event.pull_request.head.sha" in env["HEAD"]
+
+
+def test_the_daily_only_legs_run_on_the_daily_run_and_a_dispatch_only() -> None:
+    """`test-daily` (the Pythons between min and max, macOS and Windows on the min) never
+    runs on a pull request or in the merge queue, and the release gates still see it because they dispatch ci.yml.
+    The gate does not wait on it: it would be skipped in every merge group anyway."""
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load(CI.read_text())["jobs"]
+    job = jobs["test-daily"]
+    assert job["if"] == (
+        "${{ github.event_name == 'schedule' "
+        "|| github.event_name == 'workflow_dispatch' }}"
+    )
+    assert not _needs(job)
+    assert "test-daily" not in _needs(jobs["gate"])
+
+    def legs(name: str) -> set[tuple[str, str, str]]:
+        return {
+            (row["os"], row["python-version"], row["install"])
+            for row in jobs[name]["strategy"]["matrix"]["include"]
+        }
+
+    daily = legs("test-daily")
+    assert daily == {
+        ("ubuntu-latest", "3.12", "all"),
+        ("ubuntu-latest", "3.13", "all"),
+        ("ubuntu-latest", "3.14", "all"),
+        ("macos-latest", "3.11", "all"),
+        ("windows-latest", "3.11", "all"),
+    }
+    assert not daily & (legs("test") | legs("test-queue"))
+    # Each platform keeps a leg in the queue.
+    queued_os = {os for os, _, _ in legs("test") | legs("test-queue")}
+    assert {"ubuntu-latest", "macos-latest", "windows-latest"} <= queued_os
+    on = yaml.safe_load(CI.read_text())[True]
+    assert "schedule" in on and "workflow_dispatch" in on
+    # The release gate's dispatch is the legs' only run between daily runs.
+    spec = importlib.util.spec_from_file_location(
+        "release_script_gate", ROOT / "scripts" / "release" / "release.py"
+    )
+    assert spec and spec.loader
+    release = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = release
+    spec.loader.exec_module(release)
+    assert "ci.yml" in release.RELEASE_GATE_WORKFLOWS

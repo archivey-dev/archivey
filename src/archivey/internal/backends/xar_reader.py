@@ -35,6 +35,7 @@ from xml.parsers import expat
 
 from archivey.diagnostics import (
     DiagnosticCode,
+    DigestContext,
     MemberTimestampContext,
     UnknownMemberTypeContext,
 )
@@ -125,6 +126,9 @@ class _Data(NamedTuple):
     size: int
     encoding: str
     digest: tuple[str, bytes] | None
+    unchecked_style: str | None
+    """The style of an ``<extracted-checksum>`` archivey cannot compute, as written
+    (``""`` when it names none); ``None`` when there is no such checksum."""
 
 
 class _Entry(NamedTuple):
@@ -170,7 +174,8 @@ class _Frame:
         self.data: dict[str, str] = {}
         self.link: str | None = None
         self.encoding = "application/octet-stream"
-        self.digest_style = ""
+        # None until an <extracted-checksum> is seen.
+        self.digest_style: str | None = None
         self.digest = ""
         self.has_data = False
         self.path: str | None = None
@@ -367,8 +372,11 @@ class _TocParser:
         if min(offset, length, size) < 0:
             raise CorruptionError(f"XAR file {quoted(path)} has a negative data field")
         digest = None
-        style = frame.digest_style.lower()
-        if style in _DIGESTS:
+        unchecked = None
+        style = (frame.digest_style or "").lower()
+        if frame.digest_style is not None and style not in _DIGESTS:
+            unchecked = frame.digest_style
+        elif style in _DIGESTS:
             try:
                 value = bytes.fromhex(frame.digest)
             except ValueError:
@@ -378,7 +386,7 @@ class _TocParser:
                     f"XAR file {quoted(path)} has a malformed {style} checksum"
                 )
             digest = (style, value)
-        return _Data(offset, length, size, frame.encoding, digest)
+        return _Data(offset, length, size, frame.encoding, digest, unchecked)
 
 
 def _timestamp(text: str) -> datetime | None:
@@ -551,6 +559,8 @@ class XarReader(IndexedReader[_Location]):
                 if entry.data.digest is not None:
                     style, value = entry.data.digest
                     member.hashes = {_DIGESTS[style]: value}
+                if entry.data.unchecked_style is not None:
+                    self._report_unchecked(member, entry.data.unchecked_style)
         elif kind is MemberType.SYMLINK:
             member.link_target = entry.target
         mode = fields.get("mode")
@@ -585,6 +595,22 @@ class XarReader(IndexedReader[_Location]):
             )
         return member
 
+    def _report_unchecked(self, member: ArchiveMember, style: str) -> None:
+        """A file checksum of a style archivey does not compute, or of none: the data
+        reads unchecked, as ZIP and 7z report a member with nothing to check."""
+        named = f"style {quoted(style)}" if style else "no style"
+        self._context.report(
+            DiagnosticCode.DIGEST_UNVERIFIABLE,
+            f"XAR file {quoted(member.name)} has an extracted checksum of {named}, "
+            "which archivey cannot compute; its data is read without that check",
+            DigestContext(
+                member_name=member.name,
+                algorithm=style,
+                reason="unknown_algorithm_or_backend",
+            ),
+            member=member,
+        )
+
     def _set_time(
         self, member: ArchiveMember, attr: str, stored: str, text: str
     ) -> None:
@@ -616,8 +642,16 @@ class XarReader(IndexedReader[_Location]):
                 "which archivey does not read"
             )
         start = self._heap + data.offset
+        end = start + data.length
         size = self._source.size
-        if size is not None and start + data.length > size:
+        if size is not None:
+            cut = end > size
+        else:
+            # A source whose size is not known: is byte ``end - 1`` there? That is
+            # ``end > size`` asked of the source, also for an empty member. Otherwise
+            # the codec would meet the cut first and report it as damage.
+            cut = end > 0 and not self._source.read_at(end - 1, 1)
+        if cut:
             raise TruncatedError(
                 f"the XAR archive ends inside the data of {quoted(member.name)}"
             )
