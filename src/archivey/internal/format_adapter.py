@@ -1,16 +1,34 @@
 """The adapter between ``archivey.formats`` and the internal reader machinery.
 
-A format reader does not subclass :class:`BaseArchiveReader`. Two subclasses serve every
-one, built-in or plugin: :class:`IndexedReaderAdapter` implements the four abstract methods by calling an
-:class:`~archivey.formats.IndexedReader`, and :class:`SequentialReaderAdapter` by
-walking a :class:`~archivey.formats.SequentialReader`, so the walk, the passes, link
-handling and extraction stay internal (the ``plugin-api`` OpenSpec change, design §1
-and §2a).
+A :class:`~archivey.formats.FormatHandler` (a plugin's, or a built-in format written
+against the public API, such as ar or CPIO) becomes a reader in three steps:
 
-:func:`register_plugin` builds one :class:`ReadBackend` subclass per plugin and
-registers it after the built-in backends, so a built-in signal always wins (§4).
-:func:`register_builtin_format` builds one for a built-in format, registered with the
-other built-in backends.
+1. **Registration.** :func:`register_plugin` (``archivey.formats.register_format``)
+   checks the handler (:func:`_check_plugin`) and builds one :class:`ReadBackend`
+   subclass for it (:func:`_backend_class`), whose class attributes carry the
+   handler's format, extensions, magic and probe. It registers that class after the
+   built-in backends, so a built-in signal always wins detection.
+   :func:`register_builtin_format` builds the same class for a built-in format and
+   registers it among the built-in backends. A ``FormatPolicy(replace=…)`` entry gets
+   its class from :func:`replacement_backend`, which is never registered.
+2. **Selection.** Detection names the format from the registered classes' magic,
+   extensions and probes. ``open_archive`` (and ``ReaderContext.open_nested``) then
+   get the class from ``registry.BackendRegistry.reader_for_format``, which returns
+   the :func:`replacement_backend` class when the call's policy replaces the format.
+3. **Opening.** :meth:`_PluginBackend.open_read` builds the adapter for the handler's
+   shape. A format reader does not subclass :class:`BaseArchiveReader`: two adapter
+   subclasses serve every one. :class:`IndexedReaderAdapter` implements the abstract
+   reader methods by calling an :class:`~archivey.formats.IndexedReader`, and
+   :class:`SequentialReaderAdapter` by walking a
+   :class:`~archivey.formats.SequentialReader`. The walk, the passes, link handling,
+   verification and extraction stay internal, and the handler reaches archivey's
+   services (codecs, diagnostics, limits) through the
+   :class:`~archivey.formats.ReaderContext` the adapter builds.
+
+The file holds, in order: the shared adapter base, the indexed adapter,
+the sequential adapter with the walk helpers it uses, then the backend class and the
+registration functions. ``codec_adapter`` does the same for a
+:class:`~archivey.formats.CodecHandler`.
 """
 
 from __future__ import annotations
@@ -324,6 +342,49 @@ class _PluginAdapter(BaseArchiveReader):
                 source_format=self._format,
                 archive_name=self._archive_name,
             )
+        params = self._codec_params(
+            codec, method, size, properties, is_stream=is_stream
+        )
+        # Per call, as ZIP fills them per member (``_member_decoder_config``): the
+        # output size, and the input size while ``data`` is at its start. The
+        # accelerators choose by them, and rapidgzip's length check needs the first.
+        changes: dict[str, Any] = {"expected_decompressed_size": size}
+        if is_stream:
+            # A whole stream reads as a file of its format does: bytes after its end
+            # are reported (``ARCHIVE_TRAILING_DATA``), not refused. Most stream
+            # codecs have no refusal; the report is what they all share.
+            changes["refuse_input_after_end"] = False
+            changes["report_trailing_data"] = True
+        if not is_seekable(data) or data.tell() == 0:
+            input_size = source_byte_size(data)
+            if input_size is not None:
+                changes["compressed_input_size"] = input_size
+        decoded = open_codec_stream(
+            codec,
+            data,
+            config=copy_with(self._decoder_config, **changes),
+            params=params,
+            collector=self._diagnostics_collector,
+        )
+        # A decoder over a view reads the view's span.
+        hint = read_span_hint(data)
+        if hint is not None:
+            mark_read_span(decoded, hint)
+        return decoded
+
+    def _codec_params(
+        self,
+        codec: CodecId,
+        method: CompressionAlgorithm | AnyStreamFormat,
+        size: int | None,
+        properties: bytes | None,
+        *,
+        is_stream: bool,
+    ) -> CodecParams:
+        """The codec parameters for one ``decompress`` call: what ``codec`` needs
+        beyond the bytes, read from the call's ``size`` and ``properties``.
+        ``is_stream`` says ``method`` is a whole stream format, not a member's
+        compression method."""
         # Only a bzip2 member is one stream, as in ZIP and 7z: a further stream after
         # its end is refused. Zstd and LZ4 data may be several frames, read together
         # (RFC 8878, the LZ4 frame format), and the other codecs read no flag. A
@@ -361,34 +422,11 @@ class _PluginAdapter(BaseArchiveReader):
                     archive_name=self._archive_name,
                 )
             params = CodecParams(unpack_size=size)
-        # Per call, as ZIP fills them per member (``_member_decoder_config``): the
-        # output size, and the input size while ``data`` is at its start. The
-        # accelerators choose by them, and rapidgzip's length check needs the first.
-        changes: dict[str, Any] = {"expected_decompressed_size": size}
-        if is_stream:
-            # A whole stream reads as a file of its format does: bytes after its end
-            # are reported (``ARCHIVE_TRAILING_DATA``), not refused. Most stream
-            # codecs have no refusal; the report is what they all share.
-            changes["refuse_input_after_end"] = False
-            changes["report_trailing_data"] = True
-        if not is_seekable(data) or data.tell() == 0:
-            input_size = source_byte_size(data)
-            if input_size is not None:
-                changes["compressed_input_size"] = input_size
-        decoded = open_codec_stream(
-            codec,
-            data,
-            config=copy_with(self._decoder_config, **changes),
-            params=params,
-            collector=self._diagnostics_collector,
-        )
-        # A decoder over a view reads the view's span.
-        hint = read_span_hint(data)
-        if hint is not None:
-            mark_read_span(decoded, hint)
-        return decoded
+        return params
 
     def _member_id(self, member: ArchiveMember | None) -> int | None:
+        """The id a report on ``member`` carries: its registered id once listed,
+        else the walk position it is about to be listed at."""
         if member is None:
             return None
         return member._member_id if member._member_id is not None else self._walk_index
@@ -449,6 +487,8 @@ class _PluginAdapter(BaseArchiveReader):
         member: ArchiveMember | None,
         member_id: int | None,
     ) -> None:
+        """Emit one diagnostic, filling in the archive name and member id where the
+        plugin left them ``None``."""
         fill: dict[str, object] = {}
         if getattr(details, "archive_name", "") is None:
             fill["archive_name"] = self._archive_name
@@ -687,6 +727,8 @@ class _PluginAdapter(BaseArchiveReader):
         message: str,
         target_in_archive: bool,
     ) -> None:
+        """``ReaderContext.link_target_unavailable``: clear the member's link target
+        and report why, held like any report until the member is named."""
         member.link_target = None
 
         def send(member_id: int | None) -> None:
@@ -1137,7 +1179,7 @@ class _Walk:
     """One walk of the archive: the layer it reads now (the archive's, or the last
     stream it decompressed), and, in random access, the buffered views it opened, one
     per layer. The listing walk is one; a walk started to reach a member's decoded
-    data again (``_DataWalks``) is another, with views of its own."""
+    data again (``_DataWalk``) is another, with views of its own."""
 
     __slots__ = ("layer", "views")
 
@@ -1957,6 +1999,8 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _take_span_checked(
         self, span: object, layer: _Layer, index: int
     ) -> ArchiveMember:
+        """Check a span the plugin's walk yielded against the interface, then name
+        its member and record where its data is (``member._raw``)."""
         name = type(self._reader).__name__
         if not isinstance(span, MemberSpan):
             raise _plugin_bug(
@@ -2032,22 +2076,32 @@ class SequentialReaderAdapter(_PluginAdapter):
             and member.link_target is None
             and not member._link_target_resolved
         ):
-            if decoded is not None:
-                with self._translated_errors(member.name), self._handle_guard():
-                    target = _read_up_to(decoded, MAX_LINK_TARGET_BYTES + 1)
-                if len(target) > MAX_LINK_TARGET_BYTES:
-                    self._emit_link_target_too_long(member, member_id=index)
-                else:
-                    member.link_target = target.decode(
-                        "utf-8", errors="surrogateescape"
-                    )
-            elif length > MAX_LINK_TARGET_BYTES:
+            self._read_link_target(member, decoded, forward, length, index)
+        return member
+
+    def _read_link_target(
+        self,
+        member: ArchiveMember,
+        decoded: _Decoded | None,
+        forward: ForwardStream,
+        length: int,
+        index: int,
+    ) -> None:
+        """Set a symlink's target from its data, for a format that stores it there
+        (``SequentialReader.link_target_in_data``), or report it too long."""
+        if decoded is not None:
+            with self._translated_errors(member.name), self._handle_guard():
+                target = _read_up_to(decoded, MAX_LINK_TARGET_BYTES + 1)
+            if len(target) > MAX_LINK_TARGET_BYTES:
                 self._emit_link_target_too_long(member, member_id=index)
             else:
-                with self._translated_errors(member.name), self._handle_guard():
-                    target = forward.read_exact(length)
                 member.link_target = target.decode("utf-8", errors="surrogateescape")
-        return member
+        elif length > MAX_LINK_TARGET_BYTES:
+            self._emit_link_target_too_long(member, member_id=index)
+        else:
+            with self._translated_errors(member.name), self._handle_guard():
+                target = forward.read_exact(length)
+            member.link_target = target.decode("utf-8", errors="surrogateescape")
 
     @override
     def _pass_reads_through_walk(self) -> bool:
@@ -2635,6 +2689,14 @@ def prefix_probe(probe: object) -> ContentProbe:
 
 
 def _check_plugin(plugin: type[FormatHandler]) -> ArchiveFormat:
+    """Refuse a handler ``register_format`` cannot take, before anything is
+    registered; return its format.
+
+    The handler must be one of the two shapes, with a new :class:`PluginContainer`
+    and an ``UNCOMPRESSED`` stream. Its ``format=`` spellings and extensions (with a
+    sequential format's compressed pairs) must be new, so registering it never
+    changes what an existing spelling or extension means.
+    """
     if not (
         isinstance(plugin, type)
         and issubclass(plugin, (IndexedFormatHandler, SequentialFormatHandler))
@@ -2827,6 +2889,13 @@ def replacement_backend(plugin: type[FormatHandler]) -> type[ReadBackend]:
 def _backend_class(
     plugin: type[FormatHandler], fmt: ArchiveFormat, overrides: Mapping[str, object]
 ) -> type[_PluginBackend]:
+    """The :class:`ReadBackend` subclass that reads ``fmt`` with ``plugin``.
+
+    It translates the handler's public declarations into the class attributes the
+    registry and detection read (``FORMATS``, ``EXTENSIONS``, ``MAGIC``,
+    ``CONTENT_PROBES``, ...), and its ``open_read`` builds the adapter. ``overrides``
+    sets attributes a plugin cannot declare (:func:`register_builtin_format`).
+    """
     probe = plugin.probe
     sequential = issubclass(plugin, SequentialFormatHandler)
     magic = tuple(MagicSignature(m.offset, m.data, fmt) for m in plugin.magic)
