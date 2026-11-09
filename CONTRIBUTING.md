@@ -142,7 +142,9 @@ distribution unar packages, plus the minimum-versions leg when the change touche
 `pyproject.toml`, `uv.lock`, `.python-version` or `ci.yml`, and a failure there takes the
 pull request out of the queue. Linux 3.12–3.14 and macOS and Windows 3.11 run only on the
 daily run and a dispatched run, so the release gate's dispatch is their last run before
-a release; Atheris runs nightly and in the release gates. A queued
+a release; Atheris runs nightly and in the release gates. `python-distributions.yml`
+runs the suite daily on python.org, Ubuntu 22.04, Fedora and conda-forge Pythons, whose
+liblzma, zlib and bzip2 differ from the ones uv's Pythons bundle. A queued
 change that touches no path on `FULL` in `scripts/ci/ci_scope.py` (the library, the
 library tests and the files they read, the benchmarks, the dependencies, the CI, and
 every script outside the folders its `NOT_FULL` lists,
