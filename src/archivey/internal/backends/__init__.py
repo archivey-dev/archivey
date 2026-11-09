@@ -1,12 +1,14 @@
 """Format backends — one self-registering reader module per archive format.
 
-Importing this package is required: each submodule ends by registering its backend
+Importing this package is required: each reader module ends by registering its backend
 (``register_reader(...)``, or ``register_builtin_format(...)`` for the modules written
 against ``archivey.formats``), so a bare ``import archivey.internal.backends`` fills
 the registry. Do not remove the side-effect imports below.
 
-Module map. These subclass ``BaseArchiveReader`` directly, each with a
-``*ReadBackend`` (registry / ``open_read``) and a ``*Reader``:
+Module map. These are written against ``BaseArchiveReader`` and register with
+``register_reader``. A reading backend usually has a ``*ReadBackend`` (registry /
+``open_read``) and a ``*Reader``; ``udif`` only refuses. The extra modules on a bullet
+are that reader's helpers:
 
 - :mod:`.zip_reader` / ``zip_parser`` — ZIP (native central-directory parser;
   codecs/crypto for member data); ``zip_local_walk`` / ``zip_forward_reader`` read a

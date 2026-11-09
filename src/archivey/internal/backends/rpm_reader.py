@@ -26,14 +26,14 @@ Every member's metadata comes from the header, as ``rpm`` installs it; a newc en
 own size is only checked against it. Members are named as the payload stores them,
 ``./usr/bin/x``, so ``usr/bin/x`` once normalized: what ``rpm2cpio | cpio -i``
 extracts, relative to the directory it is given. A regular file's data follows its
-entry, except in a hard-link set (regular files that share ``FILEDEVICES`` and ``FILEINODES``):
-there only the set's last file in header order carries the data, the earlier entries
-coming first, empty. As for CPIO, this reader holds those back, yields the last as the
-``FILE`` and the others as ``HARDLINK`` members to it. A symlink's target is its entry's
-data; the reader takes it from ``FILELINKTOS`` and skips those bytes. A ``%ghost`` file
-is listed in the header but never stored, and ``rpm2cpio`` does not give it either: it
-is not a member. The payload ends with a newc ``TRAILER!!!`` entry, and every file
-that is not a ghost must have been found by then.
+entry, except in a hard-link set (regular files that share ``FILEDEVICES`` and
+``FILEINODES``): there only the set's last file in header order carries the data, the
+earlier entries coming first, empty. As for CPIO, this reader holds those back, yields
+the last as the ``FILE`` and the others as ``HARDLINK`` members to it. A symlink's
+target is its entry's data; the reader takes it from ``FILELINKTOS`` and skips those
+bytes. A ``%ghost`` file is listed in the header but never stored, and ``rpm2cpio``
+does not give it either: it is not a member. The payload ends with a newc
+``TRAILER!!!`` entry, and every file that is not a ghost must have been found by then.
 
 ``FILEDIGESTS`` holds each regular file's digest in the algorithm ``FILEDIGESTALGO``
 names (MD5 when absent): it is checked as the member is read. Signatures are reported
@@ -317,7 +317,7 @@ class _Package:
     compressor: StreamFormat | None
     # FILEDIGESTALGO's name and hash constructor; None for an algorithm not in _DIGESTS.
     digest_algorithm: tuple[str, Callable[[], Hasher]] | None
-    # The header's per-file columns, indexed like ``files``; None when the tag is absent.
+    # The header's per-file columns, indexed like ``files``; None for an absent tag.
     digests: list[bytes] | None
     mtimes: list[int] | None
     users: list[bytes] | None
@@ -695,7 +695,9 @@ class RpmReader(SequentialReader):
         self, payload: ForwardStream, package: _Package, file: _File
     ) -> Iterator[MemberSpan]:
         """The members one payload entry gives: its own, unless it is an earlier link
-        of a hard-link set, which is held; then the held links of the set it ends."""
+        of a hard-link set, which is held until the set's last file comes, or yielded
+        at once as a link to that file if it already came; then the held links of the
+        set it ends."""
         member = self._member(package, file)
         if member.type is MemberType.SYMLINK:
             # The target, which the header already gave.
