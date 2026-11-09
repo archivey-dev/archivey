@@ -957,6 +957,18 @@ def test_long_windows_path_gets_the_extended_prefix() -> None:
     assert long_paths.extended("\\\\.\\" + deep[3:]) == "\\\\.\\" + deep[3:]
 
 
+def test_the_extended_prefix_starts_at_two_hundred_characters() -> None:
+    # The limit is measured on the absolute, normalized path: 199 characters stay
+    # as given, 200 get the prefix, and a long spelling of a short path stays too.
+    at_limit = "C:\\" + "d" * 197
+    assert len(at_limit) == 200
+    assert long_paths.extended(at_limit[:-1]) == at_limit[:-1]
+    assert long_paths.extended(at_limit) == "\\\\?\\" + at_limit
+    roundabout = "C:\\" + "x\\..\\" * 60 + "f"
+    assert len(roundabout) >= 200
+    assert long_paths.extended(roundabout) == roundabout
+
+
 def test_extended_prefix_is_stripped_for_display() -> None:
     assert long_paths.plain("\\\\?\\C:\\a\\b") == "C:\\a\\b"
     assert long_paths.plain("\\\\?\\UNC\\server\\share\\a") == "\\\\server\\share\\a"

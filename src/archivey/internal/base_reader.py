@@ -702,6 +702,10 @@ class BaseArchiveReader(ArchiveReader):
         # SOLID_OPEN_REDECOMPRESSES (an INFO log line); later ones only escalate it,
         # the rule for every once-per-reader code (``escalate_only``).
         self._solid_decoded: dict[Hashable, tuple[int, int]] = {}
+        # Per run, the ``(offset, end)`` of every open judged but not yet settled:
+        # ``_note_solid_open`` adds it, ``_settle_solid_open`` moves it into
+        # ``_solid_decoded`` once the open succeeded, or drops it when it failed.
+        self._solid_inflight: dict[Hashable, list[tuple[int, int]]] = {}
         self._solid_redecode_reported = False
         self._solid_decoded_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
@@ -3993,6 +3997,16 @@ class BaseArchiveReader(ArchiveReader):
             reservation = self._state.reserve_live_stream()
             bound = False
             stream: ArchiveStreamImpl | None = None
+            # The solid run this open was judged against, once ``_note_solid_open``
+            # holds it in flight; settled below, committed or dropped.
+            judged: list[SolidRun] = []
+
+            def before_open(target: ArchiveMember) -> None:
+                run = self._solid_run(target)
+                if run is not None:
+                    self._note_solid_open(target, run)
+                    judged.append(run)
+
             try:
                 opened: list[ArchiveMember] = []
                 # Before the member's open, which can decode its solid prefix at once
@@ -4002,8 +4016,12 @@ class BaseArchiveReader(ArchiveReader):
                     member,
                     visited=set(),
                     opened=opened,
-                    before_open=self._check_solid_open,
+                    before_open=before_open,
                 )
+                # The open succeeded: its run is now decoded through the member's end.
+                if judged:
+                    self._settle_solid_open(judged[0], decoded=True)
+                    judged.clear()
                 self._hold_to_ratio(stream, opened[0])
                 stream._level_member = self._level_member(opened[0])
                 # An eager open may have proved the password already.
@@ -4014,6 +4032,9 @@ class BaseArchiveReader(ArchiveReader):
             finally:
                 if not bound:
                     pending = sys.exception()
+                    if judged:
+                        # The open failed: see ``_settle_solid_open``.
+                        self._settle_solid_open(judged[0], decoded=False)
                     if stream is not None:
                         try:
                             stream.close()
@@ -4051,11 +4072,31 @@ class BaseArchiveReader(ArchiveReader):
         del member
         return None
 
-    def _check_solid_open(self, member: ArchiveMember) -> None:
-        """Note an ``open()`` of ``member`` that is about to start."""
-        run = self._solid_run(member)
-        if run is not None:
-            self._note_solid_open(member, run)
+    def _settle_solid_open(self, run: SolidRun, *, decoded: bool) -> None:
+        """Take the open :meth:`_note_solid_open` judged against ``run`` off the
+        in-flight ledger, into the run's record when ``decoded``, else dropped.
+
+        An open that fails is not recorded. Most fail before decoding (a member the
+        backend refuses, a wrong password: 7z raises ``EncryptionError`` from
+        ``open()``), and recording them would make the next open of the run report a
+        re-decode, or be refused under ``raise_on``, for bytes never decoded. One
+        that fails after decoding part of its run (a 7z folder that cannot seek and
+        hits damage) is not recorded either, so a later re-decode of that part goes
+        unreported. That miss is accepted: it loses an advisory, where recording it
+        could refuse an open.
+        """
+        end = run.offset + run.size
+        with self._solid_decoded_lock:
+            entries = self._solid_inflight[run.key]
+            entries.remove((run.offset, end))
+            if not entries:
+                del self._solid_inflight[run.key]
+            if decoded:
+                decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
+                self._solid_decoded[run.key] = (
+                    max(decoded_to, end),
+                    max(discarded_to, run.offset),
+                )
 
     def _note_solid_open(self, member: ArchiveMember, run: SolidRun) -> None:
         """Report when an ``open()`` decodes again what an earlier open decoded.
@@ -4073,20 +4114,27 @@ class BaseArchiveReader(ArchiveReader):
         caller may have chosen the pattern, and ``reader.cost`` and the ``open()``
         docstring already carry the cost. Every later one is passed to the policy only
         (``escalate_only``), so ``raise_on`` stops each such open. Called before the
-        member is opened, so a refused open decodes nothing, and only an open that goes
-        ahead is kept in the per-run record.
+        member is opened, so a refused open decodes nothing.
+
+        The judgement counts the opens still in flight on the run as decoded, and
+        puts this one among them in the same locked step, so two opens judged while
+        neither has finished see each other, as they would see a finished one. The
+        caller then settles it with :meth:`_settle_solid_open`: into the run's record
+        once the open succeeded, dropped when it failed, or here when the policy
+        refuses it.
         """
         end = run.offset + run.size
         with self._solid_decoded_lock:
             decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
+            inflight = self._solid_inflight.setdefault(run.key, [])
+            for other_offset, other_end in inflight:
+                decoded_to = max(decoded_to, other_end)
+                discarded_to = max(discarded_to, other_offset)
+            inflight.append((run.offset, end))
             again = min(run.offset, decoded_to) + max(
                 0, min(end, discarded_to) - run.offset
             )
             if again <= 0:
-                self._solid_decoded[run.key] = (
-                    max(decoded_to, end),
-                    max(discarded_to, run.offset),
-                )
                 return
             first = not self._solid_redecode_reported
             self._solid_redecode_reported = True
@@ -4105,26 +4153,24 @@ class BaseArchiveReader(ArchiveReader):
             bytes_again=again,
         )
         collector = self._diagnostics_collector
-        if first:
-            collector.emit(
-                code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
-                message=message,
-                context=context,
-                logger=logger,
-            )
-        else:
-            collector.escalate_only(
-                code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
-                message=message,
-                context=context,
-            )
-        # Not refused: the open goes ahead and decodes through ``end``.
-        with self._solid_decoded_lock:
-            decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
-            self._solid_decoded[run.key] = (
-                max(decoded_to, end),
-                max(discarded_to, run.offset),
-            )
+        try:
+            if first:
+                collector.emit(
+                    code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
+                    message=message,
+                    context=context,
+                    logger=logger,
+                )
+            else:
+                collector.escalate_only(
+                    code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
+                    message=message,
+                    context=context,
+                )
+        except BaseException:
+            # Refused: the open does not happen, so nothing is decoded.
+            self._settle_solid_open(run, decoded=False)
+            raise
 
     def _open_with_link_follow(
         self,
