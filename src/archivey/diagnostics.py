@@ -1,5 +1,14 @@
 """Public diagnostic value types — structured advisories as queryable data.
 
+A reader reports something odd but not fatal, such as a renamed member or a missing
+end-of-archive marker, as a :class:`Diagnostic` with a :class:`DiagnosticCode`.
+Readers emit them through ``archivey.internal.diagnostics_collector``, which applies
+the caller's :class:`DiagnosticPolicy` (ignore, collect or raise
+:exc:`~archivey.DiagnosticRaisedError`) and calls ``ArchiveyConfig.on_diagnostic``.
+Callers read the collected records from ``reader.diagnostics``,
+``ArchiveMember.diagnostics``, an :class:`ExtractionReport` or a
+:class:`MemberListReport`.
+
 See ``openspec/specs/diagnostics`` (and the ``diagnostics-warnings-as-data`` change)
 for the lifecycle, retention, and policy contracts.
 
