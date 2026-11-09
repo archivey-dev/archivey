@@ -329,9 +329,13 @@ class CabReader(IndexedReader[_Location]):
             if size is not None and pos + header > size:
                 complete = False
                 break
-            checksum, stored, decoded = _DATA.unpack(
-                self._read(pos, _DATA.size, "a data block header")
-            )
+            try:
+                raw = self._read(pos, _DATA.size, "a data block header")
+            except TruncatedError:
+                # The same cut as above, on a source whose size is not known.
+                complete = False
+                break
+            checksum, stored, decoded = _DATA.unpack(raw)
             if stored > _INPUT_MAX or decoded > _BLOCK_MAX:
                 raise CorruptionError(
                     f"data block {number} of folder {index} stores {stored} bytes "

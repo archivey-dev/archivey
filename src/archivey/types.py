@@ -689,6 +689,12 @@ class CompressionAlgorithm(Enum):
     IMPLODE = "implode"
     """ZIP method 6, LZ77 with Shannon-Fano codes, from PKZIP 1.x. No current tool
     writes it."""
+    REDUCE = "reduce"
+    """ZIP methods 2 to 5, a byte predictor with an LZ77 layer, from PKZIP 0.9x. No
+    current tool writes it."""
+    DCL_IMPLODE = "dcl_implode"
+    """ZIP method 10, the stream format of PKWARE's Data Compression Library (DCL),
+    which is not the same as ``IMPLODE``. Old installers and games use it too."""
     LZO = "lzo"
     """Raw LZO1X with no header, as SquashFS stores a block. Not the ``.lzo`` file
     format, which is ``StreamFormat.LZOP``."""

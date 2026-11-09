@@ -202,3 +202,19 @@ def test_a_listing_failure_that_is_not_a_refusal_propagates() -> None:
     fs.pipe("/d/x.zip.001", parts[0])
     with pytest.raises(RuntimeError, match="expired credentials"):
         open_archive(OpenFile(fs, "/d/x.zip.001", mode="rb"))
+
+
+class _URLFS:
+    """Keeps whole URLs as paths, as fsspec's HTTP file system does."""
+
+    def unstrip_protocol(self, name: str) -> str:
+        return name
+
+
+def test_a_remote_volume_path_is_shown_without_credentials() -> None:
+    url = "https://alice:S3cretPW@example.invalid/d/x.zip.001?X-Amz-Signature=abc"
+    path = RemoteVolumePath(_URLFS(), url, {})
+    assert str(path) == "https://example.invalid/d/x.zip.001"
+    assert "S3cretPW" not in repr(path)
+    # The I/O keeps the URL as given.
+    assert path.path == url
