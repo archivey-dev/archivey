@@ -1307,11 +1307,16 @@ class _PassData:
         How much is decoded depends on what the directory, read later, may need:
 
         - Data short enough to be a link target is decoded and kept. Encrypted data
-          nobody read keeps its ciphertext instead, so no key is derived for it yet.
+          nobody read keeps its ciphertext instead, unless its ciphertext is over
+          ``_MAX_KEPT_CIPHERTEXT``.
         - Longer data with a stated size is skipped by that size, after decoding the
-          start a Windows reparse buffer's parse reads.
-        - Bit-3 data, whose size only its end gives, is decoded at most that far too,
-          and the walk's scan finds the end on the stored bytes.
+          start a Windows reparse buffer's parse reads, unless it is encrypted and
+          nobody read it.
+        - Bit-3 data, whose size only its end gives, is decoded no further than the
+          byte past the target cap, then the reparse prefix and one byte more; the
+          walk's scan finds the end on the stored bytes. A bit-3 STORED member is
+          read to its end. Encrypted bit-3 data that is STORED, or that nobody read,
+          is not decoded.
 
         The details follow.
 

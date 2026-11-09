@@ -1144,8 +1144,9 @@ class LocalHeaderWalk:
         return f"after member #{self._index - 1}"
 
     def _start(self) -> None:
-        """Position the walk at the first ZIP record, scanning past a stub when
-        ``find_start`` allows it; refuse a stream with no ZIP record in reach."""
+        """With ``find_start``, scan past a stub to the first ZIP record, and refuse
+        a stream with none in reach or one cut inside its first signature. Without
+        it, leave the stream as it is for ``next_entry`` to judge."""
         # Anything next_entry knows how to handle opens the stream: a local header, the
         # directory or end records of an archive whose members are gone, or the Strong
         # Encryption record it names. Only other bytes are a stub to scan past.
