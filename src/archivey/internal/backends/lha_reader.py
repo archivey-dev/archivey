@@ -110,7 +110,9 @@ _LEVEL_0_MIN = 22
 _LEVEL_1_MIN = 25
 _LEVEL_2_SIZE = 26
 _LEVEL_3_SIZE = 32
-# No writer comes near this; lhasa refuses a level-3 header over 1 MiB.
+# No writer comes near this. lhasa refuses a level-3 header over 1 MiB, and the
+# same cap bounds a level-1 chain of extended headers, which lhasa reads into
+# memory too (each record is at most 64 KiB, the chain has no count).
 _HEADER_MAX = 1 << 20
 _UNIX_AREA = 12  # level 0's Unix extended area
 _OS9_AREA = 22  # level 0's OS-9 extended area
@@ -578,9 +580,15 @@ class LhaReader(IndexedReader[_Location]):
         special = None
         if method == _DIRECTORY and file_type == stat.S_IFLNK:
             member_type = MemberType.SYMLINK
+            bars = name.count("|")
             name, bar, link_target = name.partition("|")
             if not bar:
                 link_target = None
+            elif raw.count(b"|") == bars:
+                # The stored name is name|target; raw_name keeps the name's bytes.
+                # A 0x7C can be a cp932 second byte, so the bytes are cut only when
+                # every 0x7C in them decoded as a bar.
+                raw = raw[: raw.index(b"|")]
         elif method == _DIRECTORY:
             member_type = MemberType.DIRECTORY
         else:

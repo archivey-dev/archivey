@@ -316,6 +316,25 @@ def test_a_symlink_without_a_target() -> None:
     assert DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE in codes
 
 
+def test_a_symlink_splits_at_its_bar() -> None:
+    member = Member(b"dir/link|../target", method="-lhd-", level=2, mode=0o120777)
+    with _open(archive([member])) as reader:
+        (got,) = reader.members()
+    assert got.type is MemberType.SYMLINK
+    assert (got.name, got.link_target) == ("dir/link", "../target")
+    assert got.raw_name == b"dir/link"
+
+
+def test_a_cp932_symlink_keeps_its_stored_name() -> None:
+    # The second byte of ポ is 0x7C, so the bytes cannot be cut where the name was.
+    stored = "ポ|t".encode("cp932")
+    member = Member(stored, method="-lhd-", level=2, mode=0o120777)
+    with _open(archive([member]), encoding="cp932") as reader:
+        (got,) = reader.members()
+    assert (got.name, got.link_target) == ("ポ", "t")
+    assert got.raw_name == stored
+
+
 def test_a_dos_name_uses_backslashes() -> None:
     member = Member(b"dir\\file", b"x", method="-lh0-", level=0)
     with _open(archive([member])) as reader:
@@ -429,6 +448,65 @@ def test_a_bad_header_crc_is_refused(level: int) -> None:
     raw = bytearray(archive([Member(b"f", b"x", method="-lh0-", level=level)]))
     raw[raw.index(b"f")] = ord("g")
     with pytest.raises(CorruptionError, match="CRC"):
+        _open(bytes(raw))
+
+
+def test_a_bad_level_1_common_record_crc_is_refused() -> None:
+    # Level 1's 8-bit sum covers the base header only; the common record's CRC-16
+    # covers the extended headers too.
+    member = Member(
+        b"f", b"x", method="-lh0-", level=1, extra_records=[(0x00, b"\x01\x00")]
+    )
+    with pytest.raises(CorruptionError, match="CRC"):
+        _open(archive([member]))
+
+
+def _resum(raw: bytearray) -> bytearray:
+    """Fix a level-0 or level-1 header's 8-bit sum after an edit."""
+    raw[1] = sum(raw[2 : raw[0] + 2]) & 0xFF
+    return raw
+
+
+def _level_1(*records: tuple[int, bytes]) -> bytearray:
+    member = Member(b"f", b"x", method="-lh0-", level=1, extra_records=list(records))
+    return bytearray(archive([member]))
+
+
+@pytest.mark.parametrize(("level", "length"), [(0, 21), (1, 24)])
+def test_a_header_shorter_than_its_level_is_refused(level: int, length: int) -> None:
+    raw = bytearray(archive([Member(b"f", b"x", method="-lh0-", level=level)]))
+    raw[0] = length
+    with pytest.raises(CorruptionError, match=f"is {length} bytes long"):
+        _open(bytes(_resum(raw)))
+
+
+def test_a_name_past_its_header_is_refused() -> None:
+    raw = bytearray(archive([Member(b"f", b"x", method="-lh0-", level=0)]))
+    raw[21] = 200
+    with pytest.raises(CorruptionError, match="name .* runs past the header"):
+        _open(bytes(_resum(raw)))
+
+
+def test_a_level_1_extended_header_under_3_bytes_is_refused() -> None:
+    raw = _level_1((0x3F, b"note"))
+    struct.pack_into("<H", raw, raw[0], 2)  # the first extended header's size
+    with pytest.raises(CorruptionError, match="extended header .* is 2 bytes long"):
+        _open(bytes(_resum(raw)))
+
+
+def test_level_1_extended_headers_longer_than_the_data_are_refused() -> None:
+    raw = _level_1((0x3F, b"a longer note"))
+    struct.pack_into("<I", raw, 7, 1)  # the stored size, which counts them
+    with pytest.raises(CorruptionError, match="longer"):
+        _open(bytes(_resum(raw)))
+
+
+def test_a_level_1_chain_over_the_cap_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lha_reader, "_HEADER_MAX", 16)
+    raw = _level_1((0x3F, b"note one"), (0x3F, b"note two"))
+    with pytest.raises(CorruptionError, match="pass 16 bytes"):
         _open(bytes(raw))
 
 

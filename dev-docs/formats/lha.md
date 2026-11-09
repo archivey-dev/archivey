@@ -81,7 +81,7 @@ member's data, until a zero byte or the end of the file.
 A header is checked as it is read: level 0 and 1 against their 8-bit sum, any level with
 a common record against its CRC-16 (computed over the whole header, the CRC field
 zeroed). A name past the header, an extended header past the header, a level-3 header
-over 1 MiB, level-1 extended headers longer than the stored size, or a level past 3 is
+over 1 MiB, level-1 extended headers over 1 MiB or longer than the stored size, or a level past 3 is
 `CorruptionError`. A member whose data runs past the file is `TruncatedError` at listing.
 
 As lhasa does: a level-1 `-lh7-` member with OS id `' '` is LHARK's, read as `-lk7-`; an
@@ -93,7 +93,8 @@ Names: the directory record and the name join with `/`, `0xFF` separators become
 then the name is decoded and `\` becomes `/` (after decoding, so a cp932 second byte of
 `0x5C` stays whole). Before level 2, a NUL in the name starts an Amiga file note, which
 becomes `member.comment`. A `-lhd-` member whose mode is a symlink is a `SYMLINK`, its
-stored name `name|target`; one with no `|` is listed with
+stored name `name|target` (`raw_name` keeps the bytes before the `|`); one with no `|`
+is listed with
 `SYMLINK_TARGET_UNAVAILABLE`.
 
 Times: the Unix mtime when the header has one (level 2 and 3, the `0x54` record, the

@@ -65,8 +65,8 @@ The backend SHALL list a member of a method it does not decode (`-lh1-`, `-lh2-`
 `-lh3-`, `-lzs-`, `-lz5-`, `-pm1-`, `-pm2-`, or another) and raise
 `UnsupportedFeatureError` when it is read. It SHALL raise `CorruptionError` for a header
 that fails its 8-bit sum or its common-record CRC-16, a level past 3, a name or extended
-header past its header, a level-3 header over 1 MiB, level-1 extended headers longer than
-the stored size, and a file that starts with the end byte; and, when reading, for a data
+header past its header, a level-3 header over 1 MiB, level-1 extended headers over 1 MiB
+or longer than the stored size, and a file that starts with the end byte; and, when reading, for a data
 CRC-16 that does not match, a code length over 16 bits, a table that over- or underfills
 its code space, a symbol past its table, or a match from further back than the window. A
 member whose data runs past the file SHALL raise `TruncatedError` at listing, and a

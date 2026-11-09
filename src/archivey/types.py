@@ -106,8 +106,9 @@ class ContainerFormat(StrEnum):
     payloads. Stored, MSZIP and LZX folders are read; needs a source that can seek."""
     LHA = "lha"
     """An LHA archive (``.lzh``, ``.lha``), from DOS, the Amiga and Japanese PCs.
-    Header levels 0 to 3 are read, and the methods ``-lh0-`` and ``-lh4-`` to
-    ``-lh7-``; needs a source that can seek."""
+    Header levels 0 to 3 are read, with stored members (``-lh0-``, ``-lz4-``,
+    ``-pm0-``) and the ``-lh4-`` to ``-lh7-``, ``-lhx-`` and ``-lk7-`` methods; needs
+    a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -1189,7 +1190,12 @@ class ArchiveMember:
     - A 7z member stored with no name is named after the archive source, and
       ``raw_name`` is ``b""``.
     - A RAR5 file-version-history member gets a ``;n`` suffix in ``name`` (as
-      WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it."""
+      WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it.
+    - LHA: ``raw_name`` is the directory record and the name joined with ``/``, with
+      ``0xFF`` separators turned into ``/``, without an Amiga file note (the bytes
+      after a NUL, which go to ``comment``) and, for a symlink, without the
+      ``|target`` after the name (kept when a ``0x7C`` byte in the name is the
+      second byte of a cp932 character, as the cut cannot be placed in the bytes)."""
 
     size: int | None = None
     """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry).
