@@ -20,7 +20,7 @@ The dialects differ in how a name longer than 15 bytes is stored:
 - **BSD** (and macOS): a short name is stored as it is. A member named ``#1/20`` has a
   20-byte name at the **start of its data area**, which the header's size counts, so
   its data starts after the name rather than after the header. macOS pads that name
-  with NULs, and pads each member with ``\n`` so the next header starts on 8 bytes,
+  with NULs, and pads each member with ``\\n`` so the next header starts on 8 bytes,
   counting that padding in the member's size: the padding is then part of the member,
   as llvm-ar and bsdtar extract it. The symbol table is a member named ``__.SYMDEF``
   (or ``__.SYMDEF SORTED``, ``__.SYMDEF_64``).
