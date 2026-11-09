@@ -29,7 +29,7 @@ from archivey import (
 from archivey.cli.logging_config import cli_logging, cli_opens_members
 from archivey.cost import AccessCost
 from archivey.diagnostics import SolidReopenContext
-from archivey.exceptions import DiagnosticRaisedError
+from archivey.exceptions import CorruptionError, DiagnosticRaisedError
 from tests.conftest import binary_refusal
 
 _LOGGER = "archivey.backends"
@@ -316,3 +316,31 @@ def test_a_refused_open_decodes_nothing_and_is_not_counted(
         # The refused open did not decode, so reading a again decodes nothing again.
         assert reader.read("a.txt") == _data("a.txt")
         assert opened == ["a.txt"]
+
+
+def test_an_open_that_fails_is_not_recorded_as_decoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member open the backend refuses decoded nothing, so the next open of the
+    run is not reported, or refused under ``raise_on``, for bytes never decoded."""
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.SOLID_OPEN_REDECOMPRESSES})
+    config = ArchiveyConfig(diagnostic_policy=policy)
+    with open_archive(_SOLID_7Z, config=config) as reader:
+        real = type(reader)._open_member_handle
+        failed: list[str] = []
+
+        def refuse(self, member):
+            failed.append(member.name)
+            raise CorruptionError("refused for the test")
+
+        monkeypatch.setattr(type(reader), "_open_member_handle", refuse)
+        with pytest.raises(CorruptionError):
+            reader.read("a.txt")
+        monkeypatch.setattr(type(reader), "_open_member_handle", real)
+        assert failed == ["a.txt"]
+        # Nothing was decoded, so b decodes nothing again.
+        assert reader.read("b.txt") == _data("b.txt")
+        assert reader.diagnostics.counts == {}
+        # b is recorded: c decodes it again, and is refused.
+        with pytest.raises(DiagnosticRaisedError):
+            reader.read("c.txt")

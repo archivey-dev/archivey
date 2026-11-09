@@ -4004,6 +4004,9 @@ class BaseArchiveReader(ArchiveReader):
                     opened=opened,
                     before_open=self._check_solid_open,
                 )
+                # Recorded once the open succeeded: an open that failed decoded no
+                # run an earlier open can be said to have decoded.
+                self._record_solid_open(opened[0])
                 self._hold_to_ratio(stream, opened[0])
                 stream._level_member = self._level_member(opened[0])
                 # An eager open may have proved the password already.
@@ -4052,10 +4055,29 @@ class BaseArchiveReader(ArchiveReader):
         return None
 
     def _check_solid_open(self, member: ArchiveMember) -> None:
-        """Note an ``open()`` of ``member`` that is about to start."""
+        """Judge an ``open()`` of ``member`` that is about to start."""
         run = self._solid_run(member)
         if run is not None:
             self._note_solid_open(member, run)
+
+    def _record_solid_open(self, member: ArchiveMember) -> None:
+        """Keep what a succeeded ``open()`` of ``member`` decoded of its solid run.
+
+        Called after the open, not before it: an open that fails (a member the
+        backend refuses, a wrong password) decoded nothing a later open decodes
+        again, and recording it would make the next open of the run report a
+        re-decode, or be refused under ``raise_on``, for bytes never decoded.
+        """
+        run = self._solid_run(member)
+        if run is None:
+            return
+        end = run.offset + run.size
+        with self._solid_decoded_lock:
+            decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
+            self._solid_decoded[run.key] = (
+                max(decoded_to, end),
+                max(discarded_to, run.offset),
+            )
 
     def _note_solid_open(self, member: ArchiveMember, run: SolidRun) -> None:
         """Report when an ``open()`` decodes again what an earlier open decoded.
@@ -4073,8 +4095,8 @@ class BaseArchiveReader(ArchiveReader):
         caller may have chosen the pattern, and ``reader.cost`` and the ``open()``
         docstring already carry the cost. Every later one is passed to the policy only
         (``escalate_only``), so ``raise_on`` stops each such open. Called before the
-        member is opened, so a refused open decodes nothing, and only an open that goes
-        ahead is kept in the per-run record.
+        member is opened, so a refused open decodes nothing. The per-run record is
+        kept by :meth:`_record_solid_open`, once the open has succeeded.
         """
         end = run.offset + run.size
         with self._solid_decoded_lock:
@@ -4083,10 +4105,6 @@ class BaseArchiveReader(ArchiveReader):
                 0, min(end, discarded_to) - run.offset
             )
             if again <= 0:
-                self._solid_decoded[run.key] = (
-                    max(decoded_to, end),
-                    max(discarded_to, run.offset),
-                )
                 return
             first = not self._solid_redecode_reported
             self._solid_redecode_reported = True
@@ -4117,13 +4135,6 @@ class BaseArchiveReader(ArchiveReader):
                 code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
                 message=message,
                 context=context,
-            )
-        # Not refused: the open goes ahead and decodes through ``end``.
-        with self._solid_decoded_lock:
-            decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
-            self._solid_decoded[run.key] = (
-                max(decoded_to, end),
-                max(discarded_to, run.offset),
             )
 
     def _open_with_link_follow(
