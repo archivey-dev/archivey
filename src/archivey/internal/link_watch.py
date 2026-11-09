@@ -199,7 +199,7 @@ class LinkWatch:
                     continue
                 outcome.escaped.append(link)
             try:
-                os.unlink(link.path)
+                os.unlink(long_path(link.path))
             except OSError:
                 # The same as a link that escapes when it is created: the result
                 # still says BLOCKED, and the caller logs it.

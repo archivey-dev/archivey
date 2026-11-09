@@ -542,6 +542,37 @@ def test_removing_a_link_rechecks_a_link_that_passed_through_it_earlier(
     assert not os.path.lexists(root / "m")
 
 
+def test_recheck_removes_an_escaping_link_through_long_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On Windows a path past MAX_PATH needs the extended prefix, or the unlink fails
+    # and the escaping link stays on disk. POSIX has no such limit, so a stand-in
+    # ``long_path`` marks each path with a second leading ``/``, which names the same
+    # file on Linux, and the unlink must receive the marked path.
+    root = tmp_path.resolve()
+    (root / "d").mkdir()
+    (root / "l").symlink_to("a/../d")
+    watch = link_watch.LinkWatch(root, budget=None)
+    watch.track(root / "l", "a/../d", result_index=0)
+    # A later member changes ``a``, which the link resolves through; ``escapes`` is a
+    # stub that refuses it.
+    watch.note_change(root / "a")
+    monkeypatch.setattr(link_watch, "long_path", lambda path: "/" + os.fspath(path))
+    unlinked: list[object] = []
+    real_unlink = os.unlink
+
+    def spy(path: object, *args: object, **kwargs: object) -> None:
+        unlinked.append(path)
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(link_watch.os, "unlink", spy)
+    outcome = watch.recheck(lambda path, target: True)
+
+    assert [link.path.name for link in outcome.escaped] == ["l"]
+    assert unlinked == ["/" + os.fspath(root / "l")]
+    assert not os.path.lexists(root / "l")
+
+
 def test_an_anti_item_deleting_a_symlink_rechecks(tmp_path: Path) -> None:
     # Exercised at the coordinator level, as in test_extraction's anti-item tests: a
     # backend reaches this only with a 7z anti-item whose name differs from the link's
