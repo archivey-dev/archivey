@@ -344,7 +344,8 @@ def test_reads_out_of_order_charge_the_control_files_once() -> None:
     raw = _deb()
     with open_archive(io.BytesIO(raw)) as reader:
         reader.members()
-        listed = reader._resource_usage().listing_metadata_bytes  # type: ignore[attr-defined]  # the figure the limit checks
+        # The figure the limit checks.
+        listed = reader._resource_usage().listing_metadata_bytes
     held = 4 + len(CONTROL) + len(_md5sums(FILES))
     limits = archivey.ListingLimits(max_metadata_bytes=listed + held)
     config = archivey.ArchiveyConfig(listing_limits=limits)
