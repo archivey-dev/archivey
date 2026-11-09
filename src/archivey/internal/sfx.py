@@ -99,11 +99,6 @@ _SCAN_CHUNK = 65536
 # step reads only the delta, so a full miss costs **1×** the window in unique I/O.
 # Geometric growth is about stopping early on a hit. A stub whose magic is at 250 KB —
 # the size `rar a -sfx` produces — is found on the third peek.
-#
-# The pre-workspace loop re-requested from byte 0 each step, so a miss billed
-# 64 + 256 + 1024 + 2048 KiB = 3392 KiB for a 2048 KiB window — **1.66×**, not
-# "a little over 2×". That 1.66× figure is what the tiering argument was counted
-# against; I/O is 1× now, and the gap versus a tail probe is still large either way.
 _PEEK_STEPS = (1 << 16, 1 << 18, 1 << 20)
 
 _MZ = b"MZ"
@@ -850,10 +845,10 @@ class _EarliestFinder:
 
     Each needle's next match is remembered, so a later :meth:`find` searches only
     past it instead of re-running ``bytes.find`` from ``start`` for every needle.
-    Re-searching from each candidate made a scan packed with one needle's decoys
-    quadratic whenever another needle was absent (each miss re-read to the end):
-    about 75 s for 1 MiB of back-to-back RAR5 ids. Tracking positions returns the
-    same hits in the same order; ties still go to the needle listed first.
+    Re-searching from each candidate would make a scan packed with one needle's
+    decoys quadratic whenever another needle is absent (each miss re-reads to the
+    end): about 75 s for 1 MiB of back-to-back RAR5 ids. Ties go to the needle
+    listed first.
 
     ``data`` may grow between calls (the validated scan's window is extended by
     validator peeks) but must not otherwise change. ``start`` must not decrease.
@@ -992,10 +987,7 @@ def scan_for_magic(
     # Bytes carried between chunks so a magic straddling a chunk boundary still matches.
     overlap = max(len(needle.magic) for needle in normalized) - 1
 
-    window = bytearray()
-    # Offset (from the scan start) of window[0], so a hit inside the window maps back.
-    window_start = 0
-    consumed = 0
+    window = _ForwardWindow(source)
     search_from = 0
     # Window-relative end of the previous pass. The skip is per needle: a shorter
     # needle wholly inside the retained overlap is not re-found after the trim.
@@ -1015,63 +1007,37 @@ def scan_for_magic(
     # unflushed r+b handle) for a capped scan.
     total = source_byte_size(source) if scan_start is not None else None
 
-    def peek_more(n: int, *, origin: int) -> bytes:
-        nonlocal consumed
-        if n <= 0:
-            return b""
-        origin_in_window = origin - window_start
-        if origin_in_window < 0:
-            return b""
-        need = origin_in_window + n
-        while len(window) < need:
-            chunk = source.read(min(_SCAN_CHUNK, need - len(window)))
-            if not chunk:
-                break
-            window.extend(chunk)
-            consumed += len(chunk)
-        return bytes(window[origin_in_window : origin_in_window + n])
-
-    def bind_view(bound_origin: int) -> Callable[[int], bytes]:
-        def view(n: int) -> bytes:
-            return peek_more(n, origin=bound_origin)
-
-        return view
-
     def finish() -> MagicScan:
         return MagicScan(*selector.result(), selector.rejected)
 
     if first_at is not None and validator is not None and first_at >= 0:
-        for needle in normalized:
-            if first_at + len(needle.magic) > limit:
-                continue
-            if peek_more(len(needle.magic), origin=first_at) != needle.magic:
-                continue
-            outcome = validator(
-                bind_view(first_at), _remaining_from_origin(scan_start, first_at, total)
-            )
-            if outcome in (HitOutcome.VALID, HitOutcome.VALID_SHORT):
-                return MagicScan(MagicHit(first_at, needle.magic, 0), None, 0)
-            break
+        first = _judge_first_at(
+            window,
+            normalized,
+            first_at,
+            limit=limit,
+            validator=validator,
+            remaining=_remaining_from_origin(scan_start, first_at, total),
+        )
+        if first is not None:
+            return first
 
     while True:
-        if consumed < limit:
-            chunk = source.read(min(_SCAN_CHUNK, limit - consumed))
-            consumed += len(chunk)
-            window.extend(chunk)
+        window.read_chunk(limit)
         # A pass per chunk, and one more for bytes a peek already pulled in: judging
         # ``first_at`` can read up to ``limit`` before any pass ran.
-        if len(window) <= searched:
+        if len(window.data) <= searched:
             break
 
         # Rebuilt per chunk: the finder's remembered positions are window-relative,
         # and the trim below shifts them. Validator peeks inside the loop only append.
-        finder = _EarliestFinder(window, normalized, searched=searched)
+        finder = _EarliestFinder(window.data, normalized, searched=searched)
         while True:
             hit = finder.find(search_from)
             if hit is None:
                 break
             index, needle = hit
-            abs_pos = window_start + index
+            abs_pos = window.start + index
             if abs_pos + len(needle.magic) > limit:
                 # This needle does not fit. A later shorter one still might
                 # (needles of different lengths), so skip rather than stop.
@@ -1097,19 +1063,98 @@ def scan_for_magic(
             # so a later VALID hit always displaces a held short one, and the cap
             # counts that one format's rejections.
             if (
-                selector.offer(None, found, validator(bind_view(origin), remaining))
+                selector.offer(None, found, validator(window.view(origin), remaining))
                 or selector.capped
             ):
                 return finish()
             search_from = index + 1
 
         search_from = 0
-        if len(window) > overlap:
-            window_start += len(window) - overlap
-            del window[: len(window) - overlap]
-        searched = len(window)
+        window.keep_tail(overlap)
+        searched = len(window.data)
 
     return finish()
+
+
+class _ForwardWindow:
+    """The bytes :func:`scan_for_magic` holds from a source it reads forward once.
+
+    ``data`` is the untrimmed part of what has been read, and ``start`` is the scan
+    offset of its first byte. A validator's peek may pull bytes in ahead of the scan,
+    but never reads back: a peek at an origin already trimmed away returns ``b""``.
+    """
+
+    def __init__(self, source: BinaryIO) -> None:
+        self._source = source
+        self.data = bytearray()
+        self.start = 0
+        # Bytes read from the source so far, trimmed or not.
+        self.consumed = 0
+
+    def read_chunk(self, limit: int) -> None:
+        """Append the next chunk, unless ``limit`` bytes have been read already."""
+        if self.consumed < limit:
+            chunk = self._source.read(min(_SCAN_CHUNK, limit - self.consumed))
+            self.consumed += len(chunk)
+            self.data.extend(chunk)
+
+    def peek(self, n: int, *, origin: int) -> bytes:
+        """The ``n`` bytes at scan offset ``origin``, reading forward as needed."""
+        if n <= 0:
+            return b""
+        origin_in_window = origin - self.start
+        if origin_in_window < 0:
+            return b""
+        need = origin_in_window + n
+        while len(self.data) < need:
+            chunk = self._source.read(min(_SCAN_CHUNK, need - len(self.data)))
+            if not chunk:
+                break
+            self.data.extend(chunk)
+            self.consumed += len(chunk)
+        return bytes(self.data[origin_in_window : origin_in_window + n])
+
+    def view(self, origin: int) -> Callable[[int], bytes]:
+        """A candidate-relative ``peek_more(n)`` for a :class:`HitValidator`."""
+
+        def view(n: int) -> bytes:
+            return self.peek(n, origin=origin)
+
+        return view
+
+    def keep_tail(self, overlap: int) -> None:
+        """Drop all but the last ``overlap`` bytes, so a magic that straddles the
+        next chunk boundary still matches."""
+        if len(self.data) > overlap:
+            self.start += len(self.data) - overlap
+            del self.data[: len(self.data) - overlap]
+
+
+def _judge_first_at(
+    window: _ForwardWindow,
+    needles: Sequence[ScanNeedle],
+    first_at: int,
+    *,
+    limit: int,
+    validator: HitValidator,
+    remaining: int | None,
+) -> MagicScan | None:
+    """The answer at ``first_at`` when a needle there validates, else ``None``.
+
+    Only the first needle whose magic sits at ``first_at`` is judged. For the needle
+    sets the parsers pass (7z's one, and RAR4's and RAR5's, which differ at byte 6),
+    no second needle can match at the same offset.
+    """
+    for needle in needles:
+        if first_at + len(needle.magic) > limit:
+            continue
+        if window.peek(len(needle.magic), origin=first_at) != needle.magic:
+            continue
+        outcome = validator(window.view(first_at), remaining)
+        if outcome in (HitOutcome.VALID, HitOutcome.VALID_SHORT):
+            return MagicScan(MagicHit(first_at, needle.magic, 0), None, 0)
+        break
+    return None
 
 
 def iter_magic_in_prefix(
