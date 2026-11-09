@@ -824,8 +824,8 @@ The replacement gets what any indexed plugin gets: a source that can seek, from 
 start of the archive. archivey refuses, before `open()` runs, a multi-volume set and an
 archive behind a prefix (a self-extracting stub or other leading bytes) with
 `UnsupportedFeatureError`, a source that
-cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO as
-the built-in reader refuses it, since its bytes are not an ISO 9660 image. The format's own config options, such as
+cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO,
+since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it reads). The format's own config options, such as
 `zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
 `ReaderContext.config`; honouring them is the plugin's job. `password=` does not reach a
 replacement, as it reaches no plugin, so a replaced ZIP, 7z or RAR cannot read an encrypted

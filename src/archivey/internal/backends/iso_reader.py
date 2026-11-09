@@ -103,6 +103,14 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
+from archivey.internal.backends.cd_sectors import (
+    PROBE_SIZE,
+    RAW_SECTOR_SYNC,
+    CookedSource,
+    RawSectorLayout,
+    cooked_source,
+    raw_sector_layout,
+)
 from archivey.internal.base_reader import special_file_has_data_report
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import check_metadata_budget
@@ -116,7 +124,7 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
 )
 from archivey.internal.timestamps import TimestampIssue
-from archivey.internal.trailing_scan import first_nonzero_offset
+from archivey.internal.trailing_scan import MAX_TRAILING_SCAN, first_nonzero_offset
 from archivey.internal.unix_mode import special_file_type
 from archivey.internal.volumes import JoinedViews
 from archivey.terminal import quoted
@@ -1606,10 +1614,18 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             volume_end=self._iso.pvd.space_size * self._iso.logical_block_size,
             image_length=self._image_length,
         )
-        if end >= self._image_length:
+        image_length = self._image_length
+        if isinstance(self._source, CookedSource) and end < image_length:
+            # A raw image holds every track of the disc, and only the first is read.
+            # What follows the data track (audio, or another track's pregap) is the
+            # disc's own; only data sectors that continue the track are scanned.
+            image_length = self._source.data_end(end, MAX_TRAILING_SCAN)
+        if end >= image_length:
             return
         self._iso_fp.seek(end)
-        found = first_nonzero_offset(self._iso_fp)
+        found = first_nonzero_offset(
+            self._iso_fp, limit=min(MAX_TRAILING_SCAN, image_length - end)
+        )
         if found is None:
             return
         self._context.report(
@@ -2725,10 +2741,15 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # pycdlib's stream stops at the record's data length and the zisofs decoder at
         # the declared size, so neither returns a byte past ``size``.
         spans = self._data_spans(record)
+        ranges = tuple((start, start + length) for start, length in spans)
+        if isinstance(self._source, CookedSource):
+            # The hints name bytes of the file archivey reads, which for a raw image
+            # are the whole sectors holding each extent.
+            ranges = tuple(self._source.raw_range(*span) for span in ranges)
         return MemberData(
             self._data_stream(spans, zisofs, member),
             bounded=True,
-            ranges=tuple((start, start + length) for start, length in spans),
+            ranges=ranges,
         )
 
     def _data_stream(
@@ -2816,79 +2837,67 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         self._release_archive_handles()
 
 
-# The 12-byte sync pattern that opens every sector of a raw CD dump (a ``.bin`` from a
-# ``.bin``/``.cue`` pair). A plain ``.iso`` holds only the 2048-byte user data of each
-# sector, so it never starts with this: its first 32 KiB is the zero-filled system area.
-_RAW_SECTOR_SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
-# 2352 bytes is a full raw sector; 2448 is the same with 96 bytes of subchannel data
-# appended, which some dumpers write.
-_RAW_SECTOR_SIZES = (2352, 2448)
-
-
 def _describe_raw_sector_image(source: BinaryIO) -> str | None:
     """Name the layout of a raw CD sector image, or ``None`` if ``source`` is not one.
 
-    Raw images are recognised so they can be refused by name: reading one means stripping
-    every sector to its payload first, which is not implemented. Without this the same
-    file fails detection outright, which sends a user looking for a corrupt file when the
-    answer is to convert it.
-
-    Everything needed is in the first sector or two. Byte 15 is the sector mode. For
-    mode 2, bit ``0x20`` of the submode byte (offset 18, in the subheader) separates Form
-    1, whose 2048-byte payload holds a filesystem, from Form 2, whose 2324-byte payload
-    is video or audio and holds none. The sector size is where the second sync lands.
     ``source`` is left at the position it was handed in at.
     """
-    want = max(_RAW_SECTOR_SIZES) + len(_RAW_SECTOR_SYNC)
+    layout = _raw_layout_of(source)
+    return None if layout is None else layout.describe()
+
+
+def _raw_layout_of(source: BinaryIO) -> RawSectorLayout | None:
     start = source.tell()
     try:
-        head = source.read(want)
+        head = source.read(PROBE_SIZE)
     finally:
         source.seek(start)
-    if not head.startswith(_RAW_SECTOR_SYNC) or len(head) < 24:
-        return None
-    mode = head[15]
-    if mode == 1:
-        layout = "Mode 1"
-    elif mode == 2:
-        layout = "Mode 2 Form 2" if head[18] & 0x20 else "Mode 2 Form 1"
-    else:
-        layout = f"unknown sector mode {mode}"
-    sizes = [
-        size
-        for size in _RAW_SECTOR_SIZES
-        if head[size : size + len(_RAW_SECTOR_SYNC)] == _RAW_SECTOR_SYNC
-    ]
-    if sizes:
-        layout += f", {sizes[0]}-byte sectors"
-    return layout
+    return raw_sector_layout(head)
 
 
 def refuse_raw_sector_image(
-    source: BinaryIO, format: ArchiveFormat, archive_name: str | None
+    source: BinaryIO,
+    format: ArchiveFormat,
+    archive_name: str | None,
+    *,
+    replacement: str | None = None,
 ) -> None:
-    """Raise ``UnsupportedFeatureError`` if ``source`` is a raw CD sector image.
+    """Raise ``UnsupportedFeatureError`` if ``source`` is a raw CD sector image that
+    cannot be read.
+
+    Mode 1 and Mode 2 Form 1 images are read by the built-in reader, through
+    ``cd_sectors.cooked_source``. A Form 2 image holds no filesystem, an unknown mode
+    or an image too short to show its sector size is not read, and a replacement
+    reader (named by ``replacement``) is handed no raw image at all: what it would get
+    is not an ISO 9660 image.
 
     Called by ``open_archive`` for a source resolved as ISO, before the backend's
     availability check, so the refusal does not depend on pycdlib being installed: a
     caller without it would otherwise be told to install it, only to be refused after.
     """
-    layout = _describe_raw_sector_image(source)
-    if layout is None:
+    layout = _raw_layout_of(source)
+    if layout is None or (layout.readable and replacement is None):
         return
-    if layout.startswith("Mode 2 Form 2"):
+    if layout.form2:
         what = (
             "Its sectors carry video or audio, not an ISO 9660 filesystem, so there is "
             "nothing here to list."
         )
+    elif layout.readable:
+        what = (
+            f"It is read by {replacement} (ArchiveyConfig.formats.replace), and a "
+            "replacement plugin is not handed raw sector images; convert it to a "
+            "plain .iso first (for example with bchunk or bin2iso)."
+        )
     else:
         what = (
-            "Reading raw sector images is not supported; convert it to a plain .iso "
-            "first (for example with bchunk or bin2iso, using the .cue sheet if there "
-            "is one)."
+            "Reading this layout is not supported; convert it to a plain .iso first "
+            "(for example with bchunk or bin2iso, using the .cue sheet if there is "
+            "one)."
         )
     raise UnsupportedFeatureError(
-        f"The file is a raw CD sector image ({layout}), not an ISO 9660 image. {what}",
+        f"The file is a raw CD sector image ({layout.describe()}), not an ISO 9660 "
+        f"image. {what}",
         source_format=format,
         archive_name=archive_name,
     )
@@ -2910,14 +2919,27 @@ class IsoHandler(IndexedFormatHandler):
     # internal/detection.py).
     magic = (
         Magic(32769, b"CD001"),
-        # A raw CD sector dump. Claimed as ISO so that open_archive can refuse it by
-        # name (see refuse_raw_sector_image) rather than fail detection.
-        Magic(0, _RAW_SECTOR_SYNC),
+        # A raw CD sector dump (a ``.bin``). Mode 1 and Mode 2 Form 1 are read through
+        # ``cooked_source``; other layouts are refused by name in open_archive (see
+        # refuse_raw_sector_image) rather than failing detection.
+        Magic(0, RAW_SECTOR_SYNC),
     )
     uses_encoding = True  # for Rock Ridge and plain names that are not valid UTF-8
 
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> IsoReader:
+        layout = raw_sector_layout(source.read_at(0, PROBE_SIZE))
+        if layout is not None:
+            if not layout.readable:
+                # open_archive refuses these first; this covers a caller that reaches
+                # the handler some other way.
+                raise UnsupportedFeatureError(
+                    f"The file is a raw CD sector image ({layout.describe()}) that "
+                    "cannot be read as an ISO 9660 image.",
+                    source_format=ArchiveFormat.ISO,
+                    archive_name=context.archive_name,
+                )
+            source = cooked_source(source, layout, context.archive_name)
         return IsoReader(source, context)
 
     @override

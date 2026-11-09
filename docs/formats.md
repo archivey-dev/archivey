@@ -1124,9 +1124,17 @@ other members because of a member's name any more. Setting it to `True` warns.
   hybrid installer image, whose EFI partition and GPT backup header sit after the ISO 9660 volume
   space, opens clean (7-Zip warns "There are data after the end of archive" on those images). A GPT
   damaged in transfer is not trusted, so the partition it lists is reported.
-- Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused with
-  `UnsupportedFeatureError` naming the sector layout. Convert one to a plain `.iso` first (for
-  example with `bchunk` or `bin2iso`).
+- **Raw CD sector images** (the `.bin` of a `.bin`/`.cue` pair, 2352-byte sectors, or 2448 with
+  subchannel data) open as ISO when their data is Mode 1 or Mode 2 Form 1: archivey strips each
+  sector to its 2048 bytes of user data as it reads, which gives the same bytes as the plain
+  `.iso`. Only the first track is read, so a mixed-mode disc (data, then audio) lists its data
+  track, and the audio after it is not reported as trailing data. Each sector's sync and mode are
+  checked when it is read; its EDC and ECC error-correction bytes are not. A sector that is not a
+  data sector (damage, or a Mode 2 Form 2 sector inside a file, as in Video CD and CD-XA files)
+  fails the member that reads it. The `.cue` sheet is not read: a disc whose filesystem is in a
+  later track or session is not found. A Mode 2 Form 2 image, which holds video or audio and no
+  filesystem, or an unknown sector mode, is refused with `UnsupportedFeatureError` naming the
+  layout.
 
 ## SquashFS
 
