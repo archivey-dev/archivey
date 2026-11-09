@@ -14,6 +14,7 @@ on:
       - "src/archivey/internal/streams/codecs/unix_compress_decoder.py"
       - "src/archivey/internal/streams/codecs/arm64_filter.py"
       - "src/archivey/internal/streams/codecs/riscv_filter.py"
+      - "src/archivey/internal/streams/codecs/bcj2_filter.py"
       - "src/archivey/internal/backends/zipcrypto.py"
       - ".github/workflows/native.yml"
   workflow_dispatch:
@@ -56,7 +57,7 @@ jobs:
           uv run --no-sync python -c "import archivey_native" &&
           uv run --no-sync pytest --no-cov -q -n auto
           tests/test_cab.py tests/test_lzo.py tests/test_lzop.py tests/test_squashfs.py
-          tests/test_sevenzip_arm64.py tests/test_sevenzip_riscv.py
+          tests/test_sevenzip_arm64.py tests/test_sevenzip_riscv.py tests/test_sevenzip_bcj2.py
           tests/test_zipcrypto_cipher.py tests/test_password.py tests/test_password_confirm.py
           tests/test_zip_multipassword.py tests/test_codecs.py tests/test_decode_prefix.py
           tests/test_seekable_streams.py tests/test_single_file.py

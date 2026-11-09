@@ -1,3 +1,4 @@
+# ruff: noqa: B023 - every lambda here runs at once, inside its loop iteration
 """Kernel-level timings: each Rust kernel against the Python decoder it replaces.
 
 Prints one row per kernel: input size, Python MB/s, Rust MB/s, speed-up.
@@ -32,7 +33,9 @@ def best(fn, repeat=3):
 
 def row(name, size, py, rs, extra=""):
     mb = size / 1e6
-    print(f"{name:34} {mb:7.1f} MB  py {mb / py:8.1f} MB/s  rust {mb / rs:8.1f} MB/s  x{py / rs:6.1f} {extra}")
+    print(
+        f"{name:34} {mb:7.1f} MB  py {mb / py:8.1f} MB/s  rust {mb / rs:8.1f} MB/s  x{py / rs:6.1f} {extra}"
+    )
 
 
 def corpus(size: int) -> bytes:
@@ -56,11 +59,20 @@ def main() -> None:
     # LZO1X, as SquashFS uses it: 128 KiB blocks.
     import lzo
 
-    blocks = [lzo.compress(text[i : i + 131072], 1, False) for i in range(0, len(text), 131072)]
+    blocks = [
+        lzo.compress(text[i : i + 131072], 1, False)
+        for i in range(0, len(text), 131072)
+    ]
     py = best(lambda: [lzo1x_decompress_python(b, 131072) for b in blocks], 1)
     rs = best(lambda: [n.lzo1x_decompress(b, 131072) for b in blocks])
     c = best(lambda: [lzo.decompress(b, False, 131072) for b in blocks])
-    row("LZO1X (128 KiB blocks)", len(text), py, rs, f"(python-lzo/liblzo2 {len(text) / 1e6 / c:.0f} MB/s)")
+    row(
+        "LZO1X (128 KiB blocks)",
+        len(text),
+        py,
+        rs,
+        f"(python-lzo/liblzo2 {len(text) / 1e6 / c:.0f} MB/s)",
+    )
 
     # ZipCrypto.
     data = text[: 8 << 20]
@@ -70,14 +82,24 @@ def main() -> None:
 
     # Branch filters on an executable and on text (few candidates).
     elf = Path(sys.executable).resolve().read_bytes()
-    lib = max(Path("/usr/lib/x86_64-linux-gnu").glob("libpython3*.so*"), key=lambda p: p.stat().st_size, default=None)
+    lib = max(
+        Path("/usr/lib/x86_64-linux-gnu").glob("libpython3*.so*"),
+        key=lambda p: p.stat().st_size,
+        default=None,
+    )
     exe = (elf + (lib.read_bytes() if lib else b""))[: 16 << 20]
-    hot = bytes(rng.choice(b"\x94\x95\x90\xb0") if rng.random() < 0.25 else rng.randrange(256) for _ in range(4 << 20))
+    hot = bytes(
+        rng.choice(b"\x94\x95\x90\xb0") if rng.random() < 0.25 else rng.randrange(256)
+        for _ in range(4 << 20)
+    )
     for label, buf in (("x86 binary", exe), ("dense candidates", hot), ("text", text)):
         py = best(lambda: arm64_decode(buf, 0), 2)
         rs = best(lambda: n.arm64_decode(buf, 0))
         row(f"ARM64 filter, {label}", len(buf), py, rs)
-    hot = bytes(rng.choice(b"\xef\x17\x97") if rng.random() < 0.25 else rng.randrange(256) for _ in range(4 << 20))
+    hot = bytes(
+        rng.choice(b"\xef\x17\x97") if rng.random() < 0.25 else rng.randrange(256)
+        for _ in range(4 << 20)
+    )
     for label, buf in (("x86 binary", exe), ("dense candidates", hot), ("text", text)):
         py = best(lambda: riscv_decode(buf, 0), 2)
         rs = best(lambda: n.riscv_decode(buf, 0))

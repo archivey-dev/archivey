@@ -244,3 +244,54 @@ def lzw_state(
         max_width=max_width, block_mode=block_mode, nine_bit_widens=nine_bit_widens
     )
     return _NativeLzw(native, state)
+
+
+# ── BCJ2 ───────────────────────────────────────────────────────────────────────────
+
+
+class NativeBcj2:
+    """archivey-native's BCJ2 decode loop for ``Bcj2DecoderStream``."""
+
+    __slots__ = ("_core", "_corrupt", "_truncated")
+
+    def __init__(self, native: ModuleType, core: Any) -> None:
+        self._core = core
+        self._corrupt = native.CorruptData
+        self._truncated = native.TruncatedData
+
+    def decode_block(self, left: int, pending: bytearray) -> int:
+        """Append the next block's output to ``pending``; return how many bytes. On an
+        error, what decoded before it is appended first, as the Python loop does."""
+        try:
+            data = self._core.decode_block(left)
+        except (self._truncated, self._corrupt) as exc:
+            partial = self._core.take_partial()
+            pending += partial
+            error = (
+                TruncatedError if isinstance(exc, self._truncated) else CorruptionError
+            )
+            raise _with_count(error(str(exc)), len(partial)) from None
+        pending += data
+        return len(data)
+
+    def check_inputs_finished(self) -> None:
+        try:
+            self._core.check_inputs_finished()
+        except self._corrupt as exc:
+            raise CorruptionError(str(exc)) from None
+
+
+def _with_count(exc: Exception, count: int) -> Exception:
+    setattr(exc, "decoded_before", count)  # noqa: B010 - an ad hoc attribute
+    return exc
+
+
+def bcj2_core(
+    reads: tuple[Callable[[int], bytes], ...],
+    excluded: frozenset[OptionalLibrary] = frozenset(),
+) -> NativeBcj2 | None:
+    """A native BCJ2 loop over the four streams' ``read`` methods, or ``None``."""
+    native = kernels(excluded)
+    if native is None:
+        return None
+    return NativeBcj2(native, native.Bcj2Core(*reads))

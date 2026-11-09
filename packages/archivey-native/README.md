@@ -11,6 +11,7 @@ message. Without it, archivey uses its Python decoders.
 | `LzwState` | Unix `compress` (`.Z`, `.tar.Z`) | `unix_compress_decoder.LzwState` |
 | `lzo1x_decompress` | `.lzo` files, LZO SquashFS images | `lzo_decoder.lzo1x_decompress_python` |
 | `ZipCryptoKeys` | ZIP members with traditional encryption | `zipcrypto.ZipCryptoKeys` |
+| `Bcj2Core` | 7z BCJ2 (four-stream x86 filter) | the loop of `bcj2_filter.Bcj2DecoderStream` |
 | `arm64_decode`, `riscv_decode` | 7z ARM64 and RISC-V branch filters | `arm64_filter`, `riscv_filter` |
 
 ## How archivey uses it

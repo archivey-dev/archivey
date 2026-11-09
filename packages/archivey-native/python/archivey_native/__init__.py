@@ -7,6 +7,7 @@ missing, too old or too new. Nothing here is public API.
 
 from archivey_native._native import (
     ABI_VERSION,
+    Bcj2Core,
     CorruptData,
     LzwState,
     LzxDecoder,
@@ -20,6 +21,7 @@ from archivey_native._native import (
 
 __all__ = [
     "ABI_VERSION",
+    "Bcj2Core",
     "CorruptData",
     "LzwState",
     "LzxDecoder",

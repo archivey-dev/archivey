@@ -5,6 +5,7 @@
 //! turns those into the exceptions the pure-Python decoders raise. Every entry point
 //! that loops over caller data releases the GIL.
 
+pub mod bcj2;
 pub mod error;
 pub mod filters;
 pub mod lzo;
@@ -138,6 +139,71 @@ impl LzxDecoder {
     }
 }
 
+struct PyStreams<'a, 'py> {
+    reads: &'a [Bound<'py, PyAny>; 4],
+}
+
+impl bcj2::Streams for PyStreams<'_, '_> {
+    type Error = PyErr;
+    fn read(&mut self, which: usize, n: usize) -> Result<Vec<u8>, PyErr> {
+        let data = self.reads[which].call1((n,))?;
+        if let Ok(b) = data.cast::<PyBytes>() {
+            return Ok(b.as_bytes().to_vec());
+        }
+        data.extract::<Vec<u8>>()
+    }
+}
+
+/// The BCJ2 decode loop. `reads` are the four streams' `read` methods: main, call,
+/// jump, rc. On an error, the bytes decoded before it wait in `take_partial()`.
+#[pyclass(module = "archivey_native._native")]
+struct Bcj2Core {
+    inner: bcj2::Bcj2,
+    reads: [Py<PyAny>; 4],
+    partial: Vec<u8>,
+}
+
+#[pymethods]
+impl Bcj2Core {
+    #[new]
+    fn new(main: Py<PyAny>, call: Py<PyAny>, jump: Py<PyAny>, rc: Py<PyAny>) -> Self {
+        Bcj2Core { inner: bcj2::Bcj2::new(), reads: [main, call, jump, rc], partial: Vec::new() }
+    }
+
+    fn decode_block<'py>(&mut self, py: Python<'py>, left: u64) -> PyResult<Bound<'py, PyBytes>> {
+        let reads = [
+            self.reads[0].bind(py).clone(),
+            self.reads[1].bind(py).clone(),
+            self.reads[2].bind(py).clone(),
+            self.reads[3].bind(py).clone(),
+        ];
+        let mut streams = PyStreams { reads: &reads };
+        let mut out = Vec::new();
+        match self.inner.decode_block(left, &mut out, &mut streams) {
+            Ok(()) => Ok(PyBytes::new(py, &out)),
+            Err(e) => {
+                self.partial = out;
+                Err(to_py(e))
+            }
+        }
+    }
+
+    fn take_partial<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &std::mem::take(&mut self.partial))
+    }
+
+    fn check_inputs_finished(&mut self, py: Python<'_>) -> PyResult<()> {
+        let reads = [
+            self.reads[0].bind(py).clone(),
+            self.reads[1].bind(py).clone(),
+            self.reads[2].bind(py).clone(),
+            self.reads[3].bind(py).clone(),
+        ];
+        let mut streams = PyStreams { reads: &reads };
+        self.inner.check_inputs_finished(&mut streams).map_err(to_py)
+    }
+}
+
 type LzwOut<'py> = (Bound<'py, PyBytes>, Vec<(i64, i64)>);
 
 #[pyclass(module = "archivey_native._native")]
@@ -190,5 +256,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ZipCryptoKeys>()?;
     m.add_class::<LzxDecoder>()?;
     m.add_class::<LzwState>()?;
+    m.add_class::<Bcj2Core>()?;
     Ok(())
 }

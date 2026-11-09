@@ -1,3 +1,4 @@
+# ruff: noqa: B023 - every lambda here runs at once, inside its loop iteration
 """Differential tests: every Rust kernel against the pure-Python decoder it replaces.
 
 Same input, same output bytes; on damage, the same error kind and the same message.
@@ -22,19 +23,19 @@ if os.environ.get("NATIVE_REQUIRED") == "1":
 else:
     archivey_native = pytest.importorskip("archivey_native")
 
-from archivey.exceptions import (  # noqa: E402
+from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.zipcrypto import ZipCryptoKeys  # noqa: E402
-from archivey.internal.streams.codecs.arm64_filter import arm64_decode  # noqa: E402
-from archivey.internal.streams.codecs.lzo_decoder import (  # noqa: E402
+from archivey.internal.backends.zipcrypto import ZipCryptoKeys
+from archivey.internal.streams.codecs.arm64_filter import arm64_decode
+from archivey.internal.streams.codecs.lzo_decoder import (
     LzoError,
     lzo1x_decompress_python,
 )
-from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder  # noqa: E402
-from archivey.internal.streams.codecs.riscv_filter import riscv_decode  # noqa: E402
+from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
+from archivey.internal.streams.codecs.riscv_filter import riscv_decode
 
 SEEDS = int(os.environ.get("NATIVE_PARITY_CASES", "300"))
 
@@ -246,7 +247,9 @@ def test_lzx_callback_error_passes_through() -> None:
 # ── Unix compress (.Z) LZW ─────────────────────────────────────────────────────────
 
 
-def pack_lzw(rng: random.Random, max_width: int, block_mode: bool, widen9: bool, n: int) -> bytes:
+def pack_lzw(
+    rng: random.Random, max_width: int, block_mode: bool, widen9: bool, n: int
+) -> bytes:
     """A .Z stream of ``n`` random codes that a decoder can follow: valid codes, with
     CLEARs, width increases and the writer's group padding. Not compressed data."""
     out = bytearray([0x1F, 0x9D, (0x80 if block_mode else 0) | max_width])
@@ -279,7 +282,13 @@ def pack_lzw(rng: random.Random, max_width: int, block_mode: bool, widen9: bool,
         if prev is None:
             code = rng.randrange(256)
         else:
-            code = rng.randrange(min(next_code + 1, 1 << width, 512 if width == 10 and max_width == 9 else 1 << 16))
+            code = rng.randrange(
+                min(
+                    next_code + 1,
+                    1 << width,
+                    512 if width == 10 and max_width == 9 else 1 << 16,
+                )
+            )
             if block_mode and code == 256:
                 code = 255
         era.append(code)
@@ -331,8 +340,9 @@ def test_lzw_parity() -> None:
         rng = random.Random(7)
         cases = []
         try:
-            import ncompress
             import io
+
+            import ncompress
 
             for _ in range(20):
                 raw = sample_data(rng, rng.randint(0, 300_000))
@@ -368,3 +378,51 @@ def test_lzw_parity() -> None:
                 py = lzw_run(LzwState, d, random.Random(seed), kwargs)
                 rs = lzw_run(archivey_native.LzwState, d, random.Random(seed), kwargs)
                 assert py == rs, (case, variant)
+
+
+# ── BCJ2 ───────────────────────────────────────────────────────────────────────────
+
+
+def bcj2_run(
+    streams: tuple[bytes, bytes, bytes, bytes], size: int, native: str, seed: float
+):
+    import io
+
+    from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
+
+    os.environ["ARCHIVEY_NATIVE"] = native
+    rng = random.Random(seed)
+    log: list[object] = []
+    try:
+        stream = Bcj2DecoderStream(*(io.BytesIO(s) for s in streams), unpack_size=size)
+        for _ in range(12):
+            if rng.random() < 0.2:
+                log.append(outcome(lambda: stream.seek(rng.randrange(size + 2))))
+            got = outcome(lambda: stream.read(rng.choice((1, 7, 4096, 70_000, -1))))
+            log.append((got, outcome(stream.tell)))
+    finally:
+        os.environ.pop("ARCHIVEY_NATIVE", None)
+    return log
+
+
+def test_bcj2_parity() -> None:
+    rng = random.Random(8)
+    for case in range(max(20, SEEDS // 5)):
+        size = rng.randint(0, 200_000)
+        main = bytes(
+            rng.choice(b"\xe8\xe9\x0f\x85\x80")
+            if rng.random() < 0.2
+            else rng.randrange(256)
+            for _ in range(size)
+        )
+        call = rng.randbytes(rng.randint(0, 4000) * 4 + rng.choice((0, 0, 1, 3)))
+        jump = rng.randbytes(rng.randint(0, 4000) * 4)
+        rc = b"\0" + rng.randbytes(rng.randint(0, 20_000))
+        if case % 4 == 0:
+            rc = rng.randbytes(rng.randint(0, 6))
+        out_size = rng.choice((size, size + 1000, max(0, size - 50), size * 2))
+        seed = rng.random()
+        streams = (main, call, jump, rc)
+        assert bcj2_run(streams, out_size, "0", seed) == bcj2_run(
+            streams, out_size, "1", seed
+        ), case

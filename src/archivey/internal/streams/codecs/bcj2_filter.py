@@ -200,6 +200,10 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         self._produced = 0
         self._left = self._size
         self._pending = bytearray()
+        from archivey.internal import native
+
+        # archivey-native's loop when it may be used; it holds the decode state then.
+        self._native = native.bcj2_core(tuple(s.read for s in self._inputs))
         self._probs = [_PROB_INIT] * 258
         self._prev = 0
         self._range = 0xFFFFFFFF
@@ -227,6 +231,17 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
 
     def _decode_block(self) -> None:
         """Decode to the end of the current ``main`` block, or to the end of the output."""
+        if self._native is not None:
+            got = 0
+            try:
+                got = self._native.decode_block(self._left, self._pending)
+            except (TruncatedError, CorruptionError) as exc:
+                got = getattr(exc, "decoded_before", 0)
+                raise
+            finally:
+                self._produced += got
+                self._left -= got
+            return
         if self._code is None:
             code = 0
             for _ in range(5):
@@ -339,6 +354,9 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         extraction limits count. ``rc`` is not checked: older encoders' tails are
         unmeasured (design D5, open question 1).
         """
+        if self._native is not None:
+            self._native.check_inputs_finished()
+            return
         if self._mpos < len(self._main) or self._main_stream.read(1):
             raise CorruptionError(
                 "BCJ2 main stream has bytes past the end of the output"
