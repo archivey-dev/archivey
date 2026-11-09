@@ -63,8 +63,9 @@ extract (ADR 0019).
 
 `ArchiveReader.extract_all()` SHALL accept `limits: ExtractionLimits | None`. Per-call
 `limits` takes precedence over the reader's `config.extraction_limits`, then the
-library default. `ExtractionLimits.UNLIMITED` disables byte, ratio,
-archive-wide ratio/live-ratio, and entry-count guards. Policy, overwrite,
+library default. `ExtractionLimits.UNLIMITED` disables the byte and entry-count
+guards. The ratio guards (per-member, archive-wide and live) take their fields from
+the reader's `config.decoder_limits`, which no per-call argument changes. Policy, overwrite,
 `on_error`, progress, and member-selection/filter arguments remain operational
 arguments outside config.
 
@@ -78,7 +79,8 @@ tuple on success; there is no no-tracking mode.
 | `extract_all(limits=...)` on an existing reader | Limits apply to this extraction; the report holds only this call's own diagnostics, from the existing collector |
 | `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_extracted_bytes=10 * 2**30)))` then `extract_all(dest)` | Cumulative byte limit is 10 GiB |
 | Reader config has limits, call passes `limits=ExtractionLimits(max_extracted_bytes=50 * 2**20)` | 50 MiB governs this run; later calls without `limits` revert to reader config |
-| `limits=ExtractionLimits.UNLIMITED` | Archives that would trip default guards complete without bomb-guard error |
+| `limits=ExtractionLimits.UNLIMITED` | Archives that would trip only the byte or entry guards complete; the ratio guards still apply |
+| `ExtractionLimits.UNLIMITED` and `DecoderLimits(max_ratio=None)` in the reader's config | Archives that would trip default guards complete without bomb-guard error |
 | Reader opened with custom config and `extract_all(dest)` | Reader config, including extraction limits, governs the run |
 
 ### Requirement: Non-Bypassable Universal Path-Safety Constraints
@@ -988,7 +990,6 @@ turns it off.
 | Archive of many members under 5 MiB each, together past the ratio of the archive's size | The read that crosses the archive-wide ratio raises the always-stop error |
 | The same member read twice | Counted once toward the archive-wide total |
 | `DecoderLimits(max_ratio=None)` in the reader's config | Reads, lists and extracts unchanged |
-| Deprecated `extract_all(limits=ExtractionLimits(max_ratio=None))` | Extracts; reads of the same reader stay held |
 
 ### Requirement: Progress Reporting via on_progress Callback
 
@@ -1487,12 +1488,8 @@ does not count again. Reads and forward seeks, a seek to the end included, reach
 decoder in steps of at most 1 MiB, so the decode stops within a step of the limit. A
 decoder error after a read already returned bytes in the same call is held for the
 next read, so the prefix of a cut stream is kept; a seek, even a refused one, drops
-it. `max_ratio=None` turns it off. An `extract_all` call's own decodes SHALL be held to the
-ratio fields that call applies instead, so `ExtractionLimits.UNLIMITED` or a deprecated
-ratio field passed in `limits=` lifts or tightens it for that call alone, as for a
-ZIP. A read after the call, or from the caller's own code the call runs (`filter`,
-a `members=` predicate, `on_progress`), SHALL still be held to the reader's limits,
-though the call decoded past them.
+it. `max_ratio=None` turns it off. An `extract_all` call's decodes SHALL be held to the
+same reader limits: `limits=` holds no ratio field, so no call lifts or tightens it.
 
 #### Scenario: compressed container decode matrix
 
@@ -1502,9 +1499,8 @@ though the call decoded past them.
 | The same archive from a pipe | Refused once 256 MiB are decoded (the live floor) |
 | The same archive with `DecoderLimits(max_ratio=None)` | Lists, as before |
 | A `.tar.gz` under the ratio | Lists, reads and extracts unchanged |
-| A `.tar.gz` of 24 MiB of zeros, `extract_all(limits=ExtractionLimits.UNLIMITED)` | Extracts, from a seekable source and in streaming mode |
-| The same, with a deprecated `ExtractionLimits(max_ratio=1e9)` in `limits=`, then `read()` | Extracts; the read raises `ResourceLimitError` |
-| The same `.tar.gz` or a ZIP of it under `UNLIMITED`, with an `on_progress`, `filter` or `members=` callback that calls `read()` | The callback's read raises `ResourceLimitError` |
+| A `.tar.gz` of 4 MiB of zeros, `DecoderLimits(max_ratio=10)` in the reader's config, `extract_all()` | `ResourceLimitError`, from a seekable source and in streaming mode |
+| The same with `DecoderLimits(max_ratio=None)` | Extracts, from a seekable source and in streaming mode |
 
 ### Requirement: Enforce Maximum Entry Count
 

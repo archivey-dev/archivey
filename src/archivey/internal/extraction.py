@@ -51,7 +51,6 @@ from archivey.internal.birth_time import set_birth_time
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     BombTracker,
-    ratio_limits,
 )
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.dry_run import DryRun, scratch_for
@@ -742,11 +741,8 @@ class ExtractionCoordinator:
         self._selector = selector
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
-        # The ratio fields this extraction applies (``ratio_limits``): the reader's
-        # ``DecoderLimits``, or what a deprecated ``ExtractionLimits`` field sets.
-        self._ratio = ratio_limits(
-            ratio if ratio is not None else DecoderLimits(), self._limits
-        )
+        # The ratio fields this extraction applies: the reader's ``DecoderLimits``.
+        self._ratio = ratio if ratio is not None else DecoderLimits()
         # Built by each ``run()``. A test that drives a helper directly installs its
         # own.
         self._state: _RunState
@@ -870,11 +866,6 @@ class ExtractionCoordinator:
         _plain_os_error(exc)
         if self._dry is not None:
             self._dry.rebase_os_error(exc)
-
-    @property
-    def ratio(self) -> DecoderLimits:
-        """The ratio fields this extraction applies."""
-        return self._ratio
 
     def _rebase_resolved_os_error(self, exc: OSError) -> None:
         """``_rebase_os_error`` for an error that names a path built from

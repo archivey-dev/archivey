@@ -30,6 +30,8 @@ import pytest
 
 from archivey import (
     AbortOn,
+    ArchiveyConfig,
+    DecoderLimits,
     ExtractionLimits,
     ExtractionPolicy,
     ExtractionStatus,
@@ -523,17 +525,18 @@ def test_live_ratio_default_floor() -> None:
     # The default live floor sits between the ordinary floor and the byte cap, so the
     # live ratio is reachable under default limits and judges a pipe before the cap.
     d = ExtractionLimits()
+    r = DecoderLimits()
     assert (
-        d.ratio_activation_threshold
-        <= d.live_ratio_activation_threshold
+        r.ratio_activation_threshold
+        <= r.live_ratio_activation_threshold
         < d.max_extracted_bytes
     )
-    floor = d.live_ratio_activation_threshold
+    floor = r.live_ratio_activation_threshold
     for output, trips in [(floor, False), (floor + 1, True)]:
         t = BombTracker(
             d.max_extracted_bytes,
-            d.max_ratio,
-            d.ratio_activation_threshold,
+            r.max_ratio,
+            r.ratio_activation_threshold,
             d.max_entries,
             source=SimpleNamespace(
                 compressed_source_size=None, compressed_bytes_consumed=1024
@@ -548,12 +551,12 @@ def test_live_ratio_default_floor() -> None:
             t.count(output)
 
 
-def test_extraction_limits_positional_order_is_stable() -> None:
-    # The live floor was added after ``max_entries``, so a caller passing the first
-    # four fields positionally still sets ``max_entries``.
-    limits = ExtractionLimits(2 * 2**30, 1000.0, 5 * 2**20, 1000)
+def test_extraction_limits_holds_no_ratio_field() -> None:
+    # The ratio fields left ExtractionLimits in 0.4.0: DecoderLimits holds them.
+    limits = ExtractionLimits(2 * 2**30, 1000)
     assert limits.max_entries == 1000
-    assert limits.live_ratio_activation_threshold == 256 * 2**20
+    with pytest.raises(TypeError):
+        ExtractionLimits(max_ratio=10.0)  # type: ignore[call-arg]
 
 
 def test_ratio_skipped_when_denominators_unknown() -> None:
@@ -1559,7 +1562,11 @@ def test_zip_bomb_per_member_ratio(tmp_path: Path) -> None:
         open_and_extract(
             src,
             dest,
-            limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024),
+            config=ArchiveyConfig(
+                decoder_limits=DecoderLimits(
+                    max_ratio=10.0, ratio_activation_threshold=1024
+                )
+            ),
         )
 
 
@@ -1570,7 +1577,9 @@ def _zero_zip(tmp_path: Path) -> Path:
     return src
 
 
-_TIGHT_RATIO = ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024)
+_TIGHT_RATIO = ArchiveyConfig(
+    decoder_limits=DecoderLimits(max_ratio=10.0, ratio_activation_threshold=1024)
+)
 
 
 def test_zip_bomb_member_is_refused_before_any_byte_is_written(tmp_path: Path) -> None:
@@ -1581,7 +1590,7 @@ def test_zip_bomb_member_is_refused_before_any_byte_is_written(tmp_path: Path) -
     report = open_and_extract(
         _zero_zip(tmp_path),
         dest,
-        limits=_TIGHT_RATIO,
+        config=_TIGHT_RATIO,
         on_error=OnError.CONTINUE,
         on_progress=lambda p: written.append(p.bytes_written),
     )
@@ -1596,6 +1605,15 @@ def test_zip_bomb_member_is_refused_before_any_byte_is_written(tmp_path: Path) -
 
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
+
+# A tight ratio with a low live floor, so a pipe's live ratio judges early.
+_LIVE_RATIO = ArchiveyConfig(
+    decoder_limits=DecoderLimits(
+        max_ratio=10.0,
+        ratio_activation_threshold=1024,
+        live_ratio_activation_threshold=1024,
+    )
+)
 
 
 def _bomb_7z(tmp_path: Path) -> tuple[Path, str, str]:
@@ -1631,7 +1649,7 @@ def test_7z_and_rar_bomb_members_are_refused_before_any_byte_is_written(
     report = open_and_extract(
         src,
         tmp_path / "out",
-        limits=_TIGHT_RATIO,
+        config=_TIGHT_RATIO,
         on_error=OnError.CONTINUE,
         on_progress=lambda p: written.append(p.bytes_written),
     )
@@ -1652,7 +1670,11 @@ def test_orphan_hardlink_source_is_refused_from_its_recorded_size(
             _RAR_FIXTURES / "hardlinks_solid__.rar",
             dest,
             members=["hardlink_to_file2.txt"],
-            limits=ExtractionLimits(max_ratio=1.0, ratio_activation_threshold=1),
+            config=ArchiveyConfig(
+                decoder_limits=DecoderLimits(
+                    max_ratio=1.0, ratio_activation_threshold=1
+                )
+            ),
         )
     assert not (dest / "hardlink_to_file2.txt").exists()
 
@@ -1660,7 +1682,7 @@ def test_orphan_hardlink_source_is_refused_from_its_recorded_size(
 def test_recorded_size_check_runs_on_a_dry_run(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     with pytest.raises(ResourceLimitError, match="from recorded sizes"):
-        open_and_extract(_zero_zip(tmp_path), dest, limits=_TIGHT_RATIO, dry_run=True)
+        open_and_extract(_zero_zip(tmp_path), dest, config=_TIGHT_RATIO, dry_run=True)
     assert not dest.exists()
 
 
@@ -1671,13 +1693,13 @@ def test_recorded_size_check_skips_members_the_run_does_not_decode(
     # file is never decoded, so neither check refuses it.
     src = _zero_zip(tmp_path)
     report = open_and_extract(
-        src, tmp_path / "a", limits=_TIGHT_RATIO, members=["small.txt"]
+        src, tmp_path / "a", config=_TIGHT_RATIO, members=["small.txt"]
     )
     assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED]
     report = open_and_extract(
         src,
         tmp_path / "b",
-        limits=_TIGHT_RATIO,
+        config=_TIGHT_RATIO,
         filter=lambda m: None if m.name == "bomb.bin" else m,
     )
     assert [r.member.name for r in report.results] == ["small.txt"]
@@ -1685,7 +1707,7 @@ def test_recorded_size_check_skips_members_the_run_does_not_decode(
     dest.mkdir()
     (dest / "bomb.bin").write_bytes(b"kept")
     report = open_and_extract(
-        src, dest, limits=_TIGHT_RATIO, overwrite=OverwritePolicy.SKIP
+        src, dest, config=_TIGHT_RATIO, overwrite=OverwritePolicy.SKIP
     )
     assert {r.member.name: r.status for r in report.results} == {
         "small.txt": ExtractionStatus.EXTRACTED,
@@ -1718,7 +1740,9 @@ def test_forged_recorded_size_fails_only_its_member(tmp_path: Path) -> None:
     report = open_and_extract(
         src,
         dest,
-        limits=ExtractionLimits(max_ratio=1.2, ratio_activation_threshold=1024),
+        config=ArchiveyConfig(
+            decoder_limits=DecoderLimits(max_ratio=1.2, ratio_activation_threshold=1024)
+        ),
         on_error=OnError.CONTINUE,
     )
     statuses = {r.member.name: r.status for r in report.results}
@@ -2581,7 +2605,11 @@ def test_seekable_targz_archive_wide_ratio(tmp_path: Path) -> None:
         open_and_extract(
             src,
             dest,
-            limits=ExtractionLimits(max_ratio=5.0, ratio_activation_threshold=1024),
+            config=ArchiveyConfig(
+                decoder_limits=DecoderLimits(
+                    max_ratio=5.0, ratio_activation_threshold=1024
+                )
+            ),
         )
 
 
@@ -2773,18 +2801,13 @@ def test_streaming_targz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
     # only the live ratio (and the absolute cap, set high) can catch it.
     raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
     dest = tmp_path / "out"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+    with open_archive(NonSeekableBytesIO(raw), streaming=True, config=_LIVE_RATIO) as r:
         assert r.compressed_source_size is None  # no static archive-wide denominator
         with pytest.raises(ResourceLimitError):
             r.extract_all(
                 dest,
-                limits=ExtractionLimits(
-                    max_ratio=10.0,
-                    ratio_activation_threshold=1024,
-                    live_ratio_activation_threshold=1024,
-                    max_extracted_bytes=100
-                    * 2**20,  # high, so the cap is not what trips
-                ),
+                # High, so the cap is not what trips.
+                limits=ExtractionLimits(max_extracted_bytes=100 * 2**20),
             )
 
 
@@ -2794,17 +2817,12 @@ def test_streaming_live_ratio_halts_under_continue(tmp_path: Path) -> None:
     raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
     dest = tmp_path / "out"
     with (
-        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        open_archive(NonSeekableBytesIO(raw), streaming=True, config=_LIVE_RATIO) as r,
         pytest.raises(ResourceLimitError),
     ):
         r.extract_all(
             dest,
-            limits=ExtractionLimits(
-                max_ratio=10.0,
-                ratio_activation_threshold=1024,
-                live_ratio_activation_threshold=1024,
-                max_extracted_bytes=100 * 2**20,
-            ),
+            limits=ExtractionLimits(max_extracted_bytes=100 * 2**20),
             on_error=OnError.CONTINUE,  # global guard halts anyway
         )
 
@@ -2815,13 +2833,13 @@ def test_streaming_plain_tar_no_live_ratio_trip(tmp_path: Path) -> None:
     payload = os.urandom(2 * 1024 * 1024)  # incompressible; plain (uncompressed) tar
     raw = _tar_bytes([("file", "a.bin", payload)], mode="w")
     dest = tmp_path / "out"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_ratio=10.0, ratio_activation_threshold=1024)
+    )
+    with open_archive(NonSeekableBytesIO(raw), streaming=True, config=config) as r:
         # Uncompressed: the live denominator is what the pipe gave, so the output
         # stays near 1:1 of it and the ratio never trips.
-        r.extract_all(
-            dest,
-            limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024),
-        )
+        r.extract_all(dest)
         assert r.compressed_bytes_consumed == len(raw)
     assert (dest / "a.bin").read_bytes() == payload
 
@@ -2843,20 +2861,14 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
 
     raw = gzip.compress(b"\x00" * (8 * 1024 * 1024))
     dest = tmp_path / "out"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+    with open_archive(NonSeekableBytesIO(raw), streaming=True, config=_LIVE_RATIO) as r:
         assert r.compressed_source_size is None
         assert (
             r.compressed_bytes_consumed is not None
         )  # counter wired for single-file too
         with pytest.raises(ResourceLimitError):
             r.extract_all(
-                dest,
-                limits=ExtractionLimits(
-                    max_ratio=10.0,
-                    ratio_activation_threshold=1024,
-                    live_ratio_activation_threshold=1024,
-                    max_extracted_bytes=100 * 2**20,
-                ),
+                dest, limits=ExtractionLimits(max_extracted_bytes=100 * 2**20)
             )
 
 
@@ -2874,13 +2886,11 @@ def test_pipe_size_claim_does_not_switch_off_live_ratio(
         raw = gzip.compress(payload)
     else:
         raw = _tar_bytes([("file", "z.bin", payload)], mode="w:gz")
-    limits = ExtractionLimits(
-        max_ratio=10.0,
-        ratio_activation_threshold=1024,
-        live_ratio_activation_threshold=1024,
-        max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
-    )
-    with open_archive(SizedNonSeekable(raw, size=10**9), streaming=True) as r:
+    # High, so the cap is not what trips.
+    limits = ExtractionLimits(max_extracted_bytes=100 * 2**20)
+    with open_archive(
+        SizedNonSeekable(raw, size=10**9), streaming=True, config=_LIVE_RATIO
+    ) as r:
         assert r.compressed_source_size is None
         assert r.compressed_bytes_consumed is not None
         with pytest.raises(ResourceLimitError, match="Live decompression ratio"):
@@ -2897,7 +2907,7 @@ def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
 
     payload = b"\x00" * (16 * 2**20) + os.urandom(2**20)
     raw = _tar_bytes([("file", "img.bin", payload)], mode="w:gz")
-    limits = ExtractionLimits(
+    limits = DecoderLimits(
         max_ratio=100.0,
         ratio_activation_threshold=1024,
         # Over the blank start, under the whole output: the pipe leg crosses the live
@@ -2908,20 +2918,21 @@ def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
         ("file", io.BytesIO(raw)),
         ("pipe", NonSeekableBytesIO(raw)),
     ]:
-        with open_archive(src, streaming=True) as r:
-            r.extract_all(tmp_path / name, limits=limits)
+        config = ArchiveyConfig(decoder_limits=limits)
+        with open_archive(src, streaming=True, config=config) as r:
+            r.extract_all(tmp_path / name)
         assert (tmp_path / name / "img.bin").read_bytes() == payload
 
     # A live floor under the blank start judges it before the data arrives: this is the
     # trade-off the floor sets, and what the old behaviour did at 5 MiB.
+    low = ArchiveyConfig(
+        decoder_limits=replace(limits, live_ratio_activation_threshold=1024)
+    )
     with (
-        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        open_archive(NonSeekableBytesIO(raw), streaming=True, config=low) as r,
         pytest.raises(ResourceLimitError, match="Live decompression ratio"),
     ):
-        r.extract_all(
-            tmp_path / "low",
-            limits=replace(limits, live_ratio_activation_threshold=1024),
-        )
+        r.extract_all(tmp_path / "low")
 
 
 def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> None:
@@ -2973,13 +2984,14 @@ def test_forged_member_declaration_is_refused_only_after_the_decode(
     struct.pack_into("<I", raw, cd + 24, forged)  # central directory: same field
     outer = tmp_path / "outer.zip"
     outer.write_bytes(bytes(raw))
-    limits = ExtractionLimits(
-        max_ratio=10.0, ratio_activation_threshold=1024, max_extracted_bytes=100 * 2**20
+    limits = ExtractionLimits(max_extracted_bytes=100 * 2**20)
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_ratio=10.0, ratio_activation_threshold=1024)
     )
     out = tmp_path / "out"
     with open_archive(outer) as outer_ar, outer_ar.open("inner.gz") as member_stream:
         assert not member_stream.seekable()
-        with open_archive(member_stream, streaming=True) as inner_ar:
+        with open_archive(member_stream, streaming=True, config=config) as inner_ar:
             assert inner_ar.compressed_source_size == forged
             assert inner_ar.compressed_bytes_consumed is None
             with pytest.raises(TruncatedError):
@@ -3957,7 +3969,7 @@ def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> No
 
     raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
     dest = tmp_path / "out"
-    with open_archive(CountingBytesIO(raw)) as r:
+    with open_archive(CountingBytesIO(raw), config=_LIVE_RATIO) as r:
         assert r.compressed_source_size is None  # opaque: no static denominator...
         assert (
             r.compressed_bytes_consumed is not None
@@ -3965,13 +3977,8 @@ def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> No
         with pytest.raises(ResourceLimitError):
             r.extract_all(
                 dest,
-                limits=ExtractionLimits(
-                    max_ratio=10.0,
-                    ratio_activation_threshold=1024,
-                    live_ratio_activation_threshold=1024,
-                    max_extracted_bytes=100
-                    * 2**20,  # high, so the cap is not what trips
-                ),
+                # High, so the cap is not what trips.
+                limits=ExtractionLimits(max_extracted_bytes=100 * 2**20),
             )
 
 

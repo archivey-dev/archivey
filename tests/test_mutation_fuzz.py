@@ -107,9 +107,7 @@ _FUZZ_KIND = os.environ.get("ARCHIVEY_FUZZ_KIND")
 
 # Cap what we pull from any (possibly lying) member stream, and keep extraction cheap.
 _READ_CAP = 1 << 20
-_FUZZ_LIMITS = ExtractionLimits(
-    max_extracted_bytes=8 << 20, max_ratio=1000.0, max_entries=10_000
-)
+_FUZZ_LIMITS = ExtractionLimits(max_extracted_bytes=8 << 20, max_entries=10_000)
 
 # Force the deterministic zero-dep codec path (see module docstring): the accelerators are
 # third-party C++ and can hang on crafted input, which is out of scope for this layer.

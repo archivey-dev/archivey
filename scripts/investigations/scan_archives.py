@@ -156,8 +156,8 @@ def _scan_config(default_limits: bool) -> ArchiveyConfig:
 _LIMITS: tuple[tuple[str, str, float | None], ...] = (
     ("bytes_written", "max_extracted_bytes", ExtractionLimits().max_extracted_bytes),
     ("entries_written", "max_entries", ExtractionLimits().max_entries),
-    ("archive_ratio", "max_ratio", ExtractionLimits().max_ratio),
-    ("max_member_ratio", "max_ratio", ExtractionLimits().max_ratio),
+    ("archive_ratio", "max_ratio", DecoderLimits().max_ratio),
+    ("max_member_ratio", "max_ratio", DecoderLimits().max_ratio),
     ("members", "max_members", ListingLimits().max_members),
     ("metadata_bytes", "max_metadata_bytes", ListingLimits().max_metadata_bytes),
     ("decoder_memory", "max_decoder_memory", DecoderLimits().max_decoder_memory),
@@ -499,7 +499,7 @@ def _read_report(
 
     # ``max_ratio`` only looks at output past ``ratio_activation_threshold``, so the
     # ratio columns follow the same rule and compare with the limit.
-    floor = config.extraction_limits.ratio_activation_threshold
+    floor = config.decoder_limits.ratio_activation_threshold
     archive_ratio = _ratio(written, row.file_size)
     if written > floor and archive_ratio is not None:
         row.numbers["archive_ratio"] = archive_ratio

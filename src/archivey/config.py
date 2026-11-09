@@ -234,50 +234,18 @@ INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE: int = 1024 * 1024
 REWIND_REDECODE_WARN_BYTES: int = 1 * 1024 * 1024
 
 
-class _InheritedFloat(float):
-    """The default of a deprecated ``ExtractionLimits`` ratio field: not set, so
-    :class:`DecoderLimits` decides. A ``float`` of the default value, so it reads as
-    one; told apart by type."""
-
-    __slots__ = ()
-
-
-class _InheritedInt(int):
-    """:class:`_InheritedFloat` for the integer ratio fields."""
-
-    __slots__ = ()
-
-
-def ratio_field_is_set(value: object) -> bool:
-    """Whether a deprecated ``ExtractionLimits`` ratio field was given a value."""
-    return not isinstance(value, (_InheritedFloat, _InheritedInt))
-
-
-_DEPRECATED_RATIO_FIELDS = (
-    "max_ratio",
-    "ratio_activation_threshold",
-    "live_ratio_activation_threshold",
-)
-
-
 @dataclass(frozen=True)
 class ExtractionLimits:
     """Decompression-bomb limits for extraction.
 
     Applied by :meth:`~archivey.ForwardArchiveReader.extract_all`.
 
-    ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the guard
-    fields to ``None``.
+    ``None`` on a field disables that guard. :attr:`UNLIMITED` sets every field to
+    ``None``.
 
-    The ratio fields (:attr:`max_ratio`, :attr:`ratio_activation_threshold`,
-    :attr:`live_ratio_activation_threshold`) are deprecated: the ratio holds every
-    decode, reads and listing included, so it lives on :class:`DecoderLimits`. A ratio
-    field set here still overrides the :class:`DecoderLimits` one, with a
-    ``DeprecationWarning``: in :attr:`ArchiveyConfig.extraction_limits` for every
-    decode of the reader, and in ``extract_all(limits=...)`` for that extraction.
-    Left unset, they read as the :class:`DecoderLimits` defaults. :attr:`UNLIMITED`
-    still turns the ratio off for the extraction it is passed to, until these fields
-    go.
+    The decompression ratio is not here: it holds every decode, reads and listing
+    included, so it is :attr:`DecoderLimits.max_ratio`. Its fields left this class in
+    0.4.0.
     """
 
     max_extracted_bytes: int | None = 2 * 2**30
@@ -289,17 +257,6 @@ class ExtractionLimits:
     the one guard that bounds a cross-device copy.
     Crossing it stops the whole extraction, even under ``on_error="continue"``.
     """
-
-    max_ratio: float | None = _InheritedFloat(800.0)
-    """Deprecated: use :attr:`DecoderLimits.max_ratio`, which holds reads too.
-
-    Set here, it overrides that field: in :attr:`ArchiveyConfig.extraction_limits` for
-    the reader, in ``extract_all(limits=...)`` for that extraction only.
-    """
-
-    ratio_activation_threshold: int = _InheritedInt(5 * 2**20)
-    """Deprecated: use :attr:`DecoderLimits.ratio_activation_threshold`. Set here, it
-    overrides that field as :attr:`max_ratio` does."""
 
     max_entries: int | None = 262_144
     """Most entries one extraction may create: files, directories and links.
@@ -313,40 +270,15 @@ class ExtractionLimits:
     quadratic in its size.
     """
 
-    live_ratio_activation_threshold: int = _InheritedInt(256 * 2**20)
-    """Deprecated: use :attr:`DecoderLimits.live_ratio_activation_threshold`. Set
-    here, it overrides that field as :attr:`max_ratio` does."""
-
     UNLIMITED: ClassVar[ExtractionLimits]
 
     def __post_init__(self) -> None:
         # allow_none and allow_float come from the field annotations.
         check_limit_fields(self, cls="ExtractionLimits")
-        set_fields = [
-            name
-            for name in _DEPRECATED_RATIO_FIELDS
-            if ratio_field_is_set(getattr(self, name))
-        ]
-        # ``max_ratio=None`` alone is what ``UNLIMITED`` holds, and a copy of it made
-        # with ``dataclasses.replace`` passes the value on as if the caller had set
-        # it. It stays silent, so ``replace(UNLIMITED, max_entries=...)`` does not
-        # warn about a field the caller never wrote; written by hand, it still works.
-        if set_fields and not (set_fields == ["max_ratio"] and self.max_ratio is None):
-            warnings.warn(
-                "The ratio fields of ExtractionLimits (max_ratio, "
-                "ratio_activation_threshold, live_ratio_activation_threshold) are "
-                "deprecated and will be removed in a future release; set them on "
-                "DecoderLimits, which holds reads and listing as well as extraction.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
 
 
-# ``UNLIMITED`` keeps turning the ratio off for an extraction until the deprecated
-# fields go.
 ExtractionLimits.UNLIMITED = ExtractionLimits(
     max_extracted_bytes=None,
-    max_ratio=None,
     max_entries=None,
 )
 

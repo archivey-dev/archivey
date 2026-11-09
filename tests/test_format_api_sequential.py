@@ -36,7 +36,6 @@ from archivey import (
     ArchiveyUsageError,
     CorruptionError,
     DecoderLimits,
-    ExtractionLimits,
     MemberType,
     PluginContainer,
     PluginStream,
@@ -1477,19 +1476,19 @@ def test_decompress_part_way_ratio_guard(
         + gzip.compress(build_toys(entries[2:]), mtime=0)
     )
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(
+            max_ratio=100.0,
+            ratio_activation_threshold=1 << 20,
+            # A pipe has no size: the live guard, on compressed bytes counted.
+            live_ratio_activation_threshold=1 << 20,
+        )
+    )
     with (
-        open_archive(source, streaming=pipe, format=rpmish) as reader,
+        open_archive(source, streaming=pipe, format=rpmish, config=config) as reader,
         pytest.raises(ResourceLimitError, match="ratio"),
     ):
-        reader.extract_all(
-            tmp_path / "out",
-            limits=ExtractionLimits(
-                max_ratio=100.0,
-                ratio_activation_threshold=1 << 20,
-                # A pipe has no size: the live guard, on compressed bytes counted.
-                live_ratio_activation_threshold=1 << 20,
-            ),
-        )
+        reader.extract_all(tmp_path / "out")
 
 
 # Small floors, so a few MiB of zeros break the default ratio of 800:1 on a file

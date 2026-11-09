@@ -25,7 +25,7 @@ from archivey import (
     ArchiveyUsageError,
     CompressionAlgorithm,
     CompressionMethod,
-    ExtractionLimits,
+    DecoderLimits,
     ListingLimits,
     MemberType,
     open_archive,
@@ -988,7 +988,7 @@ def test_sparse_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> N
 def test_sparse_member_extracts_dense_and_counts_toward_ratio(tmp_path: Path) -> None:
     # docs/formats.md promises both halves: the holes are written as zeros, and those
     # zeros count as output for the archive-wide ratio limit. 10 MiB of logical data in
-    # a 2 KiB tar is far past the default max_ratio of 1000, and past the 5 MiB
+    # a 2 KiB tar is far past the default max_ratio of 800, and past the 5 MiB
     # activation threshold, so the default limits must refuse it.
     logical = 10 * 1024 * 1024
     archive = tmp_path / "sparse.tar"
@@ -998,7 +998,11 @@ def test_sparse_member_extracts_dense_and_counts_toward_ratio(tmp_path: Path) ->
         open_and_extract(archive, tmp_path / "default")
 
     out = tmp_path / "unlimited"
-    open_and_extract(archive, out, limits=ExtractionLimits(max_ratio=None))
+    open_and_extract(
+        archive,
+        out,
+        config=ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=None)),
+    )
     written = out / "sparse.bin"
     assert written.stat().st_size == logical
     with written.open("rb") as f:
