@@ -45,7 +45,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import (
-    FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -158,6 +158,7 @@ class _Frame:
         "id",
         "index",
         "link",
+        "name_xml",
         "path",
         "raw_path",
     )
@@ -174,6 +175,9 @@ class _Frame:
         self.has_data = False
         self.path: str | None = None
         self.raw_path = b""
+        # The first <name>, as stored (whether base64, and its text): a repeat of
+        # it is accepted (``_set_path``).
+        self.name_xml: tuple[bool, str] | None = None
 
 
 class _TocParser:
@@ -280,7 +284,14 @@ class _TocParser:
 
     def _set_path(self, frame: _Frame, text: str) -> None:
         if frame.path is not None:
+            # Apple's productbuild writes each top-level file's <name> twice, the
+            # same both times (Node.js, GitHub CLI and Miniconda installers do this);
+            # xar and pkgutil read it as one name. Two different names stay refused:
+            # nothing says which one the file is.
+            if (self._name_base64, text) == frame.name_xml:
+                return
             raise CorruptionError(f"XAR file {quoted(frame.path)} has two names")
+        frame.name_xml = (self._name_base64, text)
         if self._name_base64:
             try:
                 raw = base64.b64decode(text, validate=True)
@@ -514,7 +525,7 @@ class XarReader(IndexedReader[_Location]):
         if target is not None:
             member.link_target = target
         data = entry.data if member.is_file else None
-        return MemberRecord(member, _Location(data), entry.path)
+        return MemberRecord(member, _Location(data))
 
     def _member(self, entry: _Entry) -> ArchiveMember:
         fields = entry.fields
@@ -527,7 +538,7 @@ class XarReader(IndexedReader[_Location]):
             kind = MemberType.FILE if entry.data is not None else MemberType.OTHER
         member = ArchiveMember(
             type=kind,
-            name=self._context.normalize_name(entry.path, kind),
+            name=entry.path,
             raw_name=entry.raw_path,
         )
         if kind is MemberType.FILE:
@@ -630,20 +641,18 @@ def _empty() -> io.BytesIO:
     return io.BytesIO(b"")
 
 
-class XarHandler(FormatHandler):
+class XarHandler(IndexedFormatHandler):
     """XAR archives: ``.xar``, and macOS ``.pkg`` and ``.xip``."""
 
     format = ArchiveFormat.XAR
     extensions = (".xar", ".pkg", ".xip")
     magic = (Magic(0, MAGIC + b"\0"),)
     uses_encoding = True
+    non_seekable_reason = "its files' data sit anywhere in the heap after the index"
 
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> XarReader:
         return XarReader(source, context)
 
 
-XarReadBackend = register_builtin_format(
-    XarHandler,
-    NON_SEEKABLE_REASON="its files' data sit anywhere in the heap after the index",
-)
+XarReadBackend = register_builtin_format(XarHandler)

@@ -450,6 +450,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
     limit. It has no default, so every caller decides.
     """
 
+    # rapidgzip adds a point to its index only for output its prefetch has decoded, so
+    # a forward seek through one skips no decoding (``restarts_follow_decoding``).
+    restarts_follow_decoding = True
+
     # Read by close(), which also runs on an instance whose __init__ never started.
     _pool: RapidgzipChildPool | None = None
     _pid: int | None = None

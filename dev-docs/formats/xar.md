@@ -10,7 +10,7 @@ and registered as a built-in, as ISO, SquashFS and ar are.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/xar_reader.py`, a `XarHandler` (`FormatHandler`) and a `XarReader` (`IndexedReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/xar_reader.py`, a `XarHandler` (`IndexedFormatHandler`) and a `XarReader` (`IndexedReader`), registered with `register_builtin_format` |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file or a stream that can seek. Not a pipe: the index points at data anywhere after it |
 | Listing cost | From the index, read whole at open |
@@ -59,7 +59,10 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
   declarations only exist inside a document type, so none is expanded. The parser keeps
   one frame per open `<file>`, reserves the entry's slot when the element opens (so a
   directory is listed before its files) and computes its path when its `<name>` closes,
-  from the enclosing frame's. `max_members` is checked as each `<file>` opens. The TOC
+  from the enclosing frame's. A second `<name>` with the same text is the same name: Apple's
+  productbuild writes each top-level file's name twice (seen in the Node.js, GitHub CLI and
+  Miniconda installers), and bsdtar 3.7 joins the two into `DistributionDistribution`. A second
+  name that differs raises `CorruptionError`. `max_members` is checked as each `<file>` opens. The TOC
   digest is then checked over the compressed TOC bytes, as Apple's `xar` computes it.
 - **Hard links.** Apple's `xar` and bsdtar mark the entry that holds the data
   `<type link="original">hardlink</type>` (listed as a `FILE`) and every other name

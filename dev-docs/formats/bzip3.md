@@ -14,8 +14,8 @@ codecs, the one-member reader, the seek table and the truncation contract, is on
 | Write | **Not shipped** |
 | Backends | The `bzip3` package (imported as `bz3`, libbzip3 bundled), from `[bzip3]` only: not in `[recommended]` or `[all]` |
 | Process | libbzip3 runs in a child process unless `process_isolation` is `NONE` |
-| Seeking | A backward seek decodes again from the start |
-| Size | `None` until a full read |
+| Seeking | With seek demand, a seek resumes at its block's start and decodes one block (§2.1) |
+| Size | With seek demand on a source that can seek, from a walk of the block headers (§2.1); else `None` until a full read |
 | Digests | None listed. Each block's CRC-32 is checked as it decodes |
 | Metadata | None beyond the shared fields |
 | Truncation | `TruncatedError` for a cut inside the header or a block; a cut between blocks reads short with no error |
@@ -72,6 +72,26 @@ previous block). Both are refused at step 2 before the binding sees them.
 `MemoryError` propagates unchanged, as everywhere in archivey: running out of memory is
 never a damaged archive.
 
+### 2.1 Seeking
+
+Every block decodes on its own: libbzip3 keeps nothing from one block to the next but the
+block size. So under declared seek demand (`seekable_members=True`), each block with
+output is a seek point, resumed by a new decoder told the block size
+(`Bzip3Decompressor.resume`, through `framed_decoder.BlockResumable`). A forward read
+records each block it reaches. On a source that can seek, a `SEEK_END`, a size query or a
+seek past the known points walks the block headers from the start
+(`build_bzip3_index`): one 8-byte read per block, nothing decoded. The walk stops quietly
+at a header the decoder would refuse or at a block that runs past the end of the file,
+keeping the points before it, and gives the size only when the last block ends at the end
+of the file.
+
+A seek then decodes at most one block: up to the block size, 16 MiB with the tool's
+default. The walk trusts the block sizes, as the xz and lzip indexes are trusted
+(threat-model O17): a lying decoded size in a block the seek skips moves the offsets after
+it, with no error. A block that is decoded is still checked against its header and its
+CRC-32. Each resume builds a new native decoder (in the child, unless `NONE`), about ten
+times the block size, as the first one did.
+
 **Detection.** `BZ3v1` is an exact magic, so a `.bz3` is found by content, whatever its name.
 The inner-TAR probe does not build a decoder for blocks over 16 MiB (the tool's default) and
 does not wait for a first block over 1 MiB compressed: past either it records
@@ -106,6 +126,8 @@ on crafted blocks). archivey's answer, ruled by davi when the format was added:
 
 - `tests/test_bzip3.py`: tool-written fixtures under every isolation mode, forged block
   headers, truncation, memory cap, detection limits, the package missing or excluded.
+- `tests/test_bzip3_seek.py`: block seek points, the header walk and where it stops, one
+  block decoded per seek under every isolation mode.
 - Fixtures: `tests/fixtures/external/bzip3/`, written by the `bzip3` 1.4.0 tool.
 
 ## 7. References

@@ -47,7 +47,7 @@ from archivey.internal.streams.codecs.rapidgzip_child import (
     reported_by_child,
 )
 from archivey.internal.streams.decompressor_stream import (
-    _StreamChecksumError,
+    StreamChecksumError,
     truncated_message,
 )
 from archivey.internal.streams.resume import ask_resume_offset
@@ -518,7 +518,7 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
     """Map rapidgzip exceptions for a DEFLATE-family codec (gzip / zlib / deflate)."""
     text = str(exc)
     if isinstance(exc, ValueError) and "Mismatching CRC32" in text:
-        return _StreamChecksumError(
+        return StreamChecksumError(
             f"Error reading {label} stream (rapidgzip): {exception_detail(exc)}"
         )
     if isinstance(exc, RuntimeError) and "IsalInflateWrapper" in text:
