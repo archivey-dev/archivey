@@ -26,6 +26,7 @@ those use the AI plan's quota.
 | `pr-gate.yml` | each PR | no | never red: it reports `CI gate` as passed so any PR can join the merge queue, where the real `CI gate` in `ci.yml` runs |
 | `docs-deploy.yml` | each push to `main` | no | the Pages deploy failed; the site keeps the previous version |
 | `ppmd-native-stress.yml` | weekly (Wednesday 05:29 UTC), on demand, and on PRs that change the PPMd code, its child process, its tests or the dependency pins | no | not a required check; see [Known issues](known-issues.md), pyppmd sections |
+| `native.yml` | on demand, and on PRs that change the optional Rust kernels (`packages/archivey-native/`) or the Python decoders they mirror | no | prototype; builds the kernels and checks them against the Python decoders |
 | `atheris-fuzz.yml` | each merge-queue group that changes a library, test, dependency or CI path (short, called from `ci.yml`), nightly when `main` moved in the last 3 days | no | a fuzz target found an input; see [A fuzz job found a crash](#a-fuzz-job-found-a-crash); it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `benchmark-wall.yml` | daily, with a change guard | no | a wall-time ratio moved; see [The benchmark went red](#the-benchmark-went-red) |
 | `benchmark-compare.yml` | on demand only (baseline ref, candidate ref, rounds) | no | a side wrote no harness JSON; timings only report, for release notes ([release checklist](release-checklist.md)) |
