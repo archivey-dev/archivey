@@ -32,10 +32,11 @@ A sequential format is also read inside each single-file compression stream arch
 decodes (``.cpio.gz``), and its walk can hand the rest of the archive to one of
 archivey's codecs part-way (:meth:`ForwardStream.decompress`). Its walk can also read a
 member that is an archive in turn, a ``.deb``'s ``data.tar.xz`` say, as members of its
-own (:meth:`ForwardStream.take` and :meth:`ReaderContext.open_nested`). What the first version
-leaves out: an indexed format inside a compression stream, member data a library decodes
-in a sequential format, self-extracting stubs, multi-volume sets, passwords, and new
-diagnostic codes.
+own (:meth:`ForwardStream.take` and :meth:`ReaderContext.open_nested`). A sequential
+format whose library decodes each member hands archivey a stream of the decoded bytes
+(:attr:`MemberSpan.data`) instead of a count of stored bytes. What the first version
+leaves out: an indexed format inside a compression stream, self-extracting stubs,
+multi-volume sets, passwords, and new diagnostic codes.
 """
 
 from __future__ import annotations
