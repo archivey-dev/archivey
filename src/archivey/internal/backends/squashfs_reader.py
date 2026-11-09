@@ -13,18 +13,20 @@ allows, the directory walk is a loop that refuses a directory reached twice, and
 compressed block goes through ``ReaderContext.decompress``, so archivey's decoder limits
 apply, or, for LZ4, through ``lz4.block`` capped at the block's size.
 
-How a listing is built (:meth:`SquashfsReader.iter_members`):
+How a listing is built:
 
-1. :func:`_read_superblock` checks the superblock, which says where each table starts.
+1. When the image opens, :func:`_read_superblock` checks the superblock, which says
+   where each table starts. The other steps run in :meth:`SquashfsReader.iter_members`.
 2. :meth:`SquashfsReader._walk` walks the directory table from the root inode, depth
    first, and keeps one :class:`_Entry` per name. It reads only the directories'
    inodes, since it needs their listings to go on.
 3. :meth:`SquashfsReader._file_inodes` reads every other inode once, in table order,
-   and keeps a packed record of each.
-4. :meth:`SquashfsReader._make_member` turns each entry into an ``ArchiveMember``. Every
-   field but the name comes from the inode: type, mode, mtime, and the owner through
-   the id table. A later entry that names the inode of a file already listed is a hard
-   link to it.
+   and keeps a packed record of each inode that reads, with a symlink's target beside
+   it. An inode that fails keeps only its reference, and its member raises.
+4. :meth:`SquashfsReader._make_member` turns each entry into an ``ArchiveMember``. The
+   type, mode, mtime and owner (through the id table) come from the inode. A later
+   entry that is not a directory and names the inode of an earlier entry is a hard
+   link to that entry, whatever its type.
 
 A file's bytes are its data blocks, decoded one at a time, then its tail, which may sit
 in a fragment block shared by many small files (:meth:`SquashfsReader._file_stream`).
@@ -181,8 +183,9 @@ def _read_superblock(source: ReaderSource) -> _Superblock:
     """The image's superblock, refused unless it is a SquashFS 4.0 one that fits.
 
     Checks only what the rest of the reader relies on before it reads a table: the
-    version, the block size, that the image holds the bytes it declares, and that the
-    inode, directory and id tables start inside them, the inode table first.
+    version, the block size, that the image holds the bytes it declares (when its size
+    is known), and that the inode, directory and id tables start inside them, the
+    inode table first.
     """
     raw = source.read_at(0, _SUPERBLOCK.size)
     if raw[:4] == _SWAPPED_MAGIC:
@@ -711,11 +714,11 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         their blocks' starts and stored sizes, read from the fragment table, which
         needs no block decoded), the files with a tail come sorted by block and offset
         instead, so each block decodes once. Writers that fill fragments in name order
-        never reach this: mksquashfs and gensquashfs keep one fragment in progress and mksquashfs
-        ``-tailends`` two. sqfstar and tar2sqfs fill fragments in the tar's order, so
-        they keep listing order when the tar is in name order. An image built from a
-        tar in another order can reach the sort, and so can a crafted one, which in
-        listing order would decode a whole fragment block for each small file.
+        never reach this: mksquashfs and gensquashfs keep one fragment in progress and
+        mksquashfs ``-tailends`` two. sqfstar and tar2sqfs fill fragments in the tar's
+        order, so they keep listing order when the tar is in name order. An image built
+        from a tar in another order can reach the sort, and so can a crafted one, which
+        in listing order would decode a whole fragment block for each small file.
 
         An image that lists one name twice keeps listing order, which says which entry
         is current.
