@@ -38,6 +38,7 @@ from tests.cab_util import (
     _Token,
     block_checksum,
     canonical_codes,
+    checksum as oracle_checksum,
     write_cab,
 )
 
@@ -319,6 +320,22 @@ def test_the_checksum_matches_libmspack() -> None:
     checksum, stored, decoded = struct.unpack_from("<IHH", raw, start)
     assert checksum
     assert block_checksum(raw[start + 8 : start + 8 + stored], decoded) == checksum
+
+
+def test_the_reader_checksum_matches_the_word_by_word_one() -> None:
+    # The reader folds the words as one integer; every length around a word and a
+    # fold boundary, with and without a seed, gives what XORing word by word gives.
+    raw = (LIBARCHIVE / "test_read_format_cab_2.cab").read_bytes()
+    start = _data_start(raw)
+    stored_checksum, stored, decoded = struct.unpack_from("<IHH", raw, start)
+    payload = raw[start + 8 : start + 8 + stored]
+    assert cab_reader._block_checksum(payload, decoded) == stored_checksum
+    rng = random.Random(11)
+    for size in [*range(70), 255, 256, 257, 4095, 4096, 4097, 32767, 32768, 32771]:
+        data = rng.randbytes(size)
+        seed = rng.getrandbits(32)
+        assert cab_reader._checksum(data) == oracle_checksum(data)
+        assert cab_reader._checksum(data, seed) == oracle_checksum(data, seed)
 
 
 @pytest.mark.parametrize("flag", [1, 2])
@@ -737,3 +754,27 @@ def test_lzx_a_stream_that_reads_past_its_end_is_truncated() -> None:
 
 def test_format_is_listed() -> None:
     assert ArchiveFormat.CAB in archivey.list_supported_formats()
+
+
+@pytest.mark.parametrize("method", ["none", "mszip", "lzx"])
+@pytest.mark.parametrize("seekable_members", [False, True])
+def test_a_read_returns_every_byte_asked_for(
+    method: str, seekable_members: bool
+) -> None:
+    # Full-count (ADR 0014): a short read is the member's end. A folder read stops at
+    # the end of each data block or LZX frame, and the member stream returned that
+    # short read as it was, so read(n) past a block boundary lost the rest of the
+    # member. Found by fuzzing a seek and a read against the bytes of a sequential
+    # read.
+    data = random.Random(7).randbytes(100_000)
+    cab = write_cab([CabFile("a", data)], [CabFolder(method=method)])
+    with archivey.open_archive(
+        io.BytesIO(cab), seekable_members=seekable_members
+    ) as reader:
+        member = reader.members()[0]
+        with reader.open(member) as stream:
+            assert stream.read(70_000) == data[:70_000]
+            assert stream.read(70_000) == data[70_000:]
+            if seekable_members:
+                stream.seek(31_000)
+                assert stream.read(40_000) == data[31_000:71_000]

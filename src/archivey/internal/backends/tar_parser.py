@@ -1355,7 +1355,10 @@ class TarWalker:
             got = len(self._stream.read(want))
             self._stream_pos += got
             count -= got
-            if got < want:
+            # Only an empty read is the cut: after a short one the loop reads again,
+            # so that an error the stream holds for its next read (a codec's verdict
+            # on the bytes after those it handed back) comes out as itself.
+            if not got:
                 raise TruncatedError(
                     f"TAR archive is truncated: a member's data runs to offset "
                     f"{self._stream_pos + count}, but the archive ends at "
@@ -1382,7 +1385,23 @@ class TarWalker:
             assert held[0] == offset, (held[0], offset)
             return held[1]
         self._seek(offset)
-        return self._read(BLOCKSIZE)
+        return self._read_header_bytes(BLOCKSIZE)
+
+    def _read_header_bytes(self, size: int) -> bytes:
+        """Read ``size`` bytes of a header: a header block or an extended header.
+
+        A short read is the end (ADR 0014), but a codec stream hands back the bytes
+        before damage and raises on the next read. So after a short read this reads
+        once more: a held codec error raises as itself, where a corrupt compressed
+        TAR would otherwise read as cut inside a header (a warning or
+        ``TruncatedError`` on a seekable source, where a pipe raises the codec's
+        error). The bytes that read would drop do not matter: a short header ends
+        the walk either way.
+        """
+        data = self._read(size)
+        if data and len(data) < size:
+            data += self._read(size - len(data))
+        return data
 
     def _read_zeros(self, count: int) -> tuple[bool, int]:
         """Read up to ``count`` bytes from the current position, stopping after the
@@ -1547,7 +1566,7 @@ class TarWalker:
                         (Ambiguity.FIELD_TAIL, parsed.typeflag + b" size")
                     )
                 charge(parsed.size, "an extended header")
-                data = self._read(parsed.size)
+                data = self._read_header_bytes(parsed.size)
                 if len(data) < parsed.size:
                     raise TruncatedError(
                         "TAR archive is truncated inside an extended header at "
