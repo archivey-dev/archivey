@@ -19,8 +19,8 @@ Two construction contracts (two classes, shared bound/tell/size arithmetic):
    thread-safe. A cheap size probe (to clamp ``length``) runs under the lock when
    the caller did not already pass ``source_size``.
 
-``SharedSource.view`` returns :class:`SharedView`. Direct ``SlicingStream(..., lock=…)``
-is gone; pass ``lock`` to :class:`SharedView`.
+``SharedSource.view`` returns :class:`SharedView`. ``SlicingStream`` takes no lock: a
+view that needs one is a :class:`SharedView`.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from archivey.internal.streams.streamtools.binaryio import (
 def _already_at(stream: BinaryIO, target: int) -> bool:
     """Whether ``stream`` is already at ``target``, without moving it.
 
-    False when it cannot say: the caller seeks, which is the old behaviour.
+    False when it cannot say, so the caller seeks.
     """
     tell = getattr(stream, "tell", None)
     if tell is None:
@@ -163,6 +163,8 @@ class SlicingStream(ReadOnlyIOStream):
         source_size: int | None = None,
         probe_source_size: bool = True,
     ) -> None:
+        """The constructor body both classes share; they differ only in ``io_guard``
+        (a lock, or none) and ``seek_before_read``."""
         self._stream = stream
         # A view is non-owning by default (never closes the underlying — the container
         # owns it). ``owns_inner=True`` is the opt-in for the case where this view is the
@@ -275,7 +277,7 @@ class SlicingStream(ReadOnlyIOStream):
                 # tell() is the handle's position. When it already matches, skip the
                 # seek: once the buffer is empty that seek is an lseek, and a
                 # sequential walk refills on every chunk. A stream that cannot tell
-                # is seeked, as before.
+                # is seeked.
                 if self._unpositioned or not _already_at(self._stream, target):
                     self._stream.seek(target)
                 self._unpositioned = False
