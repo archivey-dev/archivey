@@ -1,27 +1,32 @@
-"""Decompressors for the two DOS-era ZIP methods: Shrink (1) and Implode (6).
+"""Decompressors for the DOS-era ZIP methods: Shrink (1), Reduce (2 to 5), Implode (6)
+and PKWARE DCL Implode (10).
 
-Opened via :class:`~.zip_legacy_codec.ShrinkCodec` and
-:class:`~.zip_legacy_codec.ImplodeCodec`, which ``FramedDecoder`` drives. Both are
-pure Python (DR-20). Only archives from PKZIP 1.x and its contemporaries use them, so
-the decoders favour plain code over speed.
+Opened via the codecs in :mod:`~.zip_legacy_codec`, which ``FramedDecoder`` drives. All
+are pure Python (DR-20). Only archives from PKZIP 1.x, PKZIP 0.9x and DCL-based writers
+use them, so the decoders favour plain code over speed.
 
-The formats are PKWARE's APPNOTE (sections 5.1 and 5.3). Where APPNOTE leaves a detail
-open, the decoders do what Info-ZIP ``unzip`` (``unshrink.c``, ``explode.c``) does:
+The formats are PKWARE's APPNOTE (sections 5.1 to 5.3; DCL Implode is not in APPNOTE).
+Where the format leaves a detail open, each decoder follows a reference: Shrink and
+Implode do what Info-ZIP ``unzip`` (``unshrink.c``, ``explode.c``) does, Reduce follows
+``unreduce.c``, and DCL Implode follows zlib's ``contrib/blast/blast.c``:
 
 - Shrink: a code that names a free slot is the "KwKwK" case, the entry being added
   now; a partial clear frees every code above 256 that is no other code's prefix, and
   new codes reuse the lowest free slot.
-- Implode: a copy that reaches before the start of the output reads zeros, and the
-  last copy stops at the member's declared size.
+- Implode and Reduce: a copy that reaches before the start of the output reads zeros,
+  and the last copy stops at the member's declared size.
+- DCL Implode: a copy before the start of the output is refused.
 
-Neither stream has an end marker. Implode always ends at the declared size, so it needs
-one, and clamps its last copy to it. Shrink stops after the first code that reaches the
-size when the size is known, and otherwise where the input does (``end_input``); a last
-entry that runs past the size is refused by the member's size check above the decoder.
-The bits left in the last byte are padding. A whole byte after the end is
-``unused_data``, which ``FramedDecoder`` reports as input after the end.
+Shrink, Reduce and Implode have no end marker. Reduce and Implode always end at the
+declared size, so they need one, and clamp their last copy to it. Shrink stops after
+the first code that reaches the size when the size is known, and otherwise where the
+input does (``end_input``); a last entry that runs past the size is refused by the
+member's size check above the decoder. DCL Implode ends at its own end code, so it
+needs no size and reads from a pipe. The bits left in the last byte are padding. A
+whole byte after the end is ``unused_data``, which ``FramedDecoder`` reports as input
+after the end.
 
-Both decode forward only: a seek goes back to the start and decodes again.
+All four decode forward only: a seek goes back to the start and decodes again.
 """
 
 from __future__ import annotations

@@ -790,8 +790,8 @@ the ZIP method id to the shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
 BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
-registry already advertised for ZIP, and XZ (95), Shrink (1), Reduce (2 to 5), Implode (6) and DCL Implode (10), which are
-core. It also puts ZIP member reads on the same
+registry already advertised for ZIP, and XZ (95), Shrink (1), Reduce (2 to 5), Implode
+(6) and DCL Implode (10), which are core. It also puts ZIP member reads on the same
 `VerifyingStream` and the same exception translation as every other backend, so a corrupt
 body raises `CorruptionError` and a cut-short one raises `TruncatedError` through shared
 code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
@@ -874,6 +874,7 @@ two Reduce streams from PKZIP 0.92 (`tests/fixtures/external/reduce_pkzip092`) a
 example stream in `blast.c`; `tests/zip_legacy_build.py` has test-only encoders for the
 rest. Both decode at about 1 MB/s on text (Implode about 3), which is enough for the
 small files these old writers made.
+
 The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
 its end, and what it cannot see; `inflate64` drops input after a Deflate64 stream's end
 and has no `unused_data`, so `Deflate64Decoder` holds back the last byte it is given,
