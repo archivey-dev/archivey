@@ -43,15 +43,17 @@ def test_every_distribution_has_a_leg() -> None:
     assert sources == {
         ("python.org", "macos-latest"),
         ("python.org", "windows-latest"),
-        ("apt", "ubuntu-22.04"),
         ("conda-forge", "ubuntu-latest"),
     }
-    assert jobs["fedora"]["container"].startswith("fedora:")
+    images = {
+        row["image"] for row in jobs["container"]["strategy"]["matrix"]["include"]
+    }
+    assert images == {"fedora:latest", "ubuntu:22.04"}
 
 
 def test_each_leg_runs_the_suite_on_the_chosen_interpreter() -> None:
     jobs = _load()["jobs"]
-    for name in ("hosted", "fedora"):
+    for name in ("hosted", "container"):
         runs = [step.get("run", "") for step in jobs[name]["steps"]]
         assert any("uv sync --python" in run for run in runs), name
         assert any("pytest tests/" in run for run in runs), name

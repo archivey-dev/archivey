@@ -9,14 +9,16 @@ name: Python distributions
 # distribution, chosen for the libraries it links, not for its Python version:
 #
 # - python.org on macOS (3.11) and Windows (3.14): their own bundled, older libraries.
-# - Ubuntu 22.04's python3.11: the distribution's xz 5.2.5 (older than the 5.2.12 fix
-#   above), zlib and bzip2.
+# - Python 3.11 on Ubuntu 22.04 (deadsnakes): the distribution's xz 5.2.5 (older than
+#   the 5.2.12 fix above), zlib and bzip2.
 # - Fedora's python3: zlib is zlib-ng in compatibility mode, a different deflate.
 # - conda-forge: its own builds of xz, zlib, bzip2 and OpenSSL.
 #
 # Every leg installs [all] and the dev group and runs the whole suite. Leg-specific tools
 # (unrar, 7z, unar) are not installed, so the tests that need them skip here; ci.yml
-# covers them. Not in the merge queue, and on a pull request only when it changes this
+# covers them. The one exception is the structural benchmark gate, which fails rather
+# than skips under CI when unrar is missing (so ci.yml cannot silently drop its RAR
+# cases); it is deselected here, since ci.yml's legs and benchmark job run it. Not in the merge queue, and on a pull request only when it changes this
 # workflow or its script (maintainer, 2026-11-09): a scheduled failure opens an issue
 # (scheduled-failure-alert.yml), and the release gates dispatch this workflow, so a
 # release waits for it to be green.
@@ -53,11 +55,7 @@ jobs:
         include:
           - { name: "python.org 3.11 / macOS", os: macos-latest, source: python.org, python: "3.11" }
           - { name: "python.org 3.14 / Windows", os: windows-latest, source: python.org, python: "3.14" }
-          - { name: "Ubuntu 22.04 python3.11", os: ubuntu-22.04, source: apt, python: "3.11" }
           - { name: "conda-forge 3.12 / Linux", os: ubuntu-latest, source: conda-forge, python: "3.12" }
-    defaults:
-      run:
-        shell: bash -el {0}
     steps:
       - uses: actions/checkout@v4
 
@@ -68,12 +66,6 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install the distribution's Python (apt)
-        if: matrix.source == 'apt'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y "python${{ matrix.python }}" "python${{ matrix.python }}-venv" "python${{ matrix.python }}-dev"
-
       - name: Set up conda-forge Python
         if: matrix.source == 'conda-forge'
         uses: conda-incubator/setup-miniconda@v3
@@ -83,18 +75,17 @@ jobs:
           channels: conda-forge
           conda-remove-defaults: "true"
 
-      # The interpreter under test, by source: the one setup-python put on PATH, the
-      # distribution's /usr/bin binary, or the activated conda environment's.
+      # The interpreter under test: the one setup-python put on PATH, or the conda
+      # environment's (a login shell activates it, so $CONDA_PREFIX is set).
       - name: Choose the interpreter
         id: python
+        shell: bash -el {0}
         env:
           SOURCE: ${{ matrix.source }}
           PYTHON_ORG: ${{ steps.python-org.outputs.python-path }}
-          VERSION: ${{ matrix.python }}
         run: |
           case "$SOURCE" in
             python.org) exe="$PYTHON_ORG" ;;
-            apt) exe="/usr/bin/python$VERSION" ;;
             conda-forge) exe="$CONDA_PREFIX/bin/python" ;;
           esac
           "$exe" -c "import sys; print(sys.version)"
@@ -104,9 +95,11 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install all extras + dev group
+        shell: bash
         run: uv sync --python "${{ steps.python.outputs.exe }}" --group dev --extra all
 
       - name: Assert the venv is on that interpreter, and print its libraries
+        shell: bash
         env:
           WANT: ${{ steps.python.outputs.exe }}
         run: |
@@ -117,18 +110,43 @@ jobs:
           test "$want" = "$got"
           uv run --no-sync python scripts/ci/print_codec_libraries.py
 
+      # The runner's default shell: PowerShell on Windows, as in ci.yml. Under Git Bash,
+      # Git's own `tar` comes first on PATH and the GNU tar comparison tests call it with
+      # Windows paths it cannot take.
       - name: Run tests
-        run: uv run --no-sync pytest tests/ -q -n auto --no-cov
+        run: >-
+          uv run --no-sync pytest tests/ -q -n auto --no-cov
+          --deselect tests/test_benchmark_gate.py::test_benchmark_structural_gate
 
-  # Fedora runs in a container: GitHub has no Fedora runner image.
-  fedora:
-    name: Fedora python3 / Linux
+  # Distribution Pythons, each in its own image: GitHub has no Fedora runner, and the
+  # Ubuntu runner images carry tools (p7zip 16.02, Git's tar) that the comparison tests
+  # would pick up instead of skipping. Ubuntu 22.04's own python3.11 package is a 3.11.0
+  # release candidate, so that leg takes 3.11 from the deadsnakes archive, which is how
+  # 22.04 users get it; it still links the system's xz 5.2.5, zlib and bzip2.
+  container:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    container: fedora:latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Fedora python3 / Linux"
+            image: "fedora:latest"
+            python: /usr/bin/python3
+            install: dnf install -y python3 python3-devel gcc gcc-c++ git
+          - name: "Ubuntu 22.04 python3.11 / Linux"
+            image: "ubuntu:22.04"
+            python: /usr/bin/python3.11
+            install: >-
+              apt-get update
+              && DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common git gcc g++ curl ca-certificates
+              && add-apt-repository -y ppa:deadsnakes/ppa
+              && apt-get install -y python3.11 python3.11-dev python3.11-venv
     steps:
-      - name: Install python3, git and a compiler
-        run: dnf install -y python3 python3-devel gcc gcc-c++ git
+      - name: Install the distribution's Python, git and a compiler
+        run: ${{ matrix.install }}
 
       - uses: actions/checkout@v4
 
@@ -136,14 +154,16 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install all extras + dev group
-        run: uv sync --python /usr/bin/python3 --group dev --extra all
+        run: uv sync --python ${{ matrix.python }} --group dev --extra all
 
       - name: Print the interpreter's libraries
         run: |
-          cat /etc/os-release | head -n 2
+          head -n 2 /etc/os-release
           uv run --no-sync python scripts/ci/print_codec_libraries.py
 
       # The container runs as root. The tests that depend on file permissions check
       # os.geteuid() and skip under root, as they do in a development container.
       - name: Run tests
-        run: uv run --no-sync pytest tests/ -q -n auto --no-cov
+        run: >-
+          uv run --no-sync pytest tests/ -q -n auto --no-cov
+          --deselect tests/test_benchmark_gate.py::test_benchmark_structural_gate
