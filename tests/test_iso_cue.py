@@ -244,6 +244,7 @@ def test_a_symlinked_track_file_is_followed(tmp_path: Path) -> None:
     assert _contents(cue)["a.txt"] == b"hello\n"
 
 
+@requires("pycdlib")
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs")
 def test_a_fifo_track_file_is_refused_without_blocking(tmp_path: Path) -> None:
     os.mkfifo(tmp_path / "f.bin")
@@ -258,6 +259,7 @@ def test_a_fifo_track_file_is_refused_without_blocking(tmp_path: Path) -> None:
 # --- refusals -----------------------------------------------------------------------
 
 
+@requires("pycdlib")
 @pytest.mark.parametrize("name", ["../disc.bin", "sub/disc.bin", "/etc/passwd", ".."])
 def test_a_file_outside_the_sheets_directory_is_refused(
     name: str, tmp_path: Path
@@ -270,6 +272,7 @@ def test_a_file_outside_the_sheets_directory_is_refused(
         open_archive(cue)
 
 
+@requires("pycdlib")
 def test_a_missing_track_file_is_truncation(tmp_path: Path) -> None:
     cue = tmp_path / "disc.cue"
     cue.write_text(
@@ -279,6 +282,7 @@ def test_a_missing_track_file_is_truncation(tmp_path: Path) -> None:
         open_archive(cue)
 
 
+@requires("pycdlib")
 def test_an_audio_cd_has_no_filesystem(tmp_path: Path) -> None:
     (tmp_path / "cd.bin").write_bytes(_audio(10))
     cue = tmp_path / "cd.cue"
@@ -287,6 +291,7 @@ def test_an_audio_cd_has_no_filesystem(tmp_path: Path) -> None:
         open_archive(cue)
 
 
+@requires("pycdlib")
 def test_an_oversized_sheet_is_refused(tmp_path: Path) -> None:
     cue = tmp_path / "big.cue"
     cue.write_text("REM " + "x" * 70_000 + "\n")
