@@ -22,8 +22,8 @@ Plain header (property-tagged nesting)::
 The words the whole 7z backend uses:
 
 - A *pack stream* is one contiguous run of stored bytes in the packed area.
-- A *coder* is one decode step: a decompressor, a filter, or AES. It reads one or
-  more *in-streams* and writes *out-streams*, numbered across its folder.
+- A *coder* is one decode step: a decompressor, a filter, or AES. It reads
+  *in-streams* and writes *out-streams*, numbered across its folder.
 - A *folder* is a small graph of coders, and the unit of decoding. Its *bind pairs*
   wire one coder's out-stream to another coder's in-stream; every other in-stream
   reads one pack stream. The one out-stream no bind pair consumes is the folder's
@@ -151,7 +151,8 @@ _PROPERTY_IDS = frozenset(_Property)
 class SevenZipCoder:
     """One decode step of a folder, as declared in the header.
 
-    ``method`` is the on-disk method id, looked up in
+    ``method`` is the on-disk method id (COPY's id when the header gives an empty
+    one), looked up in
     :mod:`~archivey.internal.backends.sevenzip_methods`. ``properties`` is the
     method's own parameter blob (dictionary size, AES salt and IV, ...), parsed only
     when the folder is decoded.
@@ -165,7 +166,9 @@ class SevenZipCoder:
 
 @dataclass(slots=True)
 class SevenZipFolder:
-    """A coder graph whose output holds one or more members back to back.
+    """A coder graph whose output holds zero or more members back to back.
+
+    For an encoded header, the output is the header itself.
 
     Stream numbers are folder-wide: in-streams and out-streams are each counted
     across the coders in order (see :class:`FolderGraph`). Which pack streams the
@@ -277,11 +280,12 @@ class SevenZipFileRecord:
     """One FilesInfo entry, with its place in the folder outputs filled in.
 
     ``_map_files_to_folders`` sets the last six fields. A record with
-    ``emptystream`` keeps their defaults: ``folder_index`` stays None and the member
-    has no data to decode. Otherwise the member is substream ``file_in_folder`` of
-    folder ``folder_index``, and its bytes start after the earlier substreams of that
-    folder. ``compressed_size`` is the whole folder's packed size, because 7z stores
-    no per-member packed size.
+    ``emptystream`` keeps the values :func:`_file_record_from_props` gives them (no
+    folder, size 0, no CRC, not encrypted): the member has no data to decode.
+    Otherwise the member is substream ``file_in_folder`` of folder ``folder_index``,
+    and its bytes start after the earlier substreams of that folder.
+    ``compressed_size`` is the whole folder's packed size, because 7z stores no
+    per-member packed size.
     """
 
     filename: str
@@ -335,8 +339,10 @@ class SevenZipArchive:
 class _StreamsInfo:
     """One StreamsInfo block, as read: the raw material of :class:`SevenZipArchive`.
 
-    ``pack_pos`` counts from the end of the signature header, as stored. A field is
-    None when its section was absent.
+    ``pack_pos`` counts from the end of the signature header, as stored.
+    ``pack_sizes`` and ``pack_positions`` are None without PackInfo. The folder and
+    substream fields are None without UnpackInfo; without SubstreamsInfo they hold one
+    substream per folder (see :func:`_read_streams_info`).
     """
 
     pack_pos: int = 0
@@ -1320,8 +1326,9 @@ def _read_files_info(
 ) -> tuple[list[SevenZipFileRecord], str | None]:
     """Read FilesInfo into file records (not yet mapped to folders) and the comment.
 
-    Each property is a vector over all files, or over the stream-less files for
-    ``kEmptyFile`` and ``kAnti``. ``_FILES_INFO_HANDLERS`` applies most of them.
+    Each per-file property is a vector over all files, or over the stream-less files
+    for ``kEmptyFile`` and ``kAnti``; ``kComment`` is the archive comment.
+    ``_FILES_INFO_HANDLERS`` applies most of them.
     """
     num_files = cur.uint64()
     # Bound the file count against the header size and the listing budget before

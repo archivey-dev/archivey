@@ -1,7 +1,8 @@
 """7z coder method registry — single source for IDs, algorithms, and decode kind.
 
 Each coder in a 7z folder names its method by a short byte-string id. The parser
-keeps the raw id; the pipeline and the reader look it up here.
+stores each coder's id (an empty id becomes COPY's); the parser, the pipeline and the
+reader look it up here.
 
 :class:`MethodKind` drives :func:`sevenzip_pipeline.plan_folder`:
 
@@ -49,8 +50,11 @@ class MethodKind(Enum):
 class SevenZipMethod:
     """One registry entry: how to name and decode one coder method.
 
-    ``codec`` is the shared codec stream used when the method runs as its own stage.
-    ``lzma_filter_id`` is its filter id when it joins a liblzma chain instead.
+    ``codec`` is the :class:`~archivey.internal.streams.codecs.Codec` id. A ``SINGLE``
+    method is opened with it, and the reader checks it to tell whether a decoder
+    rejects a wrong key. ``lzma_filter_id`` is the filter id of an LZMA-family method
+    (liblzma's, or the Python-decoded ARM64 and RISC-V ids). It is used both inside a
+    liblzma chain and for a filter staged on its own.
     """
 
     method_id: bytes
