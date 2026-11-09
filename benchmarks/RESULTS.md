@@ -95,6 +95,22 @@ What the numbers show:
   row's ratio stayed inside its run-to-run range. `zip_extract` again had no stable
   `zipfile` time (10–43 ms between runs).
 
+### Large `.tar.bz2` under AUTO (open PR 1369)
+
+PR 1369, not merged when this was measured, sends a large sequential bzip2 read from a
+local file through the parallel accelerator under the default `AUTO`. Its tree
+(`129d3347`) and `main` read a 9.6 MiB `.tar.bz2` of 32 text-like members of 1 MiB with
+`stream_members()`, against a one-pass `tarfile` (median of 7 alternating calls):
+
+| Tree | archivey | tarfile | ratio |
+| --- | ---: | ---: | ---: |
+| `main` | 1 800 ms | 1 747 ms | 1.03× |
+| PR 1369 | 510 ms | 1 698 ms | 0.30× |
+
+The harness's own `.tar.bz2` is under 1 MiB, below the rule's threshold, so its `AUTO`
+time did not change (272 against 277 ms). If PR 1369 does not merge, drop this
+subsection.
+
 ### New formats against libarchive
 
 The same 4 000-file tree as an MSZIP cabinet written by `gcab` 1.6, and as a binary RPM
