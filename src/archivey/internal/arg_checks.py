@@ -108,8 +108,8 @@ def check_instance(
     """Raise ``ArchiveyUsageError`` unless ``value`` is an ``expected`` instance.
 
     ``allow_none`` covers the arguments whose default is ``None``, meaning "use the
-    library default". It is not the common case any more: ``ArchiveyConfig``'s own
-    fields all have real defaults, so ``None`` there is a wrong value rather than a
+    library default". It is not the common case: ``ArchiveyConfig``'s own fields all
+    have real defaults, so ``None`` there is a wrong value rather than a
     way of asking for one.
     """
     if isinstance(value, expected) or (value is None and allow_none):
@@ -182,13 +182,14 @@ def check_encoding(value: object, *, call: str, allow_none: bool = True) -> None
     """Raise ``ArchiveyUsageError`` unless ``value`` names a usable byte codec.
 
     This check is about a *value* rather than a type, and it is worth the lookup
-    because all three ways of getting it wrong failed differently and none of them
-    named the argument:
+    because, unchecked, the three ways of getting it wrong would each fail differently
+    and none would name the argument:
 
-    * an unregistered name (``"utf8-"``, a typo) raised ``LookupError``;
-    * a text-only codec (``"rot13"``, ``"base64"``) raised a different ``LookupError``,
-      several frames further in, only once a name was actually decoded;
-    * a non-string (``0``) was **silently ignored** and the backend auto-detected.
+    * an unregistered name (``"utf8-"``, a typo) would raise ``LookupError``;
+    * a text-only codec (``"rot13"``, ``"base64"``) would raise a different
+      ``LookupError``, several frames further in, only once a name was decoded;
+    * a non-string (``0``) would be **silently ignored** and the backend would
+      auto-detect.
 
     ``codecs.lookup`` resolves aliases, so the check accepts exactly what the decode
     later accepts. The ``_is_text_encoding`` flag is what ``bytes.decode`` itself tests
@@ -277,8 +278,8 @@ def check_limit(
 
     The guards these fields drive are all comparisons, so a wrong-typed one is not
     found until something is actually being counted — ``ListingLimits(max_members="x")``
-    built fine and then failed mid-listing as ``TypeError: '>' not supported between
-    instances of 'int' and 'str'``, naming neither the field nor the class. A limit is
+    would build fine and then fail mid-listing as ``TypeError: '>' not supported
+    between instances of 'int' and 'str'``, naming neither the field nor the class. A limit is
     a promise about a future operation; checking it where the caller wrote it is the
     only place the message can still name what they wrote.
 
