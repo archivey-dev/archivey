@@ -61,6 +61,10 @@ Each idea carries a status:
 - **libarchive backend.** *Open idea.* `python-libarchive-c` as an additional backend for
   several formats, behind its own extra. It brings a native C dependency and weak random
   access.
+- **libarchive as an accelerator for the Python decoders.** *Measured, not pursued
+  (2026-11-09).* As fast as a native port, but it accepts damaged `.Z` and LZX streams
+  that archivey refuses and needs a child process;
+  [`investigations/libarchive-accelerator.md`](investigations/libarchive-accelerator.md).
 - **Decode RAR without `unrar`.** *Open idea (research).* Build a minimal synthetic
   one-file RAR stream and feed it to libarchive's RAR decoder, as `rarfile` does. It could
   drop the `unrar` requirement for common cases, but RAR decode correctness is hard, and
