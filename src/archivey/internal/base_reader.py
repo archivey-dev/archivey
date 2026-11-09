@@ -1674,7 +1674,8 @@ class BaseArchiveReader(ArchiveReader):
         """Report an empty listing under a format the bytes never confirmed: one the
         caller's ``format=`` (``"argument"``) or the file extension chose.
         ``detected_format`` is what content detection names instead, or ``None`` when it
-        refuses the bytes."""
+        refuses the bytes or cannot read them. An extension pick passes ``None`` without
+        running detection again: detection had already declined the bytes."""
         format_name = self._format.display_name
         detected_text = detected_format or "nothing (detection refuses these bytes)"
         self._diagnostics_collector.emit(
@@ -4496,12 +4497,12 @@ class BaseArchiveReader(ArchiveReader):
         """The ``stream_members()`` pass around the backend's :meth:`_iter_with_data`.
 
         What it adds, the same for every backend: the pass token, one live-stream slot
-        for all the pass's streams, file copies left out unless ``copies.streams``, the
-        ``selector``, forward-only member streams, the ratio hold when
-        ``hold_to_ratio``, and closing each stream when the pass moves on. When the
-        pass reaches the end, ``report`` records the selector's entries no member
-        matched. A ``close()`` that finds the pass suspended at a yield winds it down
-        (``wind_down``).
+        for all the pass's streams, a file copy's stream closed unopened (the member
+        comes through with ``None``) unless ``copies.streams``, the ``selector``,
+        forward-only member streams, the ratio hold when ``hold_to_ratio``, and closing
+        each stream when the pass moves on. When the pass reaches the end, ``report``
+        records the selector's entries no member matched. A ``close()`` that finds the
+        pass suspended at a yield winds it down (``wind_down``).
         """
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStreamImpl | None = None
