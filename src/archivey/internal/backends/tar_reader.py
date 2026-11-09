@@ -10,8 +10,8 @@ progressive forward pass. :class:`~archivey.internal.backends.tar_parser.TarWalk
 does the walk and applies each member's extended headers; this module turns each
 ``TarEntry`` it returns into an :class:`~archivey.ArchiveMember`
 (:meth:`TarReader._to_member`), reports what the walk found, and opens member data
-from the ``TarSpan`` each member keeps. Compressed forms (``.tar.gz`` / …) wrap the same layout in
-a stream codec and behave as **solid** for random member opens.
+from the ``TarSpan`` each member keeps. Compressed forms (``.tar.gz`` / …) wrap the
+same layout in a stream codec and behave as **solid** for random member opens.
 
 Random-access reading (``streaming=False``) needs a seekable source (decompressing
 first for a compressed tar) and opens any member on demand: a member's stream is a
@@ -1480,8 +1480,8 @@ class TarReader(BaseArchiveReader):
 
         A read-only copy. Members that carry only the PAX global records share one,
         as the walker shares the records: one per member would cost the global records
-        once for every 512-byte member header. Read-only so that sharing it is invisible: a
-        change made through one member cannot show on another.
+        once for every 512-byte member header. Read-only so that sharing it is
+        invisible: a change made through one member cannot show on another.
         """
         if entry.has_own_pax:
             return _ReadOnlyDict(self._pax_headers_text(entry.pax))
@@ -1590,6 +1590,8 @@ class TarReader(BaseArchiveReader):
             if member_type in (MemberType.FILE, MemberType.HARDLINK)
             else ()
         )
+        # Refuses a device or FIFO header that declares data.
+        extra = self._member_extra(entry, name)
 
         member = ArchiveMember(
             type=member_type,
@@ -1611,7 +1613,7 @@ class TarReader(BaseArchiveReader):
             uid=entry.uid,
             gid=entry.gid,
             compression=compression,
-            extra=self._member_extra(entry, name),
+            extra=extra,
             # The span alone, so _open_member needs no name/id lookup table and the
             # parsed entry (header, names, PAX records) is not kept per member.
             _raw=entry.span(),
@@ -1690,8 +1692,8 @@ class TarReader(BaseArchiveReader):
         name, bad times, a name decoded as UTF-8 over ``encoding=``, and what the
         walk found in its headers. ``presented`` is the decoded name before
         normalization."""
-        # member.name is still the normalized name: this is the callee's own early
-        # return, kept here to skip the call for the common unchanged name.
+        # emit_member_name_normalized makes the same check; making it here skips the
+        # call for the common unchanged name.
         if member.name != presented:
             emit_member_name_normalized(
                 self._diagnostics_collector,
