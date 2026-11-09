@@ -1,4 +1,20 @@
-"""``extract`` / ``x`` verb."""
+"""``extract`` / ``x`` verb: write an archive's members to disk and report the outcome.
+
+``main`` calls :func:`run_extract` with the parsed options. A run takes four steps:
+
+1. Choose the destination. ``-d`` names it; otherwise :func:`resolve_smart_dest`
+   picks the current directory or a new wrapper folder named after the archive, so
+   an archive with many top-level entries does not scatter them in the current
+   directory (a "tarbomb").
+2. Extract with the reader's ``extract_all``, which applies the safety and overwrite
+   policies and returns an :class:`~archivey.ExtractionReport`.
+3. When the wrapper was chosen without knowing what the archive holds,
+   :func:`maybe_hoist_single_root` moves a single top-level entry up out of it.
+   Under ``--dry-run``, :func:`predict_hoist` says what that move would do instead.
+4. :func:`_report_extraction` prints a line for each rename, skip, block and failure,
+   then the summary, and :func:`_exit_for_outcomes` turns its counts into the exit
+   code.
+"""
 
 from __future__ import annotations
 
@@ -91,6 +107,8 @@ def _safe_stem(stem: str) -> str:
 
 
 def _top_level_names(members: list[ArchiveMember]) -> set[str]:
+    """The first segment of each member name: the entries the archive would create
+    in the directory it is extracted into."""
     tops: set[str] = set()
     for member in members:
         name = member.name.strip("/")
@@ -796,25 +814,7 @@ def maybe_hoist_single_root(
     try:
         if in_place:
             if child.is_dir() and not child.is_symlink():
-                # Flatten: wrapper/src/* → wrapper/*. The wrapper held only this
-                # child, so the moves cannot collide. The wrapper takes the child's
-                # place, so it takes the child's mode and times too.
-                st = os.stat(child)
-                mode = _open_up(child)
-                try:
-                    for entry in sorted(child.iterdir()):
-                        up = wrapper / entry.name
-                        _rename(entry, up)
-                        # Recorded for a failure part-way: an entry already moved is
-                        # named where it is, and ``left_in`` covers only the rest.
-                        moved[f"{child.name}/{entry.name}"] = up
-                    child.rmdir()
-                except BaseException:
-                    _put_back(child, mode)
-                    raise
-                with contextlib.suppress(OSError):  # best-effort, as in extraction
-                    os.chmod(wrapper, stat.S_IMODE(st.st_mode))
-                    os.utime(wrapper, ns=(st.st_atime_ns, st.st_mtime_ns))
+                _flatten_into_wrapper(wrapper, child, moved)
             else:
                 # Sole non-dir entry named like the wrapper: step the wrapper
                 # aside so the entry can take its place.
@@ -869,22 +869,12 @@ def maybe_hoist_single_root(
             f"hoist stopped; remaining files left in {escape_path(left_in)}/",
             file=err,
         )
-        return _HoistResult(
-            left_in,
-            ok=False,
-            renamed=result.renamed,
-            moves=_Moves.of(moved, left_in, stopped=True),
-        )
+        return _stopped_hoist(left_in, result, moved)
     except OSError as exc:
         # The ``archivey: `` prefix: see main._parse_and_dispatch.
         print(f"archivey: hoist failed: {format_error_detail(exc)}", file=err)
         print(f"files left in {escape_path(left_in)}/", file=err)
-        return _HoistResult(
-            left_in,
-            ok=False,
-            renamed=result.renamed,
-            moves=_Moves.of(moved, left_in, stopped=True),
-        )
+        return _stopped_hoist(left_in, result, moved)
     if result.moves is None:
         result.moves = _Moves({child.name: child.name})  # in place: name unchanged
     is_dir = result.target.is_dir() and not result.target.is_symlink()
@@ -897,6 +887,45 @@ def maybe_hoist_single_root(
     else:
         print(f"moved to {label}", file=err)
     return result
+
+
+def _flatten_into_wrapper(wrapper: Path, child: Path, moved: dict[str, Path]) -> None:
+    """Move the contents of ``child``, the wrapper's only entry and a directory of the
+    same name, up into the wrapper, then remove ``child``: ``wrapper/src/*`` becomes
+    ``wrapper/*``.
+
+    The wrapper held only this child, so the moves cannot collide. The wrapper takes
+    the child's place, so it takes the child's mode and times too. Each entry moved is
+    recorded in ``moved``, so that after a failure part-way an entry already moved is
+    reported where it is.
+    """
+    st = os.stat(child)
+    mode = _open_up(child)
+    try:
+        for entry in sorted(child.iterdir()):
+            up = wrapper / entry.name
+            _rename(entry, up)
+            moved[f"{child.name}/{entry.name}"] = up
+        child.rmdir()
+    except BaseException:
+        _put_back(child, mode)
+        raise
+    with contextlib.suppress(OSError):  # best-effort, as in extraction
+        os.chmod(wrapper, stat.S_IMODE(st.st_mode))
+        os.utime(wrapper, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+
+def _stopped_hoist(
+    left_in: Path, result: _HoistResult, moved: dict[str, Path]
+) -> _HoistResult:
+    """The failed outcome of a hoist that stopped part-way, with the remainder in
+    ``left_in``: what had moved by then is still reported where it is."""
+    return _HoistResult(
+        left_in,
+        ok=False,
+        renamed=result.renamed,
+        moves=_Moves.of(moved, left_in, stopped=True),
+    )
 
 
 def predict_hoist(
@@ -1090,36 +1119,7 @@ def _report_extraction(
     blocked = 0
     failed = 0
     rerooted = 0
-    # Every directory rename in the run: requested path -> written path. A member
-    # inside a renamed directory follows it (``dd/f`` -> ``dd (1)/f``) and so also
-    # reports ``requested_path != path``; that is the directory's one rename, not a new
-    # one. Collected before the walk, as the result that carries the rename is not
-    # always first: with the directory stored twice, it is the later copy, after the
-    # members written between the two.
-    renamed_dirs = {
-        r.requested_path: r.path
-        for r in report.results
-        if r.member.type is MemberType.DIRECTORY
-        and r.requested_path is not None
-        and r.path is not None
-        and r.requested_path != r.path
-    }
-    # A renamed directory the archive only implies has no result: take its rename
-    # from the members that followed it, and print it once, at the first of them.
-    implied_dirs: dict[Path, Path] = {}
-    for r in report.results:
-        if (
-            r.status is ExtractionStatus.EXTRACTED
-            and r.requested_path is not None
-            and r.path is not None
-            and not r.member.is_anti
-            and not _follows_renamed_dir(r.requested_path, r.path, renamed_dirs)
-        ):
-            implied = _implied_dir_rename(r.requested_path, r.path)
-            if implied is not None:
-                asked, written = implied
-                implied_dirs.setdefault(asked, written)
-    renamed_dirs.update(implied_dirs)
+    renamed_dirs, implied_dirs = _directory_renames(report)
 
     def shown(path: Path | None) -> str:
         """``path`` as the line names it."""
@@ -1129,33 +1129,20 @@ def _report_extraction(
         status = result.status
         if status is ExtractionStatus.EXTRACTED:
             extracted += 1
-            was_renamed = (
-                result.requested_path is not None
-                and result.path is not None
-                and result.requested_path != result.path
-                # An anti-item deletes; where it deleted is not a rename.
-                and not result.member.is_anti
-                and not _follows_renamed_dir(
-                    result.requested_path, result.path, renamed_dirs
-                )
-            )
             if (
                 result.requested_path is not None
                 and implied_dirs
                 and not result.member.is_anti
             ):
-                for ancestor in result.requested_path.parents:
-                    if ancestor in renamed_dirs:
-                        renamed_to = implied_dirs.pop(ancestor, None)
-                        if renamed_to is not None:
-                            renamed += 1
-                            print(
-                                f"renamed: {shown(ancestor)} -> {shown(renamed_to)}",
-                                file=err,
-                            )
-                        break
+                implied = _pop_implied_dir_rename(
+                    result.requested_path, renamed_dirs, implied_dirs
+                )
+                if implied is not None:
+                    asked, written = implied
+                    renamed += 1
+                    print(f"renamed: {shown(asked)} -> {shown(written)}", file=err)
             landed = shown(result.path)
-            if was_renamed:
+            if _is_own_rename(result, renamed_dirs):
                 renamed += 1
                 # Renames change where data lives — always report them.
                 print(
@@ -1226,24 +1213,16 @@ def _report_extraction(
                 )
         elif status is ExtractionStatus.BLOCKED:
             blocked += 1
-            detail = (
-                f": {format_error_detail(result.error)}"
-                if result.error is not None
-                else ""
-            )
             print(
-                f"blocked: {escape_member_name(result.member.name)}{detail}",
+                f"blocked: {escape_member_name(result.member.name)}"
+                f"{_error_suffix(result)}",
                 file=err,
             )
         elif status is ExtractionStatus.FAILED:
             failed += 1
-            detail = (
-                f": {format_error_detail(result.error)}"
-                if result.error is not None
-                else ""
-            )
             print(
-                f"failed: {escape_member_name(result.member.name)}{detail}",
+                f"failed: {escape_member_name(result.member.name)}"
+                f"{_error_suffix(result)}",
                 file=err,
             )
 
@@ -1270,6 +1249,88 @@ def _report_extraction(
         file=err,
     )
     return blocked, failed
+
+
+def _directory_renames(
+    report: ExtractionReport,
+) -> tuple[dict[Path, Path], dict[Path, Path]]:
+    """Every directory rename in the run, as ``(all_renames, implied_renames)``.
+
+    Both map a requested path to the path written. A member inside a renamed
+    directory follows it (``dd/f`` -> ``dd (1)/f``) and so also reports
+    ``requested_path != path``; that is the directory's one rename, not a new one, and
+    :func:`_report_extraction` reads ``all_renames`` to tell the two apart. They are
+    collected before the report is walked, as the result that carries the rename is
+    not always first: with the directory stored twice, it is the later copy, after the
+    members written between the two.
+
+    A renamed directory the archive only implies has no result of its own, so its
+    rename is taken from the members that followed it. ``implied_renames`` holds
+    those, also included in ``all_renames``; the report prints each one once, at the
+    first member under it (:func:`_pop_implied_dir_rename`).
+    """
+    renamed_dirs = {
+        r.requested_path: r.path
+        for r in report.results
+        if r.member.type is MemberType.DIRECTORY
+        and r.requested_path is not None
+        and r.path is not None
+        and r.requested_path != r.path
+    }
+    implied_dirs: dict[Path, Path] = {}
+    for r in report.results:
+        if (
+            r.status is ExtractionStatus.EXTRACTED
+            and r.requested_path is not None
+            and r.path is not None
+            and not r.member.is_anti
+            and not _follows_renamed_dir(r.requested_path, r.path, renamed_dirs)
+        ):
+            implied = _implied_dir_rename(r.requested_path, r.path)
+            if implied is not None:
+                asked, written = implied
+                implied_dirs.setdefault(asked, written)
+    renamed_dirs.update(implied_dirs)
+    return renamed_dirs, implied_dirs
+
+
+def _pop_implied_dir_rename(
+    requested: Path,
+    renamed_dirs: dict[Path, Path],
+    implied_dirs: dict[Path, Path],
+) -> tuple[Path, Path] | None:
+    """The implied directory rename to print before the member at ``requested``.
+
+    Only ``requested``'s nearest renamed ancestor counts. Its rename is removed from
+    ``implied_dirs`` so it prints once; ``None`` when that ancestor's rename has a
+    result of its own or was already printed.
+    """
+    for ancestor in requested.parents:
+        if ancestor in renamed_dirs:
+            renamed_to = implied_dirs.pop(ancestor, None)
+            return None if renamed_to is None else (ancestor, renamed_to)
+    return None
+
+
+def _is_own_rename(result: ExtractionResult, renamed_dirs: dict[Path, Path]) -> bool:
+    """Whether ``result`` was written under a name other than the one it asked for,
+    and not only because it followed a renamed directory (:func:`_directory_renames`).
+    """
+    return (
+        result.requested_path is not None
+        and result.path is not None
+        and result.requested_path != result.path
+        # An anti-item deletes; where it deleted is not a rename.
+        and not result.member.is_anti
+        and not _follows_renamed_dir(result.requested_path, result.path, renamed_dirs)
+    )
+
+
+def _error_suffix(result: ExtractionResult) -> str:
+    """``": <detail>"`` for a blocked or failed member's line, or ``""`` with no error."""
+    if result.error is None:
+        return ""
+    return f": {format_error_detail(result.error)}"
 
 
 def _usage_line(report: ExtractionReport) -> str | None:
@@ -1395,6 +1456,36 @@ def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:
     return EXIT_OK
 
 
+def _report_stop(
+    exc: ArchiveyError | OSError,
+    *,
+    extracted: int,
+    blocked: int,
+    dry_run: bool,
+    err: TextIO,
+) -> None:
+    """Print why an extraction stopped before its end, and what it had done by then.
+
+    The first line carries the ``archivey: `` prefix (see
+    ``main._parse_and_dispatch``). Under CONTINUE it can repeat the detail of the
+    ``WARNING: Skipping …`` line printed just above it, which ``test`` suppresses.
+    That is kept on purpose: the warning says a member was skipped, this line says why
+    the run ended, and ``extract`` has no failure counter, so nothing is counted
+    twice.
+    """
+    print(f"archivey: {format_error_detail(exc)}", file=err)
+    parts: list[str] = []
+    if extracted:
+        parts.append(f"{extracted} member(s) extracted")
+    if blocked:
+        parts.append(f"{blocked} blocked")
+    if parts:
+        print(f"{', '.join(parts)} before the stop", file=err)
+    print("extraction stopped; remaining members were not extracted", file=err)
+    if dry_run:
+        print("dry run: nothing was written", file=err)
+
+
 def run_extract(
     *,
     archive: str,
@@ -1415,6 +1506,12 @@ def run_extract(
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
+    """Run ``archivey extract`` and return its exit code.
+
+    The string options are the command-line spellings (``policy``, ``overwrite``,
+    ``abort_on``); ``dest`` is ``-d``, or ``None`` for the default destination. Every
+    line goes to ``err``: the extracted files are the output.
+    """
     del out  # extract reports to stderr; files go to the filesystem
     # On the strings, before Path() turns "" into ".". The stdin token "-" is
     # refused by open_for_cli below.
@@ -1456,20 +1553,14 @@ def run_extract(
             if selection.settled and selection.selects_nothing:
                 return EXIT_FAIL
 
-        may_hoist = False
         if dest is not None:
-            target = Path(dest)
+            plan = _SmartDestPlan(Path(dest), may_hoist=False)
         else:
-            plan = resolve_smart_dest(
-                reader,
-                archive_path,
-                pred=pred,
-            )
-            target = plan.target
-            may_hoist = plan.may_hoist
-            if target != Path("."):
+            plan = resolve_smart_dest(reader, archive_path, pred=pred)
+            if plan.target != Path("."):
                 verb = "would extract" if dry_run else "extracting"
-                print(f"{verb} into {escape_path(target)}/", file=err)
+                print(f"{verb} into {escape_path(plan.target)}/", file=err)
+        target = plan.target
 
         base_progress: ProgressCallback | None = make_progress_callback(
             hide_progress=hide_progress, stream=err
@@ -1510,30 +1601,16 @@ def run_extract(
                 raise
             except (ArchiveyError, OSError) as exc:
                 # STOP-path member failure / always-stop (bomb guards,
-                # DiagnosticRaisedError): report what was already written, then
-                # the stop notice. Exit 1 always on abort (Q8 Option A): exit 3
-                # is reserved for a *completed* run with policy blocks and safe
-                # members on disk (blocks never abort under STOP). The
-                # ``archivey: `` prefix: see main._parse_and_dispatch.
-                # Under CONTINUE this line can repeat the detail of the
-                # ``WARNING: Skipping …`` line printed just above it, which ``test``
-                # suppresses. That is kept on purpose: the warning says a member was
-                # skipped, this line says why the run ended, and ``extract`` has no
-                # failure counter, so nothing is counted twice.
-                print(f"archivey: {format_error_detail(exc)}", file=err)
-                parts: list[str] = []
-                if members_extracted:
-                    parts.append(f"{members_extracted} member(s) extracted")
-                if members_blocked:
-                    parts.append(f"{members_blocked} blocked")
-                if parts:
-                    print(f"{', '.join(parts)} before the stop", file=err)
-                print(
-                    "extraction stopped; remaining members were not extracted",
-                    file=err,
+                # DiagnosticRaisedError). Exit 1 always on abort (Q8 Option A):
+                # exit 3 is reserved for a *completed* run with policy blocks and
+                # safe members on disk (blocks never abort under STOP).
+                _report_stop(
+                    exc,
+                    extracted=members_extracted,
+                    blocked=members_blocked,
+                    dry_run=dry_run,
+                    err=err,
                 )
-                if dry_run:
-                    print("dry run: nothing was written", file=err)
                 return EXIT_FAIL
             if pred is not None and not selection.settled:
                 if len(report) == 0 and selection.selects_nothing:
@@ -1544,10 +1621,10 @@ def run_extract(
                     return EXIT_FAIL
                 selection.report(err=err, dest_hint=True)
             hoist = _HoistResult(target)
-            if may_hoist and dry_run:
+            if plan.may_hoist and dry_run:
                 # The hoist moves what the extraction wrote; a dry run wrote nothing.
                 hoist = predict_hoist(target, report, overwrite=overwrite_enum, err=err)
-            elif may_hoist:
+            elif plan.may_hoist:
                 hoist = maybe_hoist_single_root(
                     target, overwrite=overwrite_enum, err=err
                 )
