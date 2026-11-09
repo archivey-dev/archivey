@@ -85,10 +85,17 @@ def lzo1x_decompressor(
     excluded: frozenset[OptionalLibrary] = frozenset(),
     natives: Natives = IN_PROCESS,
 ) -> Callable[[bytes, int], bytes]:
-    """The LZO1X block decoder to use: ``python-lzo`` when present and allowed, else
+    """The LZO1X block decoder to use: archivey-native's when present and allowed (Rust,
+    so it runs in this process whatever ``natives`` says), else ``python-lzo``, else
     :func:`lzo1x_decompress_python`, which is Python and so runs in this process
-    whatever ``natives`` says."""
-    return _python_lzo(excluded, natives) or lzo1x_decompress_python
+    too."""
+    from archivey.internal import native
+
+    return (
+        native.lzo1x(excluded, LzoError)
+        or _python_lzo(excluded, natives)
+        or lzo1x_decompress_python
+    )
 
 
 def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:

@@ -45,6 +45,15 @@ from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_format_api import _compressed_archive, _compressed_plugin
 
+
+@pytest.fixture(autouse=True)
+def _without_archivey_native(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests pick between python-lzo and the Python decoder. archivey-native,
+    when installed, comes before both, so it is turned off here; test_lzo.py and
+    the native package's parity tests cover it."""
+    monkeypatch.setenv("ARCHIVEY_NATIVE", "0")
+
+
 _DATA = Path(__file__).parent / "fixtures" / "external" / "lzop"
 # What the fixtures hold (README there): the same bytes are rebuilt here.
 _TEXT = b"".join(b"line %d of the lzop fixture\n" % i for i in range(12000))

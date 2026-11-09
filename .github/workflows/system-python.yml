@@ -1,0 +1,70 @@
+name: System Pythons (experiment)
+
+# The main CI runs on uv-managed Pythons (python-build-standalone), which bundle their
+# own recent liblzma, zlib, bz2 and OpenSSL. This runs the whole suite on the Pythons
+# users get elsewhere: actions/setup-python (python.org installers on Windows and macOS)
+# and Ubuntu's own /usr/bin/python3, to find failures that depend on those libraries.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/system-python.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: system-python-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: ${{ matrix.os }} / ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - { os: ubuntu-latest, python: system }
+    env:
+      UV_PYTHON_PREFERENCE: only-system
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python (setup-python)
+        id: setup
+        if: matrix.python != 'system'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Pick the interpreter
+        id: py
+        shell: bash
+        run: |
+          if [ "${{ matrix.python }}" = system ]; then
+            sudo apt-get update && sudo apt-get install -y python3-venv python3-dev
+            echo "path=/usr/bin/python3" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=${{ steps.setup.outputs.python-path }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Report the linked libraries
+        shell: bash
+        run: |
+          "${{ steps.py.outputs.path }}" - <<'PY'
+          import ctypes, ctypes.util, lzma, ssl, sys, zlib
+          print(sys.version, sys.executable)
+          print("zlib", zlib.ZLIB_RUNTIME_VERSION, "| ssl", ssl.OPENSSL_VERSION)
+          import _lzma
+          try:
+              lib = ctypes.CDLL(_lzma.__file__)
+              lib.lzma_version_string.restype = ctypes.c_char_p
+              print("liblzma", lib.lzma_version_string().decode())
+          except Exception as exc:  # statically linked or symbol hidden
+              print("liblzma version unknown:", exc)
+          PY
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install archivey
+        run: uv sync --python "${{ steps.py.outputs.path }}" --group dev --extra all
+      - name: Run the suite
+        run: uv run --python "${{ steps.py.outputs.path }}" --no-sync pytest tests/ -q -n auto --no-cov -p no:cacheprovider -rf

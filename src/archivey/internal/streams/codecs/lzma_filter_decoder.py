@@ -229,6 +229,10 @@ def _filter_decoder(
 ) -> FilterDecoder | PythonBranchFilterDecoder:
     decode = PYTHON_BRANCH_FILTERS.get(lzma_filter["id"])
     if decode is not None:
+        from archivey.internal import native
+
+        name = "arm64_decode" if lzma_filter["id"] == FILTER_ARM64 else "riscv_decode"
+        decode = native.branch_filter(name) or decode
         return PythonBranchFilterDecoder(
             decode=decode,
             start_offset=lzma_filter.get("start_offset", 0),

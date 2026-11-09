@@ -16,9 +16,12 @@ import functools
 import io
 import zlib
 from collections.abc import Sequence
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.internal.overrides import override
+
+if TYPE_CHECKING:
+    from archivey.internal.native import ZipCryptoState
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     read_exact,
@@ -141,12 +144,14 @@ class ZipCryptoKeys:
 
 def keys_after_header(
     password: bytes, header_ciphertext: bytes
-) -> tuple[ZipCryptoKeys, int]:
+) -> tuple[ZipCryptoState, int]:
     """Decrypt the 12-byte header; return the state after it and its last plaintext byte.
 
     The last byte is the check byte a correct password reproduces.
     """
-    keys = ZipCryptoKeys(password)
+    from archivey.internal import native
+
+    keys = native.zipcrypto_keys(password) or ZipCryptoKeys(password)
     plain = keys.decrypt(header_ciphertext[:ZIPCRYPTO_HEADER_LEN])
     return keys, plain[-1]
 
@@ -214,7 +219,7 @@ class ZipCryptoDecryptStream(ReadOnlyIOStream):
     Close owns ``source``.
     """
 
-    def __init__(self, source: BinaryIO, keys: ZipCryptoKeys, *, length: int) -> None:
+    def __init__(self, source: BinaryIO, keys: ZipCryptoState, *, length: int) -> None:
         # First: close() reads it, and IOBase.__del__ runs close() on a refused instance.
         self._source = source
         super().__init__()

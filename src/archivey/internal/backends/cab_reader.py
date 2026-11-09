@@ -44,8 +44,10 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
+from archivey.internal import native
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import metadata_limit_error
+from archivey.internal.native import FrameDecoder
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.lzx_decoder import (
     FRAME_SIZE,
@@ -493,10 +495,12 @@ class _FolderStream:
         self._pending = b""
         self._history = b""
         self.failed = False
-        self._lzx: LzxDecoder | None = None
+        self._lzx: FrameDecoder | None = None
         self._lzx_input = self._next
         if folder.method == _LZX:
-            self._lzx = LzxDecoder(folder.window_bits, self._lzx_more)
+            self._lzx = native.lzx_decoder(
+                folder.window_bits, self._lzx_more
+            ) or LzxDecoder(folder.window_bits, self._lzx_more)
 
     def _payload(self, number: int) -> bytes:
         block = self._table.blocks[number]

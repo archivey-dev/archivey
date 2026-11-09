@@ -154,6 +154,9 @@ brotli = LazyOptional(OptionalLibrary.BROTLI)
 # python-lzo: only an accelerator, since LZO1X decodes in Python without it. Lazy
 # because it re-enables the GIL (see LazyOptional).
 lzo = LazyOptional(OptionalLibrary.LZO)
+# archivey-native: Rust versions of the decoders archivey otherwise runs in Python. Only
+# an accelerator; ``archivey.internal.native`` checks its ABI version before use.
+native = LazyOptional(OptionalLibrary.ARCHIVEY_NATIVE)
 # bzip3 (imported as ``bz3``): decoded in a child process unless isolation is NONE, so
 # this process imports it only then.
 bzip3 = LazyOptional(OptionalLibrary.BZIP3)
