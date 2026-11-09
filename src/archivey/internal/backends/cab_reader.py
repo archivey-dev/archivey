@@ -50,6 +50,7 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
+from archivey.internal.config import check_decoder_memory
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import metadata_limit_error
 from archivey.internal.overrides import override
@@ -146,7 +147,12 @@ class _BlockTable(NamedTuple):
     output: tuple[int, ...]
     """Where each block's output starts in the folder's output, and, last, the total."""
     complete: bool
-    """``False`` when the cabinet ends before the folder's last block header."""
+    """``False`` when the table stops before the folder's last block header: the
+    cabinet ends there, or that header is refused (``refused``)."""
+    refused: str | None = None
+    """Why the block header after the last one in the table is damage. As in libmspack,
+    which reads each header only when the decoder needs that block, the refusal is
+    raised when a read reaches the block, not when the table is read."""
 
 
 class _Location(NamedTuple):
@@ -320,6 +326,7 @@ class CabReader(IndexedReader[_Location]):
         header = _DATA.size + self._data_reserve
         size = self._source.size
         complete = True
+        refused: str | None = None
         max_meta = self._max_meta
         for number in range(folder.blocks):
             if max_meta is not None and (
@@ -336,16 +343,26 @@ class CabReader(IndexedReader[_Location]):
                 complete = False
                 break
             checksum, stored, decoded = _DATA.unpack(raw)
-            if stored > _INPUT_MAX or decoded > _BLOCK_MAX:
-                raise CorruptionError(
+            if not decoded:
+                # libmspack reads this as a block split across cabinets, and fails
+                # it when there is no next cabinet. Sets are refused at open.
+                refused = (
+                    f"data block {number} of folder {index} has no output: a block "
+                    "split across cabinets, in a cabinet that is not part of a set"
+                )
+            elif stored > _INPUT_MAX or decoded > _BLOCK_MAX:
+                refused = (
                     f"data block {number} of folder {index} stores {stored} bytes "
                     f"for {decoded}; a block holds at most {_INPUT_MAX} for "
                     f"{_BLOCK_MAX}"
                 )
+            if refused is not None:
+                complete = False
+                break
             blocks.append(_Block(pos + header, stored, decoded, checksum))
             output.append(output[-1] + decoded)
             pos += header + stored
-        table = _BlockTable(tuple(blocks), tuple(output), complete)
+        table = _BlockTable(tuple(blocks), tuple(output), complete, refused)
         with self._lock:
             kept = self._tables.get(index)
             if kept is not None:  # another thread read it meanwhile
@@ -386,9 +403,21 @@ class CabReader(IndexedReader[_Location]):
                 f"folder {locator.folder} declares an LZX window of "
                 f"2**{folder.window_bits} bytes"
             )
-        table = self._block_table(locator.folder)
+        if folder.method == _LZX:
+            check_decoder_memory(
+                1 << folder.window_bits,
+                limits=self._context.config.decoder_limits,
+                what=f"folder {locator.folder}'s LZX window",
+                usage=self._context._usage,
+            )
         size = member.size or 0
+        if not size:
+            # Nothing to decode: do not run the folder up to the member's offset.
+            return MemberData(io.BytesIO(b""), bounded=True)
+        table = self._block_table(locator.folder)
         end = locator.offset + size
+        if table.refused is not None and end > table.output[-1]:
+            raise CorruptionError(table.refused)
         if table.complete and end > table.output[-1]:
             raise CorruptionError(
                 f"{quoted(member.name)} ends at byte {end} of folder "
@@ -402,7 +431,7 @@ class CabReader(IndexedReader[_Location]):
         stream = self._folder_stream(locator.folder, folder, table, locator.offset)
         return MemberData(
             _MemberStream(self, stream, size),
-            checked=checked and size > 0,
+            checked=checked,
             bounded=True,
         )
 
@@ -563,10 +592,20 @@ class _FolderStream:
                 raise TruncatedError(
                     f"folder {self.index} ends after {self.position} bytes"
                 )
+            if table.refused is not None and left <= 0:
+                raise CorruptionError(table.refused)
             frame = min(FRAME_SIZE, left) if table.complete else FRAME_SIZE
-            return self._lzx.decode_frame(frame)
+            try:
+                return self._lzx.decode_frame(frame)
+            except TruncatedError:
+                # The input ran out at the refused block, not at a cut.
+                if table.refused is not None:
+                    raise CorruptionError(table.refused) from None
+                raise
         number = self._next
         if number >= len(table.blocks):
+            if table.refused is not None:
+                raise CorruptionError(table.refused)
             raise TruncatedError(
                 f"folder {self.index} ends after {self.position} bytes"
                 if table.complete
