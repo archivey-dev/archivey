@@ -243,9 +243,8 @@ class ExtractionLimits:
     ``None`` on a field disables that guard. :attr:`UNLIMITED` sets every field to
     ``None``.
 
-    The decompression ratio is not here: it holds every decode, reads and listing
-    included, so it is :attr:`DecoderLimits.max_ratio`. Its fields left this class in
-    0.4.0.
+    The decompression ratio is :attr:`DecoderLimits.max_ratio`, which holds every
+    decode, reads and listing included.
     """
 
     max_extracted_bytes: int | None = 2 * 2**30
@@ -258,8 +257,8 @@ class ExtractionLimits:
     Crossing it stops the whole extraction, even under ``on_error="continue"``.
     """
 
-    # Keyword-only: in 0.3 the second positional was ``max_ratio``, so a 0.3 call
-    # ``ExtractionLimits(bytes, 100)`` raises rather than becoming an entry cap.
+    # Keyword-only, so a second positional argument raises rather than setting an
+    # entry cap the caller may not have meant.
     _: KW_ONLY
     max_entries: int | None = 262_144
     """Most entries one extraction may create: files, directories and links.

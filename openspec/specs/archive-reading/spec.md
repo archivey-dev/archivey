@@ -1362,7 +1362,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | --- | --- |
 | `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
 | `open_archive(..., config=ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=100)))` then `extract_all(dest)` | 100:1 per-member ratio enforced (`safe-extraction`), and on member reads |
-| `ExtractionLimits(max_ratio=100)` | `TypeError`: the ratio fields left `ExtractionLimits` in 0.4.0; `decoder_limits` holds them |
+| `ExtractionLimits(max_ratio=100)` | `TypeError`: `ExtractionLimits` holds no ratio field; `decoder_limits` holds them |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 | `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
@@ -1788,9 +1788,8 @@ install cannot vouch for that link.
 `isinstance`, as base classes with no public constructor: every stream and pass
 archivey hands out SHALL be an instance of an internal subclass, so how one is built
 can change in any release. Calling either base directly, or a subclass that leaves an
-abstract method unimplemented (as one written for archivey 0.2 does), SHALL raise
-`TypeError` naming where to get one. Archivey 0.3 built the internal subclass instead,
-with a `DeprecationWarning`; 0.4.0 removed that (DR-12a).
+abstract method unimplemented, SHALL raise
+`TypeError` naming where to get one.
 
 #### Scenario: construction matrix
 

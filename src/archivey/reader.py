@@ -63,8 +63,8 @@ _T_co = TypeVar("_T_co", covariant=True)
 
 def _refuse_abstract(cls: type, get: str) -> None:
     """Raise ``TypeError`` for ``cls`` when it has an abstract method left: the public
-    base itself, or a subclass written for archivey 0.2, when these classes were
-    concrete. The message says where to get one instead."""
+    base itself, or an incomplete subclass. The message says where to get one
+    instead."""
     missing = getattr(cls, "__abstractmethods__", None)
     if missing:
         raise TypeError(

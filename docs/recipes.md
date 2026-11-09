@@ -66,9 +66,9 @@ with archivey.open_archive("dataset.tar.gz", config=config) as archive:
 ```
 
 `ExtractionLimits.UNLIMITED` turns off the byte and entry caps of extraction,
-`DecoderLimits(max_ratio=None)` the expansion check for reads, listing and extraction, and `ListingLimits.UNLIMITED` both listing
-limits. Listing still costs about 1.5 KiB of
-memory per member. To keep some protection, raise single fields instead, such as
+`DecoderLimits(max_ratio=None)` the expansion check for reads, listing and extraction, and
+`ListingLimits.UNLIMITED` both listing limits. Listing still costs about 1.5 KiB of memory per
+member. To keep some protection, raise single fields instead, such as
 `ListingLimits(max_members=5_000_000, max_metadata_bytes=2**30)`.
 [Hardening](security.md#hardening) lists each limit with its default and what it costs.
 

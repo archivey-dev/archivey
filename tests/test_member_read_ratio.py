@@ -362,15 +362,6 @@ def test_extraction_limits_unlimited_keeps_the_readers_ratio(tmp_path: Path) -> 
     assert (tmp_path / "out2" / "zeros").stat().st_size == 24 * _MIB
 
 
-def test_extraction_limits_left_unset_do_not_warn(
-    recwarn: pytest.WarningsRecorder,
-) -> None:
-    ExtractionLimits()
-    ExtractionLimits(max_extracted_bytes=1)
-    _ = ExtractionLimits.UNLIMITED
-    assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
-
-
 class _Decoder(io.RawIOBase):
     """Stands in for a member's decoder: records the furthest offset any call reached.
     Not a ``BytesIO``, so its size is never cheap."""
