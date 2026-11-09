@@ -77,7 +77,10 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
     source_name,
 )
-from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.streamtools.binaryio import (
+    ask_resume_offset,
+    read_blocking,
+)
 from archivey.terminal import display_path
 
 if TYPE_CHECKING:
@@ -997,6 +1000,30 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     def seek_is_expensive(self) -> bool:
         """Whether a stream volume may re-decode on a seek (see ``seek_is_expensive``)."""
         return self._seek_is_expensive
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """The offset, at or before ``target``, that a seek to ``target`` reads from.
+
+        ``target`` when no volume's seek is expensive. Otherwise the volume that holds
+        ``target`` is asked, in its own offsets: a path answers ``target``, a remote
+        volume (a ``RangeSource``) too, and a member stream its decoder's restart
+        point. ``None`` when that volume cannot answer, or answers 0 for a later
+        target: a member view clamps a point behind its own start to 0, and
+        ``seeks_to_end_are_cheap`` refuses that 0 only at the start of the set.
+        """
+        if not self._seek_is_expensive:
+            return target
+        if target < 0 or self._size == 0:
+            return None
+        index = min(bisect_right(self._offsets, target) - 1, self.volume_count - 1)
+        start = self._offsets[index]
+        source = self._volume_items[index]
+        if isinstance(source, Path):
+            return target
+        inner = ask_resume_offset(source, target - start)
+        if inner is None or (inner == 0 and target > start):
+            return None
+        return start + inner
 
     @property
     def volume_ranges(self) -> list[tuple[int, int]]:
