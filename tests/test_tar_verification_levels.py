@@ -237,8 +237,9 @@ def _plain_tar(files: dict[str, bytes]) -> bytes:
 @pytest.mark.parametrize(
     ("tar", "cut", "cause"),
     [
-        # The read ends early: no error stopped the check.
-        pytest.param(_tar("w"), 20, "ends early", id="ended"),
+        # Only the 8-byte trailer is cut: the deflate data is whole, so the read
+        # ends early and no error stopped the check.
+        pytest.param(_tar("w"), 8, "ends early", id="ended"),
         # The cut lands inside b's data, which does not compress, so it stays inside
         # it whichever zlib build made the stream: an error stopped the check.
         pytest.param(
