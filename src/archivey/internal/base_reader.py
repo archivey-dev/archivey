@@ -82,6 +82,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     _UsageTypeError,
     _UsageValueError,
+    exception_detail,
     raw_message_of,
 )
 from archivey.internal.arg_checks import (
@@ -4373,7 +4374,7 @@ class BaseArchiveReader(ArchiveReader):
                 c for c in error.covers if c.verified is not Verification.CHECKSUM
             )
             if pending:
-                spanning.append(SpanningCheckError(str(error), covers=pending))
+                spanning.append(SpanningCheckError(error.raw_message, covers=pending))
                 spanning[-1].__cause__ = error.__cause__
                 spanning[-1].archive_name = error.archive_name
         self._spanning_retry = retry_next
@@ -4432,7 +4433,7 @@ class BaseArchiveReader(ArchiveReader):
             "the read did not reach that check, most likely because the archive "
             "ends early"
             if cause is None
-            else str(cause)
+            else exception_detail(cause)
         )
         error = SpanningCheckError(
             f"A check over several members did not run, so nothing confirms the data "
