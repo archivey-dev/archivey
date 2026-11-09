@@ -228,7 +228,7 @@ and bytes read per operation, and a PR that adds a seek to a common path fails i
   pipe the size is unknown, so it divides by the bytes read so far, and that is unfair at
   the start: a `.tar.gz` that begins with 64 MiB of zeros looked like a bomb from a pipe
   and passed from disk, which broke "same input, same outcome". The live check now waits
-  for `live_ratio_activation_threshold` (256 MiB, chosen by the maintainer on 2026-10-13)
+  for `live_ratio_activation_threshold` (default 256 MiB)
   before it applies; `max_extracted_bytes` still bounds the total (PR 775).
 - **A hard link whose source the caller filtered out** can be recovered from a seekable
   source by a second pass. From a pipe the source's bytes are gone, so that link fails

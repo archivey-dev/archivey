@@ -37,7 +37,7 @@ A `DiagnosticCollector` is created **before** detection, so that the warnings de
 records and the warnings the reader records share one budget and one order, and
 `reader.diagnostics` shows both.
 
-## Step 2. Build the source (`internal/source.py`, `resolve_source`)
+## Step 2. Build the source (`internal/volumes.py` `resolve_source`, building an `internal/source.py` `ArchiveSource`)
 
 Whatever the caller passed becomes one `ArchiveSource`:
 

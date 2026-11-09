@@ -38,7 +38,7 @@ summary, so you can skim and come back.
 
 | Page | What it answers |
 | --- | --- |
-| [1. Vocabulary](01-vocabulary.md) | The fifteen words the code and the docs use everywhere, and which ones mean something different from what you would guess |
+| [1. Vocabulary](01-vocabulary.md) | The words the code and the docs use everywhere, and which ones mean something different from what you would guess |
 | [2. Where things live](02-where-things-live.md) | The source tree, one directory at a time: what each part is for, which files are big and why, and the two boundaries that matter |
 | [3. The life of one `open_archive` call](03-life-of-an-open.md) | One call followed from the caller's argument to the first decoded byte, with the function that does each step |
 | [4. Readers and the member list](04-readers-and-members.md) | The shared base class, the one member list per reader, walks and passes, link resolution, and what keeps two operations from stepping on each other |

@@ -89,9 +89,8 @@ wins), and the links are resolved. Then the list is *published*: `members()`,
 This shape is the answer to a real problem. Readers used to build their member lists
 differently, and some built them more than once: `extract_all()` on a ZIP listed it twice
 and got two sets of member objects, so diagnostics attached to the first set and the
-caller held the second. The maintainer asked for "a common caching framework in the base
-class that all readers use… asking the subclass method to read the member list just once"
-(2026-09-23). The design is in the archived change
+caller held the second. Now the base class owns the one walk and asks the backend for the
+member list just once. The design is in the archived change
 `openspec/changes/archive/2026-09-24-one-member-listing-per-reader/`, implemented in PR 423.
 
 ### Damage while listing

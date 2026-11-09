@@ -194,8 +194,8 @@ speed, never the result or the error type, except for one crafted shape listed i
 
 `ArchiveyConfig.process_isolation` chooses which native decoders run in a child
 process. The default, `KNOWN_CRASHES`, isolates the ones that have been *seen* to crash
-the process (pyppmd for every PPMd member, rapidgzip) and rapidgzip's bzip2 decoder as a
-precaution. `NATIVE_DECODERS` isolates the standard-library decoders too; `NONE` starts no
+the process: rapidgzip (`use_rapidgzip`, `use_indexed_bzip2`), pyppmd (every PPMd member)
+and, as a precaution, libbzip3 (every `.bz3` file, a young library). `NATIVE_DECODERS` isolates the standard-library decoders too; `NONE` starts no
 child. Every native decoder object is built through `codecs/isolated.py`'s `Natives`, which
 gives either the real object or a proxy with the same methods whose object lives in a
 child. Only the native object moves; checksums, decryption and parsing stay in the caller.

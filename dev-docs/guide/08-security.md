@@ -48,14 +48,14 @@ Parsing in Python still needs care in three places:
   bounded source (`ArchiveSource` never reads more than the source can supply), and
   counts are checked against `ListingLimits` while they are parsed.
 - **Recursion and nesting.** Deep directory trees, chains of links and nested archives are
-  walked with loops or explicit depth checks, not unbounded recursion. The standard
-  library does not always do the same: a review on 2026-11-08 found that a tree of about
-  1,000 levels raised `RecursionError` inside `os.makedirs` and the dry run's cleanup
-  (fix: PR 1355).
+  meant to be walked with loops or explicit depth checks, not unbounded recursion. The
+  standard library does not always do the same: a review on 2026-11-08 found that a tree
+  of about 1,000 levels raises `RecursionError` inside `os.makedirs` and the dry run's
+  cleanup (fix in review: PR 1355).
 - **Quadratic shapes.** A loop that is fine for a thousand members can be a bomb at a
   quarter of a million (the default `max_members`). The 2026-11-09 reviews found one in
   the RPM reader, where every file of a hard-link set kept its own copy of the set, so
-  4,000 files sharing one inode took 129 MiB to list (fix: PR 1392).
+  4,000 files sharing one inode take 129 MiB to list (fix in review: PR 1392).
 
 ## Layer 2: native decoders in a child process
 
@@ -64,8 +64,10 @@ on hostile data; rapidgzip aborts on a truncated stream. Nothing at the Python l
 prevent that in every case, so those decoders run in a child process
 ([page 6](06-streams-and-codecs.md#child-processes),
 [process isolation](../topics/process-isolation.md)). A crash becomes `CorruptionError`.
-The rule is "observed crashes", not "native code": the standard library's decoders are
-native too and stay in-process unless the caller asks for `NATIVE_DECODERS`.
+The rule is "observed crashes", not "native code", with one precaution: libbzip3, a young
+library with memory-safety fixes in its recent releases, is isolated too. The standard
+library's decoders are native and stay in-process unless the caller asks for
+`NATIVE_DECODERS`.
 
 The child is a crash boundary, not a sandbox. It has the caller's user and filesystem,
 and no timeout.
@@ -167,8 +169,9 @@ The password goes on stdin, not the command line (except for `unar`, which has n
 way: an accepted risk). A member name reaches `unrar` only inside an include-mask switch
 `-n./name`, and, since synthetic archives, usually not at all: members are named `m0`,
 `m1`, … in the synthetic file. Names containing `*` used to trigger catastrophic
-backtracking in `unrar`'s own mask matcher; replacing every `*` with `?` in the mask
-ended it ([page 11](11-bugs-and-lessons.md#unrars-own-mask-matcher-backtracked)). A `unar`
+backtracking in `unrar`'s own mask matcher. PR 371 first narrowed `*` to `?`; today a name
+holding `*` or `?` never reaches `unrar` as a mask at all, and that member is read through
+a synthetic archive ([page 11](11-bugs-and-lessons.md#unrars-own-mask-matcher-backtracked)). A `unar`
 build that drops RAR5 members silently is detected and refused.
 
 ## Layer 6: archive text reaching a terminal is inert
@@ -217,8 +220,8 @@ non-guarantee with its reason. The ones to know:
   Accepting a new residual risk is the maintainer's call.
 - Hostile fixtures are built in code, and property tests (Hypothesis) generate names and
   link shapes (`tests/risky_text.py`).
-- Atheris fuzzes every parser and decoder on each PR, briefly, and nightly for longer
-  ([fuzzing](../fuzzing.md)). Every test archive is also cut, bit-flipped, zeroed and padded,
+- Atheris fuzzes every parser and decoder briefly in the merge queue and for longer
+  nightly ([fuzzing](../fuzzing.md)); pull request pushes do not fuzz. Every test archive is also cut, bit-flipped, zeroed and padded,
   and must either read or raise an `ArchiveyError`.
 - Whole-codebase audits run from time to time, each with one goal; their reports and
   reproducers are kept outside the repo, and their fixes land as normal PRs.

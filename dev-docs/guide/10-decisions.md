@@ -78,8 +78,10 @@ run the library in a child process
   call order and sent members over 16 MiB to a child. On 2026-10-20 that was reversed:
   every PPMd member now decodes in a child, because the safe call order held only by
   measurement, not by a rule anyone could check
-  (ADR [0022](../decisions/0022-ppmd-always-in-a-child-process.md)). The cost is about
-  75 ms of start-up per child, which dominates small members.
+  (ADR [0022](../decisions/0022-ppmd-always-in-a-child-process.md)). What made that
+  affordable is that children are reused from a pool: each PPMd decoder costs about 1.4 to
+  2 ms more than in-process (the `ProcessIsolation.KNOWN_CRASHES` docstring), not a
+  process start per member.
 - **rapidgzip** called `std::terminate` on a truncated gzip, so it moved to a child
   process (PR 493); see [page 11](11-bugs-and-lessons.md#rapidgzip-killed-the-process-then-lost-bytes)
   for what came after.
@@ -136,8 +138,9 @@ entry point, and when or where a call is made. Two rulings show how far it goes:
   extraction waits for the central directory before it places members
   ([page 7](07-pipes-and-files.md)).
 - **Auto-detection and a forced format must list the same contents** (maintainer,
-  2026-11-07, on PR 1303). Accelerators are the only accepted exception, for one crafted
-  shape ([DR-5a](../design-rules.md#dr-5a-malformed-corner-cases-may-differ-a-little)).
+  2026-11-07, on PR 1303). Accelerators are the accepted exception there, for one crafted
+  shape ([DR-5a](../design-rules.md#dr-5a-malformed-corner-cases-may-differ-a-little),
+  which lists every accepted difference).
 
 DR-5a is the release valve: for a malformed shape that only a crafted archive produces, a
 format may keep its own behaviour if matching would need real plumbing. It never relaxes

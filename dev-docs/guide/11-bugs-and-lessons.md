@@ -44,10 +44,11 @@ closes it. Measurement is the benchmark harness's switch, so no ordinary caller 
 but the same shape was one wrapper away on every backend.
 
 **Fix, in two steps.** PR 400 wrapped every caller stream in a borrowing wrapper at the one
-boundary every source crosses. The maintainer then asked for "a single class" instead of
-a stack of single-purpose wrappers (borrowing, full-count reads, detection replay, ISO's
-bounded reads), each present or absent depending on the source, the backend and whether
-detection ran. PR 419 replaced them all with one `ArchiveSource`
+boundary every source crosses. That still left a stack of single-purpose wrappers
+(borrowing, full-count reads, detection replay, ISO's bounded reads), each present or
+absent depending on the source, the backend and whether detection ran. The
+`single-archive-source` change, implemented in PR 419, replaced them all with one
+`ArchiveSource`
 ([page 3](03-life-of-an-open.md)). The reader owns the source and closes only what
 archivey opened. `tests/test_source_ownership.py` runs every format with two stream
 shapes, with measurement on and off, and **reads from the stream afterwards** rather than
@@ -185,10 +186,11 @@ backtracked exponentially on it: archivey's (which compiled `*` to `.*`) and RAR
 `unrar` alone took 15.6 s on that mask. The time was spent before the subprocess started,
 so no subprocess timeout applied.
 
-PR 371 replaces every `*` with `?` in the mask. `?` matches exactly one character, so the
+PR 371 replaced every `*` with `?` in the mask. `?` matches exactly one character, so the
 mask keeps the name's length, still matches the member itself, and matches a subset of what
-the `*` mask matched. The subprocess dropped to 0.009 s. Synthetic RAR archives later
-removed most name passing altogether ([page 7](07-pipes-and-files.md)).
+the `*` mask matched. The subprocess dropped to 0.009 s. Today a name holding `*` or `?`
+is never sent as a mask at all: that member is read through a synthetic RAR archive
+([page 7](07-pipes-and-files.md)).
 
 **Lesson.** Any string from the archive that reaches a pattern matcher, ours or another
 program's, is an attack surface. Prefer a form that cannot backtrack over a timeout.

@@ -146,8 +146,9 @@ built-in backends.
 
 ### Why some built-in formats use the public interface
 
-The interface was designed after the maintainer asked for "an architecture that can carry
-TAR/ZIP-like streaming formats", not an indexed-only one (2026-10-25), and asked for it
+The interface was designed after the maintainer asked for an architecture that carries
+streaming formats like TAR from the first version, not an indexed-only one (2026-10-25,
+`openspec/changes/plugin-api/design.md` §2a), and asked for it
 to be checked against real third-party format libraries (ARJ, CAB and others) before it was
 built. ISO moved onto it first, with a benchmark to catch regressions; then CPIO, ar and
 SquashFS; then the new formats (RPM, CAB, XAR, deb) were written on it from the start.
@@ -211,7 +212,7 @@ limits and end-of-stream checks as the built-in codecs.
 - **`plugins=False`** turns plugin formats off. An off plugin is left out of detection
   altogether (magic, extensions, probe), so its code does not run and its signals cannot
   shadow another plugin's (maintainer, 2026-10-28).
-- **`replace=`** swaps a built-in reader (ZIP, 7z, RAR, ISO) for an indexed plugin
+- **`replace=`** swaps a built-in reader (ZIP, 7z, RAR, ISO, SquashFS, CAB or XAR) for an indexed plugin
   handler. The replacement gets the archive from its start in one file: no volumes, no
   stub.
 - **`exclude_libraries=`** makes optional packages read as not installed for the call.

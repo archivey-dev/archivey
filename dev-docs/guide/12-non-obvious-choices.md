@@ -25,10 +25,10 @@ always-seekable API lets a developer test on ZIP and ship a slow or failing path
 it, and then it works on every format.
 
 **Why does `stream_members()` never seek, even on a seekable file?**
-The integrity guarantee is for a read from start to end with no seek
-([DR-4a](../design-rules.md#dr-4a-the-integrity-guarantee-is-for-a-start-to-end-read)). A
-pass that seeks would trust the index for where data is, and a crafted index can lie
-([page 7](07-pipes-and-files.md)).
+A pass reads forward, and that is what keeps it cheap and the same on every format,
+pipes included (ADR [0003](../decisions/0003-member-streams-opt-in.md) amendment,
+2026-09-26; [page 7](07-pipes-and-files.md)). Seeking is for streams from `open()` with
+`seekable_members=True`.
 
 **Why is there no `len(reader)` and no `reader[name]`?**
 The number of members in a TAR is unknown until it has been read to the end, and a pipe
@@ -144,9 +144,10 @@ stable code a caller can test, count, ignore or raise on per call with `Diagnost
 
 ## Speed and processes
 
-**Why does every PPMd member start a child process, even a 1 KB one?**
+**Why does every PPMd member decode in a child process, even a 1 KB one?**
 pyppmd can crash the interpreter, and the call order that avoided it was safe only by
-measurement. The child costs about 75 ms and keeps the process alive
+measurement. Children are reused, so each PPMd decoder costs about 1.4 to 2 ms more than
+in-process, and a crash ends the child, not the caller
 (ADR [0022](../decisions/0022-ppmd-always-in-a-child-process.md)).
 
 **Why does rapidgzip only kick in from 16 MiB under `AUTO`?**

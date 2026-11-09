@@ -24,8 +24,11 @@ Other pages own parts of this, and this page links them rather than repeating th
 - **Three settings.** `KNOWN_CRASHES` (the default) isolates the decoders that have been
   seen to crash, rapidgzip's DEFLATE family (`use_rapidgzip`) and pyppmd (every PPMd
   member), and rapidgzip's bzip2 decoder (`use_indexed_bzip2`) as a precaution, because
-  it comes from the same library. `NATIVE_DECODERS` also isolates zlib, bz2, lzma, zstd, lz4, brotli and
-  inflate64, and the trial decodes that detection runs. `NONE` starts no child: pyppmd
+  it comes from the same library. libbzip3 (every `.bz3` file) is isolated as a precaution
+  too: it is a young library with memory-safety fixes in its 2023 releases, and it decodes
+  in a child under every setting but `NONE`. `NATIVE_DECODERS` also isolates zlib, bz2,
+  lzma, zstd, lz4, brotli, inflate64 and python-lzo, and the trial decodes that detection
+  runs. `NONE` starts no child: pyppmd
   decodes in this process, and rapidgzip is not used at all (`AUTO` falls back to the
   standard library, and `ON` is refused when the config is built).
 - **What a caller sees when a child dies.** A crash signal (or its Windows status) is
