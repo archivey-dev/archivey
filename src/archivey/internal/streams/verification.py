@@ -132,8 +132,9 @@ def find_frame_watch(stream: object, *, _depth: int = 0) -> Callable[[], bool] |
 
 
 # The level lock: a leaf lock held only for the compare-and-store below, never across
-# I/O or a callback, and no other lock is taken while it is held. One for the process: the critical section is a few
-# attribute reads and writes, so sharing it costs nothing measurable.
+# I/O or a callback, and no other lock is taken while it is held. One for the process:
+# the critical section is a few attribute reads and writes, so sharing it costs nothing
+# measurable.
 _LEVEL_LOCK = threading.Lock()
 
 

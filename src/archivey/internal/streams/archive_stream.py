@@ -8,7 +8,9 @@ or ``None`` to let it propagate), then *stamped* with format/archive/member cont
 
 It is the top of a member's stream stack, the object the caller reads. Under it sit,
 from the top down: the member's checks (a ``MemberVerifier`` from ``verify.py``, held
-on this handle, not as a layer of its own); the codec stream, most often a
+on this handle in most cases; a ``VerifyingStream`` layer of its own holds it over an
+accelerated codec, as a length backstop, and under ZIP's wrapper, for a ZipCrypto
+member's CRC); the codec stream, most often a
 :class:`~archivey.internal.streams.decompressor_stream.DecompressorStream`, and none
 for a stored member; a decrypt stage for an encrypted member (``crypto.py``); and the
 member's bytes in the archive source, most often a slice of it (``streamtools``). A
@@ -339,9 +341,7 @@ class ArchiveStreamImpl(ArchiveStream):
     _rewind_quiet = False
     # Set by ``close()`` before it takes the inner down: a read that fails on another
     # thread because of that close raises the closed-file error
-    # (``_fail_unless_closed``). A class default, so it exists even when ``__init__``
-    # raised (the verifier build can, under a RAISE policy): ``IOBase.__del__`` still
-    # calls ``close()`` then.
+    # (``_fail_unless_closed``).
     _closing = False
     # The content verdict this stream raised, if any, kept without its frames
     # (``kept_errors``). Every later read and seek raises it again (see ``_fail``),

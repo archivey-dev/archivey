@@ -974,7 +974,7 @@ def build_member_verifier(
 class VerifyingStream(ReadOnlyIOStream):
     """Wrap ``inner`` and verify digests/length via a :class:`MemberVerifier`.
 
-    For checks that must sit below another wrapper: the length backstop under an
+    For checks that must sit below another wrapper: the length backstop over an
     accelerated codec (``rapidgzip_select``), and the CRC under ZIP's wrapper for a
     ZipCrypto member whose password only that CRC confirms (``zip_reader``), and
     tests. Member backends otherwise fuse the same verifier into
