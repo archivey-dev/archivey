@@ -75,16 +75,17 @@ from archivey.internal.streams.verification import (
 )
 
 
-class _StreamChecksumError(CorruptionError):
+class StreamChecksumError(CorruptionError):
     """A whole-stream checksum failed after the stream's bytes were delivered.
 
-    Internal: callers see a :class:`CorruptionError`. A reader that tolerates a decode
-    failure past the end of its own data (the TAR end-of-archive scan) re-raises this
-    one, because the checksum covers bytes it has already handed out. Raised for a
-    checksum over the whole decoded stream (or a member of it): gzip CRC-32 and ISIZE,
-    zlib Adler-32, the zstd and lz4 content checksums, lzip CRC-32 and data size. Not
-    for a check that covers one block, and not for xz, whose integrity-check failure
-    liblzma reports with the same message as any corrupt input.
+    Not exported: callers catch :class:`CorruptionError`. The name has no leading
+    underscore because it is the type name a user sees in a traceback. A reader that
+    tolerates a decode failure past the end of its own data (the TAR end-of-archive
+    scan) re-raises this one, because the checksum covers bytes it has already handed
+    out. Raised for a checksum over the whole decoded stream (or a member of it): gzip
+    CRC-32 and ISIZE, zlib Adler-32, the zstd and lz4 content checksums, lzip CRC-32 and
+    data size. Not for a check that covers one block, and not for xz, whose
+    integrity-check failure liblzma reports with the same message as any corrupt input.
     """
 
 
@@ -107,12 +108,12 @@ def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
 
     zlib names a failed trailer check "incorrect data check" (the gzip CRC-32 or the
     zlib Adler-32) or "incorrect length check" (gzip ISIZE); both cover the whole
-    member, so they are :class:`_StreamChecksumError`. Anything else is damage to
+    member, so they are :class:`StreamChecksumError`. Anything else is damage to
     the deflate body itself.
     """
     text = str(exc)
     if "incorrect data check" in text or "incorrect length check" in text:
-        return _StreamChecksumError(
+        return StreamChecksumError(
             f"Error reading {label} stream: {exception_detail(exc)}"
         )
     return CorruptionError(f"Error reading {label} stream: {exception_detail(exc)}")

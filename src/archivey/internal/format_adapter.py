@@ -22,7 +22,7 @@ import lzma
 import threading
 import weakref
 from collections.abc import Callable, Generator, Iterator, Mapping
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import fields, replace
 from typing import Any, BinaryIO, ClassVar, NoReturn, TypeVar, cast
 
@@ -83,6 +83,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
+from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
@@ -98,7 +99,8 @@ from archivey.internal.streams.codecs import (
     single_file_codecs,
 )
 from archivey.internal.streams.codecs.registry import save_codec_state
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.decompressor_stream import StreamChecksumError
+from archivey.internal.streams.read_hints import mark_read_span, read_span_hint
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
@@ -269,6 +271,7 @@ class _PluginAdapter(BaseArchiveReader):
             report=self._report,
             link_target_unavailable=self._link_target_unavailable,
             hold=self._hold,
+            charge_metadata=self._charge_metadata,
             open_nested=self._open_nested,
         )
         self._reader = self._open_reader(context)
@@ -372,13 +375,18 @@ class _PluginAdapter(BaseArchiveReader):
             input_size = source_byte_size(data)
             if input_size is not None:
                 changes["compressed_input_size"] = input_size
-        return open_codec_stream(
+        decoded = open_codec_stream(
             codec,
             data,
             config=copy_with(self._decoder_config, **changes),
             params=params,
             collector=self._diagnostics_collector,
         )
+        # A decoder over a view reads the view's span.
+        hint = read_span_hint(data)
+        if hint is not None:
+            mark_read_span(decoded, hint)
+        return decoded
 
     def _member_id(self, member: ArchiveMember | None) -> int | None:
         if member is None:
@@ -501,7 +509,7 @@ class _PluginAdapter(BaseArchiveReader):
         try:
             yield from self._walk_members()
             ended = True
-        except _StreamChecksumError:
+        except StreamChecksumError:
             # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
             # it stays the ceiling of the members it covers, which verify_all()
             # returns. An xz or bzip2 check failure reads as damage, handled below.
@@ -522,6 +530,20 @@ class _PluginAdapter(BaseArchiveReader):
     def _walk_members(self) -> Iterator[ArchiveMember]:
         """The listing walk of the reader's shape (``_iter_members``)."""
         raise NotImplementedError
+
+    def _close_steps(
+        self, steps: Iterator[object], guard: AbstractContextManager[object]
+    ) -> None:
+        """Close the plugin's walk when the listing stops before its end: closed
+        part-way, or ended by an error. Closing archivey's own generator does not
+        close it on every interpreter (PyPy's collector does, later), so its
+        ``finally`` blocks would run after the archive closed. An error from it is
+        dropped: on a walk an error ended, that error stands; on one the caller
+        stopped, nothing is raised or reported, as when the collector closed it."""
+        close = getattr(steps, "close", None)
+        if close is not None:
+            with suppress(Exception), guard:
+                close()
 
     def _walk_next(self, steps: Iterator[object], step: str = _LISTING) -> object:
         """The next step of a walk, or ``_END`` once it ends: the listing's, during
@@ -558,6 +580,24 @@ class _PluginAdapter(BaseArchiveReader):
                 f"ReaderContext.hold(): {quoted(member.name)} is held already"
             ) from None
 
+    def _charge_metadata(self, nbytes: int, what: str) -> None:
+        """``ReaderContext.charge_metadata()``: charge the listing for what the walk
+        keeps. A walk started over to reach member data was charged already."""
+        step = self._walk_step
+        if step is None:
+            raise ArchiveyUsageError(
+                "ReaderContext.charge_metadata() counts bytes only while walk() or "
+                "iter_members() is listing"
+            )
+        if step == _REWALK:
+            return
+        if not isinstance(nbytes, int) or isinstance(nbytes, bool) or nbytes < 0:
+            raise ArchiveyUsageError(
+                "ReaderContext.charge_metadata() takes a size of 0 or more, got "
+                f"{nbytes!r}"
+            )
+        self._listing_tracker.charge_walk(nbytes, what)
+
     def _open_nested(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
         """``ReaderContext.open_nested()``: archivey's reader for ``fmt`` over
         ``data``, working for this reader."""
@@ -573,6 +613,9 @@ class _PluginAdapter(BaseArchiveReader):
             )
         registry = get_registry()
         policy = self._config.formats
+        refusal = policy._nested_refusal(fmt)
+        if refusal is not None:
+            raise UnsupportedFeatureError(refusal, source_format=fmt)
         backend_cls = registry.reader_for_format(
             fmt,
             replacement=policy._replacement_for(fmt),
@@ -810,7 +853,7 @@ class IndexedReaderAdapter(_PluginAdapter):
             source, wrap_handle=self._seek_handle_wrapper()
         )
         plugin_source = ReaderSource(
-            shared.view, shared.size, source.path, shared.read_at
+            self._marked_view, shared.size, source.path, shared.read_at
         )
         plugin = self._plugin
         assert isinstance(plugin, IndexedFormatHandler)
@@ -821,6 +864,19 @@ class IndexedReaderAdapter(_PluginAdapter):
         self._indexed = reader
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
         return reader
+
+    def _marked_view(self, start: int, length: int | None) -> BinaryIO:
+        """``ReaderSource.view``: a view of the shared source, marked with its span
+        for the range hint archivey gives when the view is read as a member's data."""
+        shared = self._shared
+        assert shared is not None
+        view = shared.view(start, length)
+        size = view.size
+        if size:
+            mark_read_span(
+                view, functools.partial(self._will_read, start, start + size)
+            )
+        return view
 
     @override
     def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
@@ -850,7 +906,21 @@ class IndexedReaderAdapter(_PluginAdapter):
                 records = iter(self._indexed.iter_members())
             finally:
                 self._walk_step = None
+        try:
+            yield from self._walk_records(records, boundary, guard)
+        except BaseException:
+            self._close_steps(records, guard)
+            raise
+
+    def _walk_records(
+        self,
+        records: Iterator[object],
+        boundary: AbstractContextManager[object],
+        guard: AbstractContextManager[object],
+    ) -> Iterator[ArchiveMember]:
+        """The members of the plugin's ``iter_members()`` steps, typed and named."""
         index = 0
+        tracker = self._listing_tracker
         while True:
             self._walk_index = index
             with boundary, guard:
@@ -891,6 +961,13 @@ class IndexedReaderAdapter(_PluginAdapter):
                     f"{type(data).__name__}, not MemberData"
                 )
             )
+        if data.ranges:
+            self._hint_ranges(data)
+        else:
+            # A view, or a decoder over one, says its span itself.
+            hint = read_span_hint(data.stream)
+            if hint is not None:
+                hint()
         stream = cast(BinaryIO, data.stream)
         if not data.bounded and _bounded(stream, member.size):
             data = data._replace(bounded=True)
@@ -899,6 +976,29 @@ class IndexedReaderAdapter(_PluginAdapter):
         if self._handle_lock is not None:
             stream = LockedStream(stream, self._handle_lock)
         return data, stream
+
+    def _hint_ranges(self, data: MemberData) -> None:
+        """Pass ``MemberData.ranges`` to the source, as the planner's hints. The first
+        ``MAX_PENDING_HINTS`` are kept: the planner holds no more at once."""
+        ranges = data.ranges
+        if not ranges:
+            return
+        if not isinstance(ranges, tuple) or not all(
+            isinstance(r, tuple)
+            and len(r) == 2
+            and all(isinstance(x, int) and not isinstance(x, bool) for x in r)
+            for r in ranges
+        ):
+            with suppress(Exception):
+                data.stream.close()
+            raise _plugin_bug(
+                TypeError(
+                    f"{type(self._reader).__name__}.open_member() returned "
+                    f"MemberData.ranges={ranges!r}, not a tuple of (start, end) ints"
+                )
+            )
+        for start, end in ranges[:MAX_PENDING_HINTS]:
+            self._will_read(start, end)
 
     @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
@@ -966,6 +1066,9 @@ def _outer_copy(member: ArchiveMember) -> ArchiveMember:
     copy.extra = type(member.extra)(member.extra)
     copy.hashes = dict(member.hashes)
     copy._diagnostics = member._diagnostics
+    # The inner listing settled the target (an empty one it reported): the outer
+    # listing does not look for it in the data, nor report it again.
+    copy._link_target_resolved = member._link_target_resolved
     return copy
 
 
@@ -1719,6 +1822,20 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._walk_index = 0
             with boundary, guard:
                 span = self._walk_next(walk)
+        try:
+            yield from self._walk_spans(walk, span, boundary, guard)
+        except BaseException:
+            self._close_steps(walk, guard)
+            raise
+
+    def _walk_spans(
+        self,
+        walk: Iterator[object],
+        span: object,
+        boundary: AbstractContextManager[object],
+        guard: AbstractContextManager[object],
+    ) -> Iterator[ArchiveMember]:
+        """The members of the plugin's ``walk()`` steps, from ``span`` on."""
         index = 0
         # Decoded bytes of the members walked so far (``_Decoded.prefix``).
         prefix = 0
@@ -1913,6 +2030,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             member.type is MemberType.SYMLINK
             and self._sequential.link_target_in_data
             and member.link_target is None
+            and not member._link_target_resolved
         ):
             if decoded is not None:
                 with self._translated_errors(member.name), self._handle_guard():

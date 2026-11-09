@@ -283,9 +283,14 @@ _STRONG_ENCRYPTION_MSG = (
 _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     0: CompressionAlgorithm.STORED,
     1: CompressionAlgorithm.SHRINK,
+    2: CompressionAlgorithm.REDUCE,
+    3: CompressionAlgorithm.REDUCE,
+    4: CompressionAlgorithm.REDUCE,
+    5: CompressionAlgorithm.REDUCE,
     6: CompressionAlgorithm.IMPLODE,
     8: CompressionAlgorithm.DEFLATE,
     9: CompressionAlgorithm.DEFLATE64,
+    10: CompressionAlgorithm.DCL_IMPLODE,
     12: CompressionAlgorithm.BZIP2,
     14: CompressionAlgorithm.LZMA,
     93: CompressionAlgorithm.ZSTD,
@@ -306,9 +311,14 @@ _UNKNOWN_COMPRESSION = (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
 _ZIP_METHOD_CODECS: dict[int, Codec] = {
     0: Codec.STORED,
     1: Codec.SHRINK,
+    2: Codec.REDUCE,  # methods 2 to 5 are compression factors 1 to 4
+    3: Codec.REDUCE,
+    4: Codec.REDUCE,
+    5: Codec.REDUCE,
     6: Codec.IMPLODE,  # settings from general-purpose bits 1 and 2
     8: Codec.DEFLATE,
     9: Codec.DEFLATE64,
+    10: Codec.DCL_IMPLODE,
     12: Codec.BZIP2,
     14: Codec.LZMA,  # after peeling the ZIP LZMA header (see _open_codec_member)
     93: Codec.ZSTD,
@@ -1347,9 +1357,9 @@ class _WalkedMembers:
         self.offsets: array[int] = array("q")
         #: A bit-3 member's CRC and sizes, from its data descriptor; 0 for any other.
         self.crcs: array[int] = array("L")
-        self.compressed_sizes: array[int] = array("q")
-        #: Unsigned: an 8-byte descriptor's uncompressed size is whatever it states,
-        #: up to 2**64 - 1, and a read checks the data against it.
+        #: Unsigned, both: an 8-byte descriptor's sizes are whatever it states, up to
+        #: 2**64 - 1, and a read checks the data against them.
+        self.compressed_sizes: array[int] = array("Q")
         self.file_sizes: array[int] = array("Q")
         #: Where the last member the walk passed whole ends.
         self.members_end = 0
@@ -3566,10 +3576,13 @@ class ZipReader(BaseArchiveReader):
             # (93) reads every frame instead, as a .zst file and a 7z coder do: RFC
             # 8878 defines Zstd data as one or more frames.
             return CodecParams(single_stream=True)
-        if method in (1, 6):  # Shrink, Implode: no end marker, so the size ends them
+        if 1 <= method <= 6:
+            # Shrink, Reduce, Implode: no end marker, so the size ends them.
             known = size if size is not None and size >= 0 else None
             if method == 1:
                 return CodecParams(unpack_size=known)
+            if method <= 5:
+                return CodecParams(unpack_size=known, reduce_factor=method - 1)
             return CodecParams(
                 unpack_size=known,
                 implode_large_window=bool(loc.flags & _ZIP_MASK_IMPLODE_8K_WINDOW),

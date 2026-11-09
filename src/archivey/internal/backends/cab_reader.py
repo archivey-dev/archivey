@@ -20,11 +20,8 @@ is ``dev-docs/formats/cab.md``.
 
 from __future__ import annotations
 
-import functools
 import io
-import operator
 import struct
-import sys
 import threading
 import zlib
 from collections.abc import Iterator
@@ -146,18 +143,25 @@ class _Location(NamedTuple):
 
 def _checksum(data: bytes, seed: int = 0) -> int:
     """libmspack's ``cabd_checksum``: the little-endian 32-bit words XORed together,
-    then the 1 to 3 bytes left, the first one highest."""
+    then the 1 to 3 bytes left, the first one highest.
+
+    The words are read as one little-endian integer and folded in halves cut on a word
+    boundary until one word is left: each fold XORs words in pairs, which keeps the
+    XOR of them all. One Python-level XOR per word is about seven times slower on a
+    32 KiB block, and slower than inflating the block.
+    """
     whole = len(data) & ~3
-    words = (
-        memoryview(data)[:whole].cast("I")
-        if sys.byteorder == "little"
-        else struct.unpack(f"<{whole // 4}I", data[:whole])
-    )
-    value = functools.reduce(operator.xor, words, seed)
+    value = int.from_bytes(memoryview(data)[:whole], "little")
+    bits = whole * 8
+    while bits > 32:
+        # The low half: a whole number of words, at most half of them.
+        half = (bits >> 6) << 5
+        value = (value & ((1 << half) - 1)) ^ (value >> half)
+        bits -= half
     tail = 0
     for byte in data[whole:]:
         tail = tail << 8 | byte
-    return value ^ tail
+    return value ^ seed ^ tail
 
 
 def _block_checksum(payload: bytes, decoded: int) -> int:
@@ -297,9 +301,13 @@ class CabReader(IndexedReader[_Location]):
             if size is not None and pos + header > size:
                 complete = False
                 break
-            checksum, stored, decoded = _DATA.unpack(
-                self._read(pos, _DATA.size, "a data block header")
-            )
+            try:
+                raw = self._read(pos, _DATA.size, "a data block header")
+            except TruncatedError:
+                # The same cut as above, on a source whose size is not known.
+                complete = False
+                break
+            checksum, stored, decoded = _DATA.unpack(raw)
             if stored > _INPUT_MAX or decoded > _BLOCK_MAX:
                 raise CorruptionError(
                     f"data block {number} of folder {index} stores {stored} bytes "
@@ -599,13 +607,19 @@ class _MemberStream(io.RawIOBase):
 
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
+        # Full-count (ADR 0014): archivey takes a short read from its own stream as
+        # the member's end, and a folder read stops at the end of each data block (at
+        # most 32 KiB) or LZX frame, so read on until the buffer is full or the member
+        # ends.
         with memoryview(b) as outer, outer.cast("B") as view:
-            if self._left == 0 or self._folder is None or not len(view):
-                return 0
-            data = self._folder.read(min(len(view), self._left))
-            n = len(data)
-            view[:n] = data
-            self._left -= n
+            n = 0
+            while n < len(view) and self._left > 0 and self._folder is not None:
+                data = self._folder.read(min(len(view) - n, self._left))
+                if not data:
+                    break
+                view[n : n + len(data)] = data
+                n += len(data)
+                self._left -= len(data)
             return n
 
     @override

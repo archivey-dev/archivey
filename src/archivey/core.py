@@ -39,6 +39,7 @@ from archivey.diagnostics import (
 from archivey.exceptions import (
     ArchiveyError,
     FormatDetectionError,
+    SourceChangedError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
     _UsageTypeError,
@@ -51,7 +52,10 @@ from archivey.internal.arg_checks import (
     raise_if_text_stream,
     raise_if_write_only_stream,
 )
-from archivey.internal.backends.iso_reader import refuse_raw_sector_image
+from archivey.internal.backends.iso_reader import (
+    raw_layout_of,
+    refuse_raw_sector_image,
+)
 from archivey.internal.backends.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
@@ -84,6 +88,7 @@ from archivey.internal.remote import (
     emit_source_change_undetectable,
     is_open_file,
     noting_fsspec_decoding,
+    raising_source_change,
     refuse_compressed_open_file_stream,
 )
 from archivey.internal.sfx import read_payload_end
@@ -783,9 +788,7 @@ def _open_resolved(
     if detected is None:
         # ``format=`` skipped detection, which records it otherwise
         # (``detect_format_into``).
-        emit_source_change_undetectable(
-            archive_source.remote_sources, collector, archive_name
-        )
+        emit_source_change_undetectable(archive_source, collector, archive_name)
 
     # The caller's format policy first: a format it turns off is refused whatever else
     # would be said about the file, so the caller is not told to install a package or
@@ -819,12 +822,17 @@ def _open_resolved(
     ):
         _raise_multi_volume_not_supported(resolved_format, archive_name)
 
-    # A raw CD sector image is claimed as ISO only so it can be refused by name. Ahead
-    # of the availability check, so the answer does not depend on pycdlib; a
-    # non-seekable source is left to the read-once refusal below, which is also ahead
-    # of it. A replacement reader is refused it too: the bytes are not an ISO 9660
-    # image, whichever reader would open them.
+    # A raw CD sector image the built-in reader cannot read (Mode 2 Form 2, an unknown
+    # mode) is refused by name, ahead of the availability check, so the answer does
+    # not depend on pycdlib; a non-seekable source is left to the read-once refusal
+    # below, which is also ahead of it. A replacement reader is refused every raw
+    # image: the bytes are not an ISO 9660 image, and only the built-in reader strips
+    # the sectors.
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
+        if replacement is not None and raw_layout_of(archive_source) is not None:
+            _refuse_for_replacement(
+                replacement, "a raw CD sector image", resolved_format, archive_name
+            )
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
     # Detection claims a recognised-only format (DMG) so this refusal can name it and
@@ -951,41 +959,50 @@ def _open_resolved(
         is_directory=archive_source.is_directory,
     )
     backend = backend_cls()
+    reader: ArchiveReader | None = None
     try:
-        reader = backend.open_read(
-            archive_source,
-            format=resolved_format,
-            streaming=streaming,
-            passwords=passwords,
-            encoding=encoding,
-            archive_name=archive_name,
-            config=config,
-            collector=collector,
-            member_streams=member_streams,
-            open_site=open_site,
-            start_offset=payload_offset,
-            end_offset=payload_end,
-        )
-    except ArchiveyError as exc:
-        # A backend that reads its first headers while it is built (7z, RAR, ZIP)
-        # raises before the reader that stamps its errors exists. Stamp them here, so a
-        # cut download names the file and the format, and says when only the filename
-        # chose that format, as every later error does.
-        stamp_error_context(
-            exc,
-            archive_format=resolved_format,
-            archive_name=archive_name,
-            provenance=provenance,
-            collector=collector,
-        )
-        raise
-    reader._format_provenance = provenance
-    reader._format_info = format_info
-    # After provenance, so an open-time decode failure carries format_unconfirmed.
-    try:
-        reader._validate_at_open()
-    except BaseException:
-        reader.close()
+        # A backend that reads its index while it is built can take a change of a
+        # remote object for damage it salvages or reports; the open ends with the
+        # change instead (``fsspec-integration`` design D7).
+        with raising_source_change(archive_source.remote_sources):
+            reader = backend.open_read(
+                archive_source,
+                format=resolved_format,
+                streaming=streaming,
+                passwords=passwords,
+                encoding=encoding,
+                archive_name=archive_name,
+                config=config,
+                collector=collector,
+                member_streams=member_streams,
+                open_site=open_site,
+                start_offset=payload_offset,
+                end_offset=payload_end,
+            )
+            reader._format_provenance = provenance
+            reader._format_info = format_info
+            # After provenance, so an open-time decode failure carries
+            # format_unconfirmed.
+            reader._validate_at_open()
+    except BaseException as exc:
+        if reader is not None:
+            reader.close()
+        if isinstance(exc, ArchiveyError) and (
+            reader is None or isinstance(exc, SourceChangedError)
+        ):
+            # A backend that reads its first headers while it is built (7z, RAR,
+            # ZIP) raises before the reader that stamps its errors exists, and the
+            # change that ends the open is raised past it. Stamp them here, so a cut
+            # download names the file and the format, and says when only the
+            # filename chose that format, as every later error does. An error from
+            # the built reader's own check is the reader's to stamp.
+            stamp_error_context(
+                exc,
+                archive_format=resolved_format,
+                archive_name=archive_name,
+                provenance=provenance,
+                collector=collector,
+            )
         raise
     return reader
 
@@ -1089,7 +1106,7 @@ def open_stream(
             # ``format=`` skips detection, which records it otherwise.
             try:
                 emit_source_change_undetectable(
-                    codec_input.remote_sources, collector, codec_input.name
+                    codec_input, collector, codec_input.name
                 )
             except BaseException:
                 codec_input.close()

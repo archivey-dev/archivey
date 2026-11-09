@@ -29,9 +29,13 @@ Hints SHALL change only how bytes are fetched, never which bytes a read returns,
 do nothing on a local source. The source facts are those of `archive-reading` §"The source
 facts of an OpenFile".
 
-The ZIP, 7z and ISO backends SHALL hint the index they read at open and each member's
-stored span before reading it. The RAR backend SHALL hint each header position during
-its listing walk.
+The ZIP and 7z backends SHALL hint the index they read at open, and the ZIP, 7z and ISO
+backends SHALL hint each member's stored span before reading it. A format plugin SHALL be
+able to name the spans a member's stream reads in `MemberData.ranges`, which archivey
+SHALL pass to the source as hints when `open_member` returns and which do nothing on a
+local source. A remote source SHALL keep several pending hints, so members read side by
+side each keep their own. The RAR listing walk SHALL NOT be hinted: it reads through by
+the planner's rules.
 
 #### Scenario: ceilings that follow from the format
 
@@ -68,7 +72,13 @@ read at open. A fetch that returns more bytes than it asked for SHALL raise `OSE
 file system ignores range requests, which is not a change of the object. A file system for
 which archivey does not implement version pinning or header forwarding SHALL be treated as
 offering neither. A change that is detected SHALL raise; it MUST NOT return bytes of the
-new object as bytes of the archive.
+new object as bytes of the archive. Once detected, every later read of the source SHALL
+raise it again, and detection, the open and a walk over the members SHALL end with
+`SourceChangedError` rather than an answer or another error, even where a handler for
+damage to the archive caught the first one and recorded a diagnostic for it. An
+`OpenFile` read through fsspec's decompressing file (`compression=`) is not checked for a
+change at all; the reader SHALL record `SOURCE_CHANGE_UNDETECTABLE` for it, naming that
+file in the reason.
 
 #### Scenario: changed object
 
@@ -79,6 +89,8 @@ new object as bytes of the archive.
 | No version, no `ETag` | `SOURCE_CHANGE_UNDETECTABLE` at open; a shorter object raises `SourceChangedError` on the next fetch past its end; a longer one is not detected |
 | A file system that ignores ranges and returns the whole object | `OSError` on the first fetch, not `SourceChangedError` |
 | `DiagnosticPolicy.STRICT`, no version, no `ETag` | Opens; the diagnostic is collected, not raised |
+| A shorter object while detection probes, or while TAR scans past its end marker | The call raises `SourceChangedError`; it does not return another format or end with only a diagnostic |
+| `OpenFile` with `compression=` | `SOURCE_CHANGE_UNDETECTABLE` at open, its reason naming fsspec's decompressing file |
 
 ### Requirement: Multi-volume discovery over fsspec
 

@@ -233,6 +233,14 @@ other fields say how archivey can check those bytes, as described in
 
 There are four ways to build the stream. Pick the first one that fits your format.
 
+Whichever you pick, an archive read by range from an `fsspec` file system fetches a
+member's bytes in one request, rather than in steps that start small, when archivey knows
+where they are. It knows when the stream is a `ReaderSource.view()`, a
+`ReaderContext.decompress()` over one, or a `block_stream()` whose blocks are those, as
+TOYA's is. For any other stream, such as one from your own library, name the spans it
+reads in `MemberData.ranges` as `(start, end)` pairs; they win over what archivey
+infers. On a local file the spans do nothing, and they never change what a read returns.
+
 **Stored bytes.** `ReaderSource.view(start, length)` is a stream over part of the archive
 with its own position, so two members open at the same time do not move each other. A
 format that stores members uncompressed returns a view, as TOYA does.
@@ -555,13 +563,15 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
 - **`stream.take(n)`** gives the next `n` bytes as a stream of their own, read forward
   from the archive as they come, from a pipe too. The walk resumes after them: the next
   `read()`, `skip()`, `take()` or `decompress()` first skips what the inner reader left
-  unread, such as padding after a tar's end.
+  unread, such as padding after a tar's end. A `read(0)` or `skip(0)` moves nothing
+  and leaves the stream open.
 - **`context.open_nested(data, format)`** reads `data` with archivey's reader for
   `format` (`ArchiveFormat.TAR_XZ`, say), in one forward pass, and yields one
   `MemberSpan` per inner member, its decoded data in `MemberSpan.data`. A format that
   needs a seekable source (7z, RAR) raises `UnsupportedFeatureError`, and so does an
   archive nested more than 8 deep, which a format that reads its inner format from its
-  own bytes can be made to reach. Call it from `walk()` only. Stop early by closing the
+  own bytes can be made to reach. Under `FormatPolicy(plugins=False)` a plugin format
+  inside raises it too. Call it from `walk()` only. Stop early by closing the
   iterator it returns; archivey closes one left open when the archive closes.
 - **One archive to the caller.** The inner reader works for the outer one: its listing
   limits and decoder limits are the caller's, and what it reports (a TAR header it had
@@ -735,6 +745,15 @@ keeps it, from `walk()` or `iter_members()`; a call made anywhere else raises
 archivey lists it, so it is counted once; a copy would count twice until the walk
 ends. In a walk archivey starts over to reach a member's data, `hold()` does nothing.
 
+A walk that keeps something in memory beyond its members, such as an ar long-name
+table or an RPM header, passes its size to `ReaderContext.charge_metadata(nbytes,
+what=...)` before reading it. The bytes count toward `max_metadata_bytes` with the
+members, and the call raises `ResourceLimitError` when they would cross it. The charge
+lasts until the walk ends. Like `hold()`, it is called from `walk()` or
+`iter_members()` only. A name read only to put on the member it yields needs no
+charge, since archivey counts the member. A table kept to look names up in is
+charged, though its entries become names.
+
 ## Archive details
 
 `archive_info()` returns a `ReaderArchiveInfo` with what archivey cannot work out itself:
@@ -823,8 +842,8 @@ The replacement gets what any indexed plugin gets: a source that can seek, from 
 start of the archive. archivey refuses, before `open()` runs, a multi-volume set and an
 archive behind a prefix (a self-extracting stub or other leading bytes) with
 `UnsupportedFeatureError`, a source that
-cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO as
-the built-in reader refuses it, since its bytes are not an ISO 9660 image. The format's own config options, such as
+cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO,
+since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it reads). The format's own config options, such as
 `zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
 `ReaderContext.config`; honouring them is the plugin's job. `password=` does not reach a
 replacement, as it reaches no plugin, so a replaced ZIP, 7z or RAR cannot read an encrypted
@@ -948,7 +967,8 @@ can turn plugin formats and plugin codecs off for a call with
 `ArchiveyConfig(formats=FormatPolicy(plugins=False))`; a format turned off is not detected
 either, so its code does not run. A plugin codec is off inside an archive too: a
 `ReaderContext.decompress` or `ForwardStream.decompress` call that asks for it raises
-`UnsupportedFeatureError`. A
+`UnsupportedFeatureError`, and so does a `ReaderContext.open_nested` call for a plugin
+format. A
 [replacement](#replacing-a-built-in-reader) is not a plugin format, so `plugins=False` does not
 turn it off: a replacement runs only in a call whose config names it in `replace=`.
 

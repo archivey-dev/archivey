@@ -2,10 +2,16 @@
 
 ``open_archive()``, ``open_stream()`` and ``detect_format()`` accept the unentered
 object ``fsspec.open(url, **options)`` returns (``openspec`` change
-``fsspec-integration``, design D1). archivey never enters it and opens no file object
-from it: every byte comes from ``fs.cat_file(path, start, end)`` on the ``OpenFile``'s
-file system, through :class:`RangeSource`, so fsspec's file caches are never in the
-path. The size comes from one ``fs.size(path)`` at open and is a fact.
+``fsspec-integration``, design D1). archivey never enters it and, unless it carries a
+``compression`` (:func:`open_decompressed`), opens no file object from it: every byte
+comes from ``fs.cat_file(path, start, end)`` on the ``OpenFile``'s file system, through
+:class:`RangeSource`, so fsspec's file caches are never in the path. The size comes
+from one ``fs.size(path)`` at open and is a fact.
+
+A change of the object that a fetch catches stays caught (design D7): the
+:class:`RangeSource` raises :class:`~archivey.SourceChangedError` on every later read,
+and :func:`source_change` gives the error that ends the operation, so a handler that
+takes the first one for damage to the archive cannot turn it into a result.
 
 This module imports nothing from fsspec at import time. :func:`is_open_file` looks for
 ``fsspec.core`` in ``sys.modules``: a caller who has not imported fsspec cannot hold an
@@ -50,7 +56,7 @@ import sys
 import threading
 from collections.abc import Generator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 from archivey.exceptions import (
     FormatDetectionError,
@@ -64,6 +70,7 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.source import ArchiveSource
 
 
 @dataclass(frozen=True)
@@ -147,9 +154,40 @@ def check_open_file(of: Any) -> None:
         )
 
 
+# Schemes whose query is dropped from display text. A signed HTTP URL carries its
+# secret there (``X-Amz-Signature=``, an Azure SAS ``sig=``). On other schemes a ``?``
+# can be part of the object's name (an S3 key), so it is kept.
+_QUERY_DROPPED_SCHEMES = frozenset({"http", "https"})
+
+
+def display_url(url: str) -> str:
+    """``url`` as archivey shows it in a message, a name or a diagnostic.
+
+    The ``user:password@`` part of the authority is removed, and for HTTP(S) so are the
+    query and the fragment, because a signed URL keeps its signature in the query.
+    Anything without ``scheme://`` (a plain fsspec path) is returned unchanged. This
+    is for text only: the I/O always uses the URL as given.
+    """
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    end = len(rest)
+    for stop in "/?#":
+        at = rest.find(stop)
+        if at != -1:
+            end = min(end, at)
+    authority, tail = rest[:end], rest[end:]
+    authority = authority.rpartition("@")[2]
+    if scheme.lower() in _QUERY_DROPPED_SCHEMES:
+        for stop in "?#":
+            tail = tail.partition(stop)[0]
+    return f"{scheme}://{authority}{tail}"
+
+
 def open_file_name(of: Any) -> str:
-    """The name archivey gives an ``OpenFile``: its path on its file system."""
-    return str(of.path)
+    """The name archivey gives an ``OpenFile``: its path on its file system, as
+    :func:`display_url` shows it."""
+    return display_url(str(of.path))
 
 
 def open_file_compression(of: Any) -> str | None:
@@ -158,28 +196,69 @@ def open_file_compression(of: Any) -> str | None:
     return getattr(of, "compression", None)
 
 
-def open_decompressed(of: Any) -> Any:
+def open_decompressed(of: Any) -> tuple[BinaryIO, BinaryIO]:
     """Open ``of`` as fsspec delivers it: its file, decompressed by fsspec.
 
     For an ``OpenFile`` with a ``compression``, the archive is the decompressed bytes,
     so archivey reads that stream as it reads any caller stream: forward, a seek back
     re-decoding, and without range requests. One WARNING says so, with the faster way
     when archivey can decode the compression itself.
+
+    Returns ``(decoded, raw)``: the decompressor and fsspec's file under it. archivey
+    opened both, so the caller closes both, ``decoded`` first. A decompressor handed a
+    file object leaves it open, and the raw file holds fsspec's read-ahead cache (and,
+    on some file systems, a connection). The two are built as ``OpenFile.open()``
+    builds them, without entering ``of``: entering it would keep them in
+    ``of.fobjects``, where the caller's own ``of.close()`` would close a stream
+    archivey is still reading.
     """
     check_open_file(of)
     compression = open_file_compression(of)
+    assert compression is not None  # only an OpenFile with one is opened here
     streams_logger.warning(
         "%r is opened with fsspec compression=%r, so archivey reads fsspec's "
         "decompressed stream: no range requests, and a seek back decodes again. %s",
-        of.path,
+        open_file_name(of),
         compression,
         _COMPRESSION_HINT.get(
-            compression or "",
+            compression,
             "archivey cannot decode this compression itself, so this is the only way "
             "to read it.",
         ),
     )
-    return of.open()
+    # The caller holds an OpenFile, so fsspec is imported already.
+    from fsspec.compression import compr
+
+    # ``compr`` starts as ``{None: noop_file}``, so a checker infers ``None`` keys.
+    opener = cast("dict[str | None, Any]", compr)[compression]
+    raw = of.fs.open(of.path, mode="rb")
+    try:
+        decoded = opener(raw, mode="r")
+    except BaseException:
+        raw.close()
+        raise
+    return decoded, raw
+
+
+@dataclass(frozen=True)
+class FsspecDecompressed:
+    """An ``OpenFile`` read through fsspec's own decompressing file (``compression=``).
+
+    Kept on the source so that open can say what :class:`RangeSource` would otherwise
+    say: nothing checks the object for a change while it is read
+    (``SOURCE_CHANGE_UNDETECTABLE``).
+    """
+
+    url: str
+    protocol: str
+    compression: str
+
+    @classmethod
+    def of(cls, of: Any) -> FsspecDecompressed:
+        fs = of.fs
+        unstrip = getattr(fs, "unstrip_protocol", None)
+        url = unstrip(of.path) if callable(unstrip) else str(of.path)
+        return cls(url, protocol_of(fs), str(open_file_compression(of)))
 
 
 @contextlib.contextmanager
@@ -230,7 +309,15 @@ _COMPRESSION_HINT = dict.fromkeys(
 class _Run:
     """One sequential run on one source, and its window (the bytes of its last fetch)."""
 
-    __slots__ = ("data", "fetches", "last_use", "source", "start")
+    __slots__ = (
+        "data",
+        "fetches",
+        "last_use",
+        "served_end",
+        "source",
+        "span_end",
+        "start",
+    )
 
     def __init__(self, source: RangeSource, start: int, tick: int) -> None:
         self.source = source
@@ -238,6 +325,13 @@ class _Run:
         self.data = b""
         self.fetches = 0
         self.last_use = tick
+        # The furthest offset a read has taken from the window.
+        self.served_end = start
+
+    def finished(self) -> bool:
+        """Whether reads have taken the window up to its end, so no stream is still
+        reading inside it."""
+        return self.served_end >= self.end
 
     @property
     def end(self) -> int:
@@ -328,6 +422,7 @@ class WindowPool:
                     view[filled : filled + take] = run.data[off : off + take]
                     filled += take
                     run.last_use = self._tick
+                    run.served_end = max(run.served_end, at + take)
                     continue
                 with view[filled:] as rest:
                     got = self._fetch_into(source, run, at, rest)
@@ -346,15 +441,18 @@ class WindowPool:
         """
         c = self.constants
         want = len(view)
-        hint = source.pending_hint
-        hinted = hint is not None and hint[0] <= at < hint[1]
+        hint = source.take_hint(at)
+        hinted = hint is not None
         if hinted:
             assert hint is not None
-            source.pending_hint = None
-            if run is not None and hint[0] > run.end:
-                # The span starts past this run's window, which another stream on
-                # the source may still be reading: the span gets a run of its own
-                # rather than taking that window over.
+            if run is not None and hint[0] > run.end and not run.finished():
+                # The span starts past the window of a run that reads have not taken
+                # to its end, so another stream on the source may still be reading
+                # it: the span gets a run of its own rather than taking that window
+                # over. A window read to its end is continued through the gap (rule
+                # 2), so members that lie almost back to back (an ISO extent's
+                # padding, a span that leaves out a header) keep one growing run
+                # rather than a request each.
                 run = None
         if run is not None:
             # Continue the run from its end, reading through the gap (rule 2). A
@@ -398,6 +496,7 @@ class WindowPool:
                 self._held -= old
                 run.data = b""
                 run.start = at + len(data)
+                run.served_end = run.start
                 run.fetches = fetches
                 run.last_use = self._tick
             return len(data)
@@ -431,6 +530,7 @@ class WindowPool:
         off = at - start
         take = max(min(want, len(data) - off), 0)
         view[:take] = data[off : off + take]
+        run.served_end = at + take
         return take
 
     def hint(self, source: RangeSource, start: int, end: int) -> None:
@@ -438,8 +538,8 @@ class WindowPool:
 
         Nothing is fetched here: the next read that lands in the span and finds no
         window fetches the span in one request, up to the maximum fetch. A span a
-        window already holds needs nothing. One pending hint per source; a later one
-        replaces it.
+        window already holds needs nothing. A source keeps its latest
+        ``MAX_PENDING_HINTS`` hints, so members read side by side each keep theirs.
         """
         with self._lock:
             end = min(end, source.size)
@@ -448,7 +548,7 @@ class WindowPool:
             for run in self._runs:
                 if run.source is source and run.start <= start and end <= run.end:
                     return
-            source.pending_hint = (start, end)
+            source.add_hint(start, end)
 
     def _trim_oversized(self, cap: int, keep: _Run | None) -> None:
         """Cut every other window down to ``cap``, dropping its head.
@@ -466,12 +566,21 @@ class WindowPool:
             self._held -= excess
 
 
+MAX_PENDING_HINTS = 8
+"""Hints a range source keeps at once: one per member stream read side by side, for
+up to this many streams. A hint lost past it costs only the fetch it would have saved."""
+
+
 class RangeSource(io.RawIOBase):
     """A seekable, full-count, read-only stream over ``(fs, path, size)``.
 
     Every byte comes from ``fs.cat_file(path, start, end)`` through the
     :class:`WindowPool`. ``read(n)`` returns ``n`` bytes unless the end comes first.
     ``close()`` drops this source's windows and closes nothing of the caller's.
+
+    Once a fetch has seen the object change, every later read raises
+    :class:`~archivey.SourceChangedError` again, a read a window still holds too
+    (:attr:`change`).
     """
 
     def __init__(
@@ -490,15 +599,23 @@ class RangeSource(io.RawIOBase):
         self.pool = pool
         self.max_read_through = max_read_through
         self._pos = 0
-        # The span a backend declared it reads next (``will_read``), until a fetch
-        # uses it.
-        self.pending_hint: tuple[int, int] | None = None
+        # The spans backends declared they read next (``will_read``), newest last,
+        # each until a fetch uses it. Several, so streams side by side each keep one.
+        self.pending_hints: list[tuple[int, int]] = []
+        # The message of the first ``SourceChangedError`` a fetch raised (design D7).
+        self.change: str | None = None
 
     @classmethod
     def from_open_file(
-        cls, of: Any, *, pool: WindowPool, max_read_through: int
+        cls,
+        of: Any,
+        *,
+        pool: WindowPool,
+        max_read_through: int,
+        size: int | None = None,
     ) -> RangeSource:
-        """Check ``of`` and learn its size, with one ``fs.size`` call."""
+        """Check ``of`` and learn its size, with one ``fs.size`` call unless the
+        caller already has it (from a directory listing)."""
         check_open_file(of)
         compression = open_file_compression(of)
         if compression is not None:
@@ -511,14 +628,35 @@ class RangeSource(io.RawIOBase):
             )
         fs = of.fs
         path = of.path
-        size = fs.size(path)
+        if size is None:
+            size = fs.size(path)
         if not isinstance(size, int) or size < 0:
-            raise OSError(f"fsspec file system gave no size for {path!r}: {size!r}")
+            raise OSError(
+                f"fsspec file system gave no size for {display_url(str(path))!r}: "
+                f"{size!r}"
+            )
         return cls(fs, path, size=size, pool=pool, max_read_through=max_read_through)
 
     @property
     def name(self) -> str:
-        return self.path
+        """The path, as :func:`display_url` shows it: it reaches ``archive_name``."""
+        return display_url(self.path)
+
+    def add_hint(self, start: int, end: int) -> None:
+        """Keep ``[start, end)`` as pending, dropping the oldest past the limit."""
+        hints = self.pending_hints
+        if (start, end) in hints:
+            hints.remove((start, end))
+        hints.append((start, end))
+        del hints[:-MAX_PENDING_HINTS]
+
+    def take_hint(self, at: int) -> tuple[int, int] | None:
+        """Remove and return the newest pending hint that covers ``at``, if any."""
+        hints = self.pending_hints
+        for i in range(len(hints) - 1, -1, -1):
+            if hints[i][0] <= at < hints[i][1]:
+                return hints.pop(i)
+        return None
 
     def will_read(self, start: int, end: int) -> None:
         """The backend reads ``[start, end)`` next (design D2 rule 3).
@@ -530,10 +668,11 @@ class RangeSource(io.RawIOBase):
 
     @property
     def url(self) -> str:
-        """The object as a URL (``s3://bucket/a.zip``), for messages. An fsspec path
-        is ``/``-separated on every OS, so it needs no ``display_path``."""
+        """The object as a URL (``s3://bucket/a.zip``), for messages, without
+        credentials (:func:`display_url`). An fsspec path is ``/``-separated on every
+        OS, so it needs no ``display_path``."""
         unstrip = getattr(self.fs, "unstrip_protocol", None)
-        return unstrip(self.path) if callable(unstrip) else self.path
+        return display_url(unstrip(self.path) if callable(unstrip) else self.path)
 
     @property
     def seek_is_expensive(self) -> bool:
@@ -563,7 +702,9 @@ class RangeSource(io.RawIOBase):
         object. That is all a fetch can see. A replacement of the same length, or a
         longer one, returns the full range and is not detected without a pinned
         version (not implemented yet); ``SOURCE_CHANGE_UNDETECTABLE`` says so at open.
+        The change is kept (:attr:`change`): this source raises it again from then on.
         """
+        self._raise_if_changed()
         data = self.fs.cat_file(self.path, start=start, end=end)
         if len(data) > end - start:
             raise OSError(
@@ -572,12 +713,20 @@ class RangeSource(io.RawIOBase):
                 f"which reading an archive remotely needs"
             )
         if len(data) < end - start:
-            raise SourceChangedError(
+            self.change = (
                 f"{self.url}: the object changed while it was read: fetching bytes "
                 f"{start}-{end} of the {self.size} bytes seen at open returned "
                 f"{len(data)} bytes"
             )
+            self._raise_if_changed()
         return bytes(data)
+
+    def _raise_if_changed(self) -> None:
+        # A new exception each time: one instance raised from several places would
+        # gather every traceback, and a later ``raise ... from`` would rewrite its
+        # cause for every holder.
+        if self.change is not None:
+            raise SourceChangedError(self.change)
 
     @override
     def readable(self) -> bool:
@@ -611,6 +760,9 @@ class RangeSource(io.RawIOBase):
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         self._checkClosed()
+        # Before the pool: a window fetched before the change still holds bytes of
+        # the object as it was, and serving them would read on past the change.
+        self._raise_if_changed()
         with memoryview(b) as outer, outer.cast("B") as whole:
             limit = min(len(whole), max(self.size - self._pos, 0))
             if limit == 0:
@@ -639,7 +791,7 @@ class RangeSource(io.RawIOBase):
 
     @override
     def __repr__(self) -> str:
-        return f"<RangeSource {self.path!r} size={self.size}>"
+        return f"<RangeSource {self.name!r} size={self.size}>"
 
 
 def protocol_of(fs: Any) -> str:
@@ -650,34 +802,97 @@ def protocol_of(fs: Any) -> str:
     return str(protocol)
 
 
+def source_change(
+    ranges: tuple[RangeSource, ...], cause: BaseException | None = None
+) -> SourceChangedError | None:
+    """The error that ends an operation on ``ranges`` once one of them saw a change.
+
+    Called where an operation ends (detection's answer, an open, the end of a member
+    walk), with ``cause`` the exception it is about to raise, if any. A change makes
+    whatever the operation concluded after it unreliable: a handler built for damage
+    to the archive may have taken the ``SourceChangedError`` for damage and answered
+    with another format, a diagnostic or a missing size, or a later step may have
+    failed on what that handler left. ``None`` when nothing changed, or when ``cause``
+    already is the change.
+    """
+    if isinstance(cause, SourceChangedError):
+        return None
+    for ranged in ranges:
+        if ranged.change is not None:
+            return SourceChangedError(ranged.change)
+    return None
+
+
+@contextlib.contextmanager
+def raising_source_change(
+    ranges: tuple[RangeSource, ...], *, archive_name: str | None = None
+) -> Generator[None]:
+    """End the block with :func:`source_change`'s error, whether the block returns or
+    raises another ``Exception`` (which becomes its cause). The error carries
+    ``archive_name``, as the errors of the call that ends with it do."""
+    try:
+        yield
+    except Exception as exc:
+        changed = source_change(ranges, exc)
+        if changed is not None:
+            changed.archive_name = archive_name
+            raise changed from exc
+        raise
+    changed = source_change(ranges)
+    if changed is not None:
+        changed.archive_name = archive_name
+        raise changed
+
+
 def emit_source_change_undetectable(
-    ranges: tuple[RangeSource, ...],
+    source: ArchiveSource,
     collector: DiagnosticCollector,
     archive_name: str | None,
 ) -> None:
-    """Record ``SOURCE_CHANGE_UNDETECTABLE`` once for a source read through ``ranges``.
+    """Record ``SOURCE_CHANGE_UNDETECTABLE`` once for a remote ``source``.
 
-    archivey pins no object version and sends no ``If-Match`` yet (design D7, tiers 1
-    and 2), so every file system gets tier 3: a fetch catches a change of length only.
+    Read by range (``remote_sources``): archivey pins no object version and sends no
+    ``If-Match`` yet (design D7, tiers 1 and 2), so every file system gets tier 3, and
+    a fetch catches a change of length only. Read through fsspec's decompressing file
+    (``fsspec_decompressed``): archivey checks nothing, because every read goes through
+    fsspec's file and its cache, never through a fetch it can compare with the size
+    seen at open. A local source records nothing.
     """
-    if not ranges:
-        return
-    from archivey.diagnostics import DiagnosticCode, SourceChangeContext
-
-    protocol = protocol_of(ranges[0].fs)
-    collector.emit(
-        code=DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
-        message=(
+    ranges = source.remote_sources
+    decompressed = source.fsspec_decompressed
+    if ranges:
+        protocol = protocol_of(ranges[0].fs)
+        message = (
             f"{archive_name or ranges[0].url} is read by range requests over "
             f"{protocol or 'fsspec'}, and archivey cannot pin one version of the "
             f"object: a replacement of the same length, or a longer one, while it "
             f"is read would not be detected"
-        ),
+        )
+        reason = (
+            "archivey implements no version pinning or If-Match for this file system"
+        )
+    elif decompressed is not None:
+        protocol = decompressed.protocol
+        compression = f"compression={decompressed.compression!r}"
+        message = (
+            f"{archive_name or decompressed.url} is read through fsspec's "
+            f"decompressing file ({compression}) over {protocol or 'fsspec'}, and "
+            f"archivey checks nothing about the object while it reads it: a "
+            f"replacement while it is read would not be detected"
+        )
+        reason = (
+            f"read through fsspec's decompressing file ({compression}), which "
+            f"archivey cannot check for a change"
+        )
+    else:
+        return
+    from archivey.diagnostics import DiagnosticCode, SourceChangeContext
+
+    collector.emit(
+        code=DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
+        message=message,
         context=SourceChangeContext(
-            archive_name=archive_name,
-            protocol=protocol,
-            reason="archivey implements no version pinning or If-Match for this "
-            "file system",
+            archive_name=archive_name, protocol=protocol, reason=reason
         ),
     )
 
@@ -685,11 +900,15 @@ def emit_source_change_undetectable(
 __all__ = [
     "DEFAULT_MAX_READ_THROUGH",
     "DEFAULT_PLANNER_CONSTANTS",
+    "FsspecDecompressed",
     "PlannerConstants",
     "RangeSource",
     "WindowPool",
     "check_open_file",
+    "display_url",
     "emit_source_change_undetectable",
     "is_open_file",
     "planner_constants",
+    "raising_source_change",
+    "source_change",
 ]

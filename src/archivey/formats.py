@@ -219,6 +219,22 @@ class MemberData(NamedTuple):
     more than ``size`` bytes either way, but a stream that breaks the promise has
     its extra bytes go unreported, where they would raise ``CorruptionError``."""
 
+    ranges: tuple[tuple[int, int], ...] = ()
+    """The spans ``(start, end)`` of the archive the stream reads, in archive
+    offsets, end exclusive: the member's stored or compressed bytes. An archive read
+    by range from an ``fsspec`` file system then fetches each span in one request (up
+    to the largest fetch archivey makes) when the stream first reads it, not in steps
+    that start small; any other source ignores them. They never change what a read
+    returns, and a wrong one costs only a fetch. archivey learns them when
+    ``open_member`` returns, so a read the plugin makes inside ``open_member`` is not
+    covered.
+
+    Leave it empty when the stream is a :meth:`ReaderSource.view`, or a
+    :meth:`ReaderContext.decompress` over one: archivey then hints the view's span
+    itself. A :func:`block_stream` whose blocks are such streams hints each block
+    when it reads it. Set it for a stream from your own library, or to name more
+    than the view (several extents)."""
+
 
 class MemberSpan(NamedTuple):
     """One member, as :meth:`SequentialReader.walk` yields it: the member, and either
@@ -377,6 +393,9 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.read() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
+        if not n:
+            # Moves no bytes, so an open take() stays open.
+            return b""
         self._end_take()
         data = self._read_fn(n)
         self._offset += len(data)
@@ -406,6 +425,8 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.skip() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
+        if not n:
+            return
         self._end_take()
         self._skip_fn(self._offset, n)
         self._offset += n
@@ -418,7 +439,9 @@ class ForwardStream:
         is held in memory. It ends after ``n`` bytes, or raises ``TruncatedError`` where
         the archive ends first. The walk resumes after the ``n`` bytes: the next
         :meth:`read`, :meth:`skip`, :meth:`take` or :meth:`decompress` first skips what
-        the stream left unread, and the stream reads nothing after that.
+        the stream left unread, and the stream reads nothing after that. A
+        :meth:`read` or :meth:`skip` of 0 bytes moves nothing and leaves the stream
+        open.
         """
         if n < 0:
             raise ValueError(f"ForwardStream.take() takes a size of 0 or more, got {n}")
@@ -548,6 +571,7 @@ class ReaderContext:
         ],
         link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None],
         hold: Callable[[ArchiveMember, str | None], None],
+        charge_metadata: Callable[[int, str], None],
         open_nested: Callable[[BinaryIO, ArchiveFormat], Iterator[MemberSpan]]
         | None = None,
     ) -> None:
@@ -558,6 +582,7 @@ class ReaderContext:
         self._report = report
         self._link_target_unavailable = link_target_unavailable
         self._hold = hold
+        self._charge_metadata = charge_metadata
         self._open_nested = open_nested
 
     @property
@@ -653,6 +678,26 @@ class ReaderContext:
         """
         self._hold(member, reason)
 
+    def charge_metadata(self, nbytes: int, *, what: str) -> None:
+        """Count ``nbytes`` the walk keeps in memory beyond its members, a long-name
+        table or a package header say, against ``max_metadata_bytes``.
+
+        The bytes count with the members already listed, and ``ResourceLimitError``
+        is raised when they would cross the limit, so call it before reading them,
+        with the size the archive declares. ``what`` names them, for that error
+        ("the long-name table"). The charge lasts until the walk ends. A name read
+        only to put on the member it yields needs no charge, since archivey charges
+        the member; a table kept to look names up in is charged, though its entries
+        become names.
+
+        Call it from ``walk()`` or ``iter_members()``, as :meth:`hold` is called. In
+        a walk archivey starts over to reach a member's data, the bytes were counted
+        when listed, and it does nothing. A call from anywhere else (at open, in
+        ``open_member``) raises ``ArchiveyUsageError``; a reader that keeps a table
+        for the life of the archive bounds it by ``config.listing_limits`` itself.
+        """
+        self._charge_metadata(nbytes, what)
+
     def open_nested(
         self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat
     ) -> Iterator[MemberSpan]:
@@ -678,8 +723,9 @@ class ReaderContext:
         closed when Python collects it, and at the latest when the archive is closed.
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
-        format is read by its replacement, and ``exclude_libraries`` holds; ``only``
-        and ``exclude`` check only the file the call opens. A format that needs a
+        format is read by its replacement, ``exclude_libraries`` holds, and under
+        ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``;
+        ``only`` and ``exclude`` check only the file the call opens. A format that needs a
         seekable source (7z, RAR) raises ``UnsupportedFeatureError``, and so does an
         archive nested more than 8 deep (an inner reader calling ``open_nested`` in
         turn). What the inner reader attaches to a member while its data is read

@@ -14,7 +14,7 @@ import subprocess
 import zipfile
 import zlib
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 
@@ -35,6 +35,9 @@ from archivey.types import MagicSignature
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.detection_cost_util import within_budget
 from tests.streams_util import NonSeekableBytesIO
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 
 # LZMA Alone, zlib and Brotli are recognised only by a content probe, and by default a
 # probe runs only when the source's name carries that format's extension. Tests of the
@@ -422,6 +425,43 @@ def test_inner_tar_over_gzip_is_tar_gz() -> None:
     # The inner-tar test is structural, weaker than an exact magic.
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
+
+
+def test_inner_tar_probe_over_gzip_does_not_read_to_the_end() -> None:
+    # The probe decodes the first block only. Seeking to the end of its window for the
+    # gzip ISIZE trailer pulled the whole window (up to 1 MiB) through detection, which
+    # doubled what a remote .tar.gz open fetched.
+    import gzip
+    import tarfile
+
+    rng = random.Random(5)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        for i in range(40):
+            payload = rng.randbytes(16 * 1024)
+            info = tarfile.TarInfo(f"m{i}")
+            info.size = len(payload)
+            t.addfile(info, io.BytesIO(payload))
+    data = gzip.compress(buf.getvalue())
+
+    class CountingBytesIO(io.BytesIO):
+        bytes_read = 0
+
+        def read(self, size: int | None = -1, /) -> bytes:
+            chunk = super().read(size)
+            self.bytes_read += len(chunk)
+            return chunk
+
+        def readinto(self, b: WriteableBuffer, /) -> int:
+            n = super().readinto(b)
+            self.bytes_read += n
+            return n
+
+    # Larger than the bound, so a read to the end and a read of a prefix differ.
+    assert len(data) > 512 * 1024
+    source = CountingBytesIO(data)
+    assert detect_format(source).format == ArchiveFormat.TAR_GZ
+    assert source.bytes_read <= 256 * 1024
 
 
 def test_gzip_without_inner_tar_stays_bare_gz() -> None:
