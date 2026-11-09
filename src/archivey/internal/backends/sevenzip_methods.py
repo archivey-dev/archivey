@@ -1,8 +1,14 @@
 """7z coder method registry — single source for IDs, algorithms, and decode kind.
 
+Each coder in a 7z folder names its method by a short byte-string id. The parser
+keeps the raw id; the pipeline and the reader look it up here.
+
 :class:`MethodKind` drives :func:`sevenzip_pipeline.plan_folder`:
 
-- ``COPY`` / ``AES`` / ``BCJ2`` / ``SINGLE`` — self-explanatory stages
+- ``COPY`` — stored bytes, passed through
+- ``AES`` — decryption, which needs the password
+- ``BCJ2`` — the four-input x86 branch filter, decoded in Python
+- ``SINGLE`` — a codec that always runs as its own stage (Deflate, BZip2, PPMd, ...)
 - ``LZMA_FAMILY`` — **not** "is LZMA": Delta and BCJ share this kind because they
   batch into the same liblzma staging run as LZMA1/2
 
@@ -41,6 +47,12 @@ class MethodKind(Enum):
 
 @dataclass(frozen=True, slots=True)
 class SevenZipMethod:
+    """One registry entry: how to name and decode one coder method.
+
+    ``codec`` is the shared codec stream used when the method runs as its own stage.
+    ``lzma_filter_id`` is its filter id when it joins a liblzma chain instead.
+    """
+
     method_id: bytes
     algorithm: CompressionAlgorithm
     kind: MethodKind
