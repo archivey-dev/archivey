@@ -176,7 +176,6 @@ def run_test(
                                             members_blocked=0,
                                         )
                                     )
-                        ok += 1
                         files_done += 1
                         if on_progress is not None:
                             on_progress(
@@ -191,6 +190,10 @@ def run_test(
                                     members_blocked=0,
                                 )
                             )
+                        # Counted once its last progress event is sent: an OSError
+                        # from that event fails the member below, and a member is
+                        # counted only once, OK or failed.
+                        ok += 1
                         if verbose:
                             print(f"OK   {escape_member_name(member.name)}", file=err)
                     except BrokenPipeError:
