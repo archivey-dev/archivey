@@ -24,7 +24,7 @@ on:
     # LICENSE (test_cli_companion_package) and review/problem-catalogue/
     # (test_review_problem_catalogue). Add a path there when a test starts reading
     # another doc file. scripts/tests/test_ci_doc_paths.py checks that the re-includes
-    # come after every `!` entry, and that atheris-fuzz.yml (called in the merge queue)
+    # come after every `!` entry, and that atheris-fuzz.yml (nightly and dispatched only)
     # has no pull_request trigger of its own.
     # Two cases skip this workflow although code changed, both from GitHub's filter: a
     # rename is seen under its new name only, so moving code into docs/ alone skips it;
@@ -65,12 +65,14 @@ on:
 # the `test` legs (Linux 3.11 and 3.15 [all], Linux 3.11 core-only, Windows 3.15 [all]),
 # free-threaded 3.13t, the structural benchmark and the LZO check against liblzo2. A
 # pull request whose diff misses every `FULL` path runs lint alone, which runs the
-# script tests. Not on a pull request: the `test-queue` legs (3.15 core-only, the minimum
-# versions, macOS, Windows 3.11, the 3.16 prerelease), 3.15t, the distribution unar
-# packages, PyPy and the short Atheris fuzz. A failure in any queued job takes the pull
-# request out of the queue, except in the 3.16 prerelease leg, which is allowed to fail.
-# Only on the daily run and a dispatch (so before each release): the `test-daily` legs
-# (Linux [all] on 3.12, 3.13 and 3.14). The split exists because the
+# script tests. Not on a pull request: the `test-queue` legs (3.15 core-only, macOS 3.15,
+# the 3.16 prerelease), 3.15t, the distribution unar packages and PyPy, plus the
+# minimum-versions leg (`test-lowest`) when the group changes the dependencies or CI. A
+# failure in any queued job takes the pull request out of the queue, except in the 3.16
+# prerelease leg, which is allowed to fail. Only on the daily run and a dispatch (so
+# before each release): the `test-daily` legs (Linux [all] on 3.12, 3.13 and 3.14,
+# macOS and Windows 3.11), and the minimum versions whatever changed. The Atheris fuzz
+# runs nightly in atheris-fuzz.yml, not here. The split exists because the
 # organization's runners are shared (20 jobs at once, 5 of them macOS): full runs on
 # every push kept the queue's runs waiting for a runner until they timed out
 # (2026-10-29). Dispatch this workflow on a branch to run everything before queueing.
@@ -134,10 +136,10 @@ jobs:
     # the scripts/ci/ci_run_native_modules.py steps are one process by design.
     # Force every uv sync/run in this job onto the matrix interpreter. Without this,
     # `.python-version` (3.11) wins and "py3.12/3.13/3.14" legs silently re-test 3.11.
-    # The legs split into three jobs, `test` here (every run), `test-queue` (not on pull
-    # requests) and `test-daily` (daily and dispatched runs only), which share these
-    # steps through the YAML anchors `test-env` and `test-steps`. Check names stay
-    # `os / pyX / install` in all three.
+    # The legs split into four jobs, `test` here (every run), `test-queue` (not on pull
+    # requests), `test-lowest` (the minimum versions) and `test-daily` (daily and
+    # dispatched runs only), which share these steps through the YAML anchors `test-env`
+    # and `test-steps`. Check names stay `os / pyX / install` in all four.
     env: &test-env
       UV_PYTHON: ${{ matrix.python-version }}
     strategy:
@@ -145,8 +147,8 @@ jobs:
       matrix:
         include:
           # Min and max Python on Linux [all], one core-only leg, and Windows on the max
-          # Python because it differs most from Linux. The rest are in `test-queue` and
-          # `test-daily`.
+          # Python because it differs most from Linux. The rest are in `test-queue`,
+          # `test-lowest` and `test-daily`.
           - { os: ubuntu-latest, python-version: "3.11", install: core-only }
           - { os: ubuntu-latest, python-version: "3.11", install: all }
           # The one leg that measures coverage. Nothing reads the result (there is no
@@ -484,8 +486,10 @@ jobs:
   # request set: `test`, `free-threaded-concurrency`, `benchmark` and `lzo-oracle`.
   # Lint, which runs the script tests, still runs. In the merge queue those legs still
   # run, on the merged tree, so a script-only pull request is tested once before it
-  # merges; `full=false` there skips the four queue-only jobs: `test-queue`,
-  # `unar-distro-packages`, `pypy` and `atheris`. The daily run and a dispatch skip this
+  # merges; `full=false` there skips the three queue-only jobs: `test-queue`,
+  # `unar-distro-packages` and `pypy`. A second answer, `lowest`, says whether the diff
+  # changes the dependencies or CI (`DEPS` in that script); in the merge queue
+  # `lowest=false` skips `test-lowest`. The daily run and a dispatch skip this
   # job and run everything. A skipped or failed scope, and a diff the compare API cut
   # off, mean the full run. The jobs that wait on it start a few seconds plus a runner
   # wait later.
@@ -498,6 +502,7 @@ jobs:
       contents: read
     outputs:
       full: ${{ steps.scope.outputs.full }}
+      lowest: ${{ steps.scope.outputs.lowest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -553,26 +558,42 @@ jobs:
           # Move it to `all` once cffi builds there; drop `prerelease` and add the
           # classifier once 3.16.0 final is out.
           - { os: ubuntu-latest, python-version: "3.16", install: core-only, prerelease: true }
-          # Minimum supported library versions (uv --resolution lowest-direct) on the min
-          # Python: the [all] legs run the *current* versions of every dependency, so
-          # this leg pins each declared dep to its floor (pycdlib 1.22, zstandard 0.23, …) to
-          # catch version-specific bugs that the default highest-version resolution hides.
-          - { os: ubuntu-latest, python-version: "3.11", install: all-lowest }
-          # macOS on min/max Python and Windows on the min (cross-platform
-          # path/symlink/junction surface; `test` has Windows on the max).
-          - { os: macos-latest, python-version: "3.11", install: all }
+          # macOS on the max Python (cross-platform path/symlink/junction surface; `test`
+          # has Windows on the max, `test-daily` both on the min).
           - { os: macos-latest, python-version: "3.15", install: all }
-          - { os: windows-latest, python-version: "3.11", install: all }
     # These rows have no `coverage` key: it evaluates to null, so the steps pass
     # --no-cov. actionlint reports the key as undefined here; that is expected.
     steps: *test-steps
 
-  # Linux [all] on the Pythons between min and max, on the daily run and a dispatched
-  # run only (so before each release too: the release gates dispatch this workflow).
-  # The min and max legs bracket them, and a failure only they would catch is rare;
-  # in the merge queue they cost three runner slots per pull request while the
-  # organization's 20 shared runners were the bottleneck (maintainer, 2026-11-09).
-  # PyPy stays in the queue: it is the one leg on another interpreter.
+  # Minimum supported library versions (uv --resolution lowest-direct) on the min
+  # Python: the [all] legs run the *current* versions of every dependency, so this leg
+  # pins each declared dep to its floor (pycdlib 1.22, zstandard 0.23, …) to catch
+  # version-specific bugs that the default highest-version resolution hides. In the
+  # merge queue only when the group changes a path on `DEPS` in scripts/ci/ci_scope.py
+  # (the dependency files and CI); always on the daily run and a dispatch. Code that
+  # starts using an API newer than a declared floor therefore shows up in the next daily
+  # run, not in the queue (maintainer, 2026-11-09).
+  test-lowest:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
+    needs: scope
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.lowest != 'false' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env: *test-env
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python-version: "3.11", install: all-lowest }
+    steps: *test-steps
+
+  # Linux [all] on the Pythons between min and max, and macOS and Windows on the min, on
+  # the daily run and a dispatched run only (so before each release too: the release
+  # gates dispatch this workflow). The min and max legs bracket the middle Pythons, and
+  # macOS 3.15 and Windows 3.15 cover each platform in the queue, so a failure only
+  # these would catch is rare; in the merge queue they cost five runner slots per pull
+  # request while the organization's 20 shared runners were the bottleneck (maintainer,
+  # 2026-11-09). PyPy stays in the queue: it is the one leg on another interpreter.
   test-daily:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -586,6 +607,8 @@ jobs:
           - { os: ubuntu-latest, python-version: "3.12", install: all }
           - { os: ubuntu-latest, python-version: "3.13", install: all }
           - { os: ubuntu-latest, python-version: "3.14", install: all }
+          - { os: macos-latest, python-version: "3.11", install: all }
+          - { os: windows-latest, python-version: "3.11", install: all }
     steps: *test-steps
 
   # Each distribution's packaged unar against archivey's unar RAR5 check, and the unar
@@ -912,15 +935,6 @@ jobs:
           uv run --no-sync pytest tests/test_squashfs.py tests/test_lzo.py
           tests/test_lzop.py -q --no-cov -rs
 
-  # The short Atheris fuzz (atheris-fuzz.yml in its short mode, three shards), in the
-  # merge queue only. The nightly and dispatched full runs stay in that workflow.
-  atheris:
-    needs: scope
-    if: ${{ !cancelled() && github.event_name == 'merge_group' && needs.scope.outputs.full != 'false' }}
-    uses: ./.github/workflows/atheris-fuzz.yml
-    with:
-      short: true
-
   # The one required check of the merge queue (ruleset on main). It runs only for a
   # merge_group and fails when any job above failed or was cancelled; a matrix leg with
   # continue-on-error does not count. On a pull request it is skipped, and the
@@ -929,7 +943,7 @@ jobs:
   gate:
     name: CI gate
     if: ${{ always() && github.event_name == 'merge_group' }}
-    needs: [scope, lint, test, test-queue, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, lzo-oracle, atheris]
+    needs: [scope, lint, test, test-queue, test-lowest, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, lzo-oracle]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
