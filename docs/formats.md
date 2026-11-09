@@ -303,8 +303,8 @@ in a real folder named `__MACOSX`.
 
 ## ZIP
 
-- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, the PKZIP 1.x methods Shrink
-  and Implode, or ZipCrypto. `[recommended]`
+- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, the old PKZIP methods
+  Shrink, Reduce and Implode, PKWARE DCL Implode (method 10), or ZipCrypto. `[recommended]`
   adds Deflate64 and PPMd (`inflate64`, `pyppmd`, the packages the 7z reader uses too), WinZip AES
   (`cryptography`), and Zstandard before Python 3.14 (`backports.zstd`). A missing package raises
   `PackageNotInstalledError` when you read such a member.
@@ -828,8 +828,10 @@ On a compressed tar, the stream's own checksum adds three cases:
   stream still open holds the file, which then can't grow: a read further in starts a new file
   for the stream, which later reads grow, and the held one is removed when it closes. So reads
   that each go further in while every earlier one is still open copy the stream's start each
-  time. For an archive opened from a path, a stream whose copy would pass 64 MiB is read in place
-  instead.
+  time. When a copy would pass `SpoolLimits.max_bytes` and removing the files of other
+  streams that no open member stream holds makes room, those files are removed, least recently
+  read first, and a later read of such a stream copies it again. For an archive opened from a path, a stream whose copy would pass 64 MiB is read in
+  place instead.
 - **A pass over a solid archive opened from a stream source copies a few solid streams at a time.**
   `stream_members()` and `extract_all()` on a solid RAR opened from a `BytesIO` or a file object
   run one `unrar` per run of whole solid streams, each on a temporary file holding that run alone,
@@ -1124,9 +1126,18 @@ other members because of a member's name any more. Setting it to `True` warns.
   hybrid installer image, whose EFI partition and GPT backup header sit after the ISO 9660 volume
   space, opens clean (7-Zip warns "There are data after the end of archive" on those images). A GPT
   damaged in transfer is not trusted, so the partition it lists is reported.
-- Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused with
-  `UnsupportedFeatureError` naming the sector layout. Convert one to a plain `.iso` first (for
-  example with `bchunk` or `bin2iso`).
+- **Raw CD sector images** (the `.bin` of a `.bin`/`.cue` pair, 2352-byte sectors, or 2448 with
+  subchannel data) open as ISO when their data is Mode 1 or Mode 2 Form 1: archivey strips each
+  sector to its 2048 bytes of user data as it reads, which gives the same bytes as the plain
+  `.iso`. Only the first track is read, so a mixed-mode disc (data, then audio) lists its data
+  track, and the audio after it is not reported as trailing data. Each sector's sync and mode are
+  checked when it is read; its EDC and ECC error-correction bytes are not. A sector that is not a
+  data sector (damage, or a Mode 2 Form 2 sector, as in Video CD and CD-XA files) fails the read
+  that reaches it: reading the member that holds it, or opening the image when the sector holds
+  the volume descriptors or a directory. The `.cue` sheet is not read: a disc whose filesystem is in a
+  later track or session is not found. A Mode 2 Form 2 image, which holds video or audio and no
+  filesystem, or an unknown sector mode, is refused with `UnsupportedFeatureError` naming the
+  layout.
 
 ## SquashFS
 
@@ -1176,7 +1187,9 @@ The format of macOS installer packages (`.pkg`) and `.xip` files, written by App
 - The index's own checksum is checked at open, and a damaged index raises
   `CorruptionError`. Each file's data carries a checksum of its decoded bytes (SHA-1 by
   default, or MD5, SHA-256 or SHA-512), which is `member.hashes`, so a member read to its end
-  is at `Verification.CHECKSUM`.
+  is at `Verification.CHECKSUM`. A checksum of another style, or one that names no style,
+  is not a hash: the file reads unchecked and reports `DIGEST_UNVERIFIABLE` when it is
+  listed, which `DiagnosticPolicy.STRICT` raises.
 - A name stored base64-encoded, as writers do for bytes that are not UTF-8, is decoded with
   `encoding=` like a name in any other format.
 - Apple's `productbuild` stores the name of each top-level file twice, the same both times;
@@ -1610,7 +1623,11 @@ they open at once. Close the sending side when the file is done.
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
   (ZIP, 7z, RAR) are searched for. Behind a Windows, Linux or macOS program whose header says
   where its own image ends, an archive that starts exactly there is taken first, ahead of
-  anything else in the window. Otherwise,
+  anything else in the window. That holds under every detection budget: a smaller one, such as
+  `FAST`, still looks there, with a seek. Read from a pipe, under a budget whose window ends before
+  that point, detection gives up instead (`FormatDetectionError` when nothing else names the
+  format), because answering from the program image could open a different archive. Raise
+  `max_scan_bytes`, or pass `format=`. Otherwise,
   among several 7z candidates, one that ends exactly at the end of
   the file is preferred over an earlier one that ends short of it.
 - **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`

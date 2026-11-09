@@ -301,6 +301,10 @@ def _codec_params(codec: Codec) -> CodecParams:
             implode_large_window=True,
             implode_literal_tree=True,
         )
+    if codec is Codec.REDUCE:
+        # Reduce has no end marker and refuses to open without a size, which would
+        # pass here vacuously too. Factor 4 is the most common one.
+        return CodecParams(unpack_size=10 * BUDGET, reduce_factor=4)
     return CodecParams()
 
 
@@ -335,7 +339,9 @@ def test_rejecting_codecs_reject_random_input(codec: Codec) -> None:
     chain holds one of these stops at ``PASSWORD_CONFIRM_PREFIX_BYTES`` instead of
     walking to a late CRC.
     If a dependency change lets random bytes decode a full prefix, the codec must
-    leave the set. Mutation check: adding ``Codec.BROTLI`` to the set fails here.
+    leave the set. Mutation checks: adding ``Codec.BROTLI`` to the set fails here, and
+    so does a Reduce decoder that accepts any follower-set size and wraps an index past
+    its set instead of refusing it (200 of 200 inputs survive).
     """
     if not is_codec_available(codec):
         pytest.skip(f"{codec.value} backend not installed")
