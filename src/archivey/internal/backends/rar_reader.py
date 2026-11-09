@@ -2001,14 +2001,13 @@ class RarReader(BaseArchiveReader):
         budget.check_total(self._spool_copy_size())
         temp_dir = Path(tempfile.mkdtemp(prefix="archivey-rar-vol-"))
         self._temp_dir = temp_dir
-        stem = "archive"
-        if self._archive_name:
-            stem = Path(self._archive_name).stem or stem
         paths: list[Path] = []
         try:
             for index, item in enumerate(items, start=1):
+                # A fixed stem, not the source's name: that can hold ``*`` or ``?``,
+                # which unrar expands in the archive name (unrar_expands_wildcards).
                 dest = temp_dir / rar_volume_name(
-                    stem, index, old_numbering=self._archive.old_volume_naming
+                    "archive", index, old_numbering=self._archive.old_volume_naming
                 )
                 # A file volume goes through the budget too, not ``shutil.copy2``:
                 # its size was read when the set was joined, and a file that grew

@@ -11,6 +11,7 @@ Two review-hub findings on ``rar_unrar``:
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
@@ -215,6 +216,36 @@ def test_archive_path_with_a_wildcard_does_not_open_a_fifo_beside_it(
         worker.join(0.2)
     assert not hung, "unrar opened the FIFO that the wildcard matched"
     assert result == [expected]
+
+
+@requires_binary("unrar")
+def test_stream_volumes_named_with_a_wildcard_reach_unrar_under_fixed_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stream volumes are copied for ``unrar`` under names that hold no wildcard.
+
+    A stream's name can come from the caller or from an outer archive's member,
+    so it can hold ``*`` or ``?``. With no synthetic archive, ``unrar`` reads the
+    copies of the whole set, and their names must not carry the stream's name.
+    """
+    names = ["tinyvol_m3.part1.rar", "tinyvol_m3.part2.rar"]
+    expected = _read_all(_fixture(names[0]))
+    monkeypatch.setattr(rar_reader.RarReader, "_synthetic_file", lambda *_: None)
+    seen = _record_unrar_archive_paths(monkeypatch)
+    items = []
+    for index, name in enumerate(names, start=1):
+        stream = io.BytesIO(_fixture(name).read_bytes())
+        stream.name = f"rep*.part{index}.rar"
+        items.append(stream)
+    with open_archive(items) as archive:
+        got = {
+            member.name: archive.read(member)
+            for member in archive.members()
+            if member.is_file
+        }
+    assert got == expected
+    assert seen
+    assert not any(rar_unrar.unrar_expands_wildcards(name) for name in seen)
 
 
 # --- the identification probe cache -------------------------------------------
