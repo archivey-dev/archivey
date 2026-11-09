@@ -335,7 +335,7 @@ def test_tree_matches_extraction_on_links_and_collisions(
             # The tree does not model the disk.
             folded = ["C", "Q"]
             if policy is ExtractionPolicy.TRUSTED:
-                folded += ["a.txt", "f.", "HC"]
+                folded += ["a.txt", "f.", "HC", "r", "k"]
             for name in folded:
                 assert name in listed
                 del listed[name]
