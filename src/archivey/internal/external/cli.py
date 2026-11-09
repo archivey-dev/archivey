@@ -41,6 +41,7 @@ from archivey.internal.streams.child_process import (
     wait_or_kill,
 )
 from archivey.internal.streams.streamtools import DelegatingStream
+from archivey.internal.win32_errors import ERROR_FILENAME_EXCED_RANGE
 from archivey.terminal import display_path
 from archivey.types import MissingComponent
 
@@ -285,9 +286,6 @@ _PROGRAM_CANNOT_RUN = frozenset(
 )
 # The system ran short: no descriptor for a pipe, no memory or process slot for a child.
 _SYSTEM_SHORTAGE = frozenset((errno.EMFILE, errno.ENFILE, errno.ENOMEM, errno.EAGAIN))
-# Windows refuses a command line over 32 767 characters with this error, which Python
-# maps to ENOENT. POSIX says E2BIG.
-_ERROR_FILENAME_EXCED_RANGE = 206
 
 
 class _SpawnFailed(Exception):
@@ -303,7 +301,7 @@ def _start_error(exc: OSError, *, name: str, not_started: str) -> ArchiveyError:
     wrong way.
     """
     if exc.errno == errno.E2BIG or (
-        getattr(exc, "winerror", None) == _ERROR_FILENAME_EXCED_RANGE
+        getattr(exc, "winerror", None) == ERROR_FILENAME_EXCED_RANGE
     ):
         return ReadError(
             f"{name} could not be started: its command line is longer than the "

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import open_archive
+from archivey import ArchiveyConfig, open_archive
 from archivey.exceptions import (
     ArchiveyError,
     PackageNotInstalledError,
@@ -324,6 +324,10 @@ def _windows_error(winerror: int, errno_value: int) -> OSError:
         # A Windows command line over 32 767 characters: Python says ENOENT.
         (_windows_error(206, errno.ENOENT), ReadError),
         (OSError(errno.EMFILE, "Too many open files"), ResourceUnavailableError),
+        (
+            OSError(errno.ENFILE, "Too many open files in system"),
+            ResourceUnavailableError,
+        ),
         (OSError(errno.ENOMEM, "Cannot allocate memory"), ResourceUnavailableError),
         (OSError(errno.EAGAIN, "Resource unavailable"), ResourceUnavailableError),
         (OSError(errno.EIO, "Input/output error"), ReadError),
@@ -359,3 +363,38 @@ def test_a_command_line_the_system_refuses_is_not_a_missing_program() -> None:
             name="python",
             not_started="python is not installed",
         )
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    "exc",
+    [
+        OSError(errno.EMFILE, "Too many open files"),
+        OSError(errno.E2BIG, "Argument list too long"),
+    ],
+    ids=["EMFILE", "E2BIG"],
+)
+def test_a_comment_unrar_cannot_start_for_degrades_to_none(
+    monkeypatch: pytest.MonkeyPatch, exc: OSError
+) -> None:
+    """The archive opens with no comment, as it did while every start failure was
+    ``PackageNotInstalledError``. Only the decode spawn fails: the version probe
+    (``subprocess.run``, default buffering) still runs."""
+    path = _fixture("rar15-comment.rar")
+    config = ArchiveyConfig(rar_decompressor="unrar")
+    with open_archive(path, config=config) as archive:
+        assert archive.info.comment
+    real = subprocess.Popen
+
+    def popen(*args: object, **kwargs: object) -> object:
+        if kwargs.get("bufsize") == 1024 * 1024:
+            raise exc
+        return real(*args, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    with open_archive(path, config=config) as archive:
+        assert archive.info.comment is None
+        assert [m.name for m in archive.members() if m.is_file] == [
+            "FILE1.TXT",
+            "FILE2.TXT",
+        ]

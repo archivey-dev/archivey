@@ -72,6 +72,13 @@ from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, plain
 from archivey.internal.overrides import override
 from archivey.internal.selection import CollectionSelector
+from archivey.internal.win32_errors import (
+    ERROR_FILENAME_EXCED_RANGE,
+    ERROR_INVALID_NAME,
+    ERROR_PATH_NOT_FOUND,
+    ERROR_PRIVILEGE_NOT_HELD,
+    ERROR_TOO_MANY_LINKS,
+)
 from archivey.paths import numbered_name
 from archivey.terminal import display_path, quoted
 from archivey.types import (
@@ -139,14 +146,6 @@ def _dir_mode_as_stored(mode: int) -> int:
     return 0o777 if mode & stat.S_IWUSR else 0o555
 
 
-# Win32 error codes matched on ``OSError.winerror``, which exists only on Windows.
-_ERROR_PATH_NOT_FOUND = 3
-_ERROR_INVALID_NAME = 123
-_ERROR_FILENAME_EXCED_RANGE = 206
-_ERROR_TOO_MANY_LINKS = 1142
-_ERROR_PRIVILEGE_NOT_HELD = 1314
-
-
 def _link_refused_here(exc: OSError) -> bool:
     """Whether ``os.link`` failed for a reason another path, or a copy, avoids.
 
@@ -166,7 +165,7 @@ def _at_link_limit(exc: OSError) -> bool:
     holds the same bytes.
     """
     return exc.errno == errno.EMLINK or (
-        getattr(exc, "winerror", None) == _ERROR_TOO_MANY_LINKS
+        getattr(exc, "winerror", None) == ERROR_TOO_MANY_LINKS
     )
 
 
@@ -222,18 +221,18 @@ def _typed_os_error(
         return exc
     # ``winerror`` exists only on Windows; elsewhere it is None.
     winerror = getattr(exc, "winerror", None)
-    if winerror == _ERROR_PATH_NOT_FOUND and _past_max_path(exc):
-        winerror = _ERROR_FILENAME_EXCED_RANGE
-    if exc.errno == errno.EILSEQ or winerror == _ERROR_INVALID_NAME:
+    if winerror == ERROR_PATH_NOT_FOUND and _past_max_path(exc):
+        winerror = ERROR_FILENAME_EXCED_RANGE
+    if exc.errno == errno.EILSEQ or winerror == ERROR_INVALID_NAME:
         message = (
             "Member name or link target cannot be represented on the destination "
             "filesystem"
         )
-    elif exc.errno == errno.ENAMETOOLONG or winerror == _ERROR_FILENAME_EXCED_RANGE:
+    elif exc.errno == errno.ENAMETOOLONG or winerror == ERROR_FILENAME_EXCED_RANGE:
         message = (
             "Member name or link target is too long for the destination filesystem"
         )
-    elif winerror == _ERROR_PRIVILEGE_NOT_HELD:
+    elif winerror == ERROR_PRIVILEGE_NOT_HELD:
         message = (
             "This process does not hold a privilege the write needs; on Windows, "
             "creating a symlink needs Developer Mode or an elevated process"

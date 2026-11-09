@@ -31,6 +31,7 @@ from pathlib import Path
 from archivey.exceptions import ExtractionError, FilterRejectionError
 from archivey.internal.long_paths import long_path, plain
 from archivey.internal.naming import BIDI_REORDERING_CONTROLS
+from archivey.internal.win32_errors import ERROR_CANT_RESOLVE_FILENAME
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
 # Split a member name into path components on either separator; a ".." component after
@@ -136,11 +137,6 @@ def reroot_absolute(member: ArchiveMember) -> ArchiveMember:
 
 def _within(path: Path, root: Path) -> bool:
     return path.is_relative_to(root)
-
-
-# Windows' code for a path whose links do not resolve (``ERROR_CANT_RESOLVE_FILENAME``),
-# its equivalent of ``ELOOP``.
-_ERROR_CANT_RESOLVE_FILENAME = 1921
 
 
 def resolve_or_raise_on_loop(path: Path) -> Path:
@@ -270,7 +266,7 @@ def _resolve_with_pathlib(path: Path) -> Path:
         Path(long_path(resolved)).stat()
     except OSError as exc:
         if exc.errno == errno.ELOOP or (
-            getattr(exc, "winerror", None) == _ERROR_CANT_RESOLVE_FILENAME
+            getattr(exc, "winerror", None) == ERROR_CANT_RESOLVE_FILENAME
         ):
             raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path)) from exc
     return resolved

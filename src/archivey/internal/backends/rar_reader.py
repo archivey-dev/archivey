@@ -62,6 +62,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -3244,10 +3245,16 @@ class RarReader(BaseArchiveReader):
         except (
             OSError,
             PackageNotInstalledError,
+            ReadError,
+            ResourceUnavailableError,
             subprocess.SubprocessError,
         ):
             # An undecodable comment degrades to None rather than sinking the
-            # listing.
+            # listing. That includes a program that could not start for a reason
+            # other than its absence (``spawn_for_stdout``): a shortage of
+            # descriptors, memory or processes is ``ResourceUnavailableError``, a
+            # command line the system refuses is ``ReadError``. The spawn is the only
+            # source of an archivey error here, so ``ReadError`` hides nothing else.
             return None
         if unpacked is None:
             return None

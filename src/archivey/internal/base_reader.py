@@ -79,6 +79,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
+    ResourceUnavailableError,
     UnsupportedFeatureError,
     _UsageTypeError,
     _UsageValueError,
@@ -203,13 +204,19 @@ UNREADABLE_LINK_TARGET_ERRORS: tuple[type[ArchiveyError], ...] = (
     CorruptionError,
     UnsupportedFeatureError,
     PackageNotInstalledError,
+    ResourceUnavailableError,
 )
 """What a read of one link's data-stored target may raise without failing the listing.
 
 Damage (``CorruptionError``, and ``TruncatedError`` under it), a method or variant this
 reader does not decode (``UnsupportedFeatureError``), and an optional library the
 member's data needs that is not installed (``PackageNotInstalledError``: a codec, or
-``cryptography`` for WinZip AES) are each about that one member's data. Listing
+``cryptography`` for WinZip AES) are each about that one member's data. A system that
+did not give a resource for the read (``ResourceUnavailableError``: no descriptor,
+memory or process slot to start ``unrar``, which once surfaced as
+``PackageNotInstalledError`` here) says nothing about the archive, so it does not fail
+the listing either. ``ReadError`` for a command line that is too long cannot happen
+here: a link is read through a placeholder or a plain name of at most 1024 units. Listing
 and a data pass leave the link targetless and report it
 (``_report_unreadable_link_target``); opening or extracting the link reads it again and
 raises the error itself. ``EncryptionError`` is not here: the backends catch it where

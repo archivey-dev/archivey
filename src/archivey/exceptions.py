@@ -336,7 +336,9 @@ class ResourceUnavailableError(ResourceLimitError):
     Raised when a decoder or helper program is ended by SIGKILL (most often the
     out-of-memory killer), when a decoder that
     :class:`~archivey.config.ProcessIsolation` runs only in a child process cannot
-    have one (a frozen application, a refused spawn), when a PPMd decoder process
+    have one (a frozen application, a refused spawn), when a helper program such as
+    ``unrar`` or ``unar`` cannot start because the system has no file descriptor,
+    memory or process slot for it, when a PPMd decoder process
     cannot allocate the member's model (a container memory limit), and when a volume
     file cannot be opened because the process is out of file descriptors. The data may
     be valid: read it again with more memory, more descriptors, or where child
