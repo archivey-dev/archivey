@@ -5,6 +5,15 @@ archive readers. Declared member-stream capabilities (`MemberStreams.CONCURRENT`
 `SEEKABLE`) gate concurrent opens and seekability here exactly as for ZIP/TAR/ISO —
 the directory backend exists to keep archive-vs-directory code uniform, not to offer a
 more permissive escape hatch.
+
+``open_archive`` routes a directory path here (``ArchiveSource.is_directory``); there is
+no magic or extension to detect. Listing is a depth-first ``os.scandir`` walk that
+turns each entry's ``lstat`` into a member: a regular file, a directory, a symlink (a
+Windows junction lists as one too), a hardlink to the first name of a multiply-linked
+file, or ``OTHER`` for devices, FIFOs and sockets. The tree can change between listing
+and reading, so both the walk and ``DirectoryReader._open_member`` check that a path
+still holds what was listed. A symlink swapped in then cannot lead a read out of the
+root (threat-model O21).
 """
 
 from __future__ import annotations
@@ -203,7 +212,7 @@ class DirectoryReader(BaseArchiveReader):
         # refused with ExtractionError. A source root that does not resolve skips the
         # check too, and the walk fails on it a moment later. So neither case writes
         # members into the source, but in the second the dest directory itself may
-        # already be created inside the source, as it was with 3.13's resolve().
+        # already be created inside the source.
         try:
             root = resolve_or_raise_on_loop(self._root)
             target = resolve_or_raise_on_loop(dest)
@@ -470,10 +479,10 @@ class DirectoryReader(BaseArchiveReader):
         Hardlink detection needs them and scandir's data has them all zero. The fresh
         stat takes a path where scandir needed none, so a path past ``MAX_PATH``
         without long-path support can fail here with ``FileNotFoundError`` for a file
-        that exists. That is not a vanished entry: keep scandir's data, which lists it
-        as a plain ``FILE``, as before hardlinks were detected. A file that really did
-        vanish in this window lists the same way, as it did then; opening it fails
-        later. Any other ``OSError`` propagates like every genuine error in the walk.
+        that exists. That is not a vanished entry: keep scandir's data, so the file
+        lists as a plain ``FILE`` with no hardlink grouping. A file that really did
+        vanish in this window lists the same way; opening it fails later. Any other
+        ``OSError`` propagates like every genuine error in the walk.
         """
         try:
             return _identity_stat(path)
@@ -524,8 +533,8 @@ class DirectoryReader(BaseArchiveReader):
         # Unix, NOT creation, so we never use it for `created`. Hence the getattr.
         birthtime = getattr(st, "st_birthtime", None)
         created = unix_to_datetime(birthtime) if birthtime is not None else None
-        # On Windows st_ctime was the creation time before 3.12 (deprecated since),
-        # so it is only an inode change time elsewhere.
+        # On Windows st_ctime has meant the creation time (deprecated since 3.12), so
+        # it is reported as the inode change time only on other platforms.
         ctime = unix_to_datetime(st.st_ctime) if os.name != "nt" else None
 
         # os.stat_result always defines st_uid/st_gid (both 0 on Windows), so no
@@ -624,8 +633,8 @@ class DirectoryReader(BaseArchiveReader):
             if expected is not None and (st.st_dev, st.st_ino) != expected:
                 raise _changed_since_listing(name, "was replaced")
             # The listed size is part of what was listed, not advisory: a caller treating
-            # the listing as a manifest must not read bytes it never described (chosen
-            # over a diagnostic in PR #501; directory.md §6).
+            # the listing as a manifest must not read bytes it never described. A
+            # diagnostic would let those bytes through, so this refuses (directory.md §6).
             if listed_size and st.st_size != listed_size:
                 raise _changed_since_listing(
                     name, f"changed size ({listed_size} to {st.st_size} bytes)"
