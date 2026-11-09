@@ -931,8 +931,11 @@ turn invalid only further in: with a 256-byte sample, 7 of the first 800 Perl mo
 When a probe accepts the window and the source is longer than the window but no longer
 than the budget's `completion_window_bytes` (64 KiB under `BALANCED`), detection SHALL
 peek the whole source and run the probe again on it, so the completeness check above
-applies to it too. A source larger than that window, a budget with no completion window
-(`FAST`), or a source of unknown length keeps the window's answer. The whole-source decode
+applies to it too. A source that can seek but has no cheap size SHALL be measured by
+peeking one byte past the completion window, and completed the same way when it ends
+within it, so the same bytes get the same answer with or without a known size. A source
+larger than that window, a budget with no completion window (`FAST`), or a forward-only
+source of unknown length keeps the window's answer. The whole-source decode
 is charged to the detection decode allowance; when the allowance cannot cover it, the
 window's answer stands and `probe_completion` is recorded as *budget exhausted*.
 
@@ -947,6 +950,7 @@ window's answer stands and `probe_completion` is recorded as *budget exhausted*.
 | Real Brotli file larger than the prefix, decode wants more input | Accepted — there genuinely is more input |
 | Real Brotli file exactly the size of the prefix, decodes to completion | Accepted |
 | Source length unknown (non-seekable stream longer than the peek) | Rule skipped; today's behaviour |
+| Seekable source with no cheap size, ending within the completion window | Completed as with a known size |
 | LZMA Alone: 51-byte low-entropy file, fully visible, does not terminate | **Rejected** — same rule, not a Brotli special case |
 | Source larger than the prefix, within the completion window, stream truncated past the window | **Rejected** — the whole source is peeked and the probe re-run on it |
 | Same source under `FAST` (no completion window) | Accepted on the window |
