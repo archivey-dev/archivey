@@ -621,9 +621,10 @@ class XarReader(IndexedReader[_Location]):
         if size is not None:
             cut = end > size
         else:
-            # A source whose size is not known: is the last byte there? Otherwise the
-            # codec would meet the cut first and report it as damage.
-            cut = data.length > 0 and not self._source.read_at(end - 1, 1)
+            # A source whose size is not known: is byte ``end - 1`` there? That is
+            # ``end > size`` asked of the source, also for an empty member. Otherwise
+            # the codec would meet the cut first and report it as damage.
+            cut = end > 0 and not self._source.read_at(end - 1, 1)
         if cut:
             raise TruncatedError(
                 f"the XAR archive ends inside the data of {quoted(member.name)}"

@@ -23,6 +23,7 @@ from archivey import ArchiveyError, open_archive
 from archivey.internal.streams.streamtools.shared import SharedSource
 from tests.atheris_fuzz import seeds
 from tests.streams_util import ShortReadBytesIO
+from tests.xar_util import XarFile, write_xar
 
 
 def _outcomes(source: io.RawIOBase | io.BytesIO) -> list[tuple[str, str]]:
@@ -71,6 +72,19 @@ def test_cut_archive_reads_the_same_with_and_without_a_known_size(
     assert checked > 50
 
 
+@pytest.mark.parametrize("encoding", ["none", "gzip"])
+def test_an_empty_xar_member_after_the_cut_reads_the_same(encoding: str) -> None:
+    data = write_xar(
+        [
+            XarFile("a", b"A" * 200, encoding="none"),
+            XarFile("e", b"", encoding=encoding),
+        ]
+    )[:-100]
+    known = _outcomes(io.BytesIO(data))
+    assert known == [("a", "TruncatedError"), ("e", "TruncatedError")]
+    assert _outcomes(ShortReadBytesIO(data, max_chunk=1 << 16)) == known
+
+
 def test_a_read_past_any_file_offset_is_empty_on_a_source_of_unknown_size() -> None:
     # A squashfs image named a fragment table at 2**64 - 31. With a known size the
     # read was clamped to nothing; with none, seeking there raised ValueError
@@ -82,3 +96,7 @@ def test_a_read_past_any_file_offset_is_empty_on_a_source_of_unknown_size() -> N
         assert view.read() == b""
     with source.view(2**63) as view:
         assert view.read() == b""
+    # An open-ended view seeked there reads nothing either.
+    with source.view(0) as view:
+        view.seek(2**64)
+        assert view.read(4) == b""

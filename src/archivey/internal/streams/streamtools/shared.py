@@ -38,15 +38,11 @@ from archivey.internal.streams.streamtools.binaryio import (
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.slice import (
+    _MAX_OFFSET,
     SharedView,
     _already_at,
     _clamp_slice_length,
 )
-
-# The largest offset a file can have (a signed 64-bit ``off_t``). An archive can name a
-# larger one; no source holds bytes there, and seeking there raises outside archivey's
-# errors, so a read or view that starts past it is empty without a seek.
-_MAX_OFFSET = (1 << 63) - 1
 
 
 class SharedSource:
@@ -110,8 +106,6 @@ class SharedSource:
             raise ValueError(f"view length must be non-negative, got {length}")
 
         length = _clamp_slice_length(start, length, self._size)
-        if start > _MAX_OFFSET:
-            length = 0
 
         return SharedView(
             self._handle,
