@@ -2,10 +2,16 @@
 
 ``open_archive()``, ``open_stream()`` and ``detect_format()`` accept the unentered
 object ``fsspec.open(url, **options)`` returns (``openspec`` change
-``fsspec-integration``, design D1). archivey never enters it and opens no file object
-from it: every byte comes from ``fs.cat_file(path, start, end)`` on the ``OpenFile``'s
-file system, through :class:`RangeSource`, so fsspec's file caches are never in the
-path. The size comes from one ``fs.size(path)`` at open and is a fact.
+``fsspec-integration``, design D1). archivey never enters it and, unless it carries a
+``compression`` (:func:`open_decompressed`), opens no file object from it: every byte
+comes from ``fs.cat_file(path, start, end)`` on the ``OpenFile``'s file system, through
+:class:`RangeSource`, so fsspec's file caches are never in the path. The size comes
+from one ``fs.size(path)`` at open and is a fact.
+
+A change of the object that a fetch catches stays caught (design D7): the
+:class:`RangeSource` raises :class:`~archivey.SourceChangedError` on every later read,
+and :func:`source_change` gives the error that ends the operation, so a handler that
+takes the first one for damage to the archive cannot turn it into a result.
 
 This module imports nothing from fsspec at import time. :func:`is_open_file` looks for
 ``fsspec.core`` in ``sys.modules``: a caller who has not imported fsspec cannot hold an
@@ -50,7 +56,7 @@ import sys
 import threading
 from collections.abc import Generator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 from archivey.exceptions import (
     FormatDetectionError,
@@ -64,6 +70,7 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.source import ArchiveSource
 
 
 @dataclass(frozen=True)
@@ -189,28 +196,69 @@ def open_file_compression(of: Any) -> str | None:
     return getattr(of, "compression", None)
 
 
-def open_decompressed(of: Any) -> Any:
+def open_decompressed(of: Any) -> tuple[BinaryIO, BinaryIO]:
     """Open ``of`` as fsspec delivers it: its file, decompressed by fsspec.
 
     For an ``OpenFile`` with a ``compression``, the archive is the decompressed bytes,
     so archivey reads that stream as it reads any caller stream: forward, a seek back
     re-decoding, and without range requests. One WARNING says so, with the faster way
     when archivey can decode the compression itself.
+
+    Returns ``(decoded, raw)``: the decompressor and fsspec's file under it. archivey
+    opened both, so the caller closes both, ``decoded`` first. A decompressor handed a
+    file object leaves it open, and the raw file holds fsspec's read-ahead cache (and,
+    on some file systems, a connection). The two are built as ``OpenFile.open()``
+    builds them, without entering ``of``: entering it would keep them in
+    ``of.fobjects``, where the caller's own ``of.close()`` would close a stream
+    archivey is still reading.
     """
     check_open_file(of)
     compression = open_file_compression(of)
+    assert compression is not None  # only an OpenFile with one is opened here
     streams_logger.warning(
         "%r is opened with fsspec compression=%r, so archivey reads fsspec's "
         "decompressed stream: no range requests, and a seek back decodes again. %s",
         open_file_name(of),
         compression,
         _COMPRESSION_HINT.get(
-            compression or "",
+            compression,
             "archivey cannot decode this compression itself, so this is the only way "
             "to read it.",
         ),
     )
-    return of.open()
+    # The caller holds an OpenFile, so fsspec is imported already.
+    from fsspec.compression import compr
+
+    # ``compr`` starts as ``{None: noop_file}``, so a checker infers ``None`` keys.
+    opener = cast("dict[str | None, Any]", compr)[compression]
+    raw = of.fs.open(of.path, mode="rb")
+    try:
+        decoded = opener(raw, mode="r")
+    except BaseException:
+        raw.close()
+        raise
+    return decoded, raw
+
+
+@dataclass(frozen=True)
+class FsspecDecompressed:
+    """An ``OpenFile`` read through fsspec's own decompressing file (``compression=``).
+
+    Kept on the source so that open can say what :class:`RangeSource` would otherwise
+    say: nothing checks the object for a change while it is read
+    (``SOURCE_CHANGE_UNDETECTABLE``).
+    """
+
+    url: str
+    protocol: str
+    compression: str
+
+    @classmethod
+    def of(cls, of: Any) -> FsspecDecompressed:
+        fs = of.fs
+        unstrip = getattr(fs, "unstrip_protocol", None)
+        url = unstrip(of.path) if callable(unstrip) else str(of.path)
+        return cls(url, protocol_of(fs), str(open_file_compression(of)))
 
 
 @contextlib.contextmanager
@@ -529,6 +577,10 @@ class RangeSource(io.RawIOBase):
     Every byte comes from ``fs.cat_file(path, start, end)`` through the
     :class:`WindowPool`. ``read(n)`` returns ``n`` bytes unless the end comes first.
     ``close()`` drops this source's windows and closes nothing of the caller's.
+
+    Once a fetch has seen the object change, every later read raises
+    :class:`~archivey.SourceChangedError` again, a read a window still holds too
+    (:attr:`change`).
     """
 
     def __init__(
@@ -550,6 +602,8 @@ class RangeSource(io.RawIOBase):
         # The spans backends declared they read next (``will_read``), newest last,
         # each until a fetch uses it. Several, so streams side by side each keep one.
         self.pending_hints: list[tuple[int, int]] = []
+        # The message of the first ``SourceChangedError`` a fetch raised (design D7).
+        self.change: str | None = None
 
     @classmethod
     def from_open_file(
@@ -648,7 +702,9 @@ class RangeSource(io.RawIOBase):
         object. That is all a fetch can see. A replacement of the same length, or a
         longer one, returns the full range and is not detected without a pinned
         version (not implemented yet); ``SOURCE_CHANGE_UNDETECTABLE`` says so at open.
+        The change is kept (:attr:`change`): this source raises it again from then on.
         """
+        self._raise_if_changed()
         data = self.fs.cat_file(self.path, start=start, end=end)
         if len(data) > end - start:
             raise OSError(
@@ -657,12 +713,20 @@ class RangeSource(io.RawIOBase):
                 f"which reading an archive remotely needs"
             )
         if len(data) < end - start:
-            raise SourceChangedError(
+            self.change = (
                 f"{self.url}: the object changed while it was read: fetching bytes "
                 f"{start}-{end} of the {self.size} bytes seen at open returned "
                 f"{len(data)} bytes"
             )
+            self._raise_if_changed()
         return bytes(data)
+
+    def _raise_if_changed(self) -> None:
+        # A new exception each time: one instance raised from several places would
+        # gather every traceback, and a later ``raise ... from`` would rewrite its
+        # cause for every holder.
+        if self.change is not None:
+            raise SourceChangedError(self.change)
 
     @override
     def readable(self) -> bool:
@@ -696,6 +760,9 @@ class RangeSource(io.RawIOBase):
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         self._checkClosed()
+        # Before the pool: a window fetched before the change still holds bytes of
+        # the object as it was, and serving them would read on past the change.
+        self._raise_if_changed()
         with memoryview(b) as outer, outer.cast("B") as whole:
             limit = min(len(whole), max(self.size - self._pos, 0))
             if limit == 0:
@@ -735,34 +802,97 @@ def protocol_of(fs: Any) -> str:
     return str(protocol)
 
 
+def source_change(
+    ranges: tuple[RangeSource, ...], cause: BaseException | None = None
+) -> SourceChangedError | None:
+    """The error that ends an operation on ``ranges`` once one of them saw a change.
+
+    Called where an operation ends (detection's answer, an open, the end of a member
+    walk), with ``cause`` the exception it is about to raise, if any. A change makes
+    whatever the operation concluded after it unreliable: a handler built for damage
+    to the archive may have taken the ``SourceChangedError`` for damage and answered
+    with another format, a diagnostic or a missing size, or a later step may have
+    failed on what that handler left. ``None`` when nothing changed, or when ``cause``
+    already is the change.
+    """
+    if isinstance(cause, SourceChangedError):
+        return None
+    for ranged in ranges:
+        if ranged.change is not None:
+            return SourceChangedError(ranged.change)
+    return None
+
+
+@contextlib.contextmanager
+def raising_source_change(
+    ranges: tuple[RangeSource, ...], *, archive_name: str | None = None
+) -> Generator[None]:
+    """End the block with :func:`source_change`'s error, whether the block returns or
+    raises another ``Exception`` (which becomes its cause). The error carries
+    ``archive_name``, as the errors of the call that ends with it do."""
+    try:
+        yield
+    except Exception as exc:
+        changed = source_change(ranges, exc)
+        if changed is not None:
+            changed.archive_name = archive_name
+            raise changed from exc
+        raise
+    changed = source_change(ranges)
+    if changed is not None:
+        changed.archive_name = archive_name
+        raise changed
+
+
 def emit_source_change_undetectable(
-    ranges: tuple[RangeSource, ...],
+    source: ArchiveSource,
     collector: DiagnosticCollector,
     archive_name: str | None,
 ) -> None:
-    """Record ``SOURCE_CHANGE_UNDETECTABLE`` once for a source read through ``ranges``.
+    """Record ``SOURCE_CHANGE_UNDETECTABLE`` once for a remote ``source``.
 
-    archivey pins no object version and sends no ``If-Match`` yet (design D7, tiers 1
-    and 2), so every file system gets tier 3: a fetch catches a change of length only.
+    Read by range (``remote_sources``): archivey pins no object version and sends no
+    ``If-Match`` yet (design D7, tiers 1 and 2), so every file system gets tier 3, and
+    a fetch catches a change of length only. Read through fsspec's decompressing file
+    (``fsspec_decompressed``): archivey checks nothing, because every read goes through
+    fsspec's file and its cache, never through a fetch it can compare with the size
+    seen at open. A local source records nothing.
     """
-    if not ranges:
-        return
-    from archivey.diagnostics import DiagnosticCode, SourceChangeContext
-
-    protocol = protocol_of(ranges[0].fs)
-    collector.emit(
-        code=DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
-        message=(
+    ranges = source.remote_sources
+    decompressed = source.fsspec_decompressed
+    if ranges:
+        protocol = protocol_of(ranges[0].fs)
+        message = (
             f"{archive_name or ranges[0].url} is read by range requests over "
             f"{protocol or 'fsspec'}, and archivey cannot pin one version of the "
             f"object: a replacement of the same length, or a longer one, while it "
             f"is read would not be detected"
-        ),
+        )
+        reason = (
+            "archivey implements no version pinning or If-Match for this file system"
+        )
+    elif decompressed is not None:
+        protocol = decompressed.protocol
+        compression = f"compression={decompressed.compression!r}"
+        message = (
+            f"{archive_name or decompressed.url} is read through fsspec's "
+            f"decompressing file ({compression}) over {protocol or 'fsspec'}, and "
+            f"archivey checks nothing about the object while it reads it: a "
+            f"replacement while it is read would not be detected"
+        )
+        reason = (
+            f"read through fsspec's decompressing file ({compression}), which "
+            f"archivey cannot check for a change"
+        )
+    else:
+        return
+    from archivey.diagnostics import DiagnosticCode, SourceChangeContext
+
+    collector.emit(
+        code=DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
+        message=message,
         context=SourceChangeContext(
-            archive_name=archive_name,
-            protocol=protocol,
-            reason="archivey implements no version pinning or If-Match for this "
-            "file system",
+            archive_name=archive_name, protocol=protocol, reason=reason
         ),
     )
 
@@ -770,6 +900,7 @@ def emit_source_change_undetectable(
 __all__ = [
     "DEFAULT_MAX_READ_THROUGH",
     "DEFAULT_PLANNER_CONSTANTS",
+    "FsspecDecompressed",
     "PlannerConstants",
     "RangeSource",
     "WindowPool",
@@ -778,4 +909,6 @@ __all__ = [
     "emit_source_change_undetectable",
     "is_open_file",
     "planner_constants",
+    "raising_source_change",
+    "source_change",
 ]

@@ -131,6 +131,7 @@ from archivey.internal.remote import (
     emit_source_change_undetectable,
     is_open_file,
     noting_fsspec_decoding,
+    raising_source_change,
 )
 from archivey.internal.sfx import (
     LAYOUT_PREFIX,
@@ -1472,7 +1473,7 @@ def _detect_source_into(
     # ``format=`` skips detection.
     if isinstance(source, ArchiveSource):
         emit_source_change_undetectable(
-            source.remote_sources, collector, getattr(source, "name", None)
+            source, collector, getattr(source, "name", None)
         )
 
     resolved_budget = effective_config.detection_budget
@@ -1481,26 +1482,14 @@ def _detect_source_into(
     # strong executable cue runs the full SFX scan), so the sibling-volume answer
     # carries its cost and its skips too. ``passes`` says there were two.
     receipt = MutableDetectionCostReceipt()
-    try:
-        info = _detect_format_body(
-            source,
-            collector,
-            resolved_budget,
-            receipt,
-            always_probe=always_probe,
-            isolation=effective_config.process_isolation,
-            formats=effective_config.formats,
-        )
-    except FormatDetectionError:
-        alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
-        if alt is None:
-            raise
-        receipt.passes += 1
-        # The volume is resolved as ``open_archive`` resolves it after the switch:
-        # ``vol.7z.001`` is detected on the joined set, not on its first slice.
-        with closing(resolve_source(alt).source) as alt_source:
+    # A change of a remote object ends detection, whatever the probes made of it: a
+    # probe that took the change for bytes that do not decode answers with another
+    # format (a ``.tar.gz`` as GZ), or with none.
+    ranges = source.remote_sources if isinstance(source, ArchiveSource) else ()
+    with raising_source_change(ranges, archive_name=getattr(source, "name", None)):
+        try:
             info = _detect_format_body(
-                alt_source,
+                source,
                 collector,
                 resolved_budget,
                 receipt,
@@ -1508,6 +1497,23 @@ def _detect_source_into(
                 isolation=effective_config.process_isolation,
                 formats=effective_config.formats,
             )
+        except FormatDetectionError:
+            alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
+            if alt is None:
+                raise
+            receipt.passes += 1
+            # The volume is resolved as ``open_archive`` resolves it after the switch:
+            # ``vol.7z.001`` is detected on the joined set, not on its first slice.
+            with closing(resolve_source(alt).source) as alt_source:
+                info = _detect_format_body(
+                    alt_source,
+                    collector,
+                    resolved_budget,
+                    receipt,
+                    always_probe=always_probe,
+                    isolation=effective_config.process_isolation,
+                    formats=effective_config.formats,
+                )
     diagnostics = (
         collector.snapshot()
         if owned_collector
