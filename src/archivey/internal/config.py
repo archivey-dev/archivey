@@ -76,7 +76,7 @@ class StreamConfig:
 
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
     """The caller's ``ArchiveyConfig.use_indexed_bzip2``: whether a bzip2 stream may go
-    through indexed_bzip2."""
+    through rapidgzip's bzip2 decoder."""
 
     compressed_input_size: int | None = None
     """The known compressed byte length of the source (path size, slice length, …),
