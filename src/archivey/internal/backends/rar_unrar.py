@@ -6,6 +6,13 @@ then the trialware writer ``rar``; not ``unrar-free`` / ``unar`` / ``7z``), or o
 Windows in WinRAR's Program Files folder, and
 spawns ``<binary> p`` with the password on stdin (bare ``-p``, secret not in
 argv) and optional ``-n./member`` include masks. Never ``x`` / extract-to-disk.
+
+:mod:`.rar_reader` calls :func:`open_unrar_p` for every member read and solid pass
+that runs ``unrar``, and :func:`decompress_rar3_blob` for a compressed RAR 1.5-4
+comment. :func:`find_rarlab_unrar` is the 6.0 banner probe: :func:`open_unrar_p`
+runs it before each spawn, :mod:`.rar_reader` runs it to resolve
+``RarDecompressor.AUTO``, and ``format_availability`` runs it through
+:func:`rarlab_unrar_missing`.
 """
 
 from __future__ import annotations
@@ -198,6 +205,7 @@ def _is_rarlab_unrar(path: str) -> _UnrarBanner:
 
 
 def _describe_floor_refusal(path: str, version: tuple[int, int] | None) -> str:
+    """One binary's part of :func:`_unrar_floor_message`: why it was turned down."""
     shown = display_path(path)
     if version is None:
         return f"the version of {shown} could not be parsed from its banner"
@@ -251,6 +259,7 @@ def _unrar_missing(message: str) -> PackageNotInstalledError:
 
 
 def _banner_meets_floor(banner: _UnrarBanner) -> bool:
+    """Whether a banner is RARLAB's and reports a version at or above the floor."""
     return (
         banner.is_rarlab
         and banner.version is not None
@@ -338,9 +347,9 @@ def find_rarlab_unrar() -> str:
     A ``which`` miss is never cached. Spawn sites still only run ``p`` (see
     :func:`open_unrar_p`).
     """
-    path_env = os.environ.get("PATH", "")
     # Sample PATH once and pass it to ``which`` so a concurrent ``os.environ``
     # rewrite cannot stamp a new lookup with the old key.
+    path_env = os.environ.get("PATH", "")
     floor_refusals: list[tuple[str, tuple[int, int] | None]] = []
     timed_out: list[str] = []
     run_cause: BaseException | None = None
