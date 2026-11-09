@@ -333,9 +333,13 @@ class _AloneDecompressor:
     marker. While both run they give the same bytes, and the first one's are returned.
     If the first one fails, and the second one has reached its end marker after exactly
     the declared size, the stream is good: the second one's output for that call is
-    returned and it continues alone. The second decoder stops when its output passes the
-    declared size (no marker there) or when it fails. This costs a second decode only for
-    a stream with a known size, and only on such a liblzma. A plain decode of the raw
+    returned and it continues alone. An old liblzma fails in the call that writes the
+    last declared byte, before it reads the marker, so the second one may not be at its
+    end yet: after the switch it must still reach the marker without writing another
+    byte. The second decoder stops when its output passes the declared size (no marker
+    there) or when it fails. This costs a second decode only for a stream with a known
+    size, and only on such a liblzma; both dictionaries count against
+    ``max_decoder_memory``. A plain decode of the raw
     LZMA1 data cannot replace it: without a marker, nothing tells it where the stream
     ends, so the trailing-data and next-stream checks would lose their start.
     """
@@ -350,6 +354,8 @@ class _AloneDecompressor:
         self._dec: Decompressor | None = None
         # The marker-reading decoder; only for a known size on an old liblzma.
         self._marker_dec: Decompressor | None = None
+        # The marker decoder took over after the first one failed at the declared size.
+        self._switched = False
         self._size = 0
         self._out = 0
         self._marker_out = 0
@@ -377,6 +383,20 @@ class _AloneDecompressor:
             or not _liblzma_refuses_marker_after_known_size()
         ):
             return header, b""
+        if self._read_bound is None:
+            # Both decoders hold the dictionary at once, so both count against the cap,
+            # as a 7z folder's coders do. The probe's dictionaries are clamped.
+            dict_size = int.from_bytes(header[1:5], "little")
+            check_decoder_memory(
+                2 * dict_size,
+                limits=self._limits,
+                what="the LZMA Alone working set",
+                counted_from=(
+                    f"the {dict_size}-byte dictionary the header declares, held twice: "
+                    "this liblzma reads a stream with a known size and an end marker "
+                    "only with a second decoder"
+                ),
+            )
         self._size = size
         self._marker_dec = self._new()
         return header, header[:5] + _ALONE_UNKNOWN_SIZE.to_bytes(8, "little")
@@ -393,14 +413,15 @@ class _AloneDecompressor:
             first, second = self._start(header[:_ALONE_HEADER_SIZE])
             data, marker_data = first + rest, second + rest
         assert self._dec is not None
+        if self._switched:
+            return self._decompress_switched(data, max_length)
         marker_dec = self._marker_dec
         marker_out = b""
         if marker_dec is not None and not marker_dec.eof:
-            # One byte past the declared size is room for nothing but the marker.
-            room = self._size + 1 - self._marker_out
-            limit = room if max_length < 0 else min(max_length, room)
             try:
-                marker_out = marker_dec.decompress(marker_data, limit)
+                marker_out = marker_dec.decompress(
+                    marker_data, self._room(max_length, self._marker_out)
+                )
             except lzma.LZMAError:
                 self._marker_dec = None
             else:
@@ -411,20 +432,52 @@ class _AloneDecompressor:
         try:
             out = self._dec.decompress(data, max_length)
         except lzma.LZMAError:
+            # An old liblzma fails in the call that writes the last declared byte, when
+            # a marker follows: CPython drops that call's output, and the marker bytes
+            # may not have arrived yet. The marker decoder takes over only if:
             if (
-                marker_dec is None
-                or self._marker_dec is None
-                or not marker_dec.eof
-                or self._marker_out != self._size
+                # it is still running: it has not failed, and it did not write past the
+                # declared size (which proves there is no marker there);
+                self._marker_dec is None
+                # it was in step before this call: the first decoder had returned
+                # exactly the bytes it had, so its output for this call continues the
+                # stream with no gap and no overlap;
                 or self._marker_out - len(marker_out) != before
+                # and it has written exactly the declared size. Damage before the end
+                # fails both decoders at the same byte, so it stays an error.
+                or self._marker_out != self._size
             ):
                 raise
+            # What it must still show, it shows alone (``_decompress_switched``): the
+            # marker, with no byte after the declared size. Input that ends first is a
+            # truncated stream, as for any decoder that is not at ``eof``.
+            assert marker_dec is not None
             self._dec, self._marker_dec = marker_dec, None
+            self._switched = True
             self._out = self._marker_out
             return marker_out
         self._out += len(out)
         if self._dec.eof:
             self._marker_dec = None
+        return out
+
+    def _room(self, max_length: int, written: int) -> int:
+        """The marker decoder's output limit: one byte past the declared size at most.
+
+        That byte is room for nothing but the marker: a stream that writes it has no
+        marker at the declared size.
+        """
+        room = self._size + 1 - written
+        return room if max_length < 0 else min(max_length, room)
+
+    def _decompress_switched(self, data: bytes, max_length: int) -> bytes:
+        assert self._dec is not None
+        out = self._dec.decompress(data, self._room(max_length, self._out))
+        self._out += len(out)
+        if self._out > self._size:
+            raise lzma.LZMAError(
+                "Corrupt input data: no end marker after the declared size"
+            )
         return out
 
     @property

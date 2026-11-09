@@ -15,7 +15,7 @@ import pytest
 
 from archivey import open_archive
 from archivey.config import DecoderLimits
-from archivey.exceptions import CorruptionError
+from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
 from archivey.formats import Decompressor
 from archivey.internal.streams.codecs import lzma_codec
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
@@ -43,10 +43,14 @@ def _marker_stream(declared: int = len(PAYLOAD)) -> bytes:
 
 
 class _OldLiblzma:
-    """Natives whose first Alone decoder fails at the marker, as liblzma 5.2.5 does.
+    """Natives whose first Alone decoder fails at the declared size, as liblzma 5.2.5 does.
 
-    liblzma 5.2.5 writes every byte of the declared size and then returns
-    ``LZMA_DATA_ERROR`` from the same call, so CPython drops that call's output.
+    liblzma 5.2.5 checks that the range coder is finished as soon as it writes the last
+    declared byte. With a marker after that byte, it is not, so it returns
+    ``LZMA_DATA_ERROR`` from that call, before it reads the marker; CPython drops the
+    call's output. Measured on 5.2.5: a 39-byte stream fed one byte at a time fails at
+    input byte 33, and the marker ends at byte 38. Use it only on a stream that has a
+    marker, or to model a stream without one whose range coder is not finished.
     """
 
     def __init__(self, *, fail_first: bool = True) -> None:
@@ -56,17 +60,25 @@ class _OldLiblzma:
     def lzma_decompressor(self, **kwargs: Any) -> Decompressor:
         self.built += 1
         real = IN_PROCESS.lzma_decompressor(**kwargs)
-        return _FailsAtMarker(real) if self._fail_first and self.built == 1 else real
+        return _FailsAtSize(real) if self._fail_first and self.built == 1 else real
 
 
-class _FailsAtMarker:
+class _FailsAtSize:
     def __init__(self, real: Decompressor) -> None:
         self._real = real
+        self._head = b""
+        self._left: int | None = None  # declared bytes not yet written
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        if self._left is None:
+            self._head += data
+            if len(self._head) >= 13:
+                self._left = int.from_bytes(self._head[5:13], "little")
         out = self._real.decompress(data, max_length)
-        if self._real.eof:
-            raise lzma.LZMAError("Corrupt input data")
+        if self._left is not None:
+            self._left -= len(out)
+            if self._left <= 0:
+                raise lzma.LZMAError("Corrupt input data")
         return out
 
     @property
@@ -195,3 +207,91 @@ def test_wrong_size_through_the_api_is_corruption() -> None:
     ):
         (member,) = a.members()
         a.read(member)
+
+
+@pytest.mark.usefixtures("old_liblzma")
+def test_no_marker_after_the_switch_is_refused() -> None:
+    # The first decoder fails at the declared size of a stream with no marker (a range
+    # coder that is not finished); the marker decoder then writes past that size.
+    with pytest.raises(lzma.LZMAError, match="no end marker"):
+        _decode(_no_marker_stream() + b"\x00" * 64, chunk=1, natives=_OldLiblzma())
+
+
+@pytest.fixture
+def old_liblzma_everywhere(monkeypatch: pytest.MonkeyPatch, old_liblzma: None) -> None:
+    """Every ``_AloneDecompressor`` the API builds gets the old first decoder."""
+    del old_liblzma
+    real_new = lzma_codec._AloneDecompressor._new
+
+    def new(self: lzma_codec._AloneDecompressor) -> Decompressor:
+        dec = real_new(self)
+        if not getattr(self, "_built_first", False):
+            self._built_first = True  # type: ignore[attr-defined]
+            return _FailsAtSize(dec)
+        return dec
+
+    monkeypatch.setattr(lzma_codec._AloneDecompressor, "_new", new)
+
+
+class _ShortReads(io.RawIOBase):
+    """A non-seekable source that returns at most ``step`` bytes per read."""
+
+    def __init__(self, data: bytes, step: int) -> None:
+        self._data = data
+        self._pos = 0
+        self._step = step
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        piece = self._data[self._pos : self._pos + min(len(buffer), self._step)]
+        buffer[: len(piece)] = piece
+        self._pos += len(piece)
+        return len(piece)
+
+
+@pytest.mark.usefixtures("old_liblzma_everywhere")
+@pytest.mark.parametrize("step", [1, 5, 33])
+def test_a_read_boundary_inside_the_marker_reads_through_the_api(step: int) -> None:
+    source = cast(Any, _ShortReads(_marker_stream(), step))
+    with open_archive(source, format="lzma", streaming=True) as archive:
+        read = []
+        for _member, stream in archive.stream_members():
+            assert stream is not None
+            read.append(stream.read())
+        assert read == [PAYLOAD]
+
+
+@pytest.mark.usefixtures("old_liblzma_everywhere")
+def test_input_ending_inside_the_marker_is_truncation() -> None:
+    stream = _marker_stream()
+    with (
+        open_archive(io.BytesIO(stream[:-2]), format="lzma") as archive,
+        pytest.raises(TruncatedError),
+    ):
+        archive.read(archive.members()[0])
+
+
+@pytest.mark.usefixtures("old_liblzma")
+def test_both_dictionaries_count_against_the_cap() -> None:
+    def stream(known_size: bool) -> bytes:
+        data = bytearray(lzma.compress(PAYLOAD, format=lzma.FORMAT_ALONE))
+        data[1:5] = (1 << 20).to_bytes(4, "little")  # a 1 MiB dictionary
+        if known_size:
+            data[5:13] = len(PAYLOAD).to_bytes(8, "little")
+        return bytes(data)
+
+    tight = DecoderLimits(max_decoder_memory=3 << 19)  # 1.5 MiB: one fits, two do not
+    with pytest.raises(ResourceLimitError, match="held twice"):
+        lzma_codec._new_alone_decompressor(None, tight).decompress(stream(True))
+    # An unknown size needs one decoder, which fits.
+    assert (
+        lzma_codec._new_alone_decompressor(None, tight).decompress(stream(False))
+        == PAYLOAD
+    )
+    roomy = DecoderLimits(max_decoder_memory=3 << 20)
+    assert (
+        lzma_codec._new_alone_decompressor(None, roomy).decompress(stream(True))
+        == PAYLOAD
+    )
