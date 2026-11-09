@@ -5,9 +5,11 @@ end-of-archive marker, as a :class:`Diagnostic` with a :class:`DiagnosticCode`.
 Readers emit them through ``archivey.internal.diagnostics_collector``, which applies
 the caller's :class:`DiagnosticPolicy` (ignore, collect or raise
 :exc:`~archivey.DiagnosticRaisedError`) and calls ``ArchiveyConfig.on_diagnostic``.
-Callers read the collected records from ``reader.diagnostics``,
-``ArchiveMember.diagnostics``, an :class:`ExtractionReport` or a
-:class:`MemberListReport`.
+Callers read the collected records from ``reader.diagnostics``, a stream's
+``ArchiveStream.diagnostics``, ``ArchiveMember.diagnostics``,
+``FormatInfo.diagnostics`` after detection, an :class:`ExtractionReport` or a
+:class:`MemberListReport`. A raised record is on the error, as
+``DiagnosticRaisedError.diagnostic``.
 
 See ``openspec/specs/diagnostics`` (and the ``diagnostics-warnings-as-data`` change)
 for the lifecycle, retention, and policy contracts.
