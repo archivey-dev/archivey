@@ -47,6 +47,7 @@ attribute archivey.ArchiveFormat.BZ2 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZIP3 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.CAB = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.CPIO = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.DEB = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DIRECTORY = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DMG = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.GZ = ArchiveFormat(...)
@@ -231,6 +232,7 @@ value archivey.ContainerFormat.RAR = 'rar'
 value archivey.ContainerFormat.SEVEN_Z = '7z'
 value archivey.ContainerFormat.ISO = 'iso'
 value archivey.ContainerFormat.AR = 'ar'
+value archivey.ContainerFormat.DEB = 'deb'
 value archivey.ContainerFormat.CPIO = 'cpio'
 value archivey.ContainerFormat.RPM = 'rpm'
 value archivey.ContainerFormat.SQUASHFS = 'squashfs'
@@ -323,6 +325,7 @@ value archivey.DiagnosticCode.MEMBER_HEADER_AMBIGUOUS = 'member_header_ambiguous
 value archivey.DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED = 'encrypted_member_unverified'
 value archivey.DiagnosticCode.SEEK_INDEX_DEGRADED = 'seek_index_degraded'
 value archivey.DiagnosticCode.STREAM_REWIND_REDECOMPRESSES = 'stream_rewind_redecompresses'
+value archivey.DiagnosticCode.SOLID_OPEN_REDECOMPRESSES = 'solid_open_redecompresses'
 value archivey.DiagnosticCode.MEMBER_SELECTOR_UNMATCHED = 'member_selector_unmatched'
 value archivey.DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA = 'member_special_file_has_data'
 value archivey.DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS = 'member_local_name_differs'
@@ -334,7 +337,7 @@ value archivey.DiagnosticCode.MEMBER_TYPE_UNKNOWN = 'member_type_unknown'
 value archivey.DiagnosticCode.MEMBER_NAME_DUPLICATE = 'member_name_duplicate'
 value archivey.DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE = 'source_change_undetectable'
 value archivey.DiagnosticCode.MEMBER_READERS_DISAGREE = 'member_readers_disagree'
-alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | NameDuplicateContext | ReaderDisagreementContext
+alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | NameDuplicateContext | ReaderDisagreementContext
 class archivey.DiagnosticPolicy()
 init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
 field archivey.DiagnosticPolicy.ignore: frozenset[DiagnosticCode]
@@ -710,6 +713,8 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'seek_index_degraded'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'seek-index-degraded'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'stream_rewind_redecompresses'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'stream-rewind-redecompresses'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'solid_open_redecompresses'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'solid-open-redecompresses'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_selector_unmatched'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-selector-unmatched'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_special_file_has_data'
@@ -932,6 +937,14 @@ field archivey.diagnostics.SizeWrapContext.size: int | None = None
 field archivey.diagnostics.SizeWrapContext.stored_compressed_size: int = 0
 field archivey.diagnostics.SizeWrapContext.stored_size: int = 0
 method archivey.diagnostics.SizeWrapContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.SolidReopenContext(_JsonSafeContext)
+init archivey.diagnostics.SolidReopenContext(kind: Literal['solid_reopen'] = 'solid_reopen', archive_name: str | None = None, member_name: str | None = None, member_id: int | None = None, bytes_again: int = 0) -> None
+field archivey.diagnostics.SolidReopenContext.archive_name: str | None = None
+field archivey.diagnostics.SolidReopenContext.bytes_again: int = 0
+field archivey.diagnostics.SolidReopenContext.kind: Literal['solid_reopen'] = 'solid_reopen'
+field archivey.diagnostics.SolidReopenContext.member_id: int | None = None
+field archivey.diagnostics.SolidReopenContext.member_name: str | None = None
+method archivey.diagnostics.SolidReopenContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.SourceChangeContext(_JsonSafeContext)
 init archivey.diagnostics.SourceChangeContext(kind: Literal['source_change'] = 'source_change', archive_name: str | None = None, protocol: str = '', reason: str = '') -> None
 field archivey.diagnostics.SourceChangeContext.archive_name: str | None = None
@@ -1081,6 +1094,7 @@ class archivey.formats.MemberData(tuple)
 field archivey.formats.MemberData.bounded: bool
 field archivey.formats.MemberData.checked: bool
 field archivey.formats.MemberData.digests: tuple[MemberDigest, ...]
+field archivey.formats.MemberData.ranges: tuple[tuple[int, int], ...]
 field archivey.formats.MemberData.stream: BinaryIO | io.RawIOBase
 class archivey.formats.MemberDigest(tuple)
 field archivey.formats.MemberDigest.expected: bytes

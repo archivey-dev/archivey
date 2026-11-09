@@ -217,6 +217,14 @@ other fields say how archivey can check those bytes, as described in
 
 There are four ways to build the stream. Pick the first one that fits your format.
 
+Whichever you pick, an archive read by range from an `fsspec` file system fetches a
+member's bytes in one request, rather than in steps that start small, when archivey knows
+where they are. It knows when the stream is a `ReaderSource.view()`, a
+`ReaderContext.decompress()` over one, or a `block_stream()` whose blocks are those, as
+TOYA's is. For any other stream, such as one from your own library, name the spans it
+reads in `MemberData.ranges` as `(start, end)` pairs; they win over what archivey
+infers. On a local file the spans do nothing, and they never change what a read returns.
+
 **Stored bytes.** `ReaderSource.view(start, length)` is a stream over part of the archive
 with its own position, so two members open at the same time do not move each other. A
 format that stores members uncompressed returns a view, as TOYA does.

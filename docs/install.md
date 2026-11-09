@@ -63,8 +63,23 @@ On Debian and Ubuntu, `sudo apt install unrar` installs RARLAB's program. It's i
 archivey doesn't use. Other Linux distributions have a package of RARLAB's UnRAR under a similar
 name.
 
-On Windows, download the command-line UnRAR from [RARLAB](https://www.rarlab.com/rar_add.htm) and
-put `UnRAR.exe` on your `PATH`, or pass its full path as `ArchiveyConfig(unrar_path=...)`.
+On Windows, installing WinRAR is enough: it puts `UnRAR.exe` and `Rar.exe` in a `WinRAR` folder
+under Program Files, and archivey looks there when it finds neither program on your `PATH`.
+Without WinRAR, download the command-line UnRAR from [RARLAB](https://www.rarlab.com/rar_add.htm),
+unpack `UnRAR.exe` into a folder of your choice, and add that folder to your `PATH`. A program on
+your `PATH` is used before WinRAR's. In PowerShell, this adds a folder, here `C:\Tools\UnRAR`, for
+your user account, with no administrator rights needed:
+
+```powershell
+$p = [Environment]::GetEnvironmentVariable('Path', 'User')
+[Environment]::SetEnvironmentVariable('Path', "$p;C:\Tools\UnRAR", 'User')
+```
+
+You can do the same in the Start menu: search for "environment variables", open "Edit environment
+variables for your account", select **Path**, click **Edit**, then **New**, and enter the folder.
+Programs that are already running keep their old `PATH`, so open a new terminal, and restart your
+editor if you run archivey from it. You can also skip the `PATH` search and pass the full path as
+`ArchiveyConfig(unrar_path=...)`.
 
 On macOS, Homebrew no longer ships `unrar`. You can install it from an unofficial Homebrew tap,
 which builds or downloads RARLAB's program:
