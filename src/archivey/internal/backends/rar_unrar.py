@@ -620,6 +620,33 @@ def unrar_expands_wildcards(path: str | Path) -> bool:
     return "*" in text or "?" in text
 
 
+# The longest archive path that ``unrar`` is trusted to keep whole: UTF-16 code units
+# on Windows, and on POSIX also bytes of the name as it reaches the filesystem. unrar
+# 6.x copies the archive argument into ``wchar ArcName[NM]`` with NM 2048
+# (``cmddata.cpp`` and ``extract.cpp``, unrarsrc 6.2.12), and ``wchar_t`` is UTF-16 on
+# Windows. On POSIX ``File::Open`` converts the name back to bytes in ``char
+# NameA[NM]`` (``WideToChar``, ``file.cpp``), so a non-ASCII path is cut at 2047
+# bytes, which can be far fewer characters (measured on 6.24: a CJK path of 708 units
+# and 2068 bytes opened a file at its 2046-byte prefix). Either way unrar opens
+# whatever file the cut path names. Half of NM leaves margin for a path unrar makes
+# absolute or derives a next volume name from.
+_UNRAR_ARCHIVE_PATH_MAX = 1024
+
+
+def unrar_may_cut_archive_path(path: str | Path) -> bool:
+    """Whether ``path`` is too long to hand to ``unrar`` as the archive.
+
+    Measured as an absolute path, so a short relative path in a deep working
+    directory counts at its full length: in UTF-16 units, and on POSIX also in the
+    bytes ``os.fsencode`` gives, which is what ``unrar`` 6.x cuts there.
+    """
+    text = os.path.abspath(path)
+    size = len(text.encode("utf-16-le", "surrogatepass")) // 2
+    if sys.platform != "win32":
+        size = max(size, len(os.fsencode(text)))
+    return size > _UNRAR_ARCHIVE_PATH_MAX
+
+
 def unrar_member_refusal(member: str) -> str | None:
     """Why ``member`` is not a mask the reader sends, or ``None`` when it is one.
 
