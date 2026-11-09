@@ -7,9 +7,12 @@ import gzip
 import io
 import lzma
 import random
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -26,6 +29,7 @@ from archivey import (
 from archivey.formats import SequentialReader
 from archivey.internal.backends import ar_reader
 from archivey.internal.backends.ar_reader import ArReader
+from tests.memory_util import traced_peak
 from tests.public_names import assert_only_public_archivey
 from tests.streams_util import ShortReadBytesIO
 
@@ -291,6 +295,91 @@ def test_windows_long_names_end_with_a_nul(tmp_path: Path) -> None:
         ]
         assert reader.read("second-long-member-name.obj") == b"two"
         assert reader.info.extra["ar.symbol_table"] is True
+
+
+def test_long_name_entry_ends_at_its_first_terminator(tmp_path: Path) -> None:
+    # Each terminator the table may use, alone and together, the "/" GNU ar writes
+    # before the newline, and an entry the table's end closes.
+    entries = [b"gnu.o/\n", b"win.obj\0", b"both/\0x\n", b"nl\nz\0", b"last"]
+    table = b"".join(entries)
+    offsets = [sum(map(len, entries[:i])) for i in range(len(entries))]
+    data = _ar((b"//", table), *((b"/%d" % at, b"d") for at in offsets))
+    with open_archive(_archive(tmp_path, data)) as reader:
+        assert [m.name for m in reader.members()] == [
+            "gnu.o",
+            "win.obj",
+            "both",
+            "nl",
+            "last",
+        ]
+
+
+def test_long_name_lookup_does_not_copy_the_rest_of_the_table(tmp_path: Path) -> None:
+    # Each lookup sliced the table from the entry to its end before searching for
+    # the terminator, so a 16 MiB table read by 50 000 members took 60 s to list.
+    # Each copy is freed before the next, so the peak showed one: about twice the
+    # table, against about one table without the copy.
+    table_size = 4 << 20
+    # At offset 1: a slice from 0 is the table itself, not a copy.
+    table = b"\nm.o/\n" + b"x" * (table_size - 6)
+    members = [(b"//", table)] + [(b"/1", b"") for _ in range(4)]
+    path = _archive(tmp_path, _ar(*members))
+
+    def walk() -> None:
+        with open_archive(path) as reader:
+            assert [m.name for m in reader.members()] == ["m.o"] * 4
+
+    walk()
+    peak = traced_peak(walk)
+    assert peak < table_size * 1.5, peak
+
+
+class _ScanSpy(bytes):
+    """A long-name table that records how far each search may run."""
+
+    scans: list[int]
+
+    def _note(self, start: int | None, stop: int | None) -> None:
+        start = 0 if start is None else start
+        stop = len(self) if stop is None else stop
+        self.scans.append(stop - start)
+
+    def find(self, sub, start=None, stop=None):  # type: ignore[no-untyped-def,override]
+        self._note(start, stop)
+        return super().find(sub, start, stop)
+
+    def index(self, sub, start=None, stop=None):  # type: ignore[no-untyped-def,override]
+        self._note(start, stop)
+        return super().index(sub, start, stop)
+
+
+class _MatchSpy:
+    """Stands in for the terminator pattern and records how far each match ran."""
+
+    def __init__(self, pattern: re.Pattern[bytes], table: _ScanSpy) -> None:
+        self._pattern = pattern
+        self._table = table
+
+    def search(self, names: bytes, pos: int = 0) -> re.Match[bytes] | None:
+        found = self._pattern.search(names, pos)
+        self._table.scans.append((len(names) if found is None else found.end()) - pos)
+        return found
+
+
+def test_long_name_lookup_scans_only_its_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A NUL-terminated entry (the Windows .lib spelling) before a long tail with no
+    # newline: a search for the newline alone runs to the table's end for every
+    # member, 70 s to list a 63 MiB archive of 50 000 members. Every search the
+    # lookup makes, by bytes method or by the module's pattern, is recorded.
+    table = _ScanSpy(b"\0a.o\0" + b"x" * (1 << 20))
+    table.scans = []
+    monkeypatch.setattr(ar_reader, "_NAME_END", _MatchSpy(ar_reader._NAME_END, table))
+    reader = cast("ArReader", SimpleNamespace(_dialect=None))
+    assert ArReader._short_name(reader, b"/1", table, 0) == b"a.o"
+    assert table.scans, "the lookup made no search the test can see"
+    assert all(scan <= 16 for scan in table.scans), table.scans
 
 
 def test_blank_fields(tmp_path: Path) -> None:
