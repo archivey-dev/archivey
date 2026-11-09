@@ -15,19 +15,21 @@ the choice in ``ArchiveInfo.extra["iso.namespace"]``:
 How a listing is built:
 
 1. ``IsoReader.__init__`` hands the image to pycdlib's ``open_fp``, which parses every
-   directory tree the image has, under the hooks listed below, and then picks the
-   namespace.
+   directory tree the image has, under the hooks listed below. ``__init__`` then picks
+   the namespace.
 2. :meth:`IsoReader._walk_records` walks that namespace's tree record by record and
-   renders each record's path. :meth:`IsoReader._record_name` says which name wins: in
-   Rock Ridge the ``NM`` name, else the ISO 9660 identifier. Bytes that are not UTF-8
-   decode with ``encoding=``; failing that, a Rock Ridge name takes the name of the
-   same file in the Joliet tree when the two line up. Otherwise the bytes stay, as
+   renders each record's path. :meth:`IsoReader._record_name` gives each record's name.
+   Rock Ridge takes the ``NM`` name, else the ISO 9660 identifier. Joliet takes its
+   UTF-16 identifier. Plain ISO 9660 takes its identifier. A Rock Ridge or plain name
+   is bytes in no declared charset: it decodes as UTF-8, else with ``encoding=``. A
+   Rock Ridge name that neither decodes takes the name of the same file in the Joliet
+   tree, when the two line up. Any other name keeps its bytes as
    ``surrogateescape``.
 3. :meth:`IsoReader._make_member` turns each record into an ``ArchiveMember``: mode,
    owner and times come from the Rock Ridge ``PX`` and ``TF`` entries when present, the
    modification time from the directory record's date otherwise.
-4. :meth:`IsoReader._report_files_in_other_trees` reports each file that only a tree
-   archivey did not list holds.
+4. :meth:`IsoReader._report_files_in_other_trees` reports each file held only by a
+   tree archivey did not list (Joliet, plain ISO 9660 or UDF).
 
 The directory tree lives in the header region → ``INDEXED`` listing and ``DIRECT``
 random access. A non-seekable source is rejected (trailing metadata; no streaming).
@@ -2232,9 +2234,9 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         namespace (:meth:`_record_name` says which name source wins), and ``raw_path``
         its bytes. Where each other field comes from:
 
-        - type: a Rock Ridge symlink, else the record's directory flag, else a special
-          file when a Rock Ridge ``PX`` mode names one on an empty extent
-          (:meth:`_member_type`);
+        - type: a Rock Ridge symlink, else the record's directory flag, else OTHER when
+          a Rock Ridge ``PX`` mode is not a regular file's and the extent is empty,
+          else FILE (:meth:`_member_type`);
         - mode, uid and gid: the Rock Ridge ``PX`` entry; ``None`` without one
           (:meth:`_px`);
         - times: the Rock Ridge ``TF`` entry, with the directory record's date as the
@@ -2739,10 +2741,10 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         pycdlib's own inode gives it when it describes the file as written. The layout
         worked out while listing is used otherwise, never worked out again here, so
         opening a member reads no directory. Three cases need the layout: a file of
-        4 GiB or more, whose inode covers only its first extent; the El Torito boot catalog, which pycdlib
-        keeps in memory and gives no inode at all, though its extent still holds its
-        bytes on disc, which is what a mounted image shows; and a file pycdlib
-        clamped at the end of the image.
+        4 GiB or more, whose inode covers only its first extent; the El Torito boot
+        catalog, which pycdlib keeps in memory and gives no inode at all, though its
+        extent still holds its bytes on disc, which is what a mounted image shows; and
+        a file pycdlib clamped at the end of the image.
 
         The extents of a multi-extent file are read in record order, wherever they
         sit: ECMA-119 does not require them to be back to back. Extents that overlap
