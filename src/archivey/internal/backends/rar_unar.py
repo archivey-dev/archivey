@@ -107,6 +107,7 @@ def _carries_no_data(info: RarMemberInfo) -> bool:
 
 
 def _carries_no_solid_data(info: RarMemberInfo) -> bool:
+    """:func:`_carries_no_data`, or an entry whose unpacked size is zero."""
     return _carries_no_data(info) or info.file_size == 0
 
 
