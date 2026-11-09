@@ -204,6 +204,17 @@ one decompressor per stream ([`single-file.md`](single-file.md) §2.3). Zero byt
 padding only where they run to the end of the file; a stream after them is trailing data
 (§6). A backward seek decodes again from the start.
 
+A stream may declare its size and also end with an end marker (mksquashfs writes this
+for every SquashFS LZMA block, and so does the LZMA SDK's `lzma_alone -eos`). liblzma
+5.2.5 and older (fixed by 5.2.12) refuses such a stream at the marker, and the python.org builds for
+macOS and Windows bundle one (5.2.3 on macOS, 3.11 to 3.14). `_AloneDecompressor` tests
+the liblzma once per process. On an old one, a stream with a known size gets a second
+decoder that reads the size as "unknown" and so stops at the marker; its output is used
+only when the first decoder fails and the second one has reached the marker after exactly
+the declared size. A stream without a marker still needs the first decoder, because a
+decode without the size cannot tell where such a stream ends. The cost is a second decode
+of a known-size stream, only on an old liblzma.
+
 **Dictionary caps.** Each format's declared dictionary is compared with
 `DecoderLimits.max_decoder_memory` before the dictionary is allocated: inside liblzma for
 xz and LZMA Alone, before the decoder is built for lzip:

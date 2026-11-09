@@ -849,7 +849,10 @@ def test_lzma_alone_zero_output_gate_costs_no_real_stream(tmp_path: Path) -> Non
     payload = b"payload data " * 8
     known = bytearray(lzma.compress(payload, format=lzma.FORMAT_ALONE))
     known[5:13] = len(payload).to_bytes(8, "little")
-    assert lzma.decompress(bytes(known), format=lzma.FORMAT_ALONE) == payload
+    # Known size plus end marker: the stdlib decoder refuses this on liblzma 5.2.5
+    # and older (every python.org build for macOS and Windows); archivey reads it.
+    with open_archive(io.BytesIO(bytes(known)), format=ArchiveFormat.LZMA_ALONE) as ar:
+        assert ar.read(ar.members()[0]) == payload
     info = detect_format(io.BytesIO(bytes(known)), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.detected_by == "content_probe"

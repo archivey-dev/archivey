@@ -294,51 +294,156 @@ def _starts_alone_stream(data: bytes) -> bool | None:
     return _alone_props_liblzma_decodes(data[0]) and data[_ALONE_HEADER_SIZE] == 0
 
 
-class _ClampedAloneDecompressor:
-    """An Alone decompressor whose header's dictionary size is clamped before liblzma sees it.
+@functools.cache
+def _liblzma_refuses_marker_after_known_size() -> bool:
+    """Whether this liblzma refuses an Alone stream with a known size and an end marker.
 
-    liblzma reserves the dictionary the 13-byte header declares when it reads the
-    header, so a detection probe (``StreamConfig.probe_read_bound``) rewrites bytes 1-4
-    of its own copy to :func:`~archivey.internal.config.probe_lzma_dictionary` first.
-    The output up to the bound is the same bytes. Each stream of a concatenated
-    ``.lzma`` gets a new one, so every header the probe reaches is clamped.
+    The format lets a stream with a known size also end with an end-of-payload marker:
+    mksquashfs writes this for SquashFS LZMA blocks, and the LZMA SDK's ``lzma_alone
+    -eos`` writes it. liblzma 5.2.5 and older (fixed by 5.2.12) decodes the
+    declared size and then reports corrupt data at the marker. The python.org builds for
+    macOS and Windows bundle such a liblzma (5.2.3 on macOS, 3.11 to 3.14). One decode
+    of a one-byte stream tells the two apart, once per process.
+    """
+    stream = bytearray(lzma.compress(b"\x00", format=lzma.FORMAT_ALONE))
+    # liblzma writes the "unknown" size and an end marker; declare the size instead.
+    stream[5:_ALONE_HEADER_SIZE] = (1).to_bytes(8, "little")
+    try:
+        lzma.decompress(bytes(stream), format=lzma.FORMAT_ALONE)
+    except lzma.LZMAError:
+        return True
+    return False
+
+
+class _AloneDecompressor:
+    """One LZMA Alone stream: liblzma's ``FORMAT_ALONE`` decoder, with two additions.
+
+    **Probe dictionary clamp.** liblzma reserves the dictionary the 13-byte header
+    declares when it reads the header, so a detection probe
+    (``StreamConfig.probe_read_bound``) rewrites bytes 1-4 of its own copy to
+    :func:`~archivey.internal.config.probe_lzma_dictionary` first. The output up to the
+    bound is the same bytes. Each stream of a concatenated ``.lzma`` gets a new
+    decompressor, so every header the probe reaches is clamped.
+
+    **End marker after a known size, on an old liblzma.** Where
+    :func:`_liblzma_refuses_marker_after_known_size` is true and the header declares a
+    size, a second decoder runs beside the first. It reads the same stream with the size
+    field set to "unknown", so it needs the end marker and stops at it. The first
+    decoder alone handles a stream without a marker; the second alone handles one with a
+    marker. While both run they give the same bytes, and the first one's are returned.
+    If the first one fails, and the second one has reached its end marker after exactly
+    the declared size, the stream is good: the second one's output for that call is
+    returned and it continues alone. The second decoder stops when its output passes the
+    declared size (no marker there) or when it fails. This costs a second decode only for
+    a stream with a known size, and only on such a liblzma. A plain decode of the raw
+    LZMA1 data cannot replace it: without a marker, nothing tells it where the stream
+    ends, so the trailing-data and next-stream checks would lose their start.
     """
 
-    def __init__(self, read_bound: int, natives: Natives = IN_PROCESS) -> None:
+    def __init__(
+        self, limits: DecoderLimits, read_bound: int | None, natives: Natives
+    ) -> None:
+        self._limits = limits
         self._read_bound = read_bound
-        self._dec = natives.lzma_decompressor(format=lzma.FORMAT_ALONE)
+        self._natives = natives
         self._header: bytes | None = b""
+        self._dec: Decompressor | None = None
+        # The marker-reading decoder; only for a known size on an old liblzma.
+        self._marker_dec: Decompressor | None = None
+        self._size = 0
+        self._out = 0
+        self._marker_out = 0
+
+    def _new(self) -> Decompressor:
+        # The cap is liblzma's ``memlimit`` on read (``new_capped_decompressor``); a
+        # probe clamps the dictionary instead.
+        if self._read_bound is None:
+            return new_capped_decompressor(
+                self._limits, lzma.FORMAT_ALONE, self._natives
+            )
+        return self._natives.lzma_decompressor(format=lzma.FORMAT_ALONE)
+
+    def _start(self, header: bytes) -> tuple[bytes, bytes]:
+        """Build the decoder(s); return each one's copy of the header."""
+        if self._read_bound is not None:
+            dict_size = probe_lzma_dictionary(
+                int.from_bytes(header[1:5], "little"), self._read_bound
+            )
+            header = header[:1] + dict_size.to_bytes(4, "little") + header[5:]
+        self._dec = self._new()
+        size = int.from_bytes(header[5:_ALONE_HEADER_SIZE], "little")
+        if (
+            size == _ALONE_UNKNOWN_SIZE
+            or not _liblzma_refuses_marker_after_known_size()
+        ):
+            return header, b""
+        self._size = size
+        self._marker_dec = self._new()
+        return header, header[:5] + _ALONE_UNKNOWN_SIZE.to_bytes(8, "little")
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        marker_data = data
         if self._header is not None:
             header = self._header + data
             if len(header) < _ALONE_HEADER_SIZE:
                 self._header = header
                 return b""
             self._header = None
-            dict_size = probe_lzma_dictionary(
-                int.from_bytes(header[1:5], "little"), self._read_bound
-            )
-            data = header[:1] + dict_size.to_bytes(4, "little") + header[5:]
-        return self._dec.decompress(data, max_length)
+            rest = header[_ALONE_HEADER_SIZE:]
+            first, second = self._start(header[:_ALONE_HEADER_SIZE])
+            data, marker_data = first + rest, second + rest
+        assert self._dec is not None
+        marker_dec = self._marker_dec
+        marker_out = b""
+        if marker_dec is not None and not marker_dec.eof:
+            # One byte past the declared size is room for nothing but the marker.
+            room = self._size + 1 - self._marker_out
+            limit = room if max_length < 0 else min(max_length, room)
+            try:
+                marker_out = marker_dec.decompress(marker_data, limit)
+            except lzma.LZMAError:
+                self._marker_dec = None
+            else:
+                self._marker_out += len(marker_out)
+                if self._marker_out > self._size:
+                    self._marker_dec = None  # No marker at the declared size.
+        before = self._out
+        try:
+            out = self._dec.decompress(data, max_length)
+        except lzma.LZMAError:
+            if (
+                marker_dec is None
+                or self._marker_dec is None
+                or not marker_dec.eof
+                or self._marker_out != self._size
+                or self._marker_out - len(marker_out) != before
+            ):
+                raise
+            self._dec, self._marker_dec = marker_dec, None
+            self._out = self._marker_out
+            return marker_out
+        self._out += len(out)
+        if self._dec.eof:
+            self._marker_dec = None
+        return out
 
     @property
     def eof(self) -> bool:
-        return self._dec.eof
+        return self._dec is not None and self._dec.eof
 
     @property
     def unused_data(self) -> bytes:
-        return self._dec.unused_data
+        return b"" if self._dec is None else self._dec.unused_data
 
     @property
     def needs_input(self) -> bool:
-        return self._header is not None or self._dec.needs_input
+        return self._dec is None or self._dec.needs_input
 
 
 def _new_alone_decompressor(
     read_bound: int | None, limits: DecoderLimits, natives: Natives = IN_PROCESS
 ) -> Decompressor:
-    """A decompressor for one Alone stream.
+    """A decompressor for one Alone stream (:class:`_AloneDecompressor`).
 
     The dictionary its header declares is refused over ``max_decoder_memory`` by
     liblzma's ``memlimit``, on the first ``decompress`` call, so on read. That timing
@@ -349,9 +454,7 @@ def _new_alone_decompressor(
     would reach the caller unstamped, telling them to raise the cap for a file the
     probe may have misread. A probe (``read_bound``) clamps the dictionary instead.
     """
-    if read_bound is None:
-        return new_capped_decompressor(limits, lzma.FORMAT_ALONE, natives)
-    return _ClampedAloneDecompressor(read_bound, natives)
+    return _AloneDecompressor(limits, read_bound, natives)
 
 
 class LzmaAloneCodec(_LzmaErrorCodec):
