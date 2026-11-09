@@ -172,7 +172,9 @@ def resolve_smart_dest(
     - Indexed archive → tops on the **filtered** member set (wrap / cwd). A single
       top whose name exists in the cwd, or that extraction may write under another
       spelling (:func:`_written_as_stored`), is extracted into a new wrapper and
-      hoisted, as below, so the operator's entry is never replaced.
+      hoisted, as below, so the operator's entry is never replaced. So is a set of
+      more than one member that holds a link, and one with a rooted member name
+      (:func:`_is_rooted_name`).
     - No cheap index (tar, an archive read from a pipe, …) → always a new
       ``./<stem>/``, then :func:`maybe_hoist_single_root` may lift a single
       extracted top entry to cwd.
@@ -189,14 +191,37 @@ def resolve_smart_dest(
     members = [m for m in indexed if pred is None or pred(m)]
     target = smart_dest(archive, format=fmt, members=members)
     tops = _top_level_names(members)
-    if target == Path(".") and any(_may_land_on_existing(top) for top in tops):
+    if target == Path(".") and (
+        any(_may_land_on_existing(top) for top in tops)
+        or any(_is_rooted_name(m.name) for m in members)
+        # A hard link to a symlink member is written as that symlink, so it counts.
+        or (len(members) > 1 and any(m.is_link for m in members))
+    ):
         # The single root's name is taken in the cwd, or extraction may write it under
         # another spelling that is. Extracting straight into the cwd would apply
         # ``--overwrite`` to the operator's entries there; the hoist never replaces or
         # deletes one, and judges from what is on disk, so extract into a new wrapper
         # and hoist.
+        #
+        # A rooted name (``C:/a``, ``\\host\share\a``) loses its root when a policy
+        # other than STRICT extracts it, so its top-level name is not the one
+        # :func:`_top_level_names` sees, and several of them can land at the top of
+        # the cwd. A link is checked by the library against the destination, which
+        # here would be the cwd: ``top/up -> ..`` stays inside it and lets
+        # ``top/up/.ssh/authorized_keys`` write into the operator's ``.ssh``. In the
+        # wrapper the same link is judged by the hoist's walk
+        # (:func:`_links_stay_inside`), which keeps the tree in the wrapper. A lone
+        # link has no later member to write through it, and the library keeps its
+        # target inside the cwd, so it still extracts straight there.
         return _SmartDestPlan(_enclosing_dir(archive, format=fmt), may_hoist=True)
     return _SmartDestPlan(target, may_hoist=False)
+
+
+def _is_rooted_name(name: str) -> bool:
+    """Whether ``name`` starts with a root that extraction may drop: a ``/`` or ``\\``,
+    or a drive letter with a separator after it. A loose test on purpose: a false
+    match only sends the archive through the wrapper."""
+    return name[:1] in ("/", "\\") or (name[1:2] == ":" and name[2:3] in ("/", "\\"))
 
 
 # Characters the library's name policy does not write as stored: it escapes them as
@@ -742,6 +767,41 @@ def _keep_reason(is_symlink: bool, links_leave: Callable[[], bool]) -> str | Non
     return None
 
 
+def _merge_with_links_reason(dest: Path) -> str:
+    """Why the hoist keeps a tree with a symlink rather than merge it into ``dest``
+    (:func:`_holds_a_symlink`)."""
+    return (
+        f"it holds a symlink, and merging it into the existing {escape_path(dest)}/ "
+        "could make the link point through entries the archive did not make"
+    )
+
+
+def _is_merge(child: Path, dest: Path) -> bool:
+    """Whether the hoist would merge the directory ``child`` into the existing
+    directory ``dest``, rather than move it to a name nothing has."""
+    return (
+        child.is_dir()
+        and not child.is_symlink()
+        and dest.is_dir()
+        and not dest.is_symlink()
+    )
+
+
+def _holds_a_symlink(root: Path) -> bool:
+    """Whether the tree under ``root`` holds a symlink; ``True`` when part of it
+    cannot be listed, since what is there was not looked at.
+
+    A merge keeps such a tree in the wrapper. Extraction and :func:`_links_stay_inside`
+    judged each link against the wrapper, where a name the link goes through may not
+    exist and is read by name. Once merged, the same name can be the operator's own
+    entry: ``top/l -> e`` with the operator's ``top/e -> /elsewhere`` already in the
+    working directory resolves outside it after the merge."""
+    try:
+        return any(True for _ in _disk_links(root))
+    except OSError:
+        return True
+
+
 def maybe_hoist_single_root(
     wrapper: Path,
     *,
@@ -751,12 +811,13 @@ def maybe_hoist_single_root(
     """If ``wrapper`` holds exactly one top-level entry, lift it to cwd (R4/D1).
 
     The entry stays in the wrapper, and a line says why, for the reasons
-    :func:`_keep_reason` gives.
+    :func:`_keep_reason` gives, and when it is a directory holding a symlink that
+    would merge into an existing directory (:func:`_holds_a_symlink`).
 
     Recovers unar-style single-root reuse (and filter-aware D1 for streaming) after an
-    always-wrap extract, without a pre-extract metadata pass. Directories merge into
-    existing ones, and under ``rename`` the final layout matches extracting directly
-    into the wrapper's parent (:func:`_merge_move`). The hoist is a convenience, not a
+    always-wrap extract, without a pre-extract metadata pass. When the merge runs,
+    directories merge into existing ones, and under ``rename`` the final layout
+    matches extracting directly into the wrapper's parent (:func:`_merge_move`). The hoist is a convenience, not a
     promise: it never replaces or deletes anything in the cwd, so when the merge would
     meet a collision that ``rename`` does not settle (any collision under ``error``,
     ``skip`` or ``replace``, :func:`_policy_resolves`), nothing is moved, a ``kept in``
@@ -806,6 +867,8 @@ def maybe_hoist_single_root(
             return _HoistResult(wrapper, ok=False)
         if clash is not None:
             reason = f"{escape_path(clash)} already exists"
+        elif _is_merge(child, dest) and _holds_a_symlink(child):
+            reason = _merge_with_links_reason(dest)
     if reason is not None:
         print(f"kept in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
@@ -982,6 +1045,13 @@ def predict_hoist(
             clash = None  # the real run's check meets the same error and says so
         if clash is not None:
             reason = f"{escape_path(clash)} already exists"
+        elif (
+            is_dir
+            and dest.is_dir()
+            and not dest.is_symlink()
+            and (links is None or any(path.startswith(f"{name}/") for path, _ in links))
+        ):
+            reason = _merge_with_links_reason(dest)
     if reason is not None:
         print(f"would keep in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)

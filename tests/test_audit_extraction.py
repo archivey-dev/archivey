@@ -287,10 +287,19 @@ def test_link_target_bidi_control_is_reported_once(
         # Presented exactly as stored.
         assert link.link_target == _BIDI_TARGET
         (context,) = _target_bidi_contexts(link)
+        (diagnostic,) = [
+            d
+            for d in link.diagnostics
+            if d.code is DiagnosticCode.MEMBER_NAME_BIDI_CONTROL
+        ]
+    assert diagnostic.message.startswith("Link target of 'link' contains a bidi")
     assert isinstance(context, MemberNameControlsContext)
     assert context.field == "link_target"
     assert context.member_name == "link"
     assert context.controls == "U+202E"
+    assert context.archive_name == str(archive)
+    assert context.raw_name_base64 == "bGluaw=="  # b"link"
+    assert context.member_id == link._member_id
 
 
 def test_member_name_bidi_control_context_says_name(tmp_path: Path) -> None:
@@ -299,8 +308,11 @@ def test_member_name_bidi_control_context_says_name(tmp_path: Path) -> None:
     with archivey.open_archive(archive) as reader:
         (member,) = reader.members()
         (context,) = _target_bidi_contexts(member)
+        (diagnostic,) = member.diagnostics
+    assert diagnostic.message.startswith("Member name contains a bidi")
     assert isinstance(context, MemberNameControlsContext)
     assert context.field == "name"
+    assert context.archive_name == str(archive)
 
 
 def test_byte_cap_message_counts_only_what_was_written() -> None:
@@ -317,3 +329,89 @@ def test_byte_cap_message_counts_only_what_was_written() -> None:
         tracker.count_copy(41, at_link_limit=False)
     tracker.count_copy(40, at_link_limit=False)
     assert tracker.total_bytes == 100
+
+
+def _file_member(name: str, size: int | None = None, compressed: int | None = None):
+    return archivey.ArchiveMember(
+        type=archivey.MemberType.FILE, name=name, size=size, compressed_size=compressed
+    )
+
+
+def test_each_refund_takes_back_one_entry() -> None:
+    from archivey.internal.bomb_tracker import BombTracker
+
+    tracker = BombTracker(max_bytes=None, max_ratio=None, max_entries=2)
+    tracker.start_member(_file_member("a"))
+    tracker.start_member(_file_member("b"))
+    tracker.refund(0)
+    tracker.start_member(_file_member("c"))
+    with pytest.raises(archivey.ResourceLimitError, match="would write entry 3"):
+        tracker.start_member(_file_member("d"))
+
+
+def test_refunds_and_copies_add_up_for_the_byte_cap() -> None:
+    from archivey.internal.bomb_tracker import BombTracker
+
+    tracker = BombTracker(max_bytes=100, max_ratio=None)
+    for name in ("a", "b"):
+        tracker.start_member(_file_member(name))
+        tracker.count(40)
+        tracker.refund(40)
+    tracker.start_member(_file_member("c"))
+    tracker.count(50)
+    tracker.count_copy(30, at_link_limit=False)
+    tracker.count_copy(20, at_link_limit=False)
+    with pytest.raises(archivey.ResourceLimitError, match="written 100 bytes"):
+        tracker.count_copy(1, at_link_limit=False)
+
+
+def test_a_recorded_size_refusal_gives_the_ratio() -> None:
+    from archivey.internal.bomb_tracker import BombTracker
+
+    tracker = BombTracker(max_bytes=None, max_ratio=10, ratio_activation_threshold=0)
+    tracker.start_member(_file_member("m", size=50_000, compressed=100))
+    with pytest.raises(
+        archivey.ResourceLimitError,
+        match=r"^Decompression ratio 500:1 exceeds limit max_ratio=10:1 \(from recorded",
+    ) as caught:
+        tracker.check_recorded_size()
+    assert caught.value.member_name == "m"
+
+
+@pytest.mark.parametrize("copies", [0, 600])
+def test_the_archive_ratio_names_link_copies_only_when_there_are_some(
+    copies: int,
+) -> None:
+    from types import SimpleNamespace
+    from typing import cast
+
+    from archivey.internal.base_reader import BaseArchiveReader
+    from archivey.internal.bomb_tracker import BombTracker
+
+    # The two sizes the tracker reads from its source.
+    source = SimpleNamespace(compressed_source_size=10, compressed_bytes_consumed=10)
+    tracker = BombTracker(
+        max_bytes=None,
+        max_ratio=100,
+        ratio_activation_threshold=0,
+        source=cast("BaseArchiveReader", source),
+    )
+    tracker.start_member(_file_member("m"))
+    if copies:
+        tracker.count_copy(copies, at_link_limit=True)
+    with pytest.raises(archivey.ResourceLimitError) as caught:
+        tracker.count(2000)
+    assert ("copied for hard links" in str(caught.value)) == bool(copies)
+
+
+def test_without_a_source_the_archive_ratio_is_not_judged() -> None:
+    from archivey.internal.bomb_tracker import BombTracker
+
+    tracker = BombTracker(
+        max_bytes=None,
+        max_ratio=2,
+        ratio_activation_threshold=0,
+        live_ratio_activation_threshold=0,
+    )
+    tracker.start_member(_file_member("m"))
+    tracker.count(1 << 20)  # no size to judge against, and no error from asking

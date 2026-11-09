@@ -80,6 +80,7 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
@@ -887,8 +888,8 @@ def _hex(raw: bytes, what: str, offset: int) -> int:
         return int(text, 16)
     except ValueError:
         raise CorruptionError(
-            f"RPM payload entry at offset {offset}: the {what} field {raw!r} is not "
-            "a number"
+            f"RPM payload entry at offset {offset}: the {what} field "
+            f"{quoted(raw.decode('ascii', 'surrogateescape'))} is not a number"
         ) from None
 
 

@@ -885,7 +885,7 @@ class Bzip2Codec(StreamCodec):
 
     @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        # An engaged accelerator no longer suppresses the report: its index can be sparse
+        # An engaged accelerator does not suppress the report: its index can be sparse
         # enough that a backward seek still re-decodes megabytes. The distance decides.
         unused_reason = _rapidgzip_unused_reason(config)
         return RewindWarning(

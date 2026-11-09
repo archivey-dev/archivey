@@ -32,6 +32,7 @@ from archivey.exceptions import ExtractionError, FilterRejectionError
 from archivey.internal.long_paths import long_path, plain
 from archivey.internal.naming import BIDI_REORDERING_CONTROLS
 from archivey.internal.win32_errors import ERROR_CANT_RESOLVE_FILENAME
+from archivey.terminal import quoted
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
 # Split a member name into path components on either separator; a ".." component after
@@ -330,7 +331,7 @@ def _reject_bidi_override(value: str, *, member_name: str, what: str) -> None:
         return
     spelled = ", ".join(f"U+{ord(char):04X}" for char in found)
     raise FilterRejectionError(
-        f"Bidirectional override ({spelled}) in {what}: {value!r}. It would display "
+        f"Bidirectional override ({spelled}) in {what}: {quoted(value)}. It would display "
         f"as a different name than it is; extract it under a name you choose.",
         member_name=member_name,
     )
@@ -745,7 +746,8 @@ def _strip_trailing_dot_space(name: str) -> str:
         stripped = part.rstrip(_DOT_SPACE)
         if stripped == "":
             raise FilterRejectionError(
-                f"Path segment is entirely dots/spaces: {part!r}", member_name=name
+                f"Path segment is entirely dots/spaces: {quoted(part)}",
+                member_name=name,
             )
         return stripped
 
@@ -769,13 +771,13 @@ def _reject_unsafe_segments(
             continue
         if _is_reserved_segment(segment):
             raise FilterRejectionError(
-                f"Windows-reserved device name in {where}: {segment!r}",
+                f"Windows-reserved device name in {where}: {quoted(segment)}",
                 member_name=member_name,
                 link_target=link_target,
             )
         if ":" in segment:
             raise FilterRejectionError(
-                f"Colon in {where} segment (NTFS alternate data stream): {segment!r}",
+                f"Colon in {where} segment (NTFS alternate data stream): {quoted(segment)}",
                 member_name=member_name,
                 link_target=link_target,
             )

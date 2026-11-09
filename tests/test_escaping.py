@@ -11,9 +11,11 @@ import ast
 import os
 import pathlib
 import re
+from collections.abc import Callable
 
 import pytest
 
+from archivey import ArchiveReader
 from archivey.diagnostics import (
     Diagnostic,
     DiagnosticCode,
@@ -122,6 +124,64 @@ def test_quoted_does_not_escape_so_the_message_escapes_once() -> None:
     assert "\\\\x1b" in via_repr  # the doubling quoted() exists to avoid
 
 
+def _list(reader: ArchiveReader) -> object:
+    with reader:
+        return reader.members()
+
+
+def _refusal_cases() -> dict[str, Callable[[], object]]:
+    """Each call raises an archivey error whose message carries ``\\x1b[2K`` from the
+    archive. Every one used ``!r`` before, so the message's own escaping doubled the
+    backslashes ``repr`` added."""
+    import io
+
+    from archivey import ArchiveFormat, open_archive
+    from archivey.internal import filters
+    from archivey.internal.backends import ar_reader, cpio_reader, rpm_reader
+
+    esc = "\x1b[2K"
+    raw = esc.encode()
+    return {
+        "bidi": lambda: filters._reject_bidi_override(
+            f"a\u202e{esc}.exe", member_name="m", what="member name"
+        ),
+        "reserved": lambda: filters._reject_unsafe_segments(
+            f"CON.{esc}", member_name="m", where="member name"
+        ),
+        "colon": lambda: filters._reject_unsafe_segments(
+            f"a:{esc}", member_name="m", where="member name"
+        ),
+        "ar": lambda: ar_reader._field(raw, 10, "size", 8),
+        "cpio": lambda: cpio_reader._number(raw, 16, "filesize", 0),
+        "rpm": lambda: rpm_reader._hex(raw, "filesize", 0),
+        "lzip": lambda: _list(open_archive(io.BytesIO(raw), format=ArchiveFormat.LZIP)),
+    }
+
+
+@pytest.mark.parametrize(
+    "case", ["bidi", "reserved", "colon", "ar", "cpio", "rpm", "lzip"]
+)
+def test_archive_text_in_a_refusal_is_escaped_once(case: str) -> None:
+    """The archive's text in each of these messages is escaped once. The dots-only
+    segment refusal is not here: its segment is only dots and spaces, so it has
+    nothing to escape."""
+    with pytest.raises(ArchiveyError) as info:
+        _refusal_cases()[case]()
+    message = info.value.message
+    assert "\x1b" not in message
+    assert "\\x1b" in message and "\\\\x1b" not in message, message
+
+
+def test_a_quote_in_a_header_field_does_not_hide_where_it_ends() -> None:
+    """``quoted()`` picks the delimiter, so a ``'`` in the field is not read as its
+    end, and a non-ASCII byte shows as its octet rather than as a letter."""
+    from archivey.internal.backends import ar_reader
+
+    with pytest.raises(ArchiveyError) as info:
+        ar_reader._field(b"1'x\xe9", 10, "size", 8)
+    assert '"1\'x\\xe9"' in info.value.message, info.value.message
+
+
 def test_raw_message_of_avoids_doubling_when_wrapping() -> None:
     inner = ExtractionError("bad: /out/ev\x1b[2Kil.txt")
     wrapped = ExtractionError(f"context: {raw_message_of(inner)}").message
@@ -172,6 +232,12 @@ _ARCHIVE_WORDS = {
     "directory",
     "dest",
     "link",
+    "segment",
+    "part",
+    "raw",
+    "head",
+    "header",
+    "data",
 }
 
 

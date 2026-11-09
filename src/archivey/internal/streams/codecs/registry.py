@@ -1,5 +1,15 @@
 """The codec registry: every openable codec, lookups by id and stream format, and
 :func:`open_codec_stream` / :func:`open_codec_raw` / :func:`resolve_codec`.
+
+Detection, the single-file reader and the format backends that decode a codec stream
+(ZIP, 7z, compressed TAR, …) open it through here. Readers that decode blocks of their
+own format build those decoders directly: CAB's MSZIP and LZX, ISO's zisofs, SquashFS
+blocks and the XAR table of contents. An open prepares the config
+(``_decoder_config``: whether the source can seek, its size, then the codec's own
+:meth:`StreamCodec.prepare_config`), resolves the backend (the codec's ``open`` with
+the translator and rewind warning that match the engine the config selects), and wraps
+the result in an :class:`ArchiveStreamImpl`, or hands it to a caller that wraps it
+itself (:func:`open_codec_raw`).
 """
 
 from __future__ import annotations
@@ -231,13 +241,12 @@ def resolve_codec(
 ) -> CodecBackend:
     """Resolve ``codec`` to its backend (open function + translator) without opening anything.
 
-    The translator must match the *active* backend: when an accelerator
-    (``rapidgzip`` / ``indexed_bzip2``) is the chosen backend, its exception taxonomy
+    The translator must match the *active* backend: when the rapidgzip accelerator is
+    the chosen backend (for gzip, zlib, raw DEFLATE or bzip2), its exception taxonomy
     differs from stdlib's, so the codec's :meth:`StreamCodec.translator` selects the right one.
     Whichever it is, :meth:`StreamCodec.eof_truncation` maps the ``EOFError`` it leaves.
-    The ``rewind_warning`` is likewise config-dependent (an active accelerator gives indexed
-    random access, so it carries none); it is attached to the ``ArchiveStream`` by
-    :func:`open_codec_stream`.
+    The ``rewind_warning`` also depends on the config (whether to suggest installing the
+    accelerator); it is attached to the ``ArchiveStream`` by :func:`open_codec_stream`.
 
     Raises ``KeyError`` for a filter-only codec (Delta/BCJ), which is composed into a raw
     LZMA chain rather than opened standalone.

@@ -1,4 +1,11 @@
-"""Brotli."""
+"""Brotli: ``.br`` files and 7z Brotli coders, decoded by the ``brotli`` package
+(:func:`BrotliDecompressorStream`).
+
+Brotli has no magic number, so detection recognizes it with a content probe: a walk of
+the opening meta-block headers (``brotli_framing``), then a bounded trial decode. The
+package is imported only when a stream needs it, because it re-enables the GIL on a
+free-threaded build (``deps.LazyOptional``).
+"""
 
 from __future__ import annotations
 
