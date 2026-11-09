@@ -33,7 +33,7 @@ Who does what:
   verification stay uniform.
 - Decrypt stages: ZipCrypto (``internal.backends.zipcrypto``, weak 1-byte check) and
   WinZip AES (method 99, ``internal.backends.zip_aes``, real method from extra field
-  ``0x9901``). One password ladder for both: a bounded confirm per candidate when
+  ``0x9901``). One password ladder for both: a confirm per candidate when
   several are possible (a shared CRC pass for STORED ZipCrypto).
 - PKWARE Strong Encryption — refused (``UnsupportedFeatureError``).
 
@@ -608,17 +608,19 @@ def _password_confirm_plans(
 ) -> tuple[PasswordConfirmPlan, bool, PasswordConfirmPlan | None]:
     """How ``ZipReader._open_encrypted_confirmed`` tests each password candidate.
 
-    Returns ``(bounded, reads_to_hmac, full)`` for a member of plaintext ``size``:
+    Returns ``(per_candidate, reads_to_hmac, full)`` for a member of plaintext
+    ``size``:
 
-    - ``bounded`` runs for every candidate and reads at most a bounded prefix. The
-      member's CRC-32 decides when the member fits in it, and the codec's rejection of
-      garbage decides for a larger member.
-    - ``reads_to_hmac`` says that a WinZip AES ``bounded`` plan reads to the end of
-      the data, where the HMAC is checked.
+    - ``per_candidate`` runs for every candidate. It reads at most the prefix budget
+      when the member fits in it (the CRC-32 decides) or its codec rejects garbage
+      (the codec decides). Otherwise it walks to the member's end, to the CRC-32 or,
+      for WinZip AES, to the HMAC, and ``full`` is then ``None``.
+    - ``reads_to_hmac`` says that a WinZip AES ``per_candidate`` plan reads to the
+      end of the data, where the HMAC is checked.
     - ``full`` is the walk to the member's end: its CRC, or for WinZip AES the HMAC.
-      It runs for each candidate that passed ``bounded`` when several did, since only
-      the end can tell them apart. ``None`` when ``bounded`` already confirms, or
-      the end has nothing to check.
+      It runs for each candidate that passed ``per_candidate`` when several did,
+      since only the end can tell them apart. ``None`` when ``per_candidate``
+      already confirms, or the end has nothing to check.
     """
     crc_anchor = cipher.crc_anchor
     codec_rejects = cipher.method in _ZIP_REJECTING_METHODS
@@ -2584,7 +2586,9 @@ class ZipReader(BaseArchiveReader):
         4. The CRC-32 digest, and the size, which an Archive Utility ZIP over 4 GiB
            stores modulo 2³².
         5. The member itself, with a :class:`_ZipLocator` for reading its data later.
-        6. The mode, owner, comment and leftover extra fields.
+        6. The fields the constructor call skips: the times, mode, owner ids and
+           comment when the entry has them, the leftover extra fields, the
+           encryption flag and the creator's host.
         7. The diagnostics for whatever quirk the entry showed.
 
         This runs once per member on the listing hot path, so each reporting helper
@@ -2783,7 +2787,9 @@ class ZipReader(BaseArchiveReader):
         if size_unknown is not None:
             # A verified full read fills ``size`` in (``fill_size``): not final yet.
             member._size_unread = True
-        # 6. The fields left at their defaults above when the entry has no value.
+        # 6. The fields the constructor call skips: the times, mode, owner ids and
+        # comment when the entry has them, the leftover extra fields, the encryption
+        # flag and the creator's host.
         if modified is not None:
             member.modified = modified
         if accessed is not None:
@@ -2816,8 +2822,9 @@ class ZipReader(BaseArchiveReader):
         if _is_encrypted_entry(entry.flags, method):
             member.is_encrypted = True
         member.create_system = create_system
-        # 7. Diagnostics. Each report below names the member by its position in the walk, because
-        # registration has not stamped `_member_id` yet and stamps that same position.
+        # 7. Diagnostics. Each report below names the member by its position in the
+        # walk, because registration has not stamped `_member_id` yet and stamps that
+        # same position.
         if decoded_name.inferred_encoding is not None:
             self._report_name_encoding(member, index, decoded_name)
         if decoded_name.unicode_extra_fault is not None:
@@ -4089,9 +4096,11 @@ class ZipReader(BaseArchiveReader):
         *,
         payload_complete: Callable[[], bool],
     ) -> MemberStreamParts:
-        """Pick among several possible passwords with a bounded confirm per candidate.
+        """Pick among several possible passwords with a confirm per candidate.
 
-        Each candidate first runs the bounded plan (:func:`_password_confirm_plans`).
+        Each candidate first runs the per-candidate plan
+        (:func:`_password_confirm_plans`), which reads a bounded prefix only when that
+        can decide.
         When several pass it and only the member's end can tell them apart, each of
         those then runs the full plan. The winner is opened afresh for the caller.
         """
@@ -4156,7 +4165,9 @@ class ZipReader(BaseArchiveReader):
                 raise candidate_failed(ended_early)
             return password, verdict
 
-        def bounded_check(password: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
+        def per_candidate_check(
+            password: bytes,
+        ) -> tuple[bytes, PasswordConfirmVerdict]:
             return run_plan(password, plan, reads_to_hmac)
 
         def full_check(password: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
@@ -4168,7 +4179,7 @@ class ZipReader(BaseArchiveReader):
             lambda: attempt_with_confirm(
                 self._passwords,
                 member,
-                bounded_check,
+                per_candidate_check,
                 None if full_plan is None else full_check,
             ),
             ambiguous_holder=failures.ambiguous,
