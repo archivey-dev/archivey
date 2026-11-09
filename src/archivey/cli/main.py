@@ -660,7 +660,7 @@ def _add_reserved_verbs(
     sub: argparse._SubParsersAction[_ArchiveyArgumentParser],
     common_sub: _ArchiveyArgumentParser,
 ) -> None:
-    """Define The verbs reserved for later, which refuse to run (``_refuse_reserved``)."""
+    """Define the verbs reserved for later, which refuse to run (``_refuse_reserved``)."""
     for name, hint in (
         ("hash", "hash emission is not implemented yet"),
         ("create", "archive creation is not implemented yet"),

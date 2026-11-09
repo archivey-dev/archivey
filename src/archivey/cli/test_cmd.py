@@ -159,8 +159,13 @@ def run_test(
                             print(f"skip {escape_member_name(member.name)}", file=err)
                         continue
                     try:
-                        _read_member(stream, member, progress, on_progress)
+                        member_bytes = _read_member(
+                            stream, member, progress, on_progress
+                        )
                         ok += 1
+                        progress.files_done += 1
+                        if on_progress is not None:
+                            on_progress(progress.event(member, member_bytes))
                         if verbose:
                             print(f"OK   {escape_member_name(member.name)}", file=err)
                     except BrokenPipeError:
@@ -295,12 +300,13 @@ def _read_member(
     member: ArchiveMember,
     progress: _PassProgress,
     on_progress: ProgressCallback | None,
-) -> None:
-    """Read ``stream`` to its end and close it, raising what the read raises.
+) -> int:
+    """Read ``stream`` to its end and close it, raising what the read raises; return
+    the number of bytes read.
 
     Reading the whole stream is the test: the reader checks the member's digest as
-    the last bytes go by. ``progress`` counts the bytes as they are read, and the
-    member as done once the stream is closed.
+    the last bytes go by. ``progress`` counts the bytes as they are read; the caller
+    counts the member as done.
     """
     member_bytes = 0
     with stream:
@@ -313,9 +319,7 @@ def _read_member(
             progress.bytes_done += n
             if on_progress is not None:
                 on_progress(progress.event(member, member_bytes))
-    progress.files_done += 1
-    if on_progress is not None:
-        on_progress(progress.event(member, member_bytes))
+    return member_bytes
 
 
 def _verify_links(
