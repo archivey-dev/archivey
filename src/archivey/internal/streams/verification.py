@@ -75,7 +75,7 @@ class VerificationProofs:
 NO_PROOFS = VerificationProofs()
 
 # A wrapper chain is a handful of layers; the bound only stops a cycle.
-_MAX_DEPTH = 64
+MAX_WRAPPER_DEPTH = 64
 
 
 def ask_verification_proofs(stream: object, *, _depth: int = 0) -> VerificationProofs:
@@ -86,7 +86,7 @@ def ask_verification_proofs(stream: object, *, _depth: int = 0) -> VerificationP
     answer comes from its ``_inner``: whole when the layer sets
     ``forwards_verification``, else only the doubt about a key.
     """
-    if stream is None or _depth > _MAX_DEPTH:
+    if stream is None or _depth > MAX_WRAPPER_DEPTH:
         return NO_PROOFS
     ask = getattr(stream, "_verification_proofs", None)
     if ask is not None:
@@ -113,7 +113,7 @@ def find_frame_watch(stream: object, *, _depth: int = 0) -> Callable[[], bool] |
     follows the same layers that walk passes ``per_frame`` through, so it finds the
     layer whenever that proof reaches ``stream``; ``None`` when there is none.
     """
-    if stream is None or _depth > _MAX_DEPTH:
+    if stream is None or _depth > MAX_WRAPPER_DEPTH:
         return None
     watch = getattr(stream, "_frames_unchecked_now", None)
     if watch is not None:

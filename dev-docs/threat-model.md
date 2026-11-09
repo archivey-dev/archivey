@@ -1427,6 +1427,16 @@ RARLAB binary is found. A read that needs no password passes none
 archive no encrypted member comes before it.
 Public: [hardening](../docs/security.md#hardening).
 
+### A file system's own error can carry a URL's credentials
+
+archivey removes a URL's `user:password@`, and an http(s) query, from the names and
+messages it writes itself (`display_url` in `internal/remote.py`). An I/O error the fsspec
+file system raises propagates unchanged
+([DR-15a](design-rules.md#dr-15a-translate-archive-problems-let-io-problems-through)), so
+a missing object's `FileNotFoundError` can carry the URL as given, secrets included.
+Contract: `openspec/changes/fsspec-integration/specs/archive-reading/spec.md`
+§"OpenFile facts".
+
 ## 5. Open design gaps
 
 ### 7z password confirmation on a late CRC

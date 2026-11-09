@@ -119,7 +119,7 @@ other way or refuses them, rather than drop them in silence (DR-1, DR-15):
 | `size` | `fs.size(path)`, read once at open, as a **fact**: it clamps reads, the way `stat` does for a path. The archive is the object as it was at open; a later change is D7's to catch, not the clamp's |
 | `size_hint` | The same value |
 | `path`, `volume_paths` | `None`: there is no local file. A backend that needs a path (RAR's `unrar`) spools, under `SpoolLimits`, as it does for any stream |
-| `name` | `of.path`. Detection's name checks and volume discovery (D4) read it |
+| `name` | `of.path` without credentials: the `user:password@` of a URL is removed, and for `http`/`https` the query and fragment too, because a signed URL keeps its signature there. The name reaches `archive_name` and archivey's own messages, diagnostics and logs, so it must not carry a secret. An I/O error the file system raises propagates unchanged (DR-15a) and can carry the URL as given. Detection's name checks read it. Volume discovery (D4) and every fetch use `of.path` as given |
 | `seek_is_expensive` | `True` |
 | Ownership | Nothing to close: the planner holds `(fs, path, size)` and its fetched windows, and `close()` drops the windows. The caller's file system object is never closed |
 
@@ -190,6 +190,17 @@ a thin planner that decides each fetch's start and length:
    so: `source.will_read(start, end)`. The planner fetches that span in one request, up
    to `_MAX_FETCH`, and then continues it as a sequential run. The hint never changes
    what bytes are returned, only how they are fetched. On a local source it does nothing.
+   A format plugin does not call it: it names the spans a member's stream reads in
+   `MemberData.ranges`, and archivey passes them to the source when `open_member`
+   returns. A plugin that names no `ranges` still gets a hint when its stream is a
+   source view, a decoder over one, or a `block_stream` of those (one hint per block,
+   as each is read): archivey infers the view's span; declared `ranges` win over it.
+   A source keeps its latest 8 pending hints, and a read takes the newest one
+   that covers it, so members read side by side each keep their own. A span that starts
+   within the read-through distance past a run's window continues that run when reads
+   have taken the window to its end, so spans that lie almost back to back (ISO extents
+   with their sector padding) keep one growing run; a window not yet read to its end
+   may still be another stream's, and the span then gets a run of its own.
 
    | Backend | Hint |
    | --- | --- |
@@ -198,8 +209,9 @@ a thin planner that decides each fetch's start and length:
    | ZIP, member | `[local header, next local header or central directory)`: header, data and data descriptor in one request |
    | 7z, open | The next-header span named by the signature header |
    | 7z, member | The pack stream span, from pack info; for a solid folder, from the folder start |
-   | ISO, member | The member's extent |
-   | RAR, listing | The next header's position as each block is parsed (it lets the planner tell a header hop from a jump) |
+   | ISO, member | Each of the member's extents, named in the plugin API's `MemberData.ranges` |
+   | Plugin, member, no `ranges` | The span of the view the stream reads, or of each `block_stream` block's view as it is read (XAR: a decoder over each member's view) |
+   | RAR, listing | None. A hint at each next header turned the walk's read-through into one request per header (measured in stage 3); rule 2 covers it |
    | TAR | None; rule 2 covers it |
 
 4. **Bounded memory, per reader.** One reader has one window pool, shared by every
@@ -366,13 +378,16 @@ Rejected:
 
 ### D4. Sibling volumes over fsspec
 
-For an `OpenFile` source, volume discovery lists the parent directory once
-(`fs.ls(parent, detail=False)`) and applies the same naming rules as local discovery
-(`archive-reading` §Multi-volume). `discover_volume_siblings` is split so that the rules
-run on a list of names, and the local and fsspec callers each supply the list. Each
-volume becomes its own `RangeSource`. A file system without listing (plain HTTP) finds no
-siblings, and a multi-volume open then fails as it does today for a lone first volume;
-an explicit sequence of `OpenFile` objects is the way to open those.
+For an `OpenFile` source, volume discovery lists the parent directory once (`fs.ls(parent,
+detail=True)`, cached per directory) and applies the same naming rules as local discovery
+(`archive-reading` §Multi-volume). The rules run on a path-like adaptor,
+`RemoteVolumePath`, that answers every question they ask (`iterdir`, `is_file`,
+`is_symlink`) from that one listing, so the same rule code serves both callers; the
+listing's `type` and `islink` keep the link refusal. Each volume becomes its own
+`RangeSource`, with its size taken from the listing, so no part costs an `info` request. A
+file system without listing (plain HTTP) finds no siblings, and a multi-volume open then
+fails as it does today for a lone first volume; an explicit sequence of `OpenFile` objects
+is the way to open those.
 
 ### D5. Batched fetches for whole-archive passes
 

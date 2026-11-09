@@ -44,6 +44,7 @@ from archivey.internal.windows_reparse import (
     IO_REPARSE_TAG_MOUNT_POINT,
     IO_REPARSE_TAG_SYMLINK,
     parse_reparse_data,
+    reparse_payload_length,
 )
 from archivey.types import ArchiveMember, MemberType, OnError
 from tests.conftest import requires_binary
@@ -187,6 +188,38 @@ def test_a_declared_payload_shorter_than_the_name_offsets_is_declined(
     """The declared length is trusted when the bytes are there, so it can decline alone."""
     data = struct.pack("<IHH", IO_REPARSE_TAG_SYMLINK, declared, 0) + b"\0" * 64
     assert parse_reparse_data(data) is None
+
+
+def test_a_lone_surrogate_in_a_target_passes_through() -> None:
+    # Windows allows an unpaired surrogate in a path; decoding keeps it rather than
+    # raising out of members() or rewriting the target.
+    name = "a\udc80b".encode("utf-16-le", errors="surrogatepass")
+    body = struct.pack("<HHHH", 0, 0, 0, len(name)) + struct.pack("<I", 0) + name
+    data = struct.pack("<IHH", IO_REPARSE_TAG_SYMLINK, len(body), 0) + body
+    parsed = parse_reparse_data(data)
+    assert parsed is not None
+    assert parsed.target == "a\udc80b"
+    assert parsed.tag == IO_REPARSE_TAG_SYMLINK
+
+
+@pytest.mark.parametrize(
+    ("header", "declared"),
+    [
+        pytest.param(b"", 0, id="empty"),
+        pytest.param(
+            struct.pack("<IHH", IO_REPARSE_TAG_SYMLINK, 90, 0)[:7], 0, id="short"
+        ),
+        pytest.param(struct.pack("<IHH", 0x80000017, 90, 0), 0, id="other-tag"),
+        pytest.param(
+            struct.pack("<IHH", IO_REPARSE_TAG_SYMLINK, 90, 0), 90, id="symlink"
+        ),
+        pytest.param(
+            struct.pack("<IHH", IO_REPARSE_TAG_MOUNT_POINT, 0, 0), 0, id="none"
+        ),
+    ],
+)
+def test_the_payload_length_a_header_declares(header: bytes, declared: int) -> None:
+    assert reparse_payload_length(header) == declared
 
 
 # --------------------------------------------------------------------------------

@@ -60,7 +60,7 @@ The `ArchiveSource` built from an `OpenFile` SHALL settle its facts once, at ope
 | `size` | `fs.size(path)`, as a fact: it clamps reads as a path's `stat` size does |
 | `size_hint` | The same value |
 | `path`, `volume_paths` | `None` |
-| `name` | `of.path` |
+| `name` | `of.path`, without the `user:password@` of a URL and, for `http`/`https`, without the query and fragment |
 | `seek_is_expensive` | `True` |
 
 A backend that needs a local path SHALL treat the source as any non-path stream (RAR's
@@ -72,6 +72,7 @@ system.
 | Case | Expected |
 | --- | --- |
 | `detect_format(fsspec.open("memory://d/data.tar.zst"))` | The name `d/data.tar.zst` drives the name-keyed checks as a path's name does |
+| `OpenFile` path `https://u:pw@host/a.zip?X-Amz-Signature=…` | `archive_name` and archivey's own messages, diagnostics and logs show `https://host/a.zip`; every fetch uses the path as given. An I/O error the file system raises propagates unchanged (DR-15a) and can carry the URL as given |
 | Object grows after open | Reads stop at the open-time size; detecting the change is the planner's (`fsspec-integration`) |
 | RAR, compressed member, `OpenFile` source | The archive is spooled under `SpoolLimits`, with the existing cost note |
 

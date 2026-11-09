@@ -147,9 +147,40 @@ def check_open_file(of: Any) -> None:
         )
 
 
+# Schemes whose query is dropped from display text. A signed HTTP URL carries its
+# secret there (``X-Amz-Signature=``, an Azure SAS ``sig=``). On other schemes a ``?``
+# can be part of the object's name (an S3 key), so it is kept.
+_QUERY_DROPPED_SCHEMES = frozenset({"http", "https"})
+
+
+def display_url(url: str) -> str:
+    """``url`` as archivey shows it in a message, a name or a diagnostic.
+
+    The ``user:password@`` part of the authority is removed, and for HTTP(S) so are the
+    query and the fragment, because a signed URL keeps its signature in the query.
+    Anything without ``scheme://`` (a plain fsspec path) is returned unchanged. This
+    is for text only: the I/O always uses the URL as given.
+    """
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    end = len(rest)
+    for stop in "/?#":
+        at = rest.find(stop)
+        if at != -1:
+            end = min(end, at)
+    authority, tail = rest[:end], rest[end:]
+    authority = authority.rpartition("@")[2]
+    if scheme.lower() in _QUERY_DROPPED_SCHEMES:
+        for stop in "?#":
+            tail = tail.partition(stop)[0]
+    return f"{scheme}://{authority}{tail}"
+
+
 def open_file_name(of: Any) -> str:
-    """The name archivey gives an ``OpenFile``: its path on its file system."""
-    return str(of.path)
+    """The name archivey gives an ``OpenFile``: its path on its file system, as
+    :func:`display_url` shows it."""
+    return display_url(str(of.path))
 
 
 def open_file_compression(of: Any) -> str | None:
@@ -171,7 +202,7 @@ def open_decompressed(of: Any) -> Any:
     streams_logger.warning(
         "%r is opened with fsspec compression=%r, so archivey reads fsspec's "
         "decompressed stream: no range requests, and a seek back decodes again. %s",
-        of.path,
+        open_file_name(of),
         compression,
         _COMPRESSION_HINT.get(
             compression or "",
@@ -230,7 +261,15 @@ _COMPRESSION_HINT = dict.fromkeys(
 class _Run:
     """One sequential run on one source, and its window (the bytes of its last fetch)."""
 
-    __slots__ = ("data", "fetches", "last_use", "source", "start")
+    __slots__ = (
+        "data",
+        "fetches",
+        "last_use",
+        "served_end",
+        "source",
+        "span_end",
+        "start",
+    )
 
     def __init__(self, source: RangeSource, start: int, tick: int) -> None:
         self.source = source
@@ -238,6 +277,13 @@ class _Run:
         self.data = b""
         self.fetches = 0
         self.last_use = tick
+        # The furthest offset a read has taken from the window.
+        self.served_end = start
+
+    def finished(self) -> bool:
+        """Whether reads have taken the window up to its end, so no stream is still
+        reading inside it."""
+        return self.served_end >= self.end
 
     @property
     def end(self) -> int:
@@ -328,6 +374,7 @@ class WindowPool:
                     view[filled : filled + take] = run.data[off : off + take]
                     filled += take
                     run.last_use = self._tick
+                    run.served_end = max(run.served_end, at + take)
                     continue
                 with view[filled:] as rest:
                     got = self._fetch_into(source, run, at, rest)
@@ -346,15 +393,18 @@ class WindowPool:
         """
         c = self.constants
         want = len(view)
-        hint = source.pending_hint
-        hinted = hint is not None and hint[0] <= at < hint[1]
+        hint = source.take_hint(at)
+        hinted = hint is not None
         if hinted:
             assert hint is not None
-            source.pending_hint = None
-            if run is not None and hint[0] > run.end:
-                # The span starts past this run's window, which another stream on
-                # the source may still be reading: the span gets a run of its own
-                # rather than taking that window over.
+            if run is not None and hint[0] > run.end and not run.finished():
+                # The span starts past the window of a run that reads have not taken
+                # to its end, so another stream on the source may still be reading
+                # it: the span gets a run of its own rather than taking that window
+                # over. A window read to its end is continued through the gap (rule
+                # 2), so members that lie almost back to back (an ISO extent's
+                # padding, a span that leaves out a header) keep one growing run
+                # rather than a request each.
                 run = None
         if run is not None:
             # Continue the run from its end, reading through the gap (rule 2). A
@@ -398,6 +448,7 @@ class WindowPool:
                 self._held -= old
                 run.data = b""
                 run.start = at + len(data)
+                run.served_end = run.start
                 run.fetches = fetches
                 run.last_use = self._tick
             return len(data)
@@ -431,6 +482,7 @@ class WindowPool:
         off = at - start
         take = max(min(want, len(data) - off), 0)
         view[:take] = data[off : off + take]
+        run.served_end = at + take
         return take
 
     def hint(self, source: RangeSource, start: int, end: int) -> None:
@@ -438,8 +490,8 @@ class WindowPool:
 
         Nothing is fetched here: the next read that lands in the span and finds no
         window fetches the span in one request, up to the maximum fetch. A span a
-        window already holds needs nothing. One pending hint per source; a later one
-        replaces it.
+        window already holds needs nothing. A source keeps its latest
+        ``MAX_PENDING_HINTS`` hints, so members read side by side each keep theirs.
         """
         with self._lock:
             end = min(end, source.size)
@@ -448,7 +500,7 @@ class WindowPool:
             for run in self._runs:
                 if run.source is source and run.start <= start and end <= run.end:
                     return
-            source.pending_hint = (start, end)
+            source.add_hint(start, end)
 
     def _trim_oversized(self, cap: int, keep: _Run | None) -> None:
         """Cut every other window down to ``cap``, dropping its head.
@@ -464,6 +516,11 @@ class WindowPool:
             run.data = run.data[excess:]
             run.start += excess
             self._held -= excess
+
+
+MAX_PENDING_HINTS = 8
+"""Hints a range source keeps at once: one per member stream read side by side, for
+up to this many streams. A hint lost past it costs only the fetch it would have saved."""
 
 
 class RangeSource(io.RawIOBase):
@@ -490,15 +547,21 @@ class RangeSource(io.RawIOBase):
         self.pool = pool
         self.max_read_through = max_read_through
         self._pos = 0
-        # The span a backend declared it reads next (``will_read``), until a fetch
-        # uses it.
-        self.pending_hint: tuple[int, int] | None = None
+        # The spans backends declared they read next (``will_read``), newest last,
+        # each until a fetch uses it. Several, so streams side by side each keep one.
+        self.pending_hints: list[tuple[int, int]] = []
 
     @classmethod
     def from_open_file(
-        cls, of: Any, *, pool: WindowPool, max_read_through: int
+        cls,
+        of: Any,
+        *,
+        pool: WindowPool,
+        max_read_through: int,
+        size: int | None = None,
     ) -> RangeSource:
-        """Check ``of`` and learn its size, with one ``fs.size`` call."""
+        """Check ``of`` and learn its size, with one ``fs.size`` call unless the
+        caller already has it (from a directory listing)."""
         check_open_file(of)
         compression = open_file_compression(of)
         if compression is not None:
@@ -511,14 +574,35 @@ class RangeSource(io.RawIOBase):
             )
         fs = of.fs
         path = of.path
-        size = fs.size(path)
+        if size is None:
+            size = fs.size(path)
         if not isinstance(size, int) or size < 0:
-            raise OSError(f"fsspec file system gave no size for {path!r}: {size!r}")
+            raise OSError(
+                f"fsspec file system gave no size for {display_url(str(path))!r}: "
+                f"{size!r}"
+            )
         return cls(fs, path, size=size, pool=pool, max_read_through=max_read_through)
 
     @property
     def name(self) -> str:
-        return self.path
+        """The path, as :func:`display_url` shows it: it reaches ``archive_name``."""
+        return display_url(self.path)
+
+    def add_hint(self, start: int, end: int) -> None:
+        """Keep ``[start, end)`` as pending, dropping the oldest past the limit."""
+        hints = self.pending_hints
+        if (start, end) in hints:
+            hints.remove((start, end))
+        hints.append((start, end))
+        del hints[:-MAX_PENDING_HINTS]
+
+    def take_hint(self, at: int) -> tuple[int, int] | None:
+        """Remove and return the newest pending hint that covers ``at``, if any."""
+        hints = self.pending_hints
+        for i in range(len(hints) - 1, -1, -1):
+            if hints[i][0] <= at < hints[i][1]:
+                return hints.pop(i)
+        return None
 
     def will_read(self, start: int, end: int) -> None:
         """The backend reads ``[start, end)`` next (design D2 rule 3).
@@ -530,10 +614,11 @@ class RangeSource(io.RawIOBase):
 
     @property
     def url(self) -> str:
-        """The object as a URL (``s3://bucket/a.zip``), for messages. An fsspec path
-        is ``/``-separated on every OS, so it needs no ``display_path``."""
+        """The object as a URL (``s3://bucket/a.zip``), for messages, without
+        credentials (:func:`display_url`). An fsspec path is ``/``-separated on every
+        OS, so it needs no ``display_path``."""
         unstrip = getattr(self.fs, "unstrip_protocol", None)
-        return unstrip(self.path) if callable(unstrip) else self.path
+        return display_url(unstrip(self.path) if callable(unstrip) else self.path)
 
     @property
     def seek_is_expensive(self) -> bool:
@@ -639,7 +724,7 @@ class RangeSource(io.RawIOBase):
 
     @override
     def __repr__(self) -> str:
-        return f"<RangeSource {self.path!r} size={self.size}>"
+        return f"<RangeSource {self.name!r} size={self.size}>"
 
 
 def protocol_of(fs: Any) -> str:
@@ -689,6 +774,7 @@ __all__ = [
     "RangeSource",
     "WindowPool",
     "check_open_file",
+    "display_url",
     "emit_source_change_undetectable",
     "is_open_file",
     "planner_constants",

@@ -128,6 +128,7 @@ from archivey.internal.backends.rar_unrar import (
     find_rarlab_unrar,
     open_unrar_p,
     rarlab_unrar_missing,
+    unrar_expands_wildcards,
     unrar_mask_carries_non_ascii,
     unrar_matches_names_as_windows,
 )
@@ -1867,13 +1868,22 @@ class RarReader(BaseArchiveReader):
         instead (:meth:`_stage_explicit_volumes`, on the first read that needs
         unrar), so it cannot read a file this reader never parsed, or miss one it
         did.
+
+        A path holding a wildcard character is staged too: unrar expands one in
+        the archive name (:func:`unrar_expands_wildcards`), so ``rep*.rar`` would
+        also open a planted ``rep-a.rar``, or block on a FIFO of that name. The
+        staged names are fixed and hold none.
         """
         if self._archive_path is None or self._stage_volume_paths:
             return
-        if self._volume_numbers is None and _unrar_finds_exactly(
-            self._volume_paths,
-            is_volume=self._archive.is_volume,
-            old_numbering=self._archive.old_volume_naming,
+        if (
+            not any(unrar_expands_wildcards(path) for path in self._volume_paths)
+            and self._volume_numbers is None
+            and _unrar_finds_exactly(
+                self._volume_paths,
+                is_volume=self._archive.is_volume,
+                old_numbering=self._archive.old_volume_naming,
+            )
         ):
             return
         self._archive_path = None
@@ -2030,14 +2040,13 @@ class RarReader(BaseArchiveReader):
         budget.check_total(self._spool_copy_size())
         temp_dir = Path(tempfile.mkdtemp(prefix="archivey-rar-vol-"))
         self._temp_dir = temp_dir
-        stem = "archive"
-        if self._archive_name:
-            stem = Path(self._archive_name).stem or stem
         paths: list[Path] = []
         try:
             for index, item in enumerate(items, start=1):
+                # A fixed stem, not the source's name: that can hold ``*`` or ``?``,
+                # which unrar expands in the archive name (unrar_expands_wildcards).
                 dest = temp_dir / rar_volume_name(
-                    stem, index, old_numbering=self._archive.old_volume_naming
+                    "archive", index, old_numbering=self._archive.old_volume_naming
                 )
                 # A file volume goes through the budget too, not ``shutil.copy2``:
                 # its size was read when the set was joined, and a file that grew

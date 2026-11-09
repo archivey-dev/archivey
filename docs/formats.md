@@ -10,6 +10,7 @@ The maintainer handbook has more depth on
 [SquashFS](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/squashfs.md),
 [CPIO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cpio.md),
 [ar](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/ar.md),
+[Debian packages](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/deb.md),
 [RAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md),
 [TAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md) and
 [ZIP](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file
@@ -62,6 +63,9 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **ar** (`.a`, `.lib`, the outer layer of a `.deb`): core. Listing: header by header. Members:
   direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.a.gz`,
   …); there, as with a compressed TAR, listing needs decompression and members are solid.
+- **Debian packages** (`.deb`, `.udeb`, `.ddeb`): needs what their tars' compressor needs
+  (xz, gzip and bzip2 in core; Zstandard as for a `.zst` file). Listing: needs decompression.
+  Members: solid. Readable from a pipe.
 - **RPM** (`.rpm`, binary and source packages): core; the payload needs what its compressor
   needs (gzip, bzip2, xz and LZMA in core, Zstandard as for a `.zst` file). Listing: needs
   decompression. Members: solid. Readable from a pipe. A package with an uncompressed
@@ -194,6 +198,8 @@ A CRC-32 is four big-endian bytes, so a CRC you computed compares as
   combined from each member's CRC, equal to the CRC-32 of the whole payload.
 - **CPIO:** none. A crc archive stores a 32-bit sum of each file's data, which a full read
   checks, but it is not a digest `hashes` can hold.
+- **Debian packages:** `md5`, for the files the package's `DEBIAN/md5sums` lists. It comes from
+  the control tar, so it is known once listing has decompressed that, before the data tar.
 - **TAR, SquashFS, ar, directory, and every other single compressed file:** none.
 
 When a format stores none, compute a digest while reading. A first-pass dedupe index can take the
@@ -1175,6 +1181,8 @@ The format of macOS installer packages (`.pkg`) and `.xip` files, written by App
   is at `Verification.CHECKSUM`.
 - A name stored base64-encoded, as writers do for bytes that are not UTF-8, is decoded with
   `encoding=` like a name in any other format.
+- Apple's `productbuild` stores the name of each top-level file twice, the same both times;
+  that is one name. A file with two different names raises `CorruptionError`.
 - A hard link lists the member that holds the data as its `link_target`. bsdtar can write
   the link before that member; archivey then lists it after.
 - A file whose data uses an encoding archivey does not know is listed, with
@@ -1258,6 +1266,33 @@ what `makecab` and `gcab` write.
   `UnsupportedFeatureError`.
 - The long-name table may be no larger than `ListingLimits.max_metadata_bytes`.
 
+## Debian packages
+
+- **Needs:** what the package's two tars are compressed with: nothing for xz, gzip, bzip2 and
+  LZMA, which `dpkg-deb` also accepts, and what a `.zst` file needs for Zstandard.
+- **Listing:** what `dpkg-deb -R` unpacks: the files the package installs under their own names,
+  and the control files (`control`, `md5sums`, the maintainer scripts) under `DEBIAN/`. The
+  listing starts with the control files, then `.`, the data tar's root, then the data files.
+  Listing reads both tars, so it needs decompression.
+- **Reading members:** solid: a member is reached by reading the package from the start, as in a
+  compressed TAR.
+- **From a pipe:** yes, with `streaming=True`.
+- `format=ArchiveFormat.AR` lists the package's three ar members instead (`debian-binary`,
+  `control.tar.xz`, `data.tar.xz`), to read a tar whole.
+- `ArchiveInfo.format_version` is the `debian-binary` version (`"2.0"`), and
+  `ArchiveInfo.extra` has `deb.package`, `deb.version` and `deb.architecture`, from the control
+  file. They appear once the listing or iteration has read the control tar, on any source:
+  `info.extra` is empty right after `open_archive`, until `members()` or the first members of
+  `stream_members()`.
+- Each file that `DEBIAN/md5sums` lists gets its MD5 in `member.hashes`, and a full read checks
+  it: a file that does not match raises `CorruptionError`. A line of `md5sums` that is not an
+  MD5 and a name is skipped, and a file it does not list has no digest.
+- As `dpkg-deb` does, a package whose format version is not 2.x raises `UnsupportedFeatureError`,
+  members whose names start with `_` (a signature, for example) are skipped, any other member
+  before the data tar raises `CorruptionError`, and nothing after the data tar is read.
+- The control file and `md5sums` are held whole while the package is read, and together may be
+  no larger than `ListingLimits.max_metadata_bytes`.
+
 ## RPM
 
 - **Needs:** nothing for gzip, bzip2, xz and LZMA payloads; a Zstandard payload (Fedora's
@@ -1274,6 +1309,10 @@ what `makecab` and `gcab` write.
   installs them. Owners are names (`uname`, `gname`); `uid` and `gid` are `None`.
 - Both payload forms read: newc CPIO, and the stripped form of RPM 6 packages and of RPM 4
   packages with a file of 4 GiB or more.
+- The package header's own digests (SHA-256 and SHA-1, each one the package stores) are
+  checked when the package is opened: a damaged name, mode, owner or link target raises
+  `CorruptionError`. They detect damage, not tampering: they are not signed, and signatures
+  are not checked. A package that stores no such digest is read unchecked.
 - Each regular file's digest from the header (SHA-256 in current packages, MD5 in old ones)
   is checked as its data is read.
 - `%ghost` files are listed in the package but never stored, and are not members.
