@@ -532,6 +532,7 @@ value archivey.OptionalLibrary.PYCDLIB = 'pycdlib'
 value archivey.OptionalLibrary.CRYPTOGRAPHY = 'cryptography'
 value archivey.OptionalLibrary.LZO = 'lzo'
 value archivey.OptionalLibrary.BZIP3 = 'bz3'
+value archivey.OptionalLibrary.ARCHIVEY_NATIVE = 'archivey_native'
 class archivey.OverwritePolicy(Enum)
 enum archivey.OverwritePolicy
 value archivey.OverwritePolicy.ERROR = 'error'

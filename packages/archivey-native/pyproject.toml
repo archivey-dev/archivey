@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "archivey-native"
+version = "0.1.0"
+description = "Optional Rust kernels for archivey's pure-Python decoders (prototype)"
+requires-python = ">=3.11"
+license = "MIT"
+classifiers = ["Programming Language :: Rust", "Programming Language :: Python :: Implementation :: CPython"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "archivey_native._native"
+features = ["pyo3/extension-module"]

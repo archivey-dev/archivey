@@ -125,6 +125,7 @@ def test_python_lzo_can_be_excluded(
     """With python-lzo installed, ``exclude_libraries={"lzo"}`` makes the read use the
     Python decoder and never python-lzo; without it, python-lzo decodes every block."""
     lzo = pytest.importorskip("lzo")
+    monkeypatch.setenv("ARCHIVEY_NATIVE", "0")  # archivey-native would come first
     used: list[str] = []
     real_lzo, real_python = lzo.decompress, lzo_decoder.lzo1x_decompress_python
 
@@ -145,8 +146,11 @@ def test_python_lzo_can_be_excluded(
     assert used and set(used) == {"python" if exclude else "python-lzo"}
 
 
-def test_python_lzo_runs_in_a_child_under_native_decoders() -> None:
+def test_python_lzo_runs_in_a_child_under_native_decoders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pytest.importorskip("lzo")
+    monkeypatch.setenv("ARCHIVEY_NATIVE", "0")  # archivey-native would come first
     config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
     POOL.close_idle()
     with open_stream(_DATA / "text.txt.lzo", config=config) as stream:

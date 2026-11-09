@@ -412,6 +412,10 @@ class OptionalLibrary(StrEnum):
     LZO1X in Python without it, more slowly."""
     BZIP3 = "bz3"
     """The ``bzip3`` package (imported as ``bz3``): ``.bz3`` files."""
+    ARCHIVEY_NATIVE = "archivey_native"
+    """``archivey-native``: optional Rust versions of the decoders archivey otherwise
+    runs in Python (LZX, LZO1X, ZipCrypto, the ARM64 and RISC-V filters). Same
+    results and errors, only faster. Experimental."""
 
 
 OptionalLibraryStr = Literal[
@@ -426,6 +430,8 @@ OptionalLibraryStr = Literal[
     "cryptography",
     "lzo",
     "bz3",
+    "archivey_native",
+    "archivey-native",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 

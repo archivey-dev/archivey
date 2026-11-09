@@ -197,6 +197,7 @@ def test_members_open_in_any_order_and_seek() -> None:
 def test_members_read_in_order_decode_each_frame_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("ARCHIVEY_NATIVE", "0")  # counts the Python decoder's frames
     calls = 0
     real = LzxDecoder.decode_frame
 

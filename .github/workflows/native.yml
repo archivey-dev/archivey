@@ -1,0 +1,58 @@
+name: Native kernels (prototype)
+
+# Builds the optional Rust kernels (packages/archivey-native) and checks them two ways:
+# the differential tests against the pure-Python decoders, and archivey's own suites for
+# every codec the kernels replace, run with the kernels on. A prototype: it runs only
+# when the kernels or the Python code they mirror change, or by hand.
+on:
+  pull_request:
+    paths:
+      - "packages/archivey-native/**"
+      - "src/archivey/internal/native.py"
+      - "src/archivey/internal/streams/codecs/lzx_decoder.py"
+      - "src/archivey/internal/streams/codecs/lzo_decoder.py"
+      - "src/archivey/internal/streams/codecs/unix_compress_decoder.py"
+      - "src/archivey/internal/streams/codecs/arm64_filter.py"
+      - "src/archivey/internal/streams/codecs/riscv_filter.py"
+      - "src/archivey/internal/backends/zipcrypto.py"
+      - ".github/workflows/native.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install archivey
+        run: uv sync --group dev --extra all
+      - name: Build and install the kernels
+        run: uv run --with "maturin>=1.9,<2" maturin develop --release -m packages/archivey-native/Cargo.toml
+      - name: Rust lints
+        working-directory: packages/archivey-native
+        run: cargo clippy --release -- -D warnings
+      - name: Differential tests (Rust against Python)
+        env:
+          NATIVE_PARITY_CASES: "1000"
+        run: uv run pytest --no-cov -q packages/archivey-native/tests
+      - name: Codec suites with the kernels on
+        env:
+          ARCHIVEY_NATIVE: "1"
+        run: >-
+          uv run pytest --no-cov -q -n auto
+          tests/test_cab.py tests/test_lzo.py tests/test_lzop.py tests/test_squashfs.py
+          tests/test_sevenzip_arm64.py tests/test_sevenzip_riscv.py
+          tests/test_zipcrypto_cipher.py tests/test_password.py tests/test_password_confirm.py
+          tests/test_zip_multipassword.py tests/test_codecs.py tests/test_decode_prefix.py
+          tests/test_seekable_streams.py tests/test_single_file.py

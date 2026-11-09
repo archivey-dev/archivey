@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.overrides import override
+
+if TYPE_CHECKING:
+    from archivey.internal.native import LzwEngine
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -677,12 +680,28 @@ class LzwState:
         return bytes(output), units
 
 
+def new_lzw_state(
+    *,
+    max_width: int | None = None,
+    block_mode: bool | None = None,
+    nine_bit_widens: bool | None = None,
+) -> LzwEngine:
+    """archivey-native's LZW state when it may be used, else :class:`LzwState`."""
+    from archivey.internal import native
+
+    return native.lzw_state(
+        max_width=max_width, block_mode=block_mode, nine_bit_widens=nine_bit_widens
+    ) or LzwState(
+        max_width=max_width, block_mode=block_mode, nine_bit_widens=nine_bit_widens
+    )
+
+
 class UnixCompressDecoder(BaseDecoder):
     """LZW decoder: CLEAR seek points (after-placement) + deferred truncation."""
 
     def __init__(
         self,
-        state: LzwState,
+        state: LzwEngine,
         *,
         comp_cursor: int,
         decomp_cursor: int,
@@ -700,14 +719,14 @@ class UnixCompressDecoder(BaseDecoder):
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> UnixCompressDecoder:
         del inner
         if self._max_width is not None and self._block_mode is not None:
-            state = LzwState(
+            state = new_lzw_state(
                 max_width=self._max_width,
                 block_mode=self._block_mode,
                 nine_bit_widens=self._state.nine_bit_widens,
             )
             header_committed = True
         else:
-            state = LzwState()
+            state = new_lzw_state()
             header_committed = False
         return UnixCompressDecoder(
             state,
@@ -783,7 +802,7 @@ def UnixCompressDecompressorStream(
     def make_decoder(point: SeekPoint, inner: BinaryIO) -> UnixCompressDecoder:
         del inner
         return UnixCompressDecoder(
-            LzwState(),
+            new_lzw_state(),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
         )
