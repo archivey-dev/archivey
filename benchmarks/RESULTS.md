@@ -46,6 +46,76 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
 
+## Since 0.3.0 (2026-11-09)
+
+**Trees.** Before is the `v0.3.0` tag (`f013eec9`). After is `main` at `37e08c35`. Both
+trees ran this branch's `benchmarks/` against their own `src/`, as the 2026-10-28 round
+did, and shared one `ARCHIVEY_BENCH_CACHE`, so both read the same archive files. The
+interval holds the per-member work of PRs 1359 (layer proofs asked once per member sync)
+and 1373 (a small ZIP member read whole at open), plus the new formats and many fixes. The
+attribution below is an inference from what those PRs change.
+
+**Host and method.** A 4-vCPU Intel Xeon KVM container, Linux x86_64, CPython 3.11.18,
+libarchive-c over libarchive 3.7.2, py7zr 1.1.4, rapidgzip 0.16.0. Each tree ran
+`benchmarks.harness --mode full --scale realistic --warmup` and `benchmarks.peers --scale
+realistic` twice, in the order before, after, before, after. Each cell is the mean of a
+tree's two runs. Extraction wrote to `/dev/shm`. Ratio is archivey ÷ peer, against the
+peer timed in the same run.
+
+### Many small members
+
+The 4 000-file corpus of [Many small members](#many-small-members). Rows that moved by
+less than about 15% in archivey's own time are left out; they are within the noise band
+measured in the earlier rounds.
+
+| Archive | Operation | Peer | archivey 0.3.0 | ratio 0.3.0 | archivey main | ratio main |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| ZIP | read_all | zipfile | 691 ms | 15.3× | 340 ms | 7.7× |
+| ZIP | extract | zipfile | 1 358 ms | 13.7× | 870 ms | 8.7× |
+| ZIP | read_all | libarchive-c | 705 ms | 28.9× | 332 ms | 13.7× |
+| ZIP | extract | libarchive-c | 1 394 ms | 23.0× | 876 ms | 14.3× |
+| ZIP stored | read_all | zipfile | 437 ms | 11.2× | 328 ms | 8.5× |
+| ZIP stored | extract | zipfile | 947 ms | 10.4× | 812 ms | 9.0× |
+| 7z | read_all | py7zr | 354 ms | 1.05× | 306 ms | 0.93× |
+| 7z | read_all | libarchive-c | 352 ms | 19.5× | 301 ms | 16.5× |
+
+What the numbers show:
+
+- **Reading a small ZIP member costs half what it did.** `read_all` over 4 000 DEFLATE
+  members fell from 691 to 340 ms (about 170 to 85 µs a member), and extraction by a
+  third. PR 1373 decodes a member of up to 64 KiB in one call at open and skips the
+  codec layer stack when nothing in the member looks unusual. Stored members gain less
+  (−25%), because they had no decoder to skip.
+- **7z gains about 14% on reading,** which fits PR 1359: it is the one change in the
+  interval that touches every format's member sync.
+- **TAR, tar.gz and listing did not move** beyond noise (−4% to +5%). The ZIP `list`
+  row read +15% in one pair of runs; a re-run of 15 alternating calls per side gave
+  55 ms, the 0.3.0 figure, and the ratio stayed at 6.3–6.5× throughout.
+- **The harness corpus did not move either** (64 members of 256 KiB, decode-bound): every
+  row's ratio stayed inside its run-to-run range. `zip_extract` again had no stable
+  `zipfile` time (10–43 ms between runs).
+
+### New formats against libarchive
+
+The same 4 000-file tree as an MSZIP cabinet written by `gcab` 1.6, and as a binary RPM
+with a gzip payload written by `rpmbuild` 4.18 (both are skipped when the tool is
+missing). One run of `main`, 9 timed calls per side.
+
+| Archive | Operation | archivey | libarchive-c | ratio |
+| --- | --- | ---: | ---: | ---: |
+| CAB | list | 38 ms | 9 ms | 4.1× |
+| CAB | read_all | 264 ms | 17 ms | 16.0× |
+| CAB | extract | 785 ms | 52 ms | 15.0× |
+| RPM | list | 127 ms | 14 ms | 9.1× |
+| RPM | read_all | 377 ms | 20 ms | 18.6× |
+| RPM | extract | 985 ms | 59 ms | 16.7× |
+
+Both sit where TAR and 7z sit against libarchive on this corpus (15–24× on reading and
+extraction): the cost is per member, not in the decoders. RPM listing is the slowest of
+the new rows. A profile of it shows little decoding: most of the time goes to the forward
+walk over the cpio payload, one entry at a time through the format-API adapter, where a
+CAB lists from its file table.
+
 ## 0.2.0 release figures (2026-10-21)
 
 The figures quoted in the 0.2.0 CHANGELOG entry. Source: `benchmark-wall.yml` run
