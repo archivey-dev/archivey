@@ -13,9 +13,9 @@ Module split:
 - :mod:`.rar_copy_sources` — keeps the bytes a solid pass decodes for the RAR5 file
   copies that read them later
 - this module — ``BaseArchiveReader``: list from the parser; member **data** via unrar,
-  or via ``unar`` when selected (same shapes, entries named by index instead of mask)
+  or via ``unar`` when selected
 
-Data-open shapes:
+Data-open shapes, under ``unrar``:
 
 - Stored, unencrypted, every part found → direct sliced view (no ``unrar``),
   whatever the solid flag; a split member's part views are joined
@@ -28,10 +28,18 @@ Data-open shapes:
   the original archive with an include mask instead (``RarReader._synthetic_file``)
 - Solid pass (``stream_members`` / extraction) → one program's output, read
   through :class:`SolidBlockReader` and cut by offset
-  (``RarReader._drive_solid_pass``); over a stream source, one ``unrar`` run per
-  run of whole solid streams (:class:`_SolidPassPipe`)
+  (``RarReader._drive_solid_pass``). Over a stream source, when the pass splits into
+  runs (``RarReader._solid_pass_run_plan``), one ``unrar`` run per run of whole solid
+  streams (:class:`_SolidPassPipe`); otherwise one pipe over a copy of the whole
+  archive
 - Stream / non-path sources may be copied to a temp file when a program needs the
   original archive, so it can open a real path (and resolve sibling volumes)
+
+Under ``unar`` the direct views are the same, but no synthetic archive is built:
+``open()`` runs ``unar -i <index>``, and a solid pass runs one ``unar`` over every entry,
+or over the readable ones by index when some are refused (:mod:`.rar_unar`). Both read
+the whole archive, from a private directory that holds its volumes linked or copied
+(``RarReader._unar_archive_path``).
 
 WinRAR ``-ver`` history members are presented as ``path;n`` (see
 :func:`_presented_filename`). Passwords feed three places: header parse, ``unrar``,
@@ -1537,11 +1545,18 @@ class RarReader(BaseArchiveReader):
 
         The steps, in order: set up per-reader state; refuse a non-seekable source;
         find the volumes and where the RAR starts and ends in the source
-        (:meth:`_open_shared_source`); parse the headers, trying the passwords
+        (:meth:`_open_shared_source`); note what the source's shape will cost to copy
+        (:meth:`_source_copy_notes`); parse the headers, trying the passwords
         (:meth:`_parse_archive`); decide how ``unrar`` will reach the volumes
         (:meth:`_choose_unrar_volume_paths`); work out what is encrypted and what a
-        solid decode reaches only through encrypted data; build the members; and
-        price each member's dictionary memory. No member data is decoded here; the
+        solid decode reaches only through encrypted data; revise the copy notes for
+        the data program (:meth:`_program_copy_notes`); check the listing's metadata
+        budget (:meth:`_check_header_metadata_budget`, which can refuse the archive);
+        decode compressed comments; build the members and link RAR5 file copies to
+        their sources (:meth:`_resolve_file_copies`); note a member no direct read
+        serves under ``RarDecompressor.NONE``; price each member's dictionary memory;
+        and report damaged service headers (:meth:`_emit_service_header_diagnostics`,
+        which a strict policy turns into a refusal). No member data is decoded here; the
         one decode at open is a compressed RAR 1.5-4 comment
         (:meth:`_resolve_rar3_comment`).
         """
