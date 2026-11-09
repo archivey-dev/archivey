@@ -121,11 +121,21 @@ _MAX_DEPTH = 2048
 
 
 class _Data(NamedTuple):
+    """A ``<data>`` element: where a file's bytes are and how to decode them."""
+
     offset: int
+    """Where the stored bytes start, from the start of the heap."""
     length: int
+    """How many bytes are stored."""
     size: int
+    """How many bytes they decode to."""
     encoding: str
+    """The ``<encoding style=…>`` MIME type: ``"application/octet-stream"`` (stored)
+    when there is no ``<encoding>``, ``""`` when it has no ``style``. A key of
+    ``_ENCODINGS`` when known."""
     digest: tuple[str, bytes] | None
+    """The extracted checksum, as ``(algorithm, digest)``, or ``None`` when there is
+    none or its style is not one of ``_DIGESTS`` (see ``unchecked_style``)."""
     unchecked_style: str | None
     """The style of an ``<extracted-checksum>`` archivey cannot compute, as written
     (``""`` when it names none); ``None`` when there is no such checksum."""
@@ -137,8 +147,10 @@ class _Entry(NamedTuple):
     raw_path: bytes
     kind: str
     link: str | None
-    """The ``<type link=…>`` attribute: ``"original"`` or another entry's id."""
+    """The ``<type link=…>`` attribute of a hard link: ``"original"`` on the entry
+    that holds the data, another entry's id on each link to it."""
     target: str | None
+    """A symlink's target, from the ``<link>`` element."""
     fields: dict[str, str]
     data: _Data | None
 
@@ -191,12 +203,18 @@ class _TocParser:
     def __init__(self, context: ReaderContext) -> None:
         self._context = context
         self._limit = context.config.listing_limits.max_members
+        # One slot per <file>, filled when the element closes (see _open_file).
         self._entries: list[_Entry | None] = []
         self.checksum: tuple[str, int, int] | None = None
+        # The names of the elements open now, outermost first.
         self._stack: list[str] = []
+        # The <file> elements open now, outermost first.
         self._files: list[_Frame] = []
+        # The text since the last element started or ended.
         self._text: list[str] = []
+        # Whether the <name> being read has enctype="base64".
         self._name_base64 = False
+        # The fields of <toc><checksum> while it is open.
         self._toc_checksum: dict[str, str] | None = None
         self._charged = 0
         self._budget = context.config.listing_limits.max_metadata_bytes
@@ -228,6 +246,7 @@ class _TocParser:
         raise CorruptionError("the XAR table of contents declares a document type")
 
     def _start(self, name: str, attrs: dict[str, str]) -> None:
+        """expat's start-element callback: the attributes the reader needs."""
         self._stack.append(name)
         self._text.clear()
         if len(self._stack) > _MAX_DEPTH:
@@ -266,6 +285,7 @@ class _TocParser:
         self._entries.append(None)
 
     def _end(self, name: str) -> None:
+        """expat's end-element callback: the element's text, and a finished file."""
         text = "".join(self._text)
         self._text.clear()
         self._stack.pop()
@@ -410,6 +430,7 @@ def _timestamp(text: str) -> datetime | None:
 
 class _Location(NamedTuple):
     data: _Data | None
+    """``None`` for a member with no data, which opens empty."""
 
 
 class XarReader(IndexedReader[_Location]):
@@ -461,6 +482,8 @@ class XarReader(IndexedReader[_Location]):
             ) from None
 
     def _checksum_name(self, algorithm: int, header_size: int) -> str | None:
+        """The TOC checksum algorithm the header names, as a ``hashlib`` name, or
+        ``None`` when the TOC is not checked."""
         if algorithm == _CKSUM_NONE:
             return None
         if algorithm in _CKSUM_NAMES:
