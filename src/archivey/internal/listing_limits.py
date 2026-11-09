@@ -44,6 +44,16 @@ def text_bytes(value: str | bytes | None) -> int:
 # a ZIP extra field with one byte of data (CPython 3.11, int key over 256).
 NUMBERED_ENTRY_BYTES = 72
 
+# What one entry of a nested dict keyed by text retains beyond its key's and value's
+# bytes: the key's ``str`` object and the dict slot. Measured 70 to 93 bytes for
+# ``extra["tar.pax_headers"]`` entries with short keywords and empty values (CPython
+# 3.11, 100 to 350,000 entries, by how full the dict's table is). The archive-reading
+# spec sets this weight. Without it a PAX entry of a short keyword would weigh about 5
+# bytes against the 90 it keeps, and TAR gives each member that has PAX records of its
+# own a copy of the global ones, so a 2 MB archive of one large global header and 100
+# small members would keep 1.5 GB under the default 64 MiB cap.
+TEXT_ENTRY_BYTES = 96
+
 
 def _extra_bytes(extra: Mapping[str, object]) -> int:
     """Sum retained ``str``/``bytes`` lengths in ``extra`` (one-level nested dicts).
@@ -55,7 +65,9 @@ def _extra_bytes(extra: Mapping[str, object]) -> int:
     ``extra["tar.pax_headers"]``, where the keyword is as attacker-sized as the value.
     A nested key that is not text (a ZIP extra field's tag in
     ``extra["zip.extra_fields"]``) weighs ``NUMBERED_ENTRY_BYTES``: the archive sets
-    how many entries there are, and an empty value would otherwise weigh nothing.
+    how many entries there are, and an empty value would otherwise weigh nothing. A
+    nested text key weighs ``TEXT_ENTRY_BYTES`` more than its bytes, for the same
+    reason: the objects an entry keeps outweigh a short key and value many times.
     """
     total = 0
     for value in extra.values():
@@ -65,7 +77,7 @@ def _extra_bytes(extra: Mapping[str, object]) -> int:
         if isinstance(value, dict):
             for nested_key, nested in value.items():
                 key_bytes = (
-                    _retained_bytes(nested_key)
+                    TEXT_ENTRY_BYTES + _retained_bytes(nested_key)
                     if isinstance(nested_key, (str, bytes))
                     else NUMBERED_ENTRY_BYTES
                 )

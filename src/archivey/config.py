@@ -415,9 +415,10 @@ class ListingLimits:
 
     Counts member names (and raw names), comments, link targets, owner and group names
     and the string or bytes values in ``extra``, plus the keys of a dict nested in it
-    (such as TAR's PAX keywords), plus the archive comment. The top-level ``extra``
-    keys are fixed per format and do not count. Non-ASCII text counts four bytes per
-    character, so it is an upper bound rather than an exact size. A TAR sparse member's
+    (such as TAR's PAX keywords) with 96 bytes more for each such text key, plus the
+    archive comment. The top-level ``extra`` keys are fixed per format and do not
+    count. Non-ASCII text counts four bytes per character, so it is an upper bound
+    rather than an exact size. A TAR sparse member's
     map, which the listing keeps to read the member, counts 24 bytes per entry, and
     each ZIP extra field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its
     data. A cabinet's block tables, read as members of each folder are first opened

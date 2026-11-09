@@ -474,16 +474,25 @@ data its pass keeps for link targets beside it.
   stops at the member that crosses a cap. The walker charges each member's headers to a
   budget before it reads them: an extended header (PAX `x` or `g`, GNU `L` or `K`) at
   its declared size, each distinct keyword of a PAX header at 256 bytes more as it is
-  parsed (`PAX_KEYWORD_BYTES`: a keyword keeps about 270 bytes of objects for 9 stored,
-  and a 60 MiB header of short keywords under the cap took 1.76 GB before), and a
-  sparse map at 24 bytes per entry from its entry count before
+  parsed (`PAX_KEYWORD_BYTES`: a short keyword keeps about 270 bytes of objects for 9
+  stored, so by bytes alone a header of millions of them under the cap keeps about 30
+  times its size), and a sparse map at 24 bytes per entry from its entry count before
   its entries are parsed, or block by block for an old GNU map's extension blocks. The
   budget is what is left of `max_metadata_bytes`, in every walk, streaming included. The
-  headers ahead of one member are one chain and draw on one budget. An over-limit tar
-  then costs about the cap plus one ordinary header. The PAX global records are held
-  once per global header, not once per member: members with none of their own share one
-  read-only snapshot. Each member is still charged for them, so the cap counts them as
-  if copied.
+  headers ahead of one member are one chain and draw on one budget. The PAX global
+  records are held once per global header, not once per member: members with none of
+  their own share one read-only snapshot. A member with records of its own gets a copy
+  of the global ones, in the walker and as text in `extra["tar.pax_headers"]`, so the
+  walker charges that copy 96 bytes per global record before it makes it. Registration
+  weighs each `extra["tar.pax_headers"]` entry, copied or shared, at 96 bytes plus its
+  keyword and value (`TEXT_ENTRY_BYTES`, `internal/listing_limits.py`), about what an
+  entry keeps (70 to 93 bytes measured). An over-limit tar then costs about the cap for
+  the registered members, plus the global records in force (at most the cap divided by
+  `PAX_KEYWORD_BYTES` of them, about 270 bytes each) and one member's headers. Measured
+  under the default 64 MiB cap: one global header of 200,000 keywords followed by 100
+  members that each have an `x` header (a 1.9 MB archive) peaks at 86 MB RSS, and 1,500
+  members that each have 10,000 keywords peak at 92 MB, both with about 39 MB of that
+  the interpreter's own.
 - A symlink target stored as member data (ZIP, 7z, RAR3/4) is read with a cap of
   `MAX_LINK_TARGET_BYTES` (4096, Linux `PATH_MAX`; `internal/base_reader.py`). A member
   declaring more is not opened; a read with no declared size stops at 4097 bytes. An

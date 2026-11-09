@@ -267,6 +267,8 @@ def test_streaming_members_report_enforces_listing_limits(tmp_path: Path) -> Non
 
 
 def test_metadata_accounting_counts_name_and_raw_name() -> None:
+    from archivey.internal.listing_limits import TEXT_ENTRY_BYTES
+
     member = ArchiveMember(
         type=MemberType.FILE,
         name="café.txt",
@@ -281,8 +283,9 @@ def test_metadata_accounting_counts_name_and_raw_name() -> None:
         + len("hi")
         + len("x")
         + len("v")
-        # A nested dict's keys are archive-derived text and count; top-level keys
-        # are format-defined literals and do not.
+        # A nested dict's keys are archive-derived text and count, with the entry's
+        # weight; top-level keys are format-defined literals and do not.
+        + TEXT_ENTRY_BYTES
         + len("k")
     )
     assert member_metadata_bytes(member) == expected
@@ -366,6 +369,8 @@ def test_metadata_accounting_skips_top_level_keys_and_counts_nested_keys() -> No
     ``tar.type``), so charging it would tighten the cap per format for text no archive
     controls. A nested key, such as a PAX keyword, is sized by the archive.
     """
+    from archivey.internal.listing_limits import TEXT_ENTRY_BYTES
+
     bare = ArchiveMember(type=MemberType.FILE, name="a.txt")
     labelled = ArchiveMember(
         type=MemberType.FILE, name="a.txt", extra={"zip.compress_type": 8}
@@ -377,7 +382,9 @@ def test_metadata_accounting_skips_top_level_keys_and_counts_nested_keys() -> No
         name="a.txt",
         extra={"tar.pax_headers": {"keyword": ""}},
     )
-    assert member_metadata_bytes(nested) == member_metadata_bytes(bare) + len("keyword")
+    assert member_metadata_bytes(nested) == (
+        member_metadata_bytes(bare) + TEXT_ENTRY_BYTES + len("keyword")
+    )
 
 
 def test_tar_pax_keywords_count_toward_max_metadata_bytes(
@@ -432,11 +439,11 @@ def _pax_header_of_distinct_keywords(count: int) -> bytes:
 def test_tar_pax_header_of_many_keywords_is_charged_per_keyword() -> None:
     """Each distinct PAX keyword is charged while the header is parsed.
 
-    Charging only the header's bytes let millions of short keywords through: each
-    keeps about 270 bytes of objects for 9 stored, so a 60 MiB header under the
-    default 64 MiB cap took 1.76 GB to list. Here 100 000 keywords in 0.9 MB, under a
-    1 MiB cap, peaked at 28 MB and listed; now the parse stops at the keyword that
-    crosses the cap.
+    Charged by its bytes alone, a header of millions of short keywords would pass:
+    each keeps about 270 bytes of objects for 9 stored, so a 60 MiB header under the
+    default 64 MiB cap would take 1.76 GB to list. Here 100 000 keywords in 0.9 MB,
+    under a 1 MiB cap, would peak at 28 MB and list; the parse stops at the keyword
+    that crosses the cap.
     """
     from tests.memory_util import traced_peak
 
@@ -461,6 +468,77 @@ def test_tar_pax_header_of_many_keywords_is_charged_per_keyword() -> None:
     ) as reader:
         (member,) = reader.members()
         assert len(member.extra["tar.pax_headers"]) == 100
+
+
+def _pax_records(keywords: range, value: bytes = b"") -> bytes:
+    out = bytearray()
+    for i in keywords:
+        body = b" %x=%s\n" % (i, value)
+        length = len(body) + len(str(len(body) + 1))
+        out += b"%d" % length + body
+    return bytes(out)
+
+
+def _pax_block(typeflag: bytes, records: bytes) -> bytes:
+    pax = tarfile.TarInfo("PaxHeaders/x")
+    pax.type, pax.size = typeflag, len(records)
+    return pax.tobuf(format=tarfile.USTAR_FORMAT) + records + bytes(-len(records) % 512)
+
+
+def _global_header_then_members(keywords: int, members: int) -> bytes:
+    """One PAX ``g`` header of ``keywords`` short records, then ``members`` members
+    that each have an ``x`` header of one record of their own."""
+    out = bytearray(_pax_block(tarfile.XGLTYPE, _pax_records(range(keywords))))
+    for i in range(members):
+        out += _pax_block(tarfile.XHDTYPE, b"11 mtime=1\n")
+        out += tarfile.TarInfo(f"m{i}").tobuf(format=tarfile.USTAR_FORMAT)
+    return bytes(out + bytes(1024))
+
+
+def _members_of_many_keywords(keywords: int, members: int) -> bytes:
+    """``members`` members, each behind an ``x`` header of ``keywords`` records."""
+    out = bytearray()
+    for i in range(members):
+        out += _pax_block(tarfile.XHDTYPE, _pax_records(range(keywords)))
+        out += tarfile.TarInfo(f"m{i}").tobuf(format=tarfile.USTAR_FORMAT)
+    return bytes(out + bytes(1024))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(_global_header_then_members(3_000, 200), id="global-copied"),
+        pytest.param(_members_of_many_keywords(1_000, 200), id="many-members"),
+    ],
+)
+def test_tar_pax_entries_are_weighed_by_what_they_keep(raw: bytes) -> None:
+    """Each ``extra["tar.pax_headers"]`` entry weighs what it keeps, about 90 bytes
+    beyond its keyword and value, and a member's copy of the global records is
+    weighed before it is made.
+
+    By key and value bytes alone a short record weighs about 5 bytes, so a listing
+    would keep about 18 times the cap: under the default 64 MiB cap, a 1.9 MB archive
+    of one global header of 200 000 records and 100 members that each have a record of
+    their own would peak at 1.5 GB, since each such member gets a copy of the global
+    records. Weighed that way, the two shapes here would peak at 31 MiB and 17 MiB
+    under a 1 MiB cap, and the second would list whole.
+    """
+    from tests.memory_util import traced_peak
+
+    cap = 1 << 20
+    assert len(raw) < 4 * cap
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=cap))
+
+    def list_it() -> None:
+        # Raised at open or at the listing: which one is not what this checks.
+        with (
+            pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+            open_archive(io.BytesIO(raw), config=cfg) as reader,
+        ):
+            reader.members()
+
+    list_it()
+    assert traced_peak(list_it) < 4 * cap
 
 
 def test_tar_drops_the_link_name_of_a_member_that_is_not_a_link(tmp_path: Path) -> None:

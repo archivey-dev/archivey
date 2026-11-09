@@ -51,6 +51,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.listing_limits import TEXT_ENTRY_BYTES
 from archivey.internal.overrides import override
 from archivey.internal.streams.decompressor_stream import _LARGE_READ_STEP
 from archivey.internal.streams.streamtools import read_within_reach
@@ -70,11 +71,12 @@ MAX_OFFSET = 2**63 - 1
 SPARSE_ENTRY_BYTES = 24
 
 # What each distinct keyword of a PAX header is charged against the member's budget
-# while the header is parsed, beyond the header's own bytes. The bytes alone let a
-# header of millions of short keywords through: each keeps a dict entry, a set entry,
-# a PaxValue and its decoded text, 270 bytes at the peak against 9 stored (CPython
-# 3.11), so a 60 MiB header under the 64 MiB cap took 1.76 GB. Honest headers hold a
-# handful of keywords, so this costs them a few kilobytes of budget.
+# while the header is parsed, beyond the header's own bytes. The archive-reading spec
+# sets this weight. Each distinct keyword keeps a dict entry, a set entry, a PaxValue
+# and its decoded text, 270 bytes at the peak against 9 stored (CPython 3.11), so by
+# its bytes alone a header of millions of short keywords under the default cap would
+# keep about 30 times its size. Honest headers hold a handful of keywords, so this
+# costs them a few kilobytes of budget.
 PAX_KEYWORD_BYTES = 256
 
 # The most significant digits a PAX number may have: 20, the width of the largest
@@ -1797,6 +1799,16 @@ class TarWalker:
         charge: _Charger,
     ) -> TarEntry:
         if own:
+            if self._global:
+                # The member gets a copy of the global records, here and as text in
+                # its extra["tar.pax_headers"]. Registration weighs that text only
+                # once both copies are built, so the copy is charged here first: a
+                # global header copied into each member with a record of its own is
+                # then refused before the copy that crosses the cap is made.
+                charge(
+                    TEXT_ENTRY_BYTES * len(self._global),
+                    "a copy of the PAX global records",
+                )
             merged: Mapping[bytes, PaxValue] = _ReadOnly({**self._global, **own})
         else:
             merged = self._global_view
