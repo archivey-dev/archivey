@@ -37,15 +37,20 @@ from __future__ import annotations
 import io
 import stat
 import struct
-from collections.abc import Iterator
-from typing import TYPE_CHECKING, BinaryIO, NamedTuple
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, BinaryIO, NamedTuple, Protocol
 
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     MemberTimestampContext,
 )
-from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.formats import (
     IndexedFormatHandler,
     IndexedReader,
@@ -59,6 +64,15 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.internal.sfx import (
+    SFX_MAX,
+    VALIDATOR_PEEK_MAX,
+    HitOutcome,
+    ScanNeedle,
+    describe_scan_miss,
+    overlay_start_of,
+    scan_for_magic,
+)
 from archivey.internal.streams.codecs.lharc_decoder import DECODERS as _OLD_DECODERS
 from archivey.internal.streams.codecs.lzh_decoder import (
     METHODS as _LZH_METHODS,
@@ -77,6 +91,7 @@ from archivey.types import (
     CompressionAlgorithm,
     CompressionMethod,
     CreateSystem,
+    MagicSignature,
     MemberType,
 )
 
@@ -107,6 +122,7 @@ _KNOWN_METHODS = (
     "-pm1-",
     "-pm2-",
 )
+_METHOD_BYTES = frozenset(m.encode("ascii") for m in _KNOWN_METHODS)
 
 _BASE = 22  # the bytes every level shares, up to the level byte and one more
 _LEVEL_0_MIN = 22
@@ -266,16 +282,23 @@ def _method(raw: bytes) -> str:
     return raw.decode("latin-1")
 
 
-class LhaReader(IndexedReader[_Location]):
-    """One open LHA archive."""
+class _HeaderSource(Protocol):
+    """What reading headers needs of a source: a :class:`ReaderSource`, or the bytes
+    the self-extracting scan peeks at a candidate (:class:`_PeekSource`)."""
 
-    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+    @property
+    def size(self) -> int | None: ...
+
+    def read_at(self, offset: int, n: int) -> bytes: ...
+
+    def read_exact(self, offset: int, n: int) -> bytes: ...
+
+
+class _Headers:
+    """Reads member headers, checking each as it is read."""
+
+    def __init__(self, source: _HeaderSource) -> None:
         self._source = source
-        self._context = context
-        # The first header is read at open, so a file that is not LHA fails there.
-        self._first = self._read_header(0)
-        if self._first is None:
-            raise CorruptionError("the LHA archive has no members")
 
     # ── Headers ──────────────────────────────────────────────────────────────────────
 
@@ -513,6 +536,21 @@ class LhaReader(IndexedReader[_Location]):
                 f"the member header at offset {header.offset} fails its CRC"
             )
 
+
+class LhaReader(_Headers, IndexedReader[_Location]):
+    """One open LHA archive."""
+
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+        source = _payload(source)
+        super().__init__(source)
+        # The same source, for the member views the header protocol does not offer.
+        self._payload = source
+        self._context = context
+        # The first header is read at open, so a file that is not LHA fails there.
+        self._first = self._read_header(0)
+        if self._first is None:
+            raise CorruptionError("the LHA archive has no members")
+
     # ── Listing ──────────────────────────────────────────────────────────────────────
 
     @override
@@ -682,14 +720,14 @@ class LhaReader(IndexedReader[_Location]):
         span = ((locator.offset, locator.offset + locator.stored),)
         if method in _STORED:
             return MemberData(
-                self._source.view(locator.offset, locator.stored), digests=digests
+                self._payload.view(locator.offset, locator.stored), digests=digests
             )
         if method not in _LZH_METHODS and method not in _OLD_DECODERS:
             raise UnsupportedFeatureError(
                 f"{quoted(member.name)} uses LHA method {method}, which archivey "
                 "does not read"
             )
-        stream = _LzhStream(self._source, locator, member.size or 0)
+        stream = _LzhStream(self._payload, locator, member.size or 0)
         return MemberData(stream, digests=digests, bounded=True, ranges=span)
 
     @override
@@ -736,6 +774,115 @@ class _LzhStream(io.RawIOBase):
         super().close()
 
 
+# ── Self-extracting archives ───────────────────────────────────────────────────────
+
+# An archive behind a stub is found by its first header's method, at offset 2, as
+# lhasa finds it; the header's own sum or CRC tells a header from a stub that holds
+# the same bytes.
+_SFX_NEEDLES = tuple(ScanNeedle(m.encode("ascii"), 2) for m in _KNOWN_METHODS)
+
+
+class _ShortPeek(Exception):
+    """The scan's peek ends before the header does: the candidate was not checked."""
+
+
+class _PeekSource:
+    """A candidate's bytes, as the self-extracting scan peeks them."""
+
+    def __init__(self, peek_more: Callable[[int], bytes], remaining: int | None):
+        self._peek_more = peek_more
+        self.size = remaining
+
+    def read_at(self, offset: int, n: int) -> bytes:
+        end = offset + n
+        if end > VALIDATOR_PEEK_MAX:
+            raise _ShortPeek
+        return self._peek_more(end)[offset:end]
+
+    def read_exact(self, offset: int, n: int) -> bytes:
+        data = self.read_at(offset, n)
+        if len(data) < n:
+            if self.size is None or offset + n <= self.size:
+                raise _ShortPeek
+            raise TruncatedError("the candidate ends inside its header")
+        return data
+
+
+def _validate_header(
+    peek_more: Callable[[int], bytes], remaining: int | None
+) -> HitOutcome:
+    """Whether an LHA member header starts at the candidate: its level, layout and sum
+    or CRC check out. A header whose data runs past the source is ``DAMAGED``.
+
+    An archive found to end before the source does, with more than padding after its
+    end byte, is ``VALID_SHORT``, so the scan looks on: Amiga LhASFX carries a small
+    archive of its own (its usage text) inside the stub, ahead of the real one, which
+    ends the file. lhasa skips it by the stub's name; the walk needs no name.
+    """
+    source = _PeekSource(peek_more, remaining)
+    headers = _Headers(source)
+    try:
+        header = headers._read_header(0)
+    except _ShortPeek:
+        return HitOutcome.NOT_THIS_FORMAT
+    except TruncatedError:
+        return HitOutcome.DAMAGED
+    except ArchiveyError:
+        return HitOutcome.NOT_THIS_FORMAT
+    if header is None:
+        return HitOutcome.NOT_THIS_FORMAT
+    if remaining is None:
+        return HitOutcome.VALID
+    # Walk the members the peek reaches, to the end byte.
+    end = header.end + header.stored
+    while True:
+        try:
+            header = headers._read_header(end)
+        except (_ShortPeek, ArchiveyError):
+            return HitOutcome.VALID  # past the peek, or damaged: not a short archive
+        if header is None:
+            break
+        end = header.end + header.stored
+    reach = min(remaining, VALIDATOR_PEEK_MAX)
+    if end + 1 >= reach:
+        return HitOutcome.VALID
+    tail = source.read_at(end + 1, reach - end - 1)
+    return HitOutcome.VALID_SHORT if tail.strip(_PADDING) else HitOutcome.VALID
+
+
+def _payload(source: ReaderSource) -> ReaderSource:
+    """``source`` from its first member header: byte 0, or past a self-extracting
+    stub, found as detection finds it (the same needles, validator and window), so a
+    forced ``format=`` reads the archive detection would."""
+    head = source.read_at(0, 7)
+    if len(head) < 7 or head[2:7] in _METHOD_BYTES:
+        return source
+    view = source.view(0)
+    try:
+        scan = scan_for_magic(
+            view,
+            _SFX_NEEDLES,
+            validator=_validate_header,
+            first_at=overlay_start_of(view),
+        )
+    finally:
+        view.close()
+    if scan.hit is None:
+        if head[:1] == b"\0":
+            return source  # an empty archive; listing says it has no members
+        raise CorruptionError(
+            "Not an LHA archive: " + describe_scan_miss(scan, limit=SFX_MAX)
+        )
+    origin = scan.hit.candidate_origin
+    size = source.size
+    return ReaderSource(
+        lambda start, length: source.view(origin + start, length),
+        None if size is None else size - origin,
+        source.path,
+        lambda offset, n: source.read_at(origin + offset, n),
+    )
+
+
 class LhaHandler(IndexedFormatHandler):
     """LHA archives: ``.lzh``, ``.lha``."""
 
@@ -750,4 +897,11 @@ class LhaHandler(IndexedFormatHandler):
         return LhaReader(source, context)
 
 
-LhaReadBackend = register_builtin_format(LhaHandler)
+LhaReadBackend = register_builtin_format(
+    LhaHandler,
+    SFX_MAGIC=tuple(
+        MagicSignature(2, m.encode("ascii"), ArchiveFormat.LHA) for m in _KNOWN_METHODS
+    ),
+    SFX_HIT_VALIDATOR=staticmethod(_validate_header),
+    SFX_PARSER_SCANS=True,
+)

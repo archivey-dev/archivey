@@ -970,9 +970,10 @@ def scan_for_magic(
 
     ``peek_more`` is served from the scan window and may pull extra bytes *forward*
     if the header extends past what has been read. It does not seek back. The source
-    does not have to be seekable. A non-zero :class:`ScanNeedle` offset together with
-    a validator is an error — the origin can sit behind the overlap trim, and a short
-    peek would silently mis-grade it. ``remaining`` is filled from a size probe taken
+    does not have to be seekable. The window keeps the largest :class:`ScanNeedle`
+    offset's bytes behind each match, so a validator judges a candidate whose magic
+    sits past its origin (LHA's method at offset 2) from that origin. ``remaining`` is
+    filled from a size probe taken
     once at scan start when both ``tell()`` and the total size are known, otherwise
     ``None``.
 
@@ -984,13 +985,10 @@ def scan_for_magic(
     normalized = _normalize_needles(needles)
     if not normalized:
         return MagicScan(None, ScanMiss.NO_MATCH, 0)
-    if validator is not None and any(needle.offset != 0 for needle in normalized):
-        raise ValueError(
-            "scan_for_magic(validator=...) requires offset-0 needles; "
-            "a non-zero ScanNeedle.offset leaves the origin behind the window"
-        )
-    # Bytes carried between chunks so a magic straddling a chunk boundary still matches.
+    # Bytes carried between chunks so a magic straddling a chunk boundary still
+    # matches, and its candidate's origin (``offset`` bytes before it) is still held.
     overlap = max(len(needle.magic) for needle in normalized) - 1
+    keep = overlap + max(needle.offset for needle in normalized)
 
     window = bytearray()
     # Offset (from the scan start) of window[0], so a hit inside the window maps back.
@@ -1042,15 +1040,16 @@ def scan_for_magic(
 
     if first_at is not None and validator is not None and first_at >= 0:
         for needle in normalized:
-            if first_at + len(needle.magic) > limit:
+            if first_at + needle.offset + len(needle.magic) > limit:
                 continue
-            if peek_more(len(needle.magic), origin=first_at) != needle.magic:
+            at = needle.offset
+            if peek_more(at + len(needle.magic), origin=first_at)[at:] != needle.magic:
                 continue
             outcome = validator(
                 bind_view(first_at), _remaining_from_origin(scan_start, first_at, total)
             )
             if outcome in (HitOutcome.VALID, HitOutcome.VALID_SHORT):
-                return MagicScan(MagicHit(first_at, needle.magic, 0), None, 0)
+                return MagicScan(MagicHit(first_at, needle.magic, at), None, 0)
             break
 
     while True:
@@ -1104,9 +1103,9 @@ def scan_for_magic(
             search_from = index + 1
 
         search_from = 0
-        if len(window) > overlap:
-            window_start += len(window) - overlap
-            del window[: len(window) - overlap]
+        if len(window) > keep:
+            window_start += len(window) - keep
+            del window[: len(window) - keep]
         searched = len(window)
 
     return finish()

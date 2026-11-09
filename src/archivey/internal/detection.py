@@ -1898,7 +1898,7 @@ def _detect_format_body(
         # find one. Last, so only a source every other step declined pays for the
         # window. An executable cue already ran the scan. A known non-archive
         # signature is not a prefix, and a name that names a format keeps its guess:
-        # the ZIP, 7z and RAR readers find a prefixed archive themselves, and the ZIP
+        # the ZIP, 7z, RAR and LHA readers find a prefixed archive themselves, and the ZIP
         # reader from the end, where the first local header the scan meets may belong
         # to a later member (a ZIP missing its first bytes). An unnamed ZIP missing its
         # first bytes is knowingly left to that: the scan opens it at a later member's
