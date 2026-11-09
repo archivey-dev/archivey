@@ -180,10 +180,6 @@ class _Frame:
         self.name_xml: tuple[bool, str] | None = None
 
 
-# The most text expat holds before it hands it to the parser, in characters.
-_TEXT_BUFFER = 1 << 20
-
-
 class _TocParser:
     """Turns the TOC's XML into entries, one per ``<file>``, in document order."""
 
@@ -208,11 +204,11 @@ class _TocParser:
         parser.StartElementHandler = self._start
         parser.EndElementHandler = self._end
         parser.CharacterDataHandler = self._text.append
-        # Unbuffered, expat hands text over one line at a time, and a TOC of short
-        # lines then costs a list slot per line: 8 bytes for each "a\n". Buffered, a
-        # piece is up to 1 MiB, and ``_end`` joins the pieces either way.
+        # Unbuffered, expat hands text over in pieces split at each newline, two
+        # per "a\n" line, and a list slot per piece is 8 bytes per byte of text.
+        # Buffered, a piece is up to expat's default buffer (8 KiB of UTF-8), and
+        # ``_end`` joins the pieces either way.
         parser.buffer_text = True
-        parser.buffer_size = _TEXT_BUFFER
         try:
             parser.Parse(xml, True)
         except expat.ExpatError as exc:

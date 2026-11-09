@@ -498,8 +498,7 @@ def test_text_of_many_lines_is_not_kept_one_piece_per_line() -> None:
     # expat hands character data over one line at a time unless asked to buffer it,
     # and the parser kept each piece in a list: 8 bytes of list slot for each byte of
     # a TOC of "a\n" lines, so a 64 MiB TOC took 704 MB to open. Here the peak was
-    # 11x the TOC. Buffered, it is 4.5x: the TOC, expat's 1 MiB buffer, the pieces
-    # and their join.
+    # 11x the TOC. Buffered, it is about 4x: the TOC, the pieces and their join.
     head = b'<xar><toc><file id="1"><name>a</name><type>file</type><mode>'
     tail = b"</mode></file></toc></xar>"
     xml = head + b"a\n" * (1 << 20) + tail
