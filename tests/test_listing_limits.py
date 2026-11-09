@@ -882,3 +882,59 @@ def test_rar4_volume_set_counts_a_split_name_once(tmp_path: Path) -> None:
     _assert_metadata_budget_holds_at_open(
         tmp_path / "long.rar", _RAR_PARSE_DETAIL, names=[name]
     )
+
+
+def _file(name: str) -> ArchiveMember:
+    return ArchiveMember(type=MemberType.FILE, name=name)
+
+
+def test_reset_starts_every_count_over() -> None:
+    """A second pass over the archive (``reset``) charges the comment again and
+    starts the held and walk charges from zero."""
+    tracker = ListingLimitTracker(ListingLimits(max_metadata_bytes=1000))
+    tracker.account_archive_comment("comment")
+    tracker.charge_walk(100, "a name table")
+    tracker.hold_member(_file("held"), "waiting")
+    tracker.reset()
+    assert (tracker.member_count, tracker.metadata_bytes) == (0, 0)
+
+    tracker.account_archive_comment("comment")
+    assert tracker.metadata_bytes == len("comment")
+    tracker.release_held()
+    assert tracker.metadata_bytes == len("comment")
+    with pytest.raises(
+        ResourceLimitError, match=r"retained 1003 bytes, 996 of them for 1 waiting"
+    ):
+        tracker.hold_member(_file("x" * 996), "waiting")
+
+
+def test_walk_charges_add_up_and_come_off_once() -> None:
+    tracker = ListingLimitTracker(ListingLimits(max_metadata_bytes=100))
+    tracker.charge_walk(40, "a header")
+    tracker.charge_walk(60, "a name table")  # exactly the cap: allowed
+    assert tracker.metadata_bytes == 100
+    with pytest.raises(ResourceLimitError, match="retained 101 bytes, 1 of them"):
+        tracker.charge_walk(1, "one more")
+    tracker.release_held()
+    assert tracker.metadata_bytes == 0
+    tracker.release_held()
+    assert tracker.metadata_bytes == 0
+
+
+def test_releasing_a_held_member_takes_off_its_own_charge() -> None:
+    tracker = ListingLimitTracker(ListingLimits(max_members=4, max_metadata_bytes=40))
+    first, second, third = _file("first"), _file("second"), _file("third")
+    for member in (first, second, third):
+        tracker.hold_member(member, "waiting")
+    tracker.release_member(first)
+    assert tracker.member_count == 2
+    assert tracker.metadata_bytes == len("second") + len("third")
+    # Two held members left: the next refusal counts them alone.
+    with pytest.raises(
+        ResourceLimitError, match=r"retained 41 bytes, 41 of them for 3 waiting"
+    ):
+        tracker.hold_member(_file("x" * 30), "waiting")
+    tracker.account_member(_file("a"))
+    tracker.account_member(_file("b"))
+    with pytest.raises(ResourceLimitError, match=r"counted 5 members, 3 of them"):
+        tracker.hold_member(_file("c"), "waiting")

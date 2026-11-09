@@ -118,8 +118,9 @@ the packages its `FormatPolicy(exclude_libraries=)` turns off as missing.
 
 ## Python versions and platforms
 
-Archivey needs Python 3.11 or later. Every change is tested on Linux with CPython 3.11 to 3.15
-and PyPy 3.11, and on macOS and Windows with CPython 3.11 and 3.15. Other platforms aren't
+Archivey needs Python 3.11 or later. Every release is tested on Linux with CPython 3.11 to 3.15
+and PyPy 3.11, and on macOS and Windows with CPython 3.11 and 3.15. Each change runs part of that
+set before it merges, and the whole set runs every day. Other platforms aren't
 tested, and PyPy has some limits ([PyPy](#pypy) lists them). [How it is built](how-it-is-built.md) has the full test
 setup.
 

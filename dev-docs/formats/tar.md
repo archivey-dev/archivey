@@ -163,7 +163,11 @@ every stream it built.
 `ReadAheadStream`, not `io.BufferedReader`, which asks again after a short read. A
 decoder over a cut stream returns the bytes it could decode and raises
 `TruncatedError` on the next read, so asking again in the same read would drop those
-bytes. For the same reason the random-access codec stream does not repeat its first
+bytes. The walker makes one exception, where the bytes would be dropped anyway: after a
+short header read (a header block or an extended header) and in its skip over member
+data, it reads once more, so that a codec's held error raises as itself instead of
+reading as a cut (`TarWalker._read_header_bytes`, `_discard`). For the same reason the
+random-access codec stream does not repeat its first
 error after a seek (`open_codec_stream(repeat_verdict=False)`): its views seek before
 a read when the handle is not already there. Each member stream keeps its own. What a cut
 member's reads return is the contract in the TAR spec's requirement "Detect truncated TAR
@@ -173,7 +177,8 @@ with no size raises with nothing.
 **A random-access member view stops at the end of the archive** and then returns no
 bytes. `MemberDataView` (`internal/walk_handoff.py`, shared with the sequential
 adapter's handoff view) sits on it and knows the member's stored length, so a read that
-ends short raises `TruncatedError` under the same contract. It does not need the source
+ends short raises `TruncatedError` under the same contract. A read with no size asks
+again after a short read before it raises, so a codec's held error comes out as itself. It does not need the source
 size, so a seekable source with no cheap size gets the same errors as a file.
 
 **The first header is parsed at open**, so a file that is not a tar fails there (DR-15b):
@@ -185,8 +190,8 @@ member's `max_metadata_bytes` budget at its declared size before it is read, the
 `read_within_reach` in 64 KiB steps, so the allocation follows the bytes that exist, not
 the size field ([`threat-model.md`](../threat-model.md) O15). A member's data area is
 skipped with one seek on a seekable stream. A forward-only walk skips it in 64 KiB steps
-and raises `TruncatedError` at the first short read, so the skip costs the bytes
-present: a 2 KiB archive declaring a 2**45-byte member fails at once instead of looping
+and raises `TruncatedError` at the first empty read (after a short one it reads again,
+so a codec's held error raises as itself), so the skip costs the bytes present: a 2 KiB archive declaring a 2**45-byte member fails at once instead of looping
 on the declared size. Member data a caller reads through a forward-only walk is read in
 1 MiB steps (`DATA_READ_STEP`, the piece the member verifier reads), so a size field
 there causes at most a 1 MiB allocation. On a seekable stream a seek past the end succeeds, so when

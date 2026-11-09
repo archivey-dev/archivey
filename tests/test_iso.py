@@ -28,8 +28,10 @@ from archivey import (
 )
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.diagnostics import ArchiveEofContext, DiagnosticPolicy
 from archivey.exceptions import (
     CorruptionError,
+    DiagnosticRaisedError,
     ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
@@ -1948,6 +1950,10 @@ def _iso_cut_points(*, udf: bool) -> dict[str, int]:
         )
         directory = iso.get_record(rr_path="/d").extent_location() * block
         points["subdirectory"] = directory + 40
+        # The padding of the last directory pycdlib walks, the Joliet ``/d``: a cut
+        # there leaves no later structure to read past it.
+        joliet = iso.get_record(joliet_path="/d").extent_location() * block
+        points["joliet-subdirectory-padding"] = joliet + 1500
     iso.close()
     return points
 
@@ -1966,6 +1972,7 @@ _RICH_CUTS = (
     "joliet-path-table",
     "joliet-root-directory",
     "subdirectory",
+    "joliet-subdirectory-padding",
 )
 _UDF_CUTS = ("udf-volume-recognition", "udf-last-anchor", "udf-file-data")
 
@@ -2073,11 +2080,10 @@ def _damage_root_extent(image: bytearray, block: int) -> None:
     "damage",
     [
         _damage_primary_descriptor,
-        _damage_directory_padding,
         _damage_path_table_size,
         _damage_root_extent,
     ],
-    ids=["primary-descriptor", "directory-padding", "path-table-size", "root-extent"],
+    ids=["primary-descriptor", "path-table-size", "root-extent"],
 )
 def test_a_damaged_image_of_full_length_is_corruption_not_truncation(
     damage: Callable[[bytearray, int], None],
@@ -2089,6 +2095,79 @@ def test_a_damaged_image_of_full_length_is_corruption_not_truncation(
     damage(image, 2048)
     with raises_corruption_not_truncation():
         open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO)
+
+
+def test_damaged_directory_padding_lists_every_file_and_is_reported() -> None:
+    """pycdlib refuses the whole image when a directory block's padding holds a non-zero
+    byte; archivey lists every record and reports the block, which ``STRICT`` refuses,
+    since a record whose length byte was damaged to zero would be lost there."""
+    image = bytearray(_three_file_image(udf=False))
+    clean = open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO)
+    with clean:
+        expected = {m.name: clean.read(m) for m in clean.members() if m.is_file}
+    (root,) = struct.unpack_from("<I", image, 16 * 2048 + 156 + 2)
+    damaged_at = root * 2048 + 2047
+    _damage_directory_padding(image, 2048)
+
+    with open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO) as reader:
+        got = {m.name: reader.read(m) for m in reader.members() if m.is_file}
+        reports = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+        ]
+    assert got == expected
+    assert [d.context for d in reports] == [
+        ArchiveEofContext(
+            archive_name=None,
+            format="iso",
+            expected_marker="directory_padding",
+            expected_bytes=0,
+            observed_bytes=damaged_at,
+            observed_kind="nonzero",
+        )
+    ]
+
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with pytest.raises(DiagnosticRaisedError):
+        open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO, config=strict)
+
+
+#: SHA-256 of pycdlib's own ``_iter_directory_records`` source that the copy in
+#: ``iso_reader`` was checked against (pycdlib 1.22.0).
+_PYCDLIB_WALK_SOURCE_SHA256 = frozenset(
+    {"cc289078d746c0d2678d95c7012ac2add5e1680d5c837807aa644ea210326151"}
+)
+
+
+def test_the_copied_directory_walk_matches_the_installed_pycdlib() -> None:
+    """The tolerant walk is a copy of pycdlib's ``_iter_directory_records``, used in
+    its place during archivey's open. A pycdlib whose walk differs fails here, so its
+    changes are compared with the copy before they are lost under archivey."""
+    import hashlib
+    import inspect
+
+    from archivey.internal.backends import iso_reader
+
+    original = iso_reader._PYCDLIB_ITER_DIRECTORY_RECORDS
+    assert callable(original)
+    digest = hashlib.sha256(inspect.getsource(original).encode()).hexdigest()
+    assert digest in _PYCDLIB_WALK_SOURCE_SHA256, (
+        "pycdlib changed _iter_directory_records: compare it with the copy in "
+        "iso_reader._install_pycdlib_padding_tolerance, then add this digest: " + digest
+    )
+
+
+def test_pycdlib_outside_archivey_still_refuses_damaged_padding() -> None:
+    """The tolerance applies to archivey's own opens only."""
+    import pycdlib
+    from pycdlib.pycdlibexception import PyCdlibInvalidISO
+
+    image = bytearray(_three_file_image(udf=False))
+    _damage_directory_padding(image, 2048)
+    iso = pycdlib.PyCdlib()
+    with pytest.raises(PyCdlibInvalidISO, match="Invalid padding"):
+        iso.open_fp(io.BytesIO(bytes(image)))
 
 
 def test_the_raw_directory_walk_crosses_sector_padding() -> None:

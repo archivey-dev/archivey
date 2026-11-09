@@ -5360,3 +5360,128 @@ def test_info_prints_prefixed_and_payload_end(
     assert ["sfx_offset:", str(overlay)] in lines
     assert ["prefixed:", "True"] in lines
     assert ["payload_end:", str(overlay + len(payload.getvalue()))] in lines
+
+
+def _zip_with_links(path: Path, entries: list[tuple[str, bytes, bool]]) -> Path:
+    """A ZIP of ``(name, data, is_symlink)`` entries; a symlink's data is its target."""
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data, is_link in entries:
+            info = zipfile.ZipInfo(name)
+            if is_link:
+                info.create_system = 3
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            zf.writestr(info, data)
+    return path
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+@pytest.mark.parametrize("overwrite", ["rename", "replace"])
+def test_indexed_single_root_with_a_symlink_cannot_write_into_the_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+) -> None:
+    """An indexed archive with one top-level name, a symlink inside it pointing at the
+    cwd, and a member under the link: extracted straight into the cwd, the link stays
+    inside the destination and the member lands in the operator's ``.ssh``. Through
+    the wrapper the link is checked against the wrapper and the hoist's link walk,
+    so nothing outside the wrapper is written."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".ssh").mkdir()
+    archive = _zip_with_links(
+        tmp_path / "docs.zip",
+        [
+            ("docs/README", b"readme", False),
+            ("docs/up", b"..", True),
+            ("docs/up/.ssh/authorized_keys", b"ATTACKER", False),
+        ],
+    )
+    assert main(["x", str(archive), "--overwrite", overwrite]) == EXIT_OK
+    capsys.readouterr()
+    assert not (tmp_path / ".ssh" / "authorized_keys").exists()
+    # The link leads to the wrapper, which then holds two entries and is not hoisted.
+    assert (tmp_path / "docs" / ".ssh" / "authorized_keys").read_bytes() == b"ATTACKER"
+
+
+@pytest.mark.parametrize("overwrite", ["rename", "replace"])
+def test_indexed_drive_rooted_names_go_through_the_wrapper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+) -> None:
+    """``C:/a`` and ``C:/b`` share the top-level name ``C:`` as stored, but a policy
+    that re-roots them writes ``a`` and ``b``: two names at the top of the cwd, one of
+    them the operator's. They go through the wrapper instead."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.txt").write_bytes(b"MINE")
+    archive = _zip(
+        tmp_path / "bomb.zip", {"C:/notes.txt": b"ARCHIVE", "C:/a.txt": b"A"}
+    )
+    args = ["x", str(archive), "--policy", "standard", "--overwrite", overwrite]
+    assert main(args) == EXIT_OK
+    capsys.readouterr()
+    assert (tmp_path / "notes.txt").read_bytes() == b"MINE"
+    assert not (tmp_path / "a.txt").exists()
+    assert (tmp_path / "bomb" / "notes.txt").read_bytes() == b"ARCHIVE"
+
+
+def test_indexed_lone_symlink_root_still_lands_in_the_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A lone symlink has no member to write through it, so it does not need the
+    wrapper: it extracts straight into the cwd, as before."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "target.txt").write_bytes(b"TARGET")
+    archive = _zip_with_links(tmp_path / "one.zip", [("t", b"target.txt", True)])
+    assert main(["x", str(archive)]) == EXIT_OK
+    capsys.readouterr()
+    assert not (tmp_path / "one").exists()
+    assert (tmp_path / "t").read_bytes() == b"TARGET"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real"])
+def test_hoist_does_not_merge_a_tree_with_a_symlink_into_an_existing_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    dry_run: bool,
+) -> None:
+    """``top/l -> e`` passes in the wrapper, where ``e`` does not exist. Merged into
+    the operator's ``top/``, which holds ``e -> <outside>``, it would resolve outside
+    the cwd. The hoist keeps the tree in the wrapper instead, and a dry run says so."""
+    import tarfile
+
+    work = tmp_path / "work"
+    outside = tmp_path / "outside"
+    work.mkdir()
+    outside.mkdir()
+    monkeypatch.chdir(work)
+    (work / "top").mkdir()
+    (work / "top" / "e").symlink_to(outside)
+    archive = work / "pkg.tar"
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo("top")
+        info.type = tarfile.DIRTYPE
+        tf.addfile(info)
+        info = tarfile.TarInfo("top/l")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "e"
+        tf.addfile(info)
+        info = tarfile.TarInfo("top/readme")
+        info.size = 2
+        tf.addfile(info, io.BytesIO(b"hi"))
+    args = ["x", str(archive)] + (["--dry-run"] if dry_run else [])
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    prefix = "would keep in " if dry_run else "kept in "
+    reason = (
+        "it holds a symlink, and merging it into the existing top/ "
+        "could make the link point through entries the archive did not make"
+    )
+    assert _report_lines(err, prefix) == [f"{prefix}pkg/: {reason}"]
+    assert not os.path.lexists(work / "top" / "l")
+    if not dry_run:
+        assert os.readlink(work / "pkg" / "top" / "l") == "e"

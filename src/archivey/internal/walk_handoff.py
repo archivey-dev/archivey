@@ -126,6 +126,15 @@ class MemberDataView(DelegatingStream):
         if want <= 0:
             return b""
         data = read_blocking(self._inner, want)
+        while whole and data and len(data) < want:
+            # A read with no size asks again after a short read, so that an error the
+            # view's stream holds for its next read (a codec's verdict on the bytes
+            # after those it handed back) comes out as itself. Only an empty read is
+            # the cut.
+            more = read_blocking(self._inner, want - len(data))
+            if not more:
+                break
+            data += more
         if len(data) < want and (whole or not data):
             raise TruncatedError(
                 f"{self._what} is truncated inside a member's data at offset "
