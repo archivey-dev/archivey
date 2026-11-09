@@ -154,6 +154,8 @@ surface is memory a header can ask for:
   directory name: joined up front, the names grow with files times directory length.
   Each member's name is then weighed by the listing's limits as it is listed.
 - A string array cannot declare more strings than its bytes can hold.
+- A tag read for one value (NAME, VERSION, EPOCH, the payload tags and the like) reads
+  only its first value, whatever count its entry declares.
 - Held hard links are charged to the listing's limits as they are held.
 - The check for bytes after the trailer reads at most 1 MiB.
 - The payload is decoded by archivey's codecs, under the caller's decoder limits and the
