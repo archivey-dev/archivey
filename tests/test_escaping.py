@@ -122,6 +122,45 @@ def test_quoted_does_not_escape_so_the_message_escapes_once() -> None:
     assert "\\\\x1b" in via_repr  # the doubling quoted() exists to avoid
 
 
+@pytest.mark.parametrize(
+    "check",
+    ["bidi", "reserved", "colon", "ar", "cpio"],
+)
+def test_archive_text_in_a_refusal_is_escaped_once(check: str) -> None:
+    """Each of these messages carried the archive's text through ``!r``, so the
+    message's own escaping doubled the backslashes ``repr`` added."""
+    import io
+
+    from archivey import ArchiveFormat, open_archive
+    from archivey.internal import filters
+
+    esc = "\x1b[2K"
+    with pytest.raises(ArchiveyError) as info:
+        if check == "bidi":
+            filters._reject_bidi_override(
+                f"a\u202e{esc}.exe", member_name="m", what="member name"
+            )
+        elif check in ("reserved", "colon"):
+            name = {"reserved": f"CON.{esc}", "colon": f"a:{esc}"}[check]
+            filters._reject_unsafe_segments(name, member_name="m", where="member name")
+        elif check == "ar":
+            header = b"a.txt/".ljust(16) + b"0".ljust(12) + b"0".ljust(6) * 2
+            header += b"644".ljust(8) + b"1\x1b[2K".ljust(10) + b"`\n"
+            with open_archive(
+                io.BytesIO(b"!<arch>\n" + header), format=ArchiveFormat.AR
+            ) as r:
+                r.members()
+        else:
+            header = b"070701" + b"\x1b[2KX!0" + b"0" * 96
+            with open_archive(
+                io.BytesIO(header + b"\0" * 64), format=ArchiveFormat.CPIO
+            ) as r:
+                r.members()
+    message = info.value.message
+    assert "\x1b" not in message
+    assert "\\x1b" in message and "\\\\x1b" not in message, message
+
+
 def test_raw_message_of_avoids_doubling_when_wrapping() -> None:
     inner = ExtractionError("bad: /out/ev\x1b[2Kil.txt")
     wrapped = ExtractionError(f"context: {raw_message_of(inner)}").message
@@ -172,6 +211,9 @@ _ARCHIVE_WORDS = {
     "directory",
     "dest",
     "link",
+    "segment",
+    "part",
+    "raw",
 }
 
 

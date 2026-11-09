@@ -197,7 +197,8 @@ def _number(raw: bytes, base: int, what: str, offset: int) -> int:
         return int(text, base)
     except ValueError:
         raise CorruptionError(
-            f"CPIO header at offset {offset}: the {what} field {raw!r} is not a number"
+            f"CPIO header at offset {offset}: the {what} field "
+            f"'{raw.decode('latin-1')}' is not a number"
         ) from None
 
 

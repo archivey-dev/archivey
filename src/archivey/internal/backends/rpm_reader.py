@@ -782,8 +782,8 @@ def _hex(raw: bytes, what: str, offset: int) -> int:
         return int(text, 16)
     except ValueError:
         raise CorruptionError(
-            f"RPM payload entry at offset {offset}: the {what} field {raw!r} is not "
-            "a number"
+            f"RPM payload entry at offset {offset}: the {what} field "
+            f"'{raw.decode('latin-1')}' is not a number"
         ) from None
 
 

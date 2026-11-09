@@ -82,7 +82,8 @@ def _field(raw: bytes, base: int, what: str, offset: int) -> int | None:
     # Digits valid in the base: isdigit() alone would let 8 and 9 into an octal mode.
     if not text.isdigit() or (base == 8 and not set(text) <= set(b"01234567")):
         raise CorruptionError(
-            f"ar header at offset {offset}: the {what} field {raw!r} is not a number"
+            f"ar header at offset {offset}: the {what} field "
+            f"'{raw.decode('latin-1')}' is not a number"
         )
     return int(text, base)
 
