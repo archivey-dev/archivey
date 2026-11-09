@@ -45,6 +45,15 @@ from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_format_api import _compressed_archive, _compressed_plugin
 
+
+@pytest.fixture(autouse=True)
+def _without_archivey_native(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests pick between python-lzo and the Python decoder. archivey-native,
+    when installed, comes before both, so it is turned off here; test_lzo.py and
+    the native package's parity tests cover it."""
+    monkeypatch.setenv("ARCHIVEY_NATIVE", "0")
+
+
 _DATA = Path(__file__).parent / "fixtures" / "external" / "lzop"
 # What the fixtures hold (README there): the same bytes are rebuilt here.
 _TEXT = b"".join(b"line %d of the lzop fixture\n" % i for i in range(12000))
@@ -125,7 +134,6 @@ def test_python_lzo_can_be_excluded(
     """With python-lzo installed, ``exclude_libraries={"lzo"}`` makes the read use the
     Python decoder and never python-lzo; without it, python-lzo decodes every block."""
     lzo = pytest.importorskip("lzo")
-    monkeypatch.setenv("ARCHIVEY_NATIVE", "0")  # archivey-native would come first
     used: list[str] = []
     real_lzo, real_python = lzo.decompress, lzo_decoder.lzo1x_decompress_python
 
@@ -146,11 +154,8 @@ def test_python_lzo_can_be_excluded(
     assert used and set(used) == {"python" if exclude else "python-lzo"}
 
 
-def test_python_lzo_runs_in_a_child_under_native_decoders(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_python_lzo_runs_in_a_child_under_native_decoders() -> None:
     pytest.importorskip("lzo")
-    monkeypatch.setenv("ARCHIVEY_NATIVE", "0")  # archivey-native would come first
     config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
     POOL.close_idle()
     with open_stream(_DATA / "text.txt.lzo", config=config) as stream:
