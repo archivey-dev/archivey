@@ -874,12 +874,7 @@ def parse_rar_volumes(
             raise located.with_traceback(exc.__traceback__) from exc.__cause__
         password_proven = part.password_proven
 
-        for member in part.members:
-            member.header_offset += base_offset
-            member.data_offset += base_offset
-            member.data_parts = [
-                (offset + base_offset, size) for offset, size in member.data_parts
-            ]
+        _rebase_member_offsets(part, base_offset)
         if where:
             if part.truncated is not None:
                 part.truncated += where
@@ -889,55 +884,13 @@ def parse_rar_volumes(
         if merged is None:
             merged = part
         else:
-            if part.version != merged.version:
-                raise CorruptionError(
-                    f"RAR volume version mismatch: {merged.version} vs {part.version}"
-                )
-            merged.is_solid = merged.is_solid or part.is_solid
-            merged.has_header_encryption = (
-                merged.has_header_encryption or part.has_header_encryption
+            _merge_volume(
+                merged,
+                part,
+                after_gap=gap,
+                max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
             )
-            if part.comment and not merged.comment:
-                merged.comment = part.comment
-            merged.is_volume = True
-            # Damaged SERVICE headers are per volume and the merge is field by
-            # field, so leaving this out made a damaged header past volume 1
-            # silent — the archive opened clean and nothing said a header could
-            # not be finished. The cap applies to the merged list for the same
-            # reason it applies to one volume's, and passes QO unmatched-copies
-            # entries through as it does there.
-            for damaged in part.damaged_service_headers:
-                if not _append_damaged_service_header(
-                    merged.damaged_service_headers, damaged
-                ):
-                    merged.damaged_service_headers_omitted += 1
-            merged.damaged_service_headers_omitted += (
-                part.damaged_service_headers_omitted
-            )
-            merged.truncated = merged.truncated or part.truncated
-            merged.damaged = merged.damaged or part.damaged
-            merged.password_proven = merged.password_proven or part.password_proven
-            merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
-            merged.end_block_damaged_volumes.update(part.end_block_damaged_volumes)
-            merged.trailing_data_volumes.update(part.trailing_data_volumes)
-            merged.rar5_header_crypt.update(part.rar5_header_crypt)
-            for position, member in enumerate(part.members):
-                if gap and position == 0:
-                    # Its earlier parts are in the missing volume: listed on its
-                    # own, never folded into the member before the gap.
-                    _append_member(
-                        merged.members,
-                        member,
-                        max_members=max_members,
-                        max_metadata_bytes=max_metadata_bytes,
-                    )
-                else:
-                    _emit_file_member(
-                        merged.members,
-                        member,
-                        max_members=max_members,
-                        max_metadata_bytes=max_metadata_bytes,
-                    )
 
         # Size of this volume for absolute offset adjustment.
         pos = volume.tell()
@@ -953,6 +906,76 @@ def parse_rar_volumes(
     assert merged is not None
     mark_missing_next_volume(merged, volumes_read=previous, missing=missing)
     return merged
+
+
+def _rebase_member_offsets(part: RarArchive, base_offset: int) -> None:
+    """Move a volume's member offsets into the set's concatenated byte space."""
+    for member in part.members:
+        member.header_offset += base_offset
+        member.data_offset += base_offset
+        member.data_parts = [
+            (offset + base_offset, size) for offset, size in member.data_parts
+        ]
+
+
+def _merge_volume(
+    merged: RarArchive,
+    part: RarArchive,
+    *,
+    after_gap: bool,
+    max_members: int | None,
+    max_metadata_bytes: int | None,
+) -> None:
+    """Fold one later volume's listing into ``merged``, the set's listing so far.
+
+    Archive-wide flags combine, per-volume reports add up, and a member that
+    continues from the volume before is folded into its first part. With
+    ``after_gap`` the volume before is missing, so its first member is listed on
+    its own instead.
+    """
+    if part.version != merged.version:
+        raise CorruptionError(
+            f"RAR volume version mismatch: {merged.version} vs {part.version}"
+        )
+    merged.is_solid = merged.is_solid or part.is_solid
+    merged.has_header_encryption = (
+        merged.has_header_encryption or part.has_header_encryption
+    )
+    if part.comment and not merged.comment:
+        merged.comment = part.comment
+    merged.is_volume = True
+    # Damaged SERVICE headers are recorded per volume, so each volume's are carried
+    # over here; otherwise a damaged header past volume 1 would go unreported. The
+    # cap applies to the merged list for the same reason it applies to one
+    # volume's, and passes QO unmatched-copies entries through as it does there.
+    for damaged in part.damaged_service_headers:
+        if not _append_damaged_service_header(merged.damaged_service_headers, damaged):
+            merged.damaged_service_headers_omitted += 1
+    merged.damaged_service_headers_omitted += part.damaged_service_headers_omitted
+    merged.truncated = merged.truncated or part.truncated
+    merged.damaged = merged.damaged or part.damaged
+    merged.password_proven = merged.password_proven or part.password_proven
+    merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
+    merged.end_block_damaged_volumes.update(part.end_block_damaged_volumes)
+    merged.trailing_data_volumes.update(part.trailing_data_volumes)
+    merged.rar5_header_crypt.update(part.rar5_header_crypt)
+    for position, member in enumerate(part.members):
+        if after_gap and position == 0:
+            # Its earlier parts are in the missing volume: listed on its
+            # own, never folded into the member before the gap.
+            _append_member(
+                merged.members,
+                member,
+                max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
+            )
+        else:
+            _emit_file_member(
+                merged.members,
+                member,
+                max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
+            )
 
 
 def mark_missing_next_volume(
@@ -3000,6 +3023,51 @@ def _rar3_decrypt_header(
     return _HeaderDecryptStream(source, key, iv, excluded=excluded)
 
 
+class _Rar3Name(NamedTuple):
+    """A RAR 1.5-4 name field, decoded (:func:`_decode_rar3_name`)."""
+
+    filename: str
+    orig_filename: bytes
+    """The 8-bit name, the bytes before the NUL when a Unicode form follows."""
+    unicode_name: str | None
+    """The Unicode form, when the field has one that decodes to a name."""
+    utf8_over_encoding: bool
+    """Whether the 8-bit name was read as UTF-8 over the caller's ``encoding=``."""
+
+
+def _decode_rar3_name(
+    name: bytes, *, flags: int, host_os: int, name_encoding: str | None
+) -> _Rar3Name:
+    """Decode a RAR 1.5-4 name field.
+
+    With the Unicode flag, the field is an 8-bit name, a NUL, then a compressed
+    Unicode form of the same name; the Unicode form wins when it decodes. Otherwise
+    the field is the 8-bit name alone, decoded by :func:`_decode_rar3_8bit_name`.
+    """
+    unicode_name: str | None = None
+    utf8_over_encoding = False
+    if flags & _RAR3_FILE_UNICODE and b"\0" in name:
+        nul = name.find(b"\0")
+        orig_filename = name[:nul]
+        decoded = _decode_rar3_unicode_name(orig_filename, name[nul + 1 :])
+        if not decoded:
+            # ``unrar`` falls back to the 8-bit field on an empty decode too.
+            filename = _decode_rar3_8bit_name(
+                orig_filename, host_os=host_os, encoding=name_encoding
+            )
+            utf8_over_encoding = _utf8_over_encoding(orig_filename, name_encoding)
+        else:
+            unicode_name = decoded
+            filename = _fix_rar3_astral_truncation(decoded, orig_filename)
+    else:
+        orig_filename = name
+        filename = _decode_rar3_8bit_name(name, host_os=host_os, encoding=name_encoding)
+        # The Unicode flag declares UTF-8, so a UTF-8 reading there is not inferred.
+        if not flags & _RAR3_FILE_UNICODE:
+            utf8_over_encoding = _utf8_over_encoding(name, name_encoding)
+    return _Rar3Name(filename, orig_filename, unicode_name, utf8_over_encoding)
+
+
 def _parse_rar3_file_header(
     hdata: bytes,
     pos: int,
@@ -3012,6 +3080,12 @@ def _parse_rar3_file_header(
     is_service: bool,
     name_encoding: str | None = None,
 ) -> tuple[RarMemberInfo, int]:
+    """Build the member a RAR 1.5-4 FILE or SUB header describes.
+
+    ``pos`` is where the file fields start. Returns the member and where the
+    header's CRC16 stops: a FILE header's CRC ends with its fields, before any
+    old-style comment; a SUB header's covers the whole header.
+    """
     if pos + _S_FILE_HDR.size > len(hdata):
         raise CorruptionError("Truncated RAR3 file header")
     fld = _S_FILE_HDR.unpack_from(hdata, pos)
@@ -3037,29 +3111,9 @@ def _parse_rar3_file_header(
 
     name, pos = _load_bytes(hdata, name_size, pos)
     name_end = pos
-    orig_filename: bytes | None
-    unicode_name: str | None = None
-    utf8_over_encoding = False
-    if flags & _RAR3_FILE_UNICODE and b"\0" in name:
-        nul = name.find(b"\0")
-        orig_filename = name[:nul]
-        decoded = _decode_rar3_unicode_name(orig_filename, name[nul + 1 :])
-        if not decoded:
-            # ``unrar`` falls back to the 8-bit field on an empty decode too.
-            filename = _decode_rar3_8bit_name(
-                orig_filename, host_os=host_os, encoding=name_encoding
-            )
-            utf8_over_encoding = _utf8_over_encoding(orig_filename, name_encoding)
-        else:
-            unicode_name = decoded
-            filename = _fix_rar3_astral_truncation(decoded, orig_filename)
-    else:
-        orig_filename = name
-        filename = _decode_rar3_8bit_name(name, host_os=host_os, encoding=name_encoding)
-        # The Unicode flag declares UTF-8, so a UTF-8 reading there is not inferred.
-        if not flags & _RAR3_FILE_UNICODE:
-            utf8_over_encoding = _utf8_over_encoding(name, name_encoding)
-
+    filename, orig_filename, unicode_name, utf8_over_encoding = _decode_rar3_name(
+        name, flags=flags, host_os=host_os, name_encoding=name_encoding
+    )
     filename = filename.replace("\\", "/").rstrip("/")
     is_directory = (flags & _RAR3_FILE_DIRECTORY) == _RAR3_FILE_DIRECTORY
     is_symlink = (
