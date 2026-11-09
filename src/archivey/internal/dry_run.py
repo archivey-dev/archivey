@@ -6,10 +6,12 @@ each entry of dest that a member's path, link target or hardlink source names is
 in before the pass looks at it, a file as an empty file and a symlink as a symlink.
 dest itself is only read.
 
-``ExtractionCoordinator.run`` is the only user: it enters :func:`scratch_for`, extracts
-into the scratch directory, and reports through :meth:`DryRun.rebase_result` and
-:meth:`DryRun.record`. Its docstring describes what a dry run shows and where it says less
-than a real run would.
+``ExtractionCoordinator`` is the only user. Its ``run`` enters :func:`scratch_for` and
+extracts into the scratch directory with the ``DryRun`` set as ``_dry``. The pass's steps
+call ``bring_in``, ``bring_in_link``, ``target_on_disk``, ``shown``, ``sink`` and
+``check_creatable`` through it, and ``run`` reports through :meth:`DryRun.rebase_result`,
+:meth:`DryRun.rebase_os_error` and :meth:`DryRun.record`. ``ExtractionCoordinator.run``'s
+docstring describes what a dry run shows and where it says less than a real run would.
 """
 
 from __future__ import annotations

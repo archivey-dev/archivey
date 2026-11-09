@@ -106,13 +106,16 @@ class WatchedLink:
 
 @dataclass
 class RecheckOutcome:
-    """The links :meth:`LinkWatch.recheck` removed, for the caller to report."""
+    """The links :meth:`LinkWatch.recheck` stopped watching and tried to unlink, for
+    the caller to report as blocked."""
 
     escaped: list[WatchedLink] = field(default_factory=list)
-    """Links that now resolve outside the destination, removed."""
+    """Links that now resolve outside the destination, unlinked where the filesystem
+    allowed it."""
 
     unchecked: list[WatchedLink] = field(default_factory=list)
-    """Links removed without being resolved, because the budget ran out."""
+    """Links unlinked where the filesystem allowed it, without being resolved,
+    because the budget ran out."""
 
 
 class LinkWatch:
@@ -214,7 +217,7 @@ class LinkWatch:
 
     def _enqueue_dependents(self, path: Path, queue: dict[WatchedLink, None]) -> None:
         """Queue every link whose last walk visited ``path``, the changed path, and
-        forget the link recorded at ``path`` if the change replaced it."""
+        forget the link recorded at ``path`` if the change replaced or removed it."""
         key = self._folded_key(path)
         if key is None:
             return
