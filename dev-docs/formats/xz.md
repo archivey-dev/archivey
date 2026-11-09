@@ -209,11 +209,13 @@ for every SquashFS LZMA block, and so does the LZMA SDK's `lzma_alone -eos`). li
 5.2.5 and older (fixed by 5.2.12) refuses such a stream at the marker, and the python.org builds for
 macOS and Windows bundle one (5.2.3 on macOS, 3.11 to 3.14). `_AloneDecompressor` tests
 the liblzma once per process. On an old one, a stream with a known size gets a second
-decoder that reads the size as "unknown" and so stops at the marker; its output is used
-only when the first decoder fails and the second one has reached the marker after exactly
-the declared size. A stream without a marker still needs the first decoder, because a
-decode without the size cannot tell where such a stream ends. The cost is a second decode
-of a known-size stream, only on an old liblzma.
+decoder that reads the size as "unknown" and so stops at the marker. The old liblzma
+fails in the call that writes the last declared byte, before it reads the marker; the
+second decoder takes over there if it has written exactly the declared size, and must
+then reach the marker without writing another byte. A stream without a marker still needs
+the first decoder, because a decode without the size cannot tell where such a stream
+ends. The cost is a second decode of a known-size stream, and twice its dictionary against
+the cap, only on an old liblzma.
 
 **Dictionary caps.** Each format's declared dictionary is compared with
 `DecoderLimits.max_decoder_memory` before the dictionary is allocated: inside liblzma for
@@ -231,7 +233,9 @@ xz and LZMA Alone, before the decoder is built for lzip:
   stamp is attached after open, so a file whose header bytes read as a 2.5 GiB
   dictionary would otherwise tell the caller to raise the cap for a file that is not
   LZMA at all. A second stream of a concatenated `.lzma` is refused the same way, when
-  its decoder starts.
+  its decoder starts. Where a known-size stream gets the second decoder of §2.3, both
+  dictionaries are held at once, so twice the declared dictionary is compared with the
+  cap first (`check_decoder_memory`), as a 7z folder counts its coders together.
 - **lzip**: the exponent in the member header, before the decoder is built. The format's
   own ceiling, 512 MiB, is below the default cap.
 
