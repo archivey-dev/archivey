@@ -8,12 +8,14 @@
    directory (a "tarbomb").
 2. Extract with the reader's ``extract_all``, which applies the safety and overwrite
    policies and returns an :class:`~archivey.ExtractionReport`.
-3. When the wrapper was chosen without knowing what the archive holds,
-   :func:`maybe_hoist_single_root` moves a single top-level entry up out of it.
-   Under ``--dry-run``, :func:`predict_hoist` says what that move would do instead.
-4. :func:`_report_extraction` prints a line for each rename, skip, block and failure,
-   then the summary, and :func:`_exit_for_outcomes` turns its counts into the exit
-   code.
+3. When :func:`resolve_smart_dest` chose a new wrapper it may hoist out of (the
+   archive has no cheap index, or its single root's name is taken in the current
+   directory), :func:`maybe_hoist_single_root` moves a single top-level entry up out
+   of it. Under ``--dry-run``, :func:`predict_hoist` says what that move would do
+   instead.
+4. :func:`_report_extraction` prints a line for each rename, overwrite skip, block
+   and failure (superseded entries only under ``--verbose``), then the summary, and
+   :func:`_exit_for_outcomes` turns its counts into the exit code.
 """
 
 from __future__ import annotations
@@ -107,8 +109,9 @@ def _safe_stem(stem: str) -> str:
 
 
 def _top_level_names(members: list[ArchiveMember]) -> set[str]:
-    """The first segment of each member name: the entries the archive would create
-    in the directory it is extracted into."""
+    """The first segment of each member name, as stored: the top-level entries the
+    archive holds, before the name policy may respell them (see
+    :func:`_written_as_stored`)."""
     tops: set[str] = set()
     for member in members:
         name = member.name.strip("/")
@@ -1302,8 +1305,8 @@ def _pop_implied_dir_rename(
     """The implied directory rename to print before the member at ``requested``.
 
     Only ``requested``'s nearest renamed ancestor counts. Its rename is removed from
-    ``implied_dirs`` so it prints once; ``None`` when that ancestor's rename has a
-    result of its own or was already printed.
+    ``implied_dirs`` so it prints once. ``None`` when no ancestor was renamed, or when
+    the nearest one's rename has a result of its own or was already printed.
     """
     for ancestor in requested.parents:
         if ancestor in renamed_dirs:
