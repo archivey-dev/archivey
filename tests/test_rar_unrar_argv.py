@@ -228,44 +228,72 @@ def test_archive_path_with_a_wildcard_does_not_open_a_fifo_beside_it(
     not sys.platform.startswith("linux"),
     reason="macOS and Windows cap a path well below what the test needs",
 )
+@pytest.mark.parametrize(
+    "component",
+    [
+        "d" * 200,
+        # 80 units and 240 bytes: six of them are under the unit bound and over the
+        # byte bound, which is where unrar 6.x cuts on POSIX.
+        "\u540d" * 80,
+    ],
+    ids=["ascii", "cjk"],
+)
 def test_archive_path_unrar_6_would_cut_is_staged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, component: str
 ) -> None:
-    """unrar 6.x keeps 2047 units of the archive path and opens the file that the
-    cut path names. A path over the bound is linked into a private directory, so
-    ``unrar`` gets a short one."""
+    """unrar 6.x keeps 2047 bytes of the archive path on POSIX and opens the file
+    that the cut path names. A path over the bound is linked into a private
+    directory, so ``unrar`` gets a short one."""
     source = _fixture("basic_solid__.rar")
     expected = _read_all(source)
-    deep = tmp_path.joinpath(*["d" * 200] * 6)
+    deep = tmp_path.joinpath(*[component] * 6)
     deep.mkdir(parents=True)
     path = deep / "long.rar"
     shutil.copyfile(source, path)
-    assert rar_unrar.unrar_may_cut_archive_path(path)
+    bound = rar_unrar._UNRAR_ARCHIVE_PATH_MAX
+    assert len(os.fsencode(path)) > bound
     monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
     seen = _record_unrar_archive_paths(monkeypatch)
     assert _read_all(path) == expected
     assert seen
-    assert not any(rar_unrar.unrar_may_cut_archive_path(name) for name in seen), [
-        len(name) for name in seen
+    assert all(len(os.fsencode(os.path.abspath(name))) <= bound for name in seen), [
+        len(os.fsencode(name)) for name in seen
     ]
+    assert rar_unrar.unrar_may_cut_archive_path(path)
 
 
+@pytest.mark.parametrize("platform", ["linux", "win32"])
 def test_unrar_may_cut_archive_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
 ) -> None:
-    """The bound counts UTF-16 units of the absolute path: a character outside the
-    BMP counts twice, and a relative path counts the working directory too."""
-    bound = rar_unrar._UNRAR_ARCHIVE_PATH_MAX
+    """The bound counts UTF-16 units of the absolute path, and on POSIX also its
+    bytes: ``名`` is one unit and three bytes, a character outside the BMP two
+    units and four bytes. A relative path counts the working directory too."""
     root = os.path.abspath(tmp_path)
+    if not root.isascii():
+        pytest.skip("the rows below assume an ASCII temporary directory")
+    monkeypatch.setattr(sys, "platform", platform)
+    posix = platform != "win32"
+    bound = rar_unrar._UNRAR_ARCHIVE_PATH_MAX
     room = bound - len(root) - 1
     assert room > 10
-    assert not rar_unrar.unrar_may_cut_archive_path(os.path.join(root, "a" * room))
-    assert rar_unrar.unrar_may_cut_archive_path(os.path.join(root, "a" * (room + 1)))
-    emoji = "\U0001f600" * (room // 2)
-    assert not rar_unrar.unrar_may_cut_archive_path(os.path.join(root, emoji))
-    assert rar_unrar.unrar_may_cut_archive_path(
-        os.path.join(root, emoji + "a" * (room % 2 + 1))
-    )
+    cjk, emoji = "\u540d", "\U0001f600"
+    rows = [
+        ("a" * room, False),
+        ("a" * (room + 1), True),
+        (cjk * (room // 3), False),
+        # Over the bound in bytes, under it in units.
+        (cjk * (room // 3 + 1), posix),
+        (emoji * (room // 4), False),
+        (emoji * (room // 4 + 1), posix),
+        # Over the bound in units too.
+        (emoji * (room // 2 + 1), True),
+    ]
+    for name, cut in rows:
+        assert rar_unrar.unrar_may_cut_archive_path(os.path.join(root, name)) is cut, (
+            name[:1],
+            len(name),
+        )
     monkeypatch.chdir(tmp_path)
     assert rar_unrar.unrar_may_cut_archive_path("a" * (room + 1))
 
