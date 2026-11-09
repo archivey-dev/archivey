@@ -1,9 +1,10 @@
 """``ArchiveSource`` — the one object every archive source becomes at the boundary.
 
-``open_archive`` and ``open_stream`` build one of these from whatever the caller passed —
-a path, a stream, an fsspec ``OpenFile`` or a volume list — through
+``open_archive`` and ``detect_format`` build one of these from whatever the caller
+passed — a path, a stream, an fsspec ``OpenFile`` or a volume list — through
 :func:`~archivey.internal.volumes.resolve_source`, and hand it to detection and then to
-the backend.
+the backend. ``open_stream`` uses ``resolve_source`` for an ``OpenFile`` and calls
+:meth:`ArchiveSource.for_path` or :meth:`ArchiveSource.for_stream` otherwise.
 It **is** the stream they read (third-party parsers such as ``pycdlib`` get it
 directly), and it carries every guarantee the raw source must give:
 
@@ -43,8 +44,9 @@ A non-seekable source also holds the **detection replay prefix**: :meth:`peek` f
 without consuming, and ``read`` drains it before reaching the source. Detection and the
 backend therefore see the same object, and nothing is swapped in between.
 
-A seekable caller stream is rewound instead, and may hold the archive starting past
-offset 0: the archive starts wherever the caller left the stream. Before a backend
+A seekable caller stream needs no replay prefix: detection seeks it back to where it
+found it. The archive may start past offset 0 there, wherever the caller left the
+stream. Before a backend
 reads it, :meth:`ArchiveSource.rebase_to_current_position` **rebases** the source so
 that position reads as offset 0.
 
