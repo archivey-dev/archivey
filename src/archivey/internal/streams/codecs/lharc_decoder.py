@@ -25,89 +25,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from archivey.exceptions import TruncatedError
 from archivey.internal.overrides import override
-
-# Output is handed over in pieces of about this size.
-_CHUNK = 1 << 16
-# Zero bytes a bit stream may read past its input; a command reads at most 23 bits.
-_MAX_PADDING = 8
-
-
-class _Decoder:
-    """``size`` bytes decoded from the runs of input ``more`` returns."""
-
-    def __init__(
-        self, method: str, size: int, more: Callable[[], bytes | None]
-    ) -> None:
-        self._method = method
-        self._more = more
-        self._left = size
-        self._out = bytearray()
-        self._start = 0
-        self._buf = b""
-        self._pos = 0
-        self._bits = 0
-        self._nbits = 0
-        self._padding = 0
-
-    def _truncated(self) -> TruncatedError:
-        return TruncatedError(
-            f"the {self._method} stream ends before the member's data"
-        )
-
-    def _refill(self, need: int) -> None:
-        """Make at least ``need`` bits available, zeros past the input."""
-        buf, pos = self._buf, self._pos
-        bits, nbits = self._bits, self._nbits
-        while nbits < need:
-            if pos >= len(buf):
-                data = None if self._padding else self._more()
-                if data is None:
-                    if self._padding >= _MAX_PADDING:
-                        raise self._truncated()
-                    self._padding += 4
-                    data = bytes(4)
-                elif not data:
-                    continue
-                buf, pos = data, 0
-            take = min(len(buf) - pos, 8)
-            bits = (bits << (8 * take)) | int.from_bytes(buf[pos : pos + take], "big")
-            nbits += 8 * take
-            pos += take
-        self._buf, self._pos = buf, pos
-        self._bits, self._nbits = bits & ((1 << nbits) - 1), nbits
-
-    def _check_overread(self) -> None:
-        """Refuse output that needed the zero bytes past the input."""
-        if self._padding * 8 > (len(self._buf) - self._pos) * 8 + self._nbits:
-            raise self._truncated()
-
-    def _decode(self, want: int) -> None:
-        raise NotImplementedError
-
-    def read(self, n: int) -> bytes:
-        if n <= 0:
-            return b""
-        out = self._out
-        if len(out) - self._start < n and self._left > 0:
-            self._decode(max(n, _CHUNK))
-        data = bytes(out[self._start : self._start + n])
-        self._start += len(data)
-        self._trim()
-        return data
-
-    def _trim(self) -> None:
-        # Output handed over is dropped; the ring decoders keep no history in it.
-        if self._start > 4 * _CHUNK:
-            del self._out[: self._start]
-            self._start = 0
-
-    def _finish(self) -> None:
-        if self._left < 0:  # the last command ran past the member's end
-            del self._out[len(self._out) + self._left :]
-            self._left = 0
-
+from archivey.internal.streams.codecs.lzh_decoder import LhaBitDecoder
 
 # ── -lh1- ───────────────────────────────────────────────────────────────────────────
 
@@ -137,13 +56,11 @@ def _lh1_tables() -> None:
 _lh1_tables()
 
 
-class Lh1Decoder(_Decoder):
+class Lh1Decoder(LhaBitDecoder):
     """``-lh1-``: LZHUF's adaptive Huffman tree and a 4 KiB window."""
 
     def __init__(self, size: int, more: Callable[[], bytes | None]) -> None:
-        super().__init__("-lh1-", size, more)
-        self._out = bytearray(b" " * _LH1_WINDOW)
-        self._start = _LH1_WINDOW
+        super().__init__("-lh1-", size, more, b" " * _LH1_WINDOW)
         n, t = _LH1_CODES, _LH1_NODES
         freq = [0] * (t + 1)
         son = [0] * t
@@ -263,20 +180,12 @@ class Lh1Decoder(_Decoder):
                         count -= step
             self._left -= len(out) - before
         self._finish()
-        self._check_overread()
-
-    @override
-    def _trim(self) -> None:
-        if self._start > _LH1_WINDOW + 4 * _CHUNK:
-            cut = self._start - _LH1_WINDOW
-            del self._out[:cut]
-            self._start -= cut
 
 
 # ── -lzs- and -lz5- ─────────────────────────────────────────────────────────────────
 
 
-class LzsDecoder(_Decoder):
+class LzsDecoder(LhaBitDecoder):
     """``-lzs-``: LArc's 2 KiB ring, addressed by position."""
 
     _RING = 2048
@@ -317,7 +226,6 @@ class LzsDecoder(_Decoder):
         self._at = at
         self._left -= len(out) - before
         self._finish()
-        self._check_overread()
 
 
 def _lz5_ring() -> bytearray:
@@ -331,7 +239,7 @@ def _lz5_ring() -> bytearray:
     return ring
 
 
-class Lz5Decoder(_Decoder):
+class Lz5Decoder(LhaBitDecoder):
     """``-lz5-``: LArc's 4 KiB ring, flag bytes, two-byte copy commands."""
 
     _RING = 4096
@@ -382,10 +290,9 @@ class Lz5Decoder(_Decoder):
         self._at = at
         self._left -= len(out) - before
         self._finish()
-        self._check_overread()
 
 
-DECODERS: dict[str, Callable[[int, Callable[[], bytes | None]], _Decoder]] = {
+DECODERS: dict[str, Callable[[int, Callable[[], bytes | None]], LhaBitDecoder]] = {
     "-lh1-": Lh1Decoder,
     "-lzs-": LzsDecoder,
     "-lz5-": Lz5Decoder,

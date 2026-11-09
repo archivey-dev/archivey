@@ -146,8 +146,9 @@ the high part of each distance), and LArc's `-lzs-` (a 2 KiB ring, bit commands)
 `-lz5-` (a 4 KiB ring that starts with a fixed pattern, flag bytes). They follow lhasa's
 `lh1_decoder.c`, `lzs_decoder.c` and `lz5_decoder.c`. None of their codes can name a byte
 outside its window, so the only damage they see before the CRC is input that ends
-early: past the input they read zeros, at most 8 bytes, and refuse output that needed
-them (`TruncatedError`). They run at about 6 to 12 MB/s on lhasa's long test files.
+early. They share `LzhDecoder`'s input and output (`LhaBitDecoder` in
+`lzh_decoder.py`): past the input they read zeros, at most 32 bytes, and refuse output
+that needed them (`TruncatedError`). They run at about 6 to 12 MB/s on lhasa's long test files.
 
 ## 3. Tests
 

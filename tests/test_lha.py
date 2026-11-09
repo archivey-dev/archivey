@@ -669,13 +669,20 @@ def _stored(fixture: str) -> tuple[bytes, int]:
         ("larc333_lz5.lzs", "-lz5-"),
     ],
 )
-def test_old_methods_cut_streams_are_truncated(fixture: str, method: str) -> None:
+@pytest.mark.parametrize("cut", [1, 2, 3, "half"])
+def test_old_methods_cut_streams_are_truncated(
+    fixture: str, method: str, cut: int | str
+) -> None:
+    """A stream a few bytes short decodes into the zero padding before it runs out;
+    only the over-read check refuses it (a no-op ``_check_overread`` fails the short
+    cuts). A stream cut in half runs out of padding first."""
     stored, size = _stored(fixture)
     assert hashlib.sha256(_old(method, stored, size)).hexdigest()[:16] == (
         "8177f97513213526"
     )
+    keep = len(stored) // 2 if cut == "half" else len(stored) - int(cut)
     with pytest.raises(TruncatedError):
-        _old(method, stored[: len(stored) // 2], size)
+        _old(method, stored[:keep], size)
 
 
 @pytest.mark.parametrize("seed", range(20))
