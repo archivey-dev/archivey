@@ -22,9 +22,11 @@ re-exports it as the archivey-facing name.
 
 from __future__ import annotations
 
+import io
 from contextvars import ContextVar
 
 from archivey.internal.streams.streamtools.binaryio import ask_resume_offset
+from archivey.internal.streams.verification import MAX_WRAPPER_DEPTH
 
 __all__ = [
     "ResumeReachedStreamEnd",
@@ -32,12 +34,36 @@ __all__ = [
     "ask_seek_resume_offset",
     "hold_for_planned_seek",
     "planning_seek",
+    "restarts_follow_decoding",
 ]
 
 # Inside ``ask_seek_resume_offset``: the reports held for the planning caller.
 _PLANNING_SEEK: ContextVar[list[Exception] | None] = ContextVar(
     "archivey_planning_seek", default=None
 )
+
+
+def restarts_follow_decoding(stream: object | None) -> bool:
+    """Whether the seek-point table under ``stream`` holds only points its decoder has
+    already decoded past, so that a forward seek through one skips no decoding.
+
+    rapidgzip's index is such a table: its prefetch decodes ahead of the reader and
+    indexes what it decoded (``RapidgzipChildStream.restarts_follow_decoding``). A
+    table read from the file (bgzip blocks, a Seekable Zstandard seek table) is not:
+    a seek through it jumps bytes that are never decoded. Follows ``_inner`` from
+    ``stream`` down to the layer that answers, and a ``BufferedReader``'s raw stream,
+    as the verification walks do.
+    """
+    for _ in range(MAX_WRAPPER_DEPTH):
+        if stream is None:
+            return False
+        if getattr(stream, "restarts_follow_decoding", False) is True:
+            return True
+        if isinstance(stream, io.BufferedReader):
+            stream = stream.raw
+        else:
+            stream = getattr(stream, "_inner", None)
+    return False
 
 
 def ask_seek_resume_offset(

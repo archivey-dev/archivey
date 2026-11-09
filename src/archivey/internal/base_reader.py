@@ -62,6 +62,7 @@ from archivey.diagnostics import (
     NameDuplicateContext,
     NameEncodingContext,
     ReaderDisagreementContext,
+    SolidReopenContext,
     SpecialFileDataContext,
     SymlinkTargetContext,
     UnconfirmedFormatContext,
@@ -696,11 +697,12 @@ class BaseArchiveReader(ArchiveReader):
         # pass another reader's identity check; and not a plain counter, whose small
         # sequential values invite confusion with member_id or hardcoding).
         self._archive_id = uuid.uuid4().hex
-        # How far open() has decoded each solid run (``_solid_run``), until one open
-        # decodes again bytes an earlier one decoded: that logs the advice once (an
-        # INFO record by ruling, not a diagnostic or a warnings.warn), and counting
-        # stops (``None``).
-        self._solid_decoded: dict[Hashable, tuple[int, int]] | None = {}
+        # How far open() has decoded each solid run (``_solid_run``). The first open
+        # that decodes again bytes an earlier one decoded records
+        # SOLID_OPEN_REDECOMPRESSES (an INFO log line); later ones only escalate it,
+        # the rule for every once-per-reader code (``escalate_only``).
+        self._solid_decoded: dict[Hashable, tuple[int, int]] = {}
+        self._solid_redecode_reported = False
         self._solid_decoded_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
         # it: teardown closes it after ``_close_archive``. Also backs
@@ -3993,23 +3995,21 @@ class BaseArchiveReader(ArchiveReader):
             stream: ArchiveStreamImpl | None = None
             try:
                 opened: list[ArchiveMember] = []
+                # Before the member's open, which can decode its solid prefix at once
+                # (a 7z folder that cannot seek): a policy that raises on
+                # SOLID_OPEN_REDECOMPRESSES refuses the open before it decodes.
                 stream = self._open_with_link_follow(
-                    member, visited=set(), opened=opened
+                    member,
+                    visited=set(),
+                    opened=opened,
+                    before_open=self._check_solid_open,
                 )
                 self._hold_to_ratio(stream, opened[0])
                 stream._level_member = self._level_member(opened[0])
                 # An eager open may have proved the password already.
                 stream._sync_member_level()
-                # Asked before the bind: from here a raise still closes the stream.
-                run = (
-                    self._solid_run(opened[0])
-                    if self._solid_decoded is not None
-                    else None
-                )
                 registered = self._register_public_stream(stream, token=reservation)
                 bound = True
-                if run is not None:
-                    self._note_solid_open(opened[0], run)
                 return registered
             finally:
                 if not bound:
@@ -4051,57 +4051,93 @@ class BaseArchiveReader(ArchiveReader):
         del member
         return None
 
-    def _note_solid_open(self, member: ArchiveMember, run: SolidRun) -> None:
-        """Log once per reader when an ``open()`` decodes again what an earlier did.
+    def _check_solid_open(self, member: ArchiveMember) -> None:
+        """Note an ``open()`` of ``member`` that is about to start."""
+        run = self._solid_run(member)
+        if run is not None:
+            self._note_solid_open(member, run)
 
-        ``run`` is ``member``'s :meth:`_solid_run`, and the open already succeeded, so
-        this only counts and logs: it must not raise. The open decoded the run from its
+    def _note_solid_open(self, member: ArchiveMember, run: SolidRun) -> None:
+        """Report when an ``open()`` decodes again what an earlier open decoded.
+
+        ``run`` is ``member``'s :meth:`_solid_run`. The open decodes the run from its
         start through ``run.offset + run.size``. Per run the reader keeps how far opens
         have decoded and how far they discarded (the largest ``offset``). This open
         decodes again the part of its discarded prefix that an earlier open decoded,
         plus the part of its own member an earlier open decoded and discarded. A
         member's own bytes do not count when the same member is read again, since a
-        non-solid archive pays that too; the prefix it decodes again does. On the
-        first open that decodes anything again the record is INFO on
-        ``archivey.backends``: the caller may have chosen the pattern, and
-        ``reader.cost`` and the ``open()`` docstring already carry the cost.
+        non-solid archive pays that too; the prefix it decodes again does.
+
+        The first open that decodes anything again records
+        ``SOLID_OPEN_REDECOMPRESSES``, logged at INFO on ``archivey.backends``: the
+        caller may have chosen the pattern, and ``reader.cost`` and the ``open()``
+        docstring already carry the cost. Every later one is passed to the policy only
+        (``escalate_only``), so ``raise_on`` stops each such open. Called before the
+        member is opened, so a refused open decodes nothing, and only an open that goes
+        ahead is kept in the per-run record.
         """
         end = run.offset + run.size
         with self._solid_decoded_lock:
-            decoded = self._solid_decoded
-            if decoded is None:
-                return
-            decoded_to, discarded_to = decoded.get(run.key, (0, 0))
+            decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
             again = min(run.offset, decoded_to) + max(
                 0, min(end, discarded_to) - run.offset
             )
             if again <= 0:
-                decoded[run.key] = (
+                self._solid_decoded[run.key] = (
                     max(decoded_to, end),
                     max(discarded_to, run.offset),
                 )
                 return
-            self._solid_decoded = None
-        logger.info(
-            "Archive %r is solid: opening %r decoded again %d bytes an earlier open() "
-            "on this reader had decoded, because each open() or read() decodes its "
-            "member's solid block from the start. Reading many members this way is "
-            "quadratic in the block size; stream_members() decodes each block once. "
-            "Logged once per reader.",
-            self._archive_name or "(unnamed source)",
-            member.name,
-            again,
+            first = not self._solid_redecode_reported
+            self._solid_redecode_reported = True
+        archive = self._archive_name or "(unnamed source)"
+        message = (
+            f"Archive {archive!r} is solid: opening {member.name!r} decoded again "
+            f"{again} bytes an earlier open() on this reader had decoded, because each "
+            "open() or read() decodes its member's solid block from the start. Reading "
+            "many members this way is quadratic in the block size; stream_members() "
+            "decodes each block once."
         )
+        context = SolidReopenContext(
+            archive_name=self._archive_name,
+            member_name=member.name,
+            member_id=member._member_id,
+            bytes_again=again,
+        )
+        collector = self._diagnostics_collector
+        if first:
+            collector.emit(
+                code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
+                message=message,
+                context=context,
+                logger=logger,
+            )
+        else:
+            collector.escalate_only(
+                code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
+                message=message,
+                context=context,
+            )
+        # Not refused: the open goes ahead and decodes through ``end``.
+        with self._solid_decoded_lock:
+            decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
+            self._solid_decoded[run.key] = (
+                max(decoded_to, end),
+                max(discarded_to, run.offset),
+            )
 
     def _open_with_link_follow(
         self,
         member: ArchiveMember,
         visited: set[int],
         opened: list[ArchiveMember] | None = None,
+        before_open: Callable[[ArchiveMember], None] | None = None,
     ) -> ArchiveStreamImpl:
         """Open ``member``, following links hop by hop until a non-link member.
 
         ``opened``, when given, receives the member whose data the stream reads.
+        ``before_open``, when given, is called with that member just before it is
+        opened, and may raise to refuse the open.
 
         A loop, not recursion: an archive's chain can be longer than the interpreter's
         recursion limit, and ``RecursionError`` is outside the library's error contract.
@@ -4172,6 +4208,8 @@ class BaseArchiveReader(ArchiveReader):
             )
         if opened is not None:
             opened.append(current)
+        if before_open is not None:
+            before_open(current)
         return self._open_member_handle(current)
 
     @override

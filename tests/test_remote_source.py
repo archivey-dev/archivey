@@ -929,6 +929,35 @@ def test_a_plugins_ranges_reach_the_range_source(monkeypatch: pytest.MonkeyPatch
     assert hints == [(extent, extent + len(payload))]
 
 
+@pytest.mark.parametrize("encoding", ["none", "gzip"])
+def test_a_plugin_view_is_hinted_without_ranges(
+    encoding: str, monkeypatch: pytest.MonkeyPatch
+):
+    """XAR declares no ``MemberData.ranges``: its data is a view, or a
+    ``decompress()`` over one, and archivey hints the view's span itself. Red with
+    the view's mark removed (no hint after the listing)."""
+    from tests.xar_util import ENCODINGS, XarFile, write_xar
+
+    rng = random.Random(12)
+    payload = rng.randbytes(20_000)
+    data = write_xar([XarFile("b.bin", payload, encoding=encoding)])
+    stored = ENCODINGS[encoding][1](payload)
+    hints: list[tuple[int, int]] = []
+    original = RangeSource.will_read
+
+    def spy(self: RangeSource, start: int, end: int) -> None:
+        hints.append((start, end))
+        original(self, start, end)
+
+    monkeypatch.setattr(RangeSource, "will_read", spy)
+    with open_archive(OpenFile(RecordingFS(data), "/a.xar", mode="rb")) as reader:
+        member = reader.get("b.bin")
+        listed = len(hints)
+        assert reader.read(member) == payload
+    start = data.index(stored)
+    assert hints[listed:] == [(start, start + len(stored))]
+
+
 def test_ranges_that_are_not_offset_pairs_are_a_plugin_bug(
     monkeypatch: pytest.MonkeyPatch,
 ):
