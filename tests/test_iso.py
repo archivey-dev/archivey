@@ -1950,6 +1950,10 @@ def _iso_cut_points(*, udf: bool) -> dict[str, int]:
         )
         directory = iso.get_record(rr_path="/d").extent_location() * block
         points["subdirectory"] = directory + 40
+        # The padding of the last directory pycdlib walks, the Joliet ``/d``: a cut
+        # there leaves no later structure to read past it.
+        joliet = iso.get_record(joliet_path="/d").extent_location() * block
+        points["joliet-subdirectory-padding"] = joliet + 1500
     iso.close()
     return points
 
@@ -1968,6 +1972,7 @@ _RICH_CUTS = (
     "joliet-path-table",
     "joliet-root-directory",
     "subdirectory",
+    "joliet-subdirectory-padding",
 )
 _UDF_CUTS = ("udf-volume-recognition", "udf-last-anchor", "udf-file-data")
 
@@ -2126,6 +2131,31 @@ def test_damaged_directory_padding_lists_every_file_and_is_reported() -> None:
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError):
         open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO, config=strict)
+
+
+#: SHA-256 of pycdlib's own ``_iter_directory_records`` source that the copy in
+#: ``iso_reader`` was checked against (pycdlib 1.22.0).
+_PYCDLIB_WALK_SOURCE_SHA256 = frozenset(
+    {"cc289078d746c0d2678d95c7012ac2add5e1680d5c837807aa644ea210326151"}
+)
+
+
+def test_the_copied_directory_walk_matches_the_installed_pycdlib() -> None:
+    """The tolerant walk is a copy of pycdlib's ``_iter_directory_records``, used in
+    its place during archivey's open. A pycdlib whose walk differs fails here, so its
+    changes are compared with the copy before they are lost under archivey."""
+    import hashlib
+    import inspect
+
+    from archivey.internal.backends import iso_reader
+
+    original = iso_reader._PYCDLIB_ITER_DIRECTORY_RECORDS
+    assert callable(original)
+    digest = hashlib.sha256(inspect.getsource(original).encode()).hexdigest()
+    assert digest in _PYCDLIB_WALK_SOURCE_SHA256, (
+        "pycdlib changed _iter_directory_records: compare it with the copy in "
+        "iso_reader._install_pycdlib_padding_tolerance, then add this digest: " + digest
+    )
 
 
 def test_pycdlib_outside_archivey_still_refuses_damaged_padding() -> None:

@@ -248,6 +248,10 @@ What is ISO-specific in turning a record into a member:
   on (`_install_pycdlib_padding_tolerance`), and each such block is reported as
   `ARCHIVE_TRAILING_DATA` with `expected_marker="directory_padding"`: a record whose
   length byte was damaged to zero would be lost there, so `STRICT` refuses (DR-3).
+  Padding the image cuts short still raises `Invalid padding on ISO`, a cut (below). The
+  walk is a copy of `pycdlib` 1.22.0's and replaces any upstream change to it inside
+  archivey's open; `test_iso` pins the original's source, so a `pycdlib` that changes
+  it fails until the two are compared.
 - **Versions.** In the plain namespace the `;N` suffix of a file and the `.` of an empty
   extension are removed (`FOO.;1` is `FOO`) and the number goes to `extra["iso.version"]`.
   When a directory holds several versions, the highest takes the bare name; older ones are
@@ -382,8 +386,8 @@ Three kinds of record need a layout, worked out while listing and used by `_data
   whose extent sits at the image end); otherwise `size` is `None`. Reading such a file
   returns the bytes the image holds and then raises `TruncatedError`.
 - **An image cut inside its metadata.** `pycdlib` reports a short read as an invalid
-  image (`Failed to read entire volume descriptor`, `Invalid directory record`) or
-  fails parsing the short bytes (`struct.error`), so its
+  image (`Failed to read entire volume descriptor`, `Invalid directory record`,
+  `Invalid padding on ISO`) or fails parsing the short bytes (`struct.error`), so its
   exception does not say whether the bytes were wrong or missing. `_cut_short` decides
   from two facts: `pycdlib`'s last read reached the end of the file (the handle is at
   or past it), and the image declares more than the file holds (the primary

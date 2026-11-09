@@ -818,6 +818,8 @@ _PADDING_NOTES: ContextVar[list[int] | None] = ContextVar(
     "archivey_iso_padding_notes", default=None
 )
 _PYCDLIB_PADDING_TOLERANCE_INSTALLED = False
+# pycdlib's own ``_iter_directory_records``, kept for ``test_iso``'s drift check.
+_PYCDLIB_ITER_DIRECTORY_RECORDS: object | None = None
 
 
 def _install_pycdlib_padding_tolerance() -> None:
@@ -833,8 +835,16 @@ def _install_pycdlib_padding_tolerance() -> None:
     pycdlib's does, except that it records where the padding stopped being zero in
     ``_PADDING_NOTES`` and goes on; ``IsoReader`` reports each one as
     ``ARCHIVE_TRAILING_DATA`` (DR-3), because a record whose length byte was damaged
-    to zero would also show up this way. Installed once, and only when pycdlib has the
-    method, so another pycdlib keeps its own behaviour.
+    to zero would also show up this way. Padding the image cuts short still raises
+    ``Invalid padding on ISO``, as pycdlib's equality check does, so a cut there stays
+    ``TruncatedError``.
+
+    The walk is a copy of pycdlib 1.22.0's, and inside our ``open_fp`` it takes the
+    place of whatever the installed pycdlib does: an upstream fix to that loop would
+    not apply there. ``test_iso`` pins the original's source
+    (``_PYCDLIB_ITER_DIRECTORY_RECORDS``), so a pycdlib that changes it fails a test
+    until someone compares the two. Outside our ``open_fp``, and when pycdlib has no
+    such method, pycdlib's own walk runs.
     """
     global _PYCDLIB_PADDING_TOLERANCE_INSTALLED
     if pycdlib is None or _PYCDLIB_PADDING_TOLERANCE_INSTALLED:
@@ -845,6 +855,8 @@ def _install_pycdlib_padding_tolerance() -> None:
     original = getattr(pcd_module.PyCdlib, "_iter_directory_records", None)
     if original is None:
         return
+    global _PYCDLIB_ITER_DIRECTORY_RECORDS
+    _PYCDLIB_ITER_DIRECTORY_RECORDS = original
 
     def _iter_directory_records(
         self: PyCdlib, vd: object, dir_record: DirectoryRecord, iso_file_length: int
@@ -866,6 +878,11 @@ def _install_pycdlib_padding_tolerance() -> None:
             if lenbyte == 0:
                 pad_check = min(block_size - offset % block_size, length - offset)
                 padding = data[offset : offset + pad_check]
+                if len(padding) < pad_check:
+                    # The image ends inside the padding: pycdlib's check that the
+                    # padding is ``pad_check`` zeros refuses it, and ``_cut_short``
+                    # tells a cut from damage.
+                    raise pycdlibexception.PyCdlibInvalidISO("Invalid padding on ISO")
                 stripped = padding.lstrip(b"\0")
                 if stripped:
                     notes.append(
