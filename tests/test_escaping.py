@@ -11,9 +11,11 @@ import ast
 import os
 import pathlib
 import re
+from collections.abc import Callable
 
 import pytest
 
+from archivey import ArchiveReader
 from archivey.diagnostics import (
     Diagnostic,
     DiagnosticCode,
@@ -122,43 +124,62 @@ def test_quoted_does_not_escape_so_the_message_escapes_once() -> None:
     assert "\\\\x1b" in via_repr  # the doubling quoted() exists to avoid
 
 
-@pytest.mark.parametrize(
-    "check",
-    ["bidi", "reserved", "colon", "ar", "cpio"],
-)
-def test_archive_text_in_a_refusal_is_escaped_once(check: str) -> None:
-    """Each of these messages carried the archive's text through ``!r``, so the
-    message's own escaping doubled the backslashes ``repr`` added."""
+def _list(reader: ArchiveReader) -> object:
+    with reader:
+        return reader.members()
+
+
+def _refusal_cases() -> dict[str, Callable[[], object]]:
+    """Each call raises an archivey error whose message carries ``\\x1b[2K`` from the
+    archive. Every one used ``!r`` before, so the message's own escaping doubled the
+    backslashes ``repr`` added."""
     import io
 
     from archivey import ArchiveFormat, open_archive
     from archivey.internal import filters
+    from archivey.internal.backends import ar_reader, cpio_reader, rpm_reader
 
     esc = "\x1b[2K"
+    raw = esc.encode()
+    return {
+        "bidi": lambda: filters._reject_bidi_override(
+            f"a\u202e{esc}.exe", member_name="m", what="member name"
+        ),
+        "reserved": lambda: filters._reject_unsafe_segments(
+            f"CON.{esc}", member_name="m", where="member name"
+        ),
+        "colon": lambda: filters._reject_unsafe_segments(
+            f"a:{esc}", member_name="m", where="member name"
+        ),
+        "ar": lambda: ar_reader._field(raw, 10, "size", 8),
+        "cpio": lambda: cpio_reader._number(raw, 16, "filesize", 0),
+        "rpm": lambda: rpm_reader._hex(raw, "filesize", 0),
+        "lzip": lambda: _list(open_archive(io.BytesIO(raw), format=ArchiveFormat.LZIP)),
+    }
+
+
+@pytest.mark.parametrize(
+    "case", ["bidi", "reserved", "colon", "ar", "cpio", "rpm", "lzip"]
+)
+def test_archive_text_in_a_refusal_is_escaped_once(case: str) -> None:
+    """The archive's text in each of these messages is escaped once. The dots-only
+    segment refusal is not here: its segment is only dots and spaces, so it has
+    nothing to escape."""
     with pytest.raises(ArchiveyError) as info:
-        if check == "bidi":
-            filters._reject_bidi_override(
-                f"a\u202e{esc}.exe", member_name="m", what="member name"
-            )
-        elif check in ("reserved", "colon"):
-            name = {"reserved": f"CON.{esc}", "colon": f"a:{esc}"}[check]
-            filters._reject_unsafe_segments(name, member_name="m", where="member name")
-        elif check == "ar":
-            header = b"a.txt/".ljust(16) + b"0".ljust(12) + b"0".ljust(6) * 2
-            header += b"644".ljust(8) + b"1\x1b[2K".ljust(10) + b"`\n"
-            with open_archive(
-                io.BytesIO(b"!<arch>\n" + header), format=ArchiveFormat.AR
-            ) as r:
-                r.members()
-        else:
-            header = b"070701" + b"\x1b[2KX!0" + b"0" * 96
-            with open_archive(
-                io.BytesIO(header + b"\0" * 64), format=ArchiveFormat.CPIO
-            ) as r:
-                r.members()
+        _refusal_cases()[case]()
     message = info.value.message
     assert "\x1b" not in message
     assert "\\x1b" in message and "\\\\x1b" not in message, message
+
+
+def test_a_quote_in_a_header_field_does_not_hide_where_it_ends() -> None:
+    """``quoted()`` picks the delimiter, so a ``'`` in the field is not read as its
+    end, and a non-ASCII byte shows as its octet rather than as a letter."""
+    from archivey.internal.backends import ar_reader
+
+    with pytest.raises(ArchiveyError) as info:
+        ar_reader._field(b"1'x\xe9", 10, "size", 8)
+    assert '"1\'x\\xe9"' in info.value.message, info.value.message
 
 
 def test_raw_message_of_avoids_doubling_when_wrapping() -> None:
@@ -214,6 +235,9 @@ _ARCHIVE_WORDS = {
     "segment",
     "part",
     "raw",
+    "head",
+    "header",
+    "data",
 }
 
 
