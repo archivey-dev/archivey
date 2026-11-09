@@ -265,3 +265,14 @@ def test_auto_resolves_with_the_pinned_programs(
     auto = rar_reader.RarDecompressor.AUTO
     assert resolve(auto) is rar_reader.RarDecompressor.UNRAR
     assert resolve(auto, None, str(binary)) is rar_reader.RarDecompressor.UNAR
+
+
+def test_a_pinned_unrar_skips_the_winrar_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Fails if the pinned path falls through to the WinRAR install-folder search.
+    def _searched() -> list[str]:
+        raise AssertionError("the WinRAR folders were searched")
+
+    monkeypatch.setattr(rar_unrar, "winrar_install_candidates", _searched)
+    assert list(rar_unrar._unrar_candidates(_ABSOLUTE)) == [_ABSOLUTE]

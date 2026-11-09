@@ -389,6 +389,9 @@ class ListingLimits:
     builds the file list.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than is left of ``max_metadata_bytes``, before reading it.
+    A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
+    ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
+    ``max_metadata_bytes``, before reading it.
     SquashFS walks the whole directory tree before it lists a member, and weighs the
     paths it finds, and the symlink targets it keeps for later, against
     ``max_metadata_bytes`` as it goes: a listing whose names and kept targets cross the

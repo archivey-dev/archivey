@@ -64,9 +64,10 @@ and later fixed.
 Review catches mistakes in the reasoning. These checks catch the rest, and each one finds things the
 others miss.
 
-- **Thousands of tests on every pull request.** They run on Linux with Python 3.11 to 3.15, on macOS
+- **Thousands of tests on every change.** They run on Linux with Python 3.11 to 3.15, on macOS
   and Windows with 3.11 and 3.15, on a free-threaded build, with no optional packages installed,
-  with the oldest dependency versions archivey allows, and on PyPy.
+  with the oldest dependency versions archivey allows, and on PyPy. Each change runs most of these
+  before it merges, and the rest run every day and before every release.
 - **A test for every fix.** Every bug that has been fixed has a test, and so do many corner cases
   that were only worried about, so a fixed problem can't quietly come back.
 - **One set of test archives, built in every format.** Each test archive is described once and then

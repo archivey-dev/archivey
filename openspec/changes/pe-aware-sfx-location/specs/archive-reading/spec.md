@@ -22,9 +22,13 @@ to its own checks only.
 
 An explicit `format=` that bypasses detection retains each backend’s own
 start-offset / SFX rules (`format-rar`, `format-7z`). For a backend whose format can carry
-a stub (RAR, 7z, ZIP), on a seekable single-file source, `open_archive` SHALL read the
+a stub (RAR, 7z, ZIP), on a seekable source, `open_archive` SHALL read the
 source's first 4096 bytes and, when they are a PE whose layout parses, SHALL pass the
-payload end derived from them with the PE layout helper detection uses. Detection reads
+payload end derived from them with the PE layout helper detection uses. A volume set is
+read as its joined bytes, as detection reads it, so the last part's table ends the join.
+The same read applies when detection ran but did not judge a prefix (`prefixed` is
+`False`), such as a format taken from the name with the scan off: only a prefixed
+detection answer carries an end of its own. Detection reads
 the layout from the same 4096 bytes whatever `max_prefix_bytes` says. So a forced
 `format=` and auto-detect open the same region and list the same members: what an archive
 holds SHALL NOT depend on whether its format was named. No backend derives an end itself.
@@ -45,4 +49,6 @@ cannot be placed.
 | The same SFX from a non-seekable stream, auto-detect or forced | No `E`: the certificate is reported as trailing data, the same both ways |
 | Forced `format=ZIP` on the IRPF installer under `DiagnosticPolicy.STRICT` | Opens, as auto-detect does: the certificate is past `E` |
 | Forced `format=ZIP` on a signed SFX whose certificate holds a second whole ZIP, its offsets counted from its own start or from the start of the file | The archive before `E` is listed, as auto-detect lists it; the ZIP inside the certificate is not |
+| Signed PE split into `signed.zip.001` / `.002`, a second ZIP planted in the certificate table, forced `format=ZIP` | The end read from the joined set's headers; the ZIP before it is listed, as auto-detect lists it |
+| Signed PE named `signed.zip`, detected from its name with `max_scan_bytes=0` | The end read from the headers at open; the ZIP before it is listed, not one planted in the certificate table |
 | No `payload_end` (unsigned, non-PE, or total size unknown) | Unchanged: the archive is read to the end of the source |

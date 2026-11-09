@@ -107,29 +107,44 @@ measurements; this baseline has no correctness speed threshold.
 | Operation raises or closes | Translation/logging/lifecycle/callback work runs without the ISO handle lock held |
 | Future throughput optimization proposed | Evidence compares wall/lock timing and practical seek/byte counters; adds peak memory only if buffering/materialization changes |
 
-### Requirement: Refuse raw CD sector images by name
+### Requirement: Read raw CD sector images of a data track
 
 The ISO backend SHALL recognise a raw CD sector image — a dump whose sectors begin with
-the 12-byte sync pattern `00 FF×10 00`, as the `.bin` of a `.bin`/`.cue` pair does —
-and SHALL refuse it with `UnsupportedFeatureError` naming the layout found, rather than
-read it or let detection fail. Detection SHALL claim such a file as `ISO` from the sync
-pattern at offset 0 so that the refusal is reachable, and the refusal SHALL NOT depend on
-`pycdlib` being installed.
+the 12-byte sync pattern `00 FF×10 00`, as the `.bin` of a `.bin`/`.cue` pair does.
+Detection SHALL claim such a file as `ISO` from the sync pattern at offset 0.
 
-The layout named SHALL be the sector mode (Mode 1, Mode 2 Form 1, Mode 2 Form 2, or an
-unknown mode byte) and, when a second sync is found, the sector size: 2352, or 2448 for a
-dump carrying subchannel data. Reading a raw image by stripping sectors to their payload
-is deferred past 0.2.0 and documentation SHALL NOT claim it.
+When the first sector is Mode 1 or Mode 2 Form 1 and a second sync shows the sector size
+(2352, or 2448 for a dump carrying subchannel data), the backend SHALL read the image as
+the plain ISO it holds: each sector stripped to its 2048 bytes of user data (after the
+16-byte header, and for Mode 2 also the 8-byte subheader). Each sector SHALL be checked
+when it is read: a sector without the sync or with another mode byte SHALL raise
+`CorruptionError` and a Mode 2 Form 2 sector `UnsupportedFeatureError`, for the read that
+reaches it; a sector read ahead and not asked for SHALL NOT fail a read. EDC and ECC bytes
+are not checked, and documentation SHALL say so. Only the first track is read; the `.cue`
+sheet is not consulted. The trailing-data check SHALL scan only the data sectors that
+continue the track after the volume space, so a mixed-mode disc's audio is not reported.
+Read hints SHALL name the raw sectors that hold a member's extents.
+
+Any other layout (Mode 2 Form 2, an unknown mode byte, no second sync) SHALL be refused
+with `UnsupportedFeatureError` naming the layout, before the availability check, so the
+refusal SHALL NOT depend on `pycdlib` being installed. A replacement reader
+(`FormatPolicy.replace`) SHALL be refused every raw image.
 
 #### Scenario: raw-sector matrix
 
 | Case | Expected |
 | --- | --- |
-| Raw Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors | `UnsupportedFeatureError` naming the layout and pointing at converting to `.iso` |
+| Raw Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors | Lists and reads as the plain `.iso` does, with no diagnostic |
+| Data track followed by audio sectors | Reads; no `ARCHIVE_TRAILING_DATA` |
+| Non-zero data sectors past the volume space | `ARCHIVE_TRAILING_DATA` |
+| A file's sector with a broken sync | Reading that file raises `CorruptionError`; other files read |
+| A Mode 2 Form 2 sector inside a file | Reading that file raises `UnsupportedFeatureError` |
+| Image cut inside a file | Reading that file raises `TruncatedError` |
 | Raw Mode 2 Form 2 image | `UnsupportedFeatureError` saying it holds no ISO 9660 filesystem |
-| Unknown mode byte | `UnsupportedFeatureError` naming the mode |
+| Unknown mode byte, or a single sector | `UnsupportedFeatureError` naming the layout |
 | `detect_format` on a raw image | `ISO`, `CERTAIN`, `detected_by="magic"` |
-| `pycdlib` not installed | The same refusal |
+| `pycdlib` not installed, unread layout | The same refusal |
+| Replacement ISO reader | `UnsupportedFeatureError` naming the replacement |
 | Plain `.iso` | Unaffected: it starts with the zero-filled system area, never the sync |
 
 ### Requirement: List every ISO directory record as its own member
@@ -308,6 +323,14 @@ when a read started past the end of the volume space. A file the cut reaches sti
 raises `TruncatedError` when its read reaches the cut, and a file wholly before the cut
 reads normally.
 
+Non-zero bytes in the padding of a directory block (from a zero length byte to the end
+of the logical block) SHALL NOT fail the open, in any of the image's trees. Each such
+block SHALL be reported once as `ARCHIVE_TRAILING_DATA` with
+`expected_marker="directory_padding"` and the offset of its first non-zero padding
+byte, because a record whose length byte was damaged to zero would be lost there (DR-3:
+damage to structure that holds no member data is a diagnostic, refused under `STRICT`).
+A cut inside the padding stays `TruncatedError`.
+
 #### Scenario: cut and damaged images
 
 | Case | Expected |
@@ -316,7 +339,8 @@ reads normally.
 | Image cut inside a path table, a directory record, its System Use area, or the padding after the last record of a directory | `TruncatedError` at open |
 | UDF image cut inside its volume recognition sequence, its last anchor, or file data | `TruncatedError` at open |
 | Image cut inside file data, no UDF | Opens; reading a file the cut reaches raises `TruncatedError` |
-| Full-length image: a descriptor field, a directory's padding, a path table size past the volume space, or a root directory extent past the volume space damaged | `CorruptionError`, not `TruncatedError` |
+| Full-length image: a descriptor field, a path table size past the volume space, or a root directory extent past the volume space damaged | `CorruptionError`, not `TruncatedError` |
+| Full-length image: a non-zero byte in a directory block's padding | Opens and lists every record; `ARCHIVE_TRAILING_DATA` with `expected_marker="directory_padding"`; refused under `STRICT` |
 | Cut image that keeps its path tables, root directory extent damaged to point past the volume space | `CorruptionError`, not `TruncatedError` |
 | Full-length UDF image whose volume space size is damaged upwards | `TruncatedError`: the file holds less than the image declares |
 
