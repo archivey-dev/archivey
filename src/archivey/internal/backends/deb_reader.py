@@ -194,6 +194,11 @@ class DebReader(SequentialReader):
         self._version = version.decode("ascii", "replace")
 
     def _control(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
+        """The control tar's members, under ``DEBIAN/``.
+
+        ``control`` and ``md5sums`` are read whole on the way, for the archive info and
+        the data files' digests, so their spans are served from those held bytes.
+        """
         context = self._context
         for span in context.open_nested(data, fmt):
             member = span.member
@@ -213,6 +218,7 @@ class DebReader(SequentialReader):
             yield span
 
     def _data(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
+        """The data tar's members, each file with its digest from ``md5sums``."""
         context = self._context
         for span in context.open_nested(data, fmt):
             member = span.member
