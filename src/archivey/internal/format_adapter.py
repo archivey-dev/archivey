@@ -1721,8 +1721,12 @@ class SequentialReaderAdapter(_PluginAdapter):
             # A walk reads header bytes a size field of the archive asked for, so the
             # read must not allocate what the field says before the stream shows it
             # has the bytes (threat model, "Allocations sized by a header field").
+            # A plain file of known size clamps the read to what is left, as ``skip``
+            # trusts that size: no step copies, so a large honest table (an ar ``//``
+            # member) costs one buffer, not the steps and their join.
+            remaining = size - stream.tell() if seekable and size is not None else None
             return read_within_reach(
-                refusing, n, remaining=None, step=_HEADER_READ_STEP
+                refusing, n, remaining=remaining, step=_HEADER_READ_STEP
             )
 
         layer.forward = ForwardStream(
