@@ -15,7 +15,7 @@ import stat
 import struct
 import subprocess
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from io import BytesIO
 from pathlib import Path
 
@@ -1191,6 +1191,86 @@ def test_a_tainted_batch_leaves_the_next_batch_on_its_own_run(
     assert _pass_bytes(path) == expected
     # Three runs, and member 2 read on its own after batch 0 stopped lining up.
     assert len(spawns.calls) == 4
+
+
+def _main_solid_cleared(data: bytes) -> bytes:
+    """``data`` with its MAIN header's solid flag cleared and the header CRC fixed.
+
+    The members keep their own solid flags, which ``unrar`` still honours.
+    """
+    out = bytearray(data)
+    if out.startswith(b"Rar!\x1a\x07\x01\x00"):
+        pos = 12  # signature and CRC32: the size vint, type, flags, archive flags
+        size, start = _load_vint(out, pos)
+        block_type, at = _load_vint(out, start)
+        header_flags, at = _load_vint(out, at)
+        if header_flags & 0x01:
+            _, at = _load_vint(out, at)
+        assert block_type == 1 and out[at] & 0x04
+        out[at] &= ~0x04
+        struct.pack_into("<I", out, 8, zlib.crc32(bytes(out[12 : start + size])))
+    else:
+        flags, size = struct.unpack_from("<HH", out, 10)
+        assert out[9] == 0x73 and flags & 0x08
+        struct.pack_into("<H", out, 10, flags & ~0x08)
+        struct.pack_into("<H", out, 7, zlib.crc32(bytes(out[9 : 7 + size])) & 0xFFFF)
+    return bytes(out)
+
+
+def _load_vint(buf: bytearray, pos: int) -> tuple[int, int]:
+    value = shift = 0
+    while True:
+        byte = buf[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            return value, pos
+
+
+def _outcome(read: Callable[[], bytes]) -> bytes | type[BaseException]:
+    try:
+        return read()
+    except ArchiveyError as exc:
+        return type(exc)
+
+
+@requires_unrar_cli()
+@pytest.mark.parametrize("fixture", ["basic_solid__.rar", "basic_solid__rar4.rar"])
+@pytest.mark.parametrize("stream_source", [False, True], ids=["path", "stream"])
+def test_a_member_with_its_own_solid_flag_is_left_out_of_batches(
+    tmp_path: Path, fixture: str, stream_source: bool
+) -> None:
+    """In an archive whose MAIN header is not solid, ``unrar`` still decodes a
+    member flagged solid on top of the member it decoded before. In a batch that
+    is the batch's previous member; read alone it is an empty window. So such a
+    member is never in a batch, and the pass reads what ``open()`` reads."""
+    data = _main_solid_cleared((_FIXTURES / fixture).read_bytes())
+    path = tmp_path / fixture
+    path.write_bytes(data)
+
+    def source() -> object:
+        return BytesIO(data) if stream_source else path
+
+    with open_archive(source()) as reader:  # type: ignore[arg-type]
+        assert isinstance(reader, RarReader)
+        assert not reader._archive.is_solid
+        batches = reader._nonsolid_pass_batches()
+        alone = {
+            m.name: _outcome(lambda m=m: reader.read(m))
+            for m in reader.members()
+            if m.is_file
+        }
+    # The fixture's later members decode only on top of the earlier ones.
+    assert sum(isinstance(v, bytes) for v in alone.values()) < len(alone)
+    with open_archive(source()) as reader:  # type: ignore[arg-type]
+        passed = {
+            member.name: _outcome(stream.read)
+            for member, stream in reader.stream_members()
+            if stream is not None and member.is_file
+        }
+    assert passed == alone
+    assert batches == []
 
 
 @requires_unrar_cli()

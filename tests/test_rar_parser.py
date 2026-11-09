@@ -27,11 +27,13 @@ from archivey.internal.backends.rar_parser import (
     _rar3_s2k,
     _Rar3Sha1,
     _rar5_dictionary_size,
+    _settle_rar15_solid,
     parse_rar_archive,
     parse_rar_volumes,
     rar5_data_key,
     rar5_hash_key,
 )
+from archivey.internal.backends.rar_synthetic import solid_chain
 from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
 from tests.conftest import requires, requires_binary, requires_unrar_cli
 from tests.corruption_util import raises_corruption_not_truncation
@@ -677,6 +679,103 @@ def test_parsed_dictionary_size_is_set_and_zero_for_directories(name: str) -> No
             # RAR3/4: 64 KiB << a 3-bit exponent, at most 4 MiB.
             assert 64 * 1024 <= info.dictionary_size <= 4 * 2**20
     assert any(not info.is_directory for info in archive.members)
+
+
+def _as_rar15(data: bytes, *, main_solid: bool, unp_ver: int = 15) -> bytes:
+    """``data``, a RAR 1.5-4 archive, with the headers a RAR 1.3-1.5 writer leaves.
+
+    Each FILE header gets ``unp_ver`` and loses its own solid flag (``0x10``), which
+    those writers never set; the MAIN header's solid flag is set to ``main_solid``.
+    Every header's CRC16 is fixed. No ``rar`` writes RAR 1.5 archives any more, and
+    the walk reads no member data, so the packed data stays as it is.
+    """
+    out = bytearray(data)
+    pos = 7  # past the marker block
+    while pos + 7 <= len(out):
+        block_type = out[pos + 2]
+        flags, size = struct.unpack_from("<HH", out, pos + 3)
+        add_size = struct.unpack_from("<I", out, pos + 7)[0] if flags & 0x8000 else 0
+        if block_type == 0x73:
+            flags = flags | 0x08 if main_solid else flags & ~0x08
+            struct.pack_into("<H", out, pos + 3, flags)
+        elif block_type == 0x74:
+            struct.pack_into("<H", out, pos + 3, flags & ~0x10)
+            out[pos + 24] = unp_ver
+        if block_type in (0x73, 0x74):
+            crc = zlib.crc32(bytes(out[pos + 2 : pos + size])) & 0xFFFF
+            struct.pack_into("<H", out, pos, crc)
+        pos += size + add_size
+    return bytes(out)
+
+
+def _solid_flags(data: bytes, *, volumes: bool) -> list[tuple[str, bool]]:
+    source = io.BytesIO(data)
+    archive = (
+        parse_rar_volumes([source], use_qo=False)
+        if volumes
+        else parse_rar_archive(source, use_qo=False)
+    )
+    return [(m.filename, m.file_solid) for m in archive.members]
+
+
+@pytest.mark.parametrize("volumes", [False, True], ids=["archive", "volumes"])
+def test_a_solid_rar15_archive_marks_every_file_after_the_first_solid(
+    volumes: bool,
+) -> None:
+    # unrar decodes a member with UNP_VER 15 or lower on top of the earlier members
+    # when the MAIN header is solid and the member is not the first file
+    # (extract.cpp: DoUnpack(15, FileCount>1 && Arc.Solid)). Directories do not count.
+    data = _as_rar15(_fixture("basic_solid__rar4.rar").read_bytes(), main_solid=True)
+    flags = _solid_flags(data, volumes=volumes)
+    assert flags == [
+        ("empty_file.txt", False),
+        ("file1.txt", True),
+        ("subdir/file2.txt", True),
+        ("implicit_subdir/file3.txt", True),
+        ("empty_subdir/", False),
+        ("subdir/", False),
+    ]
+    archive = parse_rar_archive(io.BytesIO(data), use_qo=False)
+    assert solid_chain(archive.members, 3) == range(4)
+
+
+def test_a_rar15_directory_before_the_first_file_does_not_count() -> None:
+    # unrar's IsArcDir() returns before FileCount++, so a directory listed first
+    # leaves the first file non-solid. The fixture lists its directories last,
+    # so the members are reordered here. Fails against seen_file = True for a
+    # directory too.
+    data = _as_rar15(_fixture("basic_solid__rar4.rar").read_bytes(), main_solid=False)
+    archive = parse_rar_archive(io.BytesIO(data), use_qo=False)
+    directories = [m for m in archive.members if m.is_directory]
+    files = [m for m in archive.members if not m.is_directory]
+    assert directories and files
+    archive.members[:] = directories + files
+    archive.is_solid = True
+    _settle_rar15_solid(archive)
+    assert [(m.filename, m.file_solid) for m in archive.members] == [
+        ("empty_subdir/", False),
+        ("subdir/", False),
+        ("empty_file.txt", False),
+        ("file1.txt", True),
+        ("subdir/file2.txt", True),
+        ("implicit_subdir/file3.txt", True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("main_solid", "unp_ver"), [(False, 15), (True, 20), (True, 29)]
+)
+def test_rar15_rule_needs_a_solid_archive_and_an_old_member(
+    main_solid: bool, unp_ver: int
+) -> None:
+    # A RAR 2.0+ member carries its own solid flag, and a nonsolid archive has no
+    # solid members of RAR 1.5 age.
+    data = _as_rar15(
+        _fixture("basic_solid__rar4.rar").read_bytes(),
+        main_solid=main_solid,
+        unp_ver=unp_ver,
+    )
+    assert not any(solid for _, solid in _solid_flags(data, volumes=False))
 
 
 def test_volume_set_packed_data_past_end_names_the_volume() -> None:

@@ -3683,8 +3683,12 @@ class RarReader(BaseArchiveReader):
         that, and a batch of one, keep their own read. So does a member whose
         dictionary is over ``max_decoder_memory``: ``unrar`` decodes a batch's
         members past the one read, so each must fit before the run starts, and the
-        member read alone is refused as ``open()`` refuses it. Every other member is
-        read as ``open()`` reads it and takes no place in a batch's output.
+        member read alone is refused as ``open()`` refuses it. So does a member
+        whose own solid flag is set: ``unrar`` honours that flag even when the MAIN
+        header is not solid, so in a batch it would decode on top of the member
+        before it, where read alone it decodes on an empty window. Every other
+        member is read as ``open()`` reads it and takes no place in a batch's
+        output.
         """
         if self._unar_policy is not None:
             return []
@@ -3701,6 +3705,7 @@ class RarReader(BaseArchiveReader):
                 and info.is_payload_file()
                 and has_packed_data(info)
                 and not info.is_file_copy()
+                and not info.file_solid
                 and not info.is_encrypted
                 and not info.encryption_unknown
                 and info.crc32 is not None
