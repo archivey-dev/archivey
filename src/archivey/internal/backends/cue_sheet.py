@@ -25,8 +25,10 @@ sector, so the base address is right when that sector holds it, and is searched 
 the track's first sectors when it does not.
 
 A ``FILE`` name is taken only as a plain name in the ``.cue``'s own directory: a path,
-``..`` or an absolute name is refused, so a sheet cannot make archivey read another
-file.
+``..`` or an absolute name is refused, and so is anything there that is not a regular
+file (a FIFO, a device). A symlink there is followed, as the sheet's own path is. A
+name that is not there exactly is matched without case, as sheets written on Windows
+often spell ``DISC.BIN`` for ``disc.bin``.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from __future__ import annotations
 import bisect
 import os
 import re
+import stat
 import struct
 import threading
 from collections.abc import Callable
@@ -55,6 +58,7 @@ from archivey.types import ArchiveFormat
 
 # A sheet is a few lines per track and at most 99 tracks; a larger file is not one.
 MAX_CUE_SIZE = 64 * 1024
+_O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no newline translation
 _FRAMES_PER_SECOND = 75
 _FIRST_SESSION_GAP = 11_400
 _LATER_SESSION_GAP = 6_900
@@ -122,7 +126,8 @@ def _file_name(rest: str, line: int) -> str:
         if end < 0:
             raise CorruptionError(f"line {line} of the .cue sheet has an open quote")
         return rest[1:end]
-    return rest.rsplit(None, 1)[0] if " " in rest else rest
+    parts = rest.rsplit(None, 1)
+    return parts[0] if len(parts) == 2 else rest
 
 
 def parse_cue(text: str) -> list[CueFile]:
@@ -202,9 +207,23 @@ class _TrackFile:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._fp: BinaryIO = open(path, "rb")  # noqa: SIM115  # closed by close()
+        # Non-blocking, so a FIFO is refused by the check below instead of hanging
+        # the open waiting for a writer.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | _O_BINARY)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise UnsupportedFeatureError(
+                    f"the .cue sheet names {quoted(path.name)}, which is not a "
+                    "regular file",
+                    source_format=ArchiveFormat.ISO,
+                )
+        except BaseException:
+            os.close(fd)
+            raise
+        self._fp: BinaryIO = os.fdopen(fd, "rb")  # closed by close()
         self._lock = threading.Lock()
-        self.size = os.fstat(self._fp.fileno()).st_size
+        self.size = st.st_size
 
     def read_at(self, offset: int, n: int) -> bytes:
         with self._lock:
@@ -297,11 +316,24 @@ class DiscSource(ReaderSource):
         return end + 1
 
     def trailing_window(self, volume_end: int, limit: int) -> tuple[int, int]:
-        """The cooked range after ``volume_end`` that the chosen track still holds."""
-        lo = self.chosen.lba * USER_DATA_SIZE
-        hi = (self.chosen.lba + self.chosen.count) * USER_DATA_SIZE
+        """The cooked range after ``volume_end`` that the chosen track still holds as
+        data sectors: the scan stops at the first one that is not (a Mode 2 Form 2
+        postgap before the audio, the run-out sectors of a track-at-once track), as
+        those are the disc's own and no read asks for them."""
+        chosen = self.chosen
+        lo = chosen.lba * USER_DATA_SIZE
+        hi = (chosen.lba + chosen.count) * USER_DATA_SIZE
         start = min(max(volume_end, lo), hi)
-        return start, min(hi, start + limit)
+        end = min(hi, start + limit)
+        checker = chosen.checker
+        read_at = self._files[chosen.file].read_at
+        sector = start // USER_DATA_SIZE
+        while sector * USER_DATA_SIZE < end:
+            offset = chosen.file_offset + (sector - chosen.lba) * checker.sector_size
+            if not checker.is_data_sector(read_at(offset, 24)):
+                return start, max(start, sector * USER_DATA_SIZE)
+            sector += 1
+        return start, end
 
     def close(self) -> None:
         for track_file in self._files:
@@ -319,6 +351,35 @@ def _plain_name(name: str) -> bool:
     )
 
 
+def _beside(directory: Path, name: str) -> Path | None:
+    """``name`` in ``directory``: exactly, or else the one entry that matches it
+    without case. ``None`` when there is none, or more than one."""
+    exact = directory / name
+    if os.path.lexists(exact):
+        return exact
+    try:
+        matches = [p for p in directory.iterdir() if p.name.lower() == name.lower()]
+    except OSError:
+        return None
+    return matches[0] if len(matches) == 1 else None
+
+
+def read_cue_text(path: Path, archive_name: str | None = None) -> str:
+    """The text of the sheet at ``path``: UTF-8 (a BOM is dropped), else Latin-1."""
+    with open(path, "rb") as fp:
+        raw = fp.read(MAX_CUE_SIZE + 1)
+    if len(raw) > MAX_CUE_SIZE:
+        raise UnsupportedFeatureError(
+            f"{quoted(path.name)} is over {MAX_CUE_SIZE} bytes: not a .cue sheet",
+            source_format=ArchiveFormat.ISO,
+            archive_name=archive_name,
+        )
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
+
+
 def _open_files(cue_path: Path, files: list[CueFile]) -> list[_TrackFile]:
     opened: list[_TrackFile] = []
     try:
@@ -329,14 +390,13 @@ def _open_files(cue_path: Path, files: list[CueFile]) -> list[_TrackFile]:
                     "sheet is read",
                     source_format=ArchiveFormat.ISO,
                 )
-            path = cue_path.parent / cue_file.name
-            try:
-                opened.append(_TrackFile(path))
-            except FileNotFoundError:
+            path = _beside(cue_path.parent, cue_file.name)
+            if path is None:
                 raise TruncatedError(
                     f"the .cue sheet names {quoted(cue_file.name)}, which is not beside it",
                     source_format=ArchiveFormat.ISO,
-                ) from None
+                )
+            opened.append(_TrackFile(path))
     except BaseException:
         for track_file in opened:
             track_file.close()
@@ -435,19 +495,7 @@ def _rebase(extents: list[_Extent], chosen: _Extent, delta: int) -> list[_Extent
 
 def disc_source(cue_path: Path, archive_name: str | None) -> DiscSource:
     """The disc ``cue_path`` describes, as a :class:`DiscSource` on its chosen track."""
-    with open(cue_path, "rb") as fp:
-        raw = fp.read(MAX_CUE_SIZE + 1)
-    if len(raw) > MAX_CUE_SIZE:
-        raise UnsupportedFeatureError(
-            f"{quoted(cue_path.name)} is over {MAX_CUE_SIZE} bytes: not a .cue sheet",
-            source_format=ArchiveFormat.ISO,
-            archive_name=archive_name,
-        )
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("latin-1")
-    files = parse_cue(text)
+    files = parse_cue(read_cue_text(cue_path, archive_name))
     opened = _open_files(cue_path, files)
     try:
         extents, tracks = _layout_extents(files, opened, archive_name)

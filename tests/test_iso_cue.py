@@ -24,7 +24,7 @@ from archivey import (
 )
 from archivey.internal.backends.cue_sheet import parse_cue
 from tests.conftest import requires, requires_binary
-from tests.test_iso_raw_sectors import to_raw
+from tests.test_iso_raw_sectors import _sector, to_raw
 
 _PAYLOAD = bytes(range(256)) * 40
 
@@ -104,6 +104,13 @@ def test_parse_refuses_a_bad_sheet(
         parse_cue(text)
 
 
+def test_parse_splits_an_unquoted_name_from_its_type_at_a_tab() -> None:
+    files = parse_cue(
+        "FILE t.bin\tBINARY\n  TRACK 01 MODE1/2352\n  INDEX 01 00:00:00\n"
+    )
+    assert files[0].name == "t.bin"
+
+
 def test_parse_refuses_more_than_99_tracks() -> None:
     body = "".join(
         f"  TRACK {n:02d} AUDIO\n    INDEX 01 00:00:00\n" for n in range(100)
@@ -163,6 +170,89 @@ def test_data_past_the_volume_in_its_track_is_trailing_data(tmp_path: Path) -> N
     with open_archive(cue) as archive:
         codes = [d.code for d in archive.diagnostics.retained]
     assert codes == [DiagnosticCode.ARCHIVE_TRAILING_DATA]
+
+
+@requires("pycdlib")
+def test_a_form2_postgap_after_the_volume_is_not_read(tmp_path: Path) -> None:
+    # A Mode 2 mixed-mode disc: the data track ends in a two-second Form 2 postgap,
+    # then the audio. The trailing-data scan stops at the postgap, as without the .cue.
+    data = to_raw(_plain_iso(), mode=2)
+    sectors = len(data) // 2352
+    postgap = b"".join(_sector(sectors + i, mode=2, form2=True) for i in range(150))
+    (tmp_path / "game.bin").write_bytes(data + postgap + _audio(100))
+    cue = tmp_path / "game.cue"
+    cue.write_text(
+        'FILE "game.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+        f"  TRACK 02 AUDIO\n    INDEX 00 {_msf(sectors + 150)}\n"
+        f"    INDEX 01 {_msf(sectors + 300)}\n"
+    )
+    assert _contents(cue)["big.dat"] == _PAYLOAD
+    assert _contents(tmp_path / "game.bin")["a.txt"] == b"hello\n"
+
+
+@requires("pycdlib")
+def test_run_out_sectors_at_the_end_of_the_track_are_not_read(tmp_path: Path) -> None:
+    (tmp_path / "disc.bin").write_bytes(to_raw(_plain_iso()) + b"\0" * 2352 * 2)
+    cue = tmp_path / "disc.cue"
+    cue.write_text(
+        'FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    )
+    assert _contents(cue)["a.txt"] == b"hello\n"
+
+
+@requires("pycdlib")
+def test_a_track_file_is_found_without_case(tmp_path: Path) -> None:
+    (tmp_path / "disc.bin").write_bytes(to_raw(_plain_iso()))
+    cue = tmp_path / "disc.cue"
+    cue.write_text(
+        'FILE "DISC.BIN" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    )
+    assert _contents(cue)["a.txt"] == b"hello\n"
+    assert _contents(tmp_path / "disc.bin")["a.txt"] == b"hello\n"
+
+
+@requires("pycdlib")
+@pytest.mark.parametrize(
+    ("stem", "prefix"),
+    [("disc", "\ufeff"), ("café", "")],
+    ids=["bom", "non-ascii-name"],
+)
+def test_a_bin_finds_its_sheet_in_utf8(stem: str, prefix: str, tmp_path: Path) -> None:
+    from archivey.internal.backends.iso_reader import _cue_for
+
+    (tmp_path / f"{stem}.bin").write_bytes(to_raw(_plain_iso()))
+    cue = tmp_path / f"{stem}.cue"
+    cue.write_bytes(
+        (
+            f'{prefix}FILE "{stem}.bin" BINARY\n  TRACK 01 MODE1/2352\n'
+            "    INDEX 01 00:00:00\n"
+        ).encode()
+    )
+    assert _cue_for(tmp_path / f"{stem}.bin", True) == cue
+
+
+@requires("pycdlib")
+def test_a_symlinked_track_file_is_followed(tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "x.bin").write_bytes(to_raw(_plain_iso()))
+    (tmp_path / "disc.bin").symlink_to(elsewhere / "x.bin")
+    cue = tmp_path / "disc.cue"
+    cue.write_text(
+        'FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    )
+    assert _contents(cue)["a.txt"] == b"hello\n"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs")
+def test_a_fifo_track_file_is_refused_without_blocking(tmp_path: Path) -> None:
+    os.mkfifo(tmp_path / "f.bin")
+    cue = tmp_path / "f.cue"
+    cue.write_text(
+        'FILE "f.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    )
+    with pytest.raises(UnsupportedFeatureError, match="not a regular file"):
+        open_archive(cue)
 
 
 # --- refusals -----------------------------------------------------------------------

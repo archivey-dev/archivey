@@ -114,10 +114,10 @@ from archivey.internal.backends.cd_sectors import (
     raw_sector_layout,
 )
 from archivey.internal.backends.cue_sheet import (
-    MAX_CUE_SIZE,
     DiscSource,
     disc_source,
     parse_cue,
+    read_cue_text,
 )
 from archivey.internal.base_reader import special_file_has_data_report
 from archivey.internal.format_adapter import register_builtin_format
@@ -3068,9 +3068,7 @@ def _cue_for(path: Path | None, raw: bool) -> Path | None:
         return None
     for sheet in siblings:
         try:
-            with open(sheet, "rb") as fp:
-                text = fp.read(MAX_CUE_SIZE).decode("latin-1")
-            names = [f.name.lower() for f in parse_cue(text)]
+            names = [f.name.lower() for f in parse_cue(read_cue_text(sheet))]
         except (OSError, ArchiveyError):
             continue
         if path.name.lower() in names:
