@@ -129,24 +129,23 @@ pytest tests/test_zip.py` stays one process.
 CI also matrixes supported **Python versions** (3.11–3.15 on Linux; 3.11/3.15 on
 macOS/Windows, plus an allowed-to-fail 3.16 prerelease leg), and runs the python.org
 builds of macOS 3.11 and Windows 3.14 for the older native libraries they bundle
-(liblzma, zlib, OpenSSL). A pull request push runs a
-reduced set (Linux 3.11 and 3.15, one core-only leg, Windows 3.15, free-threaded 3.13t, the benchmark and plugin jobs); the
-merge queue runs every leg plus PyPy, the distribution unar packages and the short
+(liblzma, zlib, OpenSSL). A pull request push runs a reduced set (Linux 3.11 and 3.15,
+one core-only leg, Windows 3.15, free-threaded 3.13t, the benchmark and plugin jobs);
+the merge queue runs every leg plus PyPy, the distribution unar packages and the short
 Atheris fuzz, and a failure there takes the pull request out of the queue. A queued
 change that touches no path on `FULL` in `scripts/ci/ci_scope.py` (the library, the
 library tests and the files they read, the benchmarks, the dependencies, the CI, and
 every script outside the folders its `NOT_FULL` lists,
-[`scripts/README.md`](scripts/README.md)) runs only the pull request
-set plus the free-threaded 3.15t leg there, and skips the short fuzz. On a pull request
-push, such a change runs the lint job alone (it runs the script tests); the library
-legs wait for the queue. `ci.yml` does not
-run again after the merge; a daily run tests `main` with every job. To run the whole set
-before queueing, dispatch `ci.yml` on your branch. The note at the top of `ci.yml` lists
-which job runs where. Repo `.python-version` pins the default local env to 3.11, so a
-matrix job must pin its Python on every `uv sync` / `uv run`, or newer-version legs
-silently re-test 3.11. Today the `ci.yml` test matrix sets `UV_PYTHON` and passes
-`--python`; the free-threaded job and the stress workflows pin each call with `--python`
-or `UV_PYTHON`. Keep that when you add a step.
+[`scripts/README.md`](scripts/README.md)) runs only the pull request set plus the
+free-threaded 3.15t leg there, and skips the short fuzz. On a pull request push, such a
+change runs the lint job alone (it runs the script tests); the library legs wait for the
+queue. `ci.yml` does not run again after the merge; a daily run tests `main` with every
+job. To run the whole set before queueing, dispatch `ci.yml` on your branch. The note at
+the top of `ci.yml` lists which job runs where. Repo `.python-version` pins the default
+local env to 3.11, so a matrix job must pin its Python on every `uv sync` / `uv run`, or
+newer-version legs silently re-test 3.11. Today the `ci.yml` test matrix sets
+`UV_PYTHON` and passes `--python`; the free-threaded job and the stress workflows pin
+each call with `--python` or `UV_PYTHON`. Keep that when you add a step.
 
 > **`--resolution lowest-direct` rewrites `uv.lock`**, and every later `uv sync --frozen`
 > / `uv run --no-sync` keeps the downgraded set. `./scripts/test.sh --all-configs`
