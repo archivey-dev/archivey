@@ -43,6 +43,11 @@ from archivey.internal.streams.streamtools.binaryio import (
     source_byte_size,
 )
 
+# The largest offset a file can have (a signed 64-bit ``off_t``). An archive can name a
+# larger one; no source holds bytes there, and seeking there raises outside archivey's
+# errors, so a read that starts past it is empty without a seek.
+_MAX_OFFSET = (1 << 63) - 1
+
 
 def _already_at(stream: BinaryIO, target: int) -> bool:
     """Whether ``stream`` is already at ``target``, without moving it.
@@ -272,6 +277,8 @@ class SlicingStream(ReadOnlyIOStream):
                     self._start is not None
                 )  # re-seek / lazy-position views are seekable
                 target = self._start + self._pos
+                if target > _MAX_OFFSET:
+                    return b""
                 # tell() is the handle's position. When it already matches, skip the
                 # seek: once the buffer is empty that seek is an lseek, and a
                 # sequential walk refills on every chunk. A stream that cannot tell

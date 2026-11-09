@@ -114,7 +114,8 @@ class DiagnosticCode(StrEnum):
     be truncated."""
     ARCHIVE_TRAILING_DATA = "archive_trailing_data"
     """Bytes other than zeros follow the end of the archive or of the compressed
-    stream."""
+    stream, or fill padding the format says is zero, such as the rest of an ISO
+    directory block after its last record."""
     ARCHIVE_UNLISTED_DATA = "archive_unlisted_data"
     """A ZIP read from a pipe holds a member its central directory does not list. It
     is left out of the listing, as a read from a file never sees it."""
@@ -490,6 +491,11 @@ class ArchiveEofContext(_JsonSafeContext):
       that byte's offset past the end. RAR emits one per volume, and its offset counts from that
       volume's end block, unlike member offsets, which count across the whole set; the
       message names the volume.
+    - ``"directory_padding"`` (``ARCHIVE_TRAILING_DATA``) — an ISO directory block's
+      padding, which starts at a zero length byte and fills the rest of the logical
+      block, holds a non-zero byte. Every record before it is listed; a record whose
+      length byte was damaged to zero would be missing, so it is reported. ``format``
+      is ``"iso"`` and ``observed_bytes`` is that byte's offset in the image.
     - ``"end_of_stream"`` (``ARCHIVE_TRAILING_DATA``) — a compressed stream (gzip, xz,
       zstd and the other stream codecs) decoded to its end, and bytes follow that end
       which are neither another stream nor padding the format allows. ``format`` names
@@ -1344,7 +1350,7 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
             ),
             DiagnosticCode.ARCHIVE_TRAILING_DATA: (
                 "expected_marker",
-                frozenset({"zeros_to_eof", "end_of_stream"}),
+                frozenset({"zeros_to_eof", "end_of_stream", "directory_padding"}),
             ),
             DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: ("field", frozenset({"name"})),
             DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS: (

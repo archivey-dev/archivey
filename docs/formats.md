@@ -303,8 +303,8 @@ in a real folder named `__MACOSX`.
 
 ## ZIP
 
-- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, the PKZIP 1.x methods Shrink
-  and Implode, or ZipCrypto. `[recommended]`
+- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, the old PKZIP methods
+  Shrink, Reduce and Implode, PKWARE DCL Implode (method 10), or ZipCrypto. `[recommended]`
   adds Deflate64 and PPMd (`inflate64`, `pyppmd`, the packages the 7z reader uses too), WinZip AES
   (`cryptography`), and Zstandard before Python 3.14 (`backports.zstd`). A missing package raises
   `PackageNotInstalledError` when you read such a member.
@@ -1124,9 +1124,18 @@ other members because of a member's name any more. Setting it to `True` warns.
   hybrid installer image, whose EFI partition and GPT backup header sit after the ISO 9660 volume
   space, opens clean (7-Zip warns "There are data after the end of archive" on those images). A GPT
   damaged in transfer is not trusted, so the partition it lists is reported.
-- Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused with
-  `UnsupportedFeatureError` naming the sector layout. Convert one to a plain `.iso` first (for
-  example with `bchunk` or `bin2iso`).
+- **Raw CD sector images** (the `.bin` of a `.bin`/`.cue` pair, 2352-byte sectors, or 2448 with
+  subchannel data) open as ISO when their data is Mode 1 or Mode 2 Form 1: archivey strips each
+  sector to its 2048 bytes of user data as it reads, which gives the same bytes as the plain
+  `.iso`. Only the first track is read, so a mixed-mode disc (data, then audio) lists its data
+  track, and the audio after it is not reported as trailing data. Each sector's sync and mode are
+  checked when it is read; its EDC and ECC error-correction bytes are not. A sector that is not a
+  data sector (damage, or a Mode 2 Form 2 sector, as in Video CD and CD-XA files) fails the read
+  that reaches it: reading the member that holds it, or opening the image when the sector holds
+  the volume descriptors or a directory. The `.cue` sheet is not read: a disc whose filesystem is in a
+  later track or session is not found. A Mode 2 Form 2 image, which holds video or audio and no
+  filesystem, or an unknown sector mode, is refused with `UnsupportedFeatureError` naming the
+  layout.
 
 ## SquashFS
 
@@ -1307,6 +1316,10 @@ what `makecab` and `gcab` write.
   installs them. Owners are names (`uname`, `gname`); `uid` and `gid` are `None`.
 - Both payload forms read: newc CPIO, and the stripped form of RPM 6 packages and of RPM 4
   packages with a file of 4 GiB or more.
+- The package header's own digests (SHA-256 and SHA-1, each one the package stores) are
+  checked when the package is opened: a damaged name, mode, owner or link target raises
+  `CorruptionError`. They detect damage, not tampering: they are not signed, and signatures
+  are not checked. A package that stores no such digest is read unchecked.
 - Each regular file's digest from the header (SHA-256 in current packages, MD5 in old ones)
   is checked as its data is read.
 - `%ghost` files are listed in the package but never stored, and are not members.
