@@ -20,8 +20,9 @@ How a listing is built:
 2. :meth:`IsoReader._walk_records` walks that namespace's tree record by record and
    renders each record's path. :meth:`IsoReader._record_name` says which name wins: in
    Rock Ridge the ``NM`` name, else the ISO 9660 identifier. Bytes that are not UTF-8
-   decode with ``encoding=``, else take the name of the same file in the Joliet tree,
-   else keep their bytes as ``surrogateescape``.
+   decode with ``encoding=``; failing that, a Rock Ridge name takes the name of the
+   same file in the Joliet tree when the two line up. Otherwise the bytes stay, as
+   ``surrogateescape``.
 3. :meth:`IsoReader._make_member` turns each record into an ``ArchiveMember``: mode,
    owner and times come from the Rock Ridge ``PX`` and ``TF`` entries when present, the
    modification time from the directory record's date otherwise.
@@ -255,7 +256,8 @@ class _SystemUseNotes:
         are left out.
 
         Anything else pycdlib refuses, it still refuses, and the image fails to open as
-        it would without this filter. The ``skip`` bytes before the first entry are pycdlib's to interpret.
+        it would without this filter. The ``skip`` bytes before the first entry are
+        pycdlib's to interpret.
         """
         out = bytearray(record[:skip])
         offset = skip
