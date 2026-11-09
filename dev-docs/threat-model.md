@@ -970,9 +970,9 @@ writes itself) is exercised against mutated and coverage-guided input.
    ZIP member or 7z coder does, since `AUTO` engages rapidgzip on them only with one.
    libFuzzer's own `-timeout` and `-rss_limit_mb` bound those targets: unlike a Python
    alarm, they fire while the main thread is inside native code. The full partition runs
-   on a change-guarded nightly and on `workflow_dispatch` (the release gates dispatch it) (`.github/workflows/atheris-fuzz.yml`,
-   `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
-   group only.
+   on a change-guarded nightly and on `workflow_dispatch`, which the release gates use
+   (`.github/workflows/atheris-fuzz.yml`, `openspec/specs/testing-contract/spec.md`).
+   `atheris` is in the `fuzz` dependency group only.
 
 pycdlib before 1.22 looped forever when corrupt directory records formed a back-edge,
 in any namespace `open_fp` walks, UDF included, where it also allocated on every pass. A

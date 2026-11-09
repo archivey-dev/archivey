@@ -2,11 +2,10 @@
 """Decide whether a CI run needs the library's tests.
 
 Reads the changed paths of a pull request or a merge group, one per line, on stdin,
-and prints ``full=`` and ``lowest=`` lines (``true`` or ``false``) for ``$GITHUB_OUTPUT``.
-A diff that changes
-none of `FULL` (the library, the plugin packages, the library tests and the files they
-read, the benchmarks, the dependencies, the CI that tests them, and every script outside
-`NOT_FULL`) says ``full=false``. ci.yml uses that one answer in two ways:
+and prints ``full=`` and ``lowest=`` lines (``true`` or ``false``) for
+``$GITHUB_OUTPUT``. A diff that changes none of `FULL` (the library, the plugin
+packages, the library tests and the files they read, the benchmarks, the dependencies,
+the CI that tests them, and every script outside `NOT_FULL`) says ``full=false``. ci.yml uses that one answer in two ways:
 
 - On a pull request push, ``full=false`` runs only the lint job, which runs the script
   tests, and skips the library legs of the pull request set.
