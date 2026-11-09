@@ -815,8 +815,8 @@ with open_archive("a.zip", config=MY_ZIP) as reader:
 The replacement is an indexed plugin whose `format` is the built-in one, here
 `ArchiveFormat.ZIP`, and it declares no `extensions`, `magic` or `probe`: the file is
 found by the built-in detection, which does not change. `reader.format` is the built-in
-format and `format_info.from_plugin` is false. ZIP, 7z, RAR, ISO, SquashFS, XAR, CAB and LHA can be
-replaced.
+format and `format_info.from_plugin` is false. ZIP, 7z, RAR, ISO, SquashFS, XAR, CAB, LHA and
+ARJ can be replaced.
 `FormatPolicy` checks the plugin when it is built, so a plugin that does not fit fails
 there, before any open.
 

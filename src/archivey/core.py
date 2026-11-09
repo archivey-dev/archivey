@@ -392,10 +392,12 @@ def open_archive(
 
     ``encoding`` names the codec for member names whose encoding the archive does not
     declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO, RAR 1.5-4, CPIO, ar,
-    RPM, SquashFS, CAB, XAR and LHA). A name whose bytes are valid UTF-8 is decoded as UTF-8 in every format,
-    with or without ``encoding``, and ``encoding`` replaces only the format's fallback
-    (cp437 or ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code
-    page for RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar, RPM, SquashFS, CAB, XAR and LHA).
+    RPM, SquashFS, CAB, XAR, LHA and ARJ). A name whose bytes are valid UTF-8 is
+    decoded as UTF-8 in every format, with or without ``encoding``, and ``encoding``
+    replaces only the format's fallback (cp437 or
+    ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code page for
+    RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar, RPM, SquashFS, CAB, XAR, LHA and
+    ARJ).
     ``member.raw_name`` keeps the stored bytes. A ZIP comment without the UTF-8 flag
     (the archive comment always) and an 8-bit RAR 1.5-4 comment decode the same way as
     a name without a declared encoding, and a byte the codec does not define survives

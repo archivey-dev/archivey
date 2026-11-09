@@ -341,3 +341,96 @@ def test_a_missing_end_header_is_reported() -> None:
         (diagnostic,) = reader.diagnostics.retained
     assert diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
     assert diagnostic.context.expected_marker == "end_of_archive_header"
+
+
+def test_a_dos_name_splits_on_backslash_after_decoding() -> None:
+    # In cp932 the second byte of 表 is 0x5C, the byte of "\": a replace on the bytes
+    # would split the character.
+    stored = "表\\a.txt".encode("cp932")
+    data = _archive((stored, b"alpha"))
+    with open_archive(io.BytesIO(data), encoding="cp932") as reader:
+        (member,) = reader.members()
+    assert member.name == "表/a.txt"
+    assert member.raw_name == stored
+
+
+def _raw_header(body: bytes) -> bytes:
+    return b"\x60\xea" + _block(body) + b"\0\0"
+
+
+def _fixed(first: int = 30) -> bytes:
+    fixed = bytearray(_header(b"a", file_type=0)[4 : 4 + 30])
+    fixed[0] = first
+    return bytes(fixed)
+
+
+def test_a_name_with_no_end_is_corruption() -> None:
+    data = _header(b"test.arj", file_type=2) + _raw_header(_fixed() + b"a.txt")
+    with pytest.raises(CorruptionError, match="has no end"):
+        _read_all(io.BytesIO(data + b"\x60\xea\0\0"))
+
+
+def test_a_fixed_part_size_out_of_range_is_corruption() -> None:
+    body = _fixed(first=29) + b"\0" * 10
+    data = _header(b"test.arj", file_type=2) + _raw_header(body)
+    with pytest.raises(CorruptionError, match="fixed part of 29 bytes"):
+        _read_all(io.BytesIO(data + b"\x60\xea\0\0"))
+
+
+def test_an_extended_header_crc_failure_is_corruption() -> None:
+    member = bytearray(_header(b"a.txt", file_type=0, extended=(b"Xdata",)))
+    member[-3] ^= 1  # the extended header's CRC, before the closing 0 length
+    data = _header(b"test.arj", file_type=2) + bytes(member) + b"\x60\xea\0\0"
+    with pytest.raises(CorruptionError, match="extended header .* fails its CRC"):
+        _read_all(io.BytesIO(data))
+
+
+def test_a_unix_special_header_with_a_two_byte_length() -> None:
+    target = b"t" * 40
+    ext = b"U\x00" + bytes([(2 << 5) | 0x1F]) + struct.pack("<H", len(target)) + target
+    out = _header(b"test.arj", file_type=2)
+    out += _header(b"link", file_type=6, extended=(ext,)) + b"\x60\xea\0\0"
+    with open_archive(io.BytesIO(out)) as reader:
+        (member,) = reader.members()
+    assert member.type is MemberType.SYMLINK
+    assert member.link_target == "t" * 40
+
+
+# --- method 4 on hand-built bit streams ----------------------------------------------
+
+
+def _bits(*fields: str) -> bytes:
+    """Bits written most significant first, zero-padded to whole bytes."""
+    text = "".join(fields)
+    text += "0" * (-len(text) % 8)
+    return int(text, 2).to_bytes(len(text) // 8, "big") if text else b""
+
+
+def _fast(stream: bytes, size: int) -> bytes:
+    from archivey.internal.streams.codecs.arj_fast_decoder import ArjFastDecoder
+
+    parts = [stream]
+    decoder = ArjFastDecoder(size, lambda: parts.pop() if parts else None)
+    out = b""
+    while chunk := decoder.read(1 << 16):
+        out += chunk
+    return out
+
+
+# A literal: length code "0", then 8 bits. A match of 3 bytes: length code "100"
+# (width 1, value 1); distance less one 0: "0" then 9 bits.
+_LITERAL_A = ("0", format(ord("a"), "08b"))
+_MATCH_3_BACK_1 = ("100", "0", "0" * 9)
+
+
+def test_method4_literal_and_match() -> None:
+    assert _fast(_bits(*_LITERAL_A, *_MATCH_3_BACK_1), 4) == b"aaaa"
+
+
+def test_method4_last_match_is_cut_at_the_size() -> None:
+    assert _fast(_bits(*_LITERAL_A, *_MATCH_3_BACK_1), 3) == b"aaa"
+
+
+def test_method4_match_before_the_output_is_corruption() -> None:
+    with pytest.raises(CorruptionError, match="before the start of the output"):
+        _fast(_bits(*_MATCH_3_BACK_1), 3)

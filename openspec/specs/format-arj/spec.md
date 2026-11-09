@@ -54,8 +54,8 @@ pipe SHALL be refused with `StreamNotSeekableError`.
 
 The backend SHALL raise `CorruptionError` for a header without `60 EA`, a basic header
 over 2600 bytes or under its fixed part, a basic or extended header that fails its
-CRC-32, a name with no NUL, a second main header, a Unix special header cut short, more
-than 1 MiB of extended headers on one member, and a member whose data fails its CRC-32.
+CRC-32, a name with no NUL, a second main header, a Unix special header cut short, and a
+member whose data fails its CRC-32.
 It SHALL raise `TruncatedError` for a file that ends inside a header or a member's data.
 A garbled member SHALL be listed with `is_encrypted` and raise `UnsupportedFeatureError`
 when read, as SHALL a member split across volumes and a method past 4.

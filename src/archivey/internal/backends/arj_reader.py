@@ -75,9 +75,6 @@ _FIXED_MIN = 30
 _FIXED_EXT_POS = 34
 _FIXED_TIMES = 46
 _FIXED = struct.Struct("<BBBBBBBBIIIIHHBB")
-# The extended headers of one member: ARJ writes at most a few; the cap bounds a chain
-# with no count.
-_EXT_MAX_TOTAL = 1 << 20
 
 _FLAG_GARBLED = 0x01
 _FLAG_VOLUME = 0x04  # the member goes on in the next volume
@@ -86,8 +83,6 @@ _FLAG_EXTFILE = 0x08  # the member started in the previous volume
 _TYPE_TEXT = 1
 _TYPE_MAIN = 2
 _TYPE_DIRECTORY = 3
-_TYPE_VOLUME_LABEL = 4
-_TYPE_CHAPTER_LABEL = 5
 _TYPE_UNIX_SPECIAL = 6
 _FILE_TYPES = frozenset({0, _TYPE_TEXT})
 
@@ -157,7 +152,6 @@ class _Header:
         "modified",
         "name",
         "offset",
-        "password_modifier",
         "size",
         "stored",
         "unix_special",
@@ -169,7 +163,6 @@ class _Header:
         self.flags = 0
         self.method = 0
         self.file_type = 0
-        self.password_modifier = 0
         self.modified = 0
         self.accessed = 0
         self.created = 0
@@ -240,7 +233,7 @@ class ArjReader(IndexedReader[_Location]):
             header.flags,
             header.method,
             header.file_type,
-            header.password_modifier,
+            _password_modifier,
             header.modified,
             header.stored,
             header.size,
@@ -251,7 +244,9 @@ class ArjReader(IndexedReader[_Location]):
             _chapter,
         ) = _FIXED.unpack_from(body)
         if first >= _FIXED_TIMES:
-            header.accessed, header.created = struct.unpack_from("<II", body, 34)
+            header.accessed, header.created = struct.unpack_from(
+                "<II", body, _FIXED_EXT_POS
+            )
         name, nul, rest = body[first:].partition(b"\0")
         if not nul:
             raise CorruptionError(
@@ -260,18 +255,13 @@ class ArjReader(IndexedReader[_Location]):
         header.name = name
         header.comment = rest.partition(b"\0")[0]
         pos = offset + 4 + size + 4
-        total = 0
+        # Each extended header is read, checked and dropped (only a ``U`` header is
+        # kept), so the chain is bounded by its 2-byte lengths and the file's size.
         while True:
             length = int.from_bytes(self._read(pos, 2, "an extended header"), "little")
             pos += 2
             if length == 0:
                 break
-            total += length
-            if total > _EXT_MAX_TOTAL:
-                raise CorruptionError(
-                    f"the ARJ header at offset {offset} has over {_EXT_MAX_TOTAL} "
-                    "bytes of extended headers"
-                )
             ext = self._read(pos, length + 4, "an extended header")
             data = ext[:length]
             if zlib.crc32(data) != int.from_bytes(ext[length:], "little"):
@@ -368,9 +358,11 @@ class ArjReader(IndexedReader[_Location]):
     def _member(self, header: _Header) -> ArchiveMember:
         context = self._context
         raw = header.name
-        if header.host_os in _BACKSLASH_HOSTS:
-            raw = raw.replace(b"\\", b"/")
         name = context.decode_name(raw)
+        if header.host_os in _BACKSLASH_HOSTS:
+            # On the decoded name: in a double-byte code page (cp932) 0x5C can be the
+            # second byte of a character.
+            name = name.replace("\\", "/")
         file_type = header.file_type
         link_target: str | None = None
         special: str | None = None
