@@ -66,7 +66,7 @@ on:
 # free-threaded 3.13t, the structural benchmark and the LZO check against liblzo2. A
 # pull request whose diff misses every `FULL` path runs lint alone, which runs the
 # script tests. Not on a pull request: the `test-queue` legs (the other Pythons, 3.15 core-only, the minimum versions, macOS,
-# Windows 3.11, the 3.16 prerelease), 3.15t, the distribution unar packages, PyPy and
+# Windows 3.11, the python.org builds on macOS and Windows, the 3.16 prerelease), 3.15t, the distribution unar packages, PyPy and
 # the short Atheris fuzz.
 # A failure there takes the pull request out of the queue, except in the 3.16 prerelease
 # leg, which is allowed to fail. The split exists because the
@@ -120,7 +120,7 @@ jobs:
         run: uv run --no-sync pytest scripts/tests -q -n auto --no-cov
 
   test:
-    name: ${{ matrix.os }} / py${{ matrix.python-version }}${{ matrix.python-source && format(' {0}', matrix.python-source) || '' }} / ${{ matrix.install }}
+    name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
     runs-on: ${{ matrix.os }}
@@ -135,7 +135,8 @@ jobs:
     # `.python-version` (3.11) wins and "py3.12/3.13/3.14" legs silently re-test 3.11.
     # The legs split into two jobs, `test` here (every run) and `test-queue` (not on pull
     # requests), which share these steps through the YAML anchors `test-env` and
-    # `test-steps`. Check names stay `os / pyX / install` in both.
+    # `test-steps`. Check names stay `os / pyX / install` in both, with `python.org`
+    # after the version on a `test-queue` leg that sets `python-source`.
     env: &test-env
       UV_PYTHON: ${{ matrix.python-version }}
       # A python.org leg (matrix.python-source) runs on the interpreter setup-python put
@@ -158,13 +159,6 @@ jobs:
           # expression: `matrix.coverage && '' || '--no-cov'` would give --no-cov here too.
           - { os: ubuntu-latest, python-version: "3.15", install: all, coverage: true }
           - { os: windows-latest, python-version: "3.15", install: all }
-          # python.org builds (actions/setup-python), on macOS and Windows. uv-managed
-          # Pythons bundle a recent liblzma, zlib, bz2 and OpenSSL; the python.org ones
-          # bundle their own, older ones (liblzma 5.2.3 on macOS, 3.11 to 3.14), and most
-          # users on these systems run them. The other legs cannot see a bug that depends
-          # on those libraries, as the LZMA Alone end-marker one did (PR #1420).
-          - { os: macos-latest, python-version: "3.11", install: all, python-source: python.org }
-          - { os: windows-latest, python-version: "3.14", install: all, python-source: python.org }
 
     steps: &test-steps
       - uses: actions/checkout@v4
@@ -443,8 +437,8 @@ jobs:
           got=sys.version_info[:2]; assert got==exp, (got, exp); print(sys.version)"
 
       # A python.org leg must test the setup-python interpreter: fail if uv picked another
-      # one (the macOS image also has Homebrew Pythons). Prints the liblzma version, which
-      # Windows links statically and so cannot report.
+      # one (the macOS image also has Homebrew Pythons). Prints the liblzma version where
+      # `_lzma` exports `lzma_version_string` (not on Windows).
       - name: Assert the venv is on the python.org Python
         if: matrix.python-source == 'python.org'
         shell: bash
@@ -463,7 +457,7 @@ jobs:
               lib = ctypes.CDLL(_lzma.__file__)
               lib.lzma_version_string.restype = ctypes.c_char_p
               print("liblzma", lib.lzma_version_string().decode())
-          except (OSError, AttributeError) as exc:  # statically linked, or symbol hidden
+          except (OSError, AttributeError) as exc:  # no __file__ (built in), or not exported
               print("liblzma version unknown:", exc)
           PY
 
@@ -569,7 +563,7 @@ jobs:
   # and a dispatched run (see the note at the top). Same steps as `test`. In the merge
   # queue, only when `scope` says the group needs them.
   test-queue:
-    name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}${{ matrix.python-source && format(' {0}', matrix.python-source) || '' }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ${{ matrix.os }}
@@ -607,6 +601,16 @@ jobs:
           - { os: macos-latest, python-version: "3.11", install: all }
           - { os: macos-latest, python-version: "3.15", install: all }
           - { os: windows-latest, python-version: "3.11", install: all }
+          # python.org builds (actions/setup-python) on macOS and Windows, for the native
+          # libraries they bundle, not for the Python version. uv-managed Pythons bundle a
+          # recent liblzma, zlib, bz2 and OpenSSL; the python.org ones bundle their own,
+          # older ones (liblzma 5.2.3 on macOS, 3.11 to 3.14), and most users on these
+          # systems run them. The other legs cannot see a bug that depends on those
+          # libraries, as the LZMA Alone end-marker one did (#1420). In the queue only, as
+          # macOS is (maintainer, 2026-11-09); dispatch the workflow on a branch to run
+          # them before queueing.
+          - { os: macos-latest, python-version: "3.11", install: all, python-source: python.org }
+          - { os: windows-latest, python-version: "3.14", install: all, python-source: python.org }
     # These rows have no `coverage` key: it evaluates to null, so the steps pass
     # --no-cov. actionlint reports the key as undefined here; that is expected.
     steps: *test-steps

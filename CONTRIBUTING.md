@@ -127,7 +127,9 @@ in the lint job instead; leg 3 passes `tests/`, as CI's core-only leg does. `-n 
 pytest tests/test_zip.py` stays one process.
 
 CI also matrixes supported **Python versions** (3.11–3.15 on Linux; 3.11/3.15 on
-macOS/Windows, plus an allowed-to-fail 3.16 prerelease leg). A pull request push runs a
+macOS/Windows, plus an allowed-to-fail 3.16 prerelease leg), and runs the python.org
+builds of macOS 3.11 and Windows 3.14 for the older native libraries they bundle
+(liblzma, zlib, OpenSSL). A pull request push runs a
 reduced set (Linux 3.11 and 3.15, one core-only leg, Windows 3.15, free-threaded 3.13t, the benchmark and plugin jobs); the
 merge queue runs every leg plus PyPy, the distribution unar packages and the short
 Atheris fuzz, and a failure there takes the pull request out of the queue. A queued
