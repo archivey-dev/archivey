@@ -14,6 +14,11 @@ but does not read. A compressed folder is solid: a file is reached by decoding i
 folder from the start. The reader keeps the folder decoder the last member stream left
 behind, so members read in order decode each folder once.
 
+The listing is the file table: each ``CFFILE`` record becomes a ``FILE`` member whose
+locator is its folder and its offset in that folder's output. Opening a member reads
+the folder's ``CFDATA`` headers once (the block table), then decodes the folder up to
+that offset.
+
 Cabinet sets (a folder continued in the next ``.cab``) are refused. The handbook page
 is ``dev-docs/formats/cab.md``.
 """
@@ -109,15 +114,20 @@ class _Folder(NamedTuple):
     """Where its first CFDATA block starts."""
     blocks: int
     method: int
+    """``_STORED``, ``_MSZIP``, ``_QUANTUM`` or ``_LZX``, or a value no writer uses."""
     window_bits: int
+    """The LZX window size as a power of two; ignored for the other methods."""
 
 
 class _Block(NamedTuple):
     payload: int
     """Where its stored bytes start."""
     stored: int
+    """How many bytes it stores."""
     decoded: int
+    """How many bytes of folder output it decodes to."""
     checksum: int
+    """The ``CFDATA`` checksum, 0 when the writer left it out."""
 
 
 # ``_A_EXEC`` and ``_A_NAME_IS_UTF``: bits a cabinet gives its own meaning, which in a
@@ -139,6 +149,9 @@ class _BlockTable(NamedTuple):
 
 
 class _Location(NamedTuple):
+    """Where a member's bytes are: an index into the folder records, and where the
+    member starts in that folder's decoded output."""
+
     folder: int
     offset: int
 
@@ -391,6 +404,13 @@ class CabReader(IndexedReader[_Location]):
     def _folder_stream(
         self, index: int, folder: _Folder, table: _BlockTable, offset: int
     ) -> _FolderStream:
+        """A folder stream positioned at ``offset`` of folder ``index``'s output.
+
+        The parked stream is taken when it is on the same folder and not yet past
+        ``offset``, so members read in order decode the folder once. Otherwise a
+        compressed folder decodes again from its first block, because each block
+        depends on the output before it.
+        """
         with self._lock:
             parked, self._parked = self._parked, None
         if parked is not None and parked.index == index and parked.position <= offset:
@@ -472,7 +492,12 @@ class _Cursor:
 
 
 class _FolderStream:
-    """A folder's output, decoded block by block from where it starts."""
+    """A folder's output, decoded block by block from where it starts.
+
+    ``first`` is the block to start at: 0 for a compressed folder, any block for a
+    stored one, or ``None`` for an offset past the blocks read. That one starts at
+    the end of those blocks' output, so its first read raises ``TruncatedError``.
+    """
 
     def __init__(
         self,
@@ -490,10 +515,14 @@ class _FolderStream:
         self.position = (
             table.output[self._next] if first is not None else (table.output[-1])
         )
+        # Decoded bytes not yet handed out.
         self._pending = b""
+        # MSZIP: the last 32 KiB of output, the next block's deflate dictionary.
         self._history = b""
+        # Set when a decode raised, so the stream is not parked for the next member.
         self.failed = False
         self._lzx: LzxDecoder | None = None
+        # LZX: the next block whose bytes the decoder pulls through ``_lzx_more``.
         self._lzx_input = self._next
         if folder.method == _LZX:
             self._lzx = LzxDecoder(folder.window_bits, self._lzx_more)
@@ -508,6 +537,8 @@ class _FolderStream:
         return data
 
     def _lzx_more(self) -> bytes | None:
+        """The LZX decoder's input: the next block's checked bytes, None after the
+        last."""
         if self._lzx_input >= len(self._table.blocks):
             return None
         data = self._payload(self._lzx_input)
