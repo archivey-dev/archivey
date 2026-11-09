@@ -28,8 +28,10 @@ stay a local path whatever it contains, and the `OpenFile` check SHALL run only 
 
 An `OpenFile` whose `mode` is not `"rb"` SHALL be refused with an `ArchiveyUsageError`
 that is a `ValueError`, naming the mode, before any range is read. An `OpenFile` whose
-`compression` is not `None` after fsspec resolves it SHALL be read through `of.open()`,
-fsspec's decompressing stream, as a stream archivey opened and closes, with one WARNING
+`compression` is not `None` after fsspec resolves it SHALL be read through fsspec's
+decompressing stream, as `of.open()` builds it but without entering `of`. archivey opened
+that stream and the file system's file under it, and SHALL close both when the source
+closes, the open fails or detection ends, with one WARNING
 on the `archivey.streams` logger saying it reads no ranges; for a codec archivey decodes
 itself, the warning SHALL say that `compression=None` reads by range. Its `compression`
 SHALL NOT become a `format=`: the archive is what the decompressed bytes hold. In a
@@ -60,7 +62,7 @@ The `ArchiveSource` built from an `OpenFile` SHALL settle its facts once, at ope
 | `size` | `fs.size(path)`, as a fact: it clamps reads as a path's `stat` size does |
 | `size_hint` | The same value |
 | `path`, `volume_paths` | `None` |
-| `name` | `of.path` |
+| `name` | `of.path`, without the `user:password@` of a URL and, for `http`/`https`, without the query and fragment |
 | `seek_is_expensive` | `True` |
 
 A backend that needs a local path SHALL treat the source as any non-path stream (RAR's
@@ -72,6 +74,7 @@ system.
 | Case | Expected |
 | --- | --- |
 | `detect_format(fsspec.open("memory://d/data.tar.zst"))` | The name `d/data.tar.zst` drives the name-keyed checks as a path's name does |
+| `OpenFile` path `https://u:pw@host/a.zip?X-Amz-Signature=…` | `archive_name` and archivey's own messages, diagnostics and logs show `https://host/a.zip`; every fetch uses the path as given. An I/O error the file system raises propagates unchanged (DR-15a) and can carry the URL as given |
 | Object grows after open | Reads stop at the open-time size; detecting the change is the planner's (`fsspec-integration`) |
 | RAR, compressed member, `OpenFile` source | The archive is spooled under `SpoolLimits`, with the existing cost note |
 

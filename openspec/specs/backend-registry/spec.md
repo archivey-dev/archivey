@@ -471,7 +471,9 @@ archive (`ReaderContext.decompress`, `ForwardStream.decompress`), SHALL NOT be r
 by them. `FormatPolicy.plugins` and `FormatPolicy.exclude_libraries` SHALL hold for
 every decode in the call. Under `plugins=False`, a `ReaderContext.decompress` or
 `ForwardStream.decompress` call for a `PluginStream` SHALL raise
-`UnsupportedFeatureError` that names `plugins=False`, before the codec's code runs. A
+`UnsupportedFeatureError` that names `plugins=False`, before the codec's code runs, and
+so SHALL a `ReaderContext.open_nested` call whose format has a `PluginContainer` or a
+`PluginStream`, before the inner reader runs. A
 package `exclude_libraries` names SHALL read as not installed for a nested decode as
 for the outer file (`packaging-and-extras`, *An excluded optional library reads as not
 installed*).
@@ -484,6 +486,13 @@ installed*).
 - **THEN** reading the member raises `UnsupportedFeatureError` that names `plugins=False`
 - **AND** that codec's decoder is not created
 
+#### Scenario: A plugin format nested inside an archive is refused under plugins=False
+
+- **WHEN** a reader's walk calls `ReaderContext.open_nested` with an `ArchiveFormat`
+  whose container is a registered `PluginContainer`, under `FormatPolicy(plugins=False)`
+- **THEN** the walk raises `UnsupportedFeatureError` that names `plugins=False`
+- **AND** that format's reader is not created
+
 ### Requirement: A replacement plugin reads a built-in container
 
 A `FormatPolicy(replace={container: plugin})` SHALL open that built-in container with
@@ -493,7 +502,8 @@ built-in format, and `format_info.from_plugin` SHALL stay false.
 The replacement SHALL NOT be given a multi-volume set or an archive found behind an SFX
 stub; each SHALL raise `UnsupportedFeatureError` that names the replacement. A read-once
 source SHALL raise `StreamNotSeekableError`, as it does for any indexed plugin. A raw CD
-sector image detected as ISO SHALL be refused as the built-in reader refuses it. Each
+sector image detected as ISO SHALL be refused, including the layouts the built-in reader
+reads: only the built-in reader strips the sectors. Each
 refusal SHALL come before the plugin's `open` runs.
 
 #### Scenario: A ZIP opens with the replacement
