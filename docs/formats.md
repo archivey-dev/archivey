@@ -828,8 +828,10 @@ On a compressed tar, the stream's own checksum adds three cases:
   stream still open holds the file, which then can't grow: a read further in starts a new file
   for the stream, which later reads grow, and the held one is removed when it closes. So reads
   that each go further in while every earlier one is still open copy the stream's start each
-  time. For an archive opened from a path, a stream whose copy would pass 64 MiB is read in place
-  instead.
+  time. When a copy would pass `SpoolLimits.max_bytes` and removing the files of other
+  streams that no open member stream holds makes room, those files are removed, least recently
+  read first, and a later read of such a stream copies it again. For an archive opened from a path, a stream whose copy would pass 64 MiB is read in
+  place instead.
 - **A pass over a solid archive opened from a stream source copies a few solid streams at a time.**
   `stream_members()` and `extract_all()` on a solid RAR opened from a `BytesIO` or a file object
   run one `unrar` per run of whole solid streams, each on a temporary file holding that run alone,
@@ -1185,7 +1187,9 @@ The format of macOS installer packages (`.pkg`) and `.xip` files, written by App
 - The index's own checksum is checked at open, and a damaged index raises
   `CorruptionError`. Each file's data carries a checksum of its decoded bytes (SHA-1 by
   default, or MD5, SHA-256 or SHA-512), which is `member.hashes`, so a member read to its end
-  is at `Verification.CHECKSUM`.
+  is at `Verification.CHECKSUM`. A checksum of another style, or one that names no style,
+  is not a hash: the file reads unchecked and reports `DIGEST_UNVERIFIABLE` when it is
+  listed, which `DiagnosticPolicy.STRICT` raises.
 - A name stored base64-encoded, as writers do for bytes that are not UTF-8, is decoded with
   `encoding=` like a name in any other format.
 - Apple's `productbuild` stores the name of each top-level file twice, the same both times;
@@ -1619,7 +1623,11 @@ they open at once. Close the sending side when the file is done.
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
   (ZIP, 7z, RAR) are searched for. Behind a Windows, Linux or macOS program whose header says
   where its own image ends, an archive that starts exactly there is taken first, ahead of
-  anything else in the window. Otherwise,
+  anything else in the window. That holds under every detection budget: a smaller one, such as
+  `FAST`, still looks there, with a seek. Read from a pipe, under a budget whose window ends before
+  that point, detection gives up instead (`FormatDetectionError` when nothing else names the
+  format), because answering from the program image could open a different archive. Raise
+  `max_scan_bytes`, or pass `format=`. Otherwise,
   among several 7z candidates, one that ends exactly at the end of
   the file is preferred over an earlier one that ends short of it.
 - **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`

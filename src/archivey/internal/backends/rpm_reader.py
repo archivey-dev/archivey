@@ -25,15 +25,15 @@ reader maps each entry to its file the way ``rpm`` does (``lib/rpmfi.c``):
 Every member's metadata comes from the header, as ``rpm`` installs it; a newc entry's
 own size is only checked against it. Members are named as the payload stores them,
 ``./usr/bin/x``, so ``usr/bin/x`` once normalized: what ``rpm2cpio | cpio -i``
-extracts, relative to the directory it is given. A regular file's data follows its entry, except
-in a hard-link set (regular files that share ``FILEDEVICES`` and ``FILEINODES``):
-there only the set's last file in header order carries the data, the earlier entries
-coming first, empty. As for CPIO, this reader holds those back, yields the last as the
-``FILE`` and the others as ``HARDLINK`` members to it. A symlink's target is its entry's
-data; the reader takes it from ``FILELINKTOS`` and skips those bytes. A ``%ghost`` file
-is listed in the header but never stored, and ``rpm2cpio`` does not give it either: it
-is not a member. The payload ends with a newc ``TRAILER!!!`` entry, and every file
-that is not a ghost must have been found by then.
+extracts, relative to the directory it is given. A regular file's data follows its
+entry, except in a hard-link set (regular files that share ``FILEDEVICES`` and
+``FILEINODES``): there only the set's last file in header order carries the data, the
+earlier entries coming first, empty. As for CPIO, this reader holds those back, yields
+the last as the ``FILE`` and the others as ``HARDLINK`` members to it. A symlink's
+target is its entry's data; the reader takes it from ``FILELINKTOS`` and skips those
+bytes. A ``%ghost`` file is listed in the header but never stored, and ``rpm2cpio``
+does not give it either: it is not a member. The payload ends with a newc
+``TRAILER!!!`` entry, and every file that is not a ghost must have been found by then.
 
 The signature header stores digests of the main header, from its magic to the end
 of its data store: ``RPMSIGTAG_SHA256`` and the older ``RPMSIGTAG_SHA1``. The walk
@@ -373,13 +373,18 @@ class _Package:
     # (directory, base) -> file index: the bytes objects the header's lists hold.
     by_name: dict[tuple[bytes, bytes], int]
     compressor: StreamFormat | None
-    digest: tuple[str, Callable[[], Hasher]] | None
+    # FILEDIGESTALGO's name and hash constructor; None for an algorithm not in _DIGESTS.
+    digest_algorithm: tuple[str, Callable[[], Hasher]] | None
+    # The header's per-file columns, indexed like ``files``; None for an absent tag.
     digests: list[bytes] | None
     mtimes: list[int] | None
     users: list[bytes] | None
     groups: list[bytes] | None
     targets: list[bytes] | None
+    # Earlier links of a hard-link set, waiting for the set's last file (by its index),
+    # which carries the data.
     held: dict[int, list[_File]] = field(default_factory=dict)
+    # The payload offset of the first CPIO entry: CPIO pads to 4 bytes from there.
     base: int = 0
 
 
@@ -437,6 +442,7 @@ class RpmReader(SequentialReader):
         self._check_end(payload)
 
     def _read_package(self, stream: ForwardStream) -> _Package:
+        """Read the lead and both headers, leaving the stream at the payload."""
         lead = stream.read_exact(LEAD_SIZE)
         if lead[:4] != LEAD_MAGIC:
             raise CorruptionError("No RPM lead at offset 0")
@@ -483,6 +489,8 @@ class RpmReader(SequentialReader):
         header: Header,
         compressor: bytes | None,
     ) -> None:
+        """Fill the archive info: the package's identity, whether it is signed, and the
+        package format version."""
         extra = ArchiveInfoExtra({})
 
         def text(tag: int) -> str | None:
@@ -757,6 +765,10 @@ class RpmReader(SequentialReader):
     def _entry(
         self, payload: ForwardStream, package: _Package, file: _File
     ) -> Iterator[MemberSpan]:
+        """The members one payload entry gives: its own, unless it is an earlier link
+        of a hard-link set, which is held until the set's last file comes, or yielded
+        at once as a link to that file if it already came; then the held links of the
+        set it ends."""
         member = self._member(package, file)
         if member.type is MemberType.SYMLINK:
             # The target, which the header already gave.
@@ -784,6 +796,7 @@ class RpmReader(SequentialReader):
 
     @staticmethod
     def _link(member: ArchiveMember, data: ArchiveMember) -> MemberSpan:
+        """Turn ``member`` into a hard link to ``data``, the member with the bytes."""
         member.type = MemberType.HARDLINK
         member.link_target = data.name
         member.size = None
@@ -791,7 +804,7 @@ class RpmReader(SequentialReader):
 
     @staticmethod
     def _digests(package: _Package, file: _File) -> tuple[MemberDigest, ...]:
-        if package.digests is None or package.digest is None:
+        if package.digests is None or package.digest_algorithm is None:
             return ()
         text = package.digests[file.index]
         if not text:
@@ -802,7 +815,7 @@ class RpmReader(SequentialReader):
             raise CorruptionError(
                 f"RPM header: the digest of {_shown(file.raw_name)} is not hexadecimal"
             ) from None
-        name, new = package.digest
+        name, new = package.digest_algorithm
         return (MemberDigest(name, expected, new),)
 
     def _check_end(self, payload: ForwardStream) -> None:
@@ -868,6 +881,7 @@ def _shown(raw: bytes) -> str:
 def _hex(raw: bytes, what: str, offset: int) -> int:
     try:
         text = raw.decode("ascii")
+        # int() would also take spaces, a sign and underscores.
         if not text.isalnum():
             raise ValueError(text)
         return int(text, 16)

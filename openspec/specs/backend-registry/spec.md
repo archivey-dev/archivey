@@ -471,7 +471,9 @@ archive (`ReaderContext.decompress`, `ForwardStream.decompress`), SHALL NOT be r
 by them. `FormatPolicy.plugins` and `FormatPolicy.exclude_libraries` SHALL hold for
 every decode in the call. Under `plugins=False`, a `ReaderContext.decompress` or
 `ForwardStream.decompress` call for a `PluginStream` SHALL raise
-`UnsupportedFeatureError` that names `plugins=False`, before the codec's code runs. A
+`UnsupportedFeatureError` that names `plugins=False`, before the codec's code runs, and
+so SHALL a `ReaderContext.open_nested` call whose format has a `PluginContainer` or a
+`PluginStream`, before the inner reader runs. A
 package `exclude_libraries` names SHALL read as not installed for a nested decode as
 for the outer file (`packaging-and-extras`, *An excluded optional library reads as not
 installed*).
@@ -483,6 +485,13 @@ installed*).
   `PluginStream`
 - **THEN** reading the member raises `UnsupportedFeatureError` that names `plugins=False`
 - **AND** that codec's decoder is not created
+
+#### Scenario: A plugin format nested inside an archive is refused under plugins=False
+
+- **WHEN** a reader's walk calls `ReaderContext.open_nested` with an `ArchiveFormat`
+  whose container is a registered `PluginContainer`, under `FormatPolicy(plugins=False)`
+- **THEN** the walk raises `UnsupportedFeatureError` that names `plugins=False`
+- **AND** that format's reader is not created
 
 ### Requirement: A replacement plugin reads a built-in container
 

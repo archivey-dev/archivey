@@ -127,6 +127,7 @@ from archivey.internal.reader_state import (
     LiveStreamReservation,
     ReaderState,
 )
+from archivey.internal.remote import source_change
 from archivey.internal.resource_usage import ResourceUsage, ResourceUsageRecorder
 from archivey.internal.selection import (
     CollectionSelector,
@@ -896,6 +897,8 @@ class BaseArchiveReader(ArchiveReader):
         return _TranslatedErrorBoundary(self, member_name, stamp_encryption)
 
     def _seek_declared(self) -> bool:
+        """Whether the caller asked for seekable member streams
+        (``open_archive(seekable_members=True)``): the most a member stream may offer."""
         return self._state.seekable
 
     def _register_public_stream(
@@ -1674,6 +1677,11 @@ class BaseArchiveReader(ArchiveReader):
         chosen_by: Literal["argument", "extension"],
         detected_format: str | None,
     ) -> None:
+        """Report an empty listing under a format the bytes never confirmed: one the
+        caller's ``format=`` (``"argument"``) or the file extension chose.
+        ``detected_format`` is what content detection names instead, or ``None`` when it
+        refuses the bytes or cannot read them. An extension pick passes ``None`` without
+        running detection again: detection had already declined the bytes."""
         format_name = self._format.display_name
         detected_text = detected_format or "nothing (detection refuses these bytes)"
         self._diagnostics_collector.emit(
@@ -1715,6 +1723,11 @@ class BaseArchiveReader(ArchiveReader):
             return self._publish_materialized(error=error)
 
     def _publish_materialized(self, *, error: ArchiveyError | None) -> _Materialized:
+        """Settle the walk's members and publish them as the reader's listing.
+
+        ``error`` is the damage the walk ended on, kept on the report. Runs under the
+        walk lock, after the links are resolved (:meth:`_finalize_and_publish`).
+        """
         members = self._listed
         # Links are resolved to members now, and is_current was stamped when the walk
         # ended, so nothing changes these members from here. Not when the walk ends: a
@@ -1982,9 +1995,11 @@ class BaseArchiveReader(ArchiveReader):
                     else:
                         member = self._pull_replayable(position)
                 except StopIteration:
+                    self._raise_source_change()
                     self._end_walk(None)
                     return None
                 except CorruptionError as exc:
+                    self._raise_source_change(exc)
                     self._end_walk(exc)
                     return None
                 self._register_member(position, member)
@@ -1994,6 +2009,8 @@ class BaseArchiveReader(ArchiveReader):
             return member
         except BaseException as exc:
             self._abandon_walk(exc)
+            if isinstance(exc, Exception):
+                self._raise_source_change(exc)
             raise
         finally:
             self._walk_pulling = False
@@ -2034,6 +2051,24 @@ class BaseArchiveReader(ArchiveReader):
             return self._walk_built[position]
         self._walk_built.append(member)
         return member
+
+    def _raise_source_change(self, cause: BaseException | None = None) -> None:
+        """Raise ``SourceChangedError`` when the remote object this reader reads has
+        changed (``fsspec-integration`` design D7), with ``cause`` as its cause.
+
+        The walk ends here, in place of a clean end, an incomplete listing or another
+        error. A backend handler built for damage (TAR's scan past the end-of-archive
+        marker, a salvage path, a metadata probe) can take the change for damage and
+        go on, and what it then reports describes no archive. The source raises the
+        change again on every later read, so a later call raises it too.
+        """
+        source = self._source
+        if source is None:
+            return
+        changed = source_change(source.remote_sources, cause)
+        if changed is not None:
+            self._stamp_error_context(changed)
+            raise changed from cause
 
     def _end_walk(self, error: CorruptionError | None) -> None:
         """Record that the walk ended, and stamp last-entry-wins once, over what it listed.
@@ -2631,6 +2666,8 @@ class BaseArchiveReader(ArchiveReader):
             self._resolve_link_target_locked(member)
 
     def _resolve_link_target_locked(self, member: ArchiveMember) -> None:
+        """:meth:`_resolve_link_target` under its lock: read the target, report what it
+        found, and memo that the member is done."""
         if member.link_target is not None or member._link_target_resolved:
             return
         try:
@@ -3230,6 +3267,8 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def _index_member_name(self, member: ArchiveMember) -> None:
+        """Add ``member`` to ``_listed_by_name`` under its name, after any member
+        listed under it before."""
         index = self._listed_by_name
         held = index.get(member.name)
         if held is None:
@@ -3277,6 +3316,8 @@ class BaseArchiveReader(ArchiveReader):
         return (held,)
 
     def _last_by_exact_name(self, name: str) -> ArchiveMember | None:
+        """The member listed last under exactly ``name``, which a lookup by name
+        returns, or ``None``."""
         held = self._listed_by_name.get(name)
         if isinstance(held, list):
             return held[-1]
@@ -3443,6 +3484,7 @@ class BaseArchiveReader(ArchiveReader):
         return self._progressive_gen
 
     def _guard_forward_pass_entry(self, op: str) -> None:
+        """Refuse ``op`` once a streaming reader's one forward pass has started."""
         if self._streaming and self._forward_pass_started:
             raise ArchiveyUsageError(
                 f"{op} is not available after a streaming reader's forward pass has "
@@ -3451,6 +3493,7 @@ class BaseArchiveReader(ArchiveReader):
             )
 
     def _enter_forward_pass(self, op: str) -> None:
+        """Start a streaming reader's one forward pass for ``op``, or refuse it."""
         self._guard_forward_pass_entry(op)
         self._forward_pass_started = True
 
@@ -3741,6 +3784,9 @@ class BaseArchiveReader(ArchiveReader):
         return MemberPassImpl(self._iter_pass())
 
     def _iter_pass(self) -> Generator[ArchiveMember, None, None]:
+        """``iter(reader)``. A streaming reader yields its one forward pass as it walks.
+        A random-access reader lists the archive first and yields that listing, then
+        raises the damage the listing stopped at, if any."""
         self._state.require_open("__iter__")
         if self._streaming:
             token = self._state.acquire_pass("__iter__")
@@ -3970,11 +4016,11 @@ class BaseArchiveReader(ArchiveReader):
                 member = found
             else:
                 # Checked before the identity comparison below, which reads a private
-                # attribute: without this, `open(0)` failed as
-                # `AttributeError: 'int' object has no attribute '_archive_id'` —
-                # a private field name crossing the public boundary in place of an
-                # answer. `in` raises TypeError here (a spec'd escape for the operator
-                # protocol); this is an ordinary argument, so it takes the usage error.
+                # attribute: otherwise `open(0)` would fail with an AttributeError
+                # naming `_archive_id`, a private field crossing the public boundary
+                # in place of an answer. `in` raises TypeError here (a spec'd escape
+                # for the operator protocol); this is an ordinary argument, so it
+                # takes the usage error.
                 if not isinstance(member, ArchiveMember):
                     raise _UsageTypeError(
                         f"reader.open() takes a member name (str) or an ArchiveMember "
@@ -4518,6 +4564,16 @@ class BaseArchiveReader(ArchiveReader):
         *,
         hold_to_ratio: bool = False,
     ) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
+        """The ``stream_members()`` pass around the backend's :meth:`_iter_with_data`.
+
+        What it adds, the same for every backend: the pass token, one live-stream slot
+        for all the pass's streams, a file copy's stream closed unopened (the member
+        comes through with ``None``) unless ``copies.streams``, the ``selector``,
+        forward-only member streams, the ratio hold when ``hold_to_ratio``, and closing
+        each stream when the pass moves on. When the pass reaches the end, ``report``
+        records the selector's entries no member matched. A ``close()`` that finds the
+        pass suspended at a yield winds it down (``wind_down``).
+        """
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStreamImpl | None = None
         source_closer: Callable[[], None] | None = None

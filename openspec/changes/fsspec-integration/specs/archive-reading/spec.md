@@ -28,8 +28,10 @@ stay a local path whatever it contains, and the `OpenFile` check SHALL run only 
 
 An `OpenFile` whose `mode` is not `"rb"` SHALL be refused with an `ArchiveyUsageError`
 that is a `ValueError`, naming the mode, before any range is read. An `OpenFile` whose
-`compression` is not `None` after fsspec resolves it SHALL be read through `of.open()`,
-fsspec's decompressing stream, as a stream archivey opened and closes, with one WARNING
+`compression` is not `None` after fsspec resolves it SHALL be read through fsspec's
+decompressing stream, as `of.open()` builds it but without entering `of`. archivey opened
+that stream and the file system's file under it, and SHALL close both when the source
+closes, the open fails or detection ends, with one WARNING
 on the `archivey.streams` logger saying it reads no ranges; for a codec archivey decodes
 itself, the warning SHALL say that `compression=None` reads by range. Its `compression`
 SHALL NOT become a `format=`: the archive is what the decompressed bytes hold. In a
