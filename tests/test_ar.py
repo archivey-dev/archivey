@@ -7,6 +7,7 @@ import gzip
 import io
 import lzma
 import random
+import re
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -351,14 +352,32 @@ class _ScanSpy(bytes):
         return super().index(sub, start, stop)
 
 
-def test_long_name_lookup_scans_only_its_entry() -> None:
+class _MatchSpy:
+    """Stands in for the terminator pattern and records how far each match ran."""
+
+    def __init__(self, pattern: re.Pattern[bytes], table: _ScanSpy) -> None:
+        self._pattern = pattern
+        self._table = table
+
+    def search(self, names: bytes, pos: int = 0) -> re.Match[bytes] | None:
+        found = self._pattern.search(names, pos)
+        self._table.scans.append((len(names) if found is None else found.end()) - pos)
+        return found
+
+
+def test_long_name_lookup_scans_only_its_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # A NUL-terminated entry (the Windows .lib spelling) before a long tail with no
-    # newline: a search for the newline first ran to the table's end for every
-    # member, 70 s to list a 63 MiB archive of 50 000 members.
+    # newline: a search for the newline alone runs to the table's end for every
+    # member, 70 s to list a 63 MiB archive of 50 000 members. Every search the
+    # lookup makes, by bytes method or by the module's pattern, is recorded.
     table = _ScanSpy(b"\0a.o\0" + b"x" * (1 << 20))
     table.scans = []
+    monkeypatch.setattr(ar_reader, "_NAME_END", _MatchSpy(ar_reader._NAME_END, table))
     reader = cast("ArReader", SimpleNamespace(_dialect=None))
     assert ArReader._short_name(reader, b"/1", table, 0) == b"a.o"
+    assert table.scans, "the lookup made no search the test can see"
     assert all(scan <= 16 for scan in table.scans), table.scans
 
 
