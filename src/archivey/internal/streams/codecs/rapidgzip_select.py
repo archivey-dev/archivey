@@ -7,10 +7,11 @@ index as it reads, where the standard-library path re-decodes a backward seek fr
 nearest point it knows, often the start. Whether a stream goes through it depends on
 ``use_rapidgzip`` / ``use_indexed_bzip2`` (``ON``, ``OFF`` or ``AUTO``), seek demand and
 the input size, and for the DEFLATE family on whether a truncation can be detected: see
-:func:`_rapidgzip_enabled` here and ``_bzip2_uses_accelerator`` in ``bzip2_codec``.
-``AUTO`` falls back to the standard library whenever rapidgzip cannot run; ``ON`` raises
-instead. The stream itself comes from ``rapidgzip_child``, and ``stdlib_takeover`` hands
-it to the standard library on a data error.
+:func:`_rapidgzip_wanted` here (:func:`_rapidgzip_enabled` adds the child-process
+check) and ``_bzip2_uses_accelerator`` in ``bzip2_codec``. ``AUTO`` falls back to the
+standard library whenever rapidgzip cannot run; ``ON`` raises instead. The stream itself
+comes from ``rapidgzip_child``, and ``stdlib_takeover`` hands it to the standard library
+on a data error.
 """
 
 from __future__ import annotations
@@ -265,11 +266,10 @@ def _rapidgzip_rewind_warning(
 
     Nor does a stream below the ``AUTO`` size threshold: the distance threshold covers
     it (a small member cannot produce a large re-decode distance). ``suggest_install``
-    stays False when the accelerator is present
-    or engaged, so a caller is never told to install what they already have. On an
-    interpreter where archivey does not use it, or under a policy that excludes it,
-    ``unused_reason`` carries why (``_rapidgzip_unused_reason``) and the report says
-    that instead.
+    stays False when the accelerator is present or engaged, so a caller is never told to
+    install what they already have. On an interpreter where archivey does not use it, or
+    under a policy that excludes it, ``unused_reason`` carries why
+    (``_rapidgzip_unused_reason``) and the report says that instead.
     """
     engaged = _deflate_family_uses_accelerator(config)
     unused_reason = _rapidgzip_unused_reason(config)

@@ -576,9 +576,9 @@ def _reset_peak(refs: int | None = None) -> bool:
 
 
 def _main(argv: list[str], refs: int | None) -> None:
-    """Serve one stream per ``OPEN``, until the parent stops sending or a stream ends
-    in a way that leaves this process unfit for another (no ``RESET``, or a ``RESET``
-    reply of 0)."""
+    """Serve one stream per ``OPEN``, until the parent stops sending, an ``OPEN`` fails
+    (reported as ``ERR``), or a stream ends in a way that leaves this process unfit for
+    another (no ``RESET``, or a ``RESET`` reply of 0)."""
     # ``decoder_worker.prepare_child`` has run: no core dumps, and Ctrl-C ignored (it
     # would kill the process with rapidgzip's threads running, which aborts it and
     # reads as a decoder crash).
