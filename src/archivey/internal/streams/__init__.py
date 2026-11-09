@@ -8,7 +8,8 @@ reads (a typical ZIP member; other formats leave out or reorder layers):
 
 1. **The archive source.** The caller's file or stream, shared by every open member
    (``streamtools.SharedSource``), or behind a lock held across each seek and read
-   (``streamtools.LockedStream``, for TAR and ISO).
+   (``streamtools.LockedStream``), for a reader whose concurrent members share one
+   handle.
 2. **The member's extent.** A slice (``streamtools.SlicingStream``; a ``SharedView``
    over a ``SharedSource``) bounds every read and seek to the member's bytes.
 3. **Decryption**, for an encrypted member (:mod:`.crypto`).
@@ -16,8 +17,8 @@ reads (a typical ZIP member; other formats leave out or reorder layers):
    :class:`~archivey.internal.streams.decompressor_stream.DecompressorStream`. It
    also does the seeking within the decoded bytes, from the seek points it knows.
 5. **The public stream.** ``ArchiveStreamImpl`` (:mod:`.archive_stream`) translates
-   errors, runs the member's length and digest checks (:mod:`.verify`), and reports
-   what the layers below proved (:mod:`.verification`).
+   errors, runs the member's length and digest checks in most cases (:mod:`.verify`),
+   and reports what the layers below proved (:mod:`.verification`).
 
 A compressed TAR swaps 2 and 4: one codec stream decodes the whole archive, and each
 member is a slice of its output. A solid 7z folder or RAR block does the same through
@@ -48,8 +49,10 @@ Package map:
 - :mod:`.resume` — re-exports ``ask_resume_offset`` (rewind-cost query; the
   helper lives in ``streamtools.binaryio`` as generic ``getattr`` plumbing,
   named exception in that package's docstring).
-- :mod:`.verify` — ``MemberVerifier`` (+ standalone ``VerifyingStream`` for checks
-  that must sit below another wrapper).
+- :mod:`.verify` — ``MemberVerifier``, held on the public stream in most cases, and
+  ``VerifyingStream``, a layer of its own for checks that must sit below another
+  wrapper (over an accelerated codec, a length backstop; under ZIP's wrapper, a
+  ZipCrypto member's CRC).
 - :mod:`.verification` — what each layer of a member stream has proved
   (``ask_verification_proofs``), for ``ArchiveStream.verified``.
 - :mod:`.respawn` — ``RespawnStream``: seeks over a stream that only reads forward,

@@ -78,6 +78,7 @@ class ReadAheadStream(DelegatingStream):
         self._offset = 0
         # The error of a fill that raised while bytes from an earlier fill were still
         # buffered: those bytes went to the caller first, and the next read raises it.
+        # A seek drops it, as it drops the buffer.
         self._held: Exception | None = None
         self._buffer_size = buffer_size
         self._rewind_oversize = rewind_oversize
