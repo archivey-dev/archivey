@@ -69,7 +69,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
-from archivey.internal.long_paths import long_path, plain
+from archivey.internal.long_paths import long_path, make_dirs, plain
 from archivey.internal.overrides import override
 from archivey.internal.selection import CollectionSelector
 from archivey.paths import numbered_name
@@ -2740,6 +2740,8 @@ class ExtractionCoordinator:
         resolved_parents = self._state.resolved_parents
         rel_parent = resolved_parents.get(parent)
         if rel_parent is None:
+            rel_parent = self._extend_resolved_parent(parent)
+        if rel_parent is None:
             root = os.fspath(self._state.dest_root)
             try:
                 resolved = os.fspath(resolve_or_raise_on_loop(Path(parent)))
@@ -2754,6 +2756,41 @@ class ExtractionCoordinator:
                 return None
             resolved_parents[parent] = rel_parent
         return rel_parent + name
+
+    def _extend_resolved_parent(self, parent: str) -> str | None:
+        """``_physical_rel``'s answer for the directory ``parent`` from its own
+        parent's cached answer, with one ``lstat``; ``None`` when that needs the full
+        resolution.
+
+        Resolving each directory of a deep chain from the root would cost one
+        ``lstat`` per level, the depth squared for the chain (about 20 s for a member
+        1500 levels deep). A last component that is not a symlink adds itself
+        to its parent's resolution, as the full walk does (a missing one is kept as a
+        name there too), and follows no link, so a loop is counted as before. POSIX
+        only: on Windows the resolution also takes the spelling the volume stores."""
+        if os.name == "nt":
+            return None
+        head, last = os.path.split(parent)
+        if last in ("", ".", ".."):
+            return None
+        rel_head = self._state.resolved_parents.get(head)
+        if rel_head is None:
+            return None
+        try:
+            # Without a trailing "/", which would follow a symlink at ``last``.
+            mode = os.lstat(
+                long_path(os.path.join(self._state.dest_root, rel_head + last))
+            ).st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except OSError:
+            return None
+        else:
+            if stat.S_ISLNK(mode):
+                return None
+        rel_parent = f"{rel_head}{last}/"
+        self._state.resolved_parents[parent] = rel_parent
+        return rel_parent
 
     def _physical_path(self, path: Path) -> Path:
         """Where ``path`` is, under the destination as given, with its parent
@@ -4068,7 +4105,7 @@ class ExtractionCoordinator:
         if self._dry is not None:
             self._dry.check_creatable()
         else:
-            os.makedirs(long_path(dest), exist_ok=True)
+            make_dirs(dest)
         return True
 
     def _makedirs(self, path: Path, member: ArchiveMember) -> None:
@@ -4092,17 +4129,16 @@ class ExtractionCoordinator:
                 return
         except OSError:
             pass
-        # The components that do not exist yet: this run creates them, so a directory
-        # member naming one later is not the caller's (``_is_callers_directory``).
-        missing: list[Path] = []
-        probe = path
-        while probe != probe.parent and not os.path.lexists(long_path(probe)):
-            missing.append(probe)
-            probe = probe.parent
         if self._state.reservations:
             # A held-back link (``_reserve_orphan``) holds its name as the made link
             # would: a directory cannot be created there, and the member fails as
-            # it would against the made link, with the error below.
+            # it would against the made link, with the error below. Checked before
+            # anything is created, on the components that do not exist yet.
+            missing: list[Path] = []
+            probe = path
+            while probe != probe.parent and not os.path.lexists(long_path(probe)):
+                missing.append(probe)
+                probe = probe.parent
             for component in reversed(missing):
                 if self._reservation_at(component, directory=True) is not None:
                     raise ExtractionError(
@@ -4112,7 +4148,9 @@ class ExtractionCoordinator:
                         member_name=member.name,
                     )
         try:
-            os.makedirs(long_path(path), exist_ok=True)
+            # The directories this run creates, nearest the root first: a directory
+            # member naming one later is not the caller's (``_is_callers_directory``).
+            made = [Path(component) for component in make_dirs(path)]
         except (FileExistsError, NotADirectoryError, FileNotFoundError) as exc:
             # FileNotFoundError too: Windows can report a directory created under a file
             # as a missing path. Nearest the root first, because that component is the
@@ -4128,8 +4166,10 @@ class ExtractionCoordinator:
                         member_name=member.name,
                     ) from exc
             raise
-        self._state.created_dirs.update(missing)
-        for component in missing:
+        self._state.created_dirs.update(made)
+        # Nearest the root first, so each resolution extends its parent's
+        # (``_extend_resolved_parent``).
+        for component in made:
             self._note_run_directory(component)
 
     def _is_callers_directory(self, path: Path) -> bool:

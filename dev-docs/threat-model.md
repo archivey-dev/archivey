@@ -1223,6 +1223,14 @@ still bounds the amount, only the rate is lower. Detection of an unrecognised fi
 no known extension scans up to 2 MiB for an archive behind leading bytes, and 2 MiB of
 back-to-back ZIP local-header signatures costs about 2.4 s to reject, one validation each
 ([prefixed archives §3](topics/prefixed-archives.md#3-cost-is-what-tiers-this-not-false-positives)).
+Extraction resolves each member's parent from the destination root before it writes
+the member, because an earlier member can have changed the tree, and a dry run also
+walks each member's path from the scratch root to copy in what dest holds there
+(`DryRun.bring_in`). Each is one `lstat` per level, so a tree costs its members times its
+depth, and `PATH_MAX` is the only bound on the depth. A tar listing `a`, `a/a`, … 1000
+levels deep (14 KB gzipped at 800 levels) extracts in about 6 s and dry-runs in about
+19 s (CPython 3.11). The directories a run creates under one member are resolved from
+their parent's answer instead, so a single member that deep costs about 0.2 s.
 Callers who need a time bound run
 archivey in a worker they can kill. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
