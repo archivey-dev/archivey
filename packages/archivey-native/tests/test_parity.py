@@ -17,7 +17,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests"))
 
-archivey_native = pytest.importorskip("archivey_native")
+if os.environ.get("NATIVE_REQUIRED") == "1":
+    import archivey_native  # CI: a missing build must fail, not skip
+else:
+    archivey_native = pytest.importorskip("archivey_native")
 
 from archivey.exceptions import (  # noqa: E402
     CorruptionError,

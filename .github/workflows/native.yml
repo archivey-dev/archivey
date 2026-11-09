@@ -37,20 +37,24 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Install archivey
         run: uv sync --group dev --extra all
+      # Built with maturin as the PEP 517 backend, into the project environment. Later
+      # steps use `uv run --no-sync`, which leaves the package installed.
       - name: Build and install the kernels
-        run: uv run --with "maturin>=1.9,<2" maturin develop --release -m packages/archivey-native/Cargo.toml
+        run: uv pip install ./packages/archivey-native
       - name: Rust lints
         working-directory: packages/archivey-native
         run: cargo clippy --release -- -D warnings
       - name: Differential tests (Rust against Python)
         env:
           NATIVE_PARITY_CASES: "1000"
-        run: uv run pytest --no-cov -q packages/archivey-native/tests
+          NATIVE_REQUIRED: "1"
+        run: uv run --no-sync pytest --no-cov -q packages/archivey-native/tests
       - name: Codec suites with the kernels on
         env:
           ARCHIVEY_NATIVE: "1"
         run: >-
-          uv run pytest --no-cov -q -n auto
+          uv run --no-sync python -c "import archivey_native" &&
+          uv run --no-sync pytest --no-cov -q -n auto
           tests/test_cab.py tests/test_lzo.py tests/test_lzop.py tests/test_squashfs.py
           tests/test_sevenzip_arm64.py tests/test_sevenzip_riscv.py
           tests/test_zipcrypto_cipher.py tests/test_password.py tests/test_password_confirm.py

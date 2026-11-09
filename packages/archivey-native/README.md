@@ -24,7 +24,7 @@ these into its own exceptions. Every kernel that loops over caller data releases
 ## Develop
 
 ```sh
-uv run --with "maturin>=1.9,<2" maturin develop --release -m packages/archivey-native/Cargo.toml
+uv pip install ./packages/archivey-native   # then use `uv run --no-sync`
 NATIVE_PARITY_CASES=1000 uv run pytest --no-cov packages/archivey-native/tests
 uv run python packages/archivey-native/bench/bench_kernels.py
 ```
