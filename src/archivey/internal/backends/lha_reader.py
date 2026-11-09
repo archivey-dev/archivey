@@ -28,7 +28,8 @@ Amiga LHA's directories stored as an empty ``-lh0-`` member with no name, LHARK'
 ``-lh0-``, ``-lz4-`` and ``-pm0-`` (stored), ``-lh4-`` to ``-lh7-``, ``-lhx-`` and
 ``-lk7-`` (:mod:`~archivey.internal.streams.codecs.lzh_decoder`), and ``-lh1-``,
 ``-lzs-`` and ``-lz5-`` (:mod:`~archivey.internal.streams.codecs.lharc_decoder`).
-PMarc's methods and any other are listed and refused when read. The handbook page is ``dev-docs/formats/lha.md``.
+PMarc's methods and any other are listed and refused when read. The handbook page is
+``dev-docs/formats/lha.md``.
 """
 
 from __future__ import annotations

@@ -686,7 +686,9 @@ def test_old_methods_cut_streams_are_truncated(
 
 
 @pytest.mark.parametrize("seed", range(20))
-@pytest.mark.parametrize("fixture", ["lharc113_lh1.lzh", "larc333_lz5.lzs"])
+@pytest.mark.parametrize(
+    "fixture", ["lharc113_lh1.lzh", "generated_lzs.lzs", "larc333_lz5.lzs"]
+)
 def test_damaged_old_methods_raise_an_archivey_error(fixture: str, seed: int) -> None:
     rng = random.Random(seed)
     raw = bytearray((LHASA / fixture).read_bytes())

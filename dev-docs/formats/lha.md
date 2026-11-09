@@ -148,7 +148,9 @@ the high part of each distance), and LArc's `-lzs-` (a 2 KiB ring, bit commands)
 outside its window, so the only damage they see before the CRC is input that ends
 early. They share `LzhDecoder`'s input and output (`LhaBitDecoder` in
 `lzh_decoder.py`): past the input they read zeros, at most 32 bytes, and refuse output
-that needed them (`TruncatedError`). They run at about 6 to 12 MB/s on lhasa's long test files.
+that needed them (`TruncatedError`). On lhasa's fixtures (the 18 092-byte GPL text,
+CPython 3.11), `-lzs-` and `-lz5-` decode about 4.7 MB/s and `-lh1-` about 1.8 MB/s,
+against 7 for `-lh5-` on the same text: `-lh1-` updates its tree after every symbol.
 
 ## 3. Tests
 
