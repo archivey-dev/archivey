@@ -1,7 +1,9 @@
 """``ArchiveSource`` — the one object every archive source becomes at the boundary.
 
 ``open_archive`` and ``open_stream`` build one of these from whatever the caller passed —
-a path, a stream, or a volume list — and hand it to detection and then to the backend.
+a path, a stream, an fsspec ``OpenFile`` or a volume list — through
+:func:`~archivey.internal.volumes.resolve_source`, and hand it to detection and then to
+the backend.
 It **is** the stream they read (third-party parsers such as ``pycdlib`` get it
 directly), and it carries every guarantee the raw source must give:
 
@@ -40,6 +42,11 @@ its own full-count reads can fill without waiting for a writer that keeps a pipe
 A non-seekable source also holds the **detection replay prefix**: :meth:`peek` fills it
 without consuming, and ``read`` drains it before reaching the source. Detection and the
 backend therefore see the same object, and nothing is swapped in between.
+
+A seekable caller stream is rewound instead, and may hold the archive starting past
+offset 0: the archive starts wherever the caller left the stream. Before a backend
+reads it, :meth:`ArchiveSource.rebase_to_current_position` **rebases** the source so
+that position reads as offset 0.
 
 Only a size that is a **fact** clamps a read — ``stat`` on a path, a ``BytesIO``'s buffer,
 ``fstat`` on a regular file, a joined set's measured parts. An integer ``size`` attribute
@@ -722,6 +729,10 @@ class ArchiveSource(ReadOnlyIOStream):
         return self._seekable
 
     def _stream(self) -> BinaryIO:
+        """The stream reads go to, opening a path source's handle on first use.
+
+        Raises once the source is closed, and for a directory, which has no stream.
+        """
         reader = self._reader
         if reader is not None:
             return reader
@@ -746,7 +757,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # which proves there is nothing to replay and no gathering (the class
         # docstring's table). This is ``read_within_reach``'s clamp branch; every read
         # of an archive pays for this method's frames, so the rest of the dispatch is
-        # kept off it (task 8.2 of the change).
+        # kept off it.
         reader = self._reader
         length = self._length
         if length is not None and reader is not None:

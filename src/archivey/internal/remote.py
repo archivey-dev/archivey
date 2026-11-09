@@ -6,6 +6,10 @@ object ``fsspec.open(url, **options)`` returns (``openspec`` change
 from it: every byte comes from ``fs.cat_file(path, start, end)`` on the ``OpenFile``'s
 file system, through :class:`RangeSource`, so fsspec's file caches are never in the
 path. The size comes from one ``fs.size(path)`` at open and is a fact.
+:func:`~archivey.internal.volumes.resolve_source` builds the :class:`RangeSource` (one per
+volume of a set, all drawing on one :class:`WindowPool`) and wraps it in an
+:class:`~archivey.internal.source.ArchiveSource`, so detection and the backends read it
+as any other seekable source.
 
 This module imports nothing from fsspec at import time. :func:`is_open_file` looks for
 ``fsspec.core`` in ``sys.modules``: a caller who has not imported fsspec cannot hold an
@@ -434,7 +438,7 @@ class WindowPool:
             self._trim_oversized(cap, keep=run)
             room = c.pool_bytes - (self._held - old)
         if at_limit or room < need:
-            # No window to be had: unbuffered (rule 3).
+            # No window to be had: unbuffered (rule 4).
             data = source.fetch(at, at + want)
             view[: len(data)] = data
             return len(data)
