@@ -2,9 +2,9 @@
 
 ``open_archive`` picks a :class:`ReadBackend` from the registry (``registry.py``), and
 the backend's ``open_read`` builds a reader: a :class:`BaseArchiveReader` subclass for
-one format. The backend supplies four hooks: list the members (``_iter_members``), open
-one member's data (``_open_member``), describe the archive (``_get_archive_info``) and
-release what it built (``_close_archive``). The base class turns those into the public
+one format. The reader subclass supplies four hooks: list the members
+(``_iter_members``), open one member's data (``_open_member``), describe the archive
+(``_get_archive_info``) and release what it built (``_close_archive``). The base class turns those into the public
 :class:`~archivey.ArchiveReader` surface and owns everything that does not depend on
 the format: who may call when, the member list, links, limits, verification and
 diagnostics. The class docstring of :class:`BaseArchiveReader` is the full contract.
@@ -38,14 +38,17 @@ Map of this file, in order:
   - Backend helpers: error translation and the shared-handle lock.
   - Live member streams and teardown.
   - Data passes: the ``(member, stream)`` pairs behind ``stream_members()``.
-  - Decompression-ratio limits; measurement counters; building member streams.
+  - Decompression-ratio limits; measurement counters (and ``io_stats``); building
+    member streams.
   - Publishing the listing; the member walk; registering each member and its
     presentation checks; member diagnostics that backends emit.
   - Link targets stored as member data; the name index and link resolution; a
     streaming reader's single forward pass.
-  - The public API: archive-level facts, compressed-source sizes, listing,
-    ``open()``/``read()``, ``verify_all()``, ``stream_members()``, ``extract_all()``,
-    ``close()``; then open-time validation and error stamping.
+  - The public API: archive-level facts.
+  - Compressed sources: sizes and the outer codec stream.
+  - The public API: listing, ``open()``/``read()``, ``verify_all()``,
+    ``stream_members()``, ``extract_all()``, ``close()``.
+  - Open-time validation and error stamping.
 
 - Private helpers the reader uses: ``_ProgressivePassIterator`` (one cursor over the
   walk), ``_TranslatedErrorBoundary`` and ``_InternalMemberOpens``.
@@ -658,8 +661,8 @@ class BaseArchiveReader(ArchiveReader):
       ``size`` advertisement, and room to grow shared handle features).
     - ``_get_archive_info()``   — return the :class:`ArchiveInfo` (format, solidity,
       cost, …).
-    - ``_close_archive()``      — release resources (called exactly once, via
-      ``close()``).
+    - ``_close_archive()``      — release what the backend built (called once, at
+      teardown; see its docstring).
 
     **MUST set** when it differs from the default (``True``):
 
@@ -907,7 +910,7 @@ class BaseArchiveReader(ArchiveReader):
             SeekCounter() if self._measure else None
         )
 
-    # --- Backend contract: the hooks every backend implements -------------------------
+    # --- Backend contract: the abstract hooks, and the optional _translate_exception --
 
     @abstractmethod
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -1483,6 +1486,22 @@ class BaseArchiveReader(ArchiveReader):
         """Number of ``seek`` calls on the instrumented archive source, else 0."""
         c = self._seek_counter
         return c.count if c is not None else 0
+
+    def io_stats(self) -> IoStats | None:
+        """Return I/O counters if measurement is enabled, else ``None``.
+
+        Enable measurement with :func:`archivey.internal.measurement.enable_measurement`
+        around the :func:`archivey.open_archive` call. Returns ``None`` when the reader
+        was not opened inside an ``enable_measurement()`` context.
+        """
+        if not self._measure:
+            return None
+        consumed = self._live_consumed()
+        return IoStats(
+            bytes_decompressed=self.bytes_decompressed,
+            compressed_bytes_consumed=consumed() if consumed is not None else None,
+            source_seek_count=self.source_seek_count,
+        )
 
     # --- Building member streams ------------------------------------------------------
 
@@ -4975,7 +4994,7 @@ class BaseArchiveReader(ArchiveReader):
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    # --- Open-time validation, error stamping and I/O counters ------------------------
+    # --- Open-time validation and error stamping --------------------------------------
 
     def _validate_at_open(self) -> None:
         """Check the source decodes, once ``open_archive`` has set format provenance.
@@ -5011,22 +5030,6 @@ class BaseArchiveReader(ArchiveReader):
                 return False
             self._unconfirmed_failure_emitted = True
             return True
-
-    def io_stats(self) -> IoStats | None:
-        """Return I/O counters if measurement is enabled, else ``None``.
-
-        Enable measurement with :func:`archivey.internal.measurement.enable_measurement`
-        around the :func:`archivey.open_archive` call. Returns ``None`` when the reader
-        was not opened inside an ``enable_measurement()`` context.
-        """
-        if not self._measure:
-            return None
-        consumed = self._live_consumed()
-        return IoStats(
-            bytes_decompressed=self.bytes_decompressed,
-            compressed_bytes_consumed=consumed() if consumed is not None else None,
-            source_seek_count=self.source_seek_count,
-        )
 
 
 class _ProgressivePassIterator(Iterator[ArchiveMember]):
