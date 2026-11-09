@@ -101,7 +101,11 @@ class PrefixWorkspace:
         self._handle: BinaryIO | None = None
         self._owns_handle = False
         self._entry_pos: int | None = None
+        # A non-seekable ``ArchiveSource``: peeked, so its replay prefix keeps the
+        # bytes for the backend.
         self._peekable: ArchiveSource | None = None
+        # Any other non-seekable stream: read forward, so what detection reads is gone
+        # from it.
         self._raw_forward: BinaryIO | None = None
         self._source_exhausted = False
         # Set when a ``limit``-clamped ``candidate_view`` shortens a peek. Distinct
