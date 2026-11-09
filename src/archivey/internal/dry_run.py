@@ -6,7 +6,9 @@ each entry of dest that a member's path, link target or hardlink source names is
 in before the pass looks at it, a file as an empty file and a symlink as a symlink.
 dest itself is only read.
 
-``ExtractionCoordinator.run`` describes what a dry run shows and where it says less
+``ExtractionCoordinator.run`` is the only user: it enters :func:`scratch_for`, extracts
+into the scratch directory, and reports through :meth:`DryRun.rebase_result` and
+:meth:`DryRun.record`. Its docstring describes what a dry run shows and where it says less
 than a real run would.
 """
 
@@ -361,6 +363,8 @@ class DryRun:
         return path
 
     def rebase_result(self, result: ExtractionResult) -> ExtractionResult:
+        """``result`` with each path in it, and the file names in an ``OSError`` it
+        carries, shown under the caller's dest (``shown``)."""
         if isinstance(result.error, OSError):
             self.rebase_os_error(result.error)
         return copy_with(
