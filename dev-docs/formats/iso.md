@@ -238,6 +238,16 @@ What is ISO-specific in turning a record into a member:
   whose area does not fit in its logical block, in the record's own area and in each
   continuation area, before `pycdlib` reads that area: `CorruptionError` for the image,
   under any `ListingLimits` (§4).
+- **Directory padding.** A zero length byte starts the padding that fills the rest of a
+  directory's logical block. `pycdlib` refuses the whole image when that padding holds a
+  non-zero byte (`Invalid padding on ISO`), in any tree, although every record it could
+  still read is intact; one damaged byte in a Joliet directory's padding refused an image
+  whose 40 files all read (measured for the salvage design). The Linux kernel skips the
+  padding unread (`do_isofs_readdir`). Inside archivey's own open, `pycdlib`'s
+  `_iter_directory_records` is replaced by the same walk that notes the offset and goes
+  on (`_install_pycdlib_padding_tolerance`), and each such block is reported as
+  `ARCHIVE_TRAILING_DATA` with `expected_marker="directory_padding"`: a record whose
+  length byte was damaged to zero would be lost there, so `STRICT` refuses (DR-3).
 - **Versions.** In the plain namespace the `;N` suffix of a file and the `.` of an empty
   extension are removed (`FOO.;1` is `FOO`) and the number goes to `extra["iso.version"]`.
   When a directory holds several versions, the highest takes the bare name; older ones are
@@ -372,8 +382,8 @@ Three kinds of record need a layout, worked out while listing and used by `_data
   whose extent sits at the image end); otherwise `size` is `None`. Reading such a file
   returns the bytes the image holds and then raises `TruncatedError`.
 - **An image cut inside its metadata.** `pycdlib` reports a short read as an invalid
-  image (`Failed to read entire volume descriptor`, `Invalid directory record`,
-  `Invalid padding on ISO`) or fails parsing the short bytes (`struct.error`), so its
+  image (`Failed to read entire volume descriptor`, `Invalid directory record`) or
+  fails parsing the short bytes (`struct.error`), so its
   exception does not say whether the bytes were wrong or missing. `_cut_short` decides
   from two facts: `pycdlib`'s last read reached the end of the file (the handle is at
   or past it), and the image declares more than the file holds (the primary
