@@ -521,8 +521,9 @@ local-header offset past the file's end SHALL raise `CorruptionError` when that 
 opens, never `TruncatedError` (the directory follows every local header, so the offset
 is wrong, not the file cut) and never an untyped error for an offset too large to seek
 to. A local-header offset that falls before the file's start, as when the archive lost
-its first bytes, SHALL raise `CorruptionError` when that member opens, and its message
-SHALL say how many bytes the archive seems to be missing, not give the negative offset.
+its first bytes, SHALL raise `CorruptionError` when that member opens, unless its stored
+offset holds its local header (below), and the message SHALL say how many bytes the
+archive seems to be missing, not give the negative offset.
 
 When the directory does not sit at the offset the end record stores (`EndRecord.base`
 is not 0) and the local header where the directory puts a member is refused or names
@@ -532,13 +533,16 @@ it, move the directory and the members after them, but not the members before th
 SHALL use the header found there only when it holds the member's name and method, and
 its CRC-32 and sizes (zeros allowed under bit 3, `0xFFFFFFFF` for a ZIP64 size), and
 when the member's data ends before the next stored offset above it or the directory;
-otherwise the member SHALL raise what the directory's own offset gives. A member read
-from its stored offset SHALL report `MEMBER_LOCAL_OFFSET_SHIFTED` with
+otherwise the member SHALL be read, or refused, as the directory's own offset gives. A
+member read from its stored offset SHALL report `MEMBER_LOCAL_OFFSET_SHIFTED` with
 `LocalHeaderContext(field="offset")` on its first open, a file or link only, and
 `STRICT` SHALL refuse it (DR-3: the archive lost or gained bytes). The CRC-32 still
 checks the data. A read from a pipe SHALL place the local header it walked at the
-stored offset under the same conditions, so that both reads write the same members. This is no search: the stored offset is the one other place the format
-names, and Info-ZIP's `unzip` makes the same second try.
+stored offset under the same conditions, overlap bound included, so that both reads
+write the same members. An entry whose header, where the directory puts it, is one a
+member placed at its stored offset took SHALL fail alone from a pipe, as its read from
+a file fails its CRC-32. This is no search: the stored offset is the one other place the
+format names, and Info-ZIP's `unzip` makes the same second try.
 
 An entry's lengths are damaged when:
 
@@ -588,6 +592,8 @@ ruling (PR 860).
 | The same under `DiagnosticPolicy.STRICT` | `a.txt` raises `DiagnosticRaisedError`; `c.txt` reads |
 | `b.txt`'s local header and data cut out | `a.txt` reads from its stored offset and `c.txt` where the directory puts it; `b.txt` raises `CorruptionError` (its stored offset holds `c.txt`'s header) |
 | The end record's directory offset 7 or about 2³² too large, from a file and from a pipe | Every member written, the same bytes from both, each with `MEMBER_LOCAL_OFFSET_SHIFTED` |
+| Seven members, the sixth cut out whole and three members long, from a file and from a pipe | The first five read from their stored offsets, the seventh where the directory puts it; the same files written |
+| Four members, the third cut out whole and its entry's stored offset inside the second member's data, from a file and from a pipe | The first and the last written; the second refused, since its data runs past that stored offset |
 | Seven bytes cut from inside `b.txt`'s data, and `a.txt`'s local CRC-32 changed | `a.txt` raises `CorruptionError` saying the archive seems to be missing at least its first 7 bytes; `c.txt` reads |
 
 ### Requirement: Read ZIP members whatever version they say they need

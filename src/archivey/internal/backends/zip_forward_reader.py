@@ -82,11 +82,13 @@ from archivey.internal.backends.zip_reader import (
     ZipReader,
     _bound_offset,
     _CandidateFailures,
+    _DataBounds,
     _is_candidate_integrity_failure,
     _is_encrypted_entry,
     _local_crc_stands_in,
     _local_header_confirms,
     _max_members_error,
+    _shifted_bound,
     _unconfirmed_resource_limit,
     _zipcrypto_check_byte,
     _ZipLocator,
@@ -339,6 +341,19 @@ def _missing_error(
     )
     error.__cause__ = rejected
     return error
+
+
+def _taken_by_shift_error(member: ArchiveMember, offset: int) -> CorruptionError:
+    """The failure of a directory entry whose local header, where the directory puts
+    it, belongs to another member, one read from its stored offset
+    (``ZipForwardReader._shifted_offset``)."""
+    return CorruptionError(
+        f"ZIP central directory entry {quoted(member.name)} points to offset "
+        f"{offset}, where the local header is another member's, one the directory "
+        "places at its stored offset",
+        member_name=member.name,
+        source_format=ArchiveFormat.ZIP,
+    )
 
 
 def _without_frames(exc: ArchiveyError) -> ArchiveyError:
@@ -1818,6 +1833,10 @@ class ZipForwardReader(ZipReader):
         # ``UX`` extra field macOS Archive Utility writes: the directory walk measures
         # their compressed sizes past 4 GiB from them (``CentralDirectoryWalk``).
         self._mac_data_starts: dict[int, int] = {}
+        # Local header offset -> where its data starts, for every header the pass
+        # walked: a member placed at its stored offset must end before the next
+        # stored offset, as a file read checks (``_shifted_offset``).
+        self._data_starts: dict[int, int] = {}
         # Member id -> its whole data, when short enough to be a link target, or the
         # start a Windows reparse buffer's parse reads of longer data
         # (``_PassData.reparse_prefix``), until the directory says which members are
@@ -1893,6 +1912,7 @@ class ZipForwardReader(ZipReader):
         )
         self._by_offset[entry.offset] = member
         self._local_offsets.add(entry.offset)
+        self._data_starts[entry.offset] = entry.header.data_start
         if entry.deferred and entry.header.extra[:2] == b"UX":
             self._mac_data_starts[entry.offset] = entry.header.data_start
         self._local_count = index + 1
@@ -2161,8 +2181,17 @@ class ZipForwardReader(ZipReader):
         # Members found at their stored offset, not where the directory's position
         # puts them (``_shifted_offset``), by member id: that stored offset.
         shifted: dict[int, int] = {}
+        # Local headers that a member read from its stored offset took.
+        taken_by_shift: set[int] = set()
+        bounds = _DataBounds(offsets, cd_start=end.cd_start) if end.base != 0 else None
         for position, offset in enumerate(offsets):
-            stored = self._shifted_offset(entries[position], offset, matched)
+            stored = (
+                None
+                if bounds is None
+                else self._shifted_offset(
+                    entries[position], position, offset, matched, bounds
+                )
+            )
             if stored is not None:
                 offset = stored
                 shifted[cast("int", by_offset[stored]._member_id)] = stored
@@ -2182,10 +2211,24 @@ class ZipForwardReader(ZipReader):
                 placed.append(missing)
                 any_missing = True
                 continue
+            if offset in taken_by_shift and stored is None:
+                # The header where the directory puts this entry belongs to a member
+                # read from its stored offset: a file read reads that header for this
+                # entry, by the directory's name, and its data fails, while the other
+                # entry reads. Fail this member alone, not the pass.
+                missing = self._missing_member(entries[position], len(failed))
+                failed.append(
+                    (position, missing, _taken_by_shift_error(missing, offset))
+                )
+                placed.append(missing)
+                any_missing = True
+                continue
             if offset in matched:
                 shared.append(position)
                 continue
             matched.add(offset)
+            if stored is not None:
+                taken_by_shift.add(offset)
             member = by_offset[offset]
             order.append(member)
             placed.append(member)
@@ -2304,6 +2347,7 @@ class ZipForwardReader(ZipReader):
         self._by_offset = {}
         self._local_offsets = set()
         self._mac_data_starts = {}
+        self._data_starts = {}
         self._descriptors = {}
         self._rejected_headers = {}
         if damage is not None:
@@ -2357,7 +2401,12 @@ class ZipForwardReader(ZipReader):
         )
 
     def _shifted_offset(
-        self, central: CentralEntry, offset: int, matched: set[int]
+        self,
+        central: CentralEntry,
+        position: int,
+        offset: int,
+        matched: set[int],
+        bounds: _DataBounds,
     ) -> int | None:
         """The stored offset of ``central``'s local header, before ``EndRecord.base``,
         when the pass walked a local header there that agrees with the entry and no
@@ -2367,7 +2416,7 @@ class ZipForwardReader(ZipReader):
         The file read's second try (``ZipReader._shifted_local_header``), on the local
         headers the pass met: bytes lost from the middle of the archive leave the
         members before them at their stored offsets, so a pipe places the same members
-        a file read reads.
+        a file read reads, with the same overlap bound (``_shifted_bound``).
         """
         base = self._end.base
         if base == 0:
@@ -2384,6 +2433,11 @@ class ZipForwardReader(ZipReader):
         if member is None or stored in matched:
             return None
         if not _local_header_confirms(cast("_ZipLocator", member._raw), central):
+            return None
+        data_end = self._data_starts[stored] + max(0, central.compressed_size)
+        if data_end > _shifted_bound(
+            bounds, central.header_offset, position, self._end
+        ):
             return None
         return stored
 

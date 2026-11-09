@@ -1147,6 +1147,13 @@ def _local_header_confirms(
     return True
 
 
+def _shifted_bound(bounds: _DataBounds, listed: int, index: int, end: EndRecord) -> int:
+    """Where the data of the entry at directory position ``index`` must end when it is
+    read from its stored offset, ``listed`` less ``end.base``: before the next stored
+    offset above it, or the directory (``ZipReader._shifted_local_header``)."""
+    return min(bounds.end_after(listed, index) - end.base, end.cd_start)
+
+
 def _bound_offset(offset: int) -> int:
     """``offset`` clamped into a signed 64-bit range that keeps its order.
 
@@ -1216,9 +1223,14 @@ class _DataBounds:
                     self._first_at.setdefault(offset, index)
 
     def end_for(self, loc: _ZipLocator) -> int:
-        offset = _bound_offset(loc.header_offset)
+        return self.end_after(loc.header_offset, loc.index)
+
+    def end_after(self, header_offset: int, index: int) -> int:
+        """:meth:`end_for` for the entry at directory position ``index`` whose local
+        header the directory puts at ``header_offset``."""
+        offset = _bound_offset(header_offset)
         first = self._first_at.get(offset)
-        if first is not None and first != loc.index:
+        if first is not None and first != index:
             return offset
         ordered = self._sorted
         above = bisect_right(ordered, offset)
@@ -3329,7 +3341,9 @@ class ZipReader(BaseArchiveReader):
             return None
         if not _local_header_confirms(header, loc):
             return None
-        bound = min(self._data_bounds().end_for(loc) - base, self._end.cd_start)
+        bound = _shifted_bound(
+            self._data_bounds(), loc.header_offset, loc.index, self._end
+        )
         if header.data_start + max(0, loc.compressed_size) > bound:
             return None
         self._report_local_offset(loc, member, stored)
