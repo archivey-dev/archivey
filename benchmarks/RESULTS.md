@@ -64,9 +64,10 @@ peer timed in the same run.
 
 ### Many small members
 
-The 4 000-file corpus of [Many small members](#many-small-members). Rows that moved by
-less than about 15% in archivey's own time are left out; they are within the noise band
-measured in the earlier rounds.
+The 4 000-file corpus of [Many small members](#many-small-members). The table
+lists the rows where archivey's own time fell by 10% or more. Every other row moved by
+less than 10%, inside the noise band of the earlier rounds, except one ZIP `list` pair
+discussed below.
 
 | Archive | Operation | Peer | archivey 0.3.0 | ratio 0.3.0 | archivey main | ratio main |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
@@ -86,8 +87,10 @@ What the numbers show:
   third. PR 1373 decodes a member of up to 64 KiB in one call at open and skips the
   codec layer stack when nothing in the member looks unusual. Stored members gain less
   (−25%), because they had no decoder to skip.
-- **7z gains about 14% on reading,** which fits PR 1359: it is the one change in the
-  interval that touches every format's member sync.
+- **7z gains about 14% on reading.** PR 1359, which asks the layer proofs once per
+  member sync in every format, is the likeliest cause. TAR does not show a gain, so the
+  saving may show only where the rest of a member's cost is low; this round did not
+  profile it.
 - **TAR, tar.gz and listing did not move** beyond noise (−4% to +5%). The ZIP `list`
   row read +15% in one pair of runs; a re-run of 15 alternating calls per side gave
   55 ms, the 0.3.0 figure, and the ratio stayed at 6.3–6.5× throughout.
