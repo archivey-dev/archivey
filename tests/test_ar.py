@@ -7,8 +7,12 @@ import gzip
 import io
 import lzma
 import random
+import re
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -25,6 +29,7 @@ from archivey import (
 from archivey.formats import SequentialReader
 from archivey.internal.backends import ar_reader
 from archivey.internal.backends.ar_reader import ArReader
+from tests.memory_util import traced_peak
 from tests.public_names import assert_only_public_archivey
 from tests.streams_util import ShortReadBytesIO
 
@@ -292,6 +297,91 @@ def test_windows_long_names_end_with_a_nul(tmp_path: Path) -> None:
         assert reader.info.extra["ar.symbol_table"] is True
 
 
+def test_long_name_entry_ends_at_its_first_terminator(tmp_path: Path) -> None:
+    # Each terminator the table may use, alone and together, the "/" GNU ar writes
+    # before the newline, and an entry the table's end closes.
+    entries = [b"gnu.o/\n", b"win.obj\0", b"both/\0x\n", b"nl\nz\0", b"last"]
+    table = b"".join(entries)
+    offsets = [sum(map(len, entries[:i])) for i in range(len(entries))]
+    data = _ar((b"//", table), *((b"/%d" % at, b"d") for at in offsets))
+    with open_archive(_archive(tmp_path, data)) as reader:
+        assert [m.name for m in reader.members()] == [
+            "gnu.o",
+            "win.obj",
+            "both",
+            "nl",
+            "last",
+        ]
+
+
+def test_long_name_lookup_does_not_copy_the_rest_of_the_table(tmp_path: Path) -> None:
+    # Each lookup sliced the table from the entry to its end before searching for
+    # the terminator, so a 16 MiB table read by 50 000 members took 60 s to list.
+    # Each copy is freed before the next, so the peak showed one: about twice the
+    # table, against about one table without the copy.
+    table_size = 4 << 20
+    # At offset 1: a slice from 0 is the table itself, not a copy.
+    table = b"\nm.o/\n" + b"x" * (table_size - 6)
+    members = [(b"//", table)] + [(b"/1", b"") for _ in range(4)]
+    path = _archive(tmp_path, _ar(*members))
+
+    def walk() -> None:
+        with open_archive(path) as reader:
+            assert [m.name for m in reader.members()] == ["m.o"] * 4
+
+    walk()
+    peak = traced_peak(walk)
+    assert peak < table_size * 1.5, peak
+
+
+class _ScanSpy(bytes):
+    """A long-name table that records how far each search may run."""
+
+    scans: list[int]
+
+    def _note(self, start: int | None, stop: int | None) -> None:
+        start = 0 if start is None else start
+        stop = len(self) if stop is None else stop
+        self.scans.append(stop - start)
+
+    def find(self, sub, start=None, stop=None):  # type: ignore[no-untyped-def,override]
+        self._note(start, stop)
+        return super().find(sub, start, stop)
+
+    def index(self, sub, start=None, stop=None):  # type: ignore[no-untyped-def,override]
+        self._note(start, stop)
+        return super().index(sub, start, stop)
+
+
+class _MatchSpy:
+    """Stands in for the terminator pattern and records how far each match ran."""
+
+    def __init__(self, pattern: re.Pattern[bytes], table: _ScanSpy) -> None:
+        self._pattern = pattern
+        self._table = table
+
+    def search(self, names: bytes, pos: int = 0) -> re.Match[bytes] | None:
+        found = self._pattern.search(names, pos)
+        self._table.scans.append((len(names) if found is None else found.end()) - pos)
+        return found
+
+
+def test_long_name_lookup_scans_only_its_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A NUL-terminated entry (the Windows .lib spelling) before a long tail with no
+    # newline: a search for the newline alone runs to the table's end for every
+    # member, 70 s to list a 63 MiB archive of 50 000 members. Every search the
+    # lookup makes, by bytes method or by the module's pattern, is recorded.
+    table = _ScanSpy(b"\0a.o\0" + b"x" * (1 << 20))
+    table.scans = []
+    monkeypatch.setattr(ar_reader, "_NAME_END", _MatchSpy(ar_reader._NAME_END, table))
+    reader = cast("ArReader", SimpleNamespace(_dialect=None))
+    assert ArReader._short_name(reader, b"/1", table, 0) == b"a.o"
+    assert table.scans, "the lookup made no search the test can see"
+    assert all(scan <= 16 for scan in table.scans), table.scans
+
+
 def test_blank_fields(tmp_path: Path) -> None:
     raw = bytearray(_ar((b"x.txt/", b"data")))
     raw[8 + 16 : 8 + 48] = b" " * 32  # mtime, uid, gid, mode
@@ -468,3 +558,91 @@ def test_the_reader_uses_only_public_archivey() -> None:
 
 def test_the_reader_is_a_sequential_reader() -> None:
     assert issubclass(ArReader, SequentialReader)
+
+
+def _header(
+    name: bytes,
+    data: bytes,
+    *,
+    mtime: bytes = b"0",
+    uid: bytes = b"0",
+    gid: bytes = b"0",
+    mode: bytes = b"644",
+) -> bytes:
+    """One member, each numeric field written as given."""
+    return (
+        name.ljust(16)
+        + mtime.ljust(12)
+        + uid.ljust(6)
+        + gid.ljust(6)
+        + mode.ljust(8)
+        + str(len(data)).encode().ljust(10)
+        + b"`\n"
+        + data
+        + b"\n" * (len(data) & 1)
+    )
+
+
+def test_the_numeric_fields_are_decimal_and_the_mode_octal(tmp_path: Path) -> None:
+    data = b"!<arch>\n" + _header(
+        b"x.txt/",
+        b"data",
+        mtime=b"1000000000",
+        uid=b"1000",
+        gid=b"100",
+        mode=b"12345670",
+    )
+    with open_archive(_archive(tmp_path, data)) as reader:
+        (member,) = reader.members()
+        assert (member.uid, member.gid) == (1000, 100)
+        # Every octal digit is valid; the mode keeps its permission bits only.
+        assert member.mode == 0o12345670 & 0o7777
+        assert member.modified == datetime.fromtimestamp(1_000_000_000, UTC)
+        assert member.modified.tzinfo is UTC
+        assert (member.size, member.raw_name) == (4, b"x.txt")
+
+
+@pytest.mark.parametrize("what", ["mtime", "uid", "gid", "mode"])
+def test_a_bad_numeric_field_names_the_field_and_the_header(
+    tmp_path: Path, what: str
+) -> None:
+    data = (
+        b"!<arch>\n" + _header(b"a/", b"ab") + _header(b"x/", b"data", **{what: b"1x"})
+    )
+    with (
+        open_archive(_archive(tmp_path, data)) as reader,
+        pytest.raises(
+            CorruptionError, match=rf"^ar header at offset 70: the {what} field b'1x "
+        ),
+    ):
+        reader.members()
+
+
+def test_a_long_name_keeps_its_raw_name_without_the_slash(tmp_path: Path) -> None:
+    data = _ar((b"//", b"a-long-member-name.txt/\n"), (b"/0", b"data"))
+    with open_archive(_archive(tmp_path, data)) as reader:
+        (member,) = reader.members()
+        assert member.raw_name == b"a-long-member-name.txt"
+        assert reader.info.extra["ar.dialect"] == "gnu"
+
+
+def test_a_bsd_name_ending_in_digits_is_not_a_long_name(tmp_path: Path) -> None:
+    with open_archive(_archive(tmp_path, _ar((b"x123", b"data")))) as reader:
+        assert [m.name for m in reader.members()] == ["x123"]
+        assert reader.info.extra["ar.dialect"] == "bsd"
+
+
+def test_long_name_offsets_at_the_edges_of_the_table(tmp_path: Path) -> None:
+    def opened(data: bytes) -> list[str]:
+        with open_archive(_archive(tmp_path, data), format=AR) as reader:
+            return [m.name for m in reader.members()]
+
+    table = b"ab/\n"
+    with pytest.raises(CorruptionError, match="long-name offset 4 is past the 4-byte"):
+        opened(_ar((b"//", table), (b"/4", b"data")))
+    # An offset that lands on an entry's newline names nothing.
+    with pytest.raises(CorruptionError, match="has no name"):
+        opened(_ar((b"//", table), (b"/3", b"data")))
+    assert opened(_ar((b"//", table), (b"/0", b"data"))) == ["ab"]
+    with pytest.raises(CorruptionError, match="names entry 12 of a long-name"):
+        opened(_ar((b"/12", b"data")))

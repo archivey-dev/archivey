@@ -1,4 +1,13 @@
-"""Public read-only archive interface."""
+"""Public read-only archive interface: the reader and member-stream classes.
+
+:func:`~archivey.open_archive` returns an :class:`ArchiveReader` (random access) or a
+:class:`ForwardArchiveReader` (one forward pass, from a pipe too), and member reads
+return an :class:`ArchiveStream`. The classes here are abstract: they fix the public
+methods and their docstrings, and archivey's implementations live under
+``archivey.internal``. Building an :class:`ArchiveStream` or :class:`MemberPass`
+directly, or through a subclass that leaves an abstract method unimplemented, still
+works with a ``DeprecationWarning`` until 0.4.0 (``_class_to_build``).
+"""
 
 from __future__ import annotations
 

@@ -243,3 +243,39 @@ def test_a_walk_over_the_cap_is_thinned_and_keeps_the_total(
         for pos in (BLOCK * 13 + 11, BLOCK * 3 + 5, len(data) - 7):
             stream.seek(pos)
             assert stream.read(7) == data[pos : pos + 7]
+
+
+def _headers(block_size: int, *blocks: tuple[int, int]) -> bytes:
+    """A file of block headers and filler, for the walk, which never decodes."""
+    out = bytearray(bzip3_codec.BZIP3_MAGIC + struct.pack("<i", block_size))
+    for compressed, decoded in blocks:
+        out += struct.pack("<ii", compressed, decoded) + bytes(compressed)
+    return bytes(out)
+
+
+def test_the_walk_steps_over_blocks_the_decoder_accepts_at_their_bounds() -> None:
+    """An empty literal (8 bytes, no output), a block of exactly ``bz3_bound``, and a
+    block with no output: none ends the walk. The blocks with output are the seek
+    points, and the first, at output 0, is the known start."""
+    bound = bzip3_codec.bz3_bound(BLOCK)
+    raw = _headers(BLOCK, (8, 0), (bound, BLOCK), (20, 0), (30, 5))
+    points, size = bzip3_codec.build_bzip3_index(io.BytesIO(raw), SeekPoint(0, 0), None)
+    assert [(p.compressed_offset, p.decompressed_offset) for p in points] == [
+        (9 + 16 + 8 + bound + 28, BLOCK)
+    ]
+    assert size == BLOCK + 5
+
+
+def test_the_walk_reads_the_largest_block_size() -> None:
+    raw = _headers(bzip3_codec.MAX_BLOCK_SIZE, (30, 5), (30, 5))
+    points, size = bzip3_codec.build_bzip3_index(io.BytesIO(raw), SeekPoint(0, 0), None)
+    assert [p.state for p in points] == [bzip3_codec.MAX_BLOCK_SIZE]
+    assert size == 10
+
+
+def test_the_walk_needs_the_magic_even_with_a_valid_block_size() -> None:
+    raw = b"BZ2v1" + _headers(BLOCK, (30, 5))[5:]
+    assert bzip3_codec.build_bzip3_index(io.BytesIO(raw), SeekPoint(0, 0), None) == (
+        [],
+        None,
+    )

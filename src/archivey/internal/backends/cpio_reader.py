@@ -192,6 +192,7 @@ def _pad(n: int, align: int) -> int:
 def _number(raw: bytes, base: int, what: str, offset: int) -> int:
     try:
         text = raw.decode("ascii")
+        # int() would also take spaces, a sign and underscores.
         if not text.isalnum():
             raise ValueError(text)
         return int(text, base)
@@ -204,6 +205,7 @@ def _number(raw: bytes, base: int, what: str, offset: int) -> int:
 class CpioReader(SequentialReader):
     """Walks a CPIO archive of any of the four variants."""
 
+    # A symlink's target is its data: archivey reads it from the span while walking.
     link_target_in_data = True
 
     def __init__(self, context: ReaderContext) -> None:
@@ -249,6 +251,8 @@ class CpioReader(SequentialReader):
                 # of its own, as GNU cpio's copy-in and 7-Zip extract it.
                 own_data = size > 0 and self._defers_link_data()
                 if group.name is not None and not own_data:
+                    # A later link of a file already yielded. binary and odc repeat
+                    # the data here, which is skipped as the span's unread bytes.
                     member.type = MemberType.HARDLINK
                     member.link_target = group.name
                     member.size = None
@@ -260,6 +264,8 @@ class CpioReader(SequentialReader):
                     stream.skip(size + self._data_pad(header))
                     continue
                 else:
+                    # The link that is yielded as the FILE: the first one in binary
+                    # and odc, the one carrying the data in newc and crc.
                     group.name = member.name
             yield MemberSpan(member, size, self._digests(header, member))
             stream.skip(self._data_pad(header))
@@ -290,6 +296,8 @@ class CpioReader(SequentialReader):
                 yield MemberSpan(link, 0)
 
     def _defers_link_data(self) -> bool:
+        """True for newc and crc, which store a hard-linked file's data with one link
+        only, normally the last."""
         return self._variant in (Variant.NEWC, Variant.CRC)
 
     def _read_header(self, stream: ForwardStream) -> Header:
