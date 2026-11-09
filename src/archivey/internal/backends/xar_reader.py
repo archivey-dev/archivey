@@ -129,9 +129,12 @@ class _Data(NamedTuple):
     size: int
     """How many bytes they decode to."""
     encoding: str
-    """The ``<encoding style=…>`` MIME type, a key of ``_ENCODINGS`` when known."""
+    """The ``<encoding style=…>`` MIME type: ``"application/octet-stream"`` (stored)
+    when there is no ``<encoding>``, ``""`` when it has no ``style``. A key of
+    ``_ENCODINGS`` when known."""
     digest: tuple[str, bytes] | None
-    """The extracted checksum, as ``(algorithm, digest)``."""
+    """The extracted checksum, as ``(algorithm, digest)``, or ``None`` when there is
+    none or its style is not one of ``_DIGESTS``."""
 
 
 class _Entry(NamedTuple):

@@ -16,8 +16,9 @@ behind, so members read in order decode each folder once.
 
 The listing is the file table: each ``CFFILE`` record becomes a ``FILE`` member whose
 locator is its folder and its offset in that folder's output. Opening a member reads
-the folder's ``CFDATA`` headers once (the block table), then decodes the folder up to
-that offset.
+the folder's ``CFDATA`` headers once (the block table), then reaches that offset: a
+stored folder from the block that holds it, a compressed one by decoding, from the
+folder's start or on from the parked decoder.
 
 Cabinet sets (a folder continued in the next ``.cab``) are refused. The handbook page
 is ``dev-docs/formats/cab.md``.
@@ -434,7 +435,8 @@ class CabReader(IndexedReader[_Location]):
 
 def _block_at(table: _BlockTable, offset: int) -> int | None:
     """The block whose output holds byte ``offset`` of the folder, or the next block
-    when ``offset`` is where one starts; ``None`` past the blocks read."""
+    when ``offset`` is where one starts; ``None`` at or past the end of the blocks
+    read."""
     output = table.output
     lo, hi = 0, len(output) - 1
     if hi == 0 or offset >= output[-1]:
@@ -495,8 +497,9 @@ class _FolderStream:
     """A folder's output, decoded block by block from where it starts.
 
     ``first`` is the block to start at: 0 for a compressed folder, any block for a
-    stored one, or ``None`` for an offset past the blocks read. That one starts at
-    the end of those blocks' output, so its first read raises ``TruncatedError``.
+    stored one, or ``None`` for an offset at or past the end of the blocks read. That
+    one starts at the end of those blocks' output, so its first read raises
+    ``TruncatedError``; a member of size 0 there never reads.
     """
 
     def __init__(
@@ -537,8 +540,8 @@ class _FolderStream:
         return data
 
     def _lzx_more(self) -> bytes | None:
-        """The LZX decoder's input: the next block's checked bytes, None after the
-        last."""
+        """The LZX decoder's input: the next block's stored bytes, checked when its
+        checksum is not 0; ``None`` after the last."""
         if self._lzx_input >= len(self._table.blocks):
             return None
         data = self._payload(self._lzx_input)
