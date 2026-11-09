@@ -108,7 +108,7 @@ from archivey.internal.streams.streamtools.binaryio import (
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
-    from archivey.internal.remote import RangeSource
+    from archivey.internal.remote import FsspecDecompressed, RangeSource
 
 
 class JoinedVolumes(Protocol):
@@ -312,6 +312,8 @@ class ArchiveSource(ReadOnlyIOStream):
     _full_count: _GatheringReader | None = None
     _close_callbacks: tuple[Callable[[], None], ...] = ()
     _remote: tuple[RangeSource, ...] = ()
+    _owned_beneath: BinaryIO | None = None
+    _fsspec_decompressed: FsspecDecompressed | None = None
 
     def __init__(
         self,
@@ -499,12 +501,18 @@ class ArchiveSource(ReadOnlyIOStream):
         )
 
     @classmethod
-    def for_opened_stream(cls, stream: BinaryIO) -> ArchiveSource:
-        """Own a stream archivey opened itself (an fsspec ``OpenFile``'s decompressed
-        file): read as :meth:`for_stream` reads a caller's, and closed with this
-        source."""
-        source = cls.for_stream(stream)
-        source._owned = stream
+    def for_fsspec_decompressed(
+        cls, decoded: BinaryIO, raw: BinaryIO, origin: FsspecDecompressed
+    ) -> ArchiveSource:
+        """Own the two files archivey opened for an fsspec ``OpenFile`` with a
+        ``compression``: fsspec's decompressor ``decoded``, read as :meth:`for_stream`
+        reads a caller's stream, and fsspec's file ``raw`` under it. Both close with
+        this source, ``decoded`` first, since a decompressor leaves the file it was
+        handed open. ``origin`` names the object for ``SOURCE_CHANGE_UNDETECTABLE``."""
+        source = cls.for_stream(decoded)
+        source._owned = decoded
+        source._owned_beneath = raw
+        source._fsspec_decompressed = origin
         return source
 
     @classmethod
@@ -584,6 +592,11 @@ class ArchiveSource(ReadOnlyIOStream):
     def remote_sources(self) -> tuple[RangeSource, ...]:
         """The range sources an ``fsspec`` ``OpenFile`` source reads; else empty."""
         return self._remote
+
+    @property
+    def fsspec_decompressed(self) -> FsspecDecompressed | None:
+        """The ``OpenFile`` read through fsspec's decompressing file; else ``None``."""
+        return self._fsspec_decompressed
 
     @property
     def path(self) -> Path | None:
@@ -1083,10 +1096,16 @@ class ArchiveSource(ReadOnlyIOStream):
                 buffer.close()
         finally:
             try:
-                owned = self._owned
-                self._owned = None
-                if owned is not None:
-                    owned.close()
+                try:
+                    owned = self._owned
+                    self._owned = None
+                    if owned is not None:
+                        owned.close()
+                finally:
+                    beneath = self._owned_beneath
+                    self._owned_beneath = None
+                    if beneath is not None:
+                        beneath.close()
             finally:
                 if self._replay is not None:
                     self._replay.clear()

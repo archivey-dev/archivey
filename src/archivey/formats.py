@@ -599,13 +599,16 @@ class ReaderContext:
         A report on a member being listed is held until the member is yielded, and
         sent then: archivey sets the ``member_name`` of ``details`` to the name the
         member is listed by, normalized, so a reader reports with the name as the
-        archive stores it. The ``message`` is sent as written. The caller's
+        archive stores it. The ``message`` is sent as written, stored name and all:
+        callers match a report to a member by ``member_name``. The caller's
         ``DiagnosticPolicy`` applies when the report is sent, so a code it raises on
         raises then, from the listing. A report on a member that is never yielded is
-        sent when the walk ends, under the reader's name and with no member id; it
+        sent when the walk ends, under the reader's name and with no member id (or at
+        close, for a sequential walk's first step taken at open and never listed); it
         raises only from a walk that reached its end, and is recorded without raising
-        when the walk was stopped part-way or ended by an error. In a walk archivey
-        starts over to reach member data, a report names the member as listed.
+        when the walk was stopped part-way, ended by an error, or never listed. In a
+        walk archivey starts over to reach member data, a report names the member as
+        listed.
 
         For ``SYMLINK_TARGET_UNAVAILABLE`` use :meth:`link_target_unavailable`.
         """

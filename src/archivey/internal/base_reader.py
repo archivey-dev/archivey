@@ -62,6 +62,7 @@ from archivey.diagnostics import (
     NameDuplicateContext,
     NameEncodingContext,
     ReaderDisagreementContext,
+    SolidReopenContext,
     SpecialFileDataContext,
     SymlinkTargetContext,
     UnconfirmedFormatContext,
@@ -81,6 +82,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     _UsageTypeError,
     _UsageValueError,
+    exception_detail,
     raw_message_of,
 )
 from archivey.internal.arg_checks import (
@@ -126,6 +128,7 @@ from archivey.internal.reader_state import (
     LiveStreamReservation,
     ReaderState,
 )
+from archivey.internal.remote import source_change
 from archivey.internal.resource_usage import ResourceUsage, ResourceUsageRecorder
 from archivey.internal.selection import (
     CollectionSelector,
@@ -700,11 +703,16 @@ class BaseArchiveReader(ArchiveReader):
         # pass another reader's identity check; and not a plain counter, whose small
         # sequential values invite confusion with member_id or hardcoding).
         self._archive_id = uuid.uuid4().hex
-        # How far open() has decoded each solid run (``_solid_run``), until one open
-        # decodes again bytes an earlier one decoded: that logs the advice once (an
-        # INFO record by ruling, not a diagnostic or a warnings.warn), and counting
-        # stops (``None``).
-        self._solid_decoded: dict[Hashable, tuple[int, int]] | None = {}
+        # How far open() has decoded each solid run (``_solid_run``). The first open
+        # that decodes again bytes an earlier one decoded records
+        # SOLID_OPEN_REDECOMPRESSES (an INFO log line); later ones only escalate it,
+        # the rule for every once-per-reader code (``escalate_only``).
+        self._solid_decoded: dict[Hashable, tuple[int, int]] = {}
+        # Per run, the ``(offset, end)`` of every open judged but not yet settled:
+        # ``_note_solid_open`` adds it, ``_settle_solid_open`` moves it into
+        # ``_solid_decoded`` once the open succeeded, or drops it when it failed.
+        self._solid_inflight: dict[Hashable, list[tuple[int, int]]] = {}
+        self._solid_redecode_reported = False
         self._solid_decoded_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
         # it: teardown closes it after ``_close_archive``. Also backs
@@ -1986,9 +1994,11 @@ class BaseArchiveReader(ArchiveReader):
                     else:
                         member = self._pull_replayable(position)
                 except StopIteration:
+                    self._raise_source_change()
                     self._end_walk(None)
                     return None
                 except CorruptionError as exc:
+                    self._raise_source_change(exc)
                     self._end_walk(exc)
                     return None
                 self._register_member(position, member)
@@ -1998,6 +2008,8 @@ class BaseArchiveReader(ArchiveReader):
             return member
         except BaseException as exc:
             self._abandon_walk(exc)
+            if isinstance(exc, Exception):
+                self._raise_source_change(exc)
             raise
         finally:
             self._walk_pulling = False
@@ -2038,6 +2050,24 @@ class BaseArchiveReader(ArchiveReader):
             return self._walk_built[position]
         self._walk_built.append(member)
         return member
+
+    def _raise_source_change(self, cause: BaseException | None = None) -> None:
+        """Raise ``SourceChangedError`` when the remote object this reader reads has
+        changed (``fsspec-integration`` design D7), with ``cause`` as its cause.
+
+        The walk ends here, in place of a clean end, an incomplete listing or another
+        error. A backend handler built for damage (TAR's scan past the end-of-archive
+        marker, a salvage path, a metadata probe) can take the change for damage and
+        go on, and what it then reports describes no archive. The source raises the
+        change again on every later read, so a later call raises it too.
+        """
+        source = self._source
+        if source is None:
+            return
+        changed = source_change(source.remote_sources, cause)
+        if changed is not None:
+            self._stamp_error_context(changed)
+            raise changed from cause
 
     def _end_walk(self, error: CorruptionError | None) -> None:
         """Record that the walk ended, and stamp last-entry-wins once, over what it listed.
@@ -4016,29 +4046,44 @@ class BaseArchiveReader(ArchiveReader):
             reservation = self._state.reserve_live_stream()
             bound = False
             stream: ArchiveStreamImpl | None = None
+            # The solid run this open was judged against, once ``_note_solid_open``
+            # holds it in flight; settled below, committed or dropped.
+            judged: list[SolidRun] = []
+
+            def before_open(target: ArchiveMember) -> None:
+                run = self._solid_run(target)
+                if run is not None:
+                    self._note_solid_open(target, run)
+                    judged.append(run)
+
             try:
                 opened: list[ArchiveMember] = []
+                # Before the member's open, which can decode its solid prefix at once
+                # (a 7z folder that cannot seek): a policy that raises on
+                # SOLID_OPEN_REDECOMPRESSES refuses the open before it decodes.
                 stream = self._open_with_link_follow(
-                    member, visited=set(), opened=opened
+                    member,
+                    visited=set(),
+                    opened=opened,
+                    before_open=before_open,
                 )
+                # The open succeeded: its run is now decoded through the member's end.
+                if judged:
+                    self._settle_solid_open(judged[0], decoded=True)
+                    judged.clear()
                 self._hold_to_ratio(stream, opened[0])
                 stream._level_member = self._level_member(opened[0])
                 # An eager open may have proved the password already.
                 stream._sync_member_level()
-                # Asked before the bind: from here a raise still closes the stream.
-                run = (
-                    self._solid_run(opened[0])
-                    if self._solid_decoded is not None
-                    else None
-                )
                 registered = self._register_public_stream(stream, token=reservation)
                 bound = True
-                if run is not None:
-                    self._note_solid_open(opened[0], run)
                 return registered
             finally:
                 if not bound:
                     pending = sys.exception()
+                    if judged:
+                        # The open failed: see ``_settle_solid_open``.
+                        self._settle_solid_open(judged[0], decoded=False)
                     if stream is not None:
                         try:
                             stream.close()
@@ -4076,57 +4121,118 @@ class BaseArchiveReader(ArchiveReader):
         del member
         return None
 
-    def _note_solid_open(self, member: ArchiveMember, run: SolidRun) -> None:
-        """Log once per reader when an ``open()`` decodes again what an earlier did.
+    def _settle_solid_open(self, run: SolidRun, *, decoded: bool) -> None:
+        """Take the open :meth:`_note_solid_open` judged against ``run`` off the
+        in-flight ledger, into the run's record when ``decoded``, else dropped.
 
-        ``run`` is ``member``'s :meth:`_solid_run`, and the open already succeeded, so
-        this only counts and logs: it must not raise. The open decoded the run from its
+        An open that fails is not recorded. Most fail before decoding (a member the
+        backend refuses, a wrong password: 7z raises ``EncryptionError`` from
+        ``open()``), and recording them would make the next open of the run report a
+        re-decode, or be refused under ``raise_on``, for bytes never decoded. One
+        that fails after decoding part of its run (a 7z folder that cannot seek and
+        hits damage) is not recorded either, so a later re-decode of that part goes
+        unreported. That miss is accepted: it loses an advisory, where recording it
+        could refuse an open.
+        """
+        end = run.offset + run.size
+        with self._solid_decoded_lock:
+            entries = self._solid_inflight[run.key]
+            entries.remove((run.offset, end))
+            if not entries:
+                del self._solid_inflight[run.key]
+            if decoded:
+                decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
+                self._solid_decoded[run.key] = (
+                    max(decoded_to, end),
+                    max(discarded_to, run.offset),
+                )
+
+    def _note_solid_open(self, member: ArchiveMember, run: SolidRun) -> None:
+        """Report when an ``open()`` decodes again what an earlier open decoded.
+
+        ``run`` is ``member``'s :meth:`_solid_run`. The open decodes the run from its
         start through ``run.offset + run.size``. Per run the reader keeps how far opens
         have decoded and how far they discarded (the largest ``offset``). This open
         decodes again the part of its discarded prefix that an earlier open decoded,
         plus the part of its own member an earlier open decoded and discarded. A
         member's own bytes do not count when the same member is read again, since a
-        non-solid archive pays that too; the prefix it decodes again does. On the
-        first open that decodes anything again the record is INFO on
-        ``archivey.backends``: the caller may have chosen the pattern, and
-        ``reader.cost`` and the ``open()`` docstring already carry the cost.
+        non-solid archive pays that too; the prefix it decodes again does.
+
+        The first open that decodes anything again records
+        ``SOLID_OPEN_REDECOMPRESSES``, logged at INFO on ``archivey.backends``: the
+        caller may have chosen the pattern, and ``reader.cost`` and the ``open()``
+        docstring already carry the cost. Every later one is passed to the policy only
+        (``escalate_only``), so ``raise_on`` stops each such open. Called before the
+        member is opened, so a refused open decodes nothing.
+
+        The judgement counts the opens still in flight on the run as decoded, and
+        puts this one among them in the same locked step, so two opens judged while
+        neither has finished see each other, as they would see a finished one. The
+        caller then settles it with :meth:`_settle_solid_open`: into the run's record
+        once the open succeeded, dropped when it failed, or here when the policy
+        refuses it.
         """
         end = run.offset + run.size
         with self._solid_decoded_lock:
-            decoded = self._solid_decoded
-            if decoded is None:
-                return
-            decoded_to, discarded_to = decoded.get(run.key, (0, 0))
+            decoded_to, discarded_to = self._solid_decoded.get(run.key, (0, 0))
+            inflight = self._solid_inflight.setdefault(run.key, [])
+            for other_offset, other_end in inflight:
+                decoded_to = max(decoded_to, other_end)
+                discarded_to = max(discarded_to, other_offset)
+            inflight.append((run.offset, end))
             again = min(run.offset, decoded_to) + max(
                 0, min(end, discarded_to) - run.offset
             )
             if again <= 0:
-                decoded[run.key] = (
-                    max(decoded_to, end),
-                    max(discarded_to, run.offset),
-                )
                 return
-            self._solid_decoded = None
-        logger.info(
-            "Archive %r is solid: opening %r decoded again %d bytes an earlier open() "
-            "on this reader had decoded, because each open() or read() decodes its "
-            "member's solid block from the start. Reading many members this way is "
-            "quadratic in the block size; stream_members() decodes each block once. "
-            "Logged once per reader.",
-            self._archive_name or "(unnamed source)",
-            member.name,
-            again,
+            first = not self._solid_redecode_reported
+            self._solid_redecode_reported = True
+        archive = self._archive_name or "(unnamed source)"
+        message = (
+            f"Archive {archive!r} is solid: opening {member.name!r} decoded again "
+            f"{again} bytes an earlier open() on this reader had decoded, because each "
+            "open() or read() decodes its member's solid block from the start. Reading "
+            "many members this way is quadratic in the block size; stream_members() "
+            "decodes each block once."
         )
+        context = SolidReopenContext(
+            archive_name=self._archive_name,
+            member_name=member.name,
+            member_id=member._member_id,
+            bytes_again=again,
+        )
+        collector = self._diagnostics_collector
+        try:
+            if first:
+                collector.emit(
+                    code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
+                    message=message,
+                    context=context,
+                    logger=logger,
+                )
+            else:
+                collector.escalate_only(
+                    code=DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
+                    message=message,
+                    context=context,
+                )
+        except BaseException:
+            # Refused: the open does not happen, so nothing is decoded.
+            self._settle_solid_open(run, decoded=False)
+            raise
 
     def _open_with_link_follow(
         self,
         member: ArchiveMember,
         visited: set[int],
         opened: list[ArchiveMember] | None = None,
+        before_open: Callable[[ArchiveMember], None] | None = None,
     ) -> ArchiveStreamImpl:
         """Open ``member``, following links hop by hop until a non-link member.
 
         ``opened``, when given, receives the member whose data the stream reads.
+        ``before_open``, when given, is called with that member just before it is
+        opened, and may raise to refuse the open.
 
         A loop, not recursion: an archive's chain can be longer than the interpreter's
         recursion limit, and ``RecursionError`` is outside the library's error contract.
@@ -4197,6 +4303,8 @@ class BaseArchiveReader(ArchiveReader):
             )
         if opened is not None:
             opened.append(current)
+        if before_open is not None:
+            before_open(current)
         return self._open_member_handle(current)
 
     @override
@@ -4314,7 +4422,7 @@ class BaseArchiveReader(ArchiveReader):
                 c for c in error.covers if c.verified is not Verification.CHECKSUM
             )
             if pending:
-                spanning.append(SpanningCheckError(str(error), covers=pending))
+                spanning.append(SpanningCheckError(error.raw_message, covers=pending))
                 spanning[-1].__cause__ = error.__cause__
                 spanning[-1].archive_name = error.archive_name
         self._spanning_retry = retry_next
@@ -4373,7 +4481,7 @@ class BaseArchiveReader(ArchiveReader):
             "the read did not reach that check, most likely because the archive "
             "ends early"
             if cause is None
-            else str(cause)
+            else exception_detail(cause)
         )
         error = SpanningCheckError(
             f"A check over several members did not run, so nothing confirms the data "

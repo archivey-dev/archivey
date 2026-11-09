@@ -502,7 +502,8 @@ built-in format, and `format_info.from_plugin` SHALL stay false.
 The replacement SHALL NOT be given a multi-volume set or an archive found behind an SFX
 stub; each SHALL raise `UnsupportedFeatureError` that names the replacement. A read-once
 source SHALL raise `StreamNotSeekableError`, as it does for any indexed plugin. A raw CD
-sector image detected as ISO SHALL be refused as the built-in reader refuses it. Each
+sector image detected as ISO SHALL be refused, including the layouts the built-in reader
+reads: only the built-in reader strips the sectors. Each
 refusal SHALL come before the plugin's `open` runs.
 
 #### Scenario: A ZIP opens with the replacement

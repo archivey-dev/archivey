@@ -12,6 +12,8 @@ Module map:
 - :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
 - :mod:`.ar_reader` — Unix ar, written against ``archivey.formats`` like ISO
 - :mod:`.rpm_reader` — RPM packages (headers, then the CPIO payload), the same way
+- :mod:`.deb_reader` — Debian packages, an ar layer whose tars it reads through
+  ``ReaderContext.open_nested``
 - :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio), the same way
 - :mod:`.squashfs_reader` — SquashFS 4.0, the same way
 - :mod:`.xar_reader` — XAR (``.xar``, macOS ``.pkg`` and ``.xip``), the same way
@@ -36,6 +38,12 @@ Typical split inside a format: ``*ReadBackend`` (registry / ``open_read``) +
 ``*Reader`` (``BaseArchiveReader``). Native 7z/RAR also split parse vs decode.
 """
 
+# deb registers before ar: a ``.deb`` starts with ar's magic, and the first magic that
+# matches wins. Kept out of the sorted block below so the import sorter cannot move it.
+# isort: off
+from archivey.internal.backends import deb_reader as _deb_reader  # noqa: F401
+
+# isort: on
 from archivey.internal.backends import (
     ar_reader as _ar_reader,  # noqa: F401
     cab_reader as _cab_reader,  # noqa: F401

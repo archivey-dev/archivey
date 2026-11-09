@@ -47,7 +47,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `SCAN_DIRECTORY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="directory"` |
 | `SCAN_ENTRY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="entry"` |
 | `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"two_zero_blocks","second_zero_block","end_of_archive_block","end_of_central_directory","zip64_end_of_central_directory"}`, `expected_bytes`, `observed_bytes`, `observed_kind` |
-| `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"zeros_to_eof","end_of_stream"}`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
+| `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"zeros_to_eof","end_of_stream","directory_padding"}`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
 | `ARCHIVE_UNLISTED_DATA` | `UnlistedDataContext`: `kind="unlisted_data"`, `archive_name`, `format`, `member_name`, `member_id` (the name and id the pass gave the entry before dropping it), `offset` (of its local header), `compressed_size` |
 | `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext`: `kind="member_timestamp"`, `archive_name`, `member_name`, `member_id`, `field` ∈ `{"modified","accessed","created","ctime"}` (the `ArchiveMember` attribute the value would have filled, in every format), `source`, `value_repr` |
 | `MEMBER_HEADER_RECORD_SKIPPED` | `MemberHeaderRecordContext`: `kind="member_header_record"`, `archive_name`, `member_name`, `member_id`, `record`, `record_id`, `reason`, `list_truncated` |
@@ -66,6 +66,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `ENCRYPTED_MEMBER_UNVERIFIED` | `EncryptedVerificationContext`: `kind="encrypted_verification"`, `archive_name`, `member_name`, `member_id`, `check`, `reason` |
 | `SEEK_INDEX_DEGRADED` | `SeekIndexContext`: `kind="seek_index"`, `archive_name`, `member_name`, `member_id`, `codec`, `scan`, `error_type` |
 | `STREAM_REWIND_REDECOMPRESSES` | `StreamRewindContext`: `kind="stream_rewind"`, `archive_name`, `member_name`, `member_id`, `codec`, `from_offset`, `to_offset`, `accelerator` |
+| `SOLID_OPEN_REDECOMPRESSES` | `SolidReopenContext`: `kind="solid_reopen"`, `archive_name`, `member_name`, `member_id`, `bytes_again` |
 
 (`str | None` / `int | None` as in the typed variants.) `DiagnosticContext` is
 exactly this union — no backend-defined variants. `observed_kind` ∈
@@ -524,7 +525,7 @@ the archive's own bytes or metadata as anomalous:
 
 | In `ARCHIVE_INTEGRITY_CODES` | Excluded |
 | --- | --- |
-| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `MEMBER_HEADER_AMBIGUOUS`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file), `MEMBER_NAME_DUPLICATE` and `MEMBER_READERS_DISAGREE` (real archives have the shapes, read as the format's tool reads them) |
+| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `MEMBER_HEADER_AMBIGUOUS`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `SOLID_OPEN_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file), `MEMBER_NAME_DUPLICATE` and `MEMBER_READERS_DISAGREE` (real archives have the shapes, read as the format's tool reads them) |
 
 Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
 rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
@@ -533,8 +534,9 @@ forbids treating zero members as an error; `ENCODING_ARGUMENT_UNUSED` and
 speculatively passes a password to every call would otherwise raise on every
 unencrypted archive; `EXPLICIT_FORMAT_LISTED_EMPTY` because `format=` is an override
 and an override that halts the caller is not an override;
-`STREAM_REWIND_REDECOMPRESSES` because it reports the caller's access pattern rather
-than the archive, and is most useful as a deliberately targeted tripwire;
+`STREAM_REWIND_REDECOMPRESSES` and `SOLID_OPEN_REDECOMPRESSES` because they report the
+caller's access pattern rather than the archive, and are most useful as deliberately
+targeted tripwires;
 `ENCRYPTED_MEMBER_UNVERIFIED` because the trigger is the caller abandoning the stream
 before EOF (extract never fires it), and putting it in `STRICT` would turn a ZipCrypto
 peek into `DiagnosticRaisedError` (revisit when `stream.verified` lands and this code
@@ -687,6 +689,30 @@ itself, and re-emitting would buy a duplicate record rather than a stop.
 | `PEDANTIC`, probe-only decode failure | Same typed `TruncatedError`/`CorruptionError` with `format_unconfirmed=True` — not `DiagnosticRaisedError` |
 | Three retried reads on one probe-only member | Diagnostic count stays 1; each exception still has `format_unconfirmed=True` |
 | `PEDANTIC`, three retried reads on one probe-only member | Count and retention stay 1; every read still raises the typed error with `format_unconfirmed=True` |
+
+### Requirement: Report an open that decodes a solid run again
+
+On a 7z folder or a solid RAR, every `open()` decodes its member's run from the run's
+start. The system SHALL emit `SOLID_OPEN_REDECOMPRESSES` with a `SolidReopenContext`
+when an `open()` on a reader would decode again bytes an earlier `open()` on the same
+reader decoded. `bytes_again` SHALL be the part of the member's prefix that an earlier
+open decoded, plus the part of the member's own bytes that another open decoded and
+discarded; reading the same member again does not count its own bytes. A compressed
+TAR, a `DIRECT` reader and `stream_members()` SHALL NOT emit it.
+
+The check SHALL run before the member is opened, so an open that the policy refuses
+decodes nothing and is not counted as having decoded. The first occurrence on a reader
+SHALL be recorded and logged at INFO (`logging`); every later one SHALL go to the
+policy only, so `raise_on` refuses each such open (deduplication is a presentation
+concern; escalation is not).
+
+#### Scenario: solid re-decode
+
+| Case | Expected |
+| --- | --- |
+| `read("a")`, then `read("b")` on a solid 7z | One `SOLID_OPEN_REDECOMPRESSES`, `bytes_again` = `a`'s size |
+| A third out-of-order read | Not recorded again; passed to the policy |
+| `raise_on={SOLID_OPEN_REDECOMPRESSES}`: `read("a")`, `read("b")`, `read("a")` | `read("b")` raises before decoding; the later `read("a")` succeeds |
 
 ### Requirement: Report a selector entry that matched no member
 

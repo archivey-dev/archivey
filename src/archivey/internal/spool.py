@@ -120,6 +120,13 @@ class SpoolBudget:
         self._peak = max(self._peak, self._written)
         return True
 
+    def would_fit(self, size: int, *, freed: int = 0) -> bool:
+        """Whether :meth:`try_reserve` of ``size`` would succeed once ``freed``
+        charged bytes are released. Charges and releases nothing."""
+        if self._refused is not None:
+            return False
+        return self._limit is None or self._written - freed + size <= self._limit
+
     def release(self, size: int) -> None:
         """Give back ``size`` bytes that :meth:`try_reserve` charged, now deleted.
 
