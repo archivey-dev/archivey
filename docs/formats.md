@@ -1307,6 +1307,9 @@ what `makecab` and `gcab` write.
   installs them. Owners are names (`uname`, `gname`); `uid` and `gid` are `None`.
 - Both payload forms read: newc CPIO, and the stripped form of RPM 6 packages and of RPM 4
   packages with a file of 4 GiB or more.
+- The package header's own digest (SHA-256, or SHA-1 in older packages) is checked when the
+  package is opened: a changed name, mode, owner or link target raises `CorruptionError`.
+  A package that stores no such digest is read unchecked.
 - Each regular file's digest from the header (SHA-256 in current packages, MD5 in old ones)
   is checked as its data is read.
 - `%ghost` files are listed in the package but never stored, and are not members.
