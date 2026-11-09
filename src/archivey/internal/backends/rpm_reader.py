@@ -541,8 +541,12 @@ class RpmReader(SequentialReader):
                     sets.setdefault(key, []).append(file.index)
             for members in sets.values():
                 if len(members) > 1:
+                    # One tuple per set, shared by its files: a tuple per file would
+                    # take memory with the square of the set's size, and a header
+                    # can give every file one inode.
+                    links = tuple(members)
                     for i in members:
-                        files[i].links = tuple(members)
+                        files[i].links = links
         return files, (mtimes, users, groups, targets)
 
     def _member(self, package: _Package, file: _File) -> ArchiveMember:
