@@ -26,7 +26,8 @@ not “is LZMA”: Delta and BCJ are batched with LZMA1/2 here.
 
 Two phases: :func:`plan_folder` resolves stages (pure — no I/O); then
 :func:`open_folder_pipeline` / :func:`_execute_stage` fold stages onto the packed
-sources. Encoded-header decode also lives here (parser stays structure-only); the
+sources. ``SevenZipReader`` calls :func:`open_folder_pipeline` with one view per
+pack stream and gets the folder's whole decoded output, which it slices into members. Encoded-header decode also lives here (parser stays structure-only); the
 archive-open flow that uses it is ``load_sevenzip_archive`` in ``sevenzip_reader``.
 The encoded header stays linear-only: no writer puts BCJ2 there.
 """
@@ -263,15 +264,16 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
     The graph must be a tree of linear chains. Every coder has one output; the only
     coder with more than one input is BCJ2, with four. Each input is either a pack
     stream or bound to exactly one coder's output. The root is the coder whose output
-    no bind pair consumes, and the plan is read from the root down (design D1 of the
-    ``sevenzip-bcj2-decode`` change).
+    no bind pair consumes, and the plan is read from the root down: each coder's input
+    leads to the coder that produces it, until a pack stream or a BCJ2 coder ends the
+    chain.
 
     A graph that cannot be a valid folder (no coders, a coder with no input or no
     output, a cycle, an input that is neither packed nor bound) is
     :class:`CorruptionError`. A valid shape this planner does not run (a
     coder with several outputs, a multi-input coder other than BCJ2) is
     :class:`UnsupportedFeatureError`. A linear folder plans to one chain over pack
-    stream 0, as it always has.
+    stream 0.
     """
     coders = folder.coders
     if not coders:
@@ -539,6 +541,7 @@ def _decode_lzma_properties(coder: SevenZipCoder, filter_id: int) -> dict:
 
 
 def _lzma_filter(coder: SevenZipCoder) -> dict:
+    """The liblzma filter dict for one LZMA-family coder, options from its properties."""
     method = require(coder.method)
     if method is METHOD_LZMA or method is METHOD_LZMA2:
         assert method.lzma_filter_id is not None
