@@ -523,7 +523,7 @@ def test_a_bad_numeric_field_names_the_field_and_the_header(
     with (
         open_archive(_archive(tmp_path, data)) as reader,
         pytest.raises(
-            CorruptionError, match=rf"^ar header at offset 70: the {what} field b'1x "
+            CorruptionError, match=rf"^ar header at offset 70: the {what} field '1x "
         ),
     ):
         reader.members()

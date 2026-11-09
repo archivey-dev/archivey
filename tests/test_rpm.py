@@ -1267,7 +1267,7 @@ def test_a_payload_field_that_is_not_hexadecimal_names_it() -> None:
     at = data.index(entry) - 104 + 48
     data = data[:at] + b"0000 006" + data[at + 8 :]
     with pytest.raises(
-        CorruptionError, match=r"the filesize field b'0000 006' is not a number"
+        CorruptionError, match=r"the filesize field '0000 006' is not a number"
     ):
         _open(data).members()
 
