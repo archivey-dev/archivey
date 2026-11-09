@@ -703,7 +703,7 @@ def test_compressed_tar_stream_checksum_after_trailer_is_not_dropped(
     One flipped byte in a stored member body decodes cleanly, so only the stream
     checksum can see it. With a ``tar -b128`` record (64 KiB of zero padding after
     the trailer) the checksum is reached inside the trailing scan, which must raise
-    it (_StreamChecksumError) rather than take it for a tail that failed to decode.
+    it (StreamChecksumError) rather than take it for a tail that failed to decode.
     Past the scan's 1 MiB bound it is never reached, and DIGEST_UNVERIFIABLE says so;
     the same archive without the flipped byte reports the same, and raises nothing."""
     import random

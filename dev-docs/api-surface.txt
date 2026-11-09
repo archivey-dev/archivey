@@ -47,6 +47,7 @@ attribute archivey.ArchiveFormat.BZ2 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZIP3 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.CAB = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.CPIO = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.DEB = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DIRECTORY = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DMG = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.GZ = ArchiveFormat(...)
@@ -229,6 +230,7 @@ value archivey.ContainerFormat.RAR = 'rar'
 value archivey.ContainerFormat.SEVEN_Z = '7z'
 value archivey.ContainerFormat.ISO = 'iso'
 value archivey.ContainerFormat.AR = 'ar'
+value archivey.ContainerFormat.DEB = 'deb'
 value archivey.ContainerFormat.CPIO = 'cpio'
 value archivey.ContainerFormat.RPM = 'rpm'
 value archivey.ContainerFormat.SQUASHFS = 'squashfs'
@@ -321,6 +323,7 @@ value archivey.DiagnosticCode.MEMBER_HEADER_AMBIGUOUS = 'member_header_ambiguous
 value archivey.DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED = 'encrypted_member_unverified'
 value archivey.DiagnosticCode.SEEK_INDEX_DEGRADED = 'seek_index_degraded'
 value archivey.DiagnosticCode.STREAM_REWIND_REDECOMPRESSES = 'stream_rewind_redecompresses'
+value archivey.DiagnosticCode.SOLID_OPEN_REDECOMPRESSES = 'solid_open_redecompresses'
 value archivey.DiagnosticCode.MEMBER_SELECTOR_UNMATCHED = 'member_selector_unmatched'
 value archivey.DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA = 'member_special_file_has_data'
 value archivey.DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS = 'member_local_name_differs'
@@ -332,7 +335,7 @@ value archivey.DiagnosticCode.MEMBER_TYPE_UNKNOWN = 'member_type_unknown'
 value archivey.DiagnosticCode.MEMBER_NAME_DUPLICATE = 'member_name_duplicate'
 value archivey.DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE = 'source_change_undetectable'
 value archivey.DiagnosticCode.MEMBER_READERS_DISAGREE = 'member_readers_disagree'
-alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | NameDuplicateContext | ReaderDisagreementContext
+alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | NameDuplicateContext | ReaderDisagreementContext
 class archivey.DiagnosticPolicy()
 init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
 field archivey.DiagnosticPolicy.ignore: frozenset[DiagnosticCode]
@@ -425,12 +428,12 @@ field archivey.FormatInfo.prefixed: bool = False
 field archivey.FormatInfo.unavailable_tiers: tuple[TierSkip, ...] = ()
 property archivey.FormatInfo.from_plugin: bool
 class archivey.FormatPolicy()
-init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[FormatHandler]] | None = None, exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = ()) -> None
+init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[IndexedFormatHandler]] | None = None, exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = ()) -> None
 field archivey.FormatPolicy.exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
 field archivey.FormatPolicy.exclude_libraries: frozenset[OptionalLibrary]
 field archivey.FormatPolicy.only: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None
 field archivey.FormatPolicy.plugins: bool
-field archivey.FormatPolicy.replace: Mapping[ContainerFormat, type[FormatHandler]]
+field archivey.FormatPolicy.replace: Mapping[ContainerFormat, type[IndexedFormatHandler]]
 method archivey.FormatPolicy.allows(self, fmt: ArchiveFormat) -> bool
 class archivey.FormatSupport(Enum)
 enum archivey.FormatSupport
@@ -708,6 +711,8 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'seek_index_degraded'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'seek-index-degraded'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'stream_rewind_redecompresses'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'stream-rewind-redecompresses'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'solid_open_redecompresses'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'solid-open-redecompresses'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_selector_unmatched'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-selector-unmatched'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_special_file_has_data'
@@ -930,6 +935,14 @@ field archivey.diagnostics.SizeWrapContext.size: int | None = None
 field archivey.diagnostics.SizeWrapContext.stored_compressed_size: int = 0
 field archivey.diagnostics.SizeWrapContext.stored_size: int = 0
 method archivey.diagnostics.SizeWrapContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.SolidReopenContext(_JsonSafeContext)
+init archivey.diagnostics.SolidReopenContext(kind: Literal['solid_reopen'] = 'solid_reopen', archive_name: str | None = None, member_name: str | None = None, member_id: int | None = None, bytes_again: int = 0) -> None
+field archivey.diagnostics.SolidReopenContext.archive_name: str | None = None
+field archivey.diagnostics.SolidReopenContext.bytes_again: int = 0
+field archivey.diagnostics.SolidReopenContext.kind: Literal['solid_reopen'] = 'solid_reopen'
+field archivey.diagnostics.SolidReopenContext.member_id: int | None = None
+field archivey.diagnostics.SolidReopenContext.member_name: str | None = None
+method archivey.diagnostics.SolidReopenContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.SourceChangeContext(_JsonSafeContext)
 init archivey.diagnostics.SourceChangeContext(kind: Literal['source_change'] = 'source_change', archive_name: str | None = None, protocol: str = '', reason: str = '') -> None
 field archivey.diagnostics.SourceChangeContext.archive_name: str | None = None
@@ -1034,7 +1047,6 @@ class archivey.formats.FormatHandler(ABC)
 attribute archivey.formats.FormatHandler.extensions = ()
 attribute archivey.formats.FormatHandler.install_hint = None
 attribute archivey.formats.FormatHandler.magic = ()
-method archivey.formats.FormatHandler.open(self, source: ReaderSource, context: ReaderContext) -> FormatReader
 attribute archivey.formats.FormatHandler.probe = None
 attribute archivey.formats.FormatHandler.requires = ()
 method archivey.formats.FormatHandler.translate_exception(self, exc: Exception) -> ArchiveyError | None
@@ -1056,6 +1068,16 @@ class archivey.formats.Hasher(Protocol)
 init archivey.formats.Hasher(*args, **kwargs)
 method archivey.formats.Hasher.digest(self) -> bytes
 method archivey.formats.Hasher.update(self, data: bytes, /) -> None
+class archivey.formats.IndexedFormatHandler(FormatHandler)
+attribute archivey.formats.IndexedFormatHandler.extensions = ()
+attribute archivey.formats.IndexedFormatHandler.install_hint = None
+attribute archivey.formats.IndexedFormatHandler.magic = ()
+attribute archivey.formats.IndexedFormatHandler.non_seekable_reason = None
+method archivey.formats.IndexedFormatHandler.open(self, source: ReaderSource, context: ReaderContext) -> IndexedReader[Any]
+attribute archivey.formats.IndexedFormatHandler.probe = None
+attribute archivey.formats.IndexedFormatHandler.requires = ()
+method archivey.formats.IndexedFormatHandler.translate_exception(self, exc: Exception) -> ArchiveyError | None
+attribute archivey.formats.IndexedFormatHandler.uses_encoding = False
 class archivey.formats.IndexedReader(FormatReader, Generic[LocatorT])
 method archivey.formats.IndexedReader.archive_info(self) -> ReaderArchiveInfo
 method archivey.formats.IndexedReader.close(self) -> None
@@ -1070,6 +1092,7 @@ class archivey.formats.MemberData(tuple)
 field archivey.formats.MemberData.bounded: bool
 field archivey.formats.MemberData.checked: bool
 field archivey.formats.MemberData.digests: tuple[MemberDigest, ...]
+field archivey.formats.MemberData.ranges: tuple[tuple[int, int], ...]
 field archivey.formats.MemberData.stream: BinaryIO | io.RawIOBase
 class archivey.formats.MemberDigest(tuple)
 field archivey.formats.MemberDigest.expected: bytes
@@ -1078,14 +1101,12 @@ field archivey.formats.MemberDigest.new: Callable[[], Hasher] | None
 class archivey.formats.MemberRecord(tuple, Generic[LocatorT])
 field archivey.formats.MemberRecord.locator: LocatorT
 field archivey.formats.MemberRecord.member: ArchiveMember
-field archivey.formats.MemberRecord.stored_name: str | None
 class archivey.formats.MemberSpan(tuple)
 field archivey.formats.MemberSpan.checked: bool
 field archivey.formats.MemberSpan.data: BinaryIO | io.RawIOBase | None
 field archivey.formats.MemberSpan.data_length: int
 field archivey.formats.MemberSpan.digests: tuple[MemberDigest, ...]
 field archivey.formats.MemberSpan.member: ArchiveMember
-field archivey.formats.MemberSpan.stored_name: str | None
 reexport archivey.formats.PluginContainer = archivey.PluginContainer
 reexport archivey.formats.PluginStream = archivey.PluginStream
 class archivey.formats.ReaderArchiveInfo(tuple)
@@ -1095,11 +1116,12 @@ field archivey.formats.ReaderArchiveInfo.format_version: str | None
 field archivey.formats.ReaderArchiveInfo.is_solid: bool
 class archivey.formats.ReaderContext()
 property archivey.formats.ReaderContext.archive_name: str | None
+method archivey.formats.ReaderContext.charge_metadata(self, nbytes: int, *, what: str) -> None
 property archivey.formats.ReaderContext.config: ArchiveyConfig
 method archivey.formats.ReaderContext.decode_name(self, raw: bytes) -> str
 method archivey.formats.ReaderContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat | PluginStream, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
 property archivey.formats.ReaderContext.encoding: str | None
-method archivey.formats.ReaderContext.hold(self, member: ArchiveMember, *, stored_name: str | None = None, reason: str | None = None) -> None
+method archivey.formats.ReaderContext.hold(self, member: ArchiveMember, *, reason: str | None = None) -> None
 method archivey.formats.ReaderContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
 method archivey.formats.ReaderContext.normalize_name(self, name: str, member_type: MemberType) -> str
 method archivey.formats.ReaderContext.open_nested(self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat) -> Iterator[MemberSpan]
@@ -1115,7 +1137,6 @@ class archivey.formats.SequentialFormatHandler(FormatHandler)
 attribute archivey.formats.SequentialFormatHandler.extensions = ()
 attribute archivey.formats.SequentialFormatHandler.install_hint = None
 attribute archivey.formats.SequentialFormatHandler.magic = ()
-method archivey.formats.SequentialFormatHandler.open(self, source: ReaderSource, context: ReaderContext) -> FormatReader
 method archivey.formats.SequentialFormatHandler.open_sequential(self, context: ReaderContext) -> SequentialReader
 attribute archivey.formats.SequentialFormatHandler.probe = None
 attribute archivey.formats.SequentialFormatHandler.requires = ()
@@ -1130,7 +1151,7 @@ method archivey.formats.SequentialReader.walk(self, stream: ForwardStream) -> It
 function archivey.formats.block_stream(size: int, block_size: int, read_block: Callable[[int], bytes | BinaryIO]) -> BinaryIO
 function archivey.formats.buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO
 function archivey.formats.register_codec(handler: type[CodecHandler]) -> None
-function archivey.formats.register_format(handler: type[FormatHandler]) -> None
+function archivey.formats.register_format(handler: type[IndexedFormatHandler | SequentialFormatHandler]) -> None
 module archivey.terminal
 function archivey.terminal.display_path(path: str | os.PathLike[str]) -> str
 function archivey.terminal.escape_control_chars(text: str) -> str

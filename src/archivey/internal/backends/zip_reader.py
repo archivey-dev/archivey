@@ -1347,9 +1347,9 @@ class _WalkedMembers:
         self.offsets: array[int] = array("q")
         #: A bit-3 member's CRC and sizes, from its data descriptor; 0 for any other.
         self.crcs: array[int] = array("L")
-        self.compressed_sizes: array[int] = array("q")
-        #: Unsigned: an 8-byte descriptor's uncompressed size is whatever it states,
-        #: up to 2**64 - 1, and a read checks the data against it.
+        #: Unsigned, both: an 8-byte descriptor's sizes are whatever it states, up to
+        #: 2**64 - 1, and a read checks the data against them.
+        self.compressed_sizes: array[int] = array("Q")
         self.file_sizes: array[int] = array("Q")
         #: Where the last member the walk passed whole ends.
         self.members_end = 0

@@ -128,8 +128,11 @@ from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     MemberStreamParts,
 )
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
-from archivey.internal.streams.resume import ask_resume_offset
+from archivey.internal.streams.decompressor_stream import StreamChecksumError
+from archivey.internal.streams.resume import (
+    ask_resume_offset,
+    restarts_follow_decoding,
+)
 from archivey.internal.streams.streamtools import (
     LockedStream,
     ReadAheadStream,
@@ -413,7 +416,11 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
     members (``TarReader._raise_members_the_codec_checked``). This handle reads those
     bytes instead, at the same decoding cost, and keeps the proof. A skip that a
     restart point can jump (an indexed codec: bgzip, Seekable Zstandard) still seeks,
-    since its bytes are never decoded. Any other seek passes through.
+    since its bytes are never decoded. A restart point of rapidgzip's index does not
+    count: rapidgzip indexes only output its prefetch has decoded, so that seek would
+    skip no decoding and would lose the proof (``restarts_follow_decoding``). Reading
+    those bytes is also faster than asking the child for a restart point at every
+    member. Any other seek passes through.
 
     Borrows the codec stream: the reader closes it, never this handle.
     """
@@ -421,6 +428,10 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
     def __init__(self, inner: BinaryIO) -> None:
         super().__init__()
         self._inner = inner
+        # Asked once. A standard-library takeover can replace the rapidgzip layer
+        # later; the walk then reads through where it could have seeked, which is
+        # never wrong.
+        self._restarts_skip_decoding = not restarts_follow_decoding(inner)
 
     @override
     def read(self, n: int = -1, /) -> bytes:
@@ -432,7 +443,11 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
         if whence == io.SEEK_SET:
             here = inner.tell()
             if offset > here:
-                resume = ask_resume_offset(inner, offset)
+                resume = (
+                    ask_resume_offset(inner, offset)
+                    if self._restarts_skip_decoding
+                    else None
+                )
                 if resume is None or resume <= here:
                     remaining = offset - here
                     while remaining > 0:
@@ -745,7 +760,7 @@ class TarReader(BaseArchiveReader):
         (``_note_spanning_unreachable``)."""
         try:
             yield from self._walk_members()
-        except _StreamChecksumError:
+        except StreamChecksumError:
             # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
             # it stays the ceiling of the members it covers, which verify_all()
             # returns. An xz or bzip2 check failure reads as damage, handled below.
@@ -1054,7 +1069,7 @@ class TarReader(BaseArchiveReader):
         A tail that fails to *decode* never raises. Every member was already read
         whole, so a decode failure out here must not turn a good listing into an
         error, and it is not trailing tar data, so it is not reported as that. The one
-        exception is a :class:`_StreamChecksumError`: a codec checksum that covers the
+        exception is a :class:`StreamChecksumError`: a codec checksum that covers the
         whole decoded stream (gzip's CRC-32 and ISIZE, zlib's Adler-32, the zstd and lz4
         content checksums, lzip's CRC-32) failed, so the members already read are
         damaged, and that raises. A ``tar -b128`` record pads 64 KiB past the trailer,
@@ -1099,7 +1114,7 @@ class TarReader(BaseArchiveReader):
             try:
                 with self._translated_errors(), self._walk_guard():
                     chunk = stream.read(want)
-            except _StreamChecksumError:
+            except StreamChecksumError:
                 # Nothing non-zero has come out since the trailer, so the stream this
                 # checksum covers holds the members already read: this is damage to
                 # them, not a tail that failed to decode. (A codec's read-ahead can

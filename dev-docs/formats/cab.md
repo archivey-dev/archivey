@@ -10,7 +10,7 @@ SquashFS and ar are.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/cab_reader.py`, a `CabHandler` (`FormatHandler`) and a `CabReader` (`IndexedReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/cab_reader.py`, a `CabHandler` (`IndexedFormatHandler`) and a `CabReader` (`IndexedReader`), registered with `register_builtin_format` |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file or a stream that can seek. Not a pipe: the file table points at folders anywhere in the file |
 | Listing cost | From the index (the `CFFILE` table) |

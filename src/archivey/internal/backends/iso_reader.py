@@ -51,6 +51,7 @@ import zlib
 from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta, timezone
+from functools import cache
 from types import ModuleType
 from typing import (
     TYPE_CHECKING,
@@ -93,7 +94,7 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.formats import (
-    FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -811,6 +812,97 @@ def _install_pycdlib_udf_counter() -> None:
 
 _install_pycdlib_udf_counter()
 
+# Set only while this module's ``open_fp`` runs, like ``_SYSTEM_USE_NOTES``: the image
+# offset of the first non-zero byte in each directory block's padding that pycdlib met.
+_PADDING_NOTES: ContextVar[list[int] | None] = ContextVar(
+    "archivey_iso_padding_notes", default=None
+)
+_PYCDLIB_PADDING_TOLERANCE_INSTALLED = False
+# pycdlib's own ``_iter_directory_records``, kept for ``test_iso``'s drift check.
+_PYCDLIB_ITER_DIRECTORY_RECORDS: object | None = None
+
+
+def _install_pycdlib_padding_tolerance() -> None:
+    """Note, rather than refuse, non-zero padding after a directory block's records.
+
+    pycdlib's ``_iter_directory_records`` treats a zero length byte as the start of the
+    padding that fills the rest of the logical block, and raises ``Invalid padding on
+    ISO`` when any of that padding is not zero. That one byte then refuses the whole
+    image, every tree included, although no record it could still read is affected
+    (measured: one damaged byte in a Joliet directory's padding refused an image whose
+    40 files all read). The Linux kernel skips the padding without looking at it
+    (``do_isofs_readdir``). Inside our own ``open_fp`` the walk below does what
+    pycdlib's does, except that it records where the padding stopped being zero in
+    ``_PADDING_NOTES`` and goes on; ``IsoReader`` reports each one as
+    ``ARCHIVE_TRAILING_DATA`` (DR-3), because a record whose length byte was damaged
+    to zero would also show up this way. Padding the image cuts short still raises
+    ``Invalid padding on ISO``, as pycdlib's equality check does, so a cut there stays
+    ``TruncatedError``.
+
+    The walk is a copy of pycdlib 1.22.0's, and inside our ``open_fp`` it takes the
+    place of whatever the installed pycdlib does: an upstream fix to that loop would
+    not apply there. ``test_iso`` pins the original's source
+    (``_PYCDLIB_ITER_DIRECTORY_RECORDS``), so a pycdlib that changes it fails a test
+    until someone compares the two. Outside our ``open_fp``, and when pycdlib has no
+    such method, pycdlib's own walk runs.
+    """
+    global _PYCDLIB_PADDING_TOLERANCE_INSTALLED
+    if pycdlib is None or _PYCDLIB_PADDING_TOLERANCE_INSTALLED:
+        return
+    import pycdlib.pycdlib as pcd_module
+    from pycdlib import dr as dr_mod, pycdlibexception
+
+    original = getattr(pcd_module.PyCdlib, "_iter_directory_records", None)
+    if original is None:
+        return
+    global _PYCDLIB_ITER_DIRECTORY_RECORDS
+    _PYCDLIB_ITER_DIRECTORY_RECORDS = original
+
+    def _iter_directory_records(
+        self: PyCdlib, vd: object, dir_record: DirectoryRecord, iso_file_length: int
+    ) -> Iterator[tuple[DirectoryRecord, str]]:
+        notes = _PADDING_NOTES.get()
+        if notes is None:
+            yield from original(self, vd, dir_record, iso_file_length)
+            return
+        extent = dir_record.extent_location()
+        getattr(self, "_seek_to_extent")(extent)
+        length = dir_record.get_data_length()
+        block_size = cast(int, getattr(self, "logical_block_size"))
+        data = getattr(self, "_read_clamped")(length, iso_file_length)
+        offset = 0
+        while offset < length:
+            if offset > len(data) - 1:
+                raise pycdlibexception.PyCdlibInvalidISO("Invalid directory record")
+            lenbyte = data[offset]
+            if lenbyte == 0:
+                pad_check = min(block_size - offset % block_size, length - offset)
+                padding = data[offset : offset + pad_check]
+                if len(padding) < pad_check:
+                    # The image ends inside the padding: pycdlib's check that the
+                    # padding is ``pad_check`` zeros refuses it, and ``_cut_short``
+                    # tells a cut from damage.
+                    raise pycdlibexception.PyCdlibInvalidISO("Invalid padding on ISO")
+                stripped = padding.lstrip(b"\0")
+                if stripped:
+                    notes.append(
+                        extent * block_size + offset + len(padding) - len(stripped)
+                    )
+                offset += pad_check
+                continue
+            new_record = dr_mod.DirectoryRecord()
+            rr = new_record.parse(
+                vd, data[offset : offset + lenbyte], dir_record, getattr(self, "xa")
+            )
+            offset += lenbyte
+            yield new_record, rr
+
+    setattr(pcd_module.PyCdlib, "_iter_directory_records", _iter_directory_records)
+    _PYCDLIB_PADDING_TOLERANCE_INSTALLED = True
+
+
+_install_pycdlib_padding_tolerance()
+
 # Exceptions that mean "this ISO structure is bad", translated to CorruptionError.
 # pycdlib wraps *most* format errors in PyCdlibException, but it is not hardened against
 # crafted/truncated input: fuzzing surfaces bare IndexError, struct.error, UnicodeDecodeError,
@@ -950,6 +1042,26 @@ def _nm_name_is_empty(rr: RockRidge) -> bool:
     """Whether ``NM`` entries are present and spell no name: the case where
     :func:`_nm_name` gives ``None`` although the record has ``NM`` entries."""
     return _has_nm_entries(rr) and not rr.name()
+
+
+@cache
+def _tf_modify_access_fields() -> tuple[str, str]:
+    """The attributes of pycdlib's ``RRTFRecord`` that hold a Rock Ridge ``TF`` entry's
+    modification time and its access time, in that order.
+
+    RRIP 1.12 (4.1.6) and the Linux kernel give flag bit 1 to the modification time
+    and bit 2 to the access time. pycdlib 1.x names the bits the other way round, so
+    its ``access_time`` holds the modification time. Asked of pycdlib once, with a
+    record that sets bit 1 only, so a pycdlib that fixes the order is read right too.
+    """
+    from pycdlib import rockridge as rr_mod
+
+    probe = rr_mod.RRTFRecord()
+    # "TF", length 12, version 1, flags = bit 1, then one 7-byte date.
+    probe.parse(b"TF\x0c\x01\x02" + bytes((100, 1, 1, 0, 0, 0, 0)))
+    if getattr(probe, "modification_time", None) is not None:
+        return "modification_time", "access_time"
+    return "access_time", "modification_time"
 
 
 def _rr_entry_groups(rr: RockRidge) -> tuple[RockRidgeEntries, ...]:
@@ -1530,6 +1642,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             )
             token = _SYSTEM_USE_NOTES.set(self._system_use)
             budget_token = _PARSE_BUDGET.set(budget)
+            padding_notes: list[int] = []
+            padding_token = _PADDING_NOTES.set(padding_notes)
             try:
                 self._iso.open_fp(self._iso_fp)
             except _PYCDLIB_ERRORS as exc:
@@ -1538,6 +1652,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                     raise
                 raise truncated from exc
             finally:
+                _PADDING_NOTES.reset(padding_token)
                 _PARSE_BUDGET.reset(budget_token)
                 _SYSTEM_USE_NOTES.reset(token)
             self._iso_opened = True
@@ -1557,6 +1672,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             else:
                 self._namespace = "iso9660"
                 self._path_kw = "iso_path"
+            self._report_directory_padding(padding_notes)
             self._report_trailing_data()
         except BaseException:
             # No reader is returned for anyone to close, and the exception's traceback
@@ -1567,6 +1683,36 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # ``open_fp``.
             self._release_archive_handles()
             raise
+
+    def _report_directory_padding(self, offsets: list[int]) -> None:
+        """Report each directory block whose padding is not all zeros (DR-3).
+
+        ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="directory_padding"``: a
+        warning by default, refused under ``DiagnosticPolicy.STRICT``. pycdlib parses
+        every tree, so the block may belong to a tree the listing does not use. The
+        records before the padding are all read; what the padding holds is not, which
+        is why the message says a record may be missing. pycdlib walks a directory
+        extent more than once only for a hidden or relocated directory, so the same
+        offset is reported once.
+        """
+        for found in sorted(set(offsets)):
+            self._context.report(
+                DiagnosticCode.ARCHIVE_TRAILING_DATA,
+                (
+                    "ISO directory block is damaged: its padding after the last "
+                    f"directory record holds a non-zero byte at offset {found}. The "
+                    "records before it are listed; a record whose length byte was "
+                    "damaged would be missing."
+                ),
+                ArchiveEofContext(
+                    archive_name=self._archive_name,
+                    format="iso",
+                    expected_marker="directory_padding",
+                    expected_bytes=0,
+                    observed_bytes=found,
+                    observed_kind="nonzero",
+                ),
+            )
 
     def _report_trailing_data(self) -> None:
         """Report a non-zero byte after the end of the image, as DR-3 asks.
@@ -2008,10 +2154,10 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         ):
             if not record.is_dir() and record.data_length:
                 listed_extents.add(record.extent_location())
-            member, stored_name = self._make_member(
+            member = self._make_member(
                 ns_path, raw_path, record, index, superseded=superseded
             )
-            yield MemberRecord(member, record, stored_name=stored_name)
+            yield MemberRecord(member, record)
         self._report_files_in_other_trees(listed_extents)
 
     # --- the image's other trees ---------------------------------------------------
@@ -2169,8 +2315,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         index: int,
         *,
         superseded: bool = False,
-    ) -> tuple[ArchiveMember, str]:
-        """The member, and its name as presented before normalization."""
+    ) -> ArchiveMember:
+        """The member, named as the image presents it; archivey normalizes the name."""
         rr = getattr(record, "rock_ridge", None)
         raw_mode, uid, gid = self._px(rr)
 
@@ -2199,7 +2345,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
         # ECMA-119 gives a version only to a file identifier. A directory's ``;N`` is
         # part of its name, and its children's paths keep it.
-        presented, version = (
+        name, version = (
             (ns_path.lstrip("/"), None)
             if member_type is MemberType.DIRECTORY
             else self._split_version(ns_path)
@@ -2210,11 +2356,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # matching ``raw_name``, and ``is_current=False`` so extraction skips it.
             # The newest version takes the bare name. Keeping the stored spelling also
             # keeps ``FOO.;1`` and ``FOO;1`` apart when both are superseded.
-            presented = ns_path.lstrip("/")
-        # Normalized here, not left to the adapter, so the reports made while
-        # listing name the member as callers see it; the adapter reports the change
-        # from ``presented``.
-        name = self._context.normalize_name(presented, member_type)
+            name = ns_path.lstrip("/")
         raw_name = raw_path
         extra = (
             MemberExtra({"iso.version": version})
@@ -2274,8 +2416,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         self._emit_system_use_cut(member, rr, index)
         if special is not None and member.type is MemberType.FILE:
             self._context.report(*special_file_has_data_report(member), member=member)
-        # The message names the normalized name, so it is built here, not in
-        # ``_timestamps``.
+        # The message names the member, so it is built here, not in ``_timestamps``.
         for field, source, value_repr in invalid_dates:
             message = f"Invalid ISO 9660 date for {quoted(member.name)}: {value_repr}"
             issue = TimestampIssue(
@@ -2358,7 +2499,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 ),
                 member=member,
             )
-        return member, presented
+        return member
 
     def _zisofs_entry(self, record: DirectoryRecord) -> _ZisofsEntry | None:
         rr = getattr(record, "rock_ridge", None)
@@ -2439,15 +2580,16 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # Rock Ridge TF entries carry the POSIX times (in dr_entries, or the CE
             # overflow area). A TF modification time wins over the directory-record
             # date, which cannot hold hundredths or the long form's four-digit year.
+            modify_field, access_field = _tf_modify_access_fields()
             for entries in _rr_entry_groups(rr):
                 tf = getattr(entries, "tf_record", None)
                 if tf is None:
                     continue
                 modified = modified or convert(
-                    getattr(tf, "modification_time", None), "modified", "rock_ridge"
+                    getattr(tf, modify_field, None), "modified", "rock_ridge"
                 )
                 accessed = accessed or convert(
-                    getattr(tf, "access_time", None), "accessed", "rock_ridge"
+                    getattr(tf, access_field, None), "accessed", "rock_ridge"
                 )
                 created = created or convert(
                     getattr(tf, "creation_time", None), "created", "rock_ridge"
@@ -2707,18 +2849,22 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # the zisofs header read) is covered, and wraps the stream in it after.
         # pycdlib's stream stops at the record's data length and the zisofs decoder at
         # the declared size, so neither returns a byte past ``size``.
-        return MemberData(self._data_stream(record, zisofs, member), bounded=True)
+        spans = self._data_spans(record)
+        return MemberData(
+            self._data_stream(spans, zisofs, member),
+            bounded=True,
+            ranges=tuple((start, start + length) for start, length in spans),
+        )
 
     def _data_stream(
         self,
-        record: DirectoryRecord,
+        spans: list[tuple[int, int]],
         zisofs: _ZisofsEntry | None,
         member: ArchiveMember,
     ) -> BinaryIO:
         # A view of the source per extent (``_data_spans``), joined when there are
         # several; pycdlib's own file object would add a layer that seeks the shared
         # handle on every read.
-        spans = self._data_spans(record)
         stream: BinaryIO
         if len(spans) == 1:
             stream = self._source.view(*spans[0])
@@ -2873,11 +3019,17 @@ def refuse_raw_sector_image(
     )
 
 
-class IsoHandler(FormatHandler):
+class IsoHandler(IndexedFormatHandler):
     """ISO 9660 images, read through ``archivey.formats`` (requires ``pycdlib``)."""
 
     format = ArchiveFormat.ISO
     extensions = (".iso",)
+    # pycdlib addresses the image by absolute offsets (volume descriptors at 32 KiB),
+    # so even a forward-only pass needs a seekable source.
+    non_seekable_reason = (
+        "its volume descriptors and directory records are at absolute offsets in "
+        "the image"
+    )
     # The primary volume descriptor's "CD001" magic sits at offset 32 769; detection
     # peeks the extended 32 774-byte window on demand to find it (see
     # internal/detection.py).
@@ -2914,14 +3066,6 @@ class IsoHandler(FormatHandler):
 
 IsoReadBackend = register_builtin_format(
     IsoHandler,
-    # pycdlib addresses the image by absolute offsets (volume descriptors at 32 KiB),
-    # so even a forward-only pass needs a seekable source. The same requirement the
-    # reader raises from, so the hint reported by listing / format_availability and
-    # the one in the open() failure cannot diverge.
-    NON_SEEKABLE_REASON=(
-        "its volume descriptors and directory records are at absolute offsets in "
-        "the image"
-    ),
     OPTIONAL_DEPENDENCY=OptionalLibrary.PYCDLIB,
     INSTALL_HINT=_PYCDLIB_REQUIREMENT.install_hint,
 )
