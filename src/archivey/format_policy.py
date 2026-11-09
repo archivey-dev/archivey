@@ -293,7 +293,7 @@ class FormatPolicy:
     start of the archive, so a multi-volume set and an archive behind a
     self-extracting stub are refused with :class:`~archivey.UnsupportedFeatureError`,
     a source that cannot seek with :class:`~archivey.StreamNotSeekableError`, and a
-    raw CD sector image detected as ISO as the built-in reader refuses it. The
+    raw CD sector image detected as ISO (only the built-in reader strips its sectors). The
     format's own ``ArchiveyConfig`` options reach the plugin through
     ``ReaderContext.config``."""
 
