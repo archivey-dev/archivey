@@ -121,7 +121,8 @@ _OVERLAPPING_PASSES = frozenset({"stream_members", "extract_all"})
 
 
 class CacheState(enum.Enum):
-    """Before, during and after the one walk that builds the member list."""
+    """Whether the member list is built: not yet (or the last attempt failed), being
+    built by one elected caller, or published."""
 
     UNMATERIALIZED = "unmaterialized"
     MATERIALIZING = "materializing"
@@ -283,9 +284,10 @@ class ReaderState:
     def begin_internal_opens(self) -> None:
         """Enter a library-internal open window on this thread; windows nest.
 
-        Inside one, this thread's opens pass the live-stream gate and its worker calls
-        are filed under its pass (see ``_internal_open_threads``). Leave it with
-        :meth:`end_internal_opens`.
+        Inside one, this thread's opens pass the live-stream gate and the same-thread
+        re-entry check, and its worker calls go under the pass this thread works for,
+        when there is one (:meth:`_owner_pass_locked`; see ``_internal_open_threads``).
+        Leave it with :meth:`end_internal_opens`.
         """
         tid = threading.get_ident()
         with self._lock:
@@ -345,8 +347,9 @@ class ReaderState:
         return self._root
 
     def acquire_pass(self, name: str) -> OperationToken:
-        """Take the token for a reader-wide pass named ``name``, or raise the usage error
-        that says why it cannot start. Release it with :meth:`release_pass`."""
+        """Take the token for a reader-wide pass named ``name`` (or, inside this thread's
+        internal-open window, a child of the pass it works for), or raise the usage
+        error that says why it cannot start. Release it with :meth:`release_pass`."""
         return _retry_after_collecting(self._acquire_pass_once, name)
 
     def _acquire_pass_once(self, name: str) -> OperationToken:
