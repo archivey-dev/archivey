@@ -275,6 +275,9 @@ class _Package:
     digest_algo: int | None = 8
     lead_major: int = 3
     signature: dict[int, tuple[int, object]] = field(default_factory=dict)
+    # Signature-header tags to store the main header's digest under, as rpm does:
+    # 273 (SHA-256) and 269 (SHA-1).
+    header_digests: tuple[int, ...] = ()
     extra_tags: dict[int, tuple[int, object]] = field(default_factory=dict)
     drop_tags: tuple[int, ...] = ()
     # Change the payload's entries: the files to store, in order, by index.
@@ -406,9 +409,15 @@ def _build(package: _Package) -> bytes:
     if package.compressor == b"gzip":
         raw = gzip.compress(raw, mtime=0)
     lead = b"\xed\xab\xee\xdb" + bytes([package.lead_major, 0]) + b"\0" * 90
-    signature = _header({62: (_BIN, b"\0" * 16), **package.signature})
+    header = _header(tags)
+    hashes = {273: hashlib.sha256, 269: hashlib.sha1}
+    digests = {
+        tag: (_STRING, hashes[tag](header).hexdigest().encode())
+        for tag in package.header_digests
+    }
+    signature = _header({62: (_BIN, b"\0" * 16), **digests, **package.signature})
     signature += b"\0" * (-len(signature) % 8)
-    return lead + signature + _header(tags) + raw
+    return lead + signature + header + raw
 
 
 def _tree() -> list[_F]:
@@ -669,6 +678,59 @@ def test_a_signature_is_reported(tag: int, signed: bool) -> None:
     data = _build(_Package(_tree(), signature={tag: (_BIN, b"sig")}))
     with _open(data) as reader:
         assert reader.info.extra["rpm.signed"] is signed
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_changed_header_byte_raises(pipe: bool) -> None:
+    """The fixture's signature header stores SHA-256 and SHA-1 digests of the main
+    header. One byte of the symlink's target changed there, which only the header's
+    digest covers, is damage, in both access modes."""
+    data = (DATA / "payload-gzip.rpm").read_bytes()
+    assert data.count(b"../a.txt\0") == 1  # in the header: the payload is gzip
+    data = data.replace(b"../a.txt\0", b"../b.txt\0")
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+    with (
+        pytest.raises(CorruptionError, match="SHA-256 digest"),
+        open_archive(source, streaming=pipe) as reader,
+    ):
+        list(reader.stream_members())
+
+
+@pytest.mark.parametrize(
+    ("tags", "algorithm"),
+    [((273,), "SHA-256"), ((269,), "SHA-1"), ((273, 269), "SHA-256")],
+    ids=["sha256", "sha1", "both"],
+)
+@pytest.mark.parametrize("changed", [False, True], ids=["honest", "changed"])
+def test_the_header_digest(
+    tags: tuple[int, ...], algorithm: str, changed: bool
+) -> None:
+    data = _build(_Package(_tree(), header_digests=tags))
+    if not changed:
+        assert _listing(data) == _EXPECTED
+        return
+    assert data.count(b"noarch\0") == 1
+    data = data.replace(b"noarch\0", b"noarcx\0")
+    with (
+        pytest.raises(CorruptionError, match=f"the {algorithm} digest"),
+        _open(data) as reader,
+    ):
+        reader.members()
+
+
+def test_every_header_digest_is_checked() -> None:
+    """A correct SHA-256 does not excuse a wrong SHA-1."""
+    data = _build(
+        _Package(_tree(), header_digests=(273,), signature={269: (_STRING, b"00" * 20)})
+    )
+    with pytest.raises(CorruptionError, match="SHA-1 digest"), _open(data) as r:
+        r.members()
+
+
+def test_a_header_digest_that_is_not_hexadecimal() -> None:
+    data = _build(_Package(_tree(), signature={273: (_STRING, b"zz")}))
+    with pytest.raises(CorruptionError, match="not hexadecimal"), _open(data) as r:
+        r.members()
 
 
 def test_the_rpm_6_format_version() -> None:

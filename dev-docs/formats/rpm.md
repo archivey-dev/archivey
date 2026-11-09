@@ -17,14 +17,16 @@ as a built-in the way ar and CPIO are.
 | Access cost | `SOLID`: one compression stream holds every file |
 | Core dependencies | None. The payload is decoded by archivey's codecs (gzip, bzip2, xz, LZMA Alone, Zstandard) |
 | Encryption | None |
-| Checksums | Each regular file's digest from `FILEDIGESTS` (SHA-256 in current packages, MD5 in old ones), checked as it is read |
+| Checksums | The main header's SHA-256 and SHA-1 digests from the signature header, each one stored checked as the header is read; each regular file's digest from `FILEDIGESTS` (SHA-256 in current packages, MD5 in old ones), checked as it is read |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
 | Refuses | Lead versions other than 3 and 4, delta RPMs, payload compressors archivey has no codec for |
 | Spec | `openspec/specs/format-rpm/spec.md` |
 
 Not here, though a reader might look for it: signatures are not checked (only reported),
-the payload digests (`PAYLOADSHA256` and friends) are not checked, `%ghost` files are not
-listed, and scriptlets, dependencies and the changelog are not exposed.
+the payload digests (`PAYLOADSHA256` and friends) and the MD5 over header and payload
+(signature tag 1004) are not checked, a symlink's target in the payload is not compared
+with `FILELINKTOS`, `%ghost` files are not listed, and scriptlets, dependencies and the
+changelog are not exposed.
 
 ## 1. Shape
 
@@ -58,8 +60,16 @@ By the lead's magic at offset 0, `.rpm` by extension. There is no content probe.
 
 ### 2.2 Open and list
 
-The walk reads the lead and both headers, then hands the rest of the file to
-`ForwardStream.decompress()` with the codec `PAYLOADCOMPRESSOR` names. With no such tag
+The walk reads the lead and both headers. When the signature header stores a digest
+of the main header, `RPMSIGTAG_SHA256` (tag 273), `RPMSIGTAG_SHA1` (269) or both, the
+walk hashes the main header as it reads it, once for each digest stored, from its magic to the end of its data store,
+and any mismatch is `CorruptionError` before any member is listed: in both access modes,
+since both read the header the same way. The digest covers what only the header holds
+(names, modes, owners, link targets, file digests), which no member read checks. A
+package with neither tag is read unchecked.
+
+The walk then hands the rest of the file to `ForwardStream.decompress()` with the codec
+`PAYLOADCOMPRESSOR` names. With no such tag
 the payload is read uncompressed: rpm's `ufdio` writes none. Each payload entry is mapped
 to its file as `rpm` does (`lib/rpmfi.c`): a newc entry by its name, a stripped one by
 its index. The member's metadata comes from the header, as `rpm` installs it; a newc
@@ -182,6 +192,12 @@ surface is memory a header can ask for:
 - **Ghosts are not members,** as `rpm2cpio` does not give them.
 - **Signatures are reported, not checked.** Checking needs keys and an OpenPGP
   implementation; archivey is an archive reader, and `rpm -K` exists.
+- **Every header digest stored is checked.** SHA-256 and SHA-1, as `rpm -K` checks
+  every digest it finds; the first that differs is named. A package with neither (an
+  old or rewritten one) is not damage. The digests are not signed, so they detect
+  damage, not tampering: whoever changes the header can change them too. The
+  member list comes from the header, so without this check a changed link target, mode
+  or owner passed `archivey test`.
 - **Every file must be found before the trailer,** as rpm requires
   (`RPMERR_MISSING_FILE`): a payload that ends early is `CorruptionError`.
 - **No content probe:** the lead's magic is four bytes at offset 0.
@@ -192,6 +208,10 @@ surface is memory a header can ask for:
   the compressed and the uncompressed payload as a whole, including bytes no member
   reads. Checking them needs a hook in `archivey.formats` for a check that spans the
   payload; tracked internally.
+- **The payload's copy of a symlink's target.** The walk skips it and takes the
+  target from `FILELINKTOS`, as rpm installs it; `rpm2cpio | cpio -i` writes the
+  payload's. A package where the two differ is read without a report. Reporting it
+  needs a diagnostic code or shape of its own, which is not decided yet.
 - **A payload with no compressor tag that is gzip.** rpm opens such a payload with
   `gzdio`, which reads plain bytes too; only packages from rpm 3 and older have it. The
   walk cannot look at the payload's first bytes and then hand them to a codec, so it reads
