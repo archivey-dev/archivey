@@ -209,12 +209,15 @@ class ArReader(SequentialReader):
                     f"ar header at offset {offset}: long-name offset {at} is past the "
                     f"{len(names)}-byte table"
                 )
-            entry = names[at:]
+            # The entry ends at its first newline or NUL, or at the end of the table.
+            # Search the table in place and slice the entry alone: slicing the rest
+            # of the table first copied it once per member.
+            stop = len(names)
             for end in (b"\n", b"\0"):
-                cut = entry.find(end)
+                cut = names.find(end, at, stop)
                 if cut >= 0:
-                    entry = entry[:cut]
-            return entry.removesuffix(b"/")
+                    stop = cut
+            return names[at:stop].removesuffix(b"/")
         if field.endswith(b"/"):
             self._dialect = "gnu"
             return field[:-1]
