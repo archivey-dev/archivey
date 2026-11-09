@@ -75,39 +75,6 @@ def test_archive_path_follows_a_switch_terminator(
     assert mask in cmd[: cmd.index("--")]
 
 
-@requires_binary("unrar")
-@pytest.mark.parametrize(
-    # ``@`` is the listfile prefix. No guard is added for it: unrar reads the
-    # first non-switch argument as the archive, and this row pins that.
-    "copy_name",
-    ["-inul.rar", "@inul.rar"],
-)
-@pytest.mark.parametrize(
-    "fixture",
-    [
-        # Nonsolid, compressed members: each read spawns ``unrar p -n./member``.
-        "hostile_argv__.rar",
-        "hostile_argv__rar4.rar",
-        # Solid: the read spawns ``unrar p`` with no mask.
-        "basic_solid__.rar",
-    ],
-)
-def test_archive_named_like_a_switch_reads_its_members(
-    fixture: str, copy_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A relative ``-inul.rar`` reads the same bytes as the fixture it copies.
-
-    ``-inul`` is the switch that silences ``unrar``; parsed as a switch, the
-    process exits without output and every compressed member reads as truncated.
-    """
-    source = _fixture(fixture)
-    expected = _read_all(source)
-    assert any(expected.values())
-    shutil.copyfile(source, tmp_path / copy_name)
-    monkeypatch.chdir(tmp_path)
-    assert _read_all(copy_name) == expected
-
-
 def _record_unrar_archive_paths(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Every archive path the reader hands to ``unrar p``, in order."""
     seen: list[str] = []
@@ -140,6 +107,45 @@ def test_unrar_expands_wildcards(
 ) -> None:
     monkeypatch.setattr(sys, "platform", platform)
     assert rar_unrar.unrar_expands_wildcards(path) is expands
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    # ``@`` is the listfile prefix. No guard is added for it: unrar reads the
+    # first non-switch argument as the archive, and this row pins that.
+    "copy_name",
+    ["-inul.rar", "@inul.rar"],
+)
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        # Nonsolid, compressed members: each read spawns ``unrar p -n./member``.
+        "hostile_argv__.rar",
+        "hostile_argv__rar4.rar",
+        # Solid: the read spawns ``unrar p`` with no mask.
+        "basic_solid__.rar",
+    ],
+)
+def test_archive_named_like_a_switch_reads_its_members(
+    fixture: str, copy_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative ``-inul.rar`` reads the same bytes as the fixture it copies.
+
+    ``-inul`` is the switch that silences ``unrar``; parsed as a switch, the
+    process exits without output and every compressed member reads as truncated.
+    With the in-place threshold at 0, every member is "large" and ``unrar`` reads
+    the copy itself, not a synthetic archive, so the name reaches its argv.
+    """
+    source = _fixture(fixture)
+    expected = _read_all(source)
+    assert any(expected.values())
+    shutil.copyfile(source, tmp_path / copy_name)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    seen = _record_unrar_archive_paths(monkeypatch)
+    assert _read_all(copy_name) == expected
+    assert seen
+    assert all(Path(path).name == copy_name for path in seen), seen
 
 
 @requires_binary("unrar")
@@ -215,6 +221,53 @@ def test_archive_path_with_a_wildcard_does_not_open_a_fifo_beside_it(
         worker.join(0.2)
     assert not hung, "unrar opened the FIFO that the wildcard matched"
     assert result == [expected]
+
+
+@requires_binary("unrar")
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="macOS and Windows cap a path well below what the test needs",
+)
+def test_archive_path_unrar_6_would_cut_is_staged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """unrar 6.x keeps 2047 units of the archive path and opens the file that the
+    cut path names. A path over the bound is linked into a private directory, so
+    ``unrar`` gets a short one."""
+    source = _fixture("basic_solid__.rar")
+    expected = _read_all(source)
+    deep = tmp_path.joinpath(*["d" * 200] * 6)
+    deep.mkdir(parents=True)
+    path = deep / "long.rar"
+    shutil.copyfile(source, path)
+    assert rar_unrar.unrar_may_cut_archive_path(path)
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    seen = _record_unrar_archive_paths(monkeypatch)
+    assert _read_all(path) == expected
+    assert seen
+    assert not any(rar_unrar.unrar_may_cut_archive_path(name) for name in seen), [
+        len(name) for name in seen
+    ]
+
+
+def test_unrar_may_cut_archive_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bound counts UTF-16 units of the absolute path: a character outside the
+    BMP counts twice, and a relative path counts the working directory too."""
+    bound = rar_unrar._UNRAR_ARCHIVE_PATH_MAX
+    root = os.path.abspath(tmp_path)
+    room = bound - len(root) - 1
+    assert room > 10
+    assert not rar_unrar.unrar_may_cut_archive_path(os.path.join(root, "a" * room))
+    assert rar_unrar.unrar_may_cut_archive_path(os.path.join(root, "a" * (room + 1)))
+    emoji = "\U0001f600" * (room // 2)
+    assert not rar_unrar.unrar_may_cut_archive_path(os.path.join(root, emoji))
+    assert rar_unrar.unrar_may_cut_archive_path(
+        os.path.join(root, emoji + "a" * (room % 2 + 1))
+    )
+    monkeypatch.chdir(tmp_path)
+    assert rar_unrar.unrar_may_cut_archive_path("a" * (room + 1))
 
 
 # --- the identification probe cache -------------------------------------------

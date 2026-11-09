@@ -129,6 +129,7 @@ from archivey.internal.backends.rar_unrar import (
     rarlab_unrar_missing,
     unrar_expands_wildcards,
     unrar_mask_carries_non_ascii,
+    unrar_may_cut_archive_path,
 )
 from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
@@ -1833,12 +1834,17 @@ class RarReader(BaseArchiveReader):
         A path holding a wildcard character is staged too: unrar expands one in
         the archive name (:func:`unrar_expands_wildcards`), so ``rep*.rar`` would
         also open a planted ``rep-a.rar``, or block on a FIFO of that name. The
-        staged names are fixed and hold none.
+        staged names are fixed and hold none. So is a path longer than unrar 6.x
+        keeps (:func:`unrar_may_cut_archive_path`): it would open the file that the
+        cut path names. The private directory's path is short.
         """
         if self._archive_path is None or self._stage_volume_paths:
             return
         if (
-            not any(unrar_expands_wildcards(path) for path in self._volume_paths)
+            not any(
+                unrar_expands_wildcards(path) or unrar_may_cut_archive_path(path)
+                for path in self._volume_paths
+            )
             and self._volume_numbers is None
             and _unrar_finds_exactly(
                 self._volume_paths,

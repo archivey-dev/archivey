@@ -611,6 +611,24 @@ def unrar_expands_wildcards(path: str | Path) -> bool:
     return "*" in text or "?" in text
 
 
+# The longest archive path, in UTF-16 code units, that ``unrar`` is trusted to keep
+# whole. unrar 6.x copies the archive argument into ``wchar ArcName[NM]`` with NM 2048
+# (``cmddata.cpp`` and ``extract.cpp``, unrarsrc 6.2.12), so it keeps 2047 units and
+# opens whatever file the cut path names. ``wchar_t`` is UTF-16 on Windows. Half of NM
+# leaves margin for a path unrar makes absolute or derives a next volume name from.
+_UNRAR_ARCHIVE_PATH_MAX = 1024
+
+
+def unrar_may_cut_archive_path(path: str | Path) -> bool:
+    """Whether ``path`` is too long to hand to ``unrar`` as the archive.
+
+    Measured as an absolute path, so a short relative path in a deep working
+    directory counts at its full length.
+    """
+    text = os.path.abspath(path)
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2 > _UNRAR_ARCHIVE_PATH_MAX
+
+
 def unrar_member_refusal(member: str) -> str | None:
     """Why ``member`` is not a mask the reader sends, or ``None`` when it is one.
 
