@@ -65,6 +65,7 @@ from tests.atheris_fuzz.seeds import (
     filter_seeds,
     gzip_seeds,
     iso_seeds,
+    lha_seeds,
     lz4_seeds,
     lzip_seeds,
     lzma_alone_seeds,
@@ -297,6 +298,20 @@ def cab_open_one(data: bytes) -> None:
     try:
         with open_archive(
             io.BytesIO(data), format=ArchiveFormat.CAB, config=_FUZZ_CONFIG
+        ) as arc:
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
+    except ArchiveyError:
+        return
+
+
+def lha_open_one(data: bytes) -> None:
+    """List an LHA archive and read the first members: every header level, the
+    extended headers, then stored or LZH data and its CRC-16."""
+    try:
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.LHA, config=_FUZZ_CONFIG
         ) as arc:
             _sample_seekable(
                 arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
@@ -937,6 +952,13 @@ def iter_target_specs() -> list[dict]:
             "name": "cab",
             "fn": cab_open_one,
             "seeds": cab_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "lha",
+            "fn": lha_open_one,
+            "seeds": lha_seeds,
             "fixup": None,
             "per_input_timeout": stream_timeout,
         },

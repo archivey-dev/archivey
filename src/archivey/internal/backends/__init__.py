@@ -18,6 +18,7 @@ Module map:
 - :mod:`.squashfs_reader` — SquashFS 4.0, the same way
 - :mod:`.xar_reader` — XAR (``.xar``, macOS ``.pkg`` and ``.xip``), the same way
 - :mod:`.cab_reader` — Microsoft cabinets (stored, MSZIP, LZX), the same way
+- :mod:`.lha_reader` — LHA (header levels 0-3, ``-lh0-`` and ``-lh4-`` to ``-lh7-``), the same way
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
 - :mod:`.sevenzip_methods` / ``sevenzip_parser`` / ``sevenzip_pipeline`` /
@@ -50,6 +51,7 @@ from archivey.internal.backends import (
     cpio_reader as _cpio_reader,  # noqa: F401
     directory_reader as _directory_reader,  # noqa: F401
     iso_reader as _iso_reader,  # noqa: F401
+    lha_reader as _lha_reader,  # noqa: F401
     rar_reader as _rar_reader,  # noqa: F401
     rpm_reader as _rpm_reader,  # noqa: F401
     sevenzip_reader as _sevenzip_reader,  # noqa: F401

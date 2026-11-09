@@ -104,6 +104,10 @@ class ContainerFormat(StrEnum):
     CAB = "cab"
     """A Microsoft cabinet (``.cab``): Windows updates, drivers and installer
     payloads. Stored, MSZIP and LZX folders are read; needs a source that can seek."""
+    LHA = "lha"
+    """An LHA archive (``.lzh``, ``.lha``), from DOS, the Amiga and Japanese PCs.
+    Header levels 0 to 3 are read, and the methods ``-lh0-`` and ``-lh4-`` to
+    ``-lh7-``; needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -124,10 +128,10 @@ class PluginContainer(StrEnum):
     A plugin subclasses it with one member per container it adds, and builds its
     :class:`~archivey.ArchiveFormat` from that member::
 
-        class LhaContainer(PluginContainer):
-            LHA = "lha"
+        class ArjContainer(PluginContainer):
+            ARJ = "arj"
 
-        LHA = ArchiveFormat(LhaContainer.LHA, StreamFormat.UNCOMPRESSED)
+        ARJ = ArchiveFormat(ArjContainer.ARJ, StreamFormat.UNCOMPRESSED)
 
     Experimental, with the rest of ``archivey.formats``: any release may change it.
     Code that matches on ``ArchiveFormat.container`` needs a default case once a plugin
@@ -274,6 +278,7 @@ class ArchiveFormat:
     SQUASHFS: ClassVar[ArchiveFormat]
     XAR: ClassVar[ArchiveFormat]
     CAB: ClassVar[ArchiveFormat]
+    LHA: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -364,6 +369,7 @@ ArchiveFormat.SQUASHFS = ArchiveFormat(
 )
 ArchiveFormat.XAR = ArchiveFormat(ContainerFormat.XAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CAB = ArchiveFormat(ContainerFormat.CAB, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.LHA = ArchiveFormat(ContainerFormat.LHA, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -695,6 +701,9 @@ class CompressionAlgorithm(Enum):
     LZX = "lzx"
     """Microsoft's LZX, as cabinets store it: LZ77 with Huffman codes over a window
     of 32 KiB to 2 MiB."""
+    LZH = "lzh"
+    """LHA's LZ77 with Huffman codes, the ``-lh1-`` to ``-lh7-`` methods and their
+    kin. ``ArchiveMember.extra["lha.method"]`` names the exact method."""
     QUANTUM = "quantum"
     """Quantum, an older cabinet method. archivey lists its members but cannot read
     them."""
@@ -965,6 +974,11 @@ class MemberExtra(dict[str, object]):
     * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
       stripped from the name. Versions of one name share it; the highest is
       listed last and is the current one.
+    * ``lha.method`` (``str``) — the LHA method id as stored (``"-lh5-"``), or
+      ``"-lk7-"`` for LHARK's own ``-lh7-``.
+    * ``lha.header_level`` (``int``) — the LHA header level, 0 to 3.
+    * ``lha.os_id`` (``str``) — the one-character OS id an LHA header names
+      (``"U"`` for LHa for UNIX, ``"M"`` for DOS), when it has one.
     """
 
     __slots__ = ()
@@ -1025,6 +1039,12 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["lzop.original_filename"], /) -> str: ...
     @overload
     def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.method"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.header_level"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.os_id"], /) -> str: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override

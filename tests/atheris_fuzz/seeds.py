@@ -204,6 +204,20 @@ def cab_seeds() -> list[bytes]:
     return tiny + [path.read_bytes() for path in sorted(folder.glob("*.cab"))]
 
 
+def lha_seeds() -> list[bytes]:
+    """Tiny blobs and the archives in tests/fixtures/external/lha_lhasa: header levels
+    0 to 3, stored, -lh4- to -lh7-, -lhx- and -lk7- members, links and directories, most
+    of them about 7 KB."""
+    tiny = [
+        b"",
+        b"\x16\0-lh0-" + bytes(15),
+        b"\x1a\0-lh5-" + bytes(13) + b"\x02" + bytes(5),
+    ]
+    folder = _REPO_ROOT / "tests" / "fixtures" / "external" / "lha_lhasa"
+    paths = sorted(p for p in folder.iterdir() if p.suffix in (".lzh", ".lzs", ".pma"))
+    return tiny + [path.read_bytes() for path in paths]
+
+
 def _fixture_seeds(folder: str, pattern: str) -> list[bytes]:
     """The fixtures in tests/fixtures/<folder>, plain and gzip-compressed."""
     paths = sorted((_REPO_ROOT / "tests" / "fixtures" / folder).glob(pattern))
