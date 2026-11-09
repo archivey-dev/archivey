@@ -1,5 +1,6 @@
-"""Stored: no compression. The source is returned as it is, so a stored member goes
-through the same codec interface as a compressed one."""
+"""Stored: no compression. The data is read as it is (a path is opened, any other
+source is used as a binary stream), so a stored member goes through the same codec
+interface as a compressed one."""
 
 from __future__ import annotations
 

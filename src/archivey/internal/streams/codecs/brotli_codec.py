@@ -1,5 +1,5 @@
 """Brotli: ``.br`` files and 7z Brotli coders, decoded by the ``brotli`` package
-(:class:`BrotliDecompressorStream`).
+(:func:`BrotliDecompressorStream`).
 
 Brotli has no magic number, so detection recognizes it with a content probe: a walk of
 the opening meta-block headers (``brotli_framing``), then a bounded trial decode. The

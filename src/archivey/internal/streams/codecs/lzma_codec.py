@@ -4,9 +4,10 @@ containers.
 All of them decode with the standard library's ``lzma``. xz and lzip have decoders of
 their own (``xz_decoder``, ``lzip_decoder``) that read the index the format carries for
 seeking. LZMA Alone has no reliable magic, so detection uses a content probe. Raw
-LZMA1/LZMA2 is a 7z or ZIP coder: liblzma runs the filter chain the container
-declares, Delta and BCJ stages included. The 7z stages liblzma cannot run here (ARM64,
-RISC-V) are composed by the 7z reader (``lzma_filter_decoder``).
+LZMA1/LZMA2 is a 7z or ZIP coder, and liblzma runs its filters (Delta and BCJ
+included). The 7z pipeline (``sevenzip_pipeline``) splits a coder chain into stages
+where liblzma cannot run it as one chain, and ``lzma_filter_decoder`` decodes the ARM64
+and RISC-V stages in Python.
 """
 
 from __future__ import annotations

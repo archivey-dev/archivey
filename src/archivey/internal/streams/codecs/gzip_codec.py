@@ -1025,8 +1025,8 @@ class GzipCodec(_DeflateFamilyCodec):
         file tells those cases apart. ``member.size`` comes from the first full read
         instead (the reader's late fill-in).
 
-        **The trailer CRC-32 is deliberately never put in** ``member.hashes``, for these
-        reasons:
+        **The trailer CRC-32 is deliberately never put in** ``member.hashes``: a settled
+        decision, recorded in ``dev-docs/formats/gzip.md`` §6, for these reasons:
 
         - A digest is worth having for two things: skipping a decompression because an
           equal file was already processed (it must be known *before* the read), or
