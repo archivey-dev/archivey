@@ -155,6 +155,7 @@ often they turn out to be the right place:
 
 | Question | Look in |
 |---|---|
+| How does this part of archivey work, and why is it built this way? (a plain-language overview across layers) | [`guide/README.md`](guide/README.md): the internals guide, one page per layer, with the decisions, bugs and odd-looking choices |
 | How should we work this change? | `dev-docs/pair-workflow.md` |
 | How would the maintainer settle this design question? | `dev-docs/design-rules.md` |
 | Why is a review round running, or not running, on this PR? | `dev-docs/review-loop.md` |

@@ -1,5 +1,13 @@
 # Format detection
 
+**In one minute.** When the caller does not say what a file is, archivey looks for the
+strongest evidence first and stops at the first match: magic bytes at the start, a
+self-extractor stub, magic further in or at the end, a header that checks itself, a trial
+decode, a scan of the leading bytes, and the file extension last. It reads only the front
+of the source plus, when a seek is cheap, one fixed block at the end, so detection stays
+cheap and works on a pipe. The guide's [life of an open](../guide/03-life-of-an-open.md)
+and [pipes and files](../guide/07-pipes-and-files.md) pages show where detection sits.
+
 How `detect_format()` decides what a source is, and why it decides that way. `open_archive`
 and `open_stream` run the same detection when the caller passes no `format=`, under the
 same budget, so everything here applies to them too.
