@@ -1,4 +1,13 @@
-"""Public read-only archive interface."""
+"""Public read-only archive interface: the reader and member-stream classes.
+
+:func:`~archivey.open_archive` returns an :class:`ArchiveReader` (random access) or a
+:class:`ForwardArchiveReader` (one forward pass, from a pipe too), and member reads
+return an :class:`ArchiveStream`. The classes here are abstract: they fix the public
+methods and their docstrings, and archivey's implementations live under
+``archivey.internal``. Building an :class:`ArchiveStream` or :class:`MemberPass`
+directly, or through a subclass that leaves an abstract method unimplemented, still
+works with a ``DeprecationWarning`` until 0.4.0 (``_class_to_build``).
+"""
 
 from __future__ import annotations
 
@@ -915,10 +924,10 @@ class ArchiveReader(ForwardArchiveReader):
         **Cost, when ``reader.cost.access_cost`` is ``SOLID``** (solid 7z/RAR, any
         compressed tar): members share one compression run, so opening one decodes
         every member before it. Doing that for each member in turn is quadratic in the
-        archive size. On a 7z or RAR reader, the first call that decodes again what an
-        earlier one decoded logs one INFO record per reader on the
-        ``archivey.backends`` logger saying so, and a compressed tar's backward seeks
-        report ``STREAM_REWIND_REDECOMPRESSES``. Prefer
+        archive size. On a 7z or RAR reader, a call that decodes again what an earlier
+        one decoded reports ``SOLID_OPEN_REDECOMPRESSES`` (recorded once per reader,
+        logged at INFO, raised on every such call if the policy raises on it), and a
+        compressed tar's backward seeks report ``STREAM_REWIND_REDECOMPRESSES``. Prefer
         :meth:`~ForwardArchiveReader.stream_members`, which decodes the run once.
 
         Raises:

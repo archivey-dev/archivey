@@ -1143,6 +1143,7 @@ def test_each_member_read_builds_one_archive_stream(
         built.clear()
 
 
+@pytest.mark.usefixtures("zip_general_path")
 def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> None:
     """STORED ZIP: public ArchiveStream verifies directly over SlicingStream.
 

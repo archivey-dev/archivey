@@ -624,6 +624,9 @@ class _PluginAdapter(BaseArchiveReader):
             )
         registry = get_registry()
         policy = self._config.formats
+        refusal = policy._nested_refusal(fmt)
+        if refusal is not None:
+            raise UnsupportedFeatureError(refusal, source_format=fmt)
         backend_cls = registry.reader_for_format(
             fmt,
             replacement=policy._replacement_for(fmt),
@@ -1074,6 +1077,9 @@ def _outer_copy(member: ArchiveMember) -> ArchiveMember:
     copy.extra = type(member.extra)(member.extra)
     copy.hashes = dict(member.hashes)
     copy._diagnostics = member._diagnostics
+    # The inner listing settled the target (an empty one it reported): the outer
+    # listing does not look for it in the data, nor report it again.
+    copy._link_target_resolved = member._link_target_resolved
     return copy
 
 
@@ -2077,6 +2083,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             member.type is MemberType.SYMLINK
             and self._sequential.link_target_in_data
             and member.link_target is None
+            and not member._link_target_resolved
         ):
             if decoded is not None:
                 with self._translated_errors(member.name), self._handle_guard():
@@ -2533,14 +2540,19 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _close_archive(self) -> None:
         # A walk taken at open and never listed is still suspended in the plugin's
         # walk(): finish it first, so its own cleanup runs before close() and over an
-        # open stream, not later in the collector.
+        # open stream, not later in the collector. It never ran in _iter_members, so
+        # the reports its first step held are sent here, as for a walk stopped
+        # part-way: recorded, never raised.
         try:
             if self._open_walk is not None:
                 close = getattr(self._open_walk[0], "close", None)
                 self._open_walk = None
-                if close is not None:
-                    with self._translated_errors(), self._handle_guard():
-                        close()
+                try:
+                    if close is not None:
+                        with self._translated_errors(), self._handle_guard():
+                            close()
+                finally:
+                    self._send_unyielded_reports(may_raise=False)
         finally:
             try:
                 super()._close_archive()
