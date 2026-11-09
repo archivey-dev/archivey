@@ -82,11 +82,12 @@ _ZIP64_EOCD = struct.Struct("<4sQ2H2L4Q")
 #: A central header's fixed fields up to its name, extra and comment lengths.
 _CENTRAL_HEAD = "<4s4B4HL2L"
 _CENTRAL_HEADER = struct.Struct(_CENTRAL_HEAD + "5H2L")
-#: Where those three lengths start: ``_CENTRAL_HEADER`` fields 12 to 14.
+#: Where those three lengths start: ``_CENTRAL_HEADER`` fields ``_CENTRAL_NAME_LEN``
+#: to ``_CENTRAL_NAME_LEN + 2``.
 _CENTRAL_LENGTHS_AT = struct.calcsize(_CENTRAL_HEAD)
 _CENTRAL_LENGTHS = struct.Struct("<3H")
-#: Positions in an unpacked ``_CENTRAL_HEADER``, in the order ``_central_entry``
-#: unpacks it: the name's length, and the stored local header offset.
+#: Positions in a tuple ``_CENTRAL_HEADER`` unpacks (see ``_CentralFields``): the
+#: name's length, and the stored local header offset.
 _CENTRAL_NAME_LEN = 12
 _CENTRAL_HEADER_OFFSET = 18
 _LOCAL_HEADER = struct.Struct("<4s2B4HL2L2H")
@@ -840,9 +841,11 @@ class CentralDirectoryWalk:
 
         Per entry: read its fixed header and its name, extra field and comment;
         follow any header signature inside those fields (``_follow_signatures``);
-        build the entry; undo an offset wrapped past 4 GiB when ``local_name_at``
-        allows it; and check that the next header starts where this entry ends. The
-        end-record findings are added once the last entry is out.
+        build the entry; with ``local_name_at`` and a classic (non-ZIP64) end record,
+        retry a wrapped directory ``base`` on the first entry and undo a member
+        offset wrapped past 4 GiB (``_unwrapped_offset``); and check that the next
+        header starts where this entry ends. The end-record findings are added once
+        the last entry is out.
         """
         end = self._end
         self.findings = []
@@ -1113,22 +1116,18 @@ class CentralDirectoryWalk:
         if name_at is None:
             return False
         fields = _CENTRAL_HEADER.unpack(head)
-        if (
-            fields[_CENTRAL_HEADER_OFFSET] == _U32_MAX
-        ):  # deferred to a ZIP64 field: not checked here
+        stored_offset = fields[_CENTRAL_HEADER_OFFSET]
+        name_len = fields[_CENTRAL_NAME_LEN]
+        # Deferred to a ZIP64 field: not checked here.
+        if stored_offset == _U32_MAX:
             return False
-        offset = fields[_CENTRAL_HEADER_OFFSET] + base
+        offset = stored_offset + base
         start = self._end.cd_start
         name_at_pos = pos + CENTRAL_HEADER_SIZE
-        name = data[
-            name_at_pos - data_start : name_at_pos
-            - data_start
-            + fields[_CENTRAL_NAME_LEN]
-        ]
-        if len(name) < fields[_CENTRAL_NAME_LEN]:
-            name += self._read_at(
-                start + name_at_pos + len(name), fields[_CENTRAL_NAME_LEN] - len(name)
-            )
+        at = name_at_pos - data_start
+        name = data[at : at + name_len]
+        if len(name) < name_len:
+            name += self._read_at(start + name_at_pos + len(name), name_len - len(name))
         if not 0 <= offset <= start - LOCAL_HEADER_SIZE - len(name):
             return False
         return name_at(offset) == name
