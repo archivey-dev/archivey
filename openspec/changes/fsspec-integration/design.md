@@ -119,7 +119,7 @@ other way or refuses them, rather than drop them in silence (DR-1, DR-15):
 | `size` | `fs.size(path)`, read once at open, as a **fact**: it clamps reads, the way `stat` does for a path. The archive is the object as it was at open; a later change is D7's to catch, not the clamp's |
 | `size_hint` | The same value |
 | `path`, `volume_paths` | `None`: there is no local file. A backend that needs a path (RAR's `unrar`) spools, under `SpoolLimits`, as it does for any stream |
-| `name` | `of.path`. Detection's name checks and volume discovery (D4) read it |
+| `name` | `of.path` without credentials: the `user:password@` of a URL is removed, and for `http`/`https` the query and fragment too, because a signed URL keeps its signature there. The name reaches `archive_name` and archivey's own messages, diagnostics and logs, so it must not carry a secret. An I/O error the file system raises propagates unchanged (DR-15a) and can carry the URL as given. Detection's name checks read it. Volume discovery (D4) and every fetch use `of.path` as given |
 | `seek_is_expensive` | `True`: a seek may cost a request, so detection's probe reads at an offset grow the prefix instead (`detection.md` §4.2) |
 | `nearest_resume_offset(target)` | `target`: a range request starts anywhere and decodes nothing, so the tail reads run as on a path, one request each (below) |
 | Ownership | Nothing to close: the planner holds `(fs, path, size)` and its fetched windows, and `close()` drops the windows. The caller's file system object is never closed |

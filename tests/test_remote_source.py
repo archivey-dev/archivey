@@ -29,6 +29,7 @@ import pytest
 fsspec = pytest.importorskip("fsspec")
 
 from fsspec.core import OpenFile  # noqa: E402
+from fsspec.implementations.memory import MemoryFileSystem  # noqa: E402
 
 from archivey import (  # noqa: E402
     ArchiveFormat,
@@ -38,6 +39,7 @@ from archivey import (  # noqa: E402
     DiagnosticCode,
     DiagnosticPolicy,
     DiagnosticRaisedError,
+    FormatDetectionError,
     ReadError,
     SourceChangedError,
     detect_format,
@@ -48,6 +50,7 @@ from archivey.internal.remote import (  # noqa: E402
     PlannerConstants,
     RangeSource,
     WindowPool,
+    display_url,
     planner_constants,
 )
 from archivey.internal.source import seeks_to_end_are_cheap  # noqa: E402
@@ -640,6 +643,151 @@ def test_committed_fixture_reads_the_same_through_the_planner(
         pytest.skip(f"fixture does not open standalone from a BytesIO: {exc}")
     with planner_constants(SMALL):
         assert _probe(_open_file(memfs, data), (FIXTURE_PASSWORD,)) == baseline
+
+
+# --- credentials in a URL ----------------------------------------------------------------
+
+
+class _URLMemoryFS(MemoryFileSystem):
+    """A memory file system whose paths are whole URLs, as fsspec's HTTP one keeps
+    them: ``user:password@`` and the query reach ``OpenFile.path`` unchanged."""
+
+    protocol = ("fakehttps",)
+    root_marker = ""
+
+    @classmethod
+    def _strip_protocol(cls, path: Any) -> Any:
+        return path
+
+    def unstrip_protocol(self, name: str) -> str:
+        return name
+
+
+_SECRETS = ("alice", "S3cretPW", "X-Amz-Signature", "deadbeef")
+_CRED_URL = "https://alice:S3cretPW@example.invalid/d/{name}?X-Amz-Signature=deadbeef"
+
+
+@pytest.fixture
+def urlfs() -> Any:
+    fs = _URLMemoryFS(skip_instance_cache=True)
+    yield fs
+    fs.store.clear()
+
+
+def _assert_no_secret(text: str) -> None:
+    for secret in _SECRETS:
+        assert secret not in text, text
+
+
+@pytest.mark.parametrize(
+    ("url", "shown"),
+    [
+        ("https://alice:pw@host:8080/a.zip", "https://host:8080/a.zip"),
+        ("http://alice@host/a.zip?sig=1&b=2#frag", "http://host/a.zip"),
+        ("https://a:b@c@host?x=1", "https://host"),
+        ("s3://bucket/key@v1/a.zip", "s3://bucket/key@v1/a.zip"),
+        ("s3://bucket/what?.zip", "s3://bucket/what?.zip"),
+        ("memory:///alice:pw@x/a.zip", "memory:///alice:pw@x/a.zip"),
+        ("/t/a.zip", "/t/a.zip"),
+    ],
+)
+def test_display_url_drops_userinfo_and_an_http_query(url: str, shown: str):
+    assert display_url(url) == shown
+
+
+def test_a_url_with_credentials_reads_but_never_shows_them(urlfs):
+    url = _CRED_URL.format(name="a.zip")
+    urlfs.pipe(url, _zip_bytes(MEMBERS))
+    seen: list[Any] = []
+    with open_archive(
+        OpenFile(urlfs, url), config=ArchiveyConfig(on_diagnostic=seen.append)
+    ) as reader:
+        # The real URL still does the I/O.
+        assert {m.name: reader.read(m) for m in reader.members() if m.is_file} == (
+            MEMBERS
+        )
+        assert [d.code for d in seen] == [DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE]
+        _assert_no_secret(repr(seen))
+        assert "https://example.invalid/d/a.zip" in seen[0].message
+        _assert_no_secret(repr(reader.diagnostics.retained))
+    _assert_no_secret(repr(detect_format(OpenFile(urlfs, url))))
+
+
+def test_errors_on_a_url_with_credentials_never_show_them(urlfs):
+    url = _CRED_URL.format(name="bad.zip")
+    unnamed = _CRED_URL.format(name="bad")
+    for name in (url, unnamed):
+        urlfs.pipe(name, b"\x01" * 300)
+    cases: list[tuple[type[Exception], Any]] = [
+        (CorruptionError, lambda: open_archive(OpenFile(urlfs, url))),
+        (
+            CorruptionError,
+            lambda: open_archive(OpenFile(urlfs, url), format=ArchiveFormat.ZIP),
+        ),
+        (
+            CorruptionError,
+            lambda: open_archive([OpenFile(urlfs, url), OpenFile(urlfs, url)]),
+        ),
+        (FormatDetectionError, lambda: open_archive(OpenFile(urlfs, unnamed))),
+        (FormatDetectionError, lambda: detect_format(OpenFile(urlfs, unnamed))),
+    ]
+    for error, call in cases:
+        with pytest.raises(error) as info:
+            call()
+        assert "https://example.invalid/d/bad" in str(info.value)
+        _assert_no_secret(str(info.value))
+        _assert_no_secret("".join(getattr(info.value, "__notes__", [])))
+
+
+class _NoSizeURLMemoryFS(_URLMemoryFS):
+    """A URL file system that cannot tell an object's size."""
+
+    def size(self, path: Any) -> Any:
+        return None
+
+
+def test_a_missing_size_on_a_url_with_credentials_never_shows_them():
+    fs = _NoSizeURLMemoryFS(skip_instance_cache=True)
+    url = _CRED_URL.format(name="a.zip")
+    fs.pipe(url, _zip_bytes(MEMBERS))
+    try:
+        with pytest.raises(OSError, match="gave no size") as info:
+            open_archive(OpenFile(fs, url))
+    finally:
+        fs.store.clear()
+    assert "https://example.invalid/d/a.zip" in str(info.value)
+    _assert_no_secret(str(info.value))
+
+
+def test_a_fetch_error_on_a_url_with_credentials_never_shows_them(urlfs):
+    url = _CRED_URL.format(name="a.zip")
+    urlfs.pipe(url, DATA)
+    source = RangeSource(
+        urlfs, url, size=len(DATA), pool=WindowPool(SMALL), max_read_through=1
+    )
+    _assert_no_secret(repr(source))
+    _assert_no_secret(source.name)
+    urlfs.pipe(url, DATA[:100])
+    with pytest.raises(SourceChangedError) as info:
+        source.read(1000)
+    source.close()
+    _assert_no_secret(str(info.value))
+
+
+def test_a_compressed_open_file_with_credentials_never_shows_them(urlfs, caplog):
+    import gzip
+
+    url = _CRED_URL.format(name="y.txt.gz")
+    urlfs.pipe(url, gzip.compress(b"hello"))
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.streams"),
+        pytest.raises(FormatDetectionError) as info,
+    ):
+        open_archive(OpenFile(urlfs, url, compression="gzip"))
+    assert any("compression='gzip'" in r.getMessage() for r in caplog.records)
+    _assert_no_secret(caplog.text)
+    _assert_no_secret(str(info.value))
+    _assert_no_secret("".join(getattr(info.value, "__notes__", [])))
 
 
 # --- a changed object (design D7, tier 3) ------------------------------------------------

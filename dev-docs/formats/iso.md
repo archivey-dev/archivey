@@ -238,6 +238,20 @@ What is ISO-specific in turning a record into a member:
   whose area does not fit in its logical block, in the record's own area and in each
   continuation area, before `pycdlib` reads that area: `CorruptionError` for the image,
   under any `ListingLimits` (§4).
+- **Directory padding.** A zero length byte starts the padding that fills the rest of a
+  directory's logical block. `pycdlib` refuses the whole image when that padding holds a
+  non-zero byte (`Invalid padding on ISO`), in any tree, although every record it could
+  still read is intact; one damaged byte in a Joliet directory's padding refused an image
+  whose 40 files all read (measured for the salvage design). The Linux kernel skips the
+  padding unread (`do_isofs_readdir`). Inside archivey's own open, `pycdlib`'s
+  `_iter_directory_records` is replaced by the same walk that notes the offset and goes
+  on (`_install_pycdlib_padding_tolerance`), and each such block is reported as
+  `ARCHIVE_TRAILING_DATA` with `expected_marker="directory_padding"`: a record whose
+  length byte was damaged to zero would be lost there, so `STRICT` refuses (DR-3).
+  Padding the image cuts short still raises `Invalid padding on ISO`, a cut (below). The
+  walk is a copy of `pycdlib` 1.22.0's and replaces any upstream change to it inside
+  archivey's open; `test_iso` pins the original's source, so a `pycdlib` that changes
+  it fails until the two are compared.
 - **Versions.** In the plain namespace the `;N` suffix of a file and the `.` of an empty
   extension are removed (`FOO.;1` is `FOO`) and the number goes to `extra["iso.version"]`.
   When a directory holds several versions, the highest takes the bare name; older ones are

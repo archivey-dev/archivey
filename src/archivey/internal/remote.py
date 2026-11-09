@@ -154,9 +154,40 @@ def check_open_file(of: Any) -> None:
         )
 
 
+# Schemes whose query is dropped from display text. A signed HTTP URL carries its
+# secret there (``X-Amz-Signature=``, an Azure SAS ``sig=``). On other schemes a ``?``
+# can be part of the object's name (an S3 key), so it is kept.
+_QUERY_DROPPED_SCHEMES = frozenset({"http", "https"})
+
+
+def display_url(url: str) -> str:
+    """``url`` as archivey shows it in a message, a name or a diagnostic.
+
+    The ``user:password@`` part of the authority is removed, and for HTTP(S) so are the
+    query and the fragment, because a signed URL keeps its signature in the query.
+    Anything without ``scheme://`` (a plain fsspec path) is returned unchanged. This
+    is for text only: the I/O always uses the URL as given.
+    """
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    end = len(rest)
+    for stop in "/?#":
+        at = rest.find(stop)
+        if at != -1:
+            end = min(end, at)
+    authority, tail = rest[:end], rest[end:]
+    authority = authority.rpartition("@")[2]
+    if scheme.lower() in _QUERY_DROPPED_SCHEMES:
+        for stop in "?#":
+            tail = tail.partition(stop)[0]
+    return f"{scheme}://{authority}{tail}"
+
+
 def open_file_name(of: Any) -> str:
-    """The name archivey gives an ``OpenFile``: its path on its file system."""
-    return str(of.path)
+    """The name archivey gives an ``OpenFile``: its path on its file system, as
+    :func:`display_url` shows it."""
+    return display_url(str(of.path))
 
 
 def open_file_compression(of: Any) -> str | None:
@@ -187,7 +218,7 @@ def open_decompressed(of: Any) -> tuple[BinaryIO, BinaryIO]:
     streams_logger.warning(
         "%r is opened with fsspec compression=%r, so archivey reads fsspec's "
         "decompressed stream: no range requests, and a seek back decodes again. %s",
-        of.path,
+        open_file_name(of),
         compression,
         _COMPRESSION_HINT.get(
             compression,
@@ -669,12 +700,16 @@ class RangeSource(io.RawIOBase):
         if size is None:
             size = fs.size(path)
         if not isinstance(size, int) or size < 0:
-            raise OSError(f"fsspec file system gave no size for {path!r}: {size!r}")
+            raise OSError(
+                f"fsspec file system gave no size for {display_url(str(path))!r}: "
+                f"{size!r}"
+            )
         return cls(fs, path, size=size, pool=pool, max_read_through=max_read_through)
 
     @property
     def name(self) -> str:
-        return self.path
+        """The path, as :func:`display_url` shows it: it reaches ``archive_name``."""
+        return display_url(self.path)
 
     def add_hint(self, start: int, end: int) -> None:
         """Keep ``[start, end)`` as pending, dropping the oldest past the limit."""
@@ -702,10 +737,11 @@ class RangeSource(io.RawIOBase):
 
     @property
     def url(self) -> str:
-        """The object as a URL (``s3://bucket/a.zip``), for messages. An fsspec path
-        is ``/``-separated on every OS, so it needs no ``display_path``."""
+        """The object as a URL (``s3://bucket/a.zip``), for messages, without
+        credentials (:func:`display_url`). An fsspec path is ``/``-separated on every
+        OS, so it needs no ``display_path``."""
         unstrip = getattr(self.fs, "unstrip_protocol", None)
-        return unstrip(self.path) if callable(unstrip) else self.path
+        return display_url(unstrip(self.path) if callable(unstrip) else self.path)
 
     @property
     def seek_is_expensive(self) -> bool:
@@ -836,7 +872,7 @@ class RangeSource(io.RawIOBase):
 
     @override
     def __repr__(self) -> str:
-        return f"<RangeSource {self.path!r} size={self.size}>"
+        return f"<RangeSource {self.name!r} size={self.size}>"
 
 
 def protocol_of(fs: Any) -> str:
@@ -950,6 +986,7 @@ __all__ = [
     "RangeSource",
     "WindowPool",
     "check_open_file",
+    "display_url",
     "emit_source_change_undetectable",
     "is_open_file",
     "planner_constants",
