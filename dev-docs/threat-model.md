@@ -597,7 +597,12 @@ size to the member's `max_metadata_bytes` budget before it reads anything
 `read_within_reach` in 64 KiB steps. A forward-only walk skips a member's data area in
 64 KiB steps too, and stops with `TruncatedError` at the first short read. Member data a
 caller reads through that walk is read in 1 MiB steps (`DATA_READ_STEP`): a member that
-declares 3 GiB over 100 KB of data peaks at 1 MiB. pycdlib reads
+declares 3 GiB over 100 KB of data peaks at 1 MiB. The format
+adapter's walk (`internal/format_adapter.py` `_layer_forward`), the `ForwardStream`
+every `SequentialReader` gets (ar, deb, RPM and CPIO, and a plugin's), reads header bytes
+through `read_within_reach` in 64 KiB steps too (`_HEADER_READ_STEP`): before that, a
+1 KB ar, deb or RPM file that declared a 60 MiB header peaked at 60 MiB from a `BytesIO`
+and 120 MiB from a pipe in streaming mode, and now peaks under 0.2 MiB. pycdlib reads
 through archivey's source (`internal/source.py` `ArchiveSource`), which applies
 `read_within_reach` as well. Where the remaining length is a fact (a path's `stat`, a
 `BytesIO` buffer, a regular file's `fstat`) the read is clamped to it; otherwise it is

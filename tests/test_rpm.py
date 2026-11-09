@@ -34,6 +34,7 @@ from archivey.formats import SequentialReader
 from archivey.internal.backends import rpm_reader
 from archivey.internal.backends.rpm_reader import RpmReader
 from tests.conftest import requires_zstd
+from tests.memory_util import traced_peak
 from tests.public_names import assert_only_public_archivey
 from tests.streams_util import NonSeekableBytesIO
 
@@ -782,23 +783,20 @@ def test_streaming_header_store_size_does_not_drive_the_allocation(
     package that declares a 60 MiB store is not given 60 MiB of memory before it is
     found cut. Before the fix the walk asked its stream for the declared size in one
     read, which peaked at 60 MiB from a ``BytesIO`` and 120 MiB from a pipe."""
-    import tracemalloc
-
     lead = b"\xed\xab\xee\xdb\x03" + b"\0" * 91
     signature = (
         b"\x8e\xad\xe8\x01\0\0\0\0" + struct.pack(">II", 1, 60 * 2**20) + b"\0" * 16
     )
     data = lead + signature + b"x" * 1000
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    tracemalloc.start()
-    try:
+
+    def walk() -> None:
         with (
             pytest.raises(TruncatedError),
             open_archive(source, format=RPM, streaming=True) as reader,
         ):
             for _member, _stream in reader.stream_members():
                 pass
-        peak = tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
+
+    peak = traced_peak(walk)
     assert peak < 8 * 2**20, f"peak {peak} bytes for a {len(data)}-byte package"

@@ -25,6 +25,7 @@ from archivey import (
 from archivey.formats import SequentialReader
 from archivey.internal.backends import ar_reader
 from archivey.internal.backends.ar_reader import ArReader
+from tests.memory_util import traced_peak
 from tests.public_names import assert_only_public_archivey
 from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
 
@@ -496,20 +497,17 @@ def test_streaming_header_size_does_not_drive_the_allocation(
     given 60 MiB of memory before it is found cut. Before the fix the walk asked
     its stream for the declared size in one read, which peaked at 60 MiB from a
     ``BytesIO`` and 120 MiB from a pipe."""
-    import tracemalloc
-
     declared = 60 * 2**20
     data = b"!<arch>\n" + _ar_header(member, declared) + b"x" * 1000
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    tracemalloc.start()
-    try:
+
+    def walk() -> None:
         with (
             pytest.raises(TruncatedError),
             open_archive(source, format=fmt, streaming=True) as reader,
         ):
             for _member, _stream in reader.stream_members():
                 pass
-        peak = tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
+
+    peak = traced_peak(walk)
     assert peak < 8 * 2**20, f"peak {peak} bytes for a {len(data)}-byte archive"
