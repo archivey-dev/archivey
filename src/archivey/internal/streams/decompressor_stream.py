@@ -923,8 +923,9 @@ class DecompressorStream(ReadOnlyIOStream):
       its end). ``_decoding`` wraps the call and keeps an error it raises in
       ``_spent``. ``_ingest_decode`` adds the seek points the call found to the table
       (:meth:`add_seek_points`).
-    - **Seek.** :meth:`seek` only records the target. The next read first runs
-      ``_settle``, which decodes there: ``_seek_to`` picks the nearest seek point
+    - **Seek.** :meth:`seek` records the target when reaching it would decode
+      (``SEEK_END`` may decode to find the size, in the seek itself). The next read
+      first runs ``_settle``, which decodes there: ``_seek_to`` picks the nearest seek point
       (``_find_best_seek_point``), restarts the decoder there when that is closer than
       where it stands (``_reset_to_seek_point``), and decodes forward (``_skip_to``).
     - **Index.** A seek forward past every known point first asks the decoder for
@@ -932,9 +933,10 @@ class DecompressorStream(ReadOnlyIOStream):
       ``from_index`` and checked against what decoding finds. When the two disagree,
       ``_drop_index`` drops every index point and the stream goes on with decoded
       points only.
-    - **End.** Bytes past the codec's end, or a truncation, end the stream once the
-      output before them has been read (``_end_at_trailing_data``,
-      ``_raise_deferred``).
+    - **End.** Bytes past the codec's end, or a truncation, end a bounded read's
+      stream once the output before them has been read (``_end_at_trailing_data``,
+      ``_raise_deferred``); :meth:`readall` raises at once and drops what it
+      decoded.
 
     ``seekable=False`` skips index/seek-point work (forward-only cheap path).
     ``readable``/``writable``/``write``/``readinto`` come from :class:`ReadOnlyIOStream`.
@@ -1225,9 +1227,10 @@ class DecompressorStream(ReadOnlyIOStream):
 
         The index is only an accelerator, and the file decodes: seeks go on from the
         points a decode from the origin records, and the size is the decoded one. A
-        size the index gave is forgotten, so the next size query decodes to the end. A
-        decoder that resumed at an index point is restarted before the operation
-        returns (:meth:`_restart_at_position`).
+        size the index gave is forgotten: :meth:`try_get_size` answers ``None`` again,
+        and a seek that needs the size decodes to the end. A decoder that resumed at
+        an index point is restarted before the operation returns
+        (:meth:`_restart_at_position`).
         """
         self._claims = None
         self._index_dropped = True
@@ -1257,7 +1260,8 @@ class DecompressorStream(ReadOnlyIOStream):
         return _INDEX_SOURCES.get(codec, f"{codec} seek index")
 
     def _forget_index_size(self) -> None:
-        """Forget a size the index gave, so the next size query decodes to the end."""
+        """Forget a size the index gave: :meth:`try_get_size` answers ``None`` again,
+        and a seek that needs the size decodes to the end."""
         # _index_built is cleared too. Once the index has been tried its only reader is
         # xz's per-stream scan (the ``index_built`` closure in xz_decoder), which then
         # runs again; _ensure_index_built is gated by _index_build_attempted.
@@ -1507,7 +1511,9 @@ class DecompressorStream(ReadOnlyIOStream):
         """Account for one decoder call's output and return its bytes.
 
         Advances ``_decoder_pos`` and adds the call's seek points to the table, marked
-        as the index's when the decoder resumed at an index point.
+        as the index's when the decoder resumed at an index point. Output also ends
+        the window in which an error drops the index rather than sticking
+        (``_fresh_index_point``, :meth:`_drop_index_at_failed_point`).
         """
         if out.data:
             self._fresh_index_point = None
@@ -1854,7 +1860,7 @@ class DecompressorStream(ReadOnlyIOStream):
             self._raise_spent()
         # Join a list of chunks rather than staging them through ``_buffer``: a
         # whole-stream read never needs the partial-read buffer, and the extend +
-        # bytes(buffer) copy is a measurable share of a ZIP read-all.
+        # bytes(buffer) copy would cost a measurable share of a ZIP read-all.
         chunks: list[bytes] = []
         with self._deferring_raises() as pending:
             while True:
