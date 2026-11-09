@@ -14,6 +14,7 @@ from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError
 from archivey.internal.overrides import override
+from archivey.internal.streams.read_hints import read_span_hint
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     check_read_size,
@@ -77,6 +78,11 @@ class BlockStream(ReadOnlyIOStream):
         return self._pos
 
     def _block_at(self, index: int) -> bytes:
+        """Block ``index``, decoded and length-checked; the last one is kept.
+
+        A block streamed back is read for one byte more than it should hold, so a
+        block that decodes too long is caught as well as one that decodes too short.
+        """
         if index != self._index:
             start = index * self._block_size
             expected = min(self._block_size, self._size - start)
@@ -84,6 +90,10 @@ class BlockStream(ReadOnlyIOStream):
             if isinstance(block, (bytes, bytearray, memoryview)):
                 data = bytes(block)
             else:
+                # A view, or a decoder over one: its span is read next, all of it.
+                hint = read_span_hint(block)
+                if hint is not None:
+                    hint()
                 with block:
                     data = read_exact(block, expected + 1)
             if len(data) != expected:

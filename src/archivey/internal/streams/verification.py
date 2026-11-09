@@ -4,7 +4,7 @@ Each check runs in its own layer: the member verifier (length and stored digests
 codec's own checksum, the WinZip AES HMAC in the decrypt stage, the password watch
 over a member whose password only a weak check accepted. The public stream asks the
 layer below it with :func:`ask_verification_proofs` and combines the answers into a
-:class:`~archivey.types.Verification` level (``verification-level`` change).
+:class:`~archivey.types.Verification` level.
 
 A layer answers through a private ``_verification_proofs()`` method, duck-typed as
 ``_digest_intact()`` is (:func:`~archivey.internal.streams.verify.ask_digest_intact`).
@@ -75,7 +75,7 @@ class VerificationProofs:
 NO_PROOFS = VerificationProofs()
 
 # A wrapper chain is a handful of layers; the bound only stops a cycle.
-_MAX_DEPTH = 64
+MAX_WRAPPER_DEPTH = 64
 
 
 def ask_verification_proofs(stream: object, *, _depth: int = 0) -> VerificationProofs:
@@ -86,7 +86,7 @@ def ask_verification_proofs(stream: object, *, _depth: int = 0) -> VerificationP
     answer comes from its ``_inner``: whole when the layer sets
     ``forwards_verification``, else only the doubt about a key.
     """
-    if stream is None or _depth > _MAX_DEPTH:
+    if stream is None or _depth > MAX_WRAPPER_DEPTH:
         return NO_PROOFS
     ask = getattr(stream, "_verification_proofs", None)
     if ask is not None:
@@ -113,7 +113,7 @@ def find_frame_watch(stream: object, *, _depth: int = 0) -> Callable[[], bool] |
     follows the same layers that walk passes ``per_frame`` through, so it finds the
     layer whenever that proof reaches ``stream``; ``None`` when there is none.
     """
-    if stream is None or _depth > _MAX_DEPTH:
+    if stream is None or _depth > MAX_WRAPPER_DEPTH:
         return None
     watch = getattr(stream, "_frames_unchecked_now", None)
     if watch is not None:
@@ -131,10 +131,10 @@ def find_frame_watch(stream: object, *, _depth: int = 0) -> Callable[[], bool] |
     return None
 
 
-# The level lock (``verification-level-redesign`` design Decision 4): a leaf lock held
-# only for the compare-and-store below, never across I/O or a callback, and no other
-# lock is taken while it is held. One for the process: the critical section is a few
-# attribute reads and writes, so sharing it costs nothing measurable.
+# The level lock: a leaf lock held only for the compare-and-store below, never across
+# I/O or a callback, and no other lock is taken while it is held. One for the process:
+# the critical section is a few attribute reads and writes, so sharing it costs nothing
+# measurable.
 _LEVEL_LOCK = threading.Lock()
 
 

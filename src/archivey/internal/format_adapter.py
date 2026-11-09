@@ -83,6 +83,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
+from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
@@ -99,6 +100,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.registry import save_codec_state
 from archivey.internal.streams.decompressor_stream import StreamChecksumError
+from archivey.internal.streams.read_hints import mark_read_span, read_span_hint
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
@@ -373,13 +375,18 @@ class _PluginAdapter(BaseArchiveReader):
             input_size = source_byte_size(data)
             if input_size is not None:
                 changes["compressed_input_size"] = input_size
-        return open_codec_stream(
+        decoded = open_codec_stream(
             codec,
             data,
             config=copy_with(self._decoder_config, **changes),
             params=params,
             collector=self._diagnostics_collector,
         )
+        # A decoder over a view reads the view's span.
+        hint = read_span_hint(data)
+        if hint is not None:
+            mark_read_span(decoded, hint)
+        return decoded
 
     def _member_id(self, member: ArchiveMember | None) -> int | None:
         if member is None:
@@ -606,6 +613,9 @@ class _PluginAdapter(BaseArchiveReader):
             )
         registry = get_registry()
         policy = self._config.formats
+        refusal = policy._nested_refusal(fmt)
+        if refusal is not None:
+            raise UnsupportedFeatureError(refusal, source_format=fmt)
         backend_cls = registry.reader_for_format(
             fmt,
             replacement=policy._replacement_for(fmt),
@@ -843,7 +853,7 @@ class IndexedReaderAdapter(_PluginAdapter):
             source, wrap_handle=self._seek_handle_wrapper()
         )
         plugin_source = ReaderSource(
-            shared.view, shared.size, source.path, shared.read_at
+            self._marked_view, shared.size, source.path, shared.read_at
         )
         plugin = self._plugin
         assert isinstance(plugin, IndexedFormatHandler)
@@ -854,6 +864,19 @@ class IndexedReaderAdapter(_PluginAdapter):
         self._indexed = reader
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
         return reader
+
+    def _marked_view(self, start: int, length: int | None) -> BinaryIO:
+        """``ReaderSource.view``: a view of the shared source, marked with its span
+        for the range hint archivey gives when the view is read as a member's data."""
+        shared = self._shared
+        assert shared is not None
+        view = shared.view(start, length)
+        size = view.size
+        if size:
+            mark_read_span(
+                view, functools.partial(self._will_read, start, start + size)
+            )
+        return view
 
     @override
     def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
@@ -938,6 +961,13 @@ class IndexedReaderAdapter(_PluginAdapter):
                     f"{type(data).__name__}, not MemberData"
                 )
             )
+        if data.ranges:
+            self._hint_ranges(data)
+        else:
+            # A view, or a decoder over one, says its span itself.
+            hint = read_span_hint(data.stream)
+            if hint is not None:
+                hint()
         stream = cast(BinaryIO, data.stream)
         if not data.bounded and _bounded(stream, member.size):
             data = data._replace(bounded=True)
@@ -946,6 +976,29 @@ class IndexedReaderAdapter(_PluginAdapter):
         if self._handle_lock is not None:
             stream = LockedStream(stream, self._handle_lock)
         return data, stream
+
+    def _hint_ranges(self, data: MemberData) -> None:
+        """Pass ``MemberData.ranges`` to the source, as the planner's hints. The first
+        ``MAX_PENDING_HINTS`` are kept: the planner holds no more at once."""
+        ranges = data.ranges
+        if not ranges:
+            return
+        if not isinstance(ranges, tuple) or not all(
+            isinstance(r, tuple)
+            and len(r) == 2
+            and all(isinstance(x, int) and not isinstance(x, bool) for x in r)
+            for r in ranges
+        ):
+            with suppress(Exception):
+                data.stream.close()
+            raise _plugin_bug(
+                TypeError(
+                    f"{type(self._reader).__name__}.open_member() returned "
+                    f"MemberData.ranges={ranges!r}, not a tuple of (start, end) ints"
+                )
+            )
+        for start, end in ranges[:MAX_PENDING_HINTS]:
+            self._will_read(start, end)
 
     @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
@@ -1013,6 +1066,9 @@ def _outer_copy(member: ArchiveMember) -> ArchiveMember:
     copy.extra = type(member.extra)(member.extra)
     copy.hashes = dict(member.hashes)
     copy._diagnostics = member._diagnostics
+    # The inner listing settled the target (an empty one it reported): the outer
+    # listing does not look for it in the data, nor report it again.
+    copy._link_target_resolved = member._link_target_resolved
     return copy
 
 
@@ -1974,6 +2030,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             member.type is MemberType.SYMLINK
             and self._sequential.link_target_in_data
             and member.link_target is None
+            and not member._link_target_resolved
         ):
             if decoded is not None:
                 with self._translated_errors(member.name), self._handle_guard():
@@ -2430,14 +2487,19 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _close_archive(self) -> None:
         # A walk taken at open and never listed is still suspended in the plugin's
         # walk(): finish it first, so its own cleanup runs before close() and over an
-        # open stream, not later in the collector.
+        # open stream, not later in the collector. It never ran in _iter_members, so
+        # the reports its first step held are sent here, as for a walk stopped
+        # part-way: recorded, never raised.
         try:
             if self._open_walk is not None:
                 close = getattr(self._open_walk[0], "close", None)
                 self._open_walk = None
-                if close is not None:
-                    with self._translated_errors(), self._handle_guard():
-                        close()
+                try:
+                    if close is not None:
+                        with self._translated_errors(), self._handle_guard():
+                            close()
+                finally:
+                    self._send_unyielded_reports(may_raise=False)
         finally:
             try:
                 super()._close_archive()
