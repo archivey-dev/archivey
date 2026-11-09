@@ -11,9 +11,10 @@ against the public API, such as ar or CPIO) becomes a reader in three steps:
    :func:`register_builtin_format` builds the same class for a built-in format and
    registers it among the built-in backends. A ``FormatPolicy(replace=…)`` entry gets
    its class from :func:`replacement_backend`, which is never registered.
-2. **Selection.** Detection and ``open_archive`` pick the backend class from the
-   registry (``registry.BackendRegistry.reader_for_format``) as for any built-in
-   format.
+2. **Selection.** Detection names the format from the registered classes' magic,
+   extensions and probes. ``open_archive`` (and ``ReaderContext.open_nested``) then
+   get the class from ``registry.BackendRegistry.reader_for_format``, which returns
+   the :func:`replacement_backend` class when the call's policy replaces the format.
 3. **Opening.** :meth:`_PluginBackend.open_read` builds the adapter for the handler's
    shape. A format reader does not subclass :class:`BaseArchiveReader`: two adapter
    subclasses serve every one. :class:`IndexedReaderAdapter` implements the abstract
@@ -341,7 +342,9 @@ class _PluginAdapter(BaseArchiveReader):
                 source_format=self._format,
                 archive_name=self._archive_name,
             )
-        params = self._codec_params(codec, method, size, properties)
+        params = self._codec_params(
+            codec, method, size, properties, is_stream=is_stream
+        )
         # Per call, as ZIP fills them per member (``_member_decoder_config``): the
         # output size, and the input size while ``data`` is at its start. The
         # accelerators choose by them, and rapidgzip's length check needs the first.
@@ -375,10 +378,13 @@ class _PluginAdapter(BaseArchiveReader):
         method: CompressionAlgorithm | AnyStreamFormat,
         size: int | None,
         properties: bytes | None,
+        *,
+        is_stream: bool,
     ) -> CodecParams:
         """The codec parameters for one ``decompress`` call: what ``codec`` needs
-        beyond the bytes, read from the call's ``size`` and ``properties``."""
-        is_stream = isinstance(method, (StreamFormat, PluginStream))
+        beyond the bytes, read from the call's ``size`` and ``properties``.
+        ``is_stream`` says ``method`` is a whole stream format, not a member's
+        compression method."""
         # Only a bzip2 member is one stream, as in ZIP and 7z: a further stream after
         # its end is refused. Zstd and LZ4 data may be several frames, read together
         # (RFC 8878, the LZ4 frame format), and the other codecs read no flag. A
