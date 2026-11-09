@@ -1,4 +1,11 @@
-"""Member selection normalization shared by streaming and extraction."""
+"""Member selection normalization shared by streaming and extraction.
+
+Every public call that takes ``members=`` (``extract_all``, ``stream_members``, ...)
+passes it through :func:`normalize_member_selector` once, and gets back a predicate
+over :class:`~archivey.types.ArchiveMember`. For the collection form that predicate is
+a :class:`CollectionSelector`, which the pass asks at the end which entries matched no
+member, to report them.
+"""
 
 from __future__ import annotations
 
@@ -169,8 +176,8 @@ def normalize_member_selector(
         return None
     if isinstance(members, (str, bytes)):
         # A str is an iterable of one-character strings, so `members="notes.txt"`
-        # selected the set {"n", "o", "t", "e", "s", ".", "x"} — no member matched,
-        # and the call reported a clean extraction of nothing. Refused rather than
+        # would select the set {"n", "o", "t", "e", "s", ".", "x"}: no member would
+        # match, and the call would report a clean extraction of nothing. Refused rather than
         # wrapped: guessing that a string meant [string] would make the plural
         # parameter accept a singular, and the caller is one bracket from correct.
         # bytes gets no list-wrapping advice: Pass [b'notes.txt'] is itself a
@@ -188,8 +195,7 @@ def normalize_member_selector(
         # Everything below is the collection arm, so only the predicate is left here.
         # Testing the collection first is what decides the tie: an object that is both
         # callable and iterable is read as a collection, which is the more
-        # defensible reading of a parameter named ``members``. The precedence was
-        # never an explicit decision before; it is one now.
+        # defensible reading of a parameter named ``members``.
         #
         # It is also what lets both checkers narrow this arm with no ``cast``.
         # ``callable()`` cannot drop the collection arm, because ``Iterable`` is not
@@ -207,10 +213,10 @@ def normalize_member_selector(
         if isinstance(entry, (str, ArchiveMember)):
             entries.append(entry)
         else:
-            # Anything else used to land in ``names``, where it could never equal a
-            # member name, so the entry was dropped and the call still reported
-            # success. A selector that silently selects nothing is the one outcome
-            # a caller cannot distinguish from an archive that has nothing.
+            # Anything else could never equal a member name, so the entry would
+            # select nothing while the call reported success. A selector that
+            # silently selects nothing is the one outcome a caller cannot
+            # distinguish from an archive that has nothing.
             raise _UsageTypeError(
                 f"members= takes names (str) or ArchiveMembers, but one entry was "
                 f"{describe_value(entry)}."
