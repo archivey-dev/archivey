@@ -154,6 +154,9 @@ class DiagnosticCode(StrEnum):
     may decompress more than usual."""
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
     """A backward seek decompressed at least 1 MiB again from an earlier point."""
+    SOLID_OPEN_REDECOMPRESSES = "solid_open_redecompresses"
+    """Opening a member of a solid 7z or RAR archive decompressed again data that an
+    earlier open on the same reader had already decompressed."""
     MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
     """An entry of ``members=`` matched no member of the archive."""
     MEMBER_SPECIAL_FILE_HAS_DATA = "member_special_file_has_data"
@@ -258,6 +261,8 @@ DiagnosticCodeStr = Literal[
     "seek-index-degraded",
     "stream_rewind_redecompresses",
     "stream-rewind-redecompresses",
+    "solid_open_redecompresses",
+    "solid-open-redecompresses",
     "member_selector_unmatched",
     "member-selector-unmatched",
     "member_special_file_has_data",
@@ -807,6 +812,23 @@ class StreamRewindContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class SolidReopenContext(_JsonSafeContext):
+    """An ``open()`` of a solid 7z or RAR member decompressed data again.
+
+    ``member_name`` and ``member_id`` name the member being opened. ``bytes_again`` is
+    how much of what this open decompressed an earlier open on the same reader had
+    already decompressed: the part of the solid block before the member, and the
+    member's own bytes only when an earlier open decompressed them for another member.
+    """
+
+    kind: Literal["solid_reopen"] = "solid_reopen"
+    archive_name: str | None = None
+    member_name: str | None = None
+    member_id: int | None = None
+    bytes_again: int = 0
+
+
+@dataclass(frozen=True)
 class SelectorUnmatchedContext(_JsonSafeContext):
     """One ``members=`` selector entry matched no member of the archive.
 
@@ -1086,6 +1108,7 @@ DiagnosticContext = (
     | EncryptedVerificationContext
     | SeekIndexContext
     | StreamRewindContext
+    | SolidReopenContext
     | SelectorUnmatchedContext
     | SpecialFileDataContext
     | LocalHeaderContext
@@ -1126,6 +1149,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED: "encrypted_verification",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
+        DiagnosticCode.SOLID_OPEN_REDECOMPRESSES: "solid_reopen",
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
         DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: "local_header",
@@ -1167,8 +1191,8 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Eighteen codes are deliberately **out**,
-and the reasons are part of the contract rather than an oversight:
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nineteen codes are deliberately
+**out**, and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
   treating zero members as an error.
@@ -1177,8 +1201,9 @@ and the reasons are part of the contract rather than an oversight:
   every unencrypted archive.
 - ``EXPLICIT_FORMAT_LISTED_EMPTY`` — ``format=`` is an override, and an override that
   halts the caller is not an override.
-- ``STREAM_REWIND_REDECOMPRESSES`` — reports the caller's access pattern rather than the
-  archive, and is most useful as a deliberately targeted tripwire.
+- ``STREAM_REWIND_REDECOMPRESSES`` and ``SOLID_OPEN_REDECOMPRESSES`` — report the
+  caller's access pattern rather than the archive, and are most useful as deliberately
+  targeted tripwires.
 - ``ENCRYPTED_MEMBER_UNVERIFIED`` — fires only when the caller abandons a member stream
   before EOF (extraction reads every member to EOF and never fires it). In ``STRICT`` it
   would turn a peek at a ZipCrypto or RAR3/4 encrypted member into
@@ -1239,6 +1264,7 @@ and the reasons are part of the contract rather than an oversight:
 _INFO_LOG_CODES: frozenset[DiagnosticCode] = frozenset(
     {
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
+        DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
         DiagnosticCode.MEMBER_NAME_DUPLICATE,
         DiagnosticCode.MEMBER_READERS_DISAGREE,
         DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
@@ -1246,11 +1272,10 @@ _INFO_LOG_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes whose log record is INFO rather than WARNING (``logging`` spec).
 
-``STREAM_REWIND_REDECOMPRESSES`` reports the caller's access pattern, not the archive:
-the reason
-``STREAM_REWIND_REDECOMPRESSES`` is out of :data:`ARCHIVE_INTEGRITY_CODES` too, and the
-reason the solid re-decode record on ``archivey.backends`` is INFO (maintainer,
-2026-10-23). ``MEMBER_NAME_DUPLICATE`` and ``MEMBER_READERS_DISAGREE`` report shapes
+``STREAM_REWIND_REDECOMPRESSES`` and ``SOLID_OPEN_REDECOMPRESSES`` report the caller's
+access pattern, not the archive: the reason they are out of
+:data:`ARCHIVE_INTEGRITY_CODES` too (maintainer, 2026-10-23). ``MEMBER_NAME_DUPLICATE``
+and ``MEMBER_READERS_DISAGREE`` report shapes
 of ordinary archives that only matter to a caller comparing readers, who asks for them
 through the policy. ``SOURCE_CHANGE_UNDETECTABLE`` is recorded at every open of a
 remote archive whose store cannot pin a version, so a warning would fire on every one.
@@ -1664,6 +1689,7 @@ __all__ = [
     "SeekIndexContext",
     "SelectorUnmatchedContext",
     "SizeWrapContext",
+    "SolidReopenContext",
     "SourceChangeContext",
     "SpecialFileDataContext",
     "StreamRewindContext",
