@@ -213,7 +213,7 @@ def test_the_reader_is_a_sequential_reader() -> None:
 
 # Packages built here -------------------------------------------------------------
 
-_INT16, _INT32, _INT64, _STRING, _BIN, _STRING_ARRAY = 3, 4, 5, 6, 7, 8
+_INT8, _INT16, _INT32, _INT64, _STRING, _BIN, _STRING_ARRAY = 2, 3, 4, 5, 6, 7, 8
 _ALIGN = {_INT16: 2, _INT32: 4, _INT64: 8}
 _FORMATS = {_INT16: ">H", _INT32: ">I", _INT64: ">Q"}
 
@@ -439,27 +439,27 @@ def test_a_stripped_payload_reads_from_a_pipe() -> None:
 
 
 @pytest.mark.parametrize(
-    "tag",
+    ("number", "value", "key", "expected"),
     [
-        (1000, (_STRING_ARRAY, [b"ab"] * 200_000)),  # NAME
-        (1003, (_INT32, list(range(150_000)))),  # EPOCH
+        pytest.param(
+            1000, (_STRING_ARRAY, [b"ab"] * 200_000), "rpm.name", "ab", id="name"
+        ),
+        pytest.param(1003, (_INT32, list(range(150_000))), "rpm.epoch", 0, id="epoch"),
     ],
-    ids=["name-strings", "epoch-ints"],
 )
 def test_a_one_value_tag_declaring_a_long_array_reads_only_its_first(
-    tag: tuple[int, tuple[int, object]],
+    number: int, value: tuple[int, object], key: str, expected: object
 ) -> None:
     # NAME, VERSION, EPOCH and the other tags read for one value built the whole
     # array the entry declares to take its first element: a 60 MiB data store of
     # such arrays took 1.22 GB to open. Here the peak was 12 to 16 times the
     # package; now it is about one package.
-    number, value = tag
     data = _build(_Package(_tree(), extra_tags={number: value}))
 
     def open_it() -> None:
         with _open(data) as reader:
             extra = reader.info.extra
-            assert extra["rpm.name" if number == 1000 else "rpm.epoch"] in ("ab", 0)
+            assert extra[key] == expected
 
     open_it()
     peak = traced_peak(open_it)
@@ -469,8 +469,6 @@ def test_a_one_value_tag_declaring_a_long_array_reads_only_its_first(
 def test_the_one_value_accessors_check_the_entry_as_the_array_ones_do() -> None:
     # string() and number() read only the first value, and still refuse every
     # entry that strings() and ints() refuse, with the same message.
-    from archivey.internal.backends.rpm_reader import Header, _Entry
-
     # No NUL after the second string's.
     data = b"ab\0cd\0" + bytes(range(1, 7))
     cases = {
@@ -483,7 +481,7 @@ def test_the_one_value_accessors_check_the_entry_as_the_array_ones_do() -> None:
         "int32": (_INT32, 1, 6),
         "int32 array past the end": (_INT32, 2, 6),
         "int16": (_INT16, 1, 10),
-        "int8 array": (2, 3, 1),
+        "int8 array": (_INT8, 3, 1),
         "binary": (_BIN, 1, 0),
         # _read_header refuses a count of 0; the accessors still agree on it.
         "empty array": (_STRING_ARRAY, 0, 3),
@@ -492,7 +490,9 @@ def test_the_one_value_accessors_check_the_entry_as_the_array_ones_do() -> None:
         "empty int16 array at the end": (_INT16, 0, len(data)),
     }
     for what, (kind, count, offset) in cases.items():
-        header = Header({1: _Entry(kind, count, offset)}, data, "header")
+        header = rpm_reader.Header(
+            {1: rpm_reader._Entry(kind, count, offset)}, data, "header"
+        )
         for one, many in (
             (header.string, header.strings),
             (header.number, header.ints),
