@@ -1,10 +1,13 @@
 """Public configuration types for archivey: :class:`ArchiveyConfig` and its parts.
 
-A caller builds one :class:`ArchiveyConfig` and passes it as ``config=`` to
-:func:`~archivey.open_archive`, :func:`~archivey.open_stream` or
-:func:`~archivey.detect_format`. Its fields are grouped into the limit classes here
-(:class:`ExtractionLimits`, :class:`ListingLimits`, :class:`DecoderLimits`,
-:class:`SpoolLimits`), the enums that pick an accelerator or an external program, and
+A caller builds one :class:`ArchiveyConfig` and passes it as ``config=`` to the
+functions that open, detect or report on archives: :func:`~archivey.open_archive`,
+:func:`~archivey.open_stream`, :func:`~archivey.detect_format`,
+:func:`~archivey.format_availability` and :func:`~archivey.list_supported_formats`. Its
+fields are grouped into the limit classes here (:class:`ExtractionLimits`,
+:class:`ListingLimits`, :class:`DecoderLimits`, :class:`SpoolLimits`), the enums that
+pick an accelerator, an external program, or which decoders run in a child process
+(:class:`AcceleratorMode`, :class:`RarDecompressor`, :class:`ProcessIsolation`), and
 policies defined in their own modules (diagnostics, formats, detection budget). Every
 field is checked when the config is built, so a wrong value fails at the caller's line
 rather than deep inside a read. This module also holds the password types.
