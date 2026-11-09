@@ -36,7 +36,7 @@ from archivey.internal.streams.codecs.zstd_framing import (
     regular_frame_behind_skippable_frames,
 )
 from archivey.internal.streams.codecs.zstd_seek_table import build_seek_table_index
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.decompressor_stream import StreamChecksumError
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,
@@ -229,7 +229,7 @@ class ZstdCodec(StreamCodec):
             if "checksum" in str(exc):
                 # The frame's content checksum ("Restored data doesn't match
                 # checksum"), over everything the frame decoded.
-                return _StreamChecksumError(
+                return StreamChecksumError(
                     f"Error reading zstd stream: {exception_detail(exc)}"
                 )
             return CorruptionError(

@@ -9,6 +9,12 @@ per-codec :class:`~archivey.internal.streams.codecs.MetadataContext` hooks when 
 (gzip FNAME/mtime, xz/lzip size, …); otherwise they are filled/verified on read via
 the shared codec layer.
 
+How it fits: :class:`SingleFileBackend` declares ``RAW_STREAMS``, so the registry
+routes every ``(RAW_STREAM, <codec>)`` format that detection or the caller names to
+it, and ``open_archive`` gets a :class:`SingleFileReader` back. The reader lists its
+one member at open and decodes it through ``open_codec_stream``, like a member of
+any other archive.
+
 The backend is codec-agnostic; adding a standalone codec is "add codec + enum +
 detection" — no new backend class (see ``format-single-file-compressors``). Basic
 ZST/LZ4 read is already here; remaining seekable-index / accelerator work for those
@@ -152,7 +158,14 @@ class _IndexReportRecorder(DiagnosticCollector):
 
 
 def _infer_member_name(archive_name: str | None) -> str:
-    """Infer the single member's name from the source filename (see the spec)."""
+    """Infer the single member's name from the source filename.
+
+    A known compressor extension is stripped (``notes.txt.gz`` gives ``notes.txt``),
+    a one-word suffix in ``_SUFFIX_REPLACEMENTS`` is swapped (``a.tgz`` gives
+    ``a.tar``), and any other name gets ``.uncompressed`` appended. With no usable
+    source name (a pipe, a nameless stream) the member is called ``data``. The full
+    table, edge cases included, is in the ``format-single-file-compressors`` spec.
+    """
     return infer_member_name_from_archive(
         archive_name,
         strip_suffixes=_compression_exts() - _SUFFIX_REPLACEMENTS.keys(),
@@ -228,10 +241,10 @@ class SingleFileReader(BaseArchiveReader):
         # their own config. `seekable_members` declares what the caller wants to do with
         # the *member stream*; the xz index and lzip trailer are bounded backward peeks
         # that hand nobody a stream, so reading them is decided by the source's shape.
-        # Gating them on the declaration made the same .xz report size=None on a plain
-        # open and 44 with the flag — a capability flag changing metadata. Accelerators
-        # stay OFF: a probe reads no member data, so an accelerator's startup cost buys
-        # nothing the native index does not already have.
+        # Gating them on the declaration would make the same .xz report size=None on a
+        # plain open and its real size with the flag: a capability flag must not change
+        # metadata. Accelerators stay OFF: a probe reads no member data, so an
+        # accelerator's startup cost buys nothing the native index does not already have.
         self._metadata_config = without_accelerators(
             stream_config_from_archivey(
                 self._config,
@@ -431,12 +444,12 @@ class SingleFileReader(BaseArchiveReader):
 
         What separates the pipe from the seekable caller stream is seekability, not
         trust: both carry an unchecked ``size`` claim, and the seekable one's is
-        reported. On a pipe there is no ``SEEK_END`` to answer, so ``None`` is the
-        answer it always had. The value is not only metadata. Two extraction ratio
-        guards divide by a source length: the per-member guard by ``compressed_size``,
-        and the archive-wide guard by ``BaseArchiveReader.compressed_source_size``
-        (``_trusted_source_size``). Both follow this rule, so a pipe's ``size`` claim
-        reaches neither, and the live byte counter stays. Nothing here checks a
+        reported. On a pipe there is no ``SEEK_END`` to answer, so it reports ``None``.
+        The value is not only metadata. Two extraction ratio guards divide by a source
+        length: the per-member guard by ``compressed_size``, and the archive-wide guard
+        by ``BaseArchiveReader.compressed_source_size`` (``_trusted_source_size``). Both
+        follow this rule, so a pipe's ``size`` claim reaches neither, and the live byte
+        counter stays. Nothing here checks a
         member stream's declared length, and a ``SEEK_END`` could not do better: a TAR
         member stream answers it from the same declared length. A ZIP member that holds
         fewer bytes than it declares is refused with ``TruncatedError`` only after its

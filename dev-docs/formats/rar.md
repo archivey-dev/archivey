@@ -93,8 +93,9 @@ Everything about that boundary is a consequence:
   once the solid prefix plus discarded member progress meets the 1 MiB floor. The unnamed
   ALL-pipe used by `stream_members()` stays forward-only (§2.3, §5). Opening a member of
   a solid archive by name decodes again what an earlier open decoded of its solid prefix
-  (the archive's for `unrar`, the member's solid stream for `unar`), which logs one INFO
-  record per reader on `archivey.backends` (`_solid_run`); it is not a diagnostic.
+  (the archive's for `unrar`, the member's solid stream for `unar`), which records
+  `SOLID_OPEN_REDECOMPRESSES` once per reader, logged at INFO on `archivey.backends`
+  (`_solid_run`).
 - **Identity of the binary costs a process.** `find_rarlab_unrar` looks up `unrar`
   first, then `rar`, runs the candidate with only `-cfg-` (so `~/.unrarrc` cannot inject
   `-idq` and empty the banner), and sniffs the banner.
@@ -625,9 +626,10 @@ volume, since RAR 1.5 / 2.x predate it.) Explicit sequences are still read as `1
 explicit sequence of volume *paths* is used as given, with no discovery: headers are read
 from those files in that order. For a discovered set and an explicit one alike, `unrar` is
 pointed at the first file in place only when its own next-volume rule, run from it, finds
-exactly the files parsed and nothing past the last. That rule follows the MAIN header's
-naming flag, not the names on disk: an old-scheme set renamed `x.part1.rar`, `x.part2.rar`
-is continued from `x.part1.r00`, a file archivey never parsed. Otherwise, on the first read
+exactly the files parsed and nothing past the last, and no volume path holds `*` or `?`
+(§"The argv is constructed defensively" below). That rule follows the MAIN header's naming
+flag, not the names on disk: an old-scheme set renamed `x.part1.rar`, `x.part2.rar` is
+continued from `x.part1.r00`, a file archivey never parsed. Otherwise, on the first read
 that needs `unrar`, the files are symlinked — hard-linked where a symlink is
 refused — into a temp directory under the set's own names, and copied within
 `SpoolLimits` only where neither link works. `unar` always gets such a directory. An old-scheme
@@ -936,7 +938,8 @@ never starts `unrar` and is never asked for a password.
 
 **A solid archive can mix stored and compressed members.** RAR picks the method per
 file: `rar -s -m3 -msbin` compresses most files and stores the `.bin` ones as they are.
-A stored member still gets its own solid flag (`file_solid`), which on a compressed
+A stored member still gets its own solid flag (`file_solid`: the header bit, or for
+a RAR 1.3-1.5 member the archive-wide rule in §3), which on a compressed
 member means "continue from the previous member's decoder state". Its bytes are
 plaintext in the archive all the same, so the direct slice reads them and ignores the
 flag. `unrar` decodes every compressed member ahead of it to reach those bytes, which is
@@ -952,7 +955,13 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   compressed member read as truncated. `--` is RARLAB's documented end-of-switches marker;
   measured on `unrar` 7.00 and `rar` 7.00. An `@` prefix needs no guard in this position:
   `unrar` reads the first non-switch argument as the archive, and only later file-name
-  arguments as list-files (also measured on 7.00).
+  arguments as list-files (also measured on 7.00). `--` does not stop wildcard
+  expansion: `unrar` expands `*` and `?` in the archive name even after it (only those
+  two; `[` and `{` are literal on 7.00, and Windows skips a `\\?\` prefix first). In
+  place, `rep*.rar` also opened a planted `rep-a.rar` beside it, mixing that archive's
+  members into the output, and blocked forever on a FIFO of a matching name. So the
+  reader stages such a path under fixed names in a private temp directory
+  (`unrar_expands_wildcards`).
 
 - **The member is never positional.** It is the value of the `-n` include mask, prefixed
   `./`. Passed positionally, a member literally named `-inul` is parsed by `unrar` as a
@@ -1213,7 +1222,13 @@ pinned RARLAB source tree instead of trusting a third-party tap.
 **Old archives are still readable and still surprising.** RAR 1.5 and 2.x archives (extract
 version ≤ 20) share the RAR3 block layout, so they list and read; extract version alone is
 never a rejection. `rar15-comment.rar` and `rar202-comment-nopsw.rar` are borrowed from
-`rarfile`'s own corpus because modern `rar` cannot emit them. RAR3's two name fields are the
+`rarfile`'s own corpus because modern `rar` cannot emit them. RAR 1.3-1.5 writers never set
+the per-file solid flag: only the MAIN header says the archive is solid, and `unrar` decodes
+every file with extract version 15 or lower after the first file on top of the ones before
+it (`extract.cpp`, `FileCount>1 && Arc.Solid`). The parser sets `file_solid` on those
+members (`_settle_rar15_solid`), so the synthetic chain, the stream-source pass and `unar`'s
+solid runs start at the right member. Neither borrowed fixture is solid; the test patches
+the headers of `basic_solid__rar4.rar` instead. RAR3's two name fields are the
 other legacy trap: the compressed name is UTF-16, which truncates a non-BMP character to a
 single code unit — an emoji arrives as a private-use `U+F600` — and the 8-bit field is
 preferred where it recovers the real character, without overriding a private-use character
@@ -1293,10 +1308,17 @@ RAR-specific only. General extraction and name hazards are §2.4.
   version 20 (RAR 2.0). The RARLAB writer stores those targets M0 — it does not
   produce a compressed (LZ-data) RAR3 symlink target, which is why that case is
   not in the fixtures. `FILE_COPY` (RAR5 redirect type 5) is pinned with
-  archives `rar -oi` writes at test time. Residual is
-  unfixtured existing kinds — Windows symlink, Windows junction — and future kinds
-  whose emission `is_payload_file()` gets wrong (tracked internally). A later reader must
-  not conclude the current kinds are all pinned.
+  archives `rar -oi` writes at test time. Windows symlinks and junctions (types 2 and 3)
+  are pinned with `winlinks_solid__.rar`, written on Windows by WinRAR 7.23 `rar -ol`
+  (`scripts/investigations/exploration/probe_rar_windows_links.py`; run once on a
+  GitHub Windows runner, then dropped from CI so no `rar` writer runs there, ADR
+  0016): with `unrar` 7.23 on Windows, Linux and macOS, a
+  relative or absolute file symlink, a directory symlink and a junction each print
+  nothing, and a solid pass prints exactly the regular files. They list with size 0,
+  unlike a Unix link. `rar` stores directories, directory links and junctions after the
+  files of a run, and keeps them last when a later run appends files, so only the file
+  links have data after them in an archive `rar` wrote. The residual is future kinds
+  whose emission `is_payload_file()` gets wrong.
 - **A stream source materializes the archive to disk.** The temp file is `0600` and the temp
   volume directory `0700`, and both are removed on close; the exposure is disk space and
   lifetime, not readability by other users. `CostReceipt.notes` carries the caveat at open
@@ -1644,6 +1666,7 @@ python3 scripts/investigations/exploration/rar_decompressor_matrix.py      # §3
 | RAR5 Windows symlink and junction targets list as ZIP's and 7z's do, and a drive or UNC target is refused at extraction |
 | A RAR5 name that is not UTF-8, and an 8-bit RAR 1.5-4 name with a byte windows-1252 leaves undefined, list as distinct names, read their own bytes through `unrar`, and extract escaped |
 | Solid symlink / hardlink demux does not consume pipe bytes |
+| Solid Windows symlink and junction demux (WinRAR-written, measured on Windows, Linux and macOS) does not consume pipe bytes |
 | Solid link emission per generation: RAR5 packed 0 / unpacked > 0, RAR4 packed > 0 / unpacked > 0, both emit 0; `is_payload_file()` is False |
 | A RAR5 file copy lists as `FILE` with `is_file_copy` and its source, reads and extracts as an independent file (both programs, solid and not); a dangling or wrong-size copy raises; a hard link stays `HARDLINK` |
 | A solid pass decodes a file copy's source once for all its copies (both programs; the source read or skipped, extracted or filtered out); kept in the spool past the memory allowance, decoded again when the spool limit has no room; the spool charge starts at the first kept byte, after a stream source's own copy, and ends once the pass has reached the last counted copy of every source in the file, at the latest with the pass; a `members=` collection counts only the copies it selects, so one that selects none of a source's copies never starts it, while under a predicate every copy counts; a pass that reads nothing writes nothing; the kept bytes are checked against the source's digest and count toward extraction limits |

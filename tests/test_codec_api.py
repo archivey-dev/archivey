@@ -46,7 +46,7 @@ from archivey.exceptions import ArchiveyError
 from archivey.formats import (
     CodecCall,
     CodecHandler,
-    FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -808,7 +808,7 @@ def _decoding_zip(stored: bytes, method: StreamFormat | PluginStream) -> type:
         def open_member(self, member: ArchiveMember, locator: None) -> MemberData:
             return MemberData(self._context.decompress(io.BytesIO(stored), method))
 
-    class Zip(FormatHandler):
+    class Zip(IndexedFormatHandler):
         format = ArchiveFormat.ZIP
 
         def open(self, source: ReaderSource, context: ReaderContext) -> Reader:

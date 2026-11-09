@@ -178,9 +178,7 @@ class _LinkGroup:
     until one does."""
 
     name: str | None = None
-    # Each held member with the name it was stored under, for the adapter's report of
-    # a normalized name (MemberSpan.stored_name).
-    held: list[tuple[ArchiveMember, str]] = field(default_factory=list)
+    held: list[ArchiveMember] = field(default_factory=list)
 
 
 # What the held links are, in a limit error (ReaderContext.hold).
@@ -194,6 +192,7 @@ def _pad(n: int, align: int) -> int:
 def _number(raw: bytes, base: int, what: str, offset: int) -> int:
     try:
         text = raw.decode("ascii")
+        # int() would also take spaces, a sign and underscores.
         if not text.isalnum():
             raise ValueError(text)
         return int(text, base)
@@ -206,6 +205,7 @@ def _number(raw: bytes, base: int, what: str, offset: int) -> int:
 class CpioReader(SequentialReader):
     """Walks a CPIO archive of any of the four variants."""
 
+    # A symlink's target is its data: archivey reads it from the span while walking.
     link_target_in_data = True
 
     def __init__(self, context: ReaderContext) -> None:
@@ -240,7 +240,7 @@ class CpioReader(SequentialReader):
                 yield from self._flush(groups)
                 self._check_end(stream)
                 return
-            member, stored = self._member(header, raw)
+            member = self._member(header, raw)
             size = header.file_size
             # A file that shares its inode with another.
             key = (header.dev, header.ino)
@@ -251,27 +251,31 @@ class CpioReader(SequentialReader):
                 # of its own, as GNU cpio's copy-in and 7-Zip extract it.
                 own_data = size > 0 and self._defers_link_data()
                 if group.name is not None and not own_data:
+                    # A later link of a file already yielded. binary and odc repeat
+                    # the data here, which is skipped as the span's unread bytes.
                     member.type = MemberType.HARDLINK
                     member.link_target = group.name
                     member.size = None
                 elif size == 0 and self._defers_link_data():
                     # newc keeps the data with the last link: hold this one back,
                     # counted toward the listing's limits while it waits.
-                    self._context.hold(member, stored_name=stored, reason=_HELD)
-                    group.held.append((member, stored))
+                    self._context.hold(member, reason=_HELD)
+                    group.held.append(member)
                     stream.skip(size + self._data_pad(header))
                     continue
                 else:
+                    # The link that is yielded as the FILE: the first one in binary
+                    # and odc, the one carrying the data in newc and crc.
                     group.name = member.name
-            yield MemberSpan(member, size, self._digests(header, member), stored)
+            yield MemberSpan(member, size, self._digests(header, member))
             stream.skip(self._data_pad(header))
             if member.type is MemberType.FILE and header.nlink > 1:
                 group = groups[key]
-                for link, link_stored in group.held:
+                for link in group.held:
                     link.type = MemberType.HARDLINK
                     link.link_target = member.name
                     link.size = None
-                    yield MemberSpan(link, 0, stored_name=link_stored)
+                    yield MemberSpan(link, 0)
                 group.held.clear()
 
     def _flush(
@@ -282,16 +286,18 @@ class CpioReader(SequentialReader):
         for group in groups.values():
             if not group.held:
                 continue
-            (first, first_stored), *rest = group.held
+            first, *rest = group.held
             first.size = 0
-            yield MemberSpan(first, 0, stored_name=first_stored)
-            for link, link_stored in rest:
+            yield MemberSpan(first, 0)
+            for link in rest:
                 link.type = MemberType.HARDLINK
                 link.link_target = first.name
                 link.size = None
-                yield MemberSpan(link, 0, stored_name=link_stored)
+                yield MemberSpan(link, 0)
 
     def _defers_link_data(self) -> bool:
+        """True for newc and crc, which store a hard-linked file's data with one link
+        only, normally the last."""
         return self._variant in (Variant.NEWC, Variant.CRC)
 
     def _read_header(self, stream: ForwardStream) -> Header:
@@ -451,11 +457,9 @@ class CpioReader(SequentialReader):
 
     # Members ------------------------------------------------------------------------
 
-    def _member(self, header: Header, raw: bytes) -> tuple[ArchiveMember, str]:
-        """The member a header describes, its name normalized (so a report names it as
-        callers see it), and the name it was stored under."""
+    def _member(self, header: Header, raw: bytes) -> ArchiveMember:
+        """The member a header describes, named as the archive stores it."""
         context = self._context
-        stored = context.decode_name(raw)
         kind = header.mode & _S_IFMT
         member_type = _TYPES.get(kind)
         special = _SPECIAL.get(kind)
@@ -466,7 +470,7 @@ class CpioReader(SequentialReader):
             member_type = MemberType.FILE if size else MemberType.OTHER
         member = ArchiveMember(
             type=member_type,
-            name=context.normalize_name(stored, member_type),
+            name=context.decode_name(raw),
             raw_name=raw,
             size=size if member_type is MemberType.FILE else None,
             modified=_time(header.mtime),
@@ -497,7 +501,7 @@ class CpioReader(SequentialReader):
                 ),
                 member=member,
             )
-        return member, stored
+        return member
 
     def _digests(
         self, header: Header, member: ArchiveMember

@@ -93,6 +93,8 @@ class Codec(Enum):
     DEFLATE64 = "deflate64"
     SHRINK = "shrink"  # ZIP method 1 (LZW)
     IMPLODE = "implode"  # ZIP method 6 (LZ77 + Shannon-Fano)
+    REDUCE = "reduce"  # ZIP methods 2 to 5 (follower sets + LZ77)
+    DCL_IMPLODE = "dcl_implode"  # ZIP method 10 (PKWARE DCL, as zlib's blast.c reads)
     LZOP = "lzop"  # the .lzo file format
     MOZLZ4 = "mozlz4"  # Firefox's mozLz40 files: one raw LZ4 block
     BZIP3 = "bzip3"  # the .bz3 files the bzip3 tool writes
@@ -157,6 +159,8 @@ class CodecParams:
       settings, from general-purpose bits 1 (an 8 KiB window, else 4 KiB) and 2 (three
       Shannon-Fano trees, else two). Implode also needs ``unpack_size``: its data has no
       end marker. Shrink (method 1) ends at ``unpack_size`` when it is given.
+    - ``reduce_factor`` — ZIP Reduce's compression factor, 1 to 4 (methods 2 to 5).
+      Reduce also needs ``unpack_size``: its data has no end marker.
     - ``single_stream`` — the coder's data is one stream of its codec: a bzip2 ZIP
       member or 7z coder. The decoder ends at the first stream's end rather than
       reading a further stream as a concatenated file's, so a further stream is
@@ -184,6 +188,7 @@ class CodecParams:
     ppmd_restore_method: int = 0
     implode_large_window: bool = False
     implode_literal_tree: bool = False
+    reduce_factor: int | None = None
     unpack_size: int | None = None
     pack_size: int | None = None
     single_stream: bool = False

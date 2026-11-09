@@ -132,6 +132,7 @@ from archivey.internal.remote import (
     emit_source_change_undetectable,
     is_open_file,
     noting_fsspec_decoding,
+    raising_source_change,
 )
 from archivey.internal.sfx import (
     LAYOUT_PREFIX,
@@ -1091,6 +1092,9 @@ def _scan_for_sfx_payload(
     candidate at or past its certificate table is not judged, and the answer carries
     the table's start as ``payload_end``: the table is not parsed, so a needle inside
     it could pass a validator, and the readers stop there (``archive-reading``).
+    The overlay start is judged up to ``SFX_MAX`` whatever ``scan_limit`` is
+    (:func:`_judge_overlay_start`), so the budget never changes which archive is
+    found, only whether one is.
     """
     # A zero ``max_scan_bytes`` turns the tier off, as a zero field does for the others.
     if _record_tier_limit(workspace, "sfx_scan", enabled=scan_limit > 0):
@@ -1132,6 +1136,12 @@ def _scan_for_sfx_payload(
         first = _judge_overlay_start(
             layout, entries, by_needle, formats, workspace, scan_limit, view_limit
         )
+        if isinstance(first, _OutOfReach):
+            # The uncapped paths judge the overlay start before any needle in the
+            # image. Answering from the image would list what they do not, so the
+            # scan gives up instead.
+            workspace.record_skip("sfx_scan", cut_reason)
+            return None
         if first is not None:
             return first
     for hit in iter_magic_in_prefix(
@@ -1275,6 +1285,14 @@ def _probe_pe_tail(
     )
 
 
+class _OutOfReach:
+    """The overlay start lies inside ``SFX_MAX`` and the budget kept detection from
+    judging the candidate there in full."""
+
+
+_OUT_OF_REACH = _OutOfReach()
+
+
 def _judge_overlay_start(
     layout: ExecutableLayout,
     entries: list[MagicSignature],
@@ -1283,7 +1301,7 @@ def _judge_overlay_start(
     workspace: PrefixWorkspace,
     scan_limit: int,
     view_limit: int,
-) -> FormatInfo | None:
+) -> FormatInfo | _OutOfReach | None:
     """The SFX answer at an executable's overlay start, judged before the forward
     scan.
 
@@ -1294,29 +1312,59 @@ def _judge_overlay_start(
     ``VALID_SHORT`` is the common case); anything else leaves the scan to run as it
     does for any stub. The RAR and 7z parsers' scans and the forward ZIP walk apply
     the same rule, so forced ``format=`` opens the same payload.
+
+    Those paths judge the overlay start when its magic ends inside ``SFX_MAX``, and so
+    does this one, whatever the budget made of ``scan_limit``: otherwise a smaller
+    budget would answer with an archive inside the program image that the default
+    budget and a forced open pass over. A candidate past the window is read by seeking
+    (:meth:`PrefixWorkspace.seek_view`): one read for a header of normal size, all
+    within the validator allowance a candidate in the window gets
+    (``view_limit - scan_limit``). The answer is :data:`_OUT_OF_REACH` instead when
+    the source cannot seek cheaply, since reading on to the candidate would pass the
+    budget, and when the allowance cut the validator's view short and it declined:
+    the uncapped paths could accept that candidate.
     """
     origin = layout.overlay_start
     if layout.payload_end is not None and origin >= layout.payload_end:
         return None
+    total = workspace.remaining_known()
+    if total is not None and origin >= total:
+        # Nothing appended: no candidate there for any path to judge.
+        return None
+    far_view: CandidateView | None = None
     for entry in entries:
         start = origin + entry.offset
-        if start + len(entry.magic) > scan_limit:
+        magic_end = start + len(entry.magic)
+        if magic_end > SFX_MAX:
             continue
-        view = workspace.candidate_view(origin, limit=view_limit)
+        in_window = magic_end <= scan_limit
+        if in_window:
+            view = workspace.candidate_view(origin, limit=view_limit)
+        else:
+            if far_view is None:
+                far_view = workspace.seek_view(origin, length=view_limit - scan_limit)
+                if far_view is None:
+                    return _OUT_OF_REACH
+            view = far_view
         if view(entry.offset + len(entry.magic))[entry.offset :] != entry.magic:
             continue
         key, validator = by_needle[entry.magic]
         outcome = HitOutcome.VALID
         if validator is not None:
-            source_len = workspace.remaining_known()
-            remaining = None if source_len is None else max(0, source_len - origin)
+            remaining = None if total is None else max(0, total - origin)
             outcome = validator(
-                workspace.candidate_view(origin, limit=view_limit), remaining
+                workspace.candidate_view(origin, limit=view_limit)
+                if in_window
+                else view,
+                remaining,
             )
         if outcome not in (HitOutcome.VALID, HitOutcome.VALID_SHORT):
+            if workspace.take_clamped_view_read():
+                return _OUT_OF_REACH
             continue
-        # The window examined is the bytes up to the candidate's magic.
-        workspace.charge_scanned(start + len(entry.magic))
+        # The window examined is the bytes up to the candidate's magic; a candidate
+        # read by a seek was the only place examined.
+        workspace.charge_scanned(magic_end if in_window else len(entry.magic))
         workspace.take_clamped_view_read()
         return FormatInfo(
             formats[key],
@@ -1516,7 +1564,7 @@ def _detect_source_into(
     # ``format=`` skips detection.
     if isinstance(source, ArchiveSource):
         emit_source_change_undetectable(
-            source.remote_sources, collector, getattr(source, "name", None)
+            source, collector, getattr(source, "name", None)
         )
 
     resolved_budget = effective_config.detection_budget
@@ -1525,27 +1573,14 @@ def _detect_source_into(
     # strong executable cue runs the full SFX scan), so the sibling-volume answer
     # carries its cost and its skips too. ``passes`` says there were two.
     receipt = MutableDetectionCostReceipt()
-    try:
-        info = _detect_format_body(
-            source,
-            collector,
-            resolved_budget,
-            receipt,
-            always_probe=always_probe,
-            isolation=effective_config.process_isolation,
-            formats=effective_config.formats,
-            decoder_limits=effective_config.decoder_limits,
-        )
-    except FormatDetectionError:
-        alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
-        if alt is None:
-            raise
-        receipt.passes += 1
-        # The volume is resolved as ``open_archive`` resolves it after the switch:
-        # ``vol.7z.001`` is detected on the joined set, not on its first slice.
-        with closing(resolve_source(alt).source) as alt_source:
+    # A change of a remote object ends detection, whatever the probes made of it: a
+    # probe that took the change for bytes that do not decode answers with another
+    # format (a ``.tar.gz`` as GZ), or with none.
+    ranges = source.remote_sources if isinstance(source, ArchiveSource) else ()
+    with raising_source_change(ranges, archive_name=getattr(source, "name", None)):
+        try:
             info = _detect_format_body(
-                alt_source,
+                source,
                 collector,
                 resolved_budget,
                 receipt,
@@ -1554,6 +1589,24 @@ def _detect_source_into(
                 formats=effective_config.formats,
                 decoder_limits=effective_config.decoder_limits,
             )
+        except FormatDetectionError:
+            alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
+            if alt is None:
+                raise
+            receipt.passes += 1
+            # The volume is resolved as ``open_archive`` resolves it after the switch:
+            # ``vol.7z.001`` is detected on the joined set, not on its first slice.
+            with closing(resolve_source(alt).source) as alt_source:
+                info = _detect_format_body(
+                    alt_source,
+                    collector,
+                    resolved_budget,
+                    receipt,
+                    always_probe=always_probe,
+                    isolation=effective_config.process_isolation,
+                    formats=effective_config.formats,
+                    decoder_limits=effective_config.decoder_limits,
+                )
     diagnostics = (
         collector.snapshot()
         if owned_collector
