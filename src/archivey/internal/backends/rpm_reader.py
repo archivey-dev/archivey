@@ -252,14 +252,25 @@ class Header:
         fmt = {2: ">H", 4: ">I", 8: ">Q"}[size]
         return struct.unpack_from(fmt, self._data, entry.offset)[0]
 
-    def strings(self, tag: int) -> list[bytes] | None:
-        """A string array (a single string as a list of one), or None when absent."""
+    def _string_entry(self, tag: int) -> _Entry | None:
+        """The tag's entry, checked to be a string or a string array; None when the
+        tag is absent. A single STRING must declare one value, as _read_header and
+        rpm's headerVerifyInfo require."""
         entry = self._entries.get(tag)
         if entry is None:
             return None
         if entry.type not in (_STRING, _STRING_ARRAY, _I18NSTRING):
             raise self._bad(tag, f"has type {entry.type}, not a string")
-        count = 1 if entry.type == _STRING else entry.count
+        if entry.type == _STRING and entry.count != 1:
+            raise self._bad(tag, f"is a single string with count {entry.count}")
+        return entry
+
+    def strings(self, tag: int) -> list[bytes] | None:
+        """A string array (a single string as a list of one), or None when absent."""
+        entry = self._string_entry(tag)
+        if entry is None:
+            return None
+        count = entry.count
         if count > len(self._data) - entry.offset:
             raise self._bad(tag, f"declares {count} strings in fewer bytes")
         values = []
@@ -282,12 +293,10 @@ class Header:
         without building the list: a tag read for one value, such as ``NAME``, may
         declare a count as large as the data store. None when the tag is absent or
         declares no strings."""
-        entry = self._entries.get(tag)
+        entry = self._string_entry(tag)
         if entry is None:
             return None
-        if entry.type not in (_STRING, _STRING_ARRAY, _I18NSTRING):
-            raise self._bad(tag, f"has type {entry.type}, not a string")
-        count = 1 if entry.type == _STRING else entry.count
+        count = entry.count
         if count > len(self._data) - entry.offset:
             raise self._bad(tag, f"declares {count} strings in fewer bytes")
         if count == 0:
@@ -336,6 +345,11 @@ def _read_header(
             raise CorruptionError(
                 f"RPM {what}: tag {tag} has offset {at} and count {n} in a store "
                 f"of {size} bytes"
+            )
+        if kind == _STRING and n != 1:
+            # rpm's headerVerifyInfo refuses this too: a STRING holds one value.
+            raise CorruptionError(
+                f"RPM {what}: tag {tag} is a single string with count {n}"
             )
         entries[tag] = _Entry(kind, n, at)
     return Header(entries, data, what), 16 + total
