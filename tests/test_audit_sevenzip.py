@@ -28,6 +28,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
+from archivey.internal.backends.sevenzip_pipeline import AES_TAIL_MIN_PADDING
 from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
 from archivey.internal.streams.decompressor_stream import DataAfterEndError, SeekPoint
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
@@ -382,13 +383,19 @@ def test_lzma1_after_a_delta_coder_reads() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _aes_encrypt(payload: bytes, password: str) -> bytes:
+def _aes_encrypt(payload: bytes, password: str, *, pad: bytes = b"\0") -> bytes:
+    """7z AES-CBC over ``payload``, padded to a whole block with ``pad`` repeated.
+
+    7-Zip and py7zr pad with zeros, which the tail key check reads. Any other ``pad``
+    is a writer that pads with residue: the check then cannot confirm the password,
+    and only a CRC can.
+    """
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
     from archivey.internal.backends.sevenzip_aes import derive_sevenzip_aes_key
 
     key = derive_sevenzip_aes_key(password.encode("utf-16le"), salt=b"", cycles=0)
-    padded = payload + bytes(-len(payload) % 16)
+    padded = payload + (pad * 16)[: -len(payload) % 16]
     encryptor = Cipher(algorithms.AES(key), modes.CBC(bytes(16))).encryptor()
     return encryptor.update(padded) + encryptor.finalize()
 
@@ -628,16 +635,20 @@ def _assert_surplus_behind_aes(
     assert _read_only_member(exact, password="pw", config=config) == payload
     declared = payload[:-1]
     data = _codec_archive(coders, [len(packed), len(declared)], ciphertext, declared)
-    # When the password check decodes the whole folder, it meets the surplus first
-    # and reports the folder as "wrong password or corrupt", as for any other damage
-    # it decodes. The surplus error is then in the cause chain, not the raised type.
-    # It decodes a small folder (inside its 64 KiB prefix) whole; whether it decodes
-    # a larger one whole depends on the codec (it walks to the member CRC when the
-    # codec cannot reject a wrong key by itself, as Brotli cannot).
+    # With four or more zero padding bytes in the last AES block, the tail key check
+    # confirms the password without decoding, and the read meets the surplus as
+    # corruption. Otherwise the password check decodes: when it decodes the whole
+    # folder it meets the surplus first and reports the folder as "wrong password or
+    # corrupt", as for any other damage it decodes, with the surplus error in the cause
+    # chain. It decodes a small folder (inside its 64 KiB prefix) whole; whether it
+    # decodes a larger one whole depends on the codec (it walks to the member CRC when
+    # the codec cannot reject a wrong key by itself, as Brotli cannot).
     with pytest.raises(ArchiveyError) as caught:
         _read_only_member(data, password="pw", config=config)
     assert isinstance(caught.value, (CorruptionError, EncryptionError))
-    if base < 64 * 1024:
+    if -len(packed) % 16 >= AES_TAIL_MIN_PADDING:
+        assert isinstance(caught.value, CorruptionError)
+    elif base < 64 * 1024:
         assert isinstance(caught.value, EncryptionError)
     assert _surplus_in_chain(caught.value)
 

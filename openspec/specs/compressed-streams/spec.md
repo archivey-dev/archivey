@@ -1114,12 +1114,12 @@ child, which has no `copy()`, keeps the bound above.
 
 ### Requirement: In-house decoders hand back their bytes before an error
 
-The decoders archivey implements (`.Z` LZW, lzop, ZIP Shrink, Reduce and Implode), and
-the bzip3 decoder, which reads the block framing itself and calls libbzip3 once per
-block, SHALL return the bytes they decoded before a corrupt code or a failed block, and
-raise the error from the next call. A decoder that calls its decompressor more than once
-per call (`FramedDecoder`) SHALL return the bytes earlier calls gave when a later one
-raises, and raise the error from its next call.
+The decoders archivey implements (`.Z` LZW, lzop, ZIP Shrink, Reduce, Implode and DCL
+Implode), and the bzip3 decoder, which reads the block framing itself and calls libbzip3
+once per block, SHALL return the bytes they decoded before a corrupt code or a failed
+block, and raise the error from the next call. A decoder that calls its decompressor more
+than once per call (`FramedDecoder`) SHALL return the bytes earlier calls gave when a
+later one raises, and raise the error from its next call.
 
 #### Scenario: a bad LZW code
 

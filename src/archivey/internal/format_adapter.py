@@ -22,7 +22,7 @@ import lzma
 import threading
 import weakref
 from collections.abc import Callable, Generator, Iterator, Mapping
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import fields, replace
 from typing import Any, BinaryIO, ClassVar, NoReturn, TypeVar, cast
 
@@ -48,6 +48,7 @@ from archivey.formats import (
     FormatReader,
     ForwardStream,
     Hasher,
+    IndexedFormatHandler,
     IndexedReader,
     MemberData,
     MemberDigest,
@@ -82,6 +83,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import ContentProbe, get_registry
+from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
@@ -97,7 +99,8 @@ from archivey.internal.streams.codecs import (
     single_file_codecs,
 )
 from archivey.internal.streams.codecs.registry import save_codec_state
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.decompressor_stream import StreamChecksumError
+from archivey.internal.streams.read_hints import mark_read_span, read_span_hint
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
@@ -256,6 +259,10 @@ class _PluginAdapter(BaseArchiveReader):
         # ``_LISTING`` charges the listing, ``_REWALK`` (a walk started over to reach
         # member data) charges nothing, and ``None`` (no step) is a plugin bug.
         self._walk_step: str | None = None
+        # Reports on a member being listed, held until it is yielded and named
+        # (``_send_held_reports``), by the member's id(): each sends one, naming the
+        # member as it is named when called, with the member id it is given.
+        self._held_reports: dict[int, list[Callable[[int | None], None]]] = {}
         context = ReaderContext(
             encoding=encoding,
             archive_name=archive_name,
@@ -264,6 +271,7 @@ class _PluginAdapter(BaseArchiveReader):
             report=self._report,
             link_target_unavailable=self._link_target_unavailable,
             hold=self._hold,
+            charge_metadata=self._charge_metadata,
             open_nested=self._open_nested,
         )
         self._reader = self._open_reader(context)
@@ -367,13 +375,18 @@ class _PluginAdapter(BaseArchiveReader):
             input_size = source_byte_size(data)
             if input_size is not None:
                 changes["compressed_input_size"] = input_size
-        return open_codec_stream(
+        decoded = open_codec_stream(
             codec,
             data,
             config=copy_with(self._decoder_config, **changes),
             params=params,
             collector=self._diagnostics_collector,
         )
+        # A decoder over a view reads the view's span.
+        hint = read_span_hint(data)
+        if hint is not None:
+            mark_read_span(decoded, hint)
+        return decoded
 
     def _member_id(self, member: ArchiveMember | None) -> int | None:
         if member is None:
@@ -398,24 +411,105 @@ class _PluginAdapter(BaseArchiveReader):
             validate_code_context(code, details)
         except ValueError as exc:
             raise ArchiveyUsageError(f"ReaderContext.report(): {exc}") from None
+        if member is None:
+            self._send_report(code, message, details, None, None)
+        elif self._walk_step == _REWALK:
+            # A walk started over yields fresh members under their stored names:
+            # report on the one the listing named.
+            name = normalize_member_name(
+                member.name, member.type, backslash_is_separator=False
+            )
+            listed = self._listed_named(name)
+            member_id = listed[0]._member_id if len(listed) == 1 else None
+            self._send_report(code, message, _named(details, name), member, member_id)
+        elif not self._hold_report(
+            member,
+            lambda member_id: self._send_report(
+                code, message, _named(details, member.name), member, member_id
+            ),
+        ):
+            self._send_report(code, message, details, member, self._member_id(member))
+
+    def _hold_report(
+        self, member: ArchiveMember, send: Callable[[int | None], None]
+    ) -> bool:
+        """Hold ``send`` until ``member`` is yielded, if the listing has not yielded
+        it yet: until then it is not named as callers see it. ``send`` takes the
+        member's id, ``None`` for a member never yielded."""
+        if member._member_id is not None or self._walk_step != _LISTING:
+            return False
+        self._held_reports.setdefault(id(member), []).append(send)
+        return True
+
+    def _send_report(
+        self,
+        code: DiagnosticCode,
+        message: str,
+        details: DiagnosticContext,
+        member: ArchiveMember | None,
+        member_id: int | None,
+    ) -> None:
         fill: dict[str, object] = {}
         if getattr(details, "archive_name", "") is None:
             fill["archive_name"] = self._archive_name
-        if getattr(details, "member_id", "") is None and member is not None:
-            fill["member_id"] = self._member_id(member)
+        if getattr(details, "member_id", "") is None and member_id is not None:
+            fill["member_id"] = member_id
         self._diagnostics_collector.emit(
             code=code,
             message=message,
-            context=replace(details, **fill) if fill else details,  # type: ignore[type-var]
+            context=_with_fields(details, fill),
             member=member,
             attach_to_member=member is not None,
         )
 
+    def _send_held_reports(self, member: ArchiveMember) -> None:
+        """Send the reports held for ``member`` (``_hold_report``), now that archivey
+        has named it and the walk is at it."""
+        sends = self._held_reports.pop(id(member), ())
+        if sends:
+            member_id = self._member_id(member)
+            for send in sends:
+                send(member_id)
+
+    def _send_unyielded_reports(self, *, may_raise: bool) -> None:
+        """Send the reports held for members the walk never yielded, under the names
+        the reader gave them and with no member id: archivey listed no such member.
+
+        A report the caller's policy raises on raises only when ``may_raise`` (the
+        walk ended normally). On a walk closed part-way, or ended by an error, the
+        report is still recorded, but its raise is dropped: it would replace the
+        error, or be lost in a generator's close."""
+        with self._diagnostics_collector.deferring_raises() as first_held:
+            while self._held_reports:
+                _key, sends = self._held_reports.popitem()
+                for send in sends:
+                    send(None)
+        held = first_held()
+        if may_raise and held is not None:
+            raise held
+
+    def _name_member(self, member: ArchiveMember, index: int) -> None:
+        """Give a listed member the names callers see, and send what was reported on
+        it before: the name normalized, and a hard link's target the same way, since
+        a link names another member by its listed name."""
+        presented = member.name
+        member.name = normalize_member_name(
+            presented, member.type, backslash_is_separator=False
+        )
+        if member.type is MemberType.HARDLINK and member.link_target:
+            member.link_target = normalize_member_name(
+                member.link_target, MemberType.FILE, backslash_is_separator=False
+            )
+        self._send_held_reports(member)
+        self._report_listed(member, presented, index)
+
     @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
+        ended = False
         try:
             yield from self._walk_members()
-        except _StreamChecksumError:
+            ended = True
+        except StreamChecksumError:
             # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
             # it stays the ceiling of the members it covers, which verify_all()
             # returns. An xz or bzip2 check failure reads as damage, handled below.
@@ -431,10 +525,25 @@ class _PluginAdapter(BaseArchiveReader):
             # Members held and never yielded stop counting with the walk that held
             # them, however it ends: at its end, on damage, or closed part-way.
             self._listing_tracker.release_held()
+            self._send_unyielded_reports(may_raise=ended)
 
     def _walk_members(self) -> Iterator[ArchiveMember]:
         """The listing walk of the reader's shape (``_iter_members``)."""
         raise NotImplementedError
+
+    def _close_steps(
+        self, steps: Iterator[object], guard: AbstractContextManager[object]
+    ) -> None:
+        """Close the plugin's walk when the listing stops before its end: closed
+        part-way, or ended by an error. Closing archivey's own generator does not
+        close it on every interpreter (PyPy's collector does, later), so its
+        ``finally`` blocks would run after the archive closed. An error from it is
+        dropped: on a walk an error ended, that error stands; on one the caller
+        stopped, nothing is raised or reported, as when the collector closed it."""
+        close = getattr(steps, "close", None)
+        if close is not None:
+            with suppress(Exception), guard:
+                close()
 
     def _walk_next(self, steps: Iterator[object], step: str = _LISTING) -> object:
         """The next step of a walk, or ``_END`` once it ends: the listing's, during
@@ -446,9 +555,7 @@ class _PluginAdapter(BaseArchiveReader):
         finally:
             self._walk_step = None
 
-    def _hold(
-        self, member: ArchiveMember, stored_name: str | None, reason: str | None
-    ) -> None:
+    def _hold(self, member: ArchiveMember, reason: str | None) -> None:
         """``ReaderContext.hold()``: charge a held member to the listing's limits.
         A walk started over to reach member data was listed already: no charge."""
         step = self._walk_step
@@ -466,12 +573,30 @@ class _PluginAdapter(BaseArchiveReader):
             )
         try:
             self._listing_tracker.hold_member(
-                member, stored_name, reason or "members held back by the reader"
+                member, reason or "members held back by the reader"
             )
         except ValueError:
             raise ArchiveyUsageError(
                 f"ReaderContext.hold(): {quoted(member.name)} is held already"
             ) from None
+
+    def _charge_metadata(self, nbytes: int, what: str) -> None:
+        """``ReaderContext.charge_metadata()``: charge the listing for what the walk
+        keeps. A walk started over to reach member data was charged already."""
+        step = self._walk_step
+        if step is None:
+            raise ArchiveyUsageError(
+                "ReaderContext.charge_metadata() counts bytes only while walk() or "
+                "iter_members() is listing"
+            )
+        if step == _REWALK:
+            return
+        if not isinstance(nbytes, int) or isinstance(nbytes, bool) or nbytes < 0:
+            raise ArchiveyUsageError(
+                "ReaderContext.charge_metadata() takes a size of 0 or more, got "
+                f"{nbytes!r}"
+            )
+        self._listing_tracker.charge_walk(nbytes, what)
 
     def _open_nested(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
         """``ReaderContext.open_nested()``: archivey's reader for ``fmt`` over
@@ -488,6 +613,9 @@ class _PluginAdapter(BaseArchiveReader):
             )
         registry = get_registry()
         policy = self._config.formats
+        refusal = policy._nested_refusal(fmt)
+        if refusal is not None:
+            raise UnsupportedFeatureError(refusal, source_format=fmt)
         backend_cls = registry.reader_for_format(
             fmt,
             replacement=policy._replacement_for(fmt),
@@ -560,13 +688,18 @@ class _PluginAdapter(BaseArchiveReader):
         target_in_archive: bool,
     ) -> None:
         member.link_target = None
-        self._emit_link_target_unavailable(
-            member,
-            reason=reason,
-            message=message,
-            target_in_archive=target_in_archive,
-            member_id=self._member_id(member),
-        )
+
+        def send(member_id: int | None) -> None:
+            self._emit_link_target_unavailable(
+                member,
+                reason=reason,
+                message=message,
+                target_in_archive=target_in_archive,
+                member_id=member_id,
+            )
+
+        if not self._hold_report(member, send):
+            send(self._member_id(member))
 
     @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
@@ -720,15 +853,30 @@ class IndexedReaderAdapter(_PluginAdapter):
             source, wrap_handle=self._seek_handle_wrapper()
         )
         plugin_source = ReaderSource(
-            shared.view, shared.size, source.path, shared.read_at
+            self._marked_view, shared.size, source.path, shared.read_at
         )
+        plugin = self._plugin
+        assert isinstance(plugin, IndexedFormatHandler)
         with self._translated_errors(), self._handle_guard():
-            reader = self._plugin.open(plugin_source, context)
+            reader = plugin.open(plugin_source, context)
         if not isinstance(reader, IndexedReader):
             self._wrong_reader(reader, "open", "an IndexedReader")
         self._indexed = reader
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
         return reader
+
+    def _marked_view(self, start: int, length: int | None) -> BinaryIO:
+        """``ReaderSource.view``: a view of the shared source, marked with its span
+        for the range hint archivey gives when the view is read as a member's data."""
+        shared = self._shared
+        assert shared is not None
+        view = shared.view(start, length)
+        size = view.size
+        if size:
+            mark_read_span(
+                view, functools.partial(self._will_read, start, start + size)
+            )
+        return view
 
     @override
     def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
@@ -758,7 +906,21 @@ class IndexedReaderAdapter(_PluginAdapter):
                 records = iter(self._indexed.iter_members())
             finally:
                 self._walk_step = None
+        try:
+            yield from self._walk_records(records, boundary, guard)
+        except BaseException:
+            self._close_steps(records, guard)
+            raise
+
+    def _walk_records(
+        self,
+        records: Iterator[object],
+        boundary: AbstractContextManager[object],
+        guard: AbstractContextManager[object],
+    ) -> Iterator[ArchiveMember]:
+        """The members of the plugin's ``iter_members()`` steps, typed and named."""
         index = 0
+        tracker = self._listing_tracker
         while True:
             self._walk_index = index
             with boundary, guard:
@@ -782,16 +944,8 @@ class IndexedReaderAdapter(_PluginAdapter):
                 )
             # A held member is counted as listed from here on, not twice.
             tracker.release_member(member)
-            # A reader that reports while listing normalizes the name itself, and
-            # hands over the one it started from.
-            presented = (
-                record.stored_name if record.stored_name is not None else member.name
-            )
-            member.name = normalize_member_name(
-                presented, member.type, backslash_is_separator=False
-            )
             member._raw = record.locator
-            self._report_listed(member, presented, index)
+            self._name_member(member, index)
             index += 1
             yield member
 
@@ -807,6 +961,13 @@ class IndexedReaderAdapter(_PluginAdapter):
                     f"{type(data).__name__}, not MemberData"
                 )
             )
+        if data.ranges:
+            self._hint_ranges(data)
+        else:
+            # A view, or a decoder over one, says its span itself.
+            hint = read_span_hint(data.stream)
+            if hint is not None:
+                hint()
         stream = cast(BinaryIO, data.stream)
         if not data.bounded and _bounded(stream, member.size):
             data = data._replace(bounded=True)
@@ -815,6 +976,29 @@ class IndexedReaderAdapter(_PluginAdapter):
         if self._handle_lock is not None:
             stream = LockedStream(stream, self._handle_lock)
         return data, stream
+
+    def _hint_ranges(self, data: MemberData) -> None:
+        """Pass ``MemberData.ranges`` to the source, as the planner's hints. The first
+        ``MAX_PENDING_HINTS`` are kept: the planner holds no more at once."""
+        ranges = data.ranges
+        if not ranges:
+            return
+        if not isinstance(ranges, tuple) or not all(
+            isinstance(r, tuple)
+            and len(r) == 2
+            and all(isinstance(x, int) and not isinstance(x, bool) for x in r)
+            for r in ranges
+        ):
+            with suppress(Exception):
+                data.stream.close()
+            raise _plugin_bug(
+                TypeError(
+                    f"{type(self._reader).__name__}.open_member() returned "
+                    f"MemberData.ranges={ranges!r}, not a tuple of (start, end) ints"
+                )
+            )
+        for start, end in ranges[:MAX_PENDING_HINTS]:
+            self._will_read(start, end)
 
     @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
@@ -882,6 +1066,9 @@ def _outer_copy(member: ArchiveMember) -> ArchiveMember:
     copy.extra = type(member.extra)(member.extra)
     copy.hashes = dict(member.hashes)
     copy._diagnostics = member._diagnostics
+    # The inner listing settled the target (an empty one it reported): the outer
+    # listing does not look for it in the data, nor report it again.
+    copy._link_target_resolved = member._link_target_resolved
     return copy
 
 
@@ -1005,14 +1192,29 @@ class _Span:
         self.decoded = decoded
 
 
-def _span_names(span: MemberSpan) -> tuple[str, str]:
-    """The name a span's member was presented by, and the one archivey lists it by:
-    the same in the listing walk and in every walk started over."""
+def _named(details: DiagnosticContext, name: str) -> DiagnosticContext:
+    """``details`` naming its member ``name``, when it names a member."""
+    if getattr(details, "member_name", None) is None:
+        return details
+    return _with_fields(details, {"member_name": name})
+
+
+def _with_fields(
+    details: DiagnosticContext, fields: Mapping[str, object]
+) -> DiagnosticContext:
+    """``details`` with ``fields`` replaced: only fields the caller checked
+    ``details`` has (``getattr``). ``DiagnosticContext`` is a union of dataclasses,
+    some without those fields, so ``replace`` is called on it as ``Any``."""
+    if not fields:
+        return details
+    return cast(DiagnosticContext, replace(cast(Any, details), **fields))
+
+
+def _listed_name(span: MemberSpan) -> str:
+    """The name archivey lists a span's member by: the same in the listing walk
+    (``_name_member``) and in every walk started over."""
     member = span.member
-    presented = span.stored_name if span.stored_name is not None else member.name
-    return presented, normalize_member_name(
-        presented, member.type, backslash_is_separator=False
-    )
+    return normalize_member_name(member.name, member.type, backslash_is_separator=False)
 
 
 def _full_count(data: BinaryIO | io.RawIOBase) -> BinaryIO:
@@ -1620,6 +1822,20 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._walk_index = 0
             with boundary, guard:
                 span = self._walk_next(walk)
+        try:
+            yield from self._walk_spans(walk, span, boundary, guard)
+        except BaseException:
+            self._close_steps(walk, guard)
+            raise
+
+    def _walk_spans(
+        self,
+        walk: Iterator[object],
+        span: object,
+        boundary: AbstractContextManager[object],
+        guard: AbstractContextManager[object],
+    ) -> Iterator[ArchiveMember]:
+        """The members of the plugin's ``walk()`` steps, from ``span`` on."""
         index = 0
         # Decoded bytes of the members walked so far (``_Decoded.prefix``).
         prefix = 0
@@ -1798,7 +2014,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                         f"and data_length {length}: a member's data is stored as it is"
                     )
                 )
-        presented, member.name = _span_names(span)
+        self._name_member(member, index)
         expected: dict[HashAlgorithm, bytes] | None = None
         custom: CustomDigests | None = None
         if span.digests:
@@ -1810,11 +2026,11 @@ class SequentialReaderAdapter(_PluginAdapter):
         forward = layer.forward
         record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
         member._raw = record
-        self._report_listed(member, presented, index)
         if (
             member.type is MemberType.SYMLINK
             and self._sequential.link_target_in_data
             and member.link_target is None
+            and not member._link_target_resolved
         ):
             if decoded is not None:
                 with self._translated_errors(member.name), self._handle_guard():
@@ -2067,7 +2283,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     decoded.name,
                 )
             # A member on the way, read past under the name it is listed by.
-            name = _span_names(span)[1]
+            name = _listed_name(span)
             with self._translated_errors(name), guard:
                 if data is not None:
                     _Decoded(
@@ -2097,7 +2313,7 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _check_rewalked(self, span: MemberSpan, decoded: _Decoded) -> None:
         """Refuse a walk started over that does not yield, at the member's place, the
         member the listing walk did: ``walk()`` must repeat itself."""
-        found = _span_names(span)[1]
+        found = _listed_name(span)
         if found != decoded.name:
             raise _plugin_bug(
                 ValueError(
@@ -2271,14 +2487,19 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _close_archive(self) -> None:
         # A walk taken at open and never listed is still suspended in the plugin's
         # walk(): finish it first, so its own cleanup runs before close() and over an
-        # open stream, not later in the collector.
+        # open stream, not later in the collector. It never ran in _iter_members, so
+        # the reports its first step held are sent here, as for a walk stopped
+        # part-way: recorded, never raised.
         try:
             if self._open_walk is not None:
                 close = getattr(self._open_walk[0], "close", None)
                 self._open_walk = None
-                if close is not None:
-                    with self._translated_errors(), self._handle_guard():
-                        close()
+                try:
+                    if close is not None:
+                        with self._translated_errors(), self._handle_guard():
+                            close()
+                finally:
+                    self._send_unyielded_reports(may_raise=False)
         finally:
             try:
                 super()._close_archive()
@@ -2414,9 +2635,13 @@ def prefix_probe(probe: object) -> ContentProbe:
 
 
 def _check_plugin(plugin: type[FormatHandler]) -> ArchiveFormat:
-    if not (isinstance(plugin, type) and issubclass(plugin, FormatHandler)):
+    if not (
+        isinstance(plugin, type)
+        and issubclass(plugin, (IndexedFormatHandler, SequentialFormatHandler))
+    ):
         raise ArchiveyUsageError(
-            f"register_format() takes a FormatHandler subclass, got {plugin!r}"
+            "register_format() takes an IndexedFormatHandler or a "
+            f"SequentialFormatHandler subclass, got {plugin!r}"
         )
     fmt = getattr(plugin, "format", None)
     if not isinstance(fmt, ArchiveFormat):
@@ -2567,17 +2792,17 @@ def check_replacement(container: object, plugin: object) -> None:
         raise _UsageValueError(
             f"{call} cannot replace ContainerFormat.{container.name}; it takes {names}."
         )
-    if not (isinstance(plugin, type) and issubclass(plugin, FormatHandler)):
+    if isinstance(plugin, type) and issubclass(plugin, SequentialFormatHandler):
+        raise _UsageValueError(
+            f"{call}: {plugin.__name__} is a SequentialFormatHandler; a replacement "
+            "reads an indexed container and subclasses IndexedFormatHandler."
+        )
+    if not (isinstance(plugin, type) and issubclass(plugin, IndexedFormatHandler)):
         raise _UsageTypeError(
-            f"{call} takes a FormatHandler subclass for ContainerFormat."
+            f"{call} takes an IndexedFormatHandler subclass for ContainerFormat."
             f"{container.name}, got {plugin!r}."
         )
     name = plugin.__name__
-    if issubclass(plugin, SequentialFormatHandler):
-        raise _UsageValueError(
-            f"{call}: {name} is a SequentialFormatHandler; a replacement reads an "
-            "indexed container and subclasses FormatHandler."
-        )
     expected = ArchiveFormat(container, StreamFormat.UNCOMPRESSED)
     fmt = getattr(plugin, "format", None)
     if fmt != expected:
@@ -2624,7 +2849,12 @@ def _backend_class(
             {}
             if sequential
             else {
-                "NON_SEEKABLE_REASON": "its reader needs random access to the archive"
+                # Not sequential, so indexed: ``_check_plugin`` and
+                # ``check_replacement`` admit no other shape.
+                "NON_SEEKABLE_REASON": cast(
+                    "type[IndexedFormatHandler]", plugin
+                ).non_seekable_reason
+                or "its reader needs random access to the archive"
             }
         ),
         "INSTALL_HINT": plugin.install_hint,
@@ -2658,7 +2888,7 @@ def register_builtin_format(
     built-in backends, so detection does not change and ``FormatInfo.from_plugin`` is
     false. A sequential format's compressed pairs are spelled as a plugin's are
     (``"ar.gz"``). ``overrides`` sets backend attributes a plugin cannot declare
-    (``NON_SEEKABLE_REASON``, ``OPTIONAL_DEPENDENCY``). Returns the backend class.
+    (``OPTIONAL_DEPENDENCY``, ``INSTALL_HINT``). Returns the backend class.
     """
     backend = _backend_class(plugin, plugin.format, overrides)
     get_registry().register_reader(backend)

@@ -37,12 +37,12 @@ internal name it uses (``tests/test_ar.py`` checks). Handbook page:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
 from archivey.exceptions import (
     CorruptionError,
-    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -97,6 +97,10 @@ def _time(mtime: int | None) -> datetime | None:
         return datetime.fromtimestamp(mtime, UTC)
     except (OverflowError, ValueError, OSError):
         return None
+
+
+# What ends an entry of the GNU long-name table.
+_NAME_END = re.compile(rb"[\n\0]")
 
 
 class ArReader(SequentialReader):
@@ -182,12 +186,7 @@ class ArReader(SequentialReader):
                         f"ar archive has a second long-name table at offset {offset}"
                     )
                 # The table is held for the whole walk: text the listing retains.
-                limit = self._context.config.listing_limits.max_metadata_bytes
-                if limit is not None and size > limit:
-                    raise ResourceLimitError(
-                        f"ar long-name table of {size} bytes, over "
-                        f"max_metadata_bytes={limit}"
-                    )
+                self._context.charge_metadata(size, what="the ar long-name table")
                 names = stream.read_exact(size)
                 stream.read(size & 1)
                 continue
@@ -215,12 +214,12 @@ class ArReader(SequentialReader):
                     f"ar header at offset {offset}: long-name offset {at} is past the "
                     f"{len(names)}-byte table"
                 )
-            entry = names[at:]
-            for end in (b"\n", b"\0"):
-                cut = entry.find(end)
-                if cut >= 0:
-                    entry = entry[:cut]
-            return entry.removesuffix(b"/")
+            # The entry ends at its first newline or NUL, or at the end of the table.
+            # One scan stops at whichever comes first, so a lookup costs the entry's
+            # length and not the table's, and only the entry is sliced.
+            found = _NAME_END.search(names, at)
+            stop = len(names) if found is None else found.start()
+            return names[at:stop].removesuffix(b"/")
         if field.endswith(b"/"):
             self._dialect = "gnu"
             return field[:-1]
