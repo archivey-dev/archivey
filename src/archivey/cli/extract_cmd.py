@@ -151,7 +151,9 @@ def resolve_smart_dest(
     - Indexed archive → tops on the **filtered** member set (wrap / cwd). A single
       top whose name exists in the cwd, or that extraction may write under another
       spelling (:func:`_written_as_stored`), is extracted into a new wrapper and
-      hoisted, as below, so the operator's entry is never replaced.
+      hoisted, as below, so the operator's entry is never replaced. So is a set of
+      more than one member that holds a link, and one with a rooted member name
+      (:func:`_is_rooted_name`).
     - No cheap index (tar, an archive read from a pipe, …) → always a new
       ``./<stem>/``, then :func:`maybe_hoist_single_root` may lift a single
       extracted top entry to cwd.
@@ -171,7 +173,8 @@ def resolve_smart_dest(
     if target == Path(".") and (
         any(_may_land_on_existing(top) for top in tops)
         or any(_is_rooted_name(m.name) for m in members)
-        or (len(members) > 1 and any(m.type in _LINK_TYPES for m in members))
+        # A hard link to a symlink member is written as that symlink, so it counts.
+        or (len(members) > 1 and any(m.is_link for m in members))
     ):
         # The single root's name is taken in the cwd, or extraction may write it under
         # another spelling that is. Extracting straight into the cwd would apply
@@ -191,11 +194,6 @@ def resolve_smart_dest(
         # target inside the cwd, so it still extracts straight there.
         return _SmartDestPlan(_enclosing_dir(archive, format=fmt), may_hoist=True)
     return _SmartDestPlan(target, may_hoist=False)
-
-
-# Member types that can make a symlink on disk: a hard link to a symlink member is
-# written as that symlink.
-_LINK_TYPES = frozenset({MemberType.SYMLINK, MemberType.HARDLINK})
 
 
 def _is_rooted_name(name: str) -> bool:
@@ -792,12 +790,13 @@ def maybe_hoist_single_root(
     """If ``wrapper`` holds exactly one top-level entry, lift it to cwd (R4/D1).
 
     The entry stays in the wrapper, and a line says why, for the reasons
-    :func:`_keep_reason` gives.
+    :func:`_keep_reason` gives, and when it is a directory holding a symlink that
+    would merge into an existing directory (:func:`_holds_a_symlink`).
 
     Recovers unar-style single-root reuse (and filter-aware D1 for streaming) after an
-    always-wrap extract, without a pre-extract metadata pass. Directories merge into
-    existing ones, and under ``rename`` the final layout matches extracting directly
-    into the wrapper's parent (:func:`_merge_move`). The hoist is a convenience, not a
+    always-wrap extract, without a pre-extract metadata pass. When the merge runs,
+    directories merge into existing ones, and under ``rename`` the final layout
+    matches extracting directly into the wrapper's parent (:func:`_merge_move`). The hoist is a convenience, not a
     promise: it never replaces or deletes anything in the cwd, so when the merge would
     meet a collision that ``rename`` does not settle (any collision under ``error``,
     ``skip`` or ``replace``, :func:`_policy_resolves`), nothing is moved, a ``kept in``
