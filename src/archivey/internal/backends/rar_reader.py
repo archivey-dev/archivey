@@ -127,6 +127,7 @@ from archivey.internal.backends.rar_unrar import (
     find_rarlab_unrar,
     open_unrar_p,
     rarlab_unrar_missing,
+    unrar_expands_wildcards,
     unrar_mask_carries_non_ascii,
 )
 from archivey.internal.base_reader import (
@@ -1828,13 +1829,22 @@ class RarReader(BaseArchiveReader):
         instead (:meth:`_stage_explicit_volumes`, on the first read that needs
         unrar), so it cannot read a file this reader never parsed, or miss one it
         did.
+
+        A path holding a wildcard character is staged too: unrar expands one in
+        the archive name (:func:`unrar_expands_wildcards`), so ``rep*.rar`` would
+        also open a planted ``rep-a.rar``, or block on a FIFO of that name. The
+        staged names are fixed and hold none.
         """
         if self._archive_path is None or self._stage_volume_paths:
             return
-        if self._volume_numbers is None and _unrar_finds_exactly(
-            self._volume_paths,
-            is_volume=self._archive.is_volume,
-            old_numbering=self._archive.old_volume_naming,
+        if (
+            not any(unrar_expands_wildcards(path) for path in self._volume_paths)
+            and self._volume_numbers is None
+            and _unrar_finds_exactly(
+                self._volume_paths,
+                is_volume=self._archive.is_volume,
+                old_numbering=self._archive.old_volume_naming,
+            )
         ):
             return
         self._archive_path = None
