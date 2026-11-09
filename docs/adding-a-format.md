@@ -572,8 +572,8 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
 
 ### Data a library decodes
 
-Some formats compress each member on its own, with a method only a library decodes (ARJ,
-ACE), or are read through a library that decodes as it walks (a libarchive wrapper).
+Some formats compress each member on its own, with a method only a library decodes (ACE,
+Zoo), or are read through a library that decodes as it walks (a libarchive wrapper).
 There are no stored bytes to describe with `data_length`. Hand archivey the decoded
 data instead, as a stream in `MemberSpan.data`, and leave `data_length` at 0:
 

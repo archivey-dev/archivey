@@ -54,6 +54,9 @@ METHODS: dict[str, LzhMethod] = {
     # UNLHA32's extension: a 512 KiB dictionary, which lhasa decodes in a 1 MiB ring.
     "-lhx-": LzhMethod(20, 5, 510),
     "-lk7-": LzhMethod(16, 6, 289, lhark=True),
+    # ARJ methods 1 to 3: the same stream, from the same ar002 code, with a 26 624-byte
+    # dictionary (unarj's DDICSIZ) and offset codes up to 16 (NP 17, PBIT 5).
+    "arj": LzhMethod(15, 5, 510),
 }
 
 _TEMP_COUNT_BITS = 5

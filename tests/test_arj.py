@@ -1,0 +1,343 @@
+"""ARJ archives (``ContainerFormat.ARJ``).
+
+The fixtures in ``tests/fixtures/external/arj_310`` were written by ARJ 3.10 for Linux
+(``arj`` in Debian and Ubuntu), plus two of Commons Compress's archives, one from ARJ
+for DOS. The damaged archives come from :func:`_archive`, a test-only writer of stored
+members.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import struct
+import zlib
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from archivey import (
+    ArchiveFormat,
+    CompressionAlgorithm,
+    CreateSystem,
+    MemberType,
+    detect_format,
+    open_archive,
+)
+from archivey.diagnostics import DiagnosticCode
+from archivey.exceptions import (
+    CorruptionError,
+    StreamNotSeekableError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
+from tests.streams_util import NonSeekableBytesIO
+
+_FIXTURES = Path(__file__).parent / "fixtures" / "external" / "arj_310"
+
+# The files the ARJ 3.10 fixtures hold: (size, SHA-256).
+_CONTENTS = {
+    "words.txt": (
+        15_995,
+        "1d653119304bf9bfc381f8ec11bcbeb298744d27c1ce7f44a916815082d2d82d",
+    ),
+    "runs.bin": (
+        37_353,
+        "f2e85b931ab8960e45f84f4e12a404cf8c28c38eda3f55176a0e2471ccd5df31",
+    ),
+    "small.txt": (
+        10,
+        "8987a3f53737783a18f86ec5f268a51549bb0d677384bb8442eac2fdb178877e",
+    ),
+    "empty": (0, hashlib.sha256(b"").hexdigest()),
+}
+
+
+def _read_all(path: Path | io.BytesIO) -> dict[str, bytes]:
+    with open_archive(path) as reader:
+        return {
+            member.name: stream.read() if stream is not None else b""
+            for member, stream in reader.stream_members()
+        }
+
+
+@pytest.mark.parametrize("method", [1, 2, 3, 4])
+def test_each_method_decodes(method: int) -> None:
+    path = _FIXTURES / f"method{method}.arj"
+    with open_archive(path) as reader:
+        assert reader.format == ArchiveFormat.ARJ
+        members = {m.name: m for m in reader.members()}
+        for name, member in members.items():
+            data = reader.read(member)
+            size, digest = _CONTENTS[name]
+            assert (len(data), hashlib.sha256(data).hexdigest()) == (size, digest)
+            assert member.extra["arj.method"] in (0, method)
+            assert member.create_system is CreateSystem.UNIX
+            assert member.mode == 0o644
+        words = members["words.txt"]
+        expected = (
+            CompressionAlgorithm.ARJ_FAST if method == 4 else CompressionAlgorithm.LZH
+        )
+        assert words.compression[0].algo is expected
+        # ARJ for Unix stores Unix times.
+        assert words.modified is not None
+        assert words.modified.tzinfo is not None
+        assert words.modified.year == 2026
+
+
+def test_small_reads_and_a_seek_inside_a_member() -> None:
+    with open_archive(_FIXTURES / "method1.arj") as reader:
+        member = reader.get("runs.bin")
+        with reader.open(member) as stream:
+            parts = []
+            while chunk := stream.read(997):
+                parts.append(chunk)
+        whole = b"".join(parts)
+        assert hashlib.sha256(whole).hexdigest() == _CONTENTS["runs.bin"][1]
+
+
+def test_unix_links_and_special_files() -> None:
+    with open_archive(_FIXTURES / "links.arj") as reader:
+        members = {m.name: m for m in reader.members()}
+    assert members["link"].type is MemberType.SYMLINK
+    assert members["link"].link_target == "small.txt"
+    # ARJ stores the data once, under the first name, and the later one as a link.
+    assert members["small.txt"].type is MemberType.FILE
+    assert members["hard.txt"].type is MemberType.HARDLINK
+    assert members["hard.txt"].link_target == "small.txt"
+    assert members["fifo"].type is MemberType.OTHER
+    assert members["fifo"].extra["special_file_type"] == "fifo"
+    assert members["dir/sub/"].type is MemberType.DIRECTORY
+
+
+def test_links_extract(tmp_path: Path) -> None:
+    with open_archive(_FIXTURES / "links.arj") as reader:
+        reader.extract_all(tmp_path)
+    assert (tmp_path / "small.txt").read_bytes() == b"hello arj\n"
+    assert (tmp_path / "hard.txt").read_bytes() == b"hello arj\n"
+    assert (tmp_path / "link").is_symlink()
+    assert (tmp_path / "dir" / "sub").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("name", "system", "hour"),
+    [
+        # ARJ for Windows (host 11) stores a DOS time (local time, read as is); ARJ
+        # for Unix a Unix time. Commons Compress's two archives hold the same files.
+        ("cc_bla_dos.arj", CreateSystem.WINDOWS_NTFS, 23),
+        ("cc_bla_unix.arj", CreateSystem.UNIX, 21),
+    ],
+)
+def test_commons_compress_archives(name: str, system: CreateSystem, hour: int) -> None:
+    with open_archive(_FIXTURES / name) as reader:
+        members = reader.members()
+        assert [m.name for m in members] == ["test1.xml", "test2.xml"]
+        for member in members:
+            assert member.create_system is system
+            assert member.modified is not None
+            assert member.modified.hour == hour
+            assert reader.read(member).startswith(b"<?xml")
+
+
+def test_a_garbled_member_is_listed_and_refused() -> None:
+    with open_archive(_FIXTURES / "garbled.arj") as reader:
+        (member,) = reader.members()
+        assert member.is_encrypted
+        with pytest.raises(UnsupportedFeatureError, match="garbled"):
+            reader.read(member)
+
+
+def test_detection_by_content() -> None:
+    data = (_FIXTURES / "method1.arj").read_bytes()
+    assert detect_format(io.BytesIO(data)).format == ArchiveFormat.ARJ
+    # Anything else that starts with the two magic bytes fails at open.
+    with pytest.raises(CorruptionError):
+        open_archive(io.BytesIO(b"\x60\xea" + bytes(60)))
+
+
+def test_a_pipe_is_refused() -> None:
+    data = (_FIXTURES / "stored.arj").read_bytes()
+    with pytest.raises(StreamNotSeekableError):
+        open_archive(NonSeekableBytesIO(data), format=ArchiveFormat.ARJ)
+
+
+# --- damaged archives, from a test-only writer --------------------------------------
+
+
+def _block(body: bytes) -> bytes:
+    return struct.pack("<H", len(body)) + body + struct.pack("<I", zlib.crc32(body))
+
+
+def _header(
+    name: bytes,
+    *,
+    file_type: int,
+    method: int = 0,
+    flags: int = 0,
+    stored: int = 0,
+    size: int = 0,
+    crc: int = 0,
+    extended: tuple[bytes, ...] = (),
+) -> bytes:
+    fixed = struct.pack(
+        "<BBBBBBBBIIIIHHBB",
+        30,
+        11,
+        1,
+        0,  # MS-DOS
+        flags,
+        method,
+        file_type,
+        0,
+        0x5A6E_5000,  # a DOS time in 2025
+        stored,
+        size,
+        crc,
+        0,
+        0x20,
+        0,
+        0,
+    )
+    out = b"\x60\xea" + _block(fixed + name + b"\0" + b"\0")
+    for ext in extended:
+        out += _block(ext)
+    return out + b"\0\0"
+
+
+def _archive(*members: tuple[bytes, bytes], tail: bytes = b"", **options: int) -> bytes:
+    """An ARJ archive of stored members (name, data), from MS-DOS."""
+    out = _header(b"test.arj", file_type=2)
+    for name, data in members:
+        out += _header(
+            name,
+            file_type=0,
+            stored=len(data),
+            size=len(data),
+            crc=zlib.crc32(data),
+            **options,
+        )
+        out += data
+    return out + b"\x60\xea\0\0" + tail
+
+
+def test_the_writer_makes_a_readable_archive() -> None:
+    data = _archive((b"a.txt", b"alpha"), (b"dir\\b.txt", b"beta"))
+    assert _read_all(io.BytesIO(data)) == {"a.txt": b"alpha", "dir/b.txt": b"beta"}
+    with open_archive(io.BytesIO(data)) as reader:
+        member = reader.get("a.txt")
+        assert member.modified == datetime(2025, 3, 14, 10, 0, 0)
+        assert member.mode is None
+        assert member.windows_attrs == 0x20
+
+
+def test_a_header_crc_failure_is_corruption() -> None:
+    data = bytearray(_archive((b"a.txt", b"alpha")))
+    first = data.index(b"a.txt")
+    data[first] ^= 1
+    with pytest.raises(CorruptionError, match="fails its CRC"):
+        _read_all(io.BytesIO(bytes(data)))
+
+
+def test_a_data_crc_failure_is_corruption() -> None:
+    data = _archive((b"a.txt", b"alpha"))
+    with pytest.raises(CorruptionError):
+        _read_all(io.BytesIO(data.replace(b"alpha", b"alphb")))
+
+
+def test_a_compressed_member_that_is_damaged_or_cut() -> None:
+    data = bytearray((_FIXTURES / "method1.arj").read_bytes())
+    data[400] ^= 0xFF
+    with pytest.raises(CorruptionError):
+        _read_all(io.BytesIO(bytes(data)))
+    cut = (_FIXTURES / "method4.arj").read_bytes()[:3000]
+    with pytest.raises(TruncatedError):
+        _read_all(io.BytesIO(cut))
+
+
+def test_a_missing_header_is_corruption() -> None:
+    data = _archive((b"a.txt", b"alpha"))
+    end = data.rindex(b"\x60\xea\0\0")
+    with pytest.raises(CorruptionError, match="no header"):
+        _read_all(io.BytesIO(data[:end] + b"junk" + data[end:]))
+
+
+def test_an_oversized_header_is_corruption() -> None:
+    data = bytearray(_archive((b"a.txt", b"alpha")))
+    second = data.index(b"\x60\xea", 2)
+    struct.pack_into("<H", data, second + 2, 3000)
+    with pytest.raises(CorruptionError, match="size 3000"):
+        _read_all(io.BytesIO(bytes(data)))
+
+
+def test_a_second_main_header_is_corruption() -> None:
+    data = _archive()
+    main = data[: data.rindex(b"\x60\xea\0\0")]
+    with pytest.raises(CorruptionError, match="second main header"):
+        _read_all(io.BytesIO(main + main + b"\x60\xea\0\0"))
+
+
+def test_an_archive_cut_inside_a_member_is_truncated() -> None:
+    data = _archive((b"a.txt", b"alpha" * 100))
+    with pytest.raises(TruncatedError):
+        _read_all(io.BytesIO(data[:-200]))
+
+
+@pytest.mark.parametrize("flags", [0x04, 0x08], ids=["continues", "continued"])
+def test_a_member_split_across_volumes_is_refused(flags: int) -> None:
+    data = _archive((b"a.txt", b"alpha"), flags=flags)
+    with (
+        open_archive(io.BytesIO(data)) as reader,
+        pytest.raises(UnsupportedFeatureError, match="split across ARJ volumes"),
+    ):
+        reader.read(reader.get("a.txt"))
+
+
+def test_an_unknown_method_is_listed_and_refused() -> None:
+    data = _archive((b"a.txt", b"alpha"), method=9)
+    with open_archive(io.BytesIO(data)) as reader:
+        member = reader.get("a.txt")
+        assert member.compression[0].algo is CompressionAlgorithm.UNKNOWN
+        with pytest.raises(UnsupportedFeatureError, match="ARJ method 9"):
+            reader.read(member)
+
+
+def test_data_after_the_end_header_is_reported() -> None:
+    data = _archive((b"a.txt", b"alpha"), tail=b"\0\0garbage")
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.members()
+        (diagnostic,) = reader.diagnostics.retained
+    assert diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+    assert diagnostic.context.observed_bytes == 2
+
+
+def test_zero_padding_after_the_end_header_is_not_reported() -> None:
+    data = _archive((b"a.txt", b"alpha"), tail=b"\0\0\x1a")
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.members()
+        assert not reader.diagnostics.retained
+
+
+def test_a_unix_special_header_cut_short_is_corruption() -> None:
+    out = _header(b"test.arj", file_type=2)
+    # A symlink header that says its target is 5 bytes but holds 2.
+    out += _header(b"link", file_type=6, extended=(b"U\x00" + bytes([0x45]) + b"ab",))
+    out += b"\x60\xea\0\0"
+    with pytest.raises(CorruptionError, match="cut short"):
+        _read_all(io.BytesIO(out))
+
+
+def test_utc_times_for_a_unix_host() -> None:
+    with open_archive(_FIXTURES / "links.arj") as reader:
+        member = reader.get("small.txt")
+    assert member.modified is not None
+    assert member.modified.tzinfo == UTC
+
+
+def test_a_missing_end_header_is_reported() -> None:
+    data = _archive((b"a.txt", b"alpha"))
+    with open_archive(io.BytesIO(data[:-4])) as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
+        (diagnostic,) = reader.diagnostics.retained
+    assert diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+    assert diagnostic.context.expected_marker == "end_of_archive_header"

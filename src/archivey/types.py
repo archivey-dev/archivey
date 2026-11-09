@@ -109,6 +109,10 @@ class ContainerFormat(StrEnum):
     Header levels 0 to 3 are read, with stored members (``-lh0-``, ``-lz4-``,
     ``-pm0-``) and the ``-lh4-`` to ``-lh7-``, ``-lhx-`` and ``-lk7-`` methods; needs
     a source that can seek."""
+    ARJ = "arj"
+    """An ARJ archive (``.arj``), from DOS and ARJ for Unix. Methods 0 to 4 are read;
+    garbled (password-protected) members and members split across volumes are listed
+    but not read. Needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -129,10 +133,10 @@ class PluginContainer(StrEnum):
     A plugin subclasses it with one member per container it adds, and builds its
     :class:`~archivey.ArchiveFormat` from that member::
 
-        class ArjContainer(PluginContainer):
-            ARJ = "arj"
+        class ZooContainer(PluginContainer):
+            ZOO = "zoo"
 
-        ARJ = ArchiveFormat(ArjContainer.ARJ, StreamFormat.UNCOMPRESSED)
+        ZOO = ArchiveFormat(ZooContainer.ZOO, StreamFormat.UNCOMPRESSED)
 
     Experimental, with the rest of ``archivey.formats``: any release may change it.
     Code that matches on ``ArchiveFormat.container`` needs a default case once a plugin
@@ -280,6 +284,7 @@ class ArchiveFormat:
     XAR: ClassVar[ArchiveFormat]
     CAB: ClassVar[ArchiveFormat]
     LHA: ClassVar[ArchiveFormat]
+    ARJ: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -371,6 +376,7 @@ ArchiveFormat.SQUASHFS = ArchiveFormat(
 ArchiveFormat.XAR = ArchiveFormat(ContainerFormat.XAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CAB = ArchiveFormat(ContainerFormat.CAB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.LHA = ArchiveFormat(ContainerFormat.LHA, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.ARJ = ArchiveFormat(ContainerFormat.ARJ, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -704,7 +710,10 @@ class CompressionAlgorithm(Enum):
     of 32 KiB to 2 MiB."""
     LZH = "lzh"
     """LHA's LZ77 with Huffman codes, the ``-lh1-`` to ``-lh7-`` methods and their
-    kin. ``ArchiveMember.extra["lha.method"]`` names the exact method."""
+    kin, and ARJ's methods 1 to 3. ``ArchiveMember.extra["lha.method"]`` or
+    ``["arj.method"]`` names the exact method."""
+    ARJ_FAST = "arj_fast"
+    """ARJ's method 4, "fastest": LZ77 with no Huffman codes."""
     QUANTUM = "quantum"
     """Quantum, an older cabinet method. archivey lists its members but cannot read
     them."""
@@ -748,6 +757,9 @@ class CreateSystem(Enum):
     - RAR 1.5 to 4: ``FAT`` (MS-DOS), ``OS2_HPFS``, ``WINDOWS_NTFS``, ``UNIX``,
       ``MACINTOSH`` or ``BEOS``; ``UNKNOWN`` for any other host byte.
     - RAR5: ``WINDOWS_NTFS`` or ``UNIX``.
+    - ARJ: ``FAT`` (MS-DOS), ``UNIX`` (and NeXT), ``AMIGA``, ``MACINTOSH``,
+      ``OS2_HPFS``, ``ATARI_ST``, ``OPENVMS`` or ``WINDOWS_NTFS`` (Windows 95 and
+      Win32); ``UNKNOWN`` for any other host byte.
     - 7z records no host. archivey reports ``UNIX`` when the member stores a Unix mode,
       and ``WINDOWS_NTFS`` otherwise.
     - TAR, ISO, a directory and a single-file format such as ``.gz`` leave
@@ -980,6 +992,9 @@ class MemberExtra(dict[str, object]):
     * ``lha.header_level`` (``int``) — the LHA header level, 0 to 3.
     * ``lha.os_id`` (``str``) — the one-character OS id an LHA header names
       (``"U"`` for LHa for UNIX, ``"M"`` for DOS), when it has one.
+    * ``arj.method`` (``int``) — the ARJ method, 0 (stored) to 4.
+    * ``arj.file_type`` (``int``) — the ARJ file type: 0 binary, 1 text, 3 directory,
+      4 volume label, 5 chapter label, 6 Unix special file.
     """
 
     __slots__ = ()
@@ -1046,6 +1061,10 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["lha.header_level"], /) -> int: ...
     @overload
     def __getitem__(self, key: Literal["lha.os_id"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["arj.method"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["arj.file_type"], /) -> int: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override

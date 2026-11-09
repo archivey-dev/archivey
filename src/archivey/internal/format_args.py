@@ -161,7 +161,7 @@ def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | PluginStream | Non
     builds the pair from it): ``open_stream`` peels that layer only and returns the
     tar bytes, as ``gzip.open`` does for a ``.tar.gz``. The compressed pair of every
     other container read in one pass (``.a.gz``, ``.cpio.gz``, a sequential plugin's
-    ``.arj.gz``) is the same. One rule for an explicit ``format=``, a detected format
+    ``.zoo.gz``) is the same. One rule for an explicit ``format=``, a detected format
     and the accepted-spellings message, so the three cannot disagree. Every other
     container, an uncompressed tar included, has no compression layer to remove.
     ``(RAW_STREAM, UNCOMPRESSED)`` comes back as ``UNCOMPRESSED``, which ``open_stream``

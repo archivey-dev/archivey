@@ -895,7 +895,7 @@ def _is_deferred_inner_container(
     deferred case: the inner-container probe could not run (codec backend absent) or
     found no magic, so the bare compressor is reported and the inner determination is
     left to open time. That is not a real conflict, so it must not emit a warning. A
-    ``foo.cpio.gz``, or a sequential plugin's ``foo.arj.gz``, is the same case.
+    ``foo.cpio.gz``, or a sequential plugin's ``foo.zoo.gz``, is the same case.
     """
     return (
         resolved.container == ContainerFormat.RAW_STREAM

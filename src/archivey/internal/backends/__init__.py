@@ -20,6 +20,7 @@ Module map:
 - :mod:`.cab_reader` — Microsoft cabinets (stored, MSZIP, LZX), the same way
 - :mod:`.lha_reader` — LHA (header levels 0-3; stored, ``-lh4-`` to ``-lh7-``,
   ``-lhx-``, ``-lk7-``), the same way
+- :mod:`.arj_reader` — ARJ (methods 0 to 4), the same way
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
 - :mod:`.sevenzip_methods` / ``sevenzip_parser`` / ``sevenzip_pipeline`` /
@@ -48,6 +49,7 @@ from archivey.internal.backends import deb_reader as _deb_reader  # noqa: F401
 # isort: on
 from archivey.internal.backends import (
     ar_reader as _ar_reader,  # noqa: F401
+    arj_reader as _arj_reader,  # noqa: F401
     cab_reader as _cab_reader,  # noqa: F401
     cpio_reader as _cpio_reader,  # noqa: F401
     directory_reader as _directory_reader,  # noqa: F401

@@ -952,6 +952,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "no corpus builder (needs an LHA writer); tests/test_lha.py seeks inside members",
     ),
     (
+        "arj",
+        "no corpus builder (needs an ARJ writer); tests/test_arj.py reads in small pieces",
+    ),
+    (
         "rpm",
         "no corpus builder (needs rpmbuild); tests/test_rpm.py seeks inside members",
     ),
@@ -974,6 +978,7 @@ _UNTESTED_FORMATS = {
     ArchiveFormat.XAR: "xar",
     ArchiveFormat.CAB: "cab",
     ArchiveFormat.LHA: "lha",
+    ArchiveFormat.ARJ: "arj",
     **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},
 }
 

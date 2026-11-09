@@ -218,6 +218,14 @@ def lha_seeds() -> list[bytes]:
     return tiny + [path.read_bytes() for path in paths]
 
 
+def arj_seeds() -> list[bytes]:
+    """Tiny blobs and the archives in tests/fixtures/external/arj_310: methods 0 to 4,
+    Unix links and a FIFO, a garbled member, DOS and Unix hosts."""
+    tiny = [b"", b"\x60\xea\0\0", b"\x60\xea\x1e\0" + bytes(34)]
+    folder = _REPO_ROOT / "tests" / "fixtures" / "external" / "arj_310"
+    return tiny + [path.read_bytes() for path in sorted(folder.glob("*.arj"))]
+
+
 def _fixture_seeds(folder: str, pattern: str) -> list[bytes]:
     """The fixtures in tests/fixtures/<folder>, plain and gzip-compressed."""
     paths = sorted((_REPO_ROOT / "tests" / "fixtures" / folder).glob(pattern))

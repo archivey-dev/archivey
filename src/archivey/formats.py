@@ -239,7 +239,7 @@ class MemberSpan(NamedTuple):
 
     data: BinaryIO | io.RawIOBase | None = None
     """The member's decoded bytes, for a format whose library decodes each member
-    (ARJ, ACE, a libarchive wrapper), which has no stored bytes to describe with
+    (ACE, Zoo, a libarchive wrapper), which has no stored bytes to describe with
     ``data_length``; that stays 0. The stream need only be good until the walk moves
     on: archivey reads what the caller leaves of it, up to ``member.size``, before it
     asks the walk for the next member, so the library is past it, and then closes it.
@@ -270,7 +270,7 @@ class ReaderArchiveInfo(NamedTuple):
     comment: str | None = None
     extra: Mapping[str, object] = {}
     """Format-specific values, under keys that start with the format's name
-    (``"arj.method"``)."""
+    (``"zoo.method"``)."""
 
 
 class ReaderSource:
@@ -885,7 +885,7 @@ class FormatHandler(ABC):
     ``ArchiveFormat.ZIP``, and is not registered."""
 
     extensions: ClassVar[tuple[str, ...]] = ()
-    """File extensions with the dot (``".arj"``). An extension a built-in format uses
+    """File extensions with the dot (``".zoo"``). An extension a built-in format uses
     (``".cpio"``) is refused at registration. A replacement plugin declares none: the
     built-in detection finds its files."""
 
@@ -948,7 +948,7 @@ class SequentialFormatHandler(FormatHandler):
     :attr:`~FormatHandler.magic` in the first 512 decoded bytes, so each magic must end
     within them. A format with no reliable magic is found there by its
     :attr:`~FormatHandler.probe` on those same 512 bytes, where the extension names it
-    inside the compressor (``.arj.gz``) or ``always_probe_content`` is set, as on an
+    inside the compressor (``.zoo.gz``) or ``always_probe_content`` is set, as on an
     uncompressed source."""
 
     @abstractmethod

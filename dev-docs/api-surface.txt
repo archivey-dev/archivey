@@ -42,6 +42,7 @@ init archivey.ArchiveFormat(container: ContainerFormat | PluginContainer, stream
 field archivey.ArchiveFormat.container: ContainerFormat | PluginContainer
 field archivey.ArchiveFormat.stream: StreamFormat | PluginStream
 attribute archivey.ArchiveFormat.AR = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.ARJ = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BROTLI = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZ2 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZIP3 = ArchiveFormat(...)
@@ -216,6 +217,7 @@ value archivey.CompressionAlgorithm.IMPLODE = 'implode'
 value archivey.CompressionAlgorithm.LZO = 'lzo'
 value archivey.CompressionAlgorithm.LZX = 'lzx'
 value archivey.CompressionAlgorithm.LZH = 'lzh'
+value archivey.CompressionAlgorithm.ARJ_FAST = 'arj_fast'
 value archivey.CompressionAlgorithm.QUANTUM = 'quantum'
 value archivey.CompressionAlgorithm.RAR = 'rar'
 value archivey.CompressionAlgorithm.UNKNOWN = 'unknown'
@@ -239,6 +241,7 @@ value archivey.ContainerFormat.SQUASHFS = 'squashfs'
 value archivey.ContainerFormat.XAR = 'xar'
 value archivey.ContainerFormat.CAB = 'cab'
 value archivey.ContainerFormat.LHA = 'lha'
+value archivey.ContainerFormat.ARJ = 'arj'
 value archivey.ContainerFormat.DMG = 'dmg'
 value archivey.ContainerFormat.DIRECTORY = 'directory'
 value archivey.ContainerFormat.RAW_STREAM = 'raw_stream'
