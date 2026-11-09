@@ -725,8 +725,9 @@ def test_a_shared_directory_is_not_joined_into_every_name_up_front() -> None:
 
 def test_a_hard_link_set_costs_memory_in_its_size_not_its_square() -> None:
     """Every file sharing one inode is one hard-link set. The set's file list is
-    shared by its files: a copy per file took the square of the set's size (4000
-    files took 129 MiB, 8000 took 500 MiB) from a header of a few bytes per file."""
+    shared by its files: a copy per file would take memory with the square of the
+    set's size (about 130 MiB for these 4000 files, 500 MiB for 8000) from a header
+    of a few bytes per file."""
     import tracemalloc
 
     files = [_F(b"/opt/f%06d" % i, inode=7) for i in range(4000)]
