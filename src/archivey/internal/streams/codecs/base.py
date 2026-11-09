@@ -2,6 +2,9 @@
 :class:`StreamCodec` base class, helpers that read a source without moving it, and the
 format values several codecs must agree on (the zlib ``wbits``, the gzip magic, the bzip2
 stream header).
+
+Every ``<name>_codec`` module subclasses :class:`StreamCodec` from here, and the
+registry (``registry.py``) holds one instance of each.
 """
 
 from __future__ import annotations
@@ -267,7 +270,9 @@ GZIP_MAGIC = b"\x1f\x8b"
 # made for that gate moves what the two walks accept.
 BZIP2_HEADER = re.compile(rb"BZh[1-9]")
 
-# A frame, or a skippable frame (magic 0x184D2A50 to 0x184D2A5F), for both.
+# The skippable-frame magic (0x184D2A50 to 0x184D2A5F, little-endian), as the bytes
+# allowed at each of its four positions. zstd and LZ4 share it, and either format's
+# further stream may start with one, so both stream-start tests include it.
 _SKIPPABLE_FRAME = (range(0x50, 0x60), b"\x2a", b"\x4d", b"\x18")
 
 # Bytes a content probe decodes when the source is not fully visible: the sample is
@@ -593,7 +598,7 @@ class StreamCodec:
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         """How to phrase ``STREAM_REWIND_REDECOMPRESSES`` for this codec.
 
-        It no longer decides *whether* to report: that is the seek's measured re-decode
+        It does not decide *whether* to report: that is the seek's measured re-decode
         distance, computed by ``ArchiveStream`` against the live seek-point table (a
         format that can carry an index does not always have a useful one — a single-block
         ``.xz`` re-decodes from byte zero like a codec with none). This only supplies the
