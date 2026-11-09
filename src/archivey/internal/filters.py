@@ -73,7 +73,7 @@ def _has_windows_root(target: str) -> bool:
     root (two separators, ``//server/share`` or ``\\\\server\\share``).
 
     A single leading ``\\`` (``\\foo``) is not a Windows root here; see the comment
-    in :func:`check_universal`.
+    in :func:`_check_symlink_target`.
     """
     if target[:1] in ("/", "\\") and target[1:2] in ("/", "\\"):
         return True
@@ -449,14 +449,25 @@ def check_universal(
     no OS call. The coordinator refuses the link instead when it refuses the member
     the link gets its bytes from (``ExtractionCoordinator._source_refused``).
     """
-    name = member.name
+    _check_member_name(member)
+    dest_root = _resolve_parent_within(
+        member, dest, show_os_error=show_os_error, dest_resolved=dest_resolved
+    )
+    target = member.link_target
+    if target is not None and member.type == MemberType.SYMLINK:
+        _check_symlink_target(member, target, dest_root, link_target_on_disk)
 
-    # (1) String checks on member.name. Names are faithful (meaning-preserving
-    # normalization keeps a leading "/" and every ".."), so the danger is visible directly
-    # on member.name — no separate raw_name inspection is needed. Any ".." component is
-    # rejected (escaping and internal alike): a well-formed archive has no reason to carry
-    # one. An absolute name reaching here was not re-rooted: STRICT, or a filter that
-    # returned one (see reroot_absolute).
+
+def _check_member_name(member: ArchiveMember) -> None:
+    """The string checks of :func:`check_universal` on ``member.name``, and the
+    member types no policy writes."""
+    name = member.name
+    # Names are faithful (meaning-preserving normalization keeps a leading "/" and
+    # every ".."), so the danger is visible directly on member.name — no separate
+    # raw_name inspection is needed. Any ".." component is rejected (escaping and
+    # internal alike): a well-formed archive has no reason to carry one. An absolute
+    # name reaching here was not re-rooted: STRICT, or a filter that returned one (see
+    # reroot_absolute).
     # A name the platform filesystem encoding cannot represent can never be
     # materialized under dest, and it would otherwise crash the parent-resolution
     # below with a raw UnicodeEncodeError. The extraction coordinator passes the
@@ -484,12 +495,25 @@ def check_universal(
             member_name=name,
         )
 
-    # Pre-extraction path computation: the destination's PARENT directory must resolve
-    # within the root. We resolve the parent, not the full path — the final component may
-    # be a pre-existing (possibly hostile) symlink that the OverwritePolicy will unlink
-    # rather than follow, so following it here would wrongly reject a REPLACE. Combined
-    # with the no-".." name check above, a parent inside the root guarantees the member
-    # lands inside the root. A symlinked *parent* that escapes is still caught.
+
+def _resolve_parent_within(
+    member: ArchiveMember,
+    dest: Path,
+    *,
+    show_os_error: Callable[[OSError], None] | None,
+    dest_resolved: bool,
+) -> Path:
+    """Refuse ``member`` when its parent directory resolves outside ``dest``; return
+    the resolved ``dest``.
+
+    The parent is resolved, not the full path: the final component may be a
+    pre-existing (possibly hostile) symlink that the OverwritePolicy will unlink
+    rather than follow, so following it here would wrongly reject a REPLACE. Combined
+    with the no-".." name check, a parent inside the root guarantees the member lands
+    inside the root. A symlinked *parent* that escapes is still caught.
+    """
+    name = member.name
+    rel = name.rstrip("/")
     is_root = rel in ("", ".")  # "" / "." is the root dir member itself
     try:
         dest_root = dest if dest_resolved else resolve_or_raise_on_loop(dest)
@@ -517,45 +541,54 @@ def check_universal(
             f"A path in the destination does not resolve ({cause}): {exc}",
             member_name=name,
         ) from exc
+    return dest_root
 
-    # Symlink-target escape at planning time (the authoritative check is re-run
-    # post-creation in the coordinator). The target is relative to the link's own
-    # directory; an absolute target makes the join absolute, so it passes only when it
-    # names a path inside dest.
-    target = member.link_target
-    if target is not None and member.type == MemberType.SYMLINK:
-        # Same string-level guards as for names: a NUL or an unencodable target
-        # cannot name a filesystem path, and would crash the resolves below with a
-        # raw ValueError / UnicodeEncodeError instead of a typed rejection.
-        _check_path_string(
-            target, member_name=name, what="link target", link_target=target
+
+def _check_symlink_target(
+    member: ArchiveMember,
+    target: str,
+    dest_root: Path,
+    link_target_on_disk: Callable[[str], str] | None,
+) -> None:
+    """Refuse symlink ``member``, whose target is ``target``, when the target escapes
+    ``dest_root`` (the resolved destination).
+
+    This is the planning-time check; the authoritative one is re-run after the link
+    is created, in the coordinator. The target is relative to the link's own
+    directory; an absolute target makes the join absolute, so it passes only when it
+    names a path inside the destination.
+    """
+    name = member.name
+    # Same string-level guards as for names: a NUL or an unencodable target cannot
+    # name a filesystem path, and would crash the resolves below with a raw
+    # ValueError / UnicodeEncodeError instead of a typed rejection.
+    _check_path_string(target, member_name=name, what="link target", link_target=target)
+    # A drive or UNC target leaves the destination on Windows and is a relative
+    # name on POSIX. It is refused on every OS so that one archive extracts the
+    # same way everywhere (maintainer ruling, 2026-10-06); unrar 7.00 on POSIX
+    # refuses the `\??\`-prefixed spellings too.
+    if _has_windows_root(target):
+        raise FilterRejectionError(
+            "Symlink target is a Windows drive or UNC path",
+            member_name=name,
+            link_target=member.link_target,
         )
-        # A drive or UNC target leaves the destination on Windows and is a relative
-        # name on POSIX. It is refused on every OS so that one archive extracts the
-        # same way everywhere (maintainer ruling, 2026-10-06); unrar 7.00 on POSIX
-        # refuses the `\??\`-prefixed spellings too.
-        if _has_windows_root(target):
-            raise FilterRejectionError(
-                "Symlink target is a Windows drive or UNC path",
-                member_name=name,
-                link_target=member.link_target,
-            )
-        # Named exception: a target rooted by a single `\` (`\foo`) is left alone.
-        # Windows resolves it to the drive root and refuses it as an escape, but on
-        # POSIX a backslash is an ordinary filename character, so `\foo` is a
-        # legitimate relative link there. Refusing it would block an archive that is
-        # valid on POSIX, and ADR 0013 rules that extracting beats refusing. Only
-        # TRUSTED keeps that `\` literal: STRICT and STANDARD write a TAR `\` as `/`,
-        # so `link_target_on_disk` below turns `\foo` into `/foo`, an escape.
-        if link_target_on_disk is not None:
-            target = link_target_on_disk(target)
-        problem = link_resolution_problem((dest_root / name).parent / target, dest_root)
-        if problem is not None:
-            raise FilterRejectionError(
-                problem,
-                member_name=name,
-                link_target=member.link_target,
-            )
+    # Named exception: a target rooted by a single `\` (`\foo`) is left alone.
+    # Windows resolves it to the drive root and refuses it as an escape, but on
+    # POSIX a backslash is an ordinary filename character, so `\foo` is a
+    # legitimate relative link there. Refusing it would block an archive that is
+    # valid on POSIX, and ADR 0013 rules that extracting beats refusing. Only
+    # TRUSTED keeps that `\` literal: STRICT and STANDARD write a TAR `\` as `/`,
+    # so `link_target_on_disk` below turns `\foo` into `/foo`, an escape.
+    if link_target_on_disk is not None:
+        target = link_target_on_disk(target)
+    problem = link_resolution_problem((dest_root / name).parent / target, dest_root)
+    if problem is not None:
+        raise FilterRejectionError(
+            problem,
+            member_name=name,
+            link_target=member.link_target,
+        )
 
 
 # --- Policy permission transforms (applied to a transient copy) ---------------------
