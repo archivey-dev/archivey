@@ -416,8 +416,7 @@ impl LzxDecoder {
                 self.read_block_header(input)?;
             }
             let run = self.block_remaining.min(todo);
-            let done;
-            if self.block_type == UNCOMPRESSED {
+            let done = if self.block_type == UNCOMPRESSED {
                 let pos = self.window_pos;
                 if pos + run > self.window_size {
                     return corrupt("LZX match runs past the end of the window");
@@ -425,10 +424,10 @@ impl LzxDecoder {
                 let r = self.raw_bytes(run, input)?;
                 self.window[pos..pos + run].copy_from_slice(&self.buf[r]);
                 self.window_pos = pos + run;
-                done = run;
+                run
             } else {
-                done = self.decode_run(run, input)?;
-            }
+                self.decode_run(run, input)?
+            };
             if done > self.block_remaining {
                 return corrupt("LZX match runs past the end of its block");
             }
