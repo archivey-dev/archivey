@@ -142,8 +142,7 @@ be listed where extraction writes it, through the link, and SHALL be absent when
 leads to no directory. Paths SHALL compare as on a case-sensitive disk, with only files
 and links colliding by the policy's collision key. Behaviour that depends on a destination
 (`overwrite=`, existing files, names its file system cannot hold, a disk that folds case, a link Windows keeps because it collapses `..` first),
-a link a later member makes lead out, the order of hard links extraction makes in a second
-pass, and `filter=` are outside the tree. A hard link to a symlink SHALL be listed as that
+a link a later member makes lead out, and `filter=` are outside the tree. A hard link to a symlink SHALL be listed as that
 symlink, with its target read from the hard link's own directory, as extraction writes it.
 
 | Operation | Behaviour |

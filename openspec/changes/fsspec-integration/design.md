@@ -119,7 +119,7 @@ other way or refuses them, rather than drop them in silence (DR-1, DR-15):
 | `size` | `fs.size(path)`, read once at open, as a **fact**: it clamps reads, the way `stat` does for a path. The archive is the object as it was at open; a later change is D7's to catch, not the clamp's |
 | `size_hint` | The same value |
 | `path`, `volume_paths` | `None`: there is no local file. A backend that needs a path (RAR's `unrar`) spools, under `SpoolLimits`, as it does for any stream |
-| `name` | `of.path`. Detection's name checks and volume discovery (D4) read it |
+| `name` | `of.path` without credentials: the `user:password@` of a URL is removed, and for `http`/`https` the query and fragment too, because a signed URL keeps its signature there. The name reaches `archive_name` and archivey's own messages, diagnostics and logs, so it must not carry a secret. An I/O error the file system raises propagates unchanged (DR-15a) and can carry the URL as given. Detection's name checks read it. Volume discovery (D4) and every fetch use `of.path` as given |
 | `seek_is_expensive` | `True` |
 | Ownership | Nothing to close: the planner holds `(fs, path, size)` and its fetched windows, and `close()` drops the windows. The caller's file system object is never closed |
 
@@ -192,7 +192,10 @@ a thin planner that decides each fetch's start and length:
    what bytes are returned, only how they are fetched. On a local source it does nothing.
    A format plugin does not call it: it names the spans a member's stream reads in
    `MemberData.ranges`, and archivey passes them to the source when `open_member`
-   returns. A source keeps its latest 8 pending hints, and a read takes the newest one
+   returns. A plugin that names no `ranges` still gets a hint when its stream is a
+   source view, a decoder over one, or a `block_stream` of those (one hint per block,
+   as each is read): archivey infers the view's span; declared `ranges` win over it.
+   A source keeps its latest 8 pending hints, and a read takes the newest one
    that covers it, so members read side by side each keep their own. A span that starts
    within the read-through distance past a run's window continues that run when reads
    have taken the window to its end, so spans that lie almost back to back (ISO extents
@@ -207,6 +210,7 @@ a thin planner that decides each fetch's start and length:
    | 7z, open | The next-header span named by the signature header |
    | 7z, member | The pack stream span, from pack info; for a solid folder, from the folder start |
    | ISO, member | Each of the member's extents, named in the plugin API's `MemberData.ranges` |
+   | Plugin, member, no `ranges` | The span of the view the stream reads, or of each `block_stream` block's view as it is read (XAR: a decoder over each member's view) |
    | RAR, listing | None. A hint at each next header turned the walk's read-through into one request per header (measured in stage 3); rule 2 covers it |
    | TAR | None; rule 2 covers it |
 

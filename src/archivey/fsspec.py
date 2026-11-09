@@ -217,9 +217,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     non-empty destination decides (``overwrite=``, existing files), what the
     destination's file system cannot hold (a reserved name under ``TRUSTED`` on
     Windows, case folded by the disk, a link Windows keeps because it collapses
-    ``..`` before following links), a link that a later member makes lead out, the
-    order of the hard links extraction makes in a second pass (one whose source it
-    did not write in order), and ``filter=``. A hard link to a symlink is that
+    ``..`` before following links), a link that a later member makes lead out, and
+    ``filter=``. A hard link to a symlink is that
     symlink, with its target read from the hard link's own directory, as
     extraction (and GNU tar) write it.
 

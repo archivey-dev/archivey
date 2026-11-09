@@ -140,9 +140,7 @@ class ToyReader(IndexedReader[Locator]):
 
     def open_member(self, member: ArchiveMember, locator: Locator) -> MemberData:
         offset, size = locator
-        return MemberData(
-            self._source.view(offset, size), ranges=((offset, offset + size),)
-        )
+        return MemberData(self._source.view(offset, size))
 
 
 class ToyHandler(IndexedFormatHandler):
@@ -219,12 +217,13 @@ other fields say how archivey can check those bytes, as described in
 
 There are four ways to build the stream. Pick the first one that fits your format.
 
-Whichever you pick, when the member's bytes are spans of the archive, stored or
-compressed, name them in `MemberData.ranges` as `(start, end)` pairs. An archive read by
-range from an `fsspec` file system then fetches each span in one request rather than in
-steps that start small; on a local file they do nothing, and they never change what a
-read returns. TOYA's `open_member` shows the field; the shorter examples below leave it
-out.
+Whichever you pick, an archive read by range from an `fsspec` file system fetches a
+member's bytes in one request, rather than in steps that start small, when archivey knows
+where they are. It knows when the stream is a `ReaderSource.view()`, a
+`ReaderContext.decompress()` over one, or a `block_stream()` whose blocks are those, as
+TOYA's is. For any other stream, such as one from your own library, name the spans it
+reads in `MemberData.ranges` as `(start, end)` pairs; they win over what archivey
+infers. On a local file the spans do nothing, and they never change what a read returns.
 
 **Stored bytes.** `ReaderSource.view(start, length)` is a stream over part of the archive
 with its own position, so two members open at the same time do not move each other. A
@@ -825,8 +824,8 @@ The replacement gets what any indexed plugin gets: a source that can seek, from 
 start of the archive. archivey refuses, before `open()` runs, a multi-volume set and an
 archive behind a prefix (a self-extracting stub or other leading bytes) with
 `UnsupportedFeatureError`, a source that
-cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO as
-the built-in reader refuses it, since its bytes are not an ISO 9660 image. The format's own config options, such as
+cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO,
+since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it reads). The format's own config options, such as
 `zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
 `ReaderContext.config`; honouring them is the plugin's job. `password=` does not reach a
 replacement, as it reaches no plugin, so a replaced ZIP, 7z or RAR cannot read an encrypted

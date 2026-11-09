@@ -158,6 +158,7 @@ class _Frame:
         "id",
         "index",
         "link",
+        "name_xml",
         "path",
         "raw_path",
     )
@@ -174,6 +175,9 @@ class _Frame:
         self.has_data = False
         self.path: str | None = None
         self.raw_path = b""
+        # The first <name>, as stored (whether base64, and its text): a repeat of
+        # it is accepted (``_set_path``).
+        self.name_xml: tuple[bool, str] | None = None
 
 
 class _TocParser:
@@ -280,7 +284,14 @@ class _TocParser:
 
     def _set_path(self, frame: _Frame, text: str) -> None:
         if frame.path is not None:
+            # Apple's productbuild writes each top-level file's <name> twice, the
+            # same both times (Node.js, GitHub CLI and Miniconda installers do this);
+            # xar and pkgutil read it as one name. Two different names stay refused:
+            # nothing says which one the file is.
+            if (self._name_base64, text) == frame.name_xml:
+                return
             raise CorruptionError(f"XAR file {quoted(frame.path)} has two names")
+        frame.name_xml = (self._name_base64, text)
         if self._name_base64:
             try:
                 raw = base64.b64decode(text, validate=True)
@@ -605,8 +616,16 @@ class XarReader(IndexedReader[_Location]):
                 "which archivey does not read"
             )
         start = self._heap + data.offset
+        end = start + data.length
         size = self._source.size
-        if size is not None and start + data.length > size:
+        if size is not None:
+            cut = end > size
+        else:
+            # A source whose size is not known: is byte ``end - 1`` there? That is
+            # ``end > size`` asked of the source, also for an empty member. Otherwise
+            # the codec would meet the cut first and report it as damage.
+            cut = end > 0 and not self._source.read_at(end - 1, 1)
+        if cut:
             raise TruncatedError(
                 f"the XAR archive ends inside the data of {quoted(member.name)}"
             )

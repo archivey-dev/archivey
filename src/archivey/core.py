@@ -51,7 +51,10 @@ from archivey.internal.arg_checks import (
     raise_if_text_stream,
     raise_if_write_only_stream,
 )
-from archivey.internal.backends.iso_reader import refuse_raw_sector_image
+from archivey.internal.backends.iso_reader import (
+    raw_layout_of,
+    refuse_raw_sector_image,
+)
 from archivey.internal.backends.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
@@ -819,12 +822,17 @@ def _open_resolved(
     ):
         _raise_multi_volume_not_supported(resolved_format, archive_name)
 
-    # A raw CD sector image is claimed as ISO only so it can be refused by name. Ahead
-    # of the availability check, so the answer does not depend on pycdlib; a
-    # non-seekable source is left to the read-once refusal below, which is also ahead
-    # of it. A replacement reader is refused it too: the bytes are not an ISO 9660
-    # image, whichever reader would open them.
+    # A raw CD sector image the built-in reader cannot read (Mode 2 Form 2, an unknown
+    # mode) is refused by name, ahead of the availability check, so the answer does
+    # not depend on pycdlib; a non-seekable source is left to the read-once refusal
+    # below, which is also ahead of it. A replacement reader is refused every raw
+    # image: the bytes are not an ISO 9660 image, and only the built-in reader strips
+    # the sectors.
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
+        if replacement is not None and raw_layout_of(archive_source) is not None:
+            _refuse_for_replacement(
+                replacement, "a raw CD sector image", resolved_format, archive_name
+            )
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
     # Detection claims a recognised-only format (DMG) so this refusal can name it and

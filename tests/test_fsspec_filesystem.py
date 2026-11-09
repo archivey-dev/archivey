@@ -242,6 +242,12 @@ LINKS_AND_COLLISIONS = [
     ("sym", "Q", "q"),  # dangling, not a loop through itself
     ("hard", "hc", "c"),
     ("file", "HC", b"collides"),  # refused under STRICT and STANDARD: hc has its key
+    # A hard link extraction makes in its second pass keeps its name from a later
+    # member: k is made from r's bytes, and K, after it, collides with it.
+    ("file", "R", b"first R"),
+    ("file", "r", b"lost r"),  # not written under STRICT and STANDARD: R has its key
+    ("hard", "k", "r"),  # its source is not on disk: made in the second pass
+    ("file", "K", b"later K"),  # refused under STRICT and STANDARD: k has its key
 ]
 
 
