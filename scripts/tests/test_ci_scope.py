@@ -263,3 +263,30 @@ def test_a_script_only_pull_request_skips_the_library_legs_only_there() -> None:
     )
     assert "github.event.pull_request.base.sha" in env["BASE"]
     assert "github.event.pull_request.head.sha" in env["HEAD"]
+
+
+def test_the_daily_only_legs_run_on_the_daily_run_and_a_dispatch_only() -> None:
+    """`test-daily` (the Pythons between min and max) never runs on a pull request or in
+    the merge queue, and the release gates still see it because they dispatch ci.yml.
+    The gate does not wait on it: it would be skipped in every merge group anyway."""
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load(CI.read_text())["jobs"]
+    job = jobs["test-daily"]
+    assert job["if"] == (
+        "${{ github.event_name == 'schedule' "
+        "|| github.event_name == 'workflow_dispatch' }}"
+    )
+    assert not _needs(job)
+    assert "test-daily" not in _needs(jobs["gate"])
+    pythons = {row["python-version"] for row in job["strategy"]["matrix"]["include"]}
+    queued = {
+        row["python-version"]
+        for name in ("test", "test-queue")
+        for row in jobs[name]["strategy"]["matrix"]["include"]
+    }
+    assert pythons == {"3.12", "3.13", "3.14"}
+    assert not pythons & queued
+    on = yaml.safe_load(CI.read_text())[True]
+    assert "schedule" in on and "workflow_dispatch" in on
+    release = (ROOT / "scripts" / "release" / "release.py").read_text()
+    assert '"ci.yml"' in release
