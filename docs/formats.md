@@ -1129,15 +1129,28 @@ other members because of a member's name any more. Setting it to `True` warns.
 - **Raw CD sector images** (the `.bin` of a `.bin`/`.cue` pair, 2352-byte sectors, or 2448 with
   subchannel data) open as ISO when their data is Mode 1 or Mode 2 Form 1: archivey strips each
   sector to its 2048 bytes of user data as it reads, which gives the same bytes as the plain
-  `.iso`. Only the first track is read, so a mixed-mode disc (data, then audio) lists its data
-  track, and the audio after it is not reported as trailing data. Each sector's sync and mode are
-  checked when it is read; its EDC and ECC error-correction bytes are not. A sector that is not a
-  data sector (damage, or a Mode 2 Form 2 sector, as in Video CD and CD-XA files) fails the read
-  that reaches it: reading the member that holds it, or opening the image when the sector holds
-  the volume descriptors or a directory. The `.cue` sheet is not read: a disc whose filesystem is in a
-  later track or session is not found. A Mode 2 Form 2 image, which holds video or audio and no
-  filesystem, or an unknown sector mode, is refused with `UnsupportedFeatureError` naming the
-  layout.
+  `.iso`. Each sector's sync and mode are checked when it is read; its EDC and ECC
+  error-correction bytes are not. A sector that is not a data sector (damage, or a Mode 2 Form 2
+  sector, as in Video CD and CD-XA files) fails the read that reaches it: reading the member that
+  holds it, or opening the image when the sector holds the volume descriptors or a directory. A
+  Mode 2 Form 2 image, which holds video or audio and no filesystem, or an unknown sector mode, is
+  refused with `UnsupportedFeatureError` naming the layout.
+- **`.cue` sheets.** Open the `.cue`, or the `.bin` when a `.cue` with the same name beside it
+  lists it, and archivey reads the disc the sheet describes, from one track file or one per track
+  (`MODE1/2352`, `MODE2/2352` and `MODE1/2048` data tracks; audio tracks hold no files). It lists
+  the filesystem an operating system mounts: the first data track of the last session that has
+  one. So a mixed-mode disc (data, then audio) lists track 1, an Enhanced CD (audio first, data in
+  a second session) lists its data session, and a multisession data disc lists its newest session,
+  whose tree also holds the files earlier sessions wrote, read from their own tracks. The track
+  files hold no gaps between sessions, so a later session's sector addresses are worked out from
+  the gap recorders leave and checked against the root directory, which names its own address;
+  when they disagree, the address is searched for. A `FILE` that is not a plain name beside the
+  sheet (a path, `..`) or not a regular file (a FIFO, a device) is refused; a symlink is followed.
+  A name not found exactly is matched without case (a sheet written on Windows may say `DISC.BIN`
+  for `disc.bin`), and a missing one is `TruncatedError`. Without a `.cue`, a
+  `.bin` is read from its first track, which finds the filesystem of a mixed-mode disc but not of
+  an Enhanced CD (its `.bin` starts with audio, so it is not recognised). A `.cue` has no magic: it
+  is recognised by its name, and only from a path, since its tracks are files beside it.
 
 ## SquashFS
 
