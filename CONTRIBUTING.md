@@ -129,8 +129,10 @@ pytest tests/test_zip.py` stays one process.
 CI also matrixes supported **Python versions** (3.11–3.15 on Linux; 3.11/3.15 on
 macOS/Windows, plus an allowed-to-fail 3.16 prerelease leg). A pull request push runs a
 reduced set (Linux 3.11 and 3.15, one core-only leg, Windows 3.15, free-threaded 3.13t, the benchmark and plugin jobs); the
-merge queue runs every leg plus PyPy, the distribution unar packages and the short
-Atheris fuzz, and a failure there takes the pull request out of the queue. A queued
+merge queue runs every leg except Linux 3.12–3.14, plus PyPy, the distribution unar
+packages and the short Atheris fuzz, and a failure there takes the pull request out of
+the queue. The Linux 3.12–3.14 legs run only on the daily run and a dispatched run, so
+the release gate's dispatch is their last run before a release. A queued
 change that touches no path on `FULL` in `scripts/ci/ci_scope.py` (the library, the
 library tests and the files they read, the benchmarks, the dependencies, the CI, and
 every script outside the folders its `NOT_FULL` lists,

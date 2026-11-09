@@ -79,7 +79,8 @@ RELEASE_GATE_WORKFLOWS = (
     "atheris-fuzz.yml",
     "rapidgzip-resume-stress.yml",
     # Pull requests run a reduced set of jobs and the merge queue skips PyPy's core-only
-    # suite; a dispatched run includes everything, as the daily run on main does.
+    # suite; a dispatched run includes everything, as the daily run on main does. The
+    # Linux 3.12-3.14 legs (`test-daily`) run nowhere else before a release.
     "ci.yml",
 )
 

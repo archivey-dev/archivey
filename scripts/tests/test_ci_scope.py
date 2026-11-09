@@ -288,5 +288,12 @@ def test_the_daily_only_legs_run_on_the_daily_run_and_a_dispatch_only() -> None:
     assert not pythons & queued
     on = yaml.safe_load(CI.read_text())[True]
     assert "schedule" in on and "workflow_dispatch" in on
-    release = (ROOT / "scripts" / "release" / "release.py").read_text()
-    assert '"ci.yml"' in release
+    # The release gate's dispatch is the legs' only run between daily runs.
+    spec = importlib.util.spec_from_file_location(
+        "release_script_gate", ROOT / "scripts" / "release" / "release.py"
+    )
+    assert spec and spec.loader
+    release = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = release
+    spec.loader.exec_module(release)
+    assert "ci.yml" in release.RELEASE_GATE_WORKFLOWS

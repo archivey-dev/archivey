@@ -67,10 +67,10 @@ on:
 # pull request whose diff misses every `FULL` path runs lint alone, which runs the
 # script tests. Not on a pull request: the `test-queue` legs (3.15 core-only, the minimum
 # versions, macOS, Windows 3.11, the 3.16 prerelease), 3.15t, the distribution unar
-# packages, PyPy and the short Atheris fuzz. Only on the daily run and a dispatch: the
-# `test-daily` legs (Linux [all] on 3.12, 3.13 and 3.14).
-# A failure there takes the pull request out of the queue, except in the 3.16 prerelease
-# leg, which is allowed to fail. The split exists because the
+# packages, PyPy and the short Atheris fuzz. A failure in any queued job takes the pull
+# request out of the queue, except in the 3.16 prerelease leg, which is allowed to fail.
+# Only on the daily run and a dispatch (so before each release): the `test-daily` legs
+# (Linux [all] on 3.12, 3.13 and 3.14). The split exists because the
 # organization's runners are shared (20 jobs at once, 5 of them macOS): full runs on
 # every push kept the queue's runs waiting for a runner until they timed out
 # (2026-10-29). Dispatch this workflow on a branch to run everything before queueing.
