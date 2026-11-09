@@ -553,8 +553,11 @@ def test_live_ratio_default_floor() -> None:
 
 def test_extraction_limits_holds_no_ratio_field() -> None:
     # The ratio fields left ExtractionLimits in 0.4.0: DecoderLimits holds them.
-    limits = ExtractionLimits(2 * 2**30, 1000)
+    limits = ExtractionLimits(2 * 2**30, max_entries=1000)
     assert limits.max_entries == 1000
+    # 0.3's second positional was max_ratio: it must not become an entry cap.
+    with pytest.raises(TypeError):
+        ExtractionLimits(2**30, 100)  # type: ignore[misc]
     with pytest.raises(TypeError):
         ExtractionLimits(max_ratio=10.0)  # type: ignore[call-arg]
 

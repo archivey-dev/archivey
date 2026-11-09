@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
 from typing import ClassVar
 
@@ -258,6 +258,9 @@ class ExtractionLimits:
     Crossing it stops the whole extraction, even under ``on_error="continue"``.
     """
 
+    # Keyword-only: in 0.3 the second positional was ``max_ratio``, so a 0.3 call
+    # ``ExtractionLimits(bytes, 100)`` raises rather than becoming an entry cap.
+    _: KW_ONLY
     max_entries: int | None = 262_144
     """Most entries one extraction may create: files, directories and links.
 

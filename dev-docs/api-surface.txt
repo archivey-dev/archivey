@@ -358,7 +358,7 @@ init archivey.EncryptionError(message: str, *, source_format: ArchiveFormat | No
 class archivey.ExtractionError(ArchiveyError)
 init archivey.ExtractionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.ExtractionLimits()
-init archivey.ExtractionLimits(max_extracted_bytes: int | None = 2147483648, max_entries: int | None = 262144) -> None
+init archivey.ExtractionLimits(max_extracted_bytes: int | None = 2147483648, *, max_entries: int | None = 262144) -> None
 field archivey.ExtractionLimits.max_entries: int | None = 262144
 field archivey.ExtractionLimits.max_extracted_bytes: int | None = 2147483648
 attribute archivey.ExtractionLimits.UNLIMITED = ExtractionLimits(...)
