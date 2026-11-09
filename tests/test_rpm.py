@@ -38,6 +38,7 @@ from archivey.formats import SequentialReader
 from archivey.internal.backends import rpm_reader
 from archivey.internal.backends.rpm_reader import RpmReader
 from tests.conftest import requires_zstd
+from tests.memory_util import traced_peak
 from tests.public_names import assert_only_public_archivey
 from tests.streams_util import NonSeekableBytesIO
 
@@ -216,7 +217,7 @@ def test_the_reader_is_a_sequential_reader() -> None:
 
 # Packages built here -------------------------------------------------------------
 
-_INT16, _INT32, _INT64, _STRING, _BIN, _STRING_ARRAY = 3, 4, 5, 6, 7, 8
+_INT8, _INT16, _INT32, _INT64, _STRING, _BIN, _STRING_ARRAY = 2, 3, 4, 5, 6, 7, 8
 _ALIGN = {_INT16: 2, _INT32: 4, _INT64: 8}
 _FORMATS = {_INT16: ">H", _INT32: ">I", _INT64: ">Q"}
 
@@ -274,6 +275,9 @@ class _Package:
     digest_algo: int | None = 8
     lead_major: int = 3
     signature: dict[int, tuple[int, object]] = field(default_factory=dict)
+    # Signature-header tags to store the main header's digest under, as rpm does:
+    # 273 (SHA-256) and 269 (SHA-1).
+    header_digests: tuple[int, ...] = ()
     extra_tags: dict[int, tuple[int, object]] = field(default_factory=dict)
     drop_tags: tuple[int, ...] = ()
     # Change the payload's entries: the files to store, in order, by index.
@@ -405,9 +409,15 @@ def _build(package: _Package) -> bytes:
     if package.compressor == b"gzip":
         raw = gzip.compress(raw, mtime=0)
     lead = b"\xed\xab\xee\xdb" + bytes([package.lead_major, 0]) + b"\0" * 90
-    signature = _header({62: (_BIN, b"\0" * 16), **package.signature})
+    header = _header(tags)
+    hashes = {273: hashlib.sha256, 269: hashlib.sha1}
+    digests = {
+        tag: (_STRING, hashes[tag](header).hexdigest().encode())
+        for tag in package.header_digests
+    }
+    signature = _header({62: (_BIN, b"\0" * 16), **digests, **package.signature})
     signature += b"\0" * (-len(signature) % 8)
-    return lead + signature + _header(tags) + raw
+    return lead + signature + header + raw
 
 
 def _tree() -> list[_F]:
@@ -456,6 +466,78 @@ def test_a_stripped_payload_reads_from_a_pipe() -> None:
     with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
         names = [m.name for m, _ in reader.stream_members()]
     assert names == list(_EXPECTED)
+
+
+@pytest.mark.parametrize(
+    ("number", "value", "key", "expected"),
+    [
+        pytest.param(
+            1000, (_STRING_ARRAY, [b"ab"] * 200_000), "rpm.name", "ab", id="name"
+        ),
+        pytest.param(1003, (_INT32, list(range(150_000))), "rpm.epoch", 0, id="epoch"),
+    ],
+)
+def test_a_one_value_tag_declaring_a_long_array_reads_only_its_first(
+    number: int, value: tuple[int, object], key: str, expected: object
+) -> None:
+    # NAME, VERSION, EPOCH and the other tags read for one value built the whole
+    # array the entry declares to take its first element: a 60 MiB data store of
+    # such arrays took 1.22 GB to open. Here the peak was 12 to 16 times the
+    # package; now it is about one package.
+    data = _build(_Package(_tree(), extra_tags={number: value}))
+
+    def open_it() -> None:
+        with _open(data) as reader:
+            extra = reader.info.extra
+            assert extra[key] == expected
+
+    open_it()
+    peak = traced_peak(open_it)
+    assert peak < 4 * len(data), peak / len(data)
+
+
+def test_the_one_value_accessors_check_the_entry_as_the_array_ones_do() -> None:
+    # string() and number() read only the first value, and still refuse every
+    # entry that strings() and ints() refuse, with the same message.
+    # No NUL after the second string's.
+    data = b"ab\0cd\0" + bytes(range(1, 7))
+    cases = {
+        "one string": (_STRING, 1, 0),
+        "array": (_STRING_ARRAY, 2, 3),
+        "array past the last NUL": (_STRING_ARRAY, 3, 0),
+        "array longer than the store": (_STRING_ARRAY, 99, 0),
+        "string at the end": (_STRING, 1, len(data)),
+        "string with no NUL": (_STRING, 1, 6),
+        "int32": (_INT32, 1, 6),
+        "int32 array past the end": (_INT32, 2, 6),
+        "int16": (_INT16, 1, 10),
+        "int8 array": (_INT8, 3, 1),
+        "binary": (_BIN, 1, 0),
+        # _read_header refuses a count of 0; the accessors still agree on it.
+        "empty array": (_STRING_ARRAY, 0, 3),
+        "empty array at the end": (_STRING_ARRAY, 0, len(data)),
+        "empty int32 array at the end": (_INT32, 0, len(data)),
+        "empty int16 array at the end": (_INT16, 0, len(data)),
+    }
+    for what, (kind, count, offset) in cases.items():
+        header = rpm_reader.Header(
+            {1: rpm_reader._Entry(kind, count, offset)}, data, "header"
+        )
+        for one, many in (
+            (header.string, header.strings),
+            (header.number, header.ints),
+        ):
+            try:
+                expected: object = many(1)
+            except CorruptionError as exc:
+                with pytest.raises(CorruptionError) as caught:
+                    one(1)
+                assert str(caught.value) == str(exc), what
+            else:
+                assert isinstance(expected, list)
+                assert one(1) == (expected[0] if expected else None), what
+        assert header.string(2) is None
+        assert header.number(2) is None
 
 
 def test_a_digest_mismatch_raises() -> None:
@@ -596,6 +678,59 @@ def test_a_signature_is_reported(tag: int, signed: bool) -> None:
     data = _build(_Package(_tree(), signature={tag: (_BIN, b"sig")}))
     with _open(data) as reader:
         assert reader.info.extra["rpm.signed"] is signed
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_changed_header_byte_raises(pipe: bool) -> None:
+    """The fixture's signature header stores SHA-256 and SHA-1 digests of the main
+    header. One byte of the symlink's target changed there, which only the header's
+    digest covers, is damage, in both access modes."""
+    data = (DATA / "payload-gzip.rpm").read_bytes()
+    assert data.count(b"../a.txt\0") == 1  # in the header: the payload is gzip
+    data = data.replace(b"../a.txt\0", b"../b.txt\0")
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+    with (
+        pytest.raises(CorruptionError, match="SHA-256 digest"),
+        open_archive(source, streaming=pipe) as reader,
+    ):
+        list(reader.stream_members())
+
+
+@pytest.mark.parametrize(
+    ("tags", "algorithm"),
+    [((273,), "SHA-256"), ((269,), "SHA-1"), ((273, 269), "SHA-256")],
+    ids=["sha256", "sha1", "both"],
+)
+@pytest.mark.parametrize("changed", [False, True], ids=["honest", "changed"])
+def test_the_header_digest(
+    tags: tuple[int, ...], algorithm: str, changed: bool
+) -> None:
+    data = _build(_Package(_tree(), header_digests=tags))
+    if not changed:
+        assert _listing(data) == _EXPECTED
+        return
+    assert data.count(b"noarch\0") == 1
+    data = data.replace(b"noarch\0", b"noarcx\0")
+    with (
+        pytest.raises(CorruptionError, match=f"the {algorithm} digest"),
+        _open(data) as reader,
+    ):
+        reader.members()
+
+
+def test_every_header_digest_is_checked() -> None:
+    """A correct SHA-256 does not excuse a wrong SHA-1."""
+    data = _build(
+        _Package(_tree(), header_digests=(273,), signature={269: (_STRING, b"00" * 20)})
+    )
+    with pytest.raises(CorruptionError, match="SHA-1 digest"), _open(data) as r:
+        r.members()
+
+
+def test_a_header_digest_that_is_not_hexadecimal() -> None:
+    data = _build(_Package(_tree(), signature={273: (_STRING, b"zz")}))
+    with pytest.raises(CorruptionError, match="not hexadecimal"), _open(data) as r:
+        r.members()
 
 
 def test_the_rpm_6_format_version() -> None:
@@ -742,6 +877,26 @@ def test_a_shared_directory_is_not_joined_into_every_name_up_front() -> None:
     finally:
         tracemalloc.stop()
     assert peak < 8 * 2**20
+
+
+def test_a_hard_link_set_costs_memory_in_its_size_not_its_square() -> None:
+    """Every file sharing one inode is one hard-link set. The set's file list is
+    shared by its files: a copy per file would take memory with the square of the
+    set's size (about 130 MiB for these 4000 files, 500 MiB for 8000) from a header
+    of a few bytes per file."""
+    import tracemalloc
+
+    files = [_F(b"/opt/f%06d" % i, inode=7) for i in range(4000)]
+    data = _build(_Package(files, compressor=None))
+    tracemalloc.start()
+    try:
+        with _open(data) as r:
+            members = r.members()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(members) == 4000
+    assert peak < 16 * 2**20
 
 
 def test_an_integer_column_is_counted_before_it_is_unpacked() -> None:

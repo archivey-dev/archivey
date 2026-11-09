@@ -626,9 +626,10 @@ volume, since RAR 1.5 / 2.x predate it.) Explicit sequences are still read as `1
 explicit sequence of volume *paths* is used as given, with no discovery: headers are read
 from those files in that order. For a discovered set and an explicit one alike, `unrar` is
 pointed at the first file in place only when its own next-volume rule, run from it, finds
-exactly the files parsed and nothing past the last. That rule follows the MAIN header's
-naming flag, not the names on disk: an old-scheme set renamed `x.part1.rar`, `x.part2.rar`
-is continued from `x.part1.r00`, a file archivey never parsed. Otherwise, on the first read
+exactly the files parsed and nothing past the last, and no volume path holds `*` or `?`
+(§"The argv is constructed defensively" below). That rule follows the MAIN header's naming
+flag, not the names on disk: an old-scheme set renamed `x.part1.rar`, `x.part2.rar` is
+continued from `x.part1.r00`, a file archivey never parsed. Otherwise, on the first read
 that needs `unrar`, the files are symlinked — hard-linked where a symlink is
 refused — into a temp directory under the set's own names, and copied within
 `SpoolLimits` only where neither link works. `unar` always gets such a directory. An old-scheme
@@ -953,7 +954,13 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   compressed member read as truncated. `--` is RARLAB's documented end-of-switches marker;
   measured on `unrar` 7.00 and `rar` 7.00. An `@` prefix needs no guard in this position:
   `unrar` reads the first non-switch argument as the archive, and only later file-name
-  arguments as list-files (also measured on 7.00).
+  arguments as list-files (also measured on 7.00). `--` does not stop wildcard
+  expansion: `unrar` expands `*` and `?` in the archive name even after it (only those
+  two; `[` and `{` are literal on 7.00, and Windows skips a `\\?\` prefix first). In
+  place, `rep*.rar` also opened a planted `rep-a.rar` beside it, mixing that archive's
+  members into the output, and blocked forever on a FIFO of a matching name. So the
+  reader stages such a path under fixed names in a private temp directory
+  (`unrar_expands_wildcards`).
 
 - **The member is never positional.** It is the value of the `-n` include mask, prefixed
   `./`. Passed positionally, a member literally named `-inul` is parsed by `unrar` as a
