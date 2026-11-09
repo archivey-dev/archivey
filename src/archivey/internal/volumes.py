@@ -44,6 +44,7 @@ from archivey.internal.remote import (
     DEFAULT_MAX_READ_THROUGH,
     RangeSource,
     WindowPool,
+    display_url,
     is_open_file,
     open_decompressed,
     open_file_compression,
@@ -459,8 +460,9 @@ class RemoteVolumePath:
 
     @override
     def __str__(self) -> str:
+        # For messages only, so without credentials; the I/O uses ``self.path``.
         unstrip = getattr(self.fs, "unstrip_protocol", None)
-        return unstrip(self.path) if callable(unstrip) else self.path
+        return display_url(unstrip(self.path) if callable(unstrip) else self.path)
 
     @override
     def __repr__(self) -> str:

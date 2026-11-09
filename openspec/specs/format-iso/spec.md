@@ -308,6 +308,14 @@ when a read started past the end of the volume space. A file the cut reaches sti
 raises `TruncatedError` when its read reaches the cut, and a file wholly before the cut
 reads normally.
 
+Non-zero bytes in the padding of a directory block (from a zero length byte to the end
+of the logical block) SHALL NOT fail the open, in any of the image's trees. Each such
+block SHALL be reported once as `ARCHIVE_TRAILING_DATA` with
+`expected_marker="directory_padding"` and the offset of its first non-zero padding
+byte, because a record whose length byte was damaged to zero would be lost there (DR-3:
+damage to structure that holds no member data is a diagnostic, refused under `STRICT`).
+A cut inside the padding stays `TruncatedError`.
+
 #### Scenario: cut and damaged images
 
 | Case | Expected |
@@ -316,7 +324,8 @@ reads normally.
 | Image cut inside a path table, a directory record, its System Use area, or the padding after the last record of a directory | `TruncatedError` at open |
 | UDF image cut inside its volume recognition sequence, its last anchor, or file data | `TruncatedError` at open |
 | Image cut inside file data, no UDF | Opens; reading a file the cut reaches raises `TruncatedError` |
-| Full-length image: a descriptor field, a directory's padding, a path table size past the volume space, or a root directory extent past the volume space damaged | `CorruptionError`, not `TruncatedError` |
+| Full-length image: a descriptor field, a path table size past the volume space, or a root directory extent past the volume space damaged | `CorruptionError`, not `TruncatedError` |
+| Full-length image: a non-zero byte in a directory block's padding | Opens and lists every record; `ARCHIVE_TRAILING_DATA` with `expected_marker="directory_padding"`; refused under `STRICT` |
 | Cut image that keeps its path tables, root directory extent damaged to point past the volume space | `CorruptionError`, not `TruncatedError` |
 | Full-length UDF image whose volume space size is damaged upwards | `TruncatedError`: the file holds less than the image declares |
 
