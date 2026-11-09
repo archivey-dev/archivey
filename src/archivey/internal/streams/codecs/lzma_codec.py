@@ -1,5 +1,12 @@
 """The liblzma family: xz, lzip, ``.lzma`` (LZMA Alone), and raw LZMA1/LZMA2 for
 containers.
+
+All of them decode with the standard library's ``lzma``. xz and lzip have decoders of
+their own (``xz_decoder``, ``lzip_decoder``) that read the index the format carries for
+seeking. LZMA Alone has no reliable magic, so detection uses a content probe. Raw
+LZMA1/LZMA2 is a 7z or ZIP coder: liblzma runs the filter chain the container
+declares, Delta and BCJ stages included. The 7z stages liblzma cannot run here (ARM64,
+RISC-V) are composed by the 7z reader (``lzma_filter_decoder``).
 """
 
 from __future__ import annotations
@@ -228,12 +235,11 @@ def _alone_header_plausible(prefix: bytes) -> bool:
       decode, and a ``.lzma`` name still opens one through the extension.
     - **Dictionary size** is deliberately *not* gated, at any value. Every 32-bit value
       is legal and the LZMA specification requires decoders to round one below 4 KiB up
-      to 4 KiB, so a stream whose field is zero still decodes — rejecting it was a false
-      negative on real input, and it is independent of the size field above (a
-      dictionary-zeroed stream of 700 bytes decodes fine). That rejection also served as
-      an ordering workaround, keeping a zero-filled ISO system area from decoding as an
-      empty Alone stream before far-magic ISO detection ran; far magic now runs before
-      the content probes and answers that source itself (``format-detection``).
+      to 4 KiB, so a stream whose field is zero still decodes, and rejecting it would
+      refuse real input. It is independent of the size field above (a
+      dictionary-zeroed stream of 700 bytes decodes fine). A zero-filled ISO system
+      area does not need this gate either: far-magic detection runs before the content
+      probes and answers that source itself (``format-detection``).
     """
     if len(prefix) < _ALONE_HEADER_SIZE or not _alone_props_plausible(prefix[0]):
         return False

@@ -1,4 +1,5 @@
-"""Stored: no compression."""
+"""Stored: no compression. The source is returned as it is, so a stored member goes
+through the same codec interface as a compressed one."""
 
 from __future__ import annotations
 
