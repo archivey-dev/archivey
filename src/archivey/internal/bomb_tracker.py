@@ -1,7 +1,9 @@
 """The decompression-bomb guards: the limits that stop a small archive from writing or
 decoding far more data than it is worth.
 
-Three users, one ratio rule (:func:`archive_ratio_refusal`):
+Three users share one archive-wide ratio rule (:func:`archive_ratio_refusal`).
+:class:`BombTracker` and :class:`MemberRatioGuard` also check a per-member ratio, each
+with its own code:
 
 - :class:`BombTracker`: the byte, ratio and entry-count limits one extraction enforces
   as it writes (``ExtractionLimits``). The extraction coordinator builds one per call

@@ -600,7 +600,9 @@ class DiagnosticCollector:
         """Repeat the emit a :meth:`replaying` log recorded at this point, if it matches.
 
         Returns the recorded diagnostic (re-attached to ``member`` if it was attached
-        the first time), or raises the exception the first run raised here. Returns
+        the first time), or raises the exception the first run raised here (held
+        instead for an open :meth:`deferring_raises` block, and the diagnostic
+        returned). Returns
         ``None`` when the log holds no emit of ``code`` at this point: the log is cut
         there, and the caller records this emit as a new one. The caller holds the lock.
         """
