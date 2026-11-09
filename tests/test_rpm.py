@@ -723,6 +723,25 @@ def test_a_shared_directory_is_not_joined_into_every_name_up_front() -> None:
     assert peak < 8 * 2**20
 
 
+def test_a_hard_link_set_costs_memory_in_its_size_not_its_square() -> None:
+    """Every file sharing one inode is one hard-link set. The set's file list is
+    shared by its files: a copy per file took the square of the set's size (4000
+    files took 129 MiB, 8000 took 500 MiB) from a header of a few bytes per file."""
+    import tracemalloc
+
+    files = [_F(b"/opt/f%06d" % i, inode=7) for i in range(4000)]
+    data = _build(_Package(files, compressor=None))
+    tracemalloc.start()
+    try:
+        with _open(data) as r:
+            members = r.members()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(members) == 4000
+    assert peak < 16 * 2**20
+
+
 def test_an_integer_column_is_counted_before_it_is_unpacked() -> None:
     """A per-file integer column declaring far more values than files is refused
     without unpacking them."""
