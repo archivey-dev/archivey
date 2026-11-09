@@ -57,8 +57,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **CAB** (`.cab`, Microsoft cabinets): core, for stored, MSZIP and LZX folders. Listing:
   from its index. Members: solid when a folder is compressed, otherwise direct. Needs a source
   that can seek.
-- **LHA** (`.lzh`, `.lha`, `.lzs`): core, for stored members and the `-lh4-` to `-lh7-`,
-  `-lhx-` and `-lk7-` methods. Listing: header by header. Members: direct. Needs a source
+- **LHA** (`.lzh`, `.lha`, `.lzs`): core, for stored members and the `-lh1-`, `-lh4-` to
+  `-lh7-`, `-lhx-`, `-lk7-`, `-lzs-` and `-lz5-` methods. Listing: header by header. Members: direct. Needs a source
   that can seek.
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
   direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.cpio.gz`,
@@ -1232,10 +1232,10 @@ ST and Japanese PCs, and from LHa for UNIX.
 - **Reading members:** each member is compressed on its own, so every member is direct.
 - **From a pipe:** no, for now: the listing seeks past each member's data.
 - Header levels 0 to 3 all read. Stored members (`-lh0-`, `-lz4-`, `-pm0-`) and the
-  `-lh4-` to `-lh7-` methods, UNLHA32's `-lhx-` and LHARK's `-lk7-` decode; other methods
-  (`-lh1-`, `-lzs-`, `-lz5-`, PMarc's `-pm1-` and `-pm2-`) are listed and raise
-  `UnsupportedFeatureError` when read. `member.compression` is `LZH` for every `-lh?-`
-  method, and `extra["lha.method"]` names the exact one.
+  `-lh1-` and `-lh4-` to `-lh7-` methods, UNLHA32's `-lhx-`, LHARK's `-lk7-` and LArc's
+  `-lzs-` and `-lz5-` decode; other methods (PMarc's `-pm1-` and `-pm2-`) are listed and
+  raise `UnsupportedFeatureError` when read. `member.compression` is `LZH` for every
+  `-lh?-` and `-lz?-` method, and `extra["lha.method"]` names the exact one.
 - Each member stores a CRC-16 of its data, which a read checks, so a member read to its
   end is at `Verification.CHECKSUM`. A header's own checksum or CRC is checked when it is
   read: a damaged header is `CorruptionError`.

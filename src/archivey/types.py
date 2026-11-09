@@ -107,8 +107,8 @@ class ContainerFormat(StrEnum):
     LHA = "lha"
     """An LHA archive (``.lzh``, ``.lha``), from DOS, the Amiga and Japanese PCs.
     Header levels 0 to 3 are read, with stored members (``-lh0-``, ``-lz4-``,
-    ``-pm0-``) and the ``-lh4-`` to ``-lh7-``, ``-lhx-`` and ``-lk7-`` methods; needs
-    a source that can seek."""
+    ``-pm0-``) and the ``-lh1-``, ``-lh4-`` to ``-lh7-``, ``-lhx-``, ``-lk7-``,
+    ``-lzs-`` and ``-lz5-`` methods; needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -703,8 +703,9 @@ class CompressionAlgorithm(Enum):
     """Microsoft's LZX, as cabinets store it: LZ77 with Huffman codes over a window
     of 32 KiB to 2 MiB."""
     LZH = "lzh"
-    """LHA's LZ77 with Huffman codes, the ``-lh1-`` to ``-lh7-`` methods and their
-    kin. ``ArchiveMember.extra["lha.method"]`` names the exact method."""
+    """LHA's LZ77 methods: with Huffman codes, ``-lh1-`` to ``-lh7-`` and their kin,
+    and without, LArc's ``-lzs-`` and ``-lz5-``. ``ArchiveMember.extra["lha.method"]``
+    names the exact method."""
     QUANTUM = "quantum"
     """Quantum, an older cabinet method. archivey lists its members but cannot read
     them."""

@@ -15,7 +15,7 @@ as a built-in, as CAB, XAR and ar are.
 | Source | A file or a stream that can seek. Not a pipe, for now: the listing seeks past each member's data to the next header |
 | Listing cost | Header by header, one read per header and a seek past the data |
 | Access cost | `DIRECT`: each member is its own stream |
-| Core dependencies | None. The LZH methods through `internal/streams/codecs/lzh_decoder.py`, archivey's own, in Python |
+| Core dependencies | None. The LZH methods through `internal/streams/codecs/lzh_decoder.py` and `lharc_decoder.py`, archivey's own, in Python |
 | Encryption | None in the format |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
 | Checksums | A CRC-16/ARC of each member's data, checked by the read; an 8-bit header sum (levels 0 and 1) or a header CRC-16 (the common record, levels 1 to 3), checked when the header is read |
@@ -24,8 +24,8 @@ as a built-in, as CAB, XAR and ar are.
 
 Not here, though a reader might look for it: self-extracting archives (the archive after
 a DOS, Windows, Amiga or X68000 stub) are not searched for; MacLHA's MacBinary members
-read with the MacBinary wrapper still around their data; the `-lh1-`, `-lzs-`, `-lz5-`,
-`-pm1-` and `-pm2-` methods are not decoded; multi-volume archives (a `0x39` record) are
+read with the MacBinary wrapper still around their data; PMarc's `-pm1-` and `-pm2-`
+methods are not decoded; multi-volume archives (a `0x39` record) are
 not joined; OS/2 extended attributes and MorphOS LhA's comment record (`0x71`) are not
 read, as lhasa does not read them.
 
@@ -138,15 +138,27 @@ LZX: with the fullest tables the format allows, about 2.2 µs an input byte (CPy
 The hot loop keeps the bit buffer and both tables in locals and reads a whole command
 without a call: about 8 MB/s on text, 4 to 5 on random data (CPython 3.11).
 
+### 2.5 The older methods
+
+`lharc_decoder.py` holds `-lh1-` (LHarc's LZHUF: one adaptive Huffman tree of 314
+symbols, rebuilt with halved counts when its root reaches 32 768, and a fixed code for
+the high part of each distance), and LArc's `-lzs-` (a 2 KiB ring, bit commands) and
+`-lz5-` (a 4 KiB ring that starts with a fixed pattern, flag bytes). They follow lhasa's
+`lh1_decoder.c`, `lzs_decoder.c` and `lz5_decoder.c`. None of their codes can name a byte
+outside its window, so the only damage they see before the CRC is input that ends
+early: past the input they read zeros, at most 8 bytes, and refuse output that needed
+them (`TruncatedError`). They run at about 6 to 12 MB/s on lhasa's long test files.
+
 ## 3. Tests
 
 `tests/test_lha.py`. Archives are written at test time by `tests/lha_util.py`, which
 writes headers of every level and holds an `-lh4-` to `-lh7-` encoder (no Linux tool
 here writes LHA; lhasa only extracts). lhasa reads every archive the tests write (checked
 whenever it is installed), so the decoder is not checked only against its own reading.
-Eighteen archives from lhasa's test suite, written by ten tools, are in
+Twenty-two archives from lhasa's test suite, written by eleven tools and by hand, are in
 `tests/fixtures/external/lha_lhasa/`: every decoded method, every header level, Unix and
-OS-9 modes, symlinks, directories, LHARK and a refused `-lh1-`. Commons Compress's fifteen
+OS-9 modes, symlinks, directories, LHARK, `-lh1-`, `-lzs-` and `-lz5-` (one crafted to
+copy the whole starting ring). Commons Compress's fifteen
 LHA archives match its listing (`tests/test_commons_compress_corpus.py`).
 
 Measured once (2026-11-09) against lhasa 0.4.0 on lhasa's whole test suite and
