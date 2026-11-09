@@ -294,6 +294,11 @@ def test_what_the_filter_returns_is_checked(tmp_path: Path, bad: str) -> None:
         ("a\\\\..\\b", "b"),  # an empty segment does not absorb the ..
         ("a\\.\\..\\b", "b"),  # nor does a "." segment
         ("a/./../b", "b"),
+        # A "." or empty segment after two others: only the one before it goes.
+        ("a/b/./../c", "a/c"),
+        ("a/b//../c", "a/c"),
+        # Collapsing leaves a leading separator, which goes too: never a rooted name.
+        ("a/..//b", "b"),
         ("in\u202evoice", "invoice"),
         ("a\x00b", "a_b"),
     ],

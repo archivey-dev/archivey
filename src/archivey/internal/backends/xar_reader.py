@@ -209,6 +209,11 @@ class _TocParser:
         parser.StartElementHandler = self._start
         parser.EndElementHandler = self._end
         parser.CharacterDataHandler = self._text.append
+        # Unbuffered, expat hands text over in pieces split at each newline, two
+        # per "a\n" line, and a list slot per piece is 8 bytes per byte of text.
+        # Buffered, a piece is up to expat's default buffer (8 KiB of UTF-8), and
+        # ``_end`` joins the pieces either way.
+        parser.buffer_text = True
         try:
             parser.Parse(xml, True)
         except expat.ExpatError as exc:
