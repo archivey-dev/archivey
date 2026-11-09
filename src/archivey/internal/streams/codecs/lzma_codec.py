@@ -331,16 +331,14 @@ class _AloneDecompressor:
     field set to "unknown", so it needs the end marker and stops at it. The first
     decoder alone handles a stream without a marker; the second alone handles one with a
     marker. While both run they give the same bytes, and the first one's are returned.
-    If the first one fails, and the second one has reached its end marker after exactly
-    the declared size, the stream is good: the second one's output for that call is
-    returned and it continues alone. An old liblzma fails in the call that writes the
-    last declared byte, before it reads the marker, so the second one may not be at its
-    end yet: after the switch it must still reach the marker without writing another
-    byte. The second decoder stops when its output passes the declared size (no marker
-    there) or when it fails. This costs a second decode only for a stream with a known
-    size, and only on such a liblzma; both dictionaries count against
-    ``max_decoder_memory``. A plain decode of the raw
-    LZMA1 data cannot replace it: without a marker, nothing tells it where the stream
+    An old liblzma fails in the call that writes the last declared byte, before it
+    reads the marker. If the second decoder has then written exactly the declared size,
+    it takes over: its output for that call is returned, and it must still reach the
+    marker without writing another byte. The second decoder stops when its output
+    passes the declared size (no marker there) or when it fails. This costs a second
+    decode only for a stream with a known size, and only on such a liblzma; both
+    dictionaries count against ``max_decoder_memory``. A plain decode of the raw LZMA1
+    data cannot replace it: without a marker, nothing tells it where the stream
     ends, so the trailing-data and next-stream checks would lose their start.
     """
 
