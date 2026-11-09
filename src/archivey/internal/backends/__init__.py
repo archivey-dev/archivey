@@ -1,24 +1,20 @@
 """Format backends — one self-registering reader module per archive format.
 
-Importing this package is required: each submodule ends with ``register_reader(...)``
-or, for a format written against ``archivey.formats``, ``register_builtin_format(...)``,
-so a bare ``import archivey.internal.backends`` fills the registry. Do not remove the
-side-effect imports below.
+Importing this package is required: each reader module ends by registering its backend
+(``register_reader(...)``, or ``register_builtin_format(...)`` for the modules written
+against ``archivey.formats``), so a bare ``import archivey.internal.backends`` fills
+the registry. Do not remove the side-effect imports below.
 
-Module map:
+Module map. These are written against ``BaseArchiveReader`` and register with
+``register_reader``. A reading backend usually has a ``*ReadBackend`` (registry /
+``open_read``) and a ``*Reader``; ``udif`` only refuses. The extra modules on a bullet
+are that reader's helpers:
 
-- :mod:`.zip_reader` — ZIP (stdlib central directory; codecs/crypto for member data)
+- :mod:`.zip_reader` / ``zip_parser`` — ZIP (native central-directory parser;
+  codecs/crypto for member data); ``zip_local_walk`` / ``zip_forward_reader`` read a
+  ZIP front to back from a source that cannot seek
 - :mod:`.tar_reader` — TAR / compressed TAR (native :mod:`.tar_parser`)
 - :mod:`.udif` — UDIF disk images (``.dmg``); recognised and refused, not read
-- :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
-- :mod:`.ar_reader` — Unix ar, written against ``archivey.formats`` like ISO
-- :mod:`.rpm_reader` — RPM packages (headers, then the CPIO payload), the same way
-- :mod:`.deb_reader` — Debian packages, an ar layer whose tars it reads through
-  ``ReaderContext.open_nested``
-- :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio), the same way
-- :mod:`.squashfs_reader` — SquashFS 4.0, the same way
-- :mod:`.xar_reader` — XAR (``.xar``, macOS ``.pkg`` and ``.xip``), the same way
-- :mod:`.cab_reader` — Microsoft cabinets (stored, MSZIP, LZX), the same way
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
 - :mod:`.sevenzip_methods` / ``sevenzip_parser`` / ``sevenzip_pipeline`` /
@@ -26,17 +22,31 @@ Module map:
 - :mod:`.rar_parser` / ``rar_unrar`` / ``rar_reader`` — native RAR metadata + ``unrar`` data;
   ``rar_unar`` — the RAR refusals and pipe layout for the opt-in ``unar`` data path
 
+These are written against the public plugin API, ``archivey.formats``, as a format
+added from outside would be: a ``*Handler`` declares the format and opens a
+``*Reader``, and ``internal/format_adapter.py`` makes a backend of the handler:
+
+- :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
+- :mod:`.ar_reader` — Unix ar
+- :mod:`.rpm_reader` — RPM packages (headers, then the CPIO payload)
+- :mod:`.deb_reader` — Debian packages, an ar layer whose tars it reads through
+  ``ReaderContext.open_nested``
+- :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio)
+- :mod:`.squashfs_reader` — SquashFS 4.0
+- :mod:`.xar_reader` — XAR (``.xar``, macOS ``.pkg`` and ``.xip``)
+- :mod:`.cab_reader` — Microsoft cabinets (stored, MSZIP, LZX)
+
 Format-specific helpers that are not readers live here too, next to the parser they share
 logic with: the scan-hit validators :mod:`.zip_detect`, :mod:`.sevenzip_detect` and
 :mod:`.rar_detect`, which the readers pass to ``internal/sfx.py``'s scan as ``HitValidator``
 callbacks (the dependency runs from here to ``sfx.py``, never back; ``zip_detect`` also
 carries the split-segment name check ``core.py`` uses), and the ZIP ciphers
 :mod:`.zipcrypto` and :mod:`.zip_aes`. The axis is per format, not per phase: everything
-that supports one format sits together so it can be read and kept in sync at once. Format-agnostic detection (``detection.py``, ``detection_workspace.py``, ``sfx.py``)
+that supports one format sits together so it can be read and kept in sync at once.
+Format-agnostic detection (``detection.py``, ``detection_workspace.py``, ``sfx.py``)
 stays at the top of ``internal/``.
 
-Typical split inside a format: ``*ReadBackend`` (registry / ``open_read``) +
-``*Reader`` (``BaseArchiveReader``). Native 7z/RAR also split parse vs decode.
+Native 7z and RAR also split parse from decode.
 """
 
 # deb registers before ar: a ``.deb`` starts with ar's magic, and the first magic that

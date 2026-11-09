@@ -18,7 +18,7 @@ and registered as a built-in, as ISO, SquashFS and ar are.
 | Core dependencies | None. zlib, bz2 and lzma from the standard library; the XML through `xml.parsers.expat` |
 | Encryption | None read. Apple's `xar` can sign the TOC (`<signature>`), which is not checked |
 | Name encoding | UTF-8 text in the XML, or base64 of raw bytes (`enctype="base64"`), then UTF-8 first, `encoding=`, escaped |
-| Checksums | The TOC's (SHA-1 by default, MD5, or a named algorithm), checked at open; each file's `extracted-checksum` as `member.hashes`, checked by the verifying stream |
+| Checksums | The TOC's (SHA-1 by default, MD5, or a named algorithm), checked at open; each file's `extracted-checksum` as `member.hashes`, checked by the verifying stream. One whose style is not MD5, SHA-1, SHA-256 or SHA-512, or that names no style, is not a hash: the file reads unchecked and reports `DIGEST_UNVERIFIABLE` (`reason="unknown_algorithm_or_backend"`, the style in `algorithm`) |
 | Refuses | Version other than 1; a DOCTYPE in the TOC; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-xar/spec.md` |
 
