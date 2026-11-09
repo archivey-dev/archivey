@@ -20,11 +20,8 @@ is ``dev-docs/formats/cab.md``.
 
 from __future__ import annotations
 
-import functools
 import io
-import operator
 import struct
-import sys
 import threading
 import zlib
 from collections.abc import Iterator
@@ -148,18 +145,25 @@ class _Location(NamedTuple):
 
 def _checksum(data: bytes, seed: int = 0) -> int:
     """libmspack's ``cabd_checksum``: the little-endian 32-bit words XORed together,
-    then the 1 to 3 bytes left, the first one highest."""
+    then the 1 to 3 bytes left, the first one highest.
+
+    The words are read as one little-endian integer and folded in halves cut on a word
+    boundary until one word is left: each fold XORs words in pairs, which keeps the
+    XOR of them all. One Python-level XOR per word is about seven times slower on a
+    32 KiB block, and slower than inflating the block.
+    """
     whole = len(data) & ~3
-    words = (
-        memoryview(data)[:whole].cast("I")
-        if sys.byteorder == "little"
-        else struct.unpack(f"<{whole // 4}I", data[:whole])
-    )
-    value = functools.reduce(operator.xor, words, seed)
+    value = int.from_bytes(memoryview(data)[:whole], "little")
+    bits = whole * 8
+    while bits > 32:
+        # The low half: a whole number of words, at most half of them.
+        half = (bits >> 6) << 5
+        value = (value & ((1 << half) - 1)) ^ (value >> half)
+        bits -= half
     tail = 0
     for byte in data[whole:]:
         tail = tail << 8 | byte
-    return value ^ tail
+    return value ^ seed ^ tail
 
 
 def _block_checksum(payload: bytes, decoded: int) -> int:

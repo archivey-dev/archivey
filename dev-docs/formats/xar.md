@@ -59,7 +59,10 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
   declarations only exist inside a document type, so none is expanded. The parser keeps
   one frame per open `<file>`, reserves the entry's slot when the element opens (so a
   directory is listed before its files) and computes its path when its `<name>` closes,
-  from the enclosing frame's. `max_members` is checked as each `<file>` opens. The TOC
+  from the enclosing frame's. A second `<name>` with the same text is the same name: Apple's
+  productbuild writes each top-level file's name twice (seen in the Node.js, GitHub CLI and
+  Miniconda installers), and bsdtar 3.7 joins the two into `DistributionDistribution`. A second
+  name that differs raises `CorruptionError`. `max_members` is checked as each `<file>` opens. The TOC
   digest is then checked over the compressed TOC bytes, as Apple's `xar` computes it.
 - **Hard links.** Apple's `xar` and bsdtar mark the entry that holds the data
   `<type link="original">hardlink</type>` (listed as a `FILE`) and every other name

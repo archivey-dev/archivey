@@ -51,6 +51,7 @@ import zlib
 from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta, timezone
+from functools import cache
 from types import ModuleType
 from typing import (
     TYPE_CHECKING,
@@ -950,6 +951,26 @@ def _nm_name_is_empty(rr: RockRidge) -> bool:
     """Whether ``NM`` entries are present and spell no name: the case where
     :func:`_nm_name` gives ``None`` although the record has ``NM`` entries."""
     return _has_nm_entries(rr) and not rr.name()
+
+
+@cache
+def _tf_modify_access_fields() -> tuple[str, str]:
+    """The attributes of pycdlib's ``RRTFRecord`` that hold a Rock Ridge ``TF`` entry's
+    modification time and its access time, in that order.
+
+    RRIP 1.12 (4.1.6) and the Linux kernel give flag bit 1 to the modification time
+    and bit 2 to the access time. pycdlib 1.x names the bits the other way round, so
+    its ``access_time`` holds the modification time. Asked of pycdlib once, with a
+    record that sets bit 1 only, so a pycdlib that fixes the order is read right too.
+    """
+    from pycdlib import rockridge as rr_mod
+
+    probe = rr_mod.RRTFRecord()
+    # "TF", length 12, version 1, flags = bit 1, then one 7-byte date.
+    probe.parse(b"TF\x0c\x01\x02" + bytes((100, 1, 1, 0, 0, 0, 0)))
+    if getattr(probe, "modification_time", None) is not None:
+        return "modification_time", "access_time"
+    return "access_time", "modification_time"
 
 
 def _rr_entry_groups(rr: RockRidge) -> tuple[RockRidgeEntries, ...]:
@@ -2441,15 +2462,16 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # Rock Ridge TF entries carry the POSIX times (in dr_entries, or the CE
             # overflow area). A TF modification time wins over the directory-record
             # date, which cannot hold hundredths or the long form's four-digit year.
+            modify_field, access_field = _tf_modify_access_fields()
             for entries in _rr_entry_groups(rr):
                 tf = getattr(entries, "tf_record", None)
                 if tf is None:
                     continue
                 modified = modified or convert(
-                    getattr(tf, "modification_time", None), "modified", "rock_ridge"
+                    getattr(tf, modify_field, None), "modified", "rock_ridge"
                 )
                 accessed = accessed or convert(
-                    getattr(tf, "access_time", None), "accessed", "rock_ridge"
+                    getattr(tf, access_field, None), "accessed", "rock_ridge"
                 )
                 created = created or convert(
                     getattr(tf, "creation_time", None), "created", "rock_ridge"

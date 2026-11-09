@@ -192,7 +192,10 @@ a thin planner that decides each fetch's start and length:
    what bytes are returned, only how they are fetched. On a local source it does nothing.
    A format plugin does not call it: it names the spans a member's stream reads in
    `MemberData.ranges`, and archivey passes them to the source when `open_member`
-   returns. A source keeps its latest 8 pending hints, and a read takes the newest one
+   returns. A plugin that names no `ranges` still gets a hint when its stream is a
+   source view, a decoder over one, or a `block_stream` of those (one hint per block,
+   as each is read): archivey infers the view's span; declared `ranges` win over it.
+   A source keeps its latest 8 pending hints, and a read takes the newest one
    that covers it, so members read side by side each keep their own. A span that starts
    within the read-through distance past a run's window continues that run when reads
    have taken the window to its end, so spans that lie almost back to back (ISO extents
@@ -207,6 +210,7 @@ a thin planner that decides each fetch's start and length:
    | 7z, open | The next-header span named by the signature header |
    | 7z, member | The pack stream span, from pack info; for a solid folder, from the folder start |
    | ISO, member | Each of the member's extents, named in the plugin API's `MemberData.ranges` |
+   | Plugin, member, no `ranges` | The span of the view the stream reads, or of each `block_stream` block's view as it is read (XAR: a decoder over each member's view) |
    | RAR, listing | None. A hint at each next header turned the walk's read-through into one request per header (measured in stage 3); rule 2 covers it |
    | TAR | None; rule 2 covers it |
 
@@ -374,13 +378,16 @@ Rejected:
 
 ### D4. Sibling volumes over fsspec
 
-For an `OpenFile` source, volume discovery lists the parent directory once
-(`fs.ls(parent, detail=False)`) and applies the same naming rules as local discovery
-(`archive-reading` §Multi-volume). `discover_volume_siblings` is split so that the rules
-run on a list of names, and the local and fsspec callers each supply the list. Each
-volume becomes its own `RangeSource`. A file system without listing (plain HTTP) finds no
-siblings, and a multi-volume open then fails as it does today for a lone first volume;
-an explicit sequence of `OpenFile` objects is the way to open those.
+For an `OpenFile` source, volume discovery lists the parent directory once (`fs.ls(parent,
+detail=True)`, cached per directory) and applies the same naming rules as local discovery
+(`archive-reading` §Multi-volume). The rules run on a path-like adaptor,
+`RemoteVolumePath`, that answers every question they ask (`iterdir`, `is_file`,
+`is_symlink`) from that one listing, so the same rule code serves both callers; the
+listing's `type` and `islink` keep the link refusal. Each volume becomes its own
+`RangeSource`, with its size taken from the listing, so no part costs an `info` request. A
+file system without listing (plain HTTP) finds no siblings, and a multi-volume open then
+fails as it does today for a lone first volume; an explicit sequence of `OpenFile` objects
+is the way to open those.
 
 ### D5. Batched fetches for whole-archive passes
 
