@@ -106,6 +106,7 @@ from archivey.formats import (
 from archivey.internal.backends.cd_sectors import (
     PROBE_SIZE,
     RAW_SECTOR_SYNC,
+    USER_DATA_SIZE,
     CookedSource,
     RawSectorLayout,
     cooked_source,
@@ -892,7 +893,9 @@ def _declared_length(fp: BinaryIO, image_length: int) -> int | None:
     return None
 
 
-def _cut_short(fp: BinaryIO, exc: Exception) -> TruncatedError | None:
+def _cut_short(
+    fp: BinaryIO, exc: Exception, raw: CookedSource | None = None
+) -> TruncatedError | None:
     """``exc``, which pycdlib raised while opening the image, as a truncation, if it is one.
 
     pycdlib reports a read that comes back short as an invalid image, or fails parsing
@@ -913,9 +916,18 @@ def _cut_short(fp: BinaryIO, exc: Exception) -> TruncatedError | None:
     if declared is None or position > declared:
         return None
     detail = _pycdlib_detail(exc)
+    if raw is None:
+        sizes = f"it declares {declared} bytes and the file holds {image_length}"
+    else:
+        # ``fp`` is the image's user data: name the raw sectors the file holds too.
+        sectors = -(-declared // USER_DATA_SIZE)
+        sizes = (
+            f"it declares {sectors} sectors and the {raw.raw_size}-byte raw sector "
+            f"image holds {image_length // USER_DATA_SIZE} whole ones"
+        )
     return TruncatedError(
-        f"Error reading ISO image: the image ends before its own structures do: it "
-        f"declares {declared} bytes and the file holds {image_length}"
+        "Error reading ISO image: the image ends before its own structures do: "
+        + sizes
         + ("" if detail is None else f" ({detail})")
     )
 
@@ -1562,7 +1574,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             try:
                 self._iso.open_fp(self._iso_fp)
             except _PYCDLIB_ERRORS as exc:
-                truncated = _cut_short(self._iso_fp, exc)
+                truncated = _cut_short(
+                    self._iso_fp,
+                    exc,
+                    source if isinstance(source, CookedSource) else None,
+                )
                 if truncated is None:
                     raise
                 raise truncated from exc
@@ -2837,16 +2853,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         self._release_archive_handles()
 
 
-def _describe_raw_sector_image(source: BinaryIO) -> str | None:
-    """Name the layout of a raw CD sector image, or ``None`` if ``source`` is not one.
+def raw_layout_of(source: BinaryIO) -> RawSectorLayout | None:
+    """The layout of a raw CD sector image, or ``None`` if ``source`` is not one.
 
     ``source`` is left at the position it was handed in at.
     """
-    layout = _raw_layout_of(source)
-    return None if layout is None else layout.describe()
-
-
-def _raw_layout_of(source: BinaryIO) -> RawSectorLayout | None:
     start = source.tell()
     try:
         head = source.read(PROBE_SIZE)
@@ -2859,35 +2870,26 @@ def refuse_raw_sector_image(
     source: BinaryIO,
     format: ArchiveFormat,
     archive_name: str | None,
-    *,
-    replacement: str | None = None,
 ) -> None:
     """Raise ``UnsupportedFeatureError`` if ``source`` is a raw CD sector image that
     cannot be read.
 
     Mode 1 and Mode 2 Form 1 images are read by the built-in reader, through
-    ``cd_sectors.cooked_source``. A Form 2 image holds no filesystem, an unknown mode
-    or an image too short to show its sector size is not read, and a replacement
-    reader (named by ``replacement``) is handed no raw image at all: what it would get
-    is not an ISO 9660 image.
+    ``cd_sectors.cooked_source``. A Form 2 image holds no filesystem, and an unknown
+    mode or an image too short to show its sector size is not read. (A replacement
+    reader is refused every raw image, by ``open_archive`` itself.)
 
     Called by ``open_archive`` for a source resolved as ISO, before the backend's
     availability check, so the refusal does not depend on pycdlib being installed: a
     caller without it would otherwise be told to install it, only to be refused after.
     """
-    layout = _raw_layout_of(source)
-    if layout is None or (layout.readable and replacement is None):
+    layout = raw_layout_of(source)
+    if layout is None or layout.readable:
         return
     if layout.form2:
         what = (
             "Its sectors carry video or audio, not an ISO 9660 filesystem, so there is "
             "nothing here to list."
-        )
-    elif layout.readable:
-        what = (
-            f"It is read by {replacement} (ArchiveyConfig.formats.replace), and a "
-            "replacement plugin is not handed raw sector images; convert it to a "
-            "plain .iso first (for example with bchunk or bin2iso)."
         )
     else:
         what = (

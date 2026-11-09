@@ -929,6 +929,31 @@ def test_a_plugins_ranges_reach_the_range_source(monkeypatch: pytest.MonkeyPatch
     assert hints == [(extent, extent + len(payload))]
 
 
+def test_a_raw_sector_images_ranges_name_raw_sectors(monkeypatch: pytest.MonkeyPatch):
+    """A raw CD image's hints name the whole raw sectors that hold the extent, not the
+    extent's offsets in the user data. Red with ``IsoReader.open_member``'s mapping
+    removed (the hint is the cooked range)."""
+    from tests.test_iso_raw_sectors import to_raw
+
+    rng = random.Random(11)
+    payload = rng.randbytes(20_000)
+    iso = _iso_bytes({"b.bin": payload})
+    data = to_raw(iso)
+    hints: list[tuple[int, int]] = []
+    original = RangeSource.will_read
+
+    def spy(self: RangeSource, start: int, end: int) -> None:
+        hints.append((start, end))
+        original(self, start, end)
+
+    monkeypatch.setattr(RangeSource, "will_read", spy)
+    with open_archive(OpenFile(RecordingFS(data), "/a.bin", mode="rb")) as reader:
+        assert reader.read(reader.get("B.BIN")) == payload
+    sector = iso.index(payload[:64]) // 2048
+    sectors = -(-len(payload) // 2048)
+    assert hints == [(sector * 2352, (sector + sectors) * 2352)]
+
+
 @pytest.mark.parametrize("encoding", ["none", "gzip"])
 def test_a_plugin_view_is_hinted_without_ranges(
     encoding: str, monkeypatch: pytest.MonkeyPatch

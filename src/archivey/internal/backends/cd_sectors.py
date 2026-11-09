@@ -112,7 +112,7 @@ def raw_sector_layout(head: bytes) -> RawSectorLayout | None:
 
 
 class _SectorChecker:
-    """Checks raw sectors against the layout and cuts them to their user data."""
+    """Checks raw sectors against the layout, and knows the image's cooked size."""
 
     def __init__(
         self, layout: RawSectorLayout, archive_name: str | None, raw_size: int
@@ -126,6 +126,9 @@ class _SectorChecker:
         tail = max(0, min(USER_DATA_SIZE, rest - layout.data_offset))
         self.cooked_size = full * USER_DATA_SIZE + tail
 
+    def _is_form2(self, sector: bytes) -> bool:
+        return self.layout.mode == 2 and bool(sector[18] & 0x20)
+
     def problem(self, sector: bytes) -> str | None:
         """Why ``sector`` is not a data sector of this layout, or ``None``."""
         if len(sector) < self.layout.data_offset:
@@ -134,15 +137,15 @@ class _SectorChecker:
             return "it does not start with the sector sync"
         if sector[15] != self.layout.mode:
             return f"it is a mode {sector[15]} sector, not mode {self.layout.mode}"
-        if self.layout.mode == 2 and sector[18] & 0x20:
-            return "form2"
+        if self._is_form2(sector):
+            return "it is a Mode 2 Form 2 sector"
         return None
 
     def check(self, index: int, sector: bytes) -> None:
         problem = self.problem(sector)
         if problem is None:
             return
-        if problem == "form2":
+        if self._is_form2(sector):
             raise UnsupportedFeatureError(
                 f"Raw CD sector {index} is a Mode 2 Form 2 sector (video or audio, as "
                 "on a Video CD or in a CD-XA file); its payload is not ISO 9660 data, "
@@ -278,6 +281,11 @@ class CookedSource(ReaderSource):
                 return stream.read(n)
 
         super().__init__(view, checker.cooked_size, raw.path, read_at)
+
+    @property
+    def raw_size(self) -> int:
+        """The length of the raw image file."""
+        return self._checker.raw_size
 
     def raw_range(self, start: int, end: int) -> tuple[int, int]:
         lo, hi = self.layout.raw_range(start, end)

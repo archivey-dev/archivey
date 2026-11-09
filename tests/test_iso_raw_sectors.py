@@ -118,10 +118,10 @@ def test_explicit_iso_format_refuses_too() -> None:
 
 
 def test_the_probe_restores_the_stream_position() -> None:
-    from archivey.internal.backends.iso_reader import _describe_raw_sector_image
+    from archivey.internal.backends.iso_reader import raw_layout_of
 
     stream = io.BytesIO(b"\x00" * 4096)
-    assert _describe_raw_sector_image(stream) is None
+    assert raw_layout_of(stream) is None
     assert stream.tell() == 0
 
 
@@ -263,13 +263,14 @@ def test_raw_ranges_cover_whole_sectors() -> None:
     assert layout.raw_range(4096, 4096) == (4704, 4704)
 
 
-def test_a_replacement_is_refused_a_readable_raw_image(tmp_path: Path) -> None:
-    # Covered for the message in test_format_policy; this pins that the readable
-    # layouts are among those refused, and why.
-    from archivey.internal.backends.iso_reader import refuse_raw_sector_image
-
-    with pytest.raises(UnsupportedFeatureError, match="replacement plugin is not"):
-        refuse_raw_sector_image(
-            io.BytesIO(_image(mode=1)), ArchiveFormat.ISO, None, replacement="Plugin"
-        )
-    refuse_raw_sector_image(io.BytesIO(_image(mode=1)), ArchiveFormat.ISO, None)
+@requires("pycdlib")
+def test_a_cut_image_names_sectors_not_user_data_bytes(tmp_path: Path) -> None:
+    raw = to_raw(_plain_iso())
+    path = tmp_path / "disc.bin"
+    path.write_bytes(raw[: len(raw) // 2])
+    sectors = len(raw) // 2352
+    with pytest.raises(TruncatedError) as ei:
+        open_archive(path)
+    message = str(ei.value)
+    assert f"declares {sectors} sectors" in message
+    assert f"the {len(raw) // 2}-byte raw sector image holds" in message

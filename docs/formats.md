@@ -1130,8 +1130,9 @@ other members because of a member's name any more. Setting it to `True` warns.
   `.iso`. Only the first track is read, so a mixed-mode disc (data, then audio) lists its data
   track, and the audio after it is not reported as trailing data. Each sector's sync and mode are
   checked when it is read; its EDC and ECC error-correction bytes are not. A sector that is not a
-  data sector (damage, or a Mode 2 Form 2 sector inside a file, as in Video CD and CD-XA files)
-  fails the member that reads it. The `.cue` sheet is not read: a disc whose filesystem is in a
+  data sector (damage, or a Mode 2 Form 2 sector, as in Video CD and CD-XA files) fails the read
+  that reaches it: reading the member that holds it, or opening the image when the sector holds
+  the volume descriptors or a directory. The `.cue` sheet is not read: a disc whose filesystem is in a
   later track or session is not found. A Mode 2 Form 2 image, which holds video or audio and no
   filesystem, or an unknown sector mode, is refused with `UnsupportedFeatureError` naming the
   layout.
