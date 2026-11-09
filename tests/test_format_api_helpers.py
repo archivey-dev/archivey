@@ -28,6 +28,7 @@ def _context() -> tuple[ReaderContext, list[tuple[Any, ...]]]:
         report=lambda *args: reports.append(args),
         link_target_unavailable=_unused,
         hold=_unused,
+        charge_metadata=_unused,
     )
     return context, reports
 
