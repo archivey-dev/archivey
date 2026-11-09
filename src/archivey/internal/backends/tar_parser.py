@@ -1942,8 +1942,9 @@ class TarWalker:
         Each field takes the strongest source that sets it: a PAX record (the
         member's own over a global one), then a GNU ``L`` or ``K`` header, then the
         header block. The sparse map, when the member has one, is read here too
-        (:meth:`_old_gnu_map`, :meth:`_pax_sparse`), so its blocks come before
-        ``data_offset``. A PAX size or sparse record that does not parse is
+        (:meth:`_old_gnu_map`, :meth:`_pax_sparse`). An old GNU map's extension
+        blocks and a PAX 1.0 map sit in the data area, so ``data_offset`` comes after
+        them; a 0.x map is in the PAX records. A PAX size or sparse record that does not parse is
         :class:`CorruptionError`; an old GNU map extension block that does not is
         :class:`_RejectedHeader`.
         """
@@ -2096,8 +2097,9 @@ class TarWalker:
           major (the member's own or a global one) of 1 or more. The map is the
           first blocks of the data area.
         - 0.1: ``GNU.sparse.map``, one record holding every pair.
-        - 0.0: ``GNU.sparse.size`` or repeated ``GNU.sparse.offset`` /
-          ``GNU.sparse.numbytes`` records.
+        - 0.0: a ``GNU.sparse.size`` record or at least one ``GNU.sparse.offset``
+          record. The map is the ``GNU.sparse.offset`` / ``GNU.sparse.numbytes``
+          records, in order.
 
         A ``GNU.sparse.major`` or ``GNU.sparse.realsize`` with none of these is
         :class:`CorruptionError`. ``merged`` is the records in force (the global ones
