@@ -190,12 +190,13 @@ def run_test(
                                     members_blocked=0,
                                 )
                             )
-                        # Counted once its last progress event is sent: an OSError
-                        # from that event fails the member below, and a member is
-                        # counted only once, OK or failed.
-                        ok += 1
                         if verbose:
                             print(f"OK   {escape_member_name(member.name)}", file=err)
+                        # Counted after the member's last progress event and its -v
+                        # line, the writes in this ``try``: an OSError from either
+                        # fails the member below, and a member is counted only once,
+                        # OK or failed.
+                        ok += 1
                     except BrokenPipeError:
                         # The -v line or the progress bar lost its reader: not a
                         # member failure. main() exits 141 for it, with no message.

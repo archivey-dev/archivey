@@ -1754,6 +1754,28 @@ def test_progress_error_on_member_done_counts_the_member_once(
     assert err.getvalue().splitlines()[-1] == "1 OK, 1 failed"
 
 
+class _ErrFullOnLine(io.StringIO):
+    """A report stream whose disk fills (``ENOSPC``) on writing one given line."""
+
+    def __init__(self, line: str) -> None:
+        super().__init__()
+        self.line = line
+
+    def write(self, s: str) -> int:
+        if s == self.line:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return super().write(s)
+
+
+def test_verbose_line_error_counts_the_member_once(tmp_path: Path) -> None:
+    """A member whose read passed, then whose ``-v`` OK line failed to write, is
+    counted once: as failed, not as both OK and failed."""
+    archive = _zip(tmp_path / "two.zip", {"a.txt": b"a" * 10, "b.txt": b"b" * 10})
+    err = _ErrFullOnLine("OK   a.txt")
+    assert main(["test", "-v", str(archive)], out=io.StringIO(), err=err) == EXIT_FAIL
+    assert err.getvalue().splitlines()[-1] == "1 OK, 1 failed"
+
+
 class _ClosedPipeStdout(io.StringIO):
     """A stdout whose every write raises ``BrokenPipeError``, as a closed pipe does."""
 
