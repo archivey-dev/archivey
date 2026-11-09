@@ -11,6 +11,7 @@ Two review-hub findings on ``rar_unrar``:
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
@@ -20,8 +21,15 @@ from pathlib import Path
 import pytest
 
 from archivey import open_archive
-from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
+from archivey.exceptions import (
+    ArchiveyError,
+    PackageNotInstalledError,
+    ReadError,
+    ResourceUnavailableError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.backends import rar_unrar
+from archivey.internal.external.cli import spawn_for_stdout
 from archivey.terminal import display_path
 from tests.conftest import requires_binary
 
@@ -284,3 +292,70 @@ def test_unrar_child_runs_under_a_utf8_locale(monkeypatch: pytest.MonkeyPatch) -
     env = rar_unrar._unrar_env()
     assert env is not None
     assert env["LC_ALL"] in rar_unrar._UTF8_LOCALE_NAMES
+
+
+# --- a program that does not start -------------------------------------------
+
+
+def _spawn_raising(monkeypatch: pytest.MonkeyPatch, exc: OSError) -> None:
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/stub/unrar")
+
+    def popen(*_args: object, **_kwargs: object) -> object:
+        raise exc
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+
+def _windows_error(winerror: int, errno_value: int) -> OSError:
+    exc = OSError(errno_value, os.strerror(errno_value))
+    exc.winerror = winerror  # type: ignore[attr-defined]
+    return exc
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (FileNotFoundError(errno.ENOENT, "No such file"), PackageNotInstalledError),
+        (PermissionError(errno.EACCES, "Permission denied"), PackageNotInstalledError),
+        (PermissionError(errno.EPERM, "Not permitted"), PackageNotInstalledError),
+        (OSError(errno.ENOEXEC, "Exec format error"), PackageNotInstalledError),
+        (OSError(errno.ENOTDIR, "Not a directory"), PackageNotInstalledError),
+        (OSError(errno.E2BIG, "Argument list too long"), ReadError),
+        # A Windows command line over 32 767 characters: Python says ENOENT.
+        (_windows_error(206, errno.ENOENT), ReadError),
+        (OSError(errno.EMFILE, "Too many open files"), ResourceUnavailableError),
+        (OSError(errno.ENOMEM, "Cannot allocate memory"), ResourceUnavailableError),
+        (OSError(errno.EAGAIN, "Resource unavailable"), ResourceUnavailableError),
+        (OSError(errno.EIO, "Input/output error"), ReadError),
+    ],
+    ids=lambda value: (
+        getattr(value, "__name__", None)
+        or f"{errno.errorcode.get(value.errno, value.errno)}"
+        + (f"-win{value.winerror}" if getattr(value, "winerror", None) else "")
+    ),
+)
+def test_only_a_program_that_cannot_run_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch, exc: OSError, expected: type[Exception]
+) -> None:
+    """``PackageNotInstalledError`` says to install the program. That is right only
+    when the program itself cannot run; a command line that is too long, or a system
+    short of resources, gets an error that names what went wrong."""
+    _spawn_raising(monkeypatch, exc)
+    with pytest.raises(ArchiveyError) as caught:
+        rar_unrar.open_unrar_p("a.rar", member="plain.txt")
+    assert type(caught.value) is expected
+    assert caught.value.__cause__ is exc
+    if expected is not PackageNotInstalledError:
+        assert "not found" not in str(caught.value)
+        assert "unrar could not be started" in str(caught.value)
+
+
+def test_a_command_line_the_system_refuses_is_not_a_missing_program() -> None:
+    """A real refusal: an argument longer than every supported system takes (Linux
+    takes 128 KiB in one argument, macOS 1 MiB in all, Windows 32 767 characters)."""
+    with pytest.raises(ReadError, match="command line is longer than the system"):
+        spawn_for_stdout(
+            [sys.executable, "-c", "pass", "x" * (4 << 20)],
+            name="python",
+            not_started="python is not installed",
+        )

@@ -226,6 +226,61 @@ def test_a_large_member_without_a_plain_name_is_copied(
     assert spawned == [None, "aXb", "plain.txt"]
 
 
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    "names",
+    [
+        # Longer than unrar 7.00 keeps (65 536): no mask matched it.
+        ["a" * 66001],
+        # Both cut to the same 65 536 characters: the first one's mask matched both.
+        ["a" * 65536, "a" * 65536 + "zz"],
+        # Past what unrar 6.x keeps (2047), the same two ways.
+        ["b" * 3000],
+        ["b" * 2047, "b" * 2047 + "zz"],
+    ],
+    ids=["cut-7x", "collide-7x", "cut-6x", "collide-6x"],
+)
+def test_a_large_member_with_a_name_unrar_cuts_reads_its_own_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, names: list[str]
+) -> None:
+    """``unrar`` keeps only a prefix of a long stored name, and compares that with the
+    whole ``-n`` mask. Such a name is not plain, so the read goes through a
+    synthetic archive, whose placeholder names are short."""
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    for build in (_nocrc_rar5, _build_rar5):
+        path = build(tmp_path, [(name.encode(), 1) for name in names])
+        with open_archive(path, config=_UNRAR_ONLY) as reader:
+            assert isinstance(reader, RarReader)
+            members = list(reader.members())
+            assert [m.name for m in members] == names
+            assert [reader._plain_mask(m) for m in members] == [None] * len(names)
+            got = [reader.read(member) for member in members]
+        assert got == [_payload(i) for i in range(len(names))], build.__name__
+
+
+def test_a_long_name_is_not_plain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bound counts UTF-16 units, as Windows ``unrar`` stores a name: a character
+    outside the BMP counts twice."""
+    monkeypatch.setattr(rar_reader, "unrar_mask_carries_non_ascii", lambda: True)
+    bound = rar_reader._UNRAR_PLAIN_NAME_MAX
+    for names, plain in [
+        (["a" * bound], True),
+        (["a" * (bound + 1)], False),
+        (["\U0001f600" * (bound // 2)], True),
+        (["\U0001f600" * (bound // 2) + "a"], False),
+        # One long name leaves no mask trusted for the archive.
+        (["a" * (bound + 1), "plain.txt"], False),
+    ]:
+        path = _nocrc_rar5(tmp_path, [(name.encode(), 1) for name in names])
+        with open_archive(path, config=_UNRAR_ONLY) as reader:
+            assert isinstance(reader, RarReader)
+            masks = [reader._plain_mask(m) for m in reader.members()]
+        assert masks == (names if plain else [None] * len(names)), names[0][:3]
+
+
 def test_a_rar4_history_row_keeps_the_suffix_its_name_stores() -> None:
     """A RAR 1.5-4 history row stores ``;n`` in its name; the mask must not add a
     second one (``file.txt;1;1`` selects nothing)."""
