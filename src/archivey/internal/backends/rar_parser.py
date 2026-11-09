@@ -928,8 +928,9 @@ def _merge_volume(
 ) -> None:
     """Fold one later volume's listing into ``merged``, the set's listing so far.
 
-    Archive-wide flags combine, per-volume reports add up, and a member that
-    continues from the volume before is folded into its first part. With
+    Archive-wide flags combine, the per-volume lists and maps are merged, the first
+    ``truncated`` / ``damaged`` reason is kept, and a member that continues from the
+    volume before is folded into its first part. With
     ``after_gap`` the volume before is missing, so its first member is listed on
     its own instead.
     """
@@ -2563,9 +2564,12 @@ class _Rar3Walk:
     4. ``ENDARC`` ends the volume and says whether another volume follows.
 
     Any other block type is skipped. A file that ends where a header should start is
-    a clean end: RAR 1.5-4 writers may omit ``ENDARC``. A cut or a damaged header
-    after ``MAIN`` stops the walk and keeps the members listed before it
-    (``RarArchive.truncated`` / ``RarArchive.damaged``).
+    a clean end: RAR 1.5-4 writers may omit ``ENDARC``. A cut stops the walk and keeps
+    the members listed before it (``RarArchive.truncated``). So does a header after
+    ``MAIN`` whose CRC fails (``RarArchive.damaged``), and a damaged end block with
+    only zeros after it. In an encrypted header, either failure is a wrong password
+    until the password is proven (:func:`_header_failure`). Any other invalid header
+    raises.
     """
 
     def __init__(
@@ -3775,13 +3779,16 @@ class _Rar5Walk:
        holds copies of the FILE headers. When those copies are readable, the walk
        uses them in place of reading the FILE headers they copy (§1.1 of
        ``dev-docs/formats/rar.md``).
-    3. ``FILE`` is a member. ``SERVICE`` carries extra data: ``CMT`` is the archive
-       comment, and a damaged one is reported.
+    3. ``FILE`` is a member. ``SERVICE`` carries extra data. A stored ``CMT`` is
+       read as the archive comment, and any service header whose extra records do
+       not parse is reported in ``damaged_service_headers``.
     4. ``ENDARC`` ends the volume and says whether another volume follows.
 
-    Any other block type is skipped. A cut or a damaged header after ``MAIN`` stops
-    the walk and keeps the members listed before it (``RarArchive.truncated`` /
-    ``RarArchive.damaged``).
+    Any other block type is skipped. A cut stops the walk and keeps the members
+    listed before it (``RarArchive.truncated``). So does a header after ``MAIN``
+    whose CRC fails (``RarArchive.damaged``), and a damaged end block with only
+    zeros after it. In an encrypted header, either failure is a wrong password until
+    the password is proven (:func:`_header_failure`). Any other invalid header raises.
     """
 
     def __init__(
@@ -3865,12 +3872,7 @@ class _Rar5Walk:
                 self._on_encryption(block)
                 continue
             if block.block_type == _RAR5_ENDARC:
-                endarc_flags = _load_vint_or_zero(block.hdata, block.pos)[0]
-                self.needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
-                self.end_block_seen = True
-                self.trailing_at = _scan_after_end_block(
-                    source, _packed_span_end(block.data_offset, block.add_size)
-                )
+                self._on_end_block(block)
                 break
             if block.block_type in (_RAR5_FILE, _RAR5_SERVICE):
                 self._on_file_or_service(block)
@@ -4039,6 +4041,15 @@ class _Rar5Walk:
             check_value=check_value,
         )
         _seek_after_packed(self.source, block.data_offset, block.add_size)
+
+    def _on_end_block(self, block: _Rar5Block) -> None:
+        """Finish the walk at ``ENDARC``: record whether a volume follows."""
+        endarc_flags = _load_vint_or_zero(block.hdata, block.pos)[0]
+        self.needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
+        self.end_block_seen = True
+        self.trailing_at = _scan_after_end_block(
+            self.source, _packed_span_end(block.data_offset, block.add_size)
+        )
 
     def _on_file_or_service(self, block: _Rar5Block) -> None:
         """List a ``FILE`` header, or read a ``SERVICE`` header's comment or damage."""
