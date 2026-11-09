@@ -4,9 +4,9 @@
 its ``run()``. The coordinator is a **pull-based sink**: it drives the reader
 (``members_report_if_available()``, ``_stream_members()``) and selects an algorithm,
 rather than a push-model helper that buffers deferred link state.
-Per member it runs the universal safety check on the original, applies the policy
-transform (and optional user filter) to a transient copy, and writes FILE / DIR / SYMLINK
-/ HARDLINK, tracking bomb limits and per-member results.
+Per member it applies the policy transform (and the optional user filter) to a transient
+copy, runs the universal safety check on that copy, and writes FILE / DIR / SYMLINK /
+HARDLINK, tracking bomb limits and per-member results.
 
 Hardlinks (TAR ordering guarantees the source precedes its links) are resolved by one
 **core** algorithm: a sequential forward pass with a conditional second pass. When a
@@ -22,8 +22,8 @@ How a run flows, and where each step lives in ``ExtractionCoordinator`` (``# ---
 comments mark its sections):
 
 1. **Entry point.** ``run`` calls ``_run``, under a dry run against a scratch copy of the
-   destination (``archivey.internal.dry_run``). ``_run`` builds the ``_RunState``,
-   settles the selection and the progress totals, and calls ``_run_pass``. However that
+   destination (``archivey.internal.dry_run``). ``_run`` settles the selection and the
+   progress totals, builds the ``_RunState``, and calls ``_run_pass``. However that
    ends, it then removes the staging directory, remakes symlinks of the wrong kind
    (Windows) and applies the deferred directory metadata.
 2. **The first pass.** ``_run_pass`` hands each member to ``_handle_member``. A reader
@@ -37,8 +37,9 @@ comments mark its sections):
    where ``_make_room`` / ``_prepare_destination`` apply the overwrite policy first.
    ``_settle_placement`` records the collision and revises an earlier result that a
    REPLACE overwrote. ``_handling`` turns a failure into a FAILED or BLOCKED result,
-   applies ``OnError`` and ``abort_on``, and rechecks the run's symlinks
-   (``_recheck_links``).
+   applies ``OnError`` and ``AbortOn.BLOCKED_MEMBER``, and rechecks the run's symlinks
+   (``_recheck_links``). The name and collision aborts are raised where they are
+   detected, as ``_AbortExtraction``, which passes through ``_handling``.
 4. **The second pass.** ``_resolve_orphans`` completes the hardlinks whose source was
    not on disk when the first pass reached them.
 5. **Filesystem helpers.** The destination root, directory creation, atomic landings
@@ -925,7 +926,9 @@ class ExtractionCoordinator:
         ``members=`` entry that matched nothing when that is known before anything is
         written; create the destination root and build this run's ``_RunState``; run
         both passes (``_run_pass``); then, also when the passes raise, finish what the
-        run deferred to its end (staging, symlink kinds, directory metadata).
+        run deferred to its end (staging, symlink kinds, directory metadata); and, when
+        it was not known before the passes, report a ``members=`` entry that matched
+        nothing.
         """
         ratio = self._ratio
         tracker = BombTracker(
