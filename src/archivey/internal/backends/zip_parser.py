@@ -85,6 +85,10 @@ _CENTRAL_HEADER = struct.Struct(_CENTRAL_HEAD + "5H2L")
 #: Where those three lengths start: ``_CENTRAL_HEADER`` fields 12 to 14.
 _CENTRAL_LENGTHS_AT = struct.calcsize(_CENTRAL_HEAD)
 _CENTRAL_LENGTHS = struct.Struct("<3H")
+#: Positions in an unpacked ``_CENTRAL_HEADER``, in the order ``_central_entry``
+#: unpacks it: the name's length, and the stored local header offset.
+_CENTRAL_NAME_LEN = 12
+_CENTRAL_HEADER_OFFSET = 18
 _LOCAL_HEADER = struct.Struct("<4s2B4HL2L2H")
 
 _ZIP64_EXTRA_TAG = 0x0001
@@ -831,6 +835,15 @@ class CentralDirectoryWalk:
             entry.compressed_size_correction = gap
 
     def _entries(self) -> Iterator[CentralEntry]:
+        """Yield the directory's entries in order, before any wrapped compressed size
+        is settled (``__iter__`` does that).
+
+        Per entry: read its fixed header and its name, extra field and comment;
+        follow any header signature inside those fields (``_follow_signatures``);
+        build the entry; undo an offset wrapped past 4 GiB when ``local_name_at``
+        allows it; and check that the next header starts where this entry ends. The
+        end-record findings are added once the last entry is out.
+        """
         end = self._end
         self.findings = []
         self.entries_read = None
@@ -885,7 +898,9 @@ class CentralDirectoryWalk:
                     f"{cd_size - pos} bytes before the directory's declared end"
                 )
             fields = _unpack_central(data, off, index)
-            name_len, extra_len, comment_len = fields[12:15]
+            name_len, extra_len, comment_len = fields[
+                _CENTRAL_NAME_LEN : _CENTRAL_NAME_LEN + 3
+            ]
             name_at = pos + CENTRAL_HEADER_SIZE
             extra_at = name_at + name_len
             comment_at = extra_at + extra_len
@@ -930,7 +945,7 @@ class CentralDirectoryWalk:
             # puts the directory past 4 GiB, which saturates the end record's own
             # offset field, and such an end record is ZIP64 (no correction at all).
             if name_at_offset is not None:
-                if fields[18] != _U32_MAX:
+                if fields[_CENTRAL_HEADER_OFFSET] != _U32_MAX:
                     offset = entry.header_offset
                     if wrapped_base is not None:
                         shift = base - wrapped_base
@@ -943,24 +958,13 @@ class CentralDirectoryWalk:
                                 )
                             )
                     elif offset < previous_end or after_wrappable:
-                        # The fewest 2³² steps that reach ``previous_end``,
-                        # counted rather than stepped: a ZIP64 extra field can
-                        # declare a compressed size near 2⁶⁴.
-                        steps = max(0, (previous_end - offset + _U32_MAX) >> 32)
-                        corrected = offset + (steps << 32)
-                        if after_wrappable:
-                            # Then each further multiple, up to the directory.
-                            while not self._header_named(corrected, name):
-                                corrected += OFFSET_WRAP
-                                if corrected >= end.cd_start:
-                                    corrected = offset
-                                    break
-                        elif not self._header_named(corrected, name):
-                            corrected = offset
+                        corrected = self._unwrapped_offset(
+                            offset, name, previous_end, after_wrappable=after_wrappable
+                        )
                         if corrected != offset:
                             entry.header_offset = corrected
                             entry.offset_correction = corrected - offset
-                            entry.stored_offset = fields[18]
+                            entry.stored_offset = fields[_CENTRAL_HEADER_OFFSET]
                 after_wrappable = (
                     self._local_data_start_at is not None
                     and written_by_archive_utility(entry)
@@ -992,6 +996,32 @@ class CentralDirectoryWalk:
             self.findings.append(
                 CommentCutShort(end.comment_declared, len(end.comment))
             )
+
+    def _unwrapped_offset(
+        self, offset: int, name: bytes, previous_end: int, *, after_wrappable: bool
+    ) -> int:
+        """``offset`` plus the multiple of 2³² that a local header named ``name``
+        starts at, or ``offset`` itself when none does.
+
+        The first multiple tried is the fewest that reach ``previous_end``, where the
+        members before the entry end. ``after_wrappable`` (the entry before may hold
+        a wrapped compressed size) tries each further multiple too, up to the
+        directory.
+        """
+        # The fewest 2³² steps that reach ``previous_end``, counted rather than
+        # stepped: a ZIP64 extra field can declare a compressed size near 2⁶⁴.
+        steps = max(0, (previous_end - offset + _U32_MAX) >> 32)
+        corrected = offset + (steps << 32)
+        if after_wrappable:
+            # Then each further multiple, up to the directory.
+            while not self._header_named(corrected, name):
+                corrected += OFFSET_WRAP
+                if corrected >= self._end.cd_start:
+                    return offset
+            return corrected
+        if not self._header_named(corrected, name):
+            return offset
+        return corrected
 
     def _follow_signatures(
         self,
@@ -1083,15 +1113,21 @@ class CentralDirectoryWalk:
         if name_at is None:
             return False
         fields = _CENTRAL_HEADER.unpack(head)
-        if fields[18] == _U32_MAX:  # deferred to a ZIP64 field: not checked here
+        if (
+            fields[_CENTRAL_HEADER_OFFSET] == _U32_MAX
+        ):  # deferred to a ZIP64 field: not checked here
             return False
-        offset = fields[18] + base
+        offset = fields[_CENTRAL_HEADER_OFFSET] + base
         start = self._end.cd_start
         name_at_pos = pos + CENTRAL_HEADER_SIZE
-        name = data[name_at_pos - data_start : name_at_pos - data_start + fields[12]]
-        if len(name) < fields[12]:
+        name = data[
+            name_at_pos - data_start : name_at_pos
+            - data_start
+            + fields[_CENTRAL_NAME_LEN]
+        ]
+        if len(name) < fields[_CENTRAL_NAME_LEN]:
             name += self._read_at(
-                start + name_at_pos + len(name), fields[12] - len(name)
+                start + name_at_pos + len(name), fields[_CENTRAL_NAME_LEN] - len(name)
             )
         if not 0 <= offset <= start - LOCAL_HEADER_SIZE - len(name):
             return False

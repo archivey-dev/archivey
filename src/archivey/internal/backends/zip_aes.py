@@ -462,6 +462,12 @@ class WinZipAesForwardStream(ReadOnlyIOStream):
         self._mac_matched = False
 
     def _pull(self) -> None:
+        """Read one chunk from ``source``.
+
+        Everything but the last ``hold_back`` bytes read goes into the HMAC. Those
+        bytes are decrypted into the buffer as they enter it, or, for a
+        ``hold_back=n`` source, as soon as they are read. At the end of a
+        ``hold_back=None`` source, the bytes held back are checked as the MAC."""
         chunk = self._source.read(FORWARD_READ)
         if not chunk:
             self._ended = True
