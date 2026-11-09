@@ -28,6 +28,9 @@ jobs:
     name: native (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      UV_PYTHON: "3.11"
+      UV_PYTHON_PREFERENCE: only-managed
     strategy:
       fail-fast: false
       matrix:
@@ -36,6 +39,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
+      # A uv-managed Python, as in ci.yml: the runners' preinstalled 3.11 links a
+      # liblzma that refuses tests/fixtures/squashfs/lzma.sqfs on macOS and Windows.
+      - name: Set up Python
+        run: uv python install 3.11
       - name: Install archivey
         run: uv sync --group dev --extra all
       # Built with maturin as the PEP 517 backend, into the project environment. Later
