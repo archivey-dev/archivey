@@ -29,7 +29,11 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import (
+    ArchiveEofContext,
+    DiagnosticCode,
+    UnknownMemberTypeContext,
+)
 from archivey.formats import SequentialReader
 from archivey.internal.backends import rpm_reader
 from archivey.internal.backends.rpm_reader import RpmReader
@@ -258,6 +262,8 @@ class _F:
     link: bytes = b""
     flags: int = 0
     inode: int = 0
+    # The FILEINODES value as stored, when it must be one a set would not use (0).
+    raw_inode: int | None = None
 
 
 @dataclass
@@ -276,6 +282,8 @@ class _Package:
     after_trailer: bytes = b""
     # End a stripped payload with rpm's index -1 rather than the newc trailer.
     stripped_end: bool = False
+    # Name the files with OLDFILENAMES, as packages before rpm 4.0 did.
+    old_names: bool = False
 
 
 def _size(f: _F) -> int:
@@ -322,7 +330,13 @@ def _build(package: _Package) -> bytes:
         1040: (_STRING_ARRAY, [b"root" for _ in files]),
         1044: (_STRING, b"built-1-1.src.rpm"),
         1095: (_INT32, [1 for _ in files]),
-        1096: (_INT32, [f.inode or i + 1 for i, f in enumerate(files)]),
+        1096: (
+            _INT32,
+            [
+                f.raw_inode if f.raw_inode is not None else f.inode or i + 1
+                for i, f in enumerate(files)
+            ],
+        ),
         1116: (_INT32, indexes),
         1117: (_STRING_ARRAY, bases),
         1118: (_STRING_ARRAY, dirs),
@@ -336,6 +350,10 @@ def _build(package: _Package) -> bytes:
         tags[1125] = (_STRING, package.compressor)
     if package.digest_algo is not None:
         tags[5011] = (_INT32, [package.digest_algo])
+    if package.old_names:
+        for tag in (1116, 1117, 1118):
+            del tags[tag]
+        tags[1027] = (_STRING_ARRAY, paths)
     tags.update(package.extra_tags)
     for tag in package.drop_tags:
         del tags[tag]
@@ -345,10 +363,12 @@ def _build(package: _Package) -> bytes:
         for tag in (1117, 1118, 1028, 5008):
             tags.pop(tag, None)
 
-    # Hard-link sets: data with the last in index order.
+    # Hard-link sets: data with the last in index order. As rpm builds them, only
+    # regular files that are not ghosts join one.
     sets: dict[int, list[int]] = {}
     for i, f in enumerate(files):
-        if f.inode:
+        regular = f.mode & 0o170000 == 0o100000
+        if f.inode and regular and not f.flags & (1 << 6):
             sets.setdefault(f.inode, []).append(i)
     payload = io.BytesIO()
 
@@ -361,7 +381,8 @@ def _build(package: _Package) -> bytes:
     for i in order:
         f = files[i]
         data = f.link if f.mode & 0o170000 == 0o120000 else f.data
-        if f.inode and sets[f.inode][-1] != i:
+        linked = sets.get(f.inode, [])
+        if i in linked and linked[-1] != i:
             data = b""
         pad()
         if package.stripped:
@@ -723,6 +744,26 @@ def test_a_shared_directory_is_not_joined_into_every_name_up_front() -> None:
     assert peak < 8 * 2**20
 
 
+def test_a_hard_link_set_costs_memory_in_its_size_not_its_square() -> None:
+    """Every file sharing one inode is one hard-link set. The set's file list is
+    shared by its files: a copy per file would take memory with the square of the
+    set's size (about 130 MiB for these 4000 files, 500 MiB for 8000) from a header
+    of a few bytes per file."""
+    import tracemalloc
+
+    files = [_F(b"/opt/f%06d" % i, inode=7) for i in range(4000)]
+    data = _build(_Package(files, compressor=None))
+    tracemalloc.start()
+    try:
+        with _open(data) as r:
+            members = r.members()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(members) == 4000
+    assert peak < 16 * 2**20
+
+
 def test_an_integer_column_is_counted_before_it_is_unpacked() -> None:
     """A per-file integer column declaring far more values than files is refused
     without unpacking them."""
@@ -772,3 +813,554 @@ def test_payload_bytes_for_a_type_rpm_reads_none_for_are_damage(mode: int) -> No
     )
     with pytest.raises(CorruptionError, match="the header gives 0"):
         _open(data).members()
+
+
+# Edges the mutation sweep found untested: each test below fails when one bound,
+# default or branch of the reader changes.
+
+
+def _raw_header(entries: list[tuple[int, int, int, int]], store: bytes) -> bytes:
+    """A header from raw index entries (tag, type, offset, count), unchecked."""
+    index = b"".join(struct.pack(">IIiI", *entry) for entry in entries)
+    return (
+        b"\x8e\xad\xe8\x01\0\0\0\0"
+        + struct.pack(">II", len(entries), len(store))
+        + index
+        + store
+    )
+
+
+def _with_main_header(header: bytes) -> bytes:
+    """A package whose main header is ``header``, with no payload."""
+    lead = b"\xed\xab\xee\xdb\x03" + b"\0" * 91
+    signature = _header({62: (_BIN, b"\0" * 16)})
+    return lead + signature + b"\0" * (-len(signature) % 8) + header
+
+
+def _store(entries: dict[int, rpm_reader._Entry], data: bytes) -> rpm_reader.Header:
+    return rpm_reader.Header(entries, data, "header")
+
+
+_CHAR, _INT8, _INT64, _I18NSTRING = 1, 2, 5, 9
+
+
+@pytest.mark.parametrize(
+    ("kind", "count", "fmt"),
+    [
+        (_CHAR, 3, "B"),
+        (_INT8, 2, "B"),
+        (_INT16, 2, "H"),
+        (_INT32, 1, "I"),
+        (_INT64, 1, "Q"),
+    ],
+)
+def test_an_integer_entry_that_ends_at_the_store_end_reads(
+    kind: int, count: int, fmt: str
+) -> None:
+    data = bytes(range(1, 9))
+    offset = len(data) - struct.calcsize(f">{count}{fmt}")
+    header = _store({7: rpm_reader._Entry(kind, count, offset)}, data)
+    expected = list(struct.unpack_from(f">{count}{fmt}", data, offset))
+    assert header.ints(7) == expected
+    assert header.number(7) == expected[0]
+
+
+@pytest.mark.parametrize(
+    ("entry", "match"),
+    [
+        (
+            rpm_reader._Entry(_INT32, 2, 4),
+            "tag 7 runs past the end of the header's data",
+        ),
+        (
+            rpm_reader._Entry(_INT16, 3, 4),
+            "tag 7 runs past the end of the header's data",
+        ),
+        (rpm_reader._Entry(_BIN, 1, 0), "tag 7 has type 7, not an integer"),
+        (rpm_reader._Entry(_STRING, 1, 0), "tag 7 has type 6, not an integer"),
+    ],
+    ids=["int32-past", "int16-past", "bin", "string"],
+)
+def test_an_integer_entry_that_cannot_be_read_names_its_tag(
+    entry: rpm_reader._Entry, match: str
+) -> None:
+    header = rpm_reader.Header({7: entry}, bytes(8), "signature header")
+    with pytest.raises(CorruptionError, match=f"^RPM signature header: {match}"):
+        header.ints(7)
+
+
+def test_a_string_entry_reads_its_values_and_no_further() -> None:
+    data = b"one\0two\0three\0"
+    header = _store(
+        {
+            1: rpm_reader._Entry(
+                _STRING, 5, 0
+            ),  # a STRING is one value, whatever the count
+            2: rpm_reader._Entry(_STRING_ARRAY, 2, 4),
+            3: rpm_reader._Entry(_I18NSTRING, 1, 8),
+        },
+        data,
+    )
+    assert header.strings(1) == [b"one"]
+    assert header.string(1) == b"one"
+    assert header.strings(2) == [b"two", b"three"]
+    assert header.strings(3) == [b"three"]
+    assert header.strings(4) is None
+    assert header.count(2) == 2
+    assert header.count(4) == 0
+
+
+@pytest.mark.parametrize(
+    ("entry", "data", "match"),
+    [
+        (rpm_reader._Entry(_INT32, 1, 0), b"x\0", "tag 7 has type 4, not a string"),
+        (
+            rpm_reader._Entry(_STRING_ARRAY, 4, 0),
+            b"a\0b",
+            "tag 7 declares 4 strings in fewer bytes",
+        ),
+        (
+            rpm_reader._Entry(_STRING_ARRAY, 3, 2),
+            b"a\0b\0",
+            "tag 7 declares 3 strings in fewer bytes",
+        ),
+        (
+            rpm_reader._Entry(_STRING_ARRAY, 2, 0),
+            b"a\0bc",
+            "tag 7 has a string with no NUL before the data's end",
+        ),
+        (
+            rpm_reader._Entry(_STRING, 1, 0),
+            b"a",
+            "tag 7 has a string with no NUL before the data's end",
+        ),
+    ],
+    ids=["type", "count", "count-past-offset", "no-nul", "no-nul-at-0"],
+)
+def test_a_string_entry_that_cannot_be_read_names_its_tag(
+    entry: rpm_reader._Entry, data: bytes, match: str
+) -> None:
+    header = _store({7: entry}, data)
+    with pytest.raises(CorruptionError, match=f"^RPM header: {match}"):
+        header.strings(7)
+
+
+def test_a_string_count_that_fills_the_store_exactly_reads() -> None:
+    """Three strings of one NUL each in three bytes: as many values as bytes."""
+    header = _store({7: rpm_reader._Entry(_STRING_ARRAY, 3, 0)}, b"\0\0\0")
+    assert header.strings(7) == [b"", b"", b""]
+
+
+@pytest.mark.parametrize(
+    ("count", "size", "match"),
+    [
+        (0x10000, 0, "declares 65536 tags and 0 bytes of data, over rpm's own bounds"),
+        (0, 0x10000000, "declares 0 tags and 268435456 bytes of data, over rpm's"),
+    ],
+    ids=["tags", "data"],
+)
+def test_a_header_over_rpms_bounds_is_refused_before_it_is_read(
+    count: int, size: int, match: str
+) -> None:
+    intro = b"\x8e\xad\xe8\x01\0\0\0\0" + struct.pack(">II", count, size)
+    data = _with_main_header(intro)
+    with pytest.raises(CorruptionError, match=f"RPM header at offset \\d+ {match}"):
+        _open(data).close()
+
+
+def test_a_header_at_rpms_tag_bound_is_read() -> None:
+    """0xFFFF tags is rpm's largest header: read, so the next check speaks (no tag
+    here has a count)."""
+    entries = [(1000 + i, _INT32, 0, 0) for i in range(0xFFFF)]
+    data = _with_main_header(_raw_header(entries, b""))
+    with pytest.raises(CorruptionError, match="has offset 0 and count 0"):
+        _open(data).close()
+
+
+def test_a_header_at_rpms_data_bound_is_charged_not_refused() -> None:
+    """A store of 0x0FFFFFFF bytes is in rpm's bounds: it reaches the metadata
+    budget, not the bounds check."""
+    intro = b"\x8e\xad\xe8\x01\0\0\0\0" + struct.pack(">II", 0, 0x0FFFFFFF)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=1 << 20))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        _open(_with_main_header(intro), config=config).close()
+
+
+def test_the_bad_header_is_named_in_the_message() -> None:
+    lead = b"\xed\xab\xee\xdb\x03" + b"\0" * 91
+    with pytest.raises(CorruptionError, match="^No RPM signature header at offset 96"):
+        _open(lead + b"\0" * 16).close()
+    with pytest.raises(CorruptionError, match="^No RPM lead at offset 0"):
+        open_archive(io.BytesIO(b"\0" * 200), format=RPM).close()
+
+
+def test_an_entry_may_start_at_the_store_end() -> None:
+    """An offset equal to the store's size passes the index check (rpm's too); only
+    reading the value would fail, and nobody reads an unknown tag."""
+    tags = {5999: (_INT32, [7])}
+    data = _build(_Package(_tree(), compressor=None, extra_tags=tags))
+    header_at = data.index(b"\x8e\xad\xe8\x01", 100)
+    count, size = struct.unpack_from(">II", data, header_at + 8)
+    raw = bytearray(data)
+    for i in range(count):
+        at = header_at + 16 + 16 * i
+        if struct.unpack_from(">I", raw, at)[0] == 5999:
+            struct.pack_into(">i", raw, at + 8, size)
+    assert _listing(bytes(raw)) == _EXPECTED
+
+
+def test_an_rpm_6_lead_is_read_and_a_later_one_is_refused() -> None:
+    """RPM 6 packages carry lead version 4; anything past it is unknown."""
+    data = _build(_Package(_tree(), lead_major=4))
+    assert _listing(data) == _EXPECTED
+    with pytest.raises(UnsupportedFeatureError, match="^RPM lead version 5"):
+        _open(_build(_Package(_tree(), lead_major=5))).close()
+
+
+@pytest.mark.parametrize(
+    ("payload_format", "match"),
+    [
+        (b"drpm", "^RPM payload format 'drpm' \\(a delta RPM\\)"),
+        (b"tar", "^RPM payload format 'tar'"),
+    ],
+)
+def test_a_payload_format_that_is_not_cpio_is_refused(
+    payload_format: bytes, match: str
+) -> None:
+    tags = {1124: (_STRING, payload_format)}
+    with pytest.raises(UnsupportedFeatureError, match=match):
+        _open(_build(_Package([], extra_tags=tags))).close()
+
+
+def test_no_digest_algorithm_means_md5() -> None:
+    """rpm's default when FILEDIGESTALGO is absent (rpmfiNew): an MD5 digest that
+    matches is checked, and passes."""
+    files = [_F(b"/opt/a", data=b"alpha\n")]
+    md5 = hashlib.md5(b"alpha\n").hexdigest().encode()
+    data = _build(
+        _Package(files, digest_algo=None, extra_tags={1035: (_STRING_ARRAY, [md5])})
+    )
+    with _open(data) as reader, reader.open("opt/a") as stream:
+        assert stream.read() == b"alpha\n"
+        assert stream.verified is archivey.Verification.CHECKSUM
+
+
+def test_a_digest_that_is_not_hexadecimal_names_the_file() -> None:
+    files = [_F(b"/opt/a", data=b"x")]
+    data = _build(_Package(files, extra_tags={1035: (_STRING_ARRAY, [b"zz"])}))
+    with (
+        pytest.raises(
+            CorruptionError,
+            match="^RPM header: the digest of '/opt/a' is not hexadecimal",
+        ),
+        _open(data) as reader,
+    ):
+        reader.read("opt/a")
+
+
+def test_max_members_equal_to_the_file_count_is_not_refused() -> None:
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=7))
+    with _open(_build(_Package(_tree())), config=config) as reader:
+        assert len(reader.members()) == len(_EXPECTED)
+
+
+def test_more_directories_than_max_members_is_refused() -> None:
+    """DIRNAMES is a list the reader keeps too, so it is held to the same bound."""
+    files = [_F(b"/opt/a", data=b"x")]
+    dirs = [b"/opt/", b"/d1/", b"/d2/"]
+    data = _build(_Package(files, extra_tags={1118: (_STRING_ARRAY, dirs)}))
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
+    with pytest.raises(ResourceLimitError, match="lists 3 directories"):
+        _open(data, config=config).close()
+
+
+def test_old_style_file_names_are_read() -> None:
+    """Packages before rpm 4.0 list whole paths in OLDFILENAMES."""
+    data = _build(_Package(_tree(), old_names=True))
+    assert _listing(data) == _EXPECTED
+
+
+@pytest.mark.parametrize(
+    ("drop", "tags", "match"),
+    [
+        ((1116,), {}, "lists 7 base names and 0 directory indexes"),
+        ((), {1116: (_INT32, [0] * 6)}, "lists 7 base names and 6 directory"),
+        ((1030,), {}, "^RPM header lists files with no tag 1030"),
+        ((1028,), {}, "^RPM header lists files with no tag 1028"),
+        ((), {1034: (_INT32, [0] * 6)}, "lists 7 files and 6 values of tag 1034"),
+        (
+            (),
+            {1039: (_STRING_ARRAY, [b"root"] * 6)},
+            "lists 7 files and 6 values of tag 1039",
+        ),
+    ],
+    ids=[
+        "no-dirindexes",
+        "short-dirindexes",
+        "no-modes",
+        "no-sizes",
+        "mtimes",
+        "users",
+    ],
+)
+def test_a_file_list_whose_columns_disagree_is_refused(
+    drop: tuple[int, ...], tags: dict[int, tuple[int, object]], match: str
+) -> None:
+    package = _Package(_tree(), drop_tags=drop, extra_tags=tags)
+    with pytest.raises(CorruptionError, match=match):
+        _open(_build(package)).close()
+
+
+def test_a_directory_index_equal_to_the_directory_count_is_refused() -> None:
+    files = [_F(b"/opt/a", data=b"x")]
+    data = _build(_Package(files, extra_tags={1116: (_INT32, [1])}))
+    with pytest.raises(
+        CorruptionError, match="directory index 1 of 'a' is past the 1 directory names"
+    ):
+        _open(data).close()
+
+
+def test_a_package_without_optional_columns_lists_its_files() -> None:
+    """FILEFLAGS, FILEMTIMES, FILEUSERNAME and FILEGROUPNAME are optional: no
+    flags means no ghosts, and the rest leave the member's fields unset."""
+    files = [_F(b"/opt/a", data=b"x"), _F(b"/opt/d", mode=0o040755)]
+    data = _build(_Package(files, drop_tags=(1034, 1037, 1039, 1040)))
+    with _open(data) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert reader.read("opt/a") == b"x"
+    assert set(members) == {"opt/a", "opt/d/"}
+    for member in members.values():
+        assert member.modified is None
+        assert member.uname is None
+        assert member.gname is None
+
+
+def test_a_members_fields_come_from_the_header() -> None:
+    files = [
+        _F(b"/opt/a", mode=0o104755, data=b"x"),
+        _F(b"/opt/d", mode=0o042750),
+        _F(b"/opt/l", mode=0o120777, link=b"a"),
+    ]
+    tags = {
+        1034: (_INT32, [1_700_000_000, 0, 1]),
+        1039: (_STRING_ARRAY, [b"caf\xe9", b"root", b"bin"]),
+        1040: (_STRING_ARRAY, [b"wheel", b"g\xff", b"bin"]),
+    }
+    data = _build(_Package(files, extra_tags=tags))
+    with _open(data) as reader:
+        members = {m.name: m for m in reader.members()}
+    a, d, link = members["opt/a"], members["opt/d/"], members["opt/l"]
+    assert a.size == 1
+    assert d.size is None
+    assert link.size is None
+    assert a.mode == 0o4755
+    assert d.mode == 0o2750
+    assert a.modified is not None
+    assert a.modified.utcoffset() is not None
+    assert a.modified.timestamp() == 1_700_000_000
+    assert a.uname == "caf\ufffd"
+    assert a.gname == "wheel"
+    assert d.gname == "g\ufffd"
+    assert link.link_target == "a"
+
+
+def test_a_symlink_with_no_target_is_refused_unless_it_is_a_ghost() -> None:
+    files = [_F(b"/opt/a", data=b"x"), _F(b"/opt/l", mode=0o120777)]
+    with pytest.raises(
+        CorruptionError, match="^RPM header: symlink '/opt/l' has no target"
+    ):
+        _open(_build(_Package(files))).close()
+    files[1].flags = 1 << 6
+    assert set(_listing(_build(_Package(files)))) == {"opt/a"}
+
+
+def test_without_device_numbers_there_are_no_hard_link_sets() -> None:
+    """rpm builds a set from a device and an inode (rpmfilesBuildNLink): with no
+    FILEDEVICES, two files that share an inode are two files."""
+    files = [_F(b"/opt/h1", data=b"one"), _F(b"/opt/h2", data=b"two")]
+    tags = {1096: (_INT32, [5, 5])}
+    data = _build(_Package(files, drop_tags=(1095,), extra_tags=tags))
+    assert _listing(data) == {
+        "opt/h1": (MemberType.FILE, b"one"),
+        "opt/h2": (MemberType.FILE, b"two"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "second_listed"),
+    [
+        (
+            _F(b"/opt/a", data=b"one", raw_inode=0),
+            _F(b"/opt/b", data=b"two", raw_inode=0),
+            (MemberType.FILE, b"two"),
+        ),
+        (
+            _F(b"/opt/a", data=b"one", inode=7),
+            _F(b"/opt/b", data=b"two", inode=7, flags=1 << 6),
+            None,
+        ),
+        (
+            _F(b"/opt/a", data=b"one", inode=7),
+            _F(b"/opt/b", mode=0o120777, link=b"a", inode=7),
+            (MemberType.SYMLINK, None),
+        ),
+    ],
+    ids=["inode-0", "ghost", "symlink"],
+)
+def test_only_regular_files_with_a_positive_inode_share_data(
+    first: _F, second: _F, second_listed: tuple[MemberType, bytes | None] | None
+) -> None:
+    """Two files that share an inode, where the second is a file with inode 0, a
+    ghost or a symlink: it never joins a hard-link set, so the first file keeps its
+    own data rather than coming back as a hard link."""
+    listing = _listing(_build(_Package([first, second])))
+    assert listing["opt/a"] == (MemberType.FILE, b"one")
+    assert listing.get("opt/b") == second_listed
+
+
+def test_an_uncompressed_payload_pads_from_its_own_start() -> None:
+    """CPIO aligns to 4 bytes from the payload's first byte: a header whose size is
+    not a multiple of 4 moves the payload off the file's alignment."""
+    tags = {5999: (_STRING, b"xy")}
+    data = _build(_Package(_tree(), compressor=None, extra_tags=tags))
+    header_at = data.index(b"\x8e\xad\xe8\x01", 100)
+    count, size = struct.unpack_from(">II", data, header_at + 8)
+    # Off by an odd count, where padding forwards and backwards differ.
+    assert (header_at + 16 + 16 * count + size) % 2
+    assert _listing(data) == _EXPECTED
+    data = _build(_Package(_tree(), compressor=None, stripped=True, extra_tags=tags))
+    assert _listing(data) == _EXPECTED
+
+
+def test_a_stripped_index_equal_to_the_file_count_is_refused() -> None:
+    data = _build(_Package(_tree(), stripped=True, compressor=None))
+    data = data.replace(b"07070X00000001", b"07070X00000007")
+    with pytest.raises(CorruptionError, match="names file 7 of 7"), _open(data) as r:
+        r.members()
+
+
+@pytest.mark.parametrize(
+    ("name_size", "match"),
+    [(0, "a name of 0 bytes"), (4097, "a name of 4097 bytes")],
+)
+def test_a_payload_name_size_out_of_bounds_is_refused(
+    name_size: int, match: str
+) -> None:
+    data = _build(_Package(_tree(), compressor=None))
+    entry = b"./opt/t/a.txt\0"
+    at = data.index(entry) - 104 + 88
+    data = data[:at] + b"%08x" % name_size + data[at + 8 :]
+    with pytest.raises(CorruptionError, match=match), _open(data) as r:
+        r.members()
+
+
+def test_a_payload_name_of_rpms_longest_size_is_read() -> None:
+    """4096 bytes, NUL included, is the longest name rpm reads (lib/cpio.c)."""
+    path = b"/opt/" + b"n" * (4096 - len(b"./opt/") - 1)
+    data = _build(_Package([_F(path, data=b"x")]))
+    assert _listing(data) == {path[1:].decode(): (MemberType.FILE, b"x")}
+
+
+def test_a_payload_field_that_is_not_hexadecimal_names_it() -> None:
+    data = _build(_Package(_tree(), compressor=None))
+    entry = b"./opt/t/a.txt\0"
+    at = data.index(entry) - 104 + 48
+    data = data[:at] + b"0000 006" + data[at + 8 :]
+    with pytest.raises(
+        CorruptionError, match=r"the filesize field b'0000 006' is not a number"
+    ):
+        _open(data).members()
+
+
+@pytest.mark.parametrize(
+    ("after", "at"),
+    [
+        (b"junk" + b"\0" * 10, 0),
+        (b"\0" * 3 + b"junk", 3),
+        (b"\0" * 70_000 + b"j", 70_000),
+    ],
+    ids=["junk-then-zeros", "zeros-then-junk", "past-a-read-chunk"],
+)
+def test_trailing_data_is_reported_where_it_starts(after: bytes, at: int) -> None:
+    data = _build(_Package(_tree(), compressor=None, after_trailer=after))
+    with _open(data) as reader:
+        reader.members()
+        (diagnostic,) = reader.diagnostics.retained
+    assert diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+    context = diagnostic.context
+    assert isinstance(context, ArchiveEofContext)
+    assert (context.format, context.observed_kind) == ("rpm", "nonzero")
+    # The offset counts from the end of the trailer's own padding to 4, which is
+    # where ``after`` starts: in "zeros-then-junk" the three zeros are past it.
+    assert context.observed_bytes == at
+    assert f"data {at} bytes after its trailer" in diagnostic.message
+
+
+def test_trailing_data_past_the_scan_window_is_not_read() -> None:
+    """The check bounds what it reads: bytes past the first MiB are not looked at."""
+    after = b"\0" * rpm_reader.TRAILING_SCAN + b"junk"
+    data = _build(_Package(_tree(), after_trailer=after))
+    with _open(data) as reader:
+        reader.members()
+        assert not reader.diagnostics.retained
+
+
+def test_an_unknown_file_type_diagnostic_names_the_member_and_type() -> None:
+    data = _build(_Package([_F(b"/opt/odd", mode=0o030644)], compressor=None))
+    with _open(data) as reader:
+        reader.members()
+        (diagnostic,) = reader.diagnostics.retained
+    context = diagnostic.context
+    assert isinstance(context, UnknownMemberTypeContext)
+    assert (context.member_name, context.stored_type) == ("opt/odd", "0o30000")
+    assert context.size is None
+
+
+def test_a_ghost_before_a_symlink_with_no_target_does_not_hide_it() -> None:
+    files = [
+        _F(b"/opt/g", flags=1 << 6),
+        _F(b"/opt/l", mode=0o120777),
+    ]
+    with pytest.raises(CorruptionError, match="symlink '/opt/l' has no target"):
+        _open(_build(_Package(files))).close()
+
+
+def test_inode_1_is_a_hard_link_set_like_any_positive_inode() -> None:
+    files = [_F(b"/opt/a", data=b"x", inode=1), _F(b"/opt/b", data=b"x", inode=1)]
+    assert _listing(_build(_Package(files))) == {
+        "opt/b": (MemberType.FILE, b"x"),
+        "opt/a": (MemberType.HARDLINK, None),
+    }
+
+
+@pytest.mark.parametrize(
+    "order", [None, [2, 0, 1], [1, 2, 0]], ids=["header", "last-first", "middle-first"]
+)
+@pytest.mark.parametrize("stripped", [False, True], ids=["newc", "stripped"])
+def test_a_hard_link_set_of_three_takes_its_data_from_the_last(
+    order: list[int] | None, stripped: bool
+) -> None:
+    """The set's last file in header order carries the data, whatever the payload
+    order: with three files, the last is not the second."""
+    files = [_F(b"/opt/%d" % i, data=b"shared", inode=4) for i in range(3)]
+    data = _build(_Package(files, order=order, stripped=stripped))
+    with _open(data) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert reader.read("opt/2") == b"shared"
+    assert members["opt/2"].type is MemberType.FILE
+    for name in ("opt/0", "opt/1"):
+        assert members[name].type is MemberType.HARDLINK
+        assert members[name].link_target == "opt/2"
+        assert members[name].size is None
+
+
+def test_a_payload_name_of_one_byte_is_an_empty_name() -> None:
+    """A name size of 1 is the NUL alone: read, then not found in the header."""
+    data = _build(_Package(_tree(), compressor=None))
+    entry = b"./opt/t/a.txt\0"
+    at = data.index(entry)
+    raw = bytearray(data)
+    raw[at - 104 + 88 : at - 104 + 96] = b"%08x" % 1
+    raw[at] = 0
+    with pytest.raises(CorruptionError, match="stores '', which the header does not"):
+        _open(bytes(raw)).members()
