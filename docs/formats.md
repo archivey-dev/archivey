@@ -381,6 +381,12 @@ sending side when the ZIP is done.
   directory's name is used and `MEMBER_LOCAL_NAME_DIFFERS` is reported, which `STRICT` refuses. The
   data is checked against the local CRC-32 and `MEMBER_LOCAL_CRC_USED` is reported, which `STRICT`
   reads: Adobe AIR packages store `META-INF/AIR/hash` this way.
+- **Bytes missing from the middle of the archive** (or added there) move the central directory, and
+  the offsets it gives with it. The members after the damage are where the directory says; each
+  member before it is read from the offset it stores, when a local header with its name, method,
+  CRC-32 and sizes is there. `MEMBER_LOCAL_OFFSET_SHIFTED` is reported for each, which `STRICT`
+  refuses, since the archive has lost or gained bytes. A member the damage cut through fails its
+  CRC-32 check.
 - **The local header names another compression method than the directory:** the member is
   decoded by the local header's method, from a file and a pipe alike. The local header sits next to
   the data and is all a pipe has, so both reads give the same bytes, still checked against the

@@ -33,7 +33,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.zip_reader import ZipReader
-from archivey.types import HashAlgorithm, OnError
+from archivey.types import ExtractionStatus, HashAlgorithm, OnError
 from tests.create_adversarial import adversarial_archives
 from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
 from tests.streams_util import NonSeekableBytesIO
@@ -772,15 +772,17 @@ def test_a_damaged_directory_is_the_error_over_an_entry_before_it_that_fails(
 
 
 @pytest.mark.parametrize("cd_offset", [7, 0xFFFF_FFF0], ids=["by-7", "huge"])
-def test_a_directory_offset_past_the_directory_writes_nothing_either_way(
+def test_a_directory_offset_past_the_directory_reads_the_stored_offsets_either_way(
     cd_offset: int, tmp_path: Path
 ) -> None:
     """A stored directory offset larger than where the directory is moves every
     member offset back by the difference, onto bytes that are no local header. That
     shift is what a stub sliced off the source gives (``start_offset``), so it is not
-    refused: a file read lists the directory's entries and each read fails, the pass
-    finds no local header for them and lists none. Neither writes anything, as
-    Info-ZIP unzip and 7-Zip extract nothing."""
+    refused. Each member's stored offset holds a local header with its name, method,
+    CRC-32 and sizes, so a file read reads it from there, and the pass places the
+    local header it walked there: both write every member, the same bytes, and report
+    ``MEMBER_LOCAL_OFFSET_SHIFTED`` for each. Info-ZIP unzip makes the same second try
+    but then refuses the archive as overlapped; 7-Zip reports header errors."""
     data = bytearray(_members_zip(pipe=False))
     eocd = data.rindex(b"PK\x05\x06")
     (real,) = struct.unpack_from("<I", data, eocd + 16)
@@ -791,9 +793,20 @@ def test_a_directory_offset_past_the_directory_writes_nothing_either_way(
         for side in ("file", "pipe")
     ]
     assert results[0] == results[1]
-    for side in ("file", "pipe"):
-        (tmp_path / side).mkdir(exist_ok=True)
-        assert _tree(tmp_path / side, since=started) == {}
+    assert isinstance(results[0], list) and results[0]
+    assert all(status is ExtractionStatus.EXTRACTED for _, status, _, _ in results[0])
+    tree = _tree(tmp_path / "file", since=started)
+    assert len(tree) == len(results[0])
+    assert _tree(tmp_path / "pipe", since=started) == tree
+    for piped in (False, True):
+        source = NonSeekableBytesIO(bytes(data)) if piped else io.BytesIO(bytes(data))
+        with archivey.open_archive(source, streaming=piped) as reader:
+            for _member, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
+            codes = [d.code for d in reader.diagnostics.retained]
+        shifted = DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
+        assert codes.count(shifted) == len(tree), (piped, codes)
 
 
 def test_unusable_end_records_behind_trailing_bytes_walk_the_members_once(

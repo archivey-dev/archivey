@@ -85,6 +85,7 @@ from archivey.internal.backends.zip_reader import (
     _is_candidate_integrity_failure,
     _is_encrypted_entry,
     _local_crc_stands_in,
+    _local_header_confirms,
     _max_members_error,
     _unconfirmed_resource_limit,
     _zipcrypto_check_byte,
@@ -2157,8 +2158,15 @@ class ZipForwardReader(ZipReader):
         # Listed and missing members in the directory's order, for is_current.
         placed: list[ArchiveMember] = []
         any_missing = False
+        # Members found at their stored offset, not where the directory's position
+        # puts them (``_shifted_offset``), by member id: that stored offset.
+        shifted: dict[int, int] = {}
         for position, offset in enumerate(offsets):
-            if offset not in local_offsets:
+            stored = self._shifted_offset(entries[position], offset, matched)
+            if stored is not None:
+                offset = stored
+                shifted[cast("int", by_offset[stored]._member_id)] = stored
+            elif offset not in local_offsets:
                 missing = self._missing_member(entries[position], len(failed))
                 failed.append(
                     (
@@ -2216,6 +2224,12 @@ class ZipForwardReader(ZipReader):
             unlisted = []
         for member, central in updates:
             self._update_from_directory(member, central)
+            stored = shifted.get(cast("int", member._member_id))
+            if stored is not None:
+                # A file or link only, as from a file (``_report_local_offset``).
+                self._report_local_offset(
+                    cast("_ZipLocator", member._raw), member, stored
+                )
             local_name = renamed.get(cast("int", member._member_id))
             if local_name is not None:
                 # A file or link only, as from a file (``_report_local_name``).
@@ -2341,6 +2355,37 @@ class ZipForwardReader(ZipReader):
             "that cannot seek yields no stream for it; open() delivers them from a "
             "seekable source"
         )
+
+    def _shifted_offset(
+        self, central: CentralEntry, offset: int, matched: set[int]
+    ) -> int | None:
+        """The stored offset of ``central``'s local header, before ``EndRecord.base``,
+        when the pass walked a local header there that agrees with the entry and no
+        entry took it yet, and the one at ``offset``, where the directory's position
+        puts it, is missing, taken or names another member; ``None`` otherwise.
+
+        The file read's second try (``ZipReader._shifted_local_header``), on the local
+        headers the pass met: bytes lost from the middle of the archive leave the
+        members before them at their stored offsets, so a pipe places the same members
+        a file read reads.
+        """
+        base = self._end.base
+        if base == 0:
+            return None
+        at_offset = self._by_offset.get(offset)
+        if (
+            at_offset is not None
+            and offset not in matched
+            and cast("_ZipLocator", at_offset._raw).name == central.name
+        ):
+            return None
+        stored = central.header_offset - base
+        member = self._by_offset.get(stored)
+        if member is None or stored in matched:
+            return None
+        if not _local_header_confirms(cast("_ZipLocator", member._raw), central):
+            return None
+        return stored
 
     def _missing_member(self, central: CentralEntry, nth: int) -> ArchiveMember:
         """The member a directory entry with no local entry describes, for the end of

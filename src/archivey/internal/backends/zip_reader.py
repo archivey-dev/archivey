@@ -472,6 +472,7 @@ _LOCAL_HEADER_CODES: dict[str, DiagnosticCode] = {
     "name": DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
     "method": DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
     "crc32": DiagnosticCode.MEMBER_LOCAL_CRC_USED,
+    "offset": DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED,
 }
 
 
@@ -1122,14 +1123,41 @@ def _stored_text(name: bytes) -> str:
     return name.decode("utf-8", "surrogateescape")
 
 
+def _local_header_confirms(
+    header: LocalHeader | _ZipLocator, loc: _ZipLocator | CentralEntry
+) -> bool:
+    """Whether the local ``header`` holds ``loc``'s name, method, CRC-32 and sizes, as
+    stored: a header with bit 3 on either side may store zeros for the last three, and a
+    ZIP64 one ``0xFFFFFFFF`` for a size (:meth:`ZipReader._shifted_local_header`; a
+    read from a pipe checks the local header it walked against the directory entry the
+    same way)."""
+    if header.name != loc.name or header.method != loc.method:
+        return False
+    deferred = bool((header.flags | loc.flags) & _ZIP_MASK_USE_DATA_DESCRIPTOR)
+    if header.crc != loc.crc and not (deferred and header.crc == 0):
+        return False
+    for local_size, central_size in (
+        (header.compressed_size, loc.compressed_size),
+        (header.file_size, loc.file_size),
+    ):
+        if local_size not in (central_size & 0xFFFFFFFF, 0xFFFFFFFF) and not (
+            deferred and local_size == 0
+        ):
+            return False
+    return True
+
+
 def _bound_offset(offset: int) -> int:
     """``offset`` clamped into a signed 64-bit range that keeps its order.
 
     A local-header offset past ``MAX_DATA_OFFSET`` or below 0 is refused when its
     member opens; as a bound for its neighbours only its order matters, and
-    ``MAX_DATA_OFFSET`` is the largest value the array holds.
+    ``MAX_DATA_OFFSET`` is the largest value the array holds. A negative offset keeps
+    its value: a member the directory puts before the file's start may still sit at
+    its stored offset (``ZipReader._shifted_local_header``), whose bound is the next
+    offset above this one, less ``EndRecord.base``.
     """
-    return min(max(offset, -1), MAX_DATA_OFFSET)
+    return min(max(offset, -MAX_DATA_OFFSET), MAX_DATA_OFFSET)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1481,6 +1509,8 @@ class ZipReader(BaseArchiveReader):
         self._local_names_reported: set[int] = set()
         # The same for a local header naming another method (``_report_local_method``).
         self._local_methods_reported: set[int] = set()
+        # The same for a local header found at its stored offset (``_report_local_offset``).
+        self._local_offsets_reported: set[int] = set()
         self._refuse_lone_split_segment()
         self._open_index(source, start_offset, end_offset)
 
@@ -2931,12 +2961,14 @@ class ZipReader(BaseArchiveReader):
         member: ArchiveMember,
         member_id: int,
         *,
-        field: Literal["name", "method", "crc32"],
+        field: Literal["name", "method", "crc32", "offset"],
         message: str,
         local_name: bytes | None = None,
         local_crc32: int | None = None,
         local_method: int | None = None,
         central_method: int | None = None,
+        local_offset: int | None = None,
+        central_offset: int | None = None,
     ) -> None:
         self._diagnostics_collector.emit(
             code=_LOCAL_HEADER_CODES[field],
@@ -2950,6 +2982,8 @@ class ZipReader(BaseArchiveReader):
                 local_crc32=local_crc32,
                 local_method=local_method,
                 central_method=central_method,
+                local_offset=local_offset,
+                central_offset=central_offset,
             ),
             member=member,
             attach_to_member=True,
@@ -3019,6 +3053,42 @@ class ZipReader(BaseArchiveReader):
                 f"method {local_method} and its central directory entry method "
                 f"{loc.method}; the local header's method is used, as a read from a "
                 "pipe uses it."
+            ),
+        )
+
+    def _report_local_offset(
+        self, loc: _ZipLocator, member: ArchiveMember, local_offset: int
+    ) -> None:
+        """Report that ``member``'s local header is at its stored offset
+        ``local_offset``, not where the directory's position puts it
+        (:meth:`_shifted_local_header`).
+
+        Reported on the member's first open only, and by a file or link only, as
+        :meth:`_report_local_name` is and for the same reasons.
+        """
+        if member.type not in (MemberType.FILE, MemberType.SYMLINK):
+            return
+        code = DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
+        with self._lock:
+            first = loc.index not in self._local_offsets_reported
+            self._local_offsets_reported.add(loc.index)
+        if not first and code not in self._diagnostics_collector.policy.raise_on:
+            return
+        shift = loc.header_offset - local_offset
+        change = (
+            f"{-shift} bytes are missing" if shift < 0 else f"{shift} bytes were added"
+        )
+        self._emit_local_header_differs(
+            member,
+            loc.index,
+            field="offset",
+            local_offset=local_offset,
+            central_offset=loc.header_offset,
+            message=(
+                f"ZIP member {quoted(member.name)}: its local header is at offset "
+                f"{local_offset}, as stored, not at {loc.header_offset}, where the "
+                f"central directory's position puts it: {change} between this member "
+                "and the directory. The member is read from its stored offset."
             ),
         )
 
@@ -3165,7 +3235,30 @@ class ZipReader(BaseArchiveReader):
         the guard lets through, a local name whose bytes differ from the central
         directory's is reported (``_report_local_name``), and the member reads by
         the directory's name.
+
+        When the header there is refused or names another member, and the directory
+        does not sit at its stored offset, the header is looked for once more at the
+        member's stored offset (:meth:`_shifted_local_header`): bytes lost or added
+        between the members and the directory move the directory, and every offset
+        with it, but the members before the damage stay where they were written.
         """
+        try:
+            header = self._listed_local_header(loc)
+        except CorruptionError:
+            shifted = self._shifted_local_header(loc, member)
+            if shifted is None:
+                raise
+            return shifted
+        if header.name != loc.name:
+            shifted = self._shifted_local_header(loc, member)
+            if shifted is not None:
+                return shifted
+            self._report_local_name(loc, member, header.name)
+        return header
+
+    def _listed_local_header(self, loc: _ZipLocator) -> LocalHeader:
+        """The local header where the directory puts ``loc``'s, through the overlap
+        guard (:meth:`_checked_local_header`)."""
         if loc.header_offset < 0:
             raise CorruptionError(self._front_cut_message(loc.header_offset))
         if loc.header_offset >= self._end.cd_start:
@@ -3195,8 +3288,51 @@ class ZipReader(BaseArchiveReader):
                 f"Overlapped entries: {quoted(_stored_text(loc.name))} "
                 "(possible zip bomb)"
             )
-        if header.name != loc.name:
-            self._report_local_name(loc, member, header.name)
+        return header
+
+    def _shifted_local_header(
+        self, loc: _ZipLocator, member: ArchiveMember
+    ) -> LocalHeader | None:
+        """``loc``'s local header at its stored offset, before ``EndRecord.base``, when
+        one with the member's name, method, CRC-32 and sizes is there; ``None``
+        otherwise.
+
+        ``base`` is where the directory sits less where the end record says it does.
+        It is the length of a self-extractor stub, and of a front cut, and then every
+        member is shifted by it. Bytes lost from the middle of an archive (or added
+        to it) shift the directory and the members after the damage, but not the
+        ones before it, which sit at their stored offsets. Info-ZIP's unzip makes the
+        same second try (``extra_bytes`` set to 0); 7-Zip walks the local headers. The
+        stored offset is the one other place the format names, so this is no search:
+        one header is read, and kept only when it agrees with the directory, with
+        the CRC-32 still checked on the read. A member of bit 3 stores no CRC-32 or
+        sizes in its local header, so its name and method confirm it.
+
+        The overlap guard counts the same way: the data ends before the next stored
+        offset above this one, or the directory. A corrected member then never
+        shares a byte with another corrected member, and a byte is read by at most
+        two members, one at its listed offset and one at its stored offset.
+
+        The correction is reported once per member (``MEMBER_LOCAL_OFFSET_SHIFTED``,
+        which ``STRICT`` refuses: the archive has lost or gained bytes).
+        """
+        base = self._end.base
+        if base == 0:
+            return None
+        listed = loc.header_offset
+        stored = listed - base
+        if not 0 <= stored < self._end.cd_start:
+            return None
+        try:
+            header = read_local_header(self._read_at, stored)
+        except (CorruptionError, TruncatedError):
+            return None
+        if not _local_header_confirms(header, loc):
+            return None
+        bound = min(self._data_bounds().end_for(loc) - base, self._end.cd_start)
+        if header.data_start + max(0, loc.compressed_size) > bound:
+            return None
+        self._report_local_offset(loc, member, stored)
         return header
 
     def _with_local_method(
