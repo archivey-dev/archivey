@@ -1113,6 +1113,9 @@ def test_filesystem_calls_take_the_long_path_form(
                     ("hard", "d/h", "d/f"),
                     ("file", "D/F", b"3"),
                     ("dir", "d/sub", None),
+                    # ``d/x`` makes ``d/e`` escape, so the recheck removes ``d/e``.
+                    ("sym", "d/e", "x/../../secret"),
+                    ("sym", "d/x", "."),
                 ]
             )
         ),
@@ -1124,17 +1127,20 @@ def test_filesystem_calls_take_the_long_path_form(
     )
     assert seen
     statuses = [r.status for r in report.results]
+    # The recheck blocks ``d/e`` under every policy.
+    assert statuses[-2:] == [ExtractionStatus.BLOCKED, ExtractionStatus.EXTRACTED]
     if policy is ExtractionPolicy.TRUSTED:
         # No case-only collision: D/F is its own file.
-        assert statuses == [ExtractionStatus.EXTRACTED] * 7, report.results
+        assert statuses[:-2] == [ExtractionStatus.EXTRACTED] * 7, report.results
     else:
-        assert statuses.count(ExtractionStatus.EXTRACTED) == 6, report.results
+        assert statuses.count(ExtractionStatus.EXTRACTED) == 7, report.results
     if dry_run:
         # One top-level directory, so its links were walked and recorded.
-        assert report._dry_run_links == (("d/l", "f"),)
+        assert report._dry_run_links == (("d/l", "f"), ("d/x", "."))
     else:
         assert (dest / "d" / "h").read_bytes() == b"1"
         assert os.readlink(dest / "d" / "l") == "f"
+        assert not os.path.lexists(dest / "d" / "e")
     assert calls
     unrouted = [call for call in calls if not call.split(" ", 1)[1].startswith("//")]
     assert unrouted == []
