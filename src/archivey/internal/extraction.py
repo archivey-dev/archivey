@@ -628,6 +628,10 @@ class _RunState:
     # (a disk spelling, Windows separators, a dry run's scratch path), by result
     # index, so a recheck error names it as listed.
     stored_targets: dict[int, str] = field(default_factory=dict)
+    # Errors from removing an escaping symlink, when it was created
+    # (``_write_symlink``) or rechecked: each such link is still on disk, so the
+    # member's handler ends the run with the first one (``_recheck_links``).
+    unremoved_links: list[OSError] = field(default_factory=list)
     # RAR file copies (``_open_written_source``). ``streaming_now`` is ``id()`` of
     # the member whose stream is being written; a file-copy source arriving then is
     # not kept by the pass (``_keep_copy_source``), and goes in ``declined``. Only
@@ -2519,7 +2523,7 @@ class ExtractionCoordinator:
         catches that error.
         """
         current = self._current
-        link_error: ArchiveyError | None = None
+        link_error: ArchiveyError | OSError | None = None
         try:
             yield
         except (AlwaysStopResourceLimitError, DiagnosticRaisedError):
@@ -3048,16 +3052,24 @@ class ExtractionCoordinator:
         # records the link in ``links`` for that.
         problem = _symlink_problem(dest_path, on_disk, self._state.dest_root)
         if problem is not None:
-            try:
-                os.unlink(long_path(dest_path))
-            except OSError:
-                pass
-            self._resolutions_changed()
-            raise FilterRejectionError(
+            refusal = FilterRejectionError(
                 problem,
                 member_name=transformed.name,
                 link_target=target,
             )
+            try:
+                os.unlink(long_path(dest_path))
+            except OSError as exc:
+                # The escaping link is still on disk. The member is still BLOCKED,
+                # and its handler then ends the run with this error.
+                self._rebase_os_error(exc)
+                refusal.add_note(
+                    "The symlink could not be removed and is still on disk: "
+                    + exception_detail(exc, with_type=True)
+                )
+                self._state.unremoved_links.append(exc)
+            self._resolutions_changed()
+            raise refusal
 
         return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
 
@@ -3709,7 +3721,7 @@ class ExtractionCoordinator:
         self._resolutions_changed()
         self._state.links.note_change(path)
 
-    def _recheck_links(self) -> ArchiveyError | None:
+    def _recheck_links(self) -> ArchiveyError | OSError | None:
         """Remove the links this run created that the member just handled made escape.
 
         Called once per member, before the next one is handled, so no later member
@@ -3719,11 +3731,14 @@ class ExtractionCoordinator:
         It runs in a ``finally``, so it returns the error that must end the run
         instead of raising it, which would replace the member's own error: the
         recheck bound running out, or ``AbortOn.BLOCKED_MEMBER`` with a link removed.
+        A symlink the filesystem refused to remove, here or when it was created
+        (``_write_symlink``), comes first: it is still on disk and may lead out of
+        the destination, so the run ends with that ``OSError``.
         """
         state = self._state
         links = state.links
         if not links.has_changes:
-            return None
+            return self._unremoved_link_error()
         dest_root = state.dest_root
         # The recheck asks a yes/no question; the reason is kept here, per link path,
         # so a loop a later member closed is named as a loop. ``recheck`` reports a
@@ -3744,6 +3759,7 @@ class ExtractionCoordinator:
             return problem is not None
 
         outcome = links.recheck(escapes)
+        unremoved = {id(link): exc for link, exc in outcome.unremoved}
         removed = [
             (
                 link,
@@ -3777,7 +3793,19 @@ class ExtractionCoordinator:
                         prior, path=None, status=ExtractionStatus.BLOCKED, error=error
                     ),
                 )
-            logger.warning("Removed symlink %r: %s", prior.member.name, error)
+            stuck = unremoved.get(id(link))
+            if stuck is None:
+                logger.warning("Removed symlink %r: %s", prior.member.name, error)
+                continue
+            self._rebase_os_error(stuck)
+            stuck.add_note(
+                f"Could not remove symlink {quoted(prior.member.name)}, which is "
+                f"still on disk: {error}"
+            )
+            state.unremoved_links.append(stuck)
+        unremoved_error = self._unremoved_link_error()
+        if unremoved_error is not None:
+            return unremoved_error
         if outcome.unchecked:
             return AlwaysStopResourceLimitError(
                 f"Symlink recheck limit reached: max_entries={self._limits.max_entries}"
@@ -3785,6 +3813,16 @@ class ExtractionCoordinator:
         if first is not None and AbortOn.BLOCKED_MEMBER in self._abort_on:
             return first
         return None
+
+    def _unremoved_link_error(self) -> OSError | None:
+        """The first error from removing an escaping symlink this run left on disk, or
+        ``None``. Returned once: the run ends with it."""
+        unremoved = self._state.unremoved_links
+        if not unremoved:
+            return None
+        first = unremoved[0]
+        unremoved.clear()
+        return first
 
     def _mark_overwritten(self, prior: _Claim | None) -> None:
         """Revise a clobbered member's result to OVERWRITTEN: its content is gone.

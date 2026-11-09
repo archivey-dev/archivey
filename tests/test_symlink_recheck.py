@@ -26,7 +26,7 @@ from archivey import (
     FilterRejectionError,
     ResourceLimitError,
 )
-from archivey.internal import link_watch
+from archivey.internal import extraction, filters, link_watch
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.bomb_tracker import BombTracker
 from archivey.internal.extraction import (
@@ -542,35 +542,49 @@ def test_removing_a_link_rechecks_a_link_that_passed_through_it_earlier(
     assert not os.path.lexists(root / "m")
 
 
-def test_recheck_removes_an_escaping_link_through_long_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # On Windows a path past MAX_PATH needs the extended prefix, or the unlink fails
-    # and the escaping link stays on disk. POSIX has no such limit, so a stand-in
-    # ``long_path`` marks each path with a second leading ``/``, which names the same
-    # file on Linux, and the unlink must receive the marked path.
-    root = tmp_path.resolve()
-    (root / "d").mkdir()
-    (root / "l").symlink_to("a/../d")
-    watch = link_watch.LinkWatch(root, budget=None)
-    watch.track(root / "l", "a/../d", result_index=0)
-    # A later member changes ``a``, which the link resolves through; ``escapes`` is a
-    # stub that refuses it.
-    watch.note_change(root / "a")
-    monkeypatch.setattr(link_watch, "long_path", lambda path: "/" + os.fspath(path))
-    unlinked: list[object] = []
+def _refuse_unlinking(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """Make ``os.unlink`` of an entry called ``name`` fail, as a filesystem that
+    refuses the removal does."""
     real_unlink = os.unlink
 
-    def spy(path: object, *args: object, **kwargs: object) -> None:
-        unlinked.append(path)
+    def unlink(path: object, *args: object, **kwargs: object) -> None:
+        if os.path.basename(os.fspath(path)) == name:  # type: ignore[arg-type]
+            raise PermissionError(13, "Permission denied", os.fspath(path))  # type: ignore[arg-type]
         real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(link_watch.os, "unlink", spy)
-    outcome = watch.recheck(lambda path, target: True)
+    monkeypatch.setattr(os, "unlink", unlink)
 
-    assert [link.path.name for link in outcome.escaped] == ["l"]
-    assert unlinked == ["/" + os.fspath(root / "l")]
-    assert not os.path.lexists(root / "l")
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_link_the_recheck_cannot_remove_ends_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    # The link stays on disk and leads out of the destination, so the run must not
+    # go on as if it were removed, whatever ``on_error`` says.
+    _refuse_unlinking(monkeypatch, "l")
+    with pytest.raises(PermissionError) as raised:
+        _extract(
+            tmp_path,
+            [("l", "sym", "a/../secret"), ("a", "sym", ".")],
+            streaming=streaming,
+        )
+    assert "Could not remove symlink 'l', which is still on disk" in "".join(
+        raised.value.__notes__
+    )
+
+
+def test_a_link_that_escapes_when_created_and_cannot_be_removed_ends_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No archive makes the creation-time resolution fail on POSIX after the
+    # universal check passed, so the check is stubbed to report an escape.
+    monkeypatch.setattr(
+        extraction, "_symlink_problem", lambda *_args: filters.SYMLINK_ESCAPES
+    )
+    _refuse_unlinking(monkeypatch, "l")
+    with pytest.raises(PermissionError):
+        _extract(tmp_path, [("l", "sym", "x")], streaming=False)
+    assert os.path.islink(tmp_path / "out" / "l")
 
 
 def test_an_anti_item_deleting_a_symlink_rechecks(tmp_path: Path) -> None:
