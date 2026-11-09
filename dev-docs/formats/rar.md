@@ -93,8 +93,9 @@ Everything about that boundary is a consequence:
   once the solid prefix plus discarded member progress meets the 1 MiB floor. The unnamed
   ALL-pipe used by `stream_members()` stays forward-only (§2.3, §5). Opening a member of
   a solid archive by name decodes again what an earlier open decoded of its solid prefix
-  (the archive's for `unrar`, the member's solid stream for `unar`), which logs one INFO
-  record per reader on `archivey.backends` (`_solid_run`); it is not a diagnostic.
+  (the archive's for `unrar`, the member's solid stream for `unar`), which records
+  `SOLID_OPEN_REDECOMPRESSES` once per reader, logged at INFO on `archivey.backends`
+  (`_solid_run`).
 - **Identity of the binary costs a process.** `find_rarlab_unrar` looks up `unrar`
   first, then `rar`, runs the candidate with only `-cfg-` (so `~/.unrarrc` cannot inject
   `-idq` and empty the banner), and sniffs the banner.
