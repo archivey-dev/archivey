@@ -1536,10 +1536,9 @@ def detect_format_into(
     ``config``. Internal: the public entry point never takes a collector, so the
     ``internal/`` type stays off the surface.
     """
-    # Before anything is read: an object that is neither a path nor a binary stream
-    # used to reach the prefix workspace and die there as
-    # `AttributeError: 'int' object has no attribute 'read'`, while `open_archive` on
-    # the same value already said "unsupported source type". Same refusal, same words.
+    # Before anything is read: a value that is neither a path nor a binary stream gets
+    # the refusal ``open_archive`` gives it, in the same words, instead of an
+    # ``AttributeError`` from inside the prefix workspace.
     require_source(source)
     check_path_not_empty(source, call="detect_format()")
     check_config(config, call="detect_format(config=…)")
@@ -1563,7 +1562,7 @@ def detect_format_into(
     # A path is resolved once, as ``open_archive`` resolves it: any part of a numbered
     # split set (``set.zip.002``) becomes the joined set, and a RAR continuation its
     # volume 1. A middle part has no magic of its own, so detecting the named file
-    # alone refused what ``open_archive`` opens. Resolution can itself raise, before
+    # alone would refuse what ``open_archive`` opens. Resolution can itself raise, before
     # detection reads a byte: ``TruncatedError`` for a numbered set with a gap.
     with closing(resolve_source(source, discover_volumes=discover).source) as resolved:
         return _detect_source_into(resolved, config, collector, follow_stub_volumes)
@@ -2222,7 +2221,7 @@ def _leading_bytes_scan(
     ):
         # A forward-only source is scanned over the bytes detection already
         # holds and never waits for more: an unrecognised stream whose writer
-        # keeps it open fails as fast as it did before this step.
+        # keeps it open fails at once.
         scan_limit, allowance = held, 0
         cut_reason = TierSkipReason.CAPABILITY_UNAVAILABLE
     sfx_info = _scan_for_sfx_payload(
