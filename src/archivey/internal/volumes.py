@@ -3,16 +3,20 @@
 :func:`resolve_source` is the entry point; ``core`` and ``detection`` call it. A path,
 a stream, an ``fsspec`` ``OpenFile`` or a list of volumes all come out as one source:
 
-1. A list of volumes is checked by name (:func:`_validate_volume_sequence_bases`,
-   :func:`_validate_numbered_volume_completeness`) and read back to back through a
-   :class:`ConcatenatedFile`.
+1. A list of two or more volumes is read back to back through a
+   :class:`ConcatenatedFile`. When every part has a name (a path or an ``OpenFile``),
+   the names are checked first (:func:`_validate_volume_sequence_bases`,
+   :func:`_validate_numbered_volume_completeness`). A one-element list is resolved
+   as a single source.
 2. A single path or ``OpenFile`` may be one part of a set. Discovery
    (:func:`discover_volume_siblings`) finds the other parts beside it from the three
    naming schemes below. Numbered parts (``x.7z.001``) are raw byte slices, so they
-   are joined. A local RAR set keeps volume 1's path, because unrar walks the set on
-   disk itself; a remote set of either kind is joined. The RAR backend also uses
-   the RAR naming helpers here.
-3. Anything else is one path or one stream, wrapped as it is.
+   are joined. A local RAR set keeps the path of the first volume present, because
+   unrar walks the set on disk itself; a remote set of either kind is joined. The
+   RAR backend also uses the RAR naming helpers here.
+3. Anything else is one source: a path is read as the one file it names, an
+   ``OpenFile`` is read by range (or through fsspec's decompression when it has a
+   ``compression``), and a binary stream is wrapped as it is.
 """
 
 from __future__ import annotations
@@ -1716,8 +1720,8 @@ def _resolve_single(
         siblings = discover_volume_siblings(path) if discover_volumes else None
         if siblings is not None:
             # Numbered parts are byte slices, so they are joined into one stream.
-            # RAR keeps volume 1's path instead: unrar walks the set itself and needs
-            # the sibling files on disk.
+            # RAR keeps the path of the first volume present instead: unrar walks the
+            # set itself and needs the sibling files on disk.
             name = source_name(siblings[0])
             if _NUMBERED_VOLUME_RE.match(siblings[0].name):
                 return ResolvedSource(
