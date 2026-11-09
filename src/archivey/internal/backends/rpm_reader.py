@@ -197,8 +197,9 @@ class Header:
     def _bad(self, tag: int, why: str) -> CorruptionError:
         return CorruptionError(f"RPM {self._what}: tag {tag} {why}")
 
-    def ints(self, tag: int) -> list[int] | None:
-        """An integer array, unsigned, or None when the tag is absent."""
+    def _int_entry(self, tag: int) -> tuple[_Entry, int, int] | None:
+        """The tag's entry, its integer width and where its array ends, checked to be
+        an integer array inside the data store; None when the tag is absent."""
         entry = self._entries.get(tag)
         if entry is None:
             return None
@@ -208,6 +209,14 @@ class Header:
         end = entry.offset + size * entry.count
         if end > len(self._data):
             raise self._bad(tag, "runs past the end of the header's data")
+        return entry, size, end
+
+    def ints(self, tag: int) -> list[int] | None:
+        """An integer array, unsigned, or None when the tag is absent."""
+        found = self._int_entry(tag)
+        if found is None:
+            return None
+        entry, size, end = found
         if size == 1:
             return list(self._data[entry.offset : end])
         fmt = {2: "H", 4: "I", 8: "Q"}[size]
@@ -216,8 +225,17 @@ class Header:
         )
 
     def number(self, tag: int) -> int | None:
-        values = self.ints(tag)
-        return values[0] if values else None
+        """The first value of an integer array, checked as :meth:`ints` checks it,
+        without building the array: a tag read for one value may declare a count
+        as large as the data store."""
+        found = self._int_entry(tag)
+        if found is None:
+            return None
+        entry, size, _end = found
+        if size == 1:
+            return self._data[entry.offset]
+        fmt = {2: ">H", 4: ">I", 8: ">Q"}[size]
+        return struct.unpack_from(fmt, self._data, entry.offset)[0]
 
     def strings(self, tag: int) -> list[bytes] | None:
         """A string array (a single string as a list of one), or None when absent."""
@@ -245,8 +263,21 @@ class Header:
         return 0 if entry is None else entry.count
 
     def string(self, tag: int) -> bytes | None:
-        values = self.strings(tag)
-        return values[0] if values else None
+        """The first string of the tag's entry, checked as :meth:`strings` checks it,
+        without building the list: a tag read for one value, such as ``NAME``, may
+        declare a count as large as the data store."""
+        entry = self._entries.get(tag)
+        if entry is None:
+            return None
+        if entry.type not in (_STRING, _STRING_ARRAY, _I18NSTRING):
+            raise self._bad(tag, f"has type {entry.type}, not a string")
+        count = 1 if entry.type == _STRING else entry.count
+        if count > len(self._data) - entry.offset:
+            raise self._bad(tag, f"declares {count} strings in fewer bytes")
+        # Each of the declared strings ends at a NUL, as ``strings`` requires.
+        if self._data.count(b"\0", entry.offset) < count:
+            raise self._bad(tag, "has a string with no NUL before the data's end")
+        return self._data[entry.offset : self._data.index(b"\0", entry.offset)]
 
 
 def _read_header(
