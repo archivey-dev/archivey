@@ -177,6 +177,56 @@ def test_bytes_after_the_last_block_end_the_walk_and_fail_the_decode() -> None:
             stream.read()
 
 
+def _read_until_error(stream: Any, chunk: int) -> bytes:
+    """Bounded reads until the stream raises ``CorruptionError``."""
+    got = bytearray()
+    with pytest.raises(CorruptionError, match="decoded bytes"):
+        while piece := stream.read(chunk):
+            got += piece
+    return bytes(got)
+
+
+@pytest.mark.parametrize("isolation", list(ProcessIsolation), ids=lambda i: i.name)
+@pytest.mark.parametrize("chunk", [4 << 10, 1 << 20], ids=["4KiB", "1MiB"])
+@pytest.mark.parametrize("point", ["walked", "recorded"])
+def test_a_seek_before_a_bad_block_header_gets_the_good_blocks_first(
+    isolation: ProcessIsolation,
+    chunk: int,
+    point: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read resumed at a block returns every byte up to a bad block header before it
+    raises, as a read from the start does (``compressed-streams`` §"In-house decoders
+    hand back their bytes before an error"). The point comes from the header walk, or
+    from a forward read that recorded it and stopped before the bad header: a stream
+    that already raised withholds a rewound read's last bytes (``ArchiveStreamImpl``),
+    which is not what this pins."""
+    raw = bytearray(_raw())
+    struct.pack_into("<i", raw, _block_offsets(_raw())[3] + 4, BLOCK + 1)
+    pos = STARTS[1] + 3
+    with _open(io.BytesIO(bytes(raw)), isolation=isolation) as stream:
+        if point == "recorded":
+            assert stream.read(STARTS[2] + 10) == DATA[: STARTS[2] + 10]
+        else:
+            # The walk stops at the bad header: no size, the points before it.
+            assert _engine(stream).try_get_size() is None
+        assert _points(stream) == STARTS[:3]
+        # Which block each decode gave, by its first bytes.
+        firsts: list[bytes] = []
+        original = bzip3_codec.Bzip3Decompressor._decode_block
+
+        def noting(self: Any, compressed: int, decoded: int) -> None:
+            original(self, compressed, decoded)
+            firsts.append(bytes(self._output[:16]))
+
+        monkeypatch.setattr(bzip3_codec.Bzip3Decompressor, "_decode_block", noting)
+        stream.seek(pos)
+        assert _read_until_error(stream, chunk) == DATA[pos : STARTS[3]]
+        # The seek resumed at block 1: block 0 is not decoded again.
+        assert DATA[:16] not in firsts
+        assert firsts[:2] == [DATA[start : start + 16] for start in STARTS[1:3]]
+
+
 @pytest.mark.parametrize(
     ("compressed", "decoded"),
     [(None, BLOCK + 1), (0, BLOCK), (7, 1), (8, 1)],
