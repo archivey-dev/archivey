@@ -116,7 +116,10 @@ from archivey.internal.streams.streamtools import (
     read_arrived,
     source_byte_size,
 )
-from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.streamtools.binaryio import (
+    read_blocking,
+    read_within_reach,
+)
 from archivey.internal.streams.verification import (
     ask_verification_proofs,
     drop_spanning_ceiling,
@@ -1308,6 +1311,11 @@ class _Decoded:
 _SKIP_BY_READING = 64 * 1024
 # The walk's read buffer: headers are small reads.
 _WALK_BUFFER = 64 * 1024
+# What one read of header bytes may ask the walk's stream for at a time. A header read
+# larger than this is served in steps of it, so a size field that lies costs at most
+# one step more than the bytes the stream really has (``tar_parser.READ_STEP`` is the
+# same size).
+_HEADER_READ_STEP = 64 * 1024
 
 
 class _ForwardInput(ReadOnlyIOStream):
@@ -1690,8 +1698,14 @@ class SequentialReaderAdapter(_PluginAdapter):
                     )
                 left -= len(chunk)
 
+        def read(n: int) -> bytes:
+            # A walk reads header bytes a size field of the archive asked for, so the
+            # read must not allocate what the field says before the stream shows it
+            # has the bytes (threat model, "Allocations sized by a header field").
+            return read_within_reach(stream, n, remaining=None, step=_HEADER_READ_STEP)
+
         layer.forward = ForwardStream(
-            functools.partial(read_blocking, stream),
+            read,
             skip,
             functools.partial(self._decompress_layer, walk, layer),
         )

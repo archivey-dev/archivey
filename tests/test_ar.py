@@ -26,7 +26,7 @@ from archivey.formats import SequentialReader
 from archivey.internal.backends import ar_reader
 from archivey.internal.backends.ar_reader import ArReader
 from tests.public_names import assert_only_public_archivey
-from tests.streams_util import ShortReadBytesIO
+from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
 
 AR = archivey.ArchiveFormat.AR
 DATA = Path(__file__).parent / "fixtures" / "ar"
@@ -468,3 +468,48 @@ def test_the_reader_uses_only_public_archivey() -> None:
 
 def test_the_reader_is_a_sequential_reader() -> None:
     assert issubclass(ArReader, SequentialReader)
+
+
+def _ar_header(name: bytes, size: int) -> bytes:
+    return (
+        name.ljust(16)
+        + b"0".ljust(12)
+        + b"0".ljust(6)
+        + b"0".ljust(6)
+        + b"644".ljust(8)
+        + str(size).encode().ljust(10)
+        + b"`\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("member", "fmt"),
+    [(b"//", AR), (b"debian-binary", archivey.ArchiveFormat.DEB)],
+    ids=["long-name-table", "debian-binary"],
+)
+@pytest.mark.parametrize("pipe", [False, True], ids=["bytesio", "pipe"])
+def test_streaming_header_size_does_not_drive_the_allocation(
+    member: bytes, fmt: archivey.ArchiveFormat, pipe: bool
+) -> None:
+    """A streaming walk reads a header member the archive sizes (the ``//`` table,
+    ``debian-binary``) in steps, so a 1 KB archive that declares 60 MiB is not
+    given 60 MiB of memory before it is found cut. Before the fix the walk asked
+    its stream for the declared size in one read, which peaked at 60 MiB from a
+    ``BytesIO`` and 120 MiB from a pipe."""
+    import tracemalloc
+
+    declared = 60 * 2**20
+    data = b"!<arch>\n" + _ar_header(member, declared) + b"x" * 1000
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+    tracemalloc.start()
+    try:
+        with (
+            pytest.raises(TruncatedError),
+            open_archive(source, format=fmt, streaming=True) as reader,
+        ):
+            for _member, _stream in reader.stream_members():
+                pass
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 8 * 2**20, f"peak {peak} bytes for a {len(data)}-byte archive"
