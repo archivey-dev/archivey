@@ -1711,8 +1711,9 @@ def _detect_format_body(
             # SFX or far growth that hits EOF would make ``remaining_known()`` report a
             # length; that is correct for capability accounting but must not flip
             # content-probe framing gates that deliberately treat a
-            # DETECTION_LIMIT-sized non-seekable peek as unknown-length. A peek that stopped early on a pipe is short with the source
-            # not ended, and ``remaining_known()`` is ``None`` then.
+            # DETECTION_LIMIT-sized non-seekable peek as unknown-length. A peek that
+            # stopped early on a pipe is short with the source not ended, and
+            # ``remaining_known()`` is ``None`` then.
             length=workspace.remaining_known(),
         )
 
