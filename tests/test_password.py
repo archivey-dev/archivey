@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import array
 import ast
 import re
 import subprocess
@@ -332,6 +333,7 @@ _SECRET = "WRONGPW-9f3"
         pytest.param({_SECRET}, id="set-of-str"),
         pytest.param(bytearray(_SECRET.encode()), id="bytearray"),
         pytest.param(memoryview(_SECRET.encode()), id="memoryview"),
+        pytest.param(array.array("B", _SECRET.encode()), id="array"),
     ],
 )
 def test_a_wrong_typed_password_is_refused_without_its_value(password: Any) -> None:
@@ -348,6 +350,16 @@ def test_a_wrong_typed_password_is_refused_without_its_value(password: Any) -> N
     assert "WRONGPW" not in message
     assert "(int)" not in message
     assert not re.search(r"\b87\b", message), message  # ord("W"), the first byte
+
+
+def test_a_class_given_as_a_password_is_named_as_a_class() -> None:
+    with pytest.raises(ArchiveyUsageError) as caught:
+        _PasswordCandidates.from_input([str])  # type: ignore[list-item]
+    assert "str class itself" in str(caught.value)
+    candidates = _PasswordCandidates.from_input(lambda request: str)  # type: ignore[arg-type,return-value]
+    with pytest.raises(ArchiveyUsageError) as caught:
+        list(candidates.iter_provider_answers(None, set()))
+    assert "str class itself" in str(caught.value)
 
 
 @pytest.mark.parametrize(

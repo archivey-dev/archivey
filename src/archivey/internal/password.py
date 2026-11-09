@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import array
 import threading
 from collections.abc import Callable, Container, Iterator, Sequence as ABCSequence
 from contextvars import ContextVar
@@ -187,9 +188,9 @@ class _PasswordCandidates:
             return cls()
         if isinstance(password, (str, bytes)):
             return cls(candidates=[_to_bytes(password)])
-        if isinstance(password, (bytearray, memoryview)):
-            # A bytes-like buffer is an ``ABCSequence`` of ints, so the loop below would
-            # take each byte as a candidate and report the first as a wrong-typed item.
+        if isinstance(password, (bytearray, memoryview, array.array)):
+            # These buffers are ``ABCSequence``s of ints, so the loop below would take
+            # each element as a candidate and report the first as a wrong-typed item.
             # The documented type is str or bytes; a buffer is refused as one value.
             raise _UsageTypeError(
                 f"password= takes a str or bytes, not a {type(password).__name__}. "
