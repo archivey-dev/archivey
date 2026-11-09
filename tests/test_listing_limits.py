@@ -409,6 +409,60 @@ def test_tar_pax_keywords_count_toward_max_metadata_bytes(
     assert len(header_reads) <= 6
 
 
+def _pax_header_of_distinct_keywords(count: int) -> bytes:
+    """One member behind a PAX ``x`` header of ``count`` short records, each with a
+    keyword of its own and an empty value."""
+    records = bytearray()
+    for i in range(count):
+        body = b" %x=\n" % i
+        length = len(body) + len(str(len(body) + 1))
+        records += b"%d" % length + body
+    pax = tarfile.TarInfo("PaxHeaders/a")
+    pax.type, pax.size = tarfile.XHDTYPE, len(records)
+    member = tarfile.TarInfo("a")
+    return (
+        pax.tobuf(format=tarfile.USTAR_FORMAT)
+        + bytes(records)
+        + bytes(-len(records) % 512)
+        + member.tobuf(format=tarfile.USTAR_FORMAT)
+        + bytes(1024)
+    )
+
+
+def test_tar_pax_header_of_many_keywords_is_charged_per_keyword() -> None:
+    """Each distinct PAX keyword is charged while the header is parsed.
+
+    Charging only the header's bytes let millions of short keywords through: each
+    keeps about 270 bytes of objects for 9 stored, so a 60 MiB header under the
+    default 64 MiB cap took 1.76 GB to list. Here 100 000 keywords in 0.9 MB, under a
+    1 MiB cap, peaked at 28 MB and listed; now the parse stops at the keyword that
+    crosses the cap.
+    """
+    from tests.memory_util import traced_peak
+
+    cap = 1 << 20
+    raw = _pax_header_of_distinct_keywords(100_000)
+    assert len(raw) < cap
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=cap))
+
+    def list_it() -> None:
+        # Raised at open or at the listing: which one is not what this checks.
+        with (
+            pytest.raises(ResourceLimitError, match="a PAX keyword"),
+            open_archive(io.BytesIO(raw), config=cfg) as reader,
+        ):
+            reader.members()
+
+    list_it()
+    assert traced_peak(list_it) < 3 * cap
+    # A header of a few keywords lists as before.
+    with open_archive(
+        io.BytesIO(_pax_header_of_distinct_keywords(100)), config=cfg
+    ) as reader:
+        (member,) = reader.members()
+        assert len(member.extra["tar.pax_headers"]) == 100
+
+
 def test_tar_drops_the_link_name_of_a_member_that_is_not_a_link(tmp_path: Path) -> None:
     """A long link name on a regular file is not presented, and the listing reads it.
 

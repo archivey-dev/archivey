@@ -473,7 +473,10 @@ data its pass keeps for link targets beside it.
   (`internal/backends/tar_parser.py` `TarWalker`) parses the next header, so the walk
   stops at the member that crosses a cap. The walker charges each member's headers to a
   budget before it reads them: an extended header (PAX `x` or `g`, GNU `L` or `K`) at
-  its declared size, and a sparse map at 24 bytes per entry from its entry count before
+  its declared size, each distinct keyword of a PAX header at 256 bytes more as it is
+  parsed (`PAX_KEYWORD_BYTES`: a keyword keeps about 270 bytes of objects for 9 stored,
+  and a 60 MiB header of short keywords under the cap took 1.76 GB before), and a
+  sparse map at 24 bytes per entry from its entry count before
   its entries are parsed, or block by block for an old GNU map's extension blocks. The
   budget is what is left of `max_metadata_bytes`, in every walk, streaming included. The
   headers ahead of one member are one chain and draw on one budget. An over-limit tar

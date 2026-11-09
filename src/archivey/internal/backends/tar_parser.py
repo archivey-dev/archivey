@@ -69,6 +69,14 @@ MAX_OFFSET = 2**63 - 1
 # in. The archive-reading spec sets this weight. A SparseMap holds 16 bytes per entry.
 SPARSE_ENTRY_BYTES = 24
 
+# What each distinct keyword of a PAX header is charged against the member's budget
+# while the header is parsed, beyond the header's own bytes. The bytes alone let a
+# header of millions of short keywords through: each keeps a dict entry, a set entry,
+# a PaxValue and its decoded text, 270 bytes at the peak against 9 stored (CPython
+# 3.11), so a 60 MiB header under the 64 MiB cap took 1.76 GB. Honest headers hold a
+# handful of keywords, so this costs them a few kilobytes of budget.
+PAX_KEYWORD_BYTES = 256
+
 # The most significant digits a PAX number may have: 20, the width of the largest
 # ``uintmax_t``. GNU tar reads PAX numbers with ``strtoumax``, so a longer one is out of
 # range, and it reads each number of a sparse 1.0 map into a buffer of this size. Two
@@ -705,7 +713,11 @@ def _record_ambiguities(
 
 
 def parse_pax_records(
-    data: bytes, *, binary_default: bool, first_wins: bool = False
+    data: bytes,
+    *,
+    binary_default: bool,
+    first_wins: bool = False,
+    charge: Charge | None = None,
 ) -> PaxRecords:
     """Parse ``"<length> <key>=<value>\\n"`` records.
 
@@ -728,6 +740,9 @@ def parse_pax_records(
     kept. The keywords in ``_C_STRING_KEYS`` are cut at their first NUL before
     that rule applies. ``hdrcharset`` is kept by the same rule as any key, and the one
     kept decides whether the block's names are binary.
+
+    ``charge``, when given, is called with ``PAX_KEYWORD_BYTES`` for each distinct
+    keyword as it is first read, before the parse keeps anything for it.
     """
     raw: dict[bytes, bytes] = {}
     offsets: list[bytes] = []
@@ -758,6 +773,8 @@ def parse_pax_records(
             raise CorruptionError(
                 f"TAR PAX header has a record at byte {pos} with no key"
             )
+        if charge is not None and key not in seen:
+            charge(PAX_KEYWORD_BYTES, "a PAX keyword")
         # A newline in the keyword is the same smuggled record one byte earlier: a
         # reader that splits on lines reads what follows it as another record. The
         # allow-list is for values only; no keyword holds one.
@@ -1568,6 +1585,7 @@ class TarWalker:
                             data,
                             binary_default=self._global_binary,
                             first_wins=parsed.typeflag == PAX_GLOBAL_TYPE,
+                            charge=charge,
                         )
                     except CorruptionError as exc:
                         # Records that do not parse make a header that does not parse,
