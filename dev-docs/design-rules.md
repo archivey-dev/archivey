@@ -989,7 +989,9 @@ package, an unreadable header) raises at open, not at the first read. Work propo
 to the archive's data (a full CRC scan, decoding members) waits until a read asks for it.
 
 **Rulings.** Single-file readers open their stream eagerly so init errors surface at open
-(PR 13). The gzip trailer CRC is decided at read and never scanned at open (2026-09-24).
+(PR 13). The gzip trailer CRC is decided at read and never scanned at open (2026-09-24). A
+ZIP member of at most 64 KiB may be read and decoded whole at `reader.open()`: the work is
+bounded, and it costs less than the stream setup it replaces (2026-11-09, PR 1373).
 
 ### DR-16. A feature must deliver its promise
 

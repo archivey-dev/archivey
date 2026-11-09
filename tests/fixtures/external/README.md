@@ -202,3 +202,18 @@ show what Microsoft's own writer does with stored and MSZIP folders, so
 | `test_read_format_cab_filename_cp932.cab` | MSZIP | two names in cp932 (`表だよ/漢字.txt`, `表だよ/一覧表.txt`) |
 
 How they were made is in libarchive's `test_read_format_cab.c` (`mkcab1` to `mkcab3`).
+
+## `reduce_pkzip092/`
+
+Two raw ZIP Reduce streams (method 5, compression factor 4) that PKZIP 0.92 wrote under
+DOSBox, from the Rust `zip` crate's test data (`tests/data/legacy/`, MIT licence,
+github.com/zip-rs/zip2), fetched 2026-11-09. No tool on the test image writes Reduce, and
+Info-ZIP `unzip` is built without it, so these are the only bytes from a real writer.
+
+- `reduce_hamlet_2048.bin`: the first 2048 bytes of Project Gutenberg's *Hamlet*, which
+  are `hamlet_2048.txt` (CRLF line ends, as PKZIP read them; the crate's copy lost them
+  to a git text conversion).
+- `reduce_zero_reduced.bin`: the same 2048 bytes then 1024 zero bytes, which reach a copy
+  from before the start of the output.
+
+The crate's comment on `reduce_zero_reduced.bin` gives the commands that made them.
