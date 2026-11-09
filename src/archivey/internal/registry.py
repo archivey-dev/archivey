@@ -10,9 +10,10 @@ errors, rather than silently dropping a format whose dependency is absent (see
 
 Who writes it:
 
-* each module in ``archivey.internal.backends`` calls :func:`register_reader` on import;
-* ``format_adapter.register_builtin_format`` registers a built-in format whose reader
-  is written against ``archivey.formats``, among the built-in backends;
+* each module in ``archivey.internal.backends`` registers its backend on import: with
+  :func:`register_reader`, or, for a format written against ``archivey.formats``, with
+  ``format_adapter.register_builtin_format``, which calls :func:`register_reader`
+  itself;
 * ``format_adapter.register_plugin`` (``archivey.formats.register_format``) registers
   a plugin's backend with :meth:`BackendRegistry.register_plugin_backend`, after them.
 
@@ -745,8 +746,10 @@ class BackendRegistry:
         ]
 
 
-# The process-wide registry: registration happens at import time and is never undone,
-# except by ``format_adapter.registration_scope`` in tests.
+# The process-wide registry. Built-in backends register on import; a plugin registers
+# when ``register_format`` or ``register_codec`` is called, which may be mid-process.
+# Nothing unregisters, except ``format_adapter.registration_scope``, which tests use to
+# undo plugin and codec registrations.
 _registry = BackendRegistry()
 
 
@@ -789,9 +792,10 @@ def format_availability(
     whose ``requires`` count as a registered plugin's do. Whether the format may open is
     another question, answered by ``config.formats.allows(fmt)``; a caller needs both.
     """
-    # Anything that is not a format is refused here: an answer for it would be NONE
-    # with an empty ``missing``, which reads as a real "unsupported", and its
-    # ``format`` field would not be an ArchiveFormat. The check is here rather than on
+    # Anything that is not a format is refused here: a StreamFormat, a ContainerFormat
+    # or a stray string would otherwise reach the method and fail with an untranslated
+    # AttributeError, where the caller should get an ArchiveyUsageError that names the
+    # pairs. The check is here rather than on
     # the method so internal callers, which hold an ArchiveFormat by construction, keep
     # the plain lookup.
     resolved = coerce_archive_format(

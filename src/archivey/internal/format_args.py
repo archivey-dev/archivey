@@ -38,11 +38,14 @@ an ``ArchiveFormat`` parameter is still refused rather than widened, and named a
 the ``ArchiveFormat`` pairs that contain it, because the caller who reached there made
 an understandable mistake and one message should end it.
 
-The module also holds the spelling tables that registration extends: a plugin format
-or codec (``format_adapter.register_plugin``, ``codec_adapter.register_plugin_codec``)
-adds its spellings with :func:`add_plugin_spellings`, after checking them with
-:func:`plugin_spelling_clash`, and a built-in sequential format joins
-``SEQUENTIAL_CONTAINERS``. :func:`outer_stream_format` reads that set.
+The module also holds the tables that registration extends. A plugin format or codec
+(``format_adapter.register_plugin``, ``codec_adapter.register_plugin_codec``) adds its
+spellings with :func:`add_plugin_spellings`, after checking them with
+:func:`plugin_spelling_clash`. A built-in sequential format
+(``format_adapter.register_builtin_format``) adds its compressed pairs' spellings the
+same way (``ar.gz``), and its container joins ``SEQUENTIAL_CONTAINERS``, which
+:func:`outer_stream_format` reads, and ``PAIR_SPELLED_CONTAINERS``, which
+``codec_adapter`` reads so that a codec registered later spells its pair too.
 """
 
 from __future__ import annotations

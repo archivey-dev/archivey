@@ -1,6 +1,7 @@
 """Format backends — one self-registering reader module per archive format.
 
-Importing this package is required: each submodule ends with ``register_reader(...)``,
+Importing this package is required: each submodule ends with ``register_reader(...)``
+or, for a format written against ``archivey.formats``, ``register_builtin_format(...)``,
 so a bare ``import archivey.internal.backends`` fills the registry. Do not remove the
 side-effect imports below.
 
