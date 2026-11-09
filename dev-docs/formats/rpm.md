@@ -17,7 +17,7 @@ as a built-in the way ar and CPIO are.
 | Access cost | `SOLID`: one compression stream holds every file |
 | Core dependencies | None. The payload is decoded by archivey's codecs (gzip, bzip2, xz, LZMA Alone, Zstandard) |
 | Encryption | None |
-| Checksums | The main header's SHA-256 digest from the signature header (SHA-1 when only that is stored), checked as the header is read; each regular file's digest from `FILEDIGESTS` (SHA-256 in current packages, MD5 in old ones), checked as it is read |
+| Checksums | The main header's SHA-256 and SHA-1 digests from the signature header, each one stored checked as the header is read; each regular file's digest from `FILEDIGESTS` (SHA-256 in current packages, MD5 in old ones), checked as it is read |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
 | Refuses | Lead versions other than 3 and 4, delta RPMs, payload compressors archivey has no codec for |
 | Spec | `openspec/specs/format-rpm/spec.md` |
@@ -61,9 +61,9 @@ By the lead's magic at offset 0, `.rpm` by extension. There is no content probe.
 ### 2.2 Open and list
 
 The walk reads the lead and both headers. When the signature header stores a digest
-of the main header, `RPMSIGTAG_SHA256` (tag 273) or else `RPMSIGTAG_SHA1` (269), the
-walk hashes the main header as it reads it, from its magic to the end of its data store,
-and a mismatch is `CorruptionError` before any member is listed: in both access modes,
+of the main header, `RPMSIGTAG_SHA256` (tag 273), `RPMSIGTAG_SHA1` (269) or both, the
+walk hashes the main header as it reads it, once for each digest stored, from its magic to the end of its data store,
+and any mismatch is `CorruptionError` before any member is listed: in both access modes,
 since both read the header the same way. The digest covers what only the header holds
 (names, modes, owners, link targets, file digests), which no member read checks. A
 package with neither tag is read unchecked.
@@ -190,8 +190,10 @@ surface is memory a header can ask for:
 - **Ghosts are not members,** as `rpm2cpio` does not give them.
 - **Signatures are reported, not checked.** Checking needs keys and an OpenPGP
   implementation; archivey is an archive reader, and `rpm -K` exists.
-- **The header digest is checked; one is enough.** SHA-256 when the package stores it,
-  else SHA-1. A package with neither (an old or rewritten one) is not damage. The
+- **Every header digest stored is checked.** SHA-256 and SHA-1, as `rpm -K` checks
+  every digest it finds; the first that differs is named. A package with neither (an
+  old or rewritten one) is not damage. The digests are not signed, so they detect
+  damage, not tampering: whoever changes the header can change them too. The
   member list comes from the header, so without this check a changed link target, mode
   or owner passed `archivey test`.
 - **Every file must be found before the trailer,** as rpm requires

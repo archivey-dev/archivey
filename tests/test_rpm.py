@@ -624,6 +624,15 @@ def test_the_header_digest(
         reader.members()
 
 
+def test_every_header_digest_is_checked() -> None:
+    """A correct SHA-256 does not excuse a wrong SHA-1."""
+    data = _build(
+        _Package(_tree(), header_digests=(273,), signature={269: (_STRING, b"00" * 20)})
+    )
+    with pytest.raises(CorruptionError, match="SHA-1 digest"), _open(data) as r:
+        r.members()
+
+
 def test_a_header_digest_that_is_not_hexadecimal() -> None:
     data = _build(_Package(_tree(), signature={273: (_STRING, b"zz")}))
     with pytest.raises(CorruptionError, match="not hexadecimal"), _open(data) as r:

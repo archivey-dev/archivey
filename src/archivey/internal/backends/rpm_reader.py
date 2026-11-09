@@ -37,9 +37,9 @@ that is not a ghost must have been found by then.
 
 The signature header stores digests of the main header, from its magic to the end
 of its data store: ``RPMSIGTAG_SHA256`` and the older ``RPMSIGTAG_SHA1``. The walk
-checks the first of them the package has as it reads the header, so a change to what
+checks every one of them the package stores as it reads the header, so damage to what
 only the header holds (a link target, a mode, an owner) is ``CorruptionError`` before
-any member is listed. ``FILEDIGESTS`` holds each regular file's digest in the
+any member is listed. The digests are not signed: they detect damage, not tampering. ``FILEDIGESTS`` holds each regular file's digest in the
 algorithm ``FILEDIGESTALGO`` names (MD5 when absent): it is checked as the member is
 read. Signatures are reported in the archive info, not checked.
 
@@ -141,7 +141,7 @@ TAG_RPMFORMAT = 5114
 _SIGNATURE_TAGS = frozenset({267, 268, 278, 1002, 1005, 1006})
 # Signature-header tags that hold a digest of the main header, from its magic to the
 # end of its data store, as lowercase hexadecimal: RPMSIGTAG_SHA256 (273) and
-# RPMSIGTAG_SHA1 (269). The first one the package stores is checked.
+# RPMSIGTAG_SHA1 (269). Every one the package stores is checked.
 _HEADER_DIGESTS: tuple[tuple[int, str, Callable[[], Hasher]], ...] = (
     (273, "SHA-256", hashlib.sha256),
     (269, "SHA-1", hashlib.sha1),
@@ -264,11 +264,11 @@ def _read_header(
     stream: ForwardStream,
     what: str,
     context: ReaderContext,
-    hasher: Hasher | None = None,
+    hashers: tuple[Hasher, ...] = (),
 ) -> tuple[Header, int]:
     """A header at the stream's position, and how many bytes it took. The walk keeps
     it, so its index and data store are charged to ``max_metadata_bytes`` before
-    they are read. ``hasher``, when given, is fed every byte of the header."""
+    they are read. Each of ``hashers`` is fed every byte of the header."""
     offset = stream.offset
     intro = stream.read_exact(16)
     if intro[:4] != HEADER_MAGIC:
@@ -283,7 +283,7 @@ def _read_header(
     context.charge_metadata(total, what=f"the RPM {what}")
     index = stream.read_exact(16 * count)
     data = stream.read_exact(size)
-    if hasher is not None:
+    for hasher in hashers:
         for part in (intro, index, data):
             hasher.update(part)
     entries: dict[int, _Entry] = {}
@@ -404,12 +404,11 @@ class RpmReader(SequentialReader):
             raise UnsupportedFeatureError(f"RPM lead version {major}")
         signature, used = _read_header(stream, "signature header", self._context)
         stream.skip(-used % 8)
-        check = _header_digest(signature)
+        checks = _header_digests(signature)
         header, _ = _read_header(
-            stream, "header", self._context, None if check is None else check[2]
+            stream, "header", self._context, tuple(h for _, _, h in checks)
         )
-        if check is not None:
-            name, expected, hasher = check
+        for name, expected, hasher in checks:
             if hasher.digest() != expected:
                 raise CorruptionError(
                     f"RPM header does not match the {name} digest in the signature "
@@ -786,10 +785,12 @@ class RpmReader(SequentialReader):
             scanned += len(chunk)
 
 
-def _header_digest(signature: Header) -> tuple[str, bytes, Hasher] | None:
-    """The main header's digest the signature header stores, the algorithm's name and
-    a hasher to compare it with. None when the package stores none: old packages, and
-    packages a tool rewrote, can lack both, and that is not damage."""
+def _header_digests(signature: Header) -> list[tuple[str, bytes, Hasher]]:
+    """Each digest of the main header the signature header stores: the algorithm's
+    name, the digest and a hasher to compare it with. Empty when the package stores
+    none: old packages, and packages a tool rewrote, can lack them, and that is not
+    damage."""
+    checks = []
     for tag, name, new in _HEADER_DIGESTS:
         text = signature.string(tag)
         if text is None:
@@ -800,8 +801,8 @@ def _header_digest(signature: Header) -> tuple[str, bytes, Hasher] | None:
             raise CorruptionError(
                 f"RPM signature header: the header's {name} digest is not hexadecimal"
             ) from None
-        return name, expected, new()
-    return None
+        checks.append((name, expected, new()))
+    return checks
 
 
 def _split(name: bytes) -> tuple[bytes, bytes]:
