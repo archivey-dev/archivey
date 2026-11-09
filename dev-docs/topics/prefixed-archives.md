@@ -1,5 +1,12 @@
 # Prefixed and embedded archives
 
+**In one minute.** An archive can sit after something else: a self-extractor's program
+stub, a shell script, a JPEG it was appended to. archivey finds such an archive by
+scanning a bounded window at the front for format signatures, checks each hit before
+trusting it, and then reads the archive from where it starts. This page is that scan in
+depth. The guide's [formats and plugins](../guide/05-formats-and-plugins.md) and
+[pipes and files](../guide/07-pipes-and-files.md) pages show where it fits.
+
 An archive does not have to start at byte 0. Something can sit in front of it — an
 executable stub, a shell launcher, an unrelated file it was appended to — and the archive
 is still a perfectly good archive. This page covers the machinery shared by every format

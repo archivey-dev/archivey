@@ -1,5 +1,14 @@
 # Process isolation
 
+**In one minute.** Some decoder libraries written in C or C++ can crash the whole Python
+process on bad input. archivey runs those in a child process, so a crash ends the child
+and the caller gets an `ArchiveyError` instead. By default only the decoders seen to
+crash, plus libbzip3 as a precaution, are isolated, and children are reused, so the cost
+is small. This page covers the settings, how children start, are reused and end, and
+what a caller sees when one dies. The guide's
+[streams and codecs](../guide/06-streams-and-codecs.md#child-processes) and
+[security](../guide/08-security.md) pages give the overview.
+
 Which native decoders archivey runs in a child process, how those children are started,
 reused and ended, and what a caller sees when one dies. The setting is
 `ArchiveyConfig.process_isolation`, a `ProcessIsolation`.
