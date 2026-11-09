@@ -1660,8 +1660,8 @@ def _resolve_single(
         if open_file_compression(source) is not None:
             # fsspec decompresses: the archive is the decompressed stream. archivey
             # opened it and the file under it, and so closes both. Its name has no
-            # volume siblings: the parts of a split archive are not compressed one
-            # by one.
+            # volume siblings: the parts of a split archive are not compressed one by
+            # one.
             decoded, raw = open_decompressed(source)
             try:
                 opened = ArchiveSource.for_fsspec_decompressed(

@@ -3,9 +3,11 @@
 A compressed image stores its blocks as ordinary zlib, bzip2 or xz streams. The
 first of those is a real stream, so a prefix read extracts one block and calls
 the rest of the image trailing data. The image itself is the 512-byte ``koly``
-block: at offset 0 on an old image, or at the end on every image the backup
-scan found. Reading the blocks is a separate feature. This module exists so
-detection can name the image and ``open_archive`` can refuse it.
+block: at offset 0 on an old image, or at the end, where every image in the
+survey of 138 ``.dmg`` files in ``dev-docs/formats/dmg.md`` has it. Reading the
+blocks is a separate feature. This module exists so detection can name the image
+and ``open_archive`` can refuse it: :class:`UdifBackend` registers the ``koly``
+signatures, at offset 0 and as a trailer, and refuses every open.
 """
 
 from __future__ import annotations

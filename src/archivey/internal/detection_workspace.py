@@ -68,6 +68,12 @@ class CandidateView(Protocol):
     def __call__(self, end: int, start: int = 0, /) -> bytes: ...
 
 
+#: What :meth:`PrefixWorkspace.seek_view` reads on its first peek: more than a 7z
+#: start header (32 bytes), a ZIP local header with a name of normal length, or a RAR 5
+#: main header of normal size (about 220 bytes), so one seek judges the candidate.
+SEEK_VIEW_FIRST_READ = 512
+
+
 class PrefixWorkspace:
     """Monotonically growing prefix buffer over a detection source.
 
@@ -105,7 +111,11 @@ class PrefixWorkspace:
         self._handle: BinaryIO | None = None
         self._owns_handle = False
         self._entry_pos: int | None = None
+        # A non-seekable ``ArchiveSource``: peeked, so its replay prefix keeps the
+        # bytes for the backend.
         self._peekable: ArchiveSource | None = None
+        # Any other non-seekable stream: read forward, so what detection reads is gone
+        # from it.
         self._raw_forward: BinaryIO | None = None
         self._source_exhausted = False
         # Set when a ``limit``-clamped ``candidate_view`` shortens a peek. Distinct
@@ -331,6 +341,46 @@ class PrefixWorkspace:
             # ``start`` was.
             returned = max(0, min(len(self._buf) - candidate_origin, end))
             return data
+
+        return peek_more
+
+    def seek_view(self, candidate_origin: int, *, length: int) -> CandidateView | None:
+        """A :meth:`candidate_view`-shaped callable over the ``length`` bytes from
+        ``candidate_origin``, read by seeking (:meth:`read_at`), or ``None`` when the
+        source has no cheap random access: a forward-only source, or a stream whose
+        backward seek may re-decode.
+
+        For one candidate whose place a header gives, past the bytes the prefix
+        holds: the prefix does not grow through the bytes before it. The first peek
+        reads :data:`SEEK_VIEW_FIRST_READ` bytes (or ``length``, when smaller) in one
+        seek, which holds every validator's header of normal size, and the view keeps
+        what it read: a validator's growing peeks then cost no more reads, and only a
+        longer header costs one read for each peek past what is held. A peek
+        past ``length`` is cut short and noted, as a ``limit`` is for
+        :meth:`candidate_view` (:meth:`take_clamped_view_read`).
+        """
+        if candidate_origin < 0 or length < 0:
+            raise ValueError("candidate_origin and length must be non-negative")
+        if self._cheap_random_access_handle() is None:
+            return None
+        held = bytearray()
+        ended = False
+
+        def peek_more(end: int, start: int = 0, /) -> bytes:
+            nonlocal ended
+            if start < 0:
+                raise ValueError("start must be non-negative")
+            if end > length:
+                self._clamped_view_read = True
+                end = length
+            if end > len(held) and not ended:
+                wanted = end - len(held)
+                if not held:
+                    wanted = max(wanted, min(SEEK_VIEW_FIRST_READ, length))
+                data = self.read_at(candidate_origin + len(held), wanted) or b""
+                ended = len(data) < wanted
+                held.extend(data)
+            return bytes(held[start:end])
 
         return peek_more
 

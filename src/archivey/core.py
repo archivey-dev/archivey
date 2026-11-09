@@ -52,7 +52,10 @@ from archivey.internal.arg_checks import (
     raise_if_text_stream,
     raise_if_write_only_stream,
 )
-from archivey.internal.backends.iso_reader import refuse_raw_sector_image
+from archivey.internal.backends.iso_reader import (
+    raw_layout_of,
+    refuse_raw_sector_image,
+)
 from archivey.internal.backends.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
@@ -150,22 +153,19 @@ __all__ = [
 def _forced_payload_end(
     archive_source: ArchiveSource, backend_cls: type[ReadBackend]
 ) -> int | None:
-    """Where a signed executable's certificate table starts, for a source opened with a
-    forced ``format=`` (detection, which reads it otherwise, did not run); ``None``
-    when nothing ends the region early.
+    """Where a signed executable's certificate table starts, for an open that has no
+    executable judgement from detection: a forced ``format=``, or a format detection
+    guessed from the name; ``None`` when nothing ends the region early.
 
     Read from the source's first :data:`~archivey.internal.sfx.LAYOUT_PREFIX` bytes
-    with the function detection uses, so the forced open sees the end auto-detection
+    with the function detection uses, so the open sees the end auto-detection
     reports. Only for a backend that can carry a stub (``SFX_MAGIC``); the others
     refuse an end. Not for a source that cannot seek, whose size is unknown and whose
-    table therefore cannot be placed (detection gives none there either), nor for a
-    volume set, whose parts are joined and where no part's table ends the join.
+    table therefore cannot be placed (detection gives none there either). A volume
+    set is read as its joined bytes, as detection reads it: the last part's table
+    ends the join.
     """
-    if (
-        not backend_cls.SFX_MAGIC
-        or not archive_source.seekable()
-        or archive_source.volume_count > 1
-    ):
+    if not backend_cls.SFX_MAGIC or not archive_source.seekable():
         return None
     return read_payload_end(archive_source, archive_source.size)
 
@@ -799,6 +799,10 @@ def _open_resolved(
             _refuse_for_replacement(
                 replacement, "a multi-volume set", resolved_format, archive_name
             )
+        # Best effort: ``prefixed`` is what detection found. A file whose name names
+        # the format and whose first bytes are not an executable header or ``#!`` is
+        # guessed from the name with no search for a prefix, and reaches the
+        # replacement, which then sees any prefix as its own bytes.
         if detected is not None and detected.prefixed:
             _refuse_for_replacement(
                 replacement,
@@ -819,12 +823,17 @@ def _open_resolved(
     ):
         _raise_multi_volume_not_supported(resolved_format, archive_name)
 
-    # A raw CD sector image is claimed as ISO only so it can be refused by name. Ahead
-    # of the availability check, so the answer does not depend on pycdlib; a
-    # non-seekable source is left to the read-once refusal below, which is also ahead
-    # of it. A replacement reader is refused it too: the bytes are not an ISO 9660
-    # image, whichever reader would open them.
+    # A raw CD sector image the built-in reader cannot read (Mode 2 Form 2, an unknown
+    # mode) is refused by name, ahead of the availability check, so the answer does
+    # not depend on pycdlib; a non-seekable source is left to the read-once refusal
+    # below, which is also ahead of it. A replacement reader is refused every raw
+    # image: the bytes are not an ISO 9660 image, and only the built-in reader strips
+    # the sectors.
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
+        if replacement is not None and raw_layout_of(archive_source) is not None:
+            _refuse_for_replacement(
+                replacement, "a raw CD sector image", resolved_format, archive_name
+            )
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
     # Detection claims a recognised-only format (DMG) so this refusal can name it and
@@ -930,12 +939,14 @@ def _open_resolved(
     payload_offset = detected.payload_offset if detected is not None else 0
     # Where the archive's region ends: a signed executable's certificate table follows
     # it. Passed beside the start, with the same promise (``ReadBackend.open_read``).
-    # Detection reads it from the executable's headers. A forced ``format=`` reads it
-    # here from the same headers, so the two open the same region and list the same
-    # members: what an archive holds never depends on whether its format was named.
+    # Detection reads it from the executable's headers when it judged the prefix. Any
+    # other open reads it here from the same headers: a forced ``format=``, and a
+    # format detection took from the name with the scan off or cut short. So every
+    # open reads the same region and lists the same members: what an archive holds
+    # never depends on whether its format was named, nor on the detection budget.
     payload_end = (
         detected.payload_end
-        if detected is not None
+        if detected is not None and detected.prefixed
         else _forced_payload_end(archive_source, backend_cls)
     )
 
