@@ -595,6 +595,22 @@ def unrar_mask_carries_non_ascii() -> bool:
     return sys.platform == "win32" or _utf8_locale_name() is not None
 
 
+def unrar_expands_wildcards(path: str | Path) -> bool:
+    """Whether ``unrar`` reads ``path``, given as the archive, as a wildcard mask.
+
+    ``unrar`` expands ``*`` and ``?`` in an archive name, and ``--`` does not stop
+    that: ``rep*.rar`` also opens a ``rep-a.rar`` beside it, and a FIFO that the
+    mask matches blocks the open forever. Those are the only two wildcard
+    characters (``IsWildcard`` in unrar's ``pathfn.cpp``; ``[`` is literal). On
+    Windows it skips the ``\\\\?\\`` long-path prefix before it looks, and a
+    Windows name cannot hold either character, so only that prefix is exempt.
+    """
+    text = str(path)
+    if sys.platform == "win32" and text.startswith("\\\\?\\"):
+        text = text[4:]
+    return "*" in text or "?" in text
+
+
 def unrar_member_refusal(member: str) -> str | None:
     """Why ``member`` is not a mask the reader sends, or ``None`` when it is one.
 

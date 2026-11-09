@@ -98,7 +98,12 @@ from archivey.internal.streams.codecs.registry import (
 )
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_codec import UnixCompressCodec
-from archivey.internal.streams.codecs.zip_legacy_codec import ImplodeCodec, ShrinkCodec
+from archivey.internal.streams.codecs.zip_legacy_codec import (
+    DclImplodeCodec,
+    ImplodeCodec,
+    ReduceCodec,
+    ShrinkCodec,
+)
 from archivey.internal.streams.codecs.zlib_codec import (
     DeflateCodec,
     ZlibCodec,
@@ -116,6 +121,7 @@ __all__ = [
     "CodecId",
     "CodecParams",
     "CodecSource",
+    "DclImplodeCodec",
     "Deflate64Codec",
     "DeflateCodec",
     "GzipCodec",
@@ -130,6 +136,7 @@ __all__ = [
     "PpmdCodec",
     "ProbeChargeDecode",
     "ProbeReadAt",
+    "ReduceCodec",
     "ShrinkCodec",
     "StoredCodec",
     "StreamCodec",
