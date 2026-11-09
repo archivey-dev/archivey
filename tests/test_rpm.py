@@ -485,6 +485,11 @@ def test_the_one_value_accessors_check_the_entry_as_the_array_ones_do() -> None:
         "int16": (_INT16, 1, 10),
         "int8 array": (2, 3, 1),
         "binary": (_BIN, 1, 0),
+        # _read_header refuses a count of 0; the accessors still agree on it.
+        "empty array": (_STRING_ARRAY, 0, 3),
+        "empty array at the end": (_STRING_ARRAY, 0, len(data)),
+        "empty int32 array at the end": (_INT32, 0, len(data)),
+        "empty int16 array at the end": (_INT16, 0, len(data)),
     }
     for what, (kind, count, offset) in cases.items():
         header = Header({1: _Entry(kind, count, offset)}, data, "header")
@@ -500,7 +505,7 @@ def test_the_one_value_accessors_check_the_entry_as_the_array_ones_do() -> None:
                 assert str(caught.value) == str(exc), what
             else:
                 assert isinstance(expected, list)
-                assert one(1) == expected[0], what
+                assert one(1) == (expected[0] if expected else None), what
         assert header.string(2) is None
         assert header.number(2) is None
 

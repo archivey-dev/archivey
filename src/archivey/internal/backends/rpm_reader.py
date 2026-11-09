@@ -227,11 +227,14 @@ class Header:
     def number(self, tag: int) -> int | None:
         """The first value of an integer array, checked as :meth:`ints` checks it,
         without building the array: a tag read for one value may declare a count
-        as large as the data store."""
+        as large as the data store. None when the tag is absent or declares no
+        values."""
         found = self._int_entry(tag)
         if found is None:
             return None
         entry, size, _end = found
+        if entry.count == 0:
+            return None  # as ``ints`` gives [] for a count of 0
         if size == 1:
             return self._data[entry.offset]
         fmt = {2: ">H", 4: ">I", 8: ">Q"}[size]
@@ -265,7 +268,8 @@ class Header:
     def string(self, tag: int) -> bytes | None:
         """The first string of the tag's entry, checked as :meth:`strings` checks it,
         without building the list: a tag read for one value, such as ``NAME``, may
-        declare a count as large as the data store."""
+        declare a count as large as the data store. None when the tag is absent or
+        declares no strings."""
         entry = self._entries.get(tag)
         if entry is None:
             return None
@@ -274,10 +278,16 @@ class Header:
         count = 1 if entry.type == _STRING else entry.count
         if count > len(self._data) - entry.offset:
             raise self._bad(tag, f"declares {count} strings in fewer bytes")
-        # Each of the declared strings ends at a NUL, as ``strings`` requires.
-        if self._data.count(b"\0", entry.offset) < count:
+        if count == 0:
+            return None  # as ``strings`` gives [] for a count of 0
+        first_end = self._data.find(b"\0", entry.offset)
+        # Each of the declared strings ends at a NUL, as ``strings`` requires. A
+        # single string needs only the first; an array is counted to the end.
+        if first_end < 0 or (
+            count > 1 and self._data.count(b"\0", entry.offset) < count
+        ):
             raise self._bad(tag, "has a string with no NUL before the data's end")
-        return self._data[entry.offset : self._data.index(b"\0", entry.offset)]
+        return self._data[entry.offset : first_end]
 
 
 def _read_header(
