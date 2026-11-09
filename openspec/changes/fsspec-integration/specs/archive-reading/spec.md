@@ -72,7 +72,7 @@ system.
 | Case | Expected |
 | --- | --- |
 | `detect_format(fsspec.open("memory://d/data.tar.zst"))` | The name `d/data.tar.zst` drives the name-keyed checks as a path's name does |
-| `OpenFile` path `https://u:pw@host/a.zip?X-Amz-Signature=…` | `archive_name`, messages, diagnostics and logs show `https://host/a.zip`; every fetch uses the path as given |
+| `OpenFile` path `https://u:pw@host/a.zip?X-Amz-Signature=…` | `archive_name` and archivey's own messages, diagnostics and logs show `https://host/a.zip`; every fetch uses the path as given. An I/O error the file system raises propagates unchanged (DR-15a) and can carry the URL as given |
 | Object grows after open | Reads stop at the open-time size; detecting the change is the planner's (`fsspec-integration`) |
 | RAR, compressed member, `OpenFile` source | The archive is spooled under `SpoolLimits`, with the existing cost note |
 

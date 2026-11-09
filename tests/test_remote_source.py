@@ -689,6 +689,26 @@ def test_errors_on_a_url_with_credentials_never_show_them(urlfs):
         _assert_no_secret("".join(getattr(info.value, "__notes__", [])))
 
 
+class _NoSizeURLMemoryFS(_URLMemoryFS):
+    """A URL file system that cannot tell an object's size."""
+
+    def size(self, path: Any) -> Any:
+        return None
+
+
+def test_a_missing_size_on_a_url_with_credentials_never_shows_them():
+    fs = _NoSizeURLMemoryFS(skip_instance_cache=True)
+    url = _CRED_URL.format(name="a.zip")
+    fs.pipe(url, _zip_bytes(MEMBERS))
+    try:
+        with pytest.raises(OSError, match="gave no size") as info:
+            open_archive(OpenFile(fs, url))
+    finally:
+        fs.store.clear()
+    assert "https://example.invalid/d/a.zip" in str(info.value)
+    _assert_no_secret(str(info.value))
+
+
 def test_a_fetch_error_on_a_url_with_credentials_never_shows_them(urlfs):
     url = _CRED_URL.format(name="a.zip")
     urlfs.pipe(url, DATA)
