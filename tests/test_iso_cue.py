@@ -245,6 +245,17 @@ def test_a_symlinked_track_file_is_followed(tmp_path: Path) -> None:
 
 
 @requires("pycdlib")
+def test_a_dangling_symlink_track_file_is_truncation(tmp_path: Path) -> None:
+    (tmp_path / "x.bin").symlink_to(tmp_path / "nonexistent.bin")
+    cue = tmp_path / "d.cue"
+    cue.write_text(
+        'FILE "x.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    )
+    with pytest.raises(TruncatedError, match="x.bin.*, which is not beside it"):
+        open_archive(cue)
+
+
+@requires("pycdlib")
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs")
 def test_a_fifo_track_file_is_refused_without_blocking(tmp_path: Path) -> None:
     os.mkfifo(tmp_path / "f.bin")

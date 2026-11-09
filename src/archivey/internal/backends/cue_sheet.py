@@ -391,12 +391,17 @@ def _open_files(cue_path: Path, files: list[CueFile]) -> list[_TrackFile]:
                     source_format=ArchiveFormat.ISO,
                 )
             path = _beside(cue_path.parent, cue_file.name)
-            if path is None:
+            try:
+                if path is None:
+                    raise FileNotFoundError(cue_file.name)
+                opened.append(_TrackFile(path))
+            except FileNotFoundError:
+                # Not there, or a symlink to nothing. Other OSErrors (a permission
+                # error) propagate as they do for the archive's own path.
                 raise TruncatedError(
                     f"the .cue sheet names {quoted(cue_file.name)}, which is not beside it",
                     source_format=ArchiveFormat.ISO,
-                )
-            opened.append(_TrackFile(path))
+                ) from None
     except BaseException:
         for track_file in opened:
             track_file.close()
