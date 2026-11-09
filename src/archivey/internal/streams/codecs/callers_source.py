@@ -11,9 +11,8 @@ _FROM_SOURCE = "_archivey_raised_by_callers_source"
 
 def from_callers_source(exc: BaseException) -> bool:
     """Whether ``exc`` came from the caller's own source, parked while a decoder read it
-    (the rapidgzip child's reads, or the in-process bzip2 decoder's), or raised by a
-    file region's check before a call to the child (what reading that source would
-    have raised; see ``file_region``).
+    (the rapidgzip child's reads), or raised by a file region's check before a call to
+    the child (what reading that source would have raised; see ``file_region``).
 
     Such an exception is raised to the caller as itself, so a translator must leave it
     alone, including one whose types (``EOFError``) it would map for a decoder.

@@ -115,6 +115,7 @@ def test_copy_with_refuses_a_name_that_is_not_a_field() -> None:
         copy_with(ExtractionResult(None, None, None), nope=1)  # type: ignore[arg-type]
 
 
+@pytest.mark.usefixtures("zip_general_path")
 def test_a_deflated_zip_member_builds_one_decoder_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

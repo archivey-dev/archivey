@@ -1,4 +1,7 @@
-"""Unix ``compress`` (``.Z``, LZW)."""
+"""Unix ``compress`` (``.Z``, LZW), decoded in Python
+(:func:`UnixCompressDecompressorStream`). Each CLEAR code restarts the dictionary, so
+under seek demand each one is a seek point.
+"""
 
 from __future__ import annotations
 

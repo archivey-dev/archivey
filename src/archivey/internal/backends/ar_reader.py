@@ -20,7 +20,7 @@ The dialects differ in how a name longer than 15 bytes is stored:
 - **BSD** (and macOS): a short name is stored as it is. A member named ``#1/20`` has a
   20-byte name at the **start of its data area**, which the header's size counts, so
   its data starts after the name rather than after the header. macOS pads that name
-  with NULs, and pads each member with ``\n`` so the next header starts on 8 bytes,
+  with NULs, and pads each member with ``\\n`` so the next header starts on 8 bytes,
   counting that padding in the member's size: the padding is then part of the member,
   as llvm-ar and bsdtar extract it. The symbol table is a member named ``__.SYMDEF``
   (or ``__.SYMDEF SORTED``, ``__.SYMDEF_64``).
@@ -37,6 +37,7 @@ internal name it uses (``tests/test_ar.py`` checks). Handbook page:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
@@ -56,6 +57,7 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
 MAGIC = b"!<arch>\n"
@@ -82,7 +84,8 @@ def _field(raw: bytes, base: int, what: str, offset: int) -> int | None:
     # Digits valid in the base: isdigit() alone would let 8 and 9 into an octal mode.
     if not text.isdigit() or (base == 8 and not set(text) <= set(b"01234567")):
         raise CorruptionError(
-            f"ar header at offset {offset}: the {what} field {raw!r} is not a number"
+            f"ar header at offset {offset}: the {what} field "
+            f"{quoted(raw.decode('ascii', 'surrogateescape'))} is not a number"
         )
     return int(text, base)
 
@@ -96,6 +99,10 @@ def _time(mtime: int | None) -> datetime | None:
         return datetime.fromtimestamp(mtime, UTC)
     except (OverflowError, ValueError, OSError):
         return None
+
+
+# What ends an entry of the GNU long-name table.
+_NAME_END = re.compile(rb"[\n\0]")
 
 
 class ArReader(SequentialReader):
@@ -209,12 +216,12 @@ class ArReader(SequentialReader):
                     f"ar header at offset {offset}: long-name offset {at} is past the "
                     f"{len(names)}-byte table"
                 )
-            entry = names[at:]
-            for end in (b"\n", b"\0"):
-                cut = entry.find(end)
-                if cut >= 0:
-                    entry = entry[:cut]
-            return entry.removesuffix(b"/")
+            # The entry ends at its first newline or NUL, or at the end of the table.
+            # One scan stops at whichever comes first, so a lookup costs the entry's
+            # length and not the table's, and only the entry is sliced.
+            found = _NAME_END.search(names, at)
+            stop = len(names) if found is None else found.start()
+            return names[at:stop].removesuffix(b"/")
         if field.endswith(b"/"):
             self._dialect = "gnu"
             return field[:-1]

@@ -39,6 +39,7 @@ from tests.cab_util import (
     block_checksum,
     canonical_codes,
     checksum as oracle_checksum,
+    code_lengths,
     write_cab,
 )
 
@@ -778,3 +779,165 @@ def test_a_read_returns_every_byte_asked_for(
             if seekable_members:
                 stream.seek(31_000)
                 assert stream.read(40_000) == data[31_000:71_000]
+
+
+# ── Edges the mutation sweep found untested ───────────────────────────────────
+
+
+def _lzxd_undo_e8(frame: bytes, offset: int, file_size: int) -> bytes:
+    """lzxd.c's E8 step, written as libmspack writes it (a byte walk that steps
+    over each translated CALL), to check the decoder's ``find`` loop against."""
+    if file_size >= 1 << 31:
+        file_size -= 1 << 32  # lzxd.c holds the size in a signed 32-bit int
+    out = bytearray(frame)
+    if len(out) <= 10:
+        return bytes(out)
+    i, current = 0, offset
+    while i < len(out) - 10:
+        if out[i] != 0xE8:
+            i += 1
+            current += 1
+            continue
+        value = int.from_bytes(out[i + 1 : i + 5], "little", signed=True)
+        if value >= -current and value < file_size:
+            rel = value - current if value >= 0 else value + file_size
+            out[i + 1 : i + 5] = (rel & 0xFFFFFFFF).to_bytes(4, "little")
+        i += 5
+        current += 5
+    return bytes(out)
+
+
+def _e8_frame(offset: int, file_size: int, size: int, seed: int) -> bytes:
+    """A frame of CALLs whose targets sit on and around the bounds the step
+    checks: ``-current``, 0 and ``file_size``, with E8 bytes up to the frame end."""
+    rng = random.Random(seed)
+    signed = file_size - (1 << 32) if file_size >= 1 << 31 else file_size
+    out = bytearray()
+    while len(out) < size:
+        current = offset + len(out)
+        value = rng.choice(
+            [
+                -current,
+                -current - 1,
+                -1,
+                0,
+                1,
+                signed - 1,
+                signed,
+                rng.randrange(-current, max(signed, 1)),
+            ]
+        )
+        out += b"\xe8" + (value & 0xFFFFFFFF).to_bytes(4, "little")
+        out += bytes(rng.choice([0, 1, 2]))
+    return bytes(out[:size])
+
+
+@pytest.mark.parametrize("size", [10, 11, 15, 16, 4000, FRAME])
+@pytest.mark.parametrize(
+    ("offset", "file_size"),
+    [(0, 12_000_000), (5 * FRAME, 300_000), (FRAME, 1 << 31), (0, 0xFFFFFFFF)],
+    ids=["first-frame", "later-frame", "size-2-31", "size-max"],
+)
+def test_lzx_e8_step_matches_lzxd(size: int, offset: int, file_size: int) -> None:
+    decoder = LzxDecoder(16, lambda: None)
+    decoder._intel_size = file_size
+    decoder._offset = offset
+    for seed in range(3):
+        frame = _e8_frame(offset, file_size, size, seed)
+        assert decoder._undo_e8(frame) == _lzxd_undo_e8(frame, offset, file_size)
+
+
+def test_lzx_e8_step_leaves_the_last_ten_bytes_alone() -> None:
+    """A CALL that starts in the frame's last 10 bytes stays as it is."""
+    decoder = LzxDecoder(16, lambda: None)
+    decoder._intel_size = 1 << 20
+    target = (100).to_bytes(4, "little")
+    frame = bytes(9) + b"\xe8" + target + bytes(6)  # E8 at size - 11: translated
+    assert decoder._undo_e8(frame)[10:14] == (100 - 9).to_bytes(4, "little")
+    frame = bytes(10) + b"\xe8" + target + bytes(5)  # E8 at size - 10: not
+    assert decoder._undo_e8(frame) == frame
+
+
+def _uncompressed_block(w: BitWriter, data: bytes, r: tuple[int, int, int]) -> None:
+    w.bits(3, 3)
+    w.bits(len(data) >> 8, 16)
+    w.bits(len(data) & 0xFF, 8)
+    w.align(whole_word_if_aligned=True)
+    w.raw(b"".join(v.to_bytes(4, "little") for v in r))
+    w.raw(data)
+    if len(data) & 1:
+        w.raw(b"\0")
+
+
+def test_lzx_an_uncompressed_block_sets_the_repeated_offsets() -> None:
+    """R0, R1 and R2 come from the block header, whatever the decoder held."""
+    w = BitWriter()
+    w.bits(0, 1)
+    _uncompressed_block(w, b"abcd", (0x01020304, 5, 0x0A0B0C0D))
+    decoder = _decoder(_end(w))
+    assert decoder.decode_frame(4) == b"abcd"
+    assert (decoder._r0, decoder._r1, decoder._r2) == (0x01020304, 5, 0x0A0B0C0D)
+
+
+@pytest.mark.parametrize("first", [b"abcd", b"abcde"], ids=["even", "odd"])
+def test_lzx_only_an_odd_uncompressed_block_is_padded(first: bytes) -> None:
+    """The pad byte after an uncompressed block is there only for an odd length:
+    the next block's header follows an even one at once."""
+    w = BitWriter()
+    w.bits(0, 1)
+    _uncompressed_block(w, first, (1, 1, 1))
+    _uncompressed_block(w, b"wxyz", (1, 1, 1))
+    data = first + b"wxyz"
+    assert _decoder(_end(w)).decode_frame(len(data)) == data
+
+
+def test_lzx_the_e8_step_stops_after_32768_frames() -> None:
+    """lzxd.c translates CALLs in the first 32768 frames (1 GiB) only."""
+    file_size = 1 << 24
+    call = b"\x90\xe8" + (0x7000).to_bytes(4, "little")
+    frame = call + bytes(FRAME - len(call))
+    w = BitWriter()
+    w.bits(1, 1)
+    w.bits(file_size >> 16, 16)
+    w.bits(file_size & 0xFFFF, 16)
+    _uncompressed_block(w, frame * 3, (1, 1, 1))
+    decoder = _decoder(_end(w))
+    decoder._frame = 32766
+    out = [decoder.decode_frame(FRAME) for _ in range(3)]
+    for k, got in enumerate(out):
+        translated = _lzxd_undo_e8(frame, k * FRAME, file_size)
+        assert translated != frame
+        assert got == (translated if k < 2 else frame), k
+
+
+def test_a_cabinet_cut_inside_a_block_header_reads_the_blocks_before_it() -> None:
+    """A cut that leaves part of a CFDATA header is the folder's end, not damage
+    in the blocks before it: a file inside them still reads."""
+    files = [CabFile("a.txt", b"alpha" * 20), CabFile("b.bin", BLOB)]
+    raw = write_cab(files, [CabFolder("none")])
+    (start,) = struct.unpack_from("<I", raw, 36)
+    stored = struct.unpack_from("<H", raw, start + 4)[0]
+    second = start + 8 + stored
+    for cut in (second + 3, second + 7):
+        with open_archive(io.BytesIO(raw[:cut])) as reader:
+            assert reader.read("a.txt") == b"alpha" * 20
+            with pytest.raises(TruncatedError):
+                reader.read("b.bin")
+
+
+def test_lzx_length_codes_longer_than_the_lookup_table() -> None:
+    """Length codes past the decoder's 10-bit first table go through its second
+    level: twelve lengths used 1, 1, 2, 4, ... 1024 times make an 11-bit code."""
+    tokens: list[_Token] = []
+    expected = bytearray()
+    counts = [1 << k for k in range(10, -1, -1)] + [1]
+    for i, count in enumerate(counts):
+        length = 9 + i
+        for j in range(count):
+            byte = 65 + (i + j) % 26
+            # A literal, then a match at R0 = 1 that repeats it.
+            tokens += [_Token(literal=byte), _Token(length=length, slot=0)]
+            expected += bytes([byte]) * (length + 1)
+    freqs = counts + [0] * (249 - len(counts))
+    assert max(code_lengths(freqs, 16)) > lzx_decoder._ROOT_BITS
+    assert _decode(_lzx_stream(tokens, len(expected)), len(expected)) == expected

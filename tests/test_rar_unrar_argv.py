@@ -11,17 +11,19 @@ Two review-hub findings on ``rar_unrar``:
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
 from archivey import open_archive
 from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
-from archivey.internal.backends import rar_unrar
+from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.terminal import display_path
 from tests.conftest import requires_binary
 
@@ -74,6 +76,40 @@ def test_archive_path_follows_a_switch_terminator(
     assert mask in cmd[: cmd.index("--")]
 
 
+def _record_unrar_archive_paths(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every archive path the reader hands to ``unrar p``, in order."""
+    seen: list[str] = []
+    real = rar_reader.open_unrar_p
+
+    def spy(archive_path: str | Path, *args: object, **kwargs: object) -> object:
+        seen.append(str(archive_path))
+        return real(archive_path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("platform", "path", "expands"),
+    [
+        ("linux", "/data/rep*.rar", True),
+        ("linux", "/data/rep?.rar", True),
+        ("linux", "/da?a/rep.rar", True),
+        # unrar matches only ``*`` and ``?`` (measured on 7.00).
+        ("linux", "/data/r[ab]{c,d}.rar", False),
+        # unrar skips the long-path prefix before it looks for a wildcard.
+        ("win32", "\\\\?\\C:\\data\\rep.rar", False),
+        ("win32", "\\\\?\\C:\\data\\rep?.rar", True),
+        ("linux", "\\\\?\\C:\\data\\rep.rar", True),
+    ],
+)
+def test_unrar_expands_wildcards(
+    platform: str, path: str, expands: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", platform)
+    assert rar_unrar.unrar_expands_wildcards(path) is expands
+
+
 @requires_binary("unrar")
 @pytest.mark.parametrize(
     # ``@`` is the listfile prefix. No guard is added for it: unrar reads the
@@ -98,13 +134,199 @@ def test_archive_named_like_a_switch_reads_its_members(
 
     ``-inul`` is the switch that silences ``unrar``; parsed as a switch, the
     process exits without output and every compressed member reads as truncated.
+    With the in-place threshold at 0, every member is "large" and ``unrar`` reads
+    the copy itself, not a synthetic archive, so the name reaches its argv.
     """
     source = _fixture(fixture)
     expected = _read_all(source)
     assert any(expected.values())
     shutil.copyfile(source, tmp_path / copy_name)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    seen = _record_unrar_archive_paths(monkeypatch)
     assert _read_all(copy_name) == expected
+    assert seen
+    assert all(Path(path).name == copy_name for path in seen), seen
+
+
+@requires_binary("unrar")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="* and ? cannot be in a Windows name"
+)
+@pytest.mark.parametrize("wildcard", ["*", "?"])
+# Solid, so each read goes through ``unrar``: the reader slices a stored member of a
+# nonsolid archive itself.
+@pytest.mark.parametrize("fixture", ["basic_solid__.rar", "basic_solid__rar4.rar"])
+def test_archive_path_with_a_wildcard_reads_only_that_file(
+    fixture: str, wildcard: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``unrar`` expands ``*`` and ``?`` in an archive name, even after ``--``.
+
+    Given ``rep*.rar`` in place, ``unrar`` also reads a ``rep!.rar`` beside it, in
+    directory order, and its output then holds members of both. The reader links
+    such a file under a fixed name in a private directory, so only the parsed file
+    is read. With the in-place threshold at 0, every member is "large" and
+    ``unrar`` reads the archive file itself, not a synthetic copy.
+    """
+    source = _fixture(fixture)
+    expected = _read_all(source)
+    assert any(expected.values())
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    seen = _record_unrar_archive_paths(monkeypatch)
+    path = tmp_path / f"rep{wildcard}.rar"
+    shutil.copyfile(source, path)
+    # Its file1.txt holds other bytes than the fixture's.
+    shutil.copyfile(_fixture("hardlinks_solid__.rar"), tmp_path / "rep!.rar")
+    assert _read_all(path) == expected
+    assert seen
+    assert not any(rar_unrar.unrar_expands_wildcards(name) for name in seen)
+
+
+@requires_binary("unrar")
+@pytest.mark.skipif(sys.platform == "win32", reason="* cannot be in a Windows name")
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs mkfifo")
+def test_archive_path_with_a_wildcard_does_not_open_a_fifo_beside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A FIFO that the wildcard matches would block ``unrar`` forever on its open.
+
+    If the read has not returned after a while, the test opens the FIFO's write
+    end and closes it again while ``unrar`` waits on it, so ``unrar`` gets end of
+    file and the test fails instead of hanging.
+    """
+    source = _fixture("basic_solid__.rar")
+    expected = _read_all(source)
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    shutil.copyfile(source, tmp_path / "rep*.rar")
+    fifo = tmp_path / "rep-f.rar"
+    os.mkfifo(fifo)
+    result: list[object] = []
+
+    def read() -> None:
+        try:
+            result.append(_read_all(tmp_path / "rep*.rar"))
+        except Exception as exc:  # noqa: BLE001 - reported by the assert below
+            result.append(exc)
+
+    worker = threading.Thread(target=read, daemon=True)
+    worker.start()
+    worker.join(15)
+    hung = worker.is_alive()
+    for _ in range(100):
+        if not worker.is_alive():
+            break
+        try:
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        except OSError:  # ENXIO: nothing has the FIFO open for reading now
+            pass
+        worker.join(0.2)
+    assert not hung, "unrar opened the FIFO that the wildcard matched"
+    assert result == [expected]
+
+
+@requires_binary("unrar")
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="macOS and Windows cap a path well below what the test needs",
+)
+@pytest.mark.parametrize(
+    "component",
+    [
+        "d" * 200,
+        # 80 units and 240 bytes: six of them are under the unit bound and over the
+        # byte bound, which is where unrar 6.x cuts on POSIX.
+        "\u540d" * 80,
+    ],
+    ids=["ascii", "cjk"],
+)
+def test_archive_path_unrar_6_would_cut_is_staged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, component: str
+) -> None:
+    """unrar 6.x keeps 2047 bytes of the archive path on POSIX and opens the file
+    that the cut path names. A path over the bound is linked into a private
+    directory, so ``unrar`` gets a short one."""
+    source = _fixture("basic_solid__.rar")
+    expected = _read_all(source)
+    deep = tmp_path.joinpath(*[component] * 6)
+    deep.mkdir(parents=True)
+    path = deep / "long.rar"
+    shutil.copyfile(source, path)
+    bound = rar_unrar._UNRAR_ARCHIVE_PATH_MAX
+    assert len(os.fsencode(path)) > bound
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    seen = _record_unrar_archive_paths(monkeypatch)
+    assert _read_all(path) == expected
+    assert seen
+    assert all(len(os.fsencode(os.path.abspath(name))) <= bound for name in seen), [
+        len(os.fsencode(name)) for name in seen
+    ]
+    assert rar_unrar.unrar_may_cut_archive_path(path)
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_unrar_may_cut_archive_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """The bound counts UTF-16 units of the absolute path, and on POSIX also its
+    bytes: ``名`` is one unit and three bytes, a character outside the BMP two
+    units and four bytes. A relative path counts the working directory too."""
+    root = os.path.abspath(tmp_path)
+    if not root.isascii():
+        pytest.skip("the rows below assume an ASCII temporary directory")
+    monkeypatch.setattr(sys, "platform", platform)
+    posix = platform != "win32"
+    bound = rar_unrar._UNRAR_ARCHIVE_PATH_MAX
+    room = bound - len(root) - 1
+    assert room > 10
+    cjk, emoji = "\u540d", "\U0001f600"
+    rows = [
+        ("a" * room, False),
+        ("a" * (room + 1), True),
+        (cjk * (room // 3), False),
+        # Over the bound in bytes, under it in units.
+        (cjk * (room // 3 + 1), posix),
+        (emoji * (room // 4), False),
+        (emoji * (room // 4 + 1), posix),
+        # Over the bound in units too.
+        (emoji * (room // 2 + 1), True),
+    ]
+    for name, cut in rows:
+        assert rar_unrar.unrar_may_cut_archive_path(os.path.join(root, name)) is cut, (
+            name[:1],
+            len(name),
+        )
+    monkeypatch.chdir(tmp_path)
+    assert rar_unrar.unrar_may_cut_archive_path("a" * (room + 1))
+
+
+@requires_binary("unrar")
+def test_stream_volumes_named_with_a_wildcard_reach_unrar_under_fixed_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stream volumes are copied for ``unrar`` under names that hold no wildcard.
+
+    A stream's name can come from the caller or from an outer archive's member,
+    so it can hold ``*`` or ``?``. With no synthetic archive, ``unrar`` reads the
+    copies of the whole set, and their names must not carry the stream's name.
+    """
+    names = ["tinyvol_m3.part1.rar", "tinyvol_m3.part2.rar"]
+    expected = _read_all(_fixture(names[0]))
+    monkeypatch.setattr(rar_reader.RarReader, "_synthetic_file", lambda *_: None)
+    seen = _record_unrar_archive_paths(monkeypatch)
+    items = []
+    for index, name in enumerate(names, start=1):
+        stream = io.BytesIO(_fixture(name).read_bytes())
+        stream.name = f"rep*.part{index}.rar"
+        items.append(stream)
+    with open_archive(items) as archive:
+        got = {
+            member.name: archive.read(member)
+            for member in archive.members()
+            if member.is_file
+        }
+    assert got == expected
+    assert seen
+    assert not any(rar_unrar.unrar_expands_wildcards(name) for name in seen)
 
 
 # --- the identification probe cache -------------------------------------------

@@ -12,7 +12,7 @@ behaviour and links the row.
 | Codec page | Covers |
 | --- | --- |
 | [`gzip.md`](gzip.md) | gzip, zlib, and raw DEFLATE as the ZIP and 7z coder; the `rapidgzip` accelerator and its child process |
-| [`bzip2.md`](bzip2.md) | bzip2, and `rapidgzip`'s in-process bzip2 decoder |
+| [`bzip2.md`](bzip2.md) | bzip2, and the bzip2 decoder of `rapidgzip`, in a child process |
 | [`xz.md`](xz.md) | xz, lzip and LZMA Alone: the LZMA family, with archivey's own seekable xz and lzip decoders |
 | [`zstd-lz4.md`](zstd-lz4.md) | zstd and LZ4: frame formats read through their libraries; zstd seeks from frame starts and the seekable format's table |
 | [`brotli.md`](brotli.md) | Brotli: no magic, found by a content probe |
