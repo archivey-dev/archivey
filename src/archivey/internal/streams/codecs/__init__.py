@@ -28,12 +28,14 @@ How an open goes, from :func:`open_codec_stream`:
 3. **Pick the engine.** The DEFLATE family and bzip2 may decode through rapidgzip, an
    optional accelerator that builds a seek index as it reads, depending on the
    ``use_rapidgzip`` / ``use_indexed_bzip2`` settings, the source size and the seek
-   demand. Every other codec has one engine. :func:`resolve_codec` picks the
+   demand. rapidgzip runs only in a child process, so ``process_isolation=NONE`` never
+   uses it. Every other codec has one engine. :func:`resolve_codec` picks the
    exception translator that matches the engine.
-4. **Isolate it if asked.** ``process_isolation`` decides which native decoders run in
-   a child process, so a crash on hostile input costs the member and not the caller.
-   rapidgzip, pyppmd and libbzip3 run there unless it is ``NONE``;
-   ``NATIVE_DECODERS`` moves every native decoder there.
+4. **Isolate it.** ``process_isolation`` decides which native decoders run in a child
+   process, so a crash on hostile input costs the member and not the caller. Under the
+   default (``KNOWN_CRASHES``), rapidgzip, pyppmd and libbzip3 run in a child.
+   ``NONE`` runs pyppmd and libbzip3 in this process and drops rapidgzip.
+   ``NATIVE_DECODERS`` moves every native decoder into a child.
 5. **Seek and recover.** A backward seek re-decodes from the nearest seek point the
    decoder knows: an index the format carries (xz, lzip, BGZF, the Seekable Zstandard
    table), block boundaries a decoder found, or rapidgzip's index. When rapidgzip fails
