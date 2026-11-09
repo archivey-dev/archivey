@@ -344,3 +344,34 @@ def test_an_open_that_fails_is_not_recorded_as_decoded(
         # b is recorded: c decodes it again, and is refused.
         with pytest.raises(DiagnosticRaisedError):
             reader.read("c.txt")
+
+
+def _concurrent_first_opens(reader) -> None:
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def read(name: str) -> None:
+        try:
+            barrier.wait()
+            reader.read(name)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the main thread
+            errors.append(exc)
+
+    threads = [threading.Thread(target=read, args=(n,)) for n in ("b.txt", "c.txt")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+
+
+def test_concurrent_first_opens_of_a_run_report_each_other() -> None:
+    """Two opens of one run judged while neither has finished both decode the run's
+    prefix, so one of them reports, as it would had the other finished first."""
+    for _ in range(20):
+        with open_archive(_SOLID_7Z, concurrent_operations=True) as reader:
+            _concurrent_first_opens(reader)
+            assert reader.diagnostics.counts == {
+                DiagnosticCode.SOLID_OPEN_REDECOMPRESSES: 1
+            }
+            assert reader._solid_inflight == {}
