@@ -790,7 +790,7 @@ the ZIP method id to the shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
 BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
-registry already advertised for ZIP, and XZ (95), Shrink (1) and Implode (6), which are
+registry already advertised for ZIP, and XZ (95), Shrink (1), Reduce (2 to 5), Implode (6) and DCL Implode (10), which are
 core. It also puts ZIP member reads on the same
 `VerifyingStream` and the same exception translation as every other backend, so a corrupt
 body raises `CorruptionError` and a cut-short one raises `TruncatedError` through shared
@@ -860,6 +860,20 @@ of long entries peaks at about 1.8 MiB (0.7 MiB when every code walked), where f
 strings would hold about 32 MiB. `unshrink_reference` in `tests/zip_legacy_build.py`
 walks every code and scans the table at each clear; the tests check the decoder against
 it on mutated streams with long links, clears and orphans.
+
+Reduce (methods 2 to 5, PKZIP 0.9x) has no end marker either, so it is ended and
+refused from a pipe the same way. Its decoder follows APPNOTE 5.2 and Info-ZIP
+`unreduce.c`: a copy from before the start reads zeros, and a follower set over 32 or an
+index past its set, which have no meaning, is `CorruptionError`. DCL Implode (method 10,
+PKWARE's Data Compression Library stream, unrelated to method 6) ends with its own end
+code, so it reads from a pipe with a data descriptor too; its decoder follows zlib's
+`contrib/blast/blast.c`, which refuses a copy from before the start. No tool on the test
+image reads either (7-Zip: "Unsupported Method"; `unar` 1.10.1: "not fully supported";
+Debian's `unzip` is built `COPYRIGHT_CLEAN`, without Reduce). The real-writer checks are
+two Reduce streams from PKZIP 0.92 (`tests/fixtures/external/reduce_pkzip092`) and the
+example stream in `blast.c`; `tests/zip_legacy_build.py` has test-only encoders for the
+rest. Both decode at about 1 MB/s on text (Implode about 3), which is enough for the
+small files these old writers made.
 The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
 its end, and what it cannot see; `inflate64` drops input after a Deflate64 stream's end
 and has no `unused_data`, so `Deflate64Decoder` holds back the last byte it is given,

@@ -303,8 +303,8 @@ in a real folder named `__MACOSX`.
 
 ## ZIP
 
-- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, the PKZIP 1.x methods Shrink
-  and Implode, or ZipCrypto. `[recommended]`
+- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, the old PKZIP methods
+  Shrink, Reduce and Implode, PKWARE DCL Implode (method 10), or ZipCrypto. `[recommended]`
   adds Deflate64 and PPMd (`inflate64`, `pyppmd`, the packages the 7z reader uses too), WinZip AES
   (`cryptography`), and Zstandard before Python 3.14 (`backports.zstd`). A missing package raises
   `PackageNotInstalledError` when you read such a member.
