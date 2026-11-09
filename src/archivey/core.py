@@ -10,9 +10,10 @@ package).
 2. Resolve the source (``resolve_source``): a path, a
    stream, or a list of volumes becomes one ``ArchiveSource``.
 3. Decide the format (``_decide_format``): refuse a lone numbered volume
-   (``.7z.NNN`` / ``.zip.NNN`` / ``.exe.NNN``, then Info-ZIP ``.zNN``) unless
-   ``format=`` names a format that has no volumes; then take the directory,
-   ``format=``, or detection. A stub-only ``.exe`` / ``.sfx`` with no archive magic
+   (``.7z.NNN`` / ``.zip.NNN`` / ``.exe.NNN``, then Info-ZIP ``.zNN``), unless
+   ``format=`` names a format other than the one the parts join into (ZIP or 7z; ZIP
+   for ``.zNN``) or volume discovery is off for the numbered parts; then take the
+   directory, ``format=``, or detection. A stub-only ``.exe`` / ``.sfx`` with no archive magic
    is followed to the split first volume beside it.
 4. Refuse a format this open can never read (``_refuse_unopenable_format``): off
    by policy, out of a replacement plugin's reach, a volume set for a format without
@@ -616,7 +617,7 @@ def _note_unused_arguments(
     # `password=` and `encoding=` are *resources offered for use if needed*, not
     # assertions about this archive, so a backend that cannot use one is a diagnostic
     # rather than a refusal (``archive-reading`` §"assertion vs resource"). `format=` is
-    # the assertion, and ``_open_resolved`` still refuses it for a directory path.
+    # the assertion, and ``_decide_format`` still refuses it for a directory path.
     if passwords.has_concrete_passwords() and not backend_cls.SUPPORTS_PASSWORD:
         # Every form opens alike: none is refused. Only a concrete value is recorded,
         # because a provider callable offers a password only if asked, and a format
@@ -704,8 +705,10 @@ def _decide_format(
     detection.
 
     May switch ``slot`` to the split volume beside a stub-only ``.exe`` / ``.sfx``.
-    Raises for a lone numbered volume, for a ``format=`` that conflicts with a directory
-    path, and when detection finds nothing.
+    Raises for a lone numbered volume; for a ``format=`` that conflicts with the source
+    either way round (a directory path with a file format, or a file or stream with
+    ``DIRECTORY``); when following a stub finds a volume of another container than
+    ``format=``, or a volume that is a symbolic link; and when detection finds nothing.
     """
     archive_source = slot.current
     archive_name = resolved.archive_name
