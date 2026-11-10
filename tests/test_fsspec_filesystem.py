@@ -34,6 +34,7 @@ from archivey import (  # noqa: E402
     open_archive,
 )
 from archivey.fsspec import ArchiveyFileSystem  # noqa: E402
+from tests.conftest import case_sensitive  # noqa: E402
 
 
 @pytest.fixture
@@ -372,12 +373,14 @@ _SYMLINKS_BY_WRITTEN_PATH = {
 }
 
 
-@pytest.mark.skipif(os.name == "nt", reason="a Windows disk folds case")
+@pytest.mark.skipif(os.name == "nt", reason="a Windows disk trims a trailing dot")
 @pytest.mark.parametrize("shape", list(_SYMLINKS_BY_WRITTEN_PATH))
 def test_a_symlink_reads_what_its_target_reaches_on_disk(
     memfs: Any, tmp_path: Path, shape: str
 ) -> None:
     entries, policy = _SYMLINKS_BY_WRITTEN_PATH[shape]
+    if "case" in shape and not case_sensitive(tmp_path):
+        pytest.skip("a disk that folds case reaches the winner under another case")
     data = _tar_entries(entries)
     memfs.pipe("/d/sl.tar", data)
     dest = tmp_path / "out"
@@ -460,21 +463,27 @@ def test_tree_matches_extraction_on_links_and_collisions(
         listed = _listed(fs)
         assert fs.dir_cache is not None
         cached = set(fs.dir_cache)
-        if os.name == "nt":
-            # A Windows disk folds case and trims a trailing dot, so it cannot hold
-            # these beside the member before them: the directory C beside the file
-            # c under every policy, and under TRUSTED, which keys on the exact name,
-            # the files too. Q -> q names itself there, a loop extraction refuses.
-            # The tree does not model the disk.
-            # A link to a lost or rewritten name reaches the winner there.
-            folded = ["C", "Q", "toa", "tof"]
+        folded: list[str] = []
+        if not case_sensitive(tmp_path):
+            # A disk that folds case (Windows, macOS) cannot hold these beside the
+            # member before them: the directory C beside the file c under every
+            # policy, and under TRUSTED, which keys on the exact name, the files
+            # too. Q -> q names itself there, a loop extraction refuses, and a link
+            # to a lost name reaches the winner. The tree does not model the disk.
+            folded += ["C", "Q", "toa"]
             if policy is ExtractionPolicy.TRUSTED:
-                folded += ["a.txt", "f.", "HC", "r", "k"]
-            for name in folded:
-                assert name in listed
-                del listed[name]
-                cached.discard(name)
-                written.pop(name, None)
+                folded += ["a.txt", "HC", "r", "k"]
+        if os.name == "nt":
+            # Windows also trims a trailing dot.
+            folded.append("tof")
+            if policy is ExtractionPolicy.TRUSTED:
+                folded.append("f.")
+        for name in folded:
+            assert name in listed
+            del listed[name]
+            cached.discard(name)
+            written.pop(name, None)
+        if os.name == "nt":
             # Windows collapses ``..`` before following links, so ``../dot/..`` from
             # s2 names the destination itself and extraction keeps the link. The
             # tree follows links as POSIX does and refuses it.
@@ -518,11 +527,16 @@ def test_walk_matches_fsspecs_own(memfs: Any) -> None:
             assert ours == theirs, kwargs
         assert list(fs.walk("a")) == list(AbstractFileSystem.walk(fs, "a"))
         # ``ls`` from the index matches fsspec's scan of the whole cache.
-        for path in ("", "a", "a/", "a/b", "a/b/c.txt", "e/f", "i.txt"):
+        for path in ("", "a", "a/", "a/b", "e/f"):
             for detail in (True, False):
                 assert fs.ls(path, detail=detail) == AbstractArchiveFileSystem.ls(
                     fs, path, detail=detail
                 )
+        # A file lists as itself, as current fsspec's ``ls`` does; the oldest
+        # fsspec CI installs lists nothing, so this is not compared with it.
+        for path in ("a/b/c.txt", "i.txt"):
+            assert fs.ls(path) == [fs.info(path)]
+            assert fs.ls(path, detail=False) == [path]
         with pytest.raises(FileNotFoundError):
             fs.ls("missing")
 
@@ -648,7 +662,10 @@ def test_dropped_urls_leave_no_reader_open(memfs: Any) -> None:
         file_systems.append(weakref.ref(of.fs))
         readers.append(of.fs.reader)
         del of, f
-    gc.collect()
+    # PyPy can need more than one collection to clear weak references and run
+    # their callbacks.
+    for _ in range(3):
+        gc.collect()
     assert all(ref() is None for ref in file_systems)
     assert all(reader._closed for reader in readers)
 
