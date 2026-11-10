@@ -65,9 +65,10 @@ class AcceleratorMode(Enum):
         ``PackageNotInstalledError`` if the package is missing — the user asked for it
         explicitly; ``min_size`` is ignored). ``AUTO`` enables it only when ``seekable``
         is true and the package is available, so a missing package falls back silently.
-        ``seekable`` is the demand for the accelerator: declared seeking, or for the
-        DEFLATE family also a large sequential read judged worth it
-        (``_sequential_read_pays`` in ``codecs/rapidgzip_select.py``). When ``min_size``
+        ``seekable`` is the demand for the accelerator: declared seeking, or a large
+        sequential read judged worth it (``_sequential_read_pays`` in
+        ``codecs/rapidgzip_select.py`` for the DEFLATE family,
+        ``_bzip2_sequential_read_pays`` in ``codecs/bzip2_codec.py``). When ``min_size``
         is set and ``input_size`` is known and strictly below that threshold, ``AUTO``
         also falls back (tiny members do not repay per-stream accelerator setup).
         Unknown ``input_size`` keeps the pre-threshold AUTO behaviour.
@@ -215,7 +216,9 @@ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
 # for itself much sooner than for DEFLATE: a full read broke even near 0.6 MiB
 # compressed with 4 cores, and near 2 MiB with one
 # (``scripts/investigations/bench_bzip2_child.py``). 1 MiB sits between the two. A
-# caller that seeks backward a lot gains from the index sooner, and can set ``ON``.
+# caller that seeks backward a lot gains from the index sooner, and can set ``ON``. The
+# same threshold gates a large sequential read on two or more CPUs, where the parallel
+# decoder pays more (``_bzip2_sequential_read_pays`` in ``codecs/bzip2_codec.py``).
 INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE: int = 1024 * 1024
 
 
@@ -386,6 +389,9 @@ class ListingLimits:
     builds the file list.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than is left of ``max_metadata_bytes``, before reading it.
+    A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
+    ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
+    ``max_metadata_bytes``, before reading it.
     SquashFS walks the whole directory tree before it lists a member, and weighs the
     paths it finds, and the symlink targets it keeps for later, against
     ``max_metadata_bytes`` as it goes: a listing whose names and kept targets cross the

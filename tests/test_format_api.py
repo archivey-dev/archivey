@@ -208,7 +208,7 @@ def test_stream_members_and_extract(toya: ArchiveFormat, tmp_path: Path) -> None
     assert seen["docs/a.txt"] == b"alpha\n"
     dest = tmp_path / "out"
     with open_archive(path) as reader:
-        reader.extract_all(dest)
+        reader.extract_all(dest, on_blocked="skip")
     assert (dest / "docs" / "a.txt").read_bytes() == b"alpha\n"
     assert (dest / "b.bin").read_bytes() == bytes(range(256)) * 4
 
@@ -252,7 +252,7 @@ def test_dotdot_member_not_written_outside(toya: ArchiveFormat, tmp_path: Path) 
     dest = tmp_path / "out"
     dest.mkdir()
     with open_archive(path) as reader:
-        reader.extract_all(dest)
+        reader.extract_all(dest, on_blocked="skip")
     assert not (tmp_path / "escape.txt").exists()
     assert (dest / "docs" / "a.txt").read_bytes() == b"alpha\n"
     assert (dest / "b.bin").exists()
@@ -1042,7 +1042,7 @@ def test_a_bad_open_member_is_not_reported_as_corruption_on_any_path(
                 if stream is not None:
                     stream.read()
         else:
-            archive.extract_all(tmp_path / "out")
+            archive.extract_all(tmp_path / "out", on_blocked="skip")
     assert not isinstance(exc_info.value, CorruptionError)
 
 
@@ -1505,6 +1505,122 @@ def test_block_stream_asks_a_short_block_stream_again() -> None:
 
     data = bytes(range(256)) * 16
     assert block_stream(len(data), 4096, lambda index: Shorting(data)).read() == data
+
+
+def _spy_hints(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    from archivey.internal.source import ArchiveSource
+
+    hints: list[tuple[int, int]] = []
+    original = ArchiveSource.will_read
+
+    def spy(self: ArchiveSource, start: int, end: int) -> None:
+        hints.append((start, end))
+        original(self, start, end)
+
+    monkeypatch.setattr(ArchiveSource, "will_read", spy)
+    return hints
+
+
+def test_a_view_as_member_data_hints_its_span(
+    clean_registry: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ToyReader`` returns a view and no ranges: archivey hints the view's span.
+    Ranges the plugin gives win over it."""
+
+    class Declared(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            return super().open_member(member, locator)._replace(ranges=((1, 2),))
+
+    _plugin_with("viewhint")
+    _plugin_with("declhint", reader=Declared)
+    data = build_toya(_ENTRIES)
+    payload = _ENTRIES[2][2]
+    start = data.index(payload)
+    hints = _spy_hints(monkeypatch)
+    with open_archive(_write(tmp_path, data, "t.viewhint")) as reader:
+        reader.members()
+        hints.clear()
+        assert reader.read("b.bin") == payload
+    assert hints == [(start, start + len(payload))]
+    with open_archive(_write(tmp_path, data, "t.declhint")) as reader:
+        reader.members()
+        hints.clear()
+        assert reader.read("b.bin") == payload
+    assert hints == [(1, 2)]
+
+
+def test_a_block_stream_hints_each_view_block_as_it_reads_it(
+    clean_registry: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Blocks(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            offset, size = locator
+            return MemberData(
+                block_stream(
+                    size,
+                    256,
+                    lambda i: self._source.view(
+                        offset + i * 256, min(256, size - i * 256)
+                    ),
+                )
+            )
+
+    _plugin_with("blockhint", reader=Blocks)
+    data = build_toya(_ENTRIES)
+    payload = _ENTRIES[2][2]  # 1024 bytes: four blocks
+    start = data.index(payload)
+    hints = _spy_hints(monkeypatch)
+    with open_archive(_write(tmp_path, data, "t.blockhint")) as reader:
+        reader.members()
+        hints.clear()
+        assert reader.read("b.bin") == payload
+    assert hints == [(start + i * 256, start + (i + 1) * 256) for i in range(4)]
+
+
+def test_a_block_stream_hints_each_decoded_block_as_it_reads_it(
+    clean_registry: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each block a decoder over a view: the hint is the block's compressed span."""
+    payload = _ENTRIES[2][2]
+    packed: list[bytes] = []
+    for i in range(4):
+        squeeze = zlib.compressobj(wbits=-15)
+        packed.append(squeeze.compress(payload[i * 256 : (i + 1) * 256]))
+        packed[-1] += squeeze.flush()
+    starts = [sum(len(b) for b in packed[:i]) for i in range(5)]
+
+    class Decoded(ToyReader):
+        def open_member(
+            self, member: ArchiveMember, locator: tuple[int, int]
+        ) -> MemberData:
+            offset, size = locator
+            return MemberData(
+                block_stream(
+                    size,
+                    256,
+                    lambda i: self._context.decompress(
+                        self._source.view(offset + starts[i], len(packed[i])),
+                        CompressionAlgorithm.DEFLATE,
+                        size=256,
+                    ),
+                )
+            )
+
+    _plugin_with("decodedhint", reader=Decoded)
+    stored = b"".join(packed)
+    entries = [*_ENTRIES[:2], ("b.bin", MemberType.FILE, stored)]
+    data = build_toya(entries, sizes={2: len(payload)}, crcs={2: zlib.crc32(payload)})
+    base = data.index(stored)
+    hints = _spy_hints(monkeypatch)
+    with open_archive(_write(tmp_path, data, "t.decodedhint")) as reader:
+        reader.members()
+        hints.clear()
+        assert reader.read("b.bin") == payload
+    assert hints == [(base + starts[i], base + starts[i + 1]) for i in range(4)]
 
 
 def test_read_exact_raises_truncated_at_the_end(

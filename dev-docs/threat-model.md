@@ -969,13 +969,10 @@ writes itself) is exercised against mutated and coverage-guided input.
    decode with it off raised. zlib and raw DEFLATE inputs carry a declared size, as a
    ZIP member or 7z coder does, since `AUTO` engages rapidgzip on them only with one.
    libFuzzer's own `-timeout` and `-rss_limit_mb` bound those targets: unlike a Python
-   alarm, they fire while the main thread is inside native code. A
-   short partition runs on every merge-queue group that changes a library, test, dependency
-   or CI path (`scripts/ci/ci_scope.py`; the fuzz targets live under `tests/`, so a change to
-   one always counts); the full one on a change-guarded nightly
-   and on `workflow_dispatch` (`.github/workflows/atheris-fuzz.yml`,
-   `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
-   group only.
+   alarm, they fire while the main thread is inside native code. The full partition runs
+   on a change-guarded nightly and on `workflow_dispatch`, which the release gates use
+   (`.github/workflows/atheris-fuzz.yml`, `openspec/specs/testing-contract/spec.md`).
+   `atheris` is in the `fuzz` dependency group only.
 
 pycdlib before 1.22 looped forever when corrupt directory records formed a back-edge,
 in any namespace `open_fp` walks, UDF included, where it also allocated on every pass. A
@@ -1226,6 +1223,14 @@ still bounds the amount, only the rate is lower. Detection of an unrecognised fi
 no known extension scans up to 2 MiB for an archive behind leading bytes, and 2 MiB of
 back-to-back ZIP local-header signatures costs about 2.4 s to reject, one validation each
 ([prefixed archives §3](topics/prefixed-archives.md#3-cost-is-what-tiers-this-not-false-positives)).
+Extraction resolves each member's parent from the destination root before it writes
+the member, because an earlier member can have changed the tree, and a dry run also
+walks each member's path from the scratch root to copy in what dest holds there
+(`DryRun.bring_in`). Each is one `lstat` per level, so a tree costs its members times its
+depth, and `PATH_MAX` is the only bound on the depth. A tar listing `a`, `a/a`, … 1000
+levels deep (14 KB gzipped at 800 levels) extracts in about 6 s and dry-runs in about
+19 s (CPython 3.11). The directories a run creates under one member are resolved from
+their parent's answer instead, so a single member that deep costs about 0.2 s.
 Callers who need a time bound run
 archivey in a worker they can kill. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
@@ -1426,6 +1431,16 @@ RARLAB binary is found. A read that needs no password passes none
 (`_member_needs_password`): the member and the headers are plaintext, and in a solid
 archive no encrypted member comes before it.
 Public: [hardening](../docs/security.md#hardening).
+
+### A file system's own error can carry a URL's credentials
+
+archivey removes a URL's `user:password@`, and an http(s) query, from the names and
+messages it writes itself (`display_url` in `internal/remote.py`). An I/O error the fsspec
+file system raises propagates unchanged
+([DR-15a](design-rules.md#dr-15a-translate-archive-problems-let-io-problems-through)), so
+a missing object's `FileNotFoundError` can carry the URL as given, secrets included.
+Contract: `openspec/changes/fsspec-integration/specs/archive-reading/spec.md`
+§"OpenFile facts".
 
 ## 5. Open design gaps
 

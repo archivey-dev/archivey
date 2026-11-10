@@ -8,6 +8,11 @@ arguments go to :func:`archivey.open_archive` and everything else to
 :meth:`~archivey.ForwardArchiveReader.extract_all`, so the report's diagnostics are
 extraction-only, as a caller's would be.
 
+Unlike ``extract_all()`` itself, it defaults to ``on_blocked="skip"``: most tests check
+what happened to each member, refused ones included, so they want the report back
+rather than the ``FilterRejectionError`` the library raises by default. A test of that
+default passes ``on_blocked="raise"``.
+
 It also checks, after every run that returned or raised, that no ``.archivey-tmp-*``
 staging file is left under the destination: only a hard kill may leave one
 (docs/extracting.md), so every extraction the suite runs through here guards that.
@@ -49,6 +54,7 @@ def open_and_extract(
         encoding=encoding,
         config=config,
     ) as reader:
+        extract_kwargs.setdefault("on_blocked", "skip")
         try:
             return reader.extract_all(dest, **extract_kwargs)
         finally:

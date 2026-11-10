@@ -69,7 +69,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
-from archivey.internal.long_paths import long_path, plain
+from archivey.internal.long_paths import long_path, make_dirs, plain
 from archivey.internal.overrides import override
 from archivey.internal.selection import CollectionSelector
 from archivey.paths import numbered_name
@@ -467,6 +467,11 @@ class _Orphan:
     dest_path: Path
     source: ArchiveMember
     spelled_from: ArchiveMember | None = None
+    # The claim this link's reservation (``_reserve_orphan``) took the key from, put
+    # back when the second pass releases it; and whether a later member replaced the
+    # link before the second pass made it.
+    previous_claim: _Claim | None = None
+    cancelled: bool = False
 
 
 @dataclass
@@ -573,6 +578,14 @@ class _RunState:
     written_dirs: dict[str, list[int]] = field(default_factory=dict)
     # Hardlinks whose source was not on disk yet, for the second pass.
     orphans: list[_Orphan] = field(default_factory=list)
+    # The names those hardlinks hold until the second pass makes them, by collision
+    # key (``_reserve_orphan``): a later member meets the name as taken, as it would
+    # had the link been made at its place in archive order.
+    reservations: dict[str, _Orphan] = field(default_factory=dict)
+    # Whether the destination's filesystem folds case, probed the first time a
+    # directory lands on a held-back link's key under another spelling
+    # (``_folds_case``); ``None`` until then.
+    folds_case: bool | None = None
     # Superseded copies the filesystem refused to remove, by archive name, as in
     # ``_MemberState.parked``: the next member of that name parks them again.
     unremoved: dict[str, dict[Path, int]] = field(default_factory=dict)
@@ -628,6 +641,10 @@ class _RunState:
     # (a disk spelling, Windows separators, a dry run's scratch path), by result
     # index, so a recheck error names it as listed.
     stored_targets: dict[int, str] = field(default_factory=dict)
+    # Errors from removing an escaping symlink, when it was created
+    # (``_write_symlink``) or rechecked: each such link is still on disk, so the
+    # member's handler ends the run with the first one (``_recheck_links``).
+    unremoved_links: list[OSError] = field(default_factory=list)
     # RAR file copies (``_open_written_source``). ``streaming_now`` is ``id()`` of
     # the member whose stream is being written; a file-copy source arriving then is
     # not kept by the pass (``_keep_copy_source``), and goes in ``declined``. Only
@@ -1688,6 +1705,7 @@ class ExtractionCoordinator:
             member_bytes = state.counted.pop(index)
             state.tracker.refund(0 if content_kept else member_bytes)
         state.orphans[:] = [o for o in state.orphans if o.result_index != index]
+        self._release_reservation_of(index)
 
     def _drop_parked_copies(self, name: str, result_index: int | None) -> None:
         """Remove each parked copy of ``name`` unless the member just handled, recorded
@@ -2172,9 +2190,11 @@ class ExtractionCoordinator:
         if transformed.type == MemberType.DIRECTORY:
             existed = self._occupied(dest_path)
             callers = self._is_callers_directory(dest_path)
-            if not self._make_room_for_parents(
-                transformed, dest_path
-            ) or not self._prepare_destination(transformed, dest_path):
+            if (
+                not self._meet_reservation(transformed, dest_path)
+                or not self._make_room_for_parents(transformed, dest_path)
+                or not self._prepare_destination(transformed, dest_path)
+            ):
                 return ExtractionResult(
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                 )
@@ -2259,9 +2279,11 @@ class ExtractionCoordinator:
         rule across both calls: the parent's own skip check runs before it removes
         anything, and once it has replaced the parent nothing is left at
         ``dest_path`` for ``_prepare_destination`` to skip."""
-        if not self._make_room_for_parents(
-            transformed, dest_path
-        ) or not self._prepare_destination(transformed, dest_path, atomic=atomic):
+        if (
+            not self._meet_reservation(transformed, dest_path)
+            or not self._make_room_for_parents(transformed, dest_path)
+            or not self._prepare_destination(transformed, dest_path, atomic=atomic)
+        ):
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
@@ -2311,8 +2333,10 @@ class ExtractionCoordinator:
         """
         if self._overwrite is OverwritePolicy.RENAME:
             requested = self._rename_callers_parent(requested)
-        if transformed.type == MemberType.DIRECTORY and not self._blocks_directory(
-            requested
+        if (
+            transformed.type == MemberType.DIRECTORY
+            and not self._blocks_directory(requested)
+            and self._reservation_at(requested, directory=True) is None
         ):
             return requested, None, None
         prior = self._state.collision_map.get(self._collision_key(requested))
@@ -2519,7 +2543,7 @@ class ExtractionCoordinator:
         catches that error.
         """
         current = self._current
-        link_error: ArchiveyError | None = None
+        link_error: ArchiveyError | OSError | None = None
         try:
             yield
         except (AlwaysStopResourceLimitError, DiagnosticRaisedError):
@@ -2716,6 +2740,8 @@ class ExtractionCoordinator:
         resolved_parents = self._state.resolved_parents
         rel_parent = resolved_parents.get(parent)
         if rel_parent is None:
+            rel_parent = self._extend_resolved_parent(parent)
+        if rel_parent is None:
             root = os.fspath(self._state.dest_root)
             try:
                 resolved = os.fspath(resolve_or_raise_on_loop(Path(parent)))
@@ -2730,6 +2756,41 @@ class ExtractionCoordinator:
                 return None
             resolved_parents[parent] = rel_parent
         return rel_parent + name
+
+    def _extend_resolved_parent(self, parent: str) -> str | None:
+        """``_physical_rel``'s answer for the directory ``parent`` from its own
+        parent's cached answer, with one ``lstat``; ``None`` when that needs the full
+        resolution.
+
+        Resolving each directory of a deep chain from the root would cost one
+        ``lstat`` per level, the depth squared for the chain (about 20 s for a member
+        1500 levels deep). A last component that is not a symlink adds itself
+        to its parent's resolution, as the full walk does (a missing one is kept as a
+        name there too), and follows no link, so a loop is counted as before. POSIX
+        only: on Windows the resolution also takes the spelling the volume stores."""
+        if os.name == "nt":
+            return None
+        head, last = os.path.split(parent)
+        if last in ("", ".", ".."):
+            return None
+        rel_head = self._state.resolved_parents.get(head)
+        if rel_head is None:
+            return None
+        try:
+            # Without a trailing "/", which would follow a symlink at ``last``.
+            mode = os.lstat(
+                long_path(os.path.join(self._state.dest_root, rel_head + last))
+            ).st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except OSError:
+            return None
+        else:
+            if stat.S_ISLNK(mode):
+                return None
+        rel_parent = f"{rel_head}{last}/"
+        self._state.resolved_parents[parent] = rel_parent
+        return rel_parent
 
     def _physical_path(self, path: Path) -> Path:
         """Where ``path`` is, under the destination as given, with its parent
@@ -3048,16 +3109,24 @@ class ExtractionCoordinator:
         # records the link in ``links`` for that.
         problem = _symlink_problem(dest_path, on_disk, self._state.dest_root)
         if problem is not None:
-            try:
-                os.unlink(long_path(dest_path))
-            except OSError:
-                pass
-            self._resolutions_changed()
-            raise FilterRejectionError(
+            refusal = FilterRejectionError(
                 problem,
                 member_name=transformed.name,
                 link_target=target,
             )
+            try:
+                os.unlink(long_path(dest_path))
+            except OSError as exc:
+                # The escaping link is still on disk. The member is still BLOCKED,
+                # and its handler then ends the run with this error.
+                self._rebase_os_error(exc)
+                refusal.add_note(
+                    "The symlink could not be removed and is still on disk: "
+                    + exception_detail(exc, with_type=True)
+                )
+                self._state.unremoved_links.append(exc)
+            self._resolutions_changed()
+            raise refusal
 
         return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
 
@@ -3242,24 +3311,159 @@ class ExtractionCoordinator:
                 member_name=transformed.name,
             )
         # Re-readable: resolve in the second pass.
-        self._state.orphans.append(
-            _Orphan(
-                result_index,
-                original,
-                transformed,
-                dest_path,
-                source,
-                spelled_from=self._current.spelled_from,
-            )
+        orphan = _Orphan(
+            result_index,
+            original,
+            transformed,
+            dest_path,
+            source,
+            spelled_from=self._current.spelled_from,
         )
+        self._state.orphans.append(orphan)
+        self._reserve_orphan(orphan)
         return ExtractionResult(original, None, ExtractionStatus.FAILED, None)
+
+    def _reserve_orphan(self, orphan: _Orphan) -> None:
+        """Hold ``orphan``'s name from its place in archive order until the second
+        pass makes it. First in archive order wins a name, so a later member that
+        collides with it meets the overwrite policy as it would meet the link already
+        made: refused under ``ERROR`` and ``SKIP``, given another name under
+        ``RENAME``, and under ``REPLACE`` it replaces the link, which the second pass
+        then does not make (``_meet_reservation``). Without this, the later member
+        took the name and the link, made after it, was the one refused."""
+        state = self._state
+        key = self._collision_key(orphan.dest_path)
+        previous = state.reservations.get(key)
+        if previous is not None:
+            if self._overwrite is not OverwritePolicy.REPLACE:
+                # Two held-back links of one name: the earlier keeps it. Under
+                # ERROR and SKIP the second pass refuses this one against it, and
+                # under RENAME gives it another name, as for the made link.
+                return
+            # Under REPLACE this link replaces the earlier one, as it would the
+            # made link: the earlier one is not made, and this one holds the name
+            # from the claim the earlier one took it from.
+            previous.cancelled = True
+            self._revise_to_overwritten(previous.result_index)
+            orphan.previous_claim = previous.previous_claim
+            self._claim(orphan.dest_path, orphan.result_index)
+            state.reservations[key] = orphan
+            return
+        orphan.previous_claim = state.collision_map.get(key)
+        self._claim(orphan.dest_path, orphan.result_index)
+        state.reservations[key] = orphan
+
+    def _meet_reservation(self, member: ArchiveMember, dest_path: Path) -> bool:
+        """Apply the overwrite policy to a held-back link's name that ``member`` lands
+        on (``_reserve_orphan``), as ``_prepare_destination`` would to the link once
+        made; False to skip ``member``. Under ``REPLACE`` the link is replaced: its
+        result and the one it would have replaced become OVERWRITTEN, and the second
+        pass leaves it out. A directory meets the link only where the filesystem
+        would find the made link (``_reservation_at``), as directories take no part
+        in the collision map."""
+        state = self._state
+        if not state.reservations:
+            return True
+        orphan = self._reservation_at(
+            dest_path, directory=member.type is MemberType.DIRECTORY
+        )
+        if orphan is None:
+            return True
+        key = self._collision_key(dest_path)
+        if self._overwrite is OverwritePolicy.ERROR:
+            raise self._already_exists(dest_path, member)
+        if self._overwrite is OverwritePolicy.SKIP:
+            return False
+        if self._overwrite is OverwritePolicy.REPLACE:
+            del state.reservations[key]
+            orphan.cancelled = True
+            self._revise_to_overwritten(orphan.result_index)
+            if orphan.previous_claim is not None:
+                self._revise_to_overwritten(orphan.previous_claim.result_index)
+        return True
+
+    def _reservation_at(self, path: Path, *, directory: bool) -> _Orphan | None:
+        """The held-back link whose name ``path`` reaches (``_reserve_orphan``), or
+        ``None``. A non-directory reaches it by collision key, as it would reach the
+        made link's claim. A directory, or a parent a member implies, reaches it only
+        where an ``lstat`` would find the made link: at its own path, or under
+        another case on a filesystem that folds case (``_folds_case``). On a
+        case-sensitive filesystem ``H/`` beside the link ``h`` is another entry, as it
+        is beside a made one."""
+        reservations = self._state.reservations
+        if not reservations:
+            return None
+        orphan = reservations.get(self._collision_key(path))
+        if orphan is None or not directory or orphan.dest_path == path:
+            return orphan
+        return orphan if self._folds_case() else None
+
+    def _folds_case(self) -> bool:
+        """Whether the destination's filesystem finds a name under another case,
+        probed once a run with a directory created and removed under the
+        destination (as ``tests.conftest.case_sensitive`` does). Only a directory
+        that lands on a held-back link's key under another spelling asks, so a run
+        without one never probes. A probe that cannot be made counts as
+        case-sensitive: the directory is then written, as it is beside a made link
+        on such a filesystem."""
+        state = self._state
+        if state.folds_case is None:
+            folds = False
+            with contextlib.suppress(OSError, ValueError):
+                probe = state.dest / f"Archivey-Case-Probe-{uuid.uuid4().hex}"
+                os.mkdir(long_path(probe))
+                try:
+                    folds = os.path.lexists(
+                        long_path(probe.with_name(probe.name.swapcase()))
+                    )
+                finally:
+                    os.rmdir(long_path(probe))
+            state.folds_case = folds
+        return state.folds_case
+
+    def _release_reservation_of(self, index: int) -> None:
+        """Drop the name the held-back link of result ``index`` holds, if any, for a
+        link taken back (``_take_back_written``): the claim it took the name from
+        gets it back, so a later copy of the same name meets what the link would
+        have replaced, not the link."""
+        state = self._state
+        for key, orphan in state.reservations.items():
+            if orphan.result_index != index:
+                continue
+            del state.reservations[key]
+            self._give_back_name(key, orphan)
+            return
+
+    def _give_back_name(self, key: str, orphan: _Orphan) -> None:
+        """Put back the claim ``orphan``'s reservation took ``key`` from, unless a
+        later member has claimed ``key`` since (``REPLACE``)."""
+        collision_map = self._state.collision_map
+        claim = collision_map.get(key)
+        if claim is not None and claim.result_index == orphan.result_index:
+            del collision_map[key]
+            if orphan.previous_claim is not None:
+                collision_map[key] = orphan.previous_claim
+
+    def _release_reservations(self) -> None:
+        """Give each held-back link's name back to the claim it took it from, so the
+        second pass resolves the link as the first pass would have."""
+        state = self._state
+        for key, orphan in state.reservations.items():
+            self._give_back_name(key, orphan)
+        state.reservations.clear()
+        state.rename_next.clear()
 
     # --- orphan (second pass) ------------------------------------------------------
 
     def _resolve_orphans(self, reader: BaseArchiveReader) -> None:
+        self._release_reservations()
         orphans_by_source: dict[int, list[_Orphan]] = {}
         for orphan in self._state.orphans:
+            if orphan.cancelled:
+                continue
             orphans_by_source.setdefault(orphan.source.member_id, []).append(orphan)
+        if not orphans_by_source:
+            return
 
         # A source that was written LATER in the first pass (a link preceding its source in
         # archive order) is already on disk: just link against it — re-reading its bytes
@@ -3709,7 +3913,7 @@ class ExtractionCoordinator:
         self._resolutions_changed()
         self._state.links.note_change(path)
 
-    def _recheck_links(self) -> ArchiveyError | None:
+    def _recheck_links(self) -> ArchiveyError | OSError | None:
         """Remove the links this run created that the member just handled made escape.
 
         Called once per member, before the next one is handled, so no later member
@@ -3719,11 +3923,14 @@ class ExtractionCoordinator:
         It runs in a ``finally``, so it returns the error that must end the run
         instead of raising it, which would replace the member's own error: the
         recheck bound running out, or ``AbortOn.BLOCKED_MEMBER`` with a link removed.
+        A symlink the filesystem refused to remove, here or when it was created
+        (``_write_symlink``), comes first: it is still on disk and may lead out of
+        the destination, so the run ends with that ``OSError``.
         """
         state = self._state
         links = state.links
         if not links.has_changes:
-            return None
+            return self._unremoved_link_error()
         dest_root = state.dest_root
         # The recheck asks a yes/no question; the reason is kept here, per link path,
         # so a loop a later member closed is named as a loop. ``recheck`` reports a
@@ -3744,6 +3951,7 @@ class ExtractionCoordinator:
             return problem is not None
 
         outcome = links.recheck(escapes)
+        unremoved = {id(link): exc for link, exc in outcome.unremoved}
         removed = [
             (
                 link,
@@ -3777,7 +3985,19 @@ class ExtractionCoordinator:
                         prior, path=None, status=ExtractionStatus.BLOCKED, error=error
                     ),
                 )
-            logger.warning("Removed symlink %r: %s", prior.member.name, error)
+            stuck = unremoved.get(id(link))
+            if stuck is None:
+                logger.warning("Removed symlink %r: %s", prior.member.name, error)
+                continue
+            self._rebase_os_error(stuck)
+            stuck.add_note(
+                f"Could not remove symlink {quoted(prior.member.name)}, which is "
+                f"still on disk: {error}"
+            )
+            state.unremoved_links.append(stuck)
+        unremoved_error = self._unremoved_link_error()
+        if unremoved_error is not None:
+            return unremoved_error
         if outcome.unchecked:
             return AlwaysStopResourceLimitError(
                 f"Symlink recheck limit reached: max_entries={self._limits.max_entries}"
@@ -3785,6 +4005,16 @@ class ExtractionCoordinator:
         if first is not None and AbortOn.BLOCKED_MEMBER in self._abort_on:
             return first
         return None
+
+    def _unremoved_link_error(self) -> OSError | None:
+        """The first error from removing an escaping symlink this run left on disk, or
+        ``None``. Returned once: the run ends with it."""
+        unremoved = self._state.unremoved_links
+        if not unremoved:
+            return None
+        first = unremoved[0]
+        unremoved.clear()
+        return first
 
     def _mark_overwritten(self, prior: _Claim | None) -> None:
         """Revise a clobbered member's result to OVERWRITTEN: its content is gone.
@@ -3875,7 +4105,7 @@ class ExtractionCoordinator:
         if self._dry is not None:
             self._dry.check_creatable()
         else:
-            os.makedirs(long_path(dest), exist_ok=True)
+            make_dirs(dest)
         return True
 
     def _makedirs(self, path: Path, member: ArchiveMember) -> None:
@@ -3899,15 +4129,28 @@ class ExtractionCoordinator:
                 return
         except OSError:
             pass
-        # The components that do not exist yet: this run creates them, so a directory
-        # member naming one later is not the caller's (``_is_callers_directory``).
-        missing: list[Path] = []
-        probe = path
-        while probe != probe.parent and not os.path.lexists(long_path(probe)):
-            missing.append(probe)
-            probe = probe.parent
+        if self._state.reservations:
+            # A held-back link (``_reserve_orphan``) holds its name as the made link
+            # would: a directory cannot be created there, and the member fails as
+            # it would against the made link, with the error below. Checked before
+            # anything is created, on the components that do not exist yet.
+            missing: list[Path] = []
+            probe = path
+            while probe != probe.parent and not os.path.lexists(long_path(probe)):
+                missing.append(probe)
+                probe = probe.parent
+            for component in reversed(missing):
+                if self._reservation_at(component, directory=True) is not None:
+                    raise ExtractionError(
+                        f"Cannot create {quoted(member.name)}: "
+                        f"{quoted(self._rel_name(component))} is a "
+                        "non-directory already extracted from this archive",
+                        member_name=member.name,
+                    )
         try:
-            os.makedirs(long_path(path), exist_ok=True)
+            # The directories this run creates, nearest the root first: a directory
+            # member naming one later is not the caller's (``_is_callers_directory``).
+            made = [Path(component) for component in make_dirs(path)]
         except (FileExistsError, NotADirectoryError, FileNotFoundError) as exc:
             # FileNotFoundError too: Windows can report a directory created under a file
             # as a missing path. Nearest the root first, because that component is the
@@ -3923,8 +4166,10 @@ class ExtractionCoordinator:
                         member_name=member.name,
                     ) from exc
             raise
-        self._state.created_dirs.update(missing)
-        for component in missing:
+        self._state.created_dirs.update(made)
+        # Nearest the root first, so each resolution extends its parent's
+        # (``_extend_resolved_parent``).
+        for component in made:
             self._note_run_directory(component)
 
     def _is_callers_directory(self, path: Path) -> bool:

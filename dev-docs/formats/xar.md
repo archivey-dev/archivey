@@ -18,7 +18,7 @@ and registered as a built-in, as ISO, SquashFS and ar are.
 | Core dependencies | None. zlib, bz2 and lzma from the standard library; the XML through `xml.parsers.expat` |
 | Encryption | None read. Apple's `xar` can sign the TOC (`<signature>`), which is not checked |
 | Name encoding | UTF-8 text in the XML, or base64 of raw bytes (`enctype="base64"`), then UTF-8 first, `encoding=`, escaped |
-| Checksums | The TOC's (SHA-1 by default, MD5, or a named algorithm), checked at open; each file's `extracted-checksum` as `member.hashes`, checked by the verifying stream |
+| Checksums | The TOC's (SHA-1 by default, MD5, or a named algorithm), checked at open; each file's `extracted-checksum` as `member.hashes`, checked by the verifying stream. One whose style is not MD5, SHA-1, SHA-256 or SHA-512, or that names no style, is not a hash: the file reads unchecked and reports `DIGEST_UNVERIFIABLE` (`reason="unknown_algorithm_or_backend"`, the style in `algorithm`) |
 | Refuses | Version other than 1; a DOCTYPE in the TOC; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-xar/spec.md` |
 
@@ -59,7 +59,10 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
   declarations only exist inside a document type, so none is expanded. The parser keeps
   one frame per open `<file>`, reserves the entry's slot when the element opens (so a
   directory is listed before its files) and computes its path when its `<name>` closes,
-  from the enclosing frame's. `max_members` is checked as each `<file>` opens. The TOC
+  from the enclosing frame's. A second `<name>` with the same text is the same name: Apple's
+  productbuild writes each top-level file's name twice (seen in the Node.js, GitHub CLI and
+  Miniconda installers), and bsdtar 3.7 joins the two into `DistributionDistribution`. A second
+  name that differs raises `CorruptionError`. `max_members` is checked as each `<file>` opens. The TOC
   digest is then checked over the compressed TOC bytes, as Apple's `xar` computes it.
 - **Hard links.** Apple's `xar` and bsdtar mark the entry that holds the data
   `<type link="original">hardlink</type>` (listed as a `FILE`) and every other name

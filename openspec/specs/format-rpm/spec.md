@@ -62,6 +62,26 @@ define SHALL leave the file unchecked.
 | A file read to its end, SHA-256 digest matches | `verified is CHECKSUM` |
 | A file whose bytes do not match its digest | `CorruptionError` on the read |
 
+### Requirement: Check the header's digest
+
+For each digest of the main header the signature header stores, `RPMSIGTAG_SHA256`
+(tag 273) and `RPMSIGTAG_SHA1` (tag 269), the RPM backend SHALL hash the main header
+from its magic to the end of its data store as it reads it, and SHALL raise
+`CorruptionError` naming the first digest that differs before listing any member, in
+both access modes. A package that
+stores neither SHALL be read unchecked.
+
+#### Scenario: RPM header digests
+
+| Case | Expected |
+| --- | --- |
+| An rpmbuild package, unchanged | Opens and lists as before |
+| One byte of the main header changed (a link target), the structure still valid | `CorruptionError` naming the SHA-256 digest, from a file and from a pipe |
+| Only tag 269 stored, header changed | `CorruptionError` naming the SHA-1 digest |
+| SHA-256 correct, SHA-1 wrong | `CorruptionError` naming the SHA-1 digest |
+| Neither tag stored | Read unchecked |
+| A digest that is not hexadecimal | `CorruptionError` |
+
 ### Requirement: Refuse damaged and unsupported packages
 
 The backend SHALL raise `CorruptionError` for a header that does not parse (bad magic,

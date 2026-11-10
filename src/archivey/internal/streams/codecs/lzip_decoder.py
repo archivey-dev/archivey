@@ -68,6 +68,7 @@ from archivey.internal.streams.decompressor_stream import (
     near_stream_magic,
     release_decoder,
 )
+from archivey.terminal import quoted
 
 if TYPE_CHECKING:
     from archivey.formats import Decompressor
@@ -249,7 +250,7 @@ def _iter_trailers_backwards(
         if header[:4] != _MAGIC:
             raise CorruptionError(
                 f"Lzip magic not found at expected member start {compressed_start} "
-                f"(got {header[:4]!r}); member_size in trailer may be corrupt"
+                f"(got {quoted(header[:4].decode('ascii', 'surrogateescape'))}); member_size in trailer may be corrupt"
             )
         _check_version(header, compressed_start)
         yield compressed_start, int(data_size), int(member_size), int(crc32)
@@ -286,6 +287,34 @@ def _read_index_backwards(
         _MemberBounds(comp_start, end - dist, comp_size, decomp_size)
         for dist, (comp_start, decomp_size, comp_size, _crc) in reversed(kept.items)
     ]
+
+
+def last_member_is_the_whole_file(stream: BinaryIO, file_size: int) -> bool:
+    """Whether the last lzip member starts at offset 0, read from its trailer.
+
+    Reads the last 20 bytes only when they hold a plausible trailer, so on a remote
+    source a multi-member file costs no more requests than a single-member one
+    (fsspec-integration design D1): a member size equal to the file size is one
+    member, a smaller valid one is an earlier member. Anything else (data appended
+    after the last member, damage) falls back to the first step of the full walk,
+    which looks past appended data and checks the member's header. A wrong "earlier
+    member" answer only leaves the size unknown; the forward decoder still checks
+    every member.
+    """
+    if file_size >= _TRAILER_SIZE:
+        stream.seek(file_size - _TRAILER_SIZE)
+        trailer = stream.read(_TRAILER_SIZE)
+        if len(trailer) == _TRAILER_SIZE:
+            member_size = int.from_bytes(trailer[12:20], "little")
+            if member_size == file_size:
+                return True
+            if _HEADER_SIZE + _TRAILER_SIZE <= member_size < file_size:
+                return False
+    for start, _data_size, _member_size, _crc in _iter_trailers_backwards(
+        stream, file_size
+    ):
+        return start == 0
+    return True
 
 
 def peek_index_summary(stream: BinaryIO, file_size: int) -> tuple[int, int]:
@@ -367,7 +396,7 @@ class _LzipState:
                 # trailing data is allowed only *after* a member (lzip spec §7).
                 if head != _MAGIC[: len(head)]:
                     raise CorruptionError(
-                        f"Not a valid lzip file: expected magic {_MAGIC!r}, got {head!r}"
+                        f"Not a valid lzip file: expected magic {_MAGIC!r}, got {quoted(head.decode('ascii', 'surrogateescape'))}"
                     )
                 self.truncated = True
                 return b"", []
@@ -483,7 +512,7 @@ class _LzipState:
         if header[:4] != _MAGIC:
             if self._members_seen == 0:
                 raise CorruptionError(
-                    f"Not a valid lzip file: expected magic {_MAGIC!r}, got {header[:4]!r}"
+                    f"Not a valid lzip file: expected magic {_MAGIC!r}, got {quoted(header[:4].decode('ascii', 'surrogateescape'))}"
                 )
             if near_stream_magic(header, _MAGIC):
                 # lzip's own rule: "corrupt header in multimember file".

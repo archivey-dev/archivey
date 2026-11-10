@@ -82,6 +82,11 @@ class ContainerFormat(StrEnum):
     """A Unix ar archive: a static library (``.a``, ``.lib``) or the outer layer of a
     ``.deb`` package. Read in one forward pass, so from a pipe and inside a compression
     stream too."""
+    DEB = "deb"
+    """A Debian binary package (``.deb``): an ar archive holding a control tar and a
+    data tar. Listed as the files it installs, the control files under ``DEBIAN/``, as
+    ``dpkg-deb -R`` unpacks it; ``format=ArchiveFormat.AR`` reads the ar layer instead.
+    Read in one forward pass, so from a pipe too."""
     CPIO = "cpio"
     """A CPIO archive in any of its variants (binary, odc, newc, crc): an initramfs or
     an RPM payload, for example. Read in one forward pass, so from a pipe and inside a
@@ -263,6 +268,7 @@ class ArchiveFormat:
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
     AR: ClassVar[ArchiveFormat]
+    DEB: ClassVar[ArchiveFormat]
     CPIO: ClassVar[ArchiveFormat]
     RPM: ClassVar[ArchiveFormat]
     SQUASHFS: ClassVar[ArchiveFormat]
@@ -350,6 +356,7 @@ ArchiveFormat.SEVEN_Z = ArchiveFormat(
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.AR = ArchiveFormat(ContainerFormat.AR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.DEB = ArchiveFormat(ContainerFormat.DEB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CPIO = ArchiveFormat(ContainerFormat.CPIO, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.RPM = ArchiveFormat(ContainerFormat.RPM, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.SQUASHFS = ArchiveFormat(
@@ -602,7 +609,8 @@ class HashAlgorithm(StrEnum):
     BLAKE2SP = "blake2sp"
     """BLAKE2sp, 32 bytes. Only RAR5 stores it."""
     MD5 = "md5"
-    """MD5, 16 bytes. A XAR archive may check its files with it."""
+    """MD5, 16 bytes. A Debian package's ``md5sums`` lists one per installed file, and
+    a XAR archive may check its files with it."""
     SHA1 = "sha1"
     """SHA-1, 20 bytes. What a XAR archive checks its files with by default."""
     SHA256 = "sha256"
@@ -681,6 +689,12 @@ class CompressionAlgorithm(Enum):
     IMPLODE = "implode"
     """ZIP method 6, LZ77 with Shannon-Fano codes, from PKZIP 1.x. No current tool
     writes it."""
+    REDUCE = "reduce"
+    """ZIP methods 2 to 5, a byte predictor with an LZ77 layer, from PKZIP 0.9x. No
+    current tool writes it."""
+    DCL_IMPLODE = "dcl_implode"
+    """ZIP method 10, the stream format of PKWARE's Data Compression Library (DCL),
+    which is not the same as ``IMPLODE``. Old installers and games use it too."""
     LZO = "lzo"
     """Raw LZO1X with no header, as SquashFS stores a block. Not the ``.lzo`` file
     format, which is ``StreamFormat.LZOP``."""
@@ -1038,6 +1052,11 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``7z.volume_count`` (``int``)
     * ``ar.symbol_table`` (``bool``)
     * ``ar.dialect`` (``str``)
+    * ``deb.package`` (``str``) — the ``Package`` field of the package's control file.
+      The three ``deb.*`` keys appear once the listing or iteration has read the
+      control tar, on any source; they are absent right after ``open_archive``.
+    * ``deb.version`` (``str``) — its ``Version`` field.
+    * ``deb.architecture`` (``str``) — its ``Architecture`` field.
     * ``cpio.variant`` (``str``)
     * ``squashfs.compressor`` (``str``)
     * ``squashfs.block_size`` (``int``)
@@ -1065,6 +1084,12 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["ar.symbol_table"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["ar.dialect"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["deb.package"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["deb.version"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["deb.architecture"], /) -> str: ...
     @overload
     def __getitem__(self, key: Literal["cpio.variant"], /) -> str: ...
     @overload
@@ -1792,8 +1817,8 @@ class OnError(Enum):
 
     It covers failures only: damaged data, a write error, an existing entry under
     ``OverwritePolicy.ERROR``. A member refused by a safety check is recorded as
-    ``BLOCKED`` and extraction goes on under either value; ``AbortOn.BLOCKED_MEMBER``
-    stops on one instead.
+    ``BLOCKED`` and extraction goes on under either value; :class:`OnBlocked` says what
+    happens once it ends, and ``AbortOn.BLOCKED_MEMBER`` stops at the first one instead.
     """
 
     STOP = "stop"
@@ -1809,6 +1834,33 @@ class OnError(Enum):
 # case, and a literal can express neither, so this is the canonical spelling.
 # Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
 OnErrorStr = Literal["stop", "continue"]
+
+
+class OnBlocked(StrEnum):
+    """What ``extract_all()`` does when a safety check refused a member.
+
+    A refused member is never written, and the members after it are still extracted
+    under either value. The difference is how the call ends. To stop at the first
+    refused member instead, pass ``abort_on=["blocked_member"]``.
+    """
+
+    RAISE = "raise"
+    """The default. Once every member has been processed, the call raises
+    :class:`~archivey.FilterRejectionError` instead of returning the report. The
+    exception carries the full report as its ``report`` attribute, and its message
+    names the first refused member. As GNU tar does: it extracts what it can, and
+    then exits with an error."""
+    SKIP = "skip"
+    """The call returns the report normally, and the refused members are in it as
+    ``BLOCKED``. Check ``report.ok`` or call ``report.raise_for_failure()``."""
+
+
+# The string spellings of ``OnBlocked``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# case, and a literal can express neither, so this is the canonical spelling.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+OnBlockedStr = Literal["raise", "skip"]
 
 
 class AbortOn(StrEnum):

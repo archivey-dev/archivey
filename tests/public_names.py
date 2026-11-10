@@ -19,6 +19,7 @@ _PUBLIC = {
     "archivey.exceptions": archivey.__all__,
     "archivey.formats": importlib.import_module("archivey.formats").__all__,
     "archivey.diagnostics": importlib.import_module("archivey.diagnostics").__all__,
+    "archivey.terminal": importlib.import_module("archivey.terminal").__all__,
 }
 
 

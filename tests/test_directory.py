@@ -25,6 +25,7 @@ from archivey import (
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.types import ContainerFormat, StreamFormat
 from tests.scandir_util import patch_dir_entry_stat
+from tests.stack_util import recursion_limit_above_caller
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -452,10 +453,10 @@ def test_junction_falls_back_to_the_reparse_tag_without_is_junction() -> None:
     ``st_reparse_tag`` says it instead, so a junction is not walked as a directory."""
     from types import SimpleNamespace
 
-    from archivey.internal.backends.directory_reader import _is_junction
     from archivey.internal.windows_reparse import (
         IO_REPARSE_TAG_MOUNT_POINT,
         IO_REPARSE_TAG_SYMLINK,
+        entry_is_junction,
     )
 
     old_entry = SimpleNamespace()  # no is_junction attribute, as on 3.11
@@ -465,12 +466,12 @@ def test_junction_falls_back_to_the_reparse_tag_without_is_junction() -> None:
         (0, False),
     ):
         st = SimpleNamespace(st_reparse_tag=tag)
-        assert _is_junction(old_entry, st) is expected  # type: ignore[arg-type]
+        assert entry_is_junction(old_entry, st) is expected  # type: ignore[arg-type]
     # No st_reparse_tag at all (every platform but Windows).
-    assert _is_junction(old_entry, SimpleNamespace()) is False  # type: ignore[arg-type]
+    assert entry_is_junction(old_entry, SimpleNamespace()) is False  # type: ignore[arg-type]
     # Where is_junction() exists, it decides.
     new_entry = SimpleNamespace(is_junction=lambda: True)
-    assert _is_junction(new_entry, SimpleNamespace()) is True  # type: ignore[arg-type]
+    assert entry_is_junction(new_entry, SimpleNamespace()) is True  # type: ignore[arg-type]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows-only")
@@ -603,18 +604,8 @@ def test_tree_deeper_than_recursion_limit_lists(tmp_path: Path) -> None:
     leaf.mkdir(parents=True)
     (leaf / "f").write_bytes(b"deep")
 
-    frames = 0
-    frame = sys._getframe()
-    while frame is not None:
-        frames += 1
-        frame = frame.f_back
-    old_limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(frames + depth // 2)
-    try:
-        with open_archive(tmp_path) as reader:
-            names = [m.name for m in reader]
-    finally:
-        sys.setrecursionlimit(old_limit)
+    with recursion_limit_above_caller(depth // 2), open_archive(tmp_path) as reader:
+        names = [m.name for m in reader]
 
     assert len(names) == depth + 1
     assert names[-1] == "d/" * depth + "f"
