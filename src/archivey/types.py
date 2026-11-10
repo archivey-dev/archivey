@@ -1834,8 +1834,8 @@ class OnError(Enum):
 
     It covers failures only: damaged data, a write error, an existing entry under
     ``OverwritePolicy.ERROR``. A member refused by a safety check is recorded as
-    ``BLOCKED`` and extraction goes on under either value; ``AbortOn.BLOCKED_MEMBER``
-    stops on one instead.
+    ``BLOCKED`` and extraction goes on under either value; :class:`OnBlocked` says what
+    happens once it ends, and ``AbortOn.BLOCKED_MEMBER`` stops at the first one instead.
     """
 
     STOP = "stop"
@@ -1851,6 +1851,33 @@ class OnError(Enum):
 # case, and a literal can express neither, so this is the canonical spelling.
 # Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
 OnErrorStr = Literal["stop", "continue"]
+
+
+class OnBlocked(StrEnum):
+    """What ``extract_all()`` does when a safety check refused a member.
+
+    A refused member is never written, and the members after it are still extracted
+    under either value. The difference is how the call ends. To stop at the first
+    refused member instead, pass ``abort_on=["blocked_member"]``.
+    """
+
+    RAISE = "raise"
+    """The default. Once every member has been processed, the call raises
+    :class:`~archivey.FilterRejectionError` instead of returning the report. The
+    exception carries the full report as its ``report`` attribute, and its message
+    names the first refused member. As GNU tar does: it extracts what it can, and
+    then exits with an error."""
+    SKIP = "skip"
+    """The call returns the report normally, and the refused members are in it as
+    ``BLOCKED``. Check ``report.ok`` or call ``report.raise_for_failure()``."""
+
+
+# The string spellings of ``OnBlocked``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# case, and a literal can express neither, so this is the canonical spelling.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+OnBlockedStr = Literal["raise", "skip"]
 
 
 class AbortOn(StrEnum):

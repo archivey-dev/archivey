@@ -34,11 +34,12 @@ Each idea carries a status:
   directory). Its parser's per-entry disk number is what reading spanned
   `.z01`…`.zip` sets would follow (by resolving each (disk, offset) pair). See
   [`formats/zip.md`](formats/zip.md) §5.
-- **Read `.cue` sheets for raw CD images.** *Open idea.* Single-track Mode 1 and Mode 2
-  Form 1 `.bin` images are read (`backends/cd_sectors.py`), first track only. The `.cue`
-  would find a data track that is not first (CD-Extra puts audio first) and the last
-  session of a multisession disc, whose filesystem addresses absolute sectors (map the
-  track starts the cue lists, as an OS mount does). EDC/ECC verification is also left.
+- **Verify raw CD sectors' EDC/ECC.** *Open idea.* Raw `.bin` images and `.cue` discs
+  are read (`backends/cd_sectors.py`, `backends/cue_sheet.py`) checking each sector's
+  sync and mode only. The EDC is a CRC-32 with another polynomial (not `zlib.crc32`), so
+  checking it in Python costs about as much as reading; an accelerator or opt-in flag
+  would be the shape. Other dump formats (`.ccd`/`.img`/`.sub`, `.mds`/`.mdf`, `.toc`)
+  could map onto the same `DiscSource`.
 - **Opt-in legacy name-encoding detection.** *Needs design (post-1.0).* Names with no
   Unicode marker that are not valid UTF-8 decode via `surrogateescape` today: honest and
   lossless, but garbled. Codepages have no oracle and filenames are too short for a

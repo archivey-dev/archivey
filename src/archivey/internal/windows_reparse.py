@@ -17,6 +17,7 @@ target — the parser below is correct and simply never sees one from that write
 
 from __future__ import annotations
 
+import os
 import struct
 from dataclasses import dataclass
 
@@ -26,6 +27,7 @@ __all__ = [
     "IO_REPARSE_TAG_SYMLINK",
     "REPARSE_HEADER_BYTES",
     "ReparsePoint",
+    "entry_is_junction",
     "normalize_windows_link_target",
     "parse_reparse_data",
     "reparse_payload_length",
@@ -39,6 +41,21 @@ FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 # whose content is not a link target at all, so the parser declines them.
 IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003  # junction
 IO_REPARSE_TAG_SYMLINK = 0xA000000C
+
+
+def entry_is_junction(entry: os.DirEntry[str], st: os.stat_result) -> bool:
+    """True if a scandir entry is a Windows NTFS junction.
+
+    ``st`` is the entry's ``stat(follow_symlinks=False)``. ``os.DirEntry.is_junction()``
+    only exists on Python 3.12+; before it, the junction's reparse tag in ``st`` says
+    so (``st_reparse_tag``, set on Windows only). On every other platform, where
+    junctions don't exist, this returns False.
+    """
+    is_junction = getattr(entry, "is_junction", None)
+    if is_junction is not None:
+        return bool(is_junction())
+    return getattr(st, "st_reparse_tag", 0) == IO_REPARSE_TAG_MOUNT_POINT
+
 
 # REPARSE_DATA_BUFFER: ULONG ReparseTag, USHORT ReparseDataLength, USHORT Reserved.
 _HEADER = struct.Struct("<IHH")

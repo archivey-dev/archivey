@@ -1663,6 +1663,9 @@ def run_extract(
                         policy=policy_enum,
                         overwrite=overwrite_enum,
                         on_error=on_error,
+                        # The command reports refused members from the report and
+                        # exits 3 itself, so it takes the report back, not an error.
+                        on_blocked="skip",
                         abort_on=abort_on_enum,
                         on_progress=on_progress,
                         dry_run=dry_run,
