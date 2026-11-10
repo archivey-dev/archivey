@@ -8,6 +8,22 @@ Layout this code assumes::
 
 A source that cannot seek is read front to back by ``zip_forward_reader`` instead.
 
+How members are listed (``_open_index``, then ``_iter_members``):
+
+1. Find the end record near EOF and read where the central directory starts.
+2. Walk the central directory, one entry per member, and build each
+   :class:`~archivey.ArchiveMember` from its entry (``_to_member``). Listing reads a
+   local header only to settle a doubt: a CRC-32 field of 0 over data, or a
+   directory length or offset that may be wrong (``_directory_walk``).
+3. Salvage, when the directory cannot be trusted. A directory damaged part way lists
+   the members it holds, then the members the local headers hold past the damage
+   (``_past_damage``). An archive with no usable end record lists what a walk over
+   the local headers found (``_iter_walked``). Either way the listing then raises.
+
+Opening a member (``_open_member``) reads its local header, checks it against the
+directory entry, and reads the payload: decrypt stage if encrypted, codec layer, then
+the CRC-32 and size check.
+
 Who does what:
 
 - ``zip_parser`` — the end record, the central directory walk and the local header, as
@@ -17,7 +33,7 @@ Who does what:
   verification stay uniform.
 - Decrypt stages: ZipCrypto (``internal.backends.zipcrypto``, weak 1-byte check) and
   WinZip AES (method 99, ``internal.backends.zip_aes``, real method from extra field
-  ``0x9901``). One password ladder for both: a bounded confirm per candidate when
+  ``0x9901``). One password ladder for both: a confirm per candidate when
   several are possible (a shared CRC pass for STORED ZipCrypto).
 - PKWARE Strong Encryption — refused (``UnsupportedFeatureError``).
 
@@ -277,6 +293,14 @@ _ZIP_EXTRA_UNICODE_PATH = 0x7075
 # Info-ZIP Unicode Comment extra field: a member comment as UTF-8, tied to the
 # header's comment bytes by their CRC-32 (`_unicode_comment_text`).
 _ZIP_EXTRA_UNICODE_COMMENT = 0x6375
+# ZIP64 extended information: the 64-bit sizes and offset, which the parser applies.
+_ZIP_EXTRA_ZIP64 = 0x0001
+# NTFS extra field: modification, access and creation FILETIMEs (`_zip_timestamps`).
+_ZIP_EXTRA_NTFS = 0x000A
+# Info-ZIP Extended Timestamp: Unix times, flagged present (`_zip_timestamps`).
+_ZIP_EXTRA_EXTENDED_TIMESTAMP = 0x5455
+# WinZip AES: the encryption strength and the real compression method.
+_ZIP_EXTRA_WINZIP_AES = 0x9901
 _STRONG_ENCRYPTION_MSG = (
     "PKWARE Strong Encryption is not supported (only ZipCrypto and WinZip AES are)"
 )
@@ -302,7 +326,7 @@ _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
 }
 
 # Shared compression tuples for the common ZIP methods — avoid per-member
-# CompressionMethod construction on the open+list hot path (perf review H3/Q1).
+# CompressionMethod construction on the open+list hot path.
 _ZIP_COMPRESSION_TUPLES: dict[int, tuple[CompressionMethod, ...]] = {
     method_id: (CompressionMethod(algo=algo),)
     for method_id, algo in _ZIP_COMPRESSION_ALGOS.items()
@@ -597,6 +621,63 @@ class _ZipCipher:
         return not self.is_aes and self.method in _ZIP_KEYED_SETTINGS_METHODS
 
 
+def _password_confirm_plans(
+    cipher: _ZipCipher, size: int
+) -> tuple[PasswordConfirmPlan, bool, PasswordConfirmPlan | None]:
+    """How ``ZipReader._open_encrypted_confirmed`` tests each password candidate.
+
+    Returns ``(per_candidate, reads_to_hmac, full)`` for a member of plaintext
+    ``size``:
+
+    - ``per_candidate`` runs for every candidate. It reads at most the prefix budget
+      when the member fits in it (the CRC-32 decides) or its codec rejects garbage
+      (the codec decides). Otherwise it walks to the member's end, to the CRC-32 or,
+      for WinZip AES, to the HMAC, and ``full`` is then ``None``.
+    - ``reads_to_hmac`` says that a WinZip AES ``per_candidate`` plan reads to the
+      end of the data, where the HMAC is checked.
+    - ``full`` is the walk to the member's end: its CRC, or for WinZip AES the HMAC.
+      It runs for each candidate that passed ``per_candidate`` when several did,
+      since only the end can tell them apart. ``None`` when ``per_candidate``
+      already confirms, or the end has nothing to check.
+    """
+    crc_anchor = cipher.crc_anchor
+    codec_rejects = cipher.method in _ZIP_REJECTING_METHODS
+    # One substream, the member itself: its CRC is the anchor when the member fits
+    # the prefix, and codec rejection decides a larger one.
+    plan = plan_password_confirm(
+        [(size, crc_anchor)],
+        None,
+        budget=PASSWORD_CONFIRM_PREFIX_BYTES,
+        codec_rejects=codec_rejects,
+    )
+    # WinZip AES authenticates the whole ciphertext, so reading a member to its end
+    # confirms the password (an 80-bit HMAC) whether or not it has a CRC. Take that
+    # walk wherever a CRC walk would be taken: the member fits the budget, or its
+    # codec cannot reject a wrong key on its own.
+    reads_to_hmac = (
+        cipher.is_aes
+        and not plan.confirms
+        and (size <= PASSWORD_CONFIRM_PREFIX_BYTES or not codec_rejects)
+    )
+    if reads_to_hmac:
+        plan = PasswordConfirmPlan(
+            ((size, crc_anchor),),
+            None,
+            confirms=True,
+            bounded=size <= PASSWORD_CONFIRM_PREFIX_BYTES,
+        )
+    full_plan: PasswordConfirmPlan | None = None
+    if (
+        not plan.confirms
+        and size > PASSWORD_CONFIRM_PREFIX_BYTES
+        and (crc_anchor is not None or cipher.is_aes)
+    ):
+        full_plan = PasswordConfirmPlan(
+            ((size, crc_anchor),), None, confirms=True, bounded=False
+        )
+    return plan, reads_to_hmac, full_plan
+
+
 class _UnconfirmedZipCryptoStream(DelegatingStream):
     """A ZipCrypto member opened with one password that only its check byte vouched for.
 
@@ -737,9 +818,9 @@ def _zip_timestamps(
     # check every read against the field's actual length.
     for field in fields:
         tag = field.tag
-        if tag == 0x000A and ntfs_field is None:
+        if tag == _ZIP_EXTRA_NTFS and ntfs_field is None:
             ntfs_field = field.data
-        elif tag == 0x5455 and field.data and ut_field is None:
+        elif tag == _ZIP_EXTRA_EXTENDED_TIMESTAMP and field.data and ut_field is None:
             ut_field = field.data
         elif tag in (_OWNER_TAG_INFOZIP_NEW_UNIX, _OWNER_TAG_INFOZIP_UNIX2):
             newer_unix = True
@@ -776,9 +857,9 @@ def _zip_timestamps(
                     if dt is None:
                         continue
                     if field_name == "mtime":
-                        modified, modified_from = dt, 0x000A
+                        modified, modified_from = dt, _ZIP_EXTRA_NTFS
                     elif field_name == "atime":
-                        accessed, accessed_from = dt, 0x000A
+                        accessed, accessed_from = dt, _ZIP_EXTRA_NTFS
                     else:
                         ntfs_ctime = dt
                 break
@@ -804,9 +885,9 @@ def _zip_timestamps(
                 # value it can hold is a valid datetime on every platform.
                 when = unix32_to_datetime(ts)
                 if bit == 0x01:
-                    modified, modified_from = when, 0x5455
+                    modified, modified_from = when, _ZIP_EXTRA_EXTENDED_TIMESTAMP
                 elif bit == 0x02:
-                    accessed, accessed_from = when, 0x5455
+                    accessed, accessed_from = when, _ZIP_EXTRA_EXTENDED_TIMESTAMP
                 else:
                     ut_ctime = when
 
@@ -814,7 +895,11 @@ def _zip_timestamps(
     # the creation slot takes the Extended Timestamp's time over the NTFS one
     # (``_zip_created``).
     creation_from = (
-        0x5455 if ut_ctime is not None else 0x000A if ntfs_ctime is not None else None
+        _ZIP_EXTRA_EXTENDED_TIMESTAMP
+        if ut_ctime is not None
+        else _ZIP_EXTRA_NTFS
+        if ntfs_ctime is not None
+        else None
     )
     used: tuple[int, ...] = ()
     for tag in (modified_from, accessed_from, creation_from):
@@ -955,7 +1040,9 @@ _cached_new_unix_owner = lru_cache(maxsize=64)(_new_unix_owner)
 # Fields that are part of the ZIP structure rather than a record about the member: the
 # ZIP64 sizes (applied by the parser), WinZip AES and PKWARE Strong Encryption. They
 # never appear among the unparsed fields.
-_STRUCTURAL_EXTRA_TAGS = frozenset((0x0001, 0x9901, _ZIP_EXTRA_STRONG_ENCRYPTION))
+_STRUCTURAL_EXTRA_TAGS = frozenset(
+    (_ZIP_EXTRA_ZIP64, _ZIP_EXTRA_WINZIP_AES, _ZIP_EXTRA_STRONG_ENCRYPTION)
+)
 
 
 def _unparsed_extra_fields(
@@ -1206,6 +1293,9 @@ class _DataBounds:
                     self._first_at.setdefault(offset, index)
 
     def end_for(self, loc: _ZipLocator) -> int:
+        """The offset ``loc``'s data must not run past: the next local header above
+        its own, or the directory. A later entry over an earlier entry's header gets
+        that header's own offset, so any data it has overlaps."""
         offset = _bound_offset(loc.header_offset)
         first = self._first_at.get(offset)
         if first is not None and first != loc.index:
@@ -2502,6 +2592,27 @@ class ZipReader(BaseArchiveReader):
         return None
 
     def _to_member(self, entry: CentralEntry, index: int) -> ArchiveMember:
+        """Build the member a central directory ``entry`` describes.
+
+        ``index`` is the entry's position in the directory, which becomes the member's
+        id. The steps, in order:
+
+        1. The type and name: the creator's host (``version_made_by``) decides how the
+           attributes and a backslash in the name are read.
+        2. The compression method; for WinZip AES (method 99) the real one inside it.
+        3. The times, from the DOS stamp and any time extra fields.
+        4. The CRC-32 digest, and the size, which an Archive Utility ZIP over 4 GiB
+           stores modulo 2³².
+        5. The member itself, with a :class:`_ZipLocator` for reading its data later.
+        6. The fields the constructor call skips: the times, mode, owner ids and
+           comment when the entry has them, the leftover extra fields, the
+           encryption flag and the creator's host.
+        7. The diagnostics for whatever quirk the entry showed.
+
+        This runs once per member on the listing hot path, so each reporting helper
+        is called only when the entry has the quirk it reports.
+        """
+        # 1. Type and name.
         external_attr = entry.external_attr
         full_mode = external_attr >> 16
         # CentralEntry.create_system, inlined: a property call per member is measurable
@@ -2570,8 +2681,13 @@ class ZipReader(BaseArchiveReader):
             name_source, member_type, backslash_is_separator=backslash_is_separator
         )
 
+        # 2. Compression method.
         method = entry.method
-        aes_info = parse_winzip_aes_extra(entry.extra) if method == 99 else None
+        aes_info = (
+            parse_winzip_aes_extra(entry.extra)
+            if method == _WINZIP_AES_METHOD
+            else None
+        )
         if aes_info is not None:
             # Method 99 is a wrapper; surface the underlying compression algorithm.
             algo = _ZIP_COMPRESSION_ALGOS.get(
@@ -2581,10 +2697,12 @@ class ZipReader(BaseArchiveReader):
         else:
             compression = _ZIP_COMPRESSION_TUPLES.get(method, _UNKNOWN_COMPRESSION)
 
+        # 3. Times.
         modified, accessed, ntfs_ctime, ut_ctime, ts_issues, time_tags = (
             _zip_timestamps(entry, name, fields)
         )
         created, ctime = _zip_created(create_system, ntfs_ctime, ut_ctime)
+        # 4. Digest and size.
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
         # HashAlgorithm.CRC32 → 4 big-endian bytes), so a dedupe pass can key on it
         # without decompressing (VISION "hashes without decompression"). Only for
@@ -2652,7 +2770,8 @@ class ZipReader(BaseArchiveReader):
             )
             if size_unknown is not None:
                 extra[EXTRA_SIZE_MOD_2_32] = entry.file_size
-        # Skip defaulted None/False kwargs on the listing hot path (perf review L2).
+        # 5. The member. Skip defaulted None/False kwargs: this runs once per member
+        # on the listing hot path.
         member = ArchiveMember(
             type=member_type,
             name=name,
@@ -2686,6 +2805,9 @@ class ZipReader(BaseArchiveReader):
         if size_unknown is not None:
             # A verified full read fills ``size`` in (``fill_size``): not final yet.
             member._size_unread = True
+        # 6. The fields the constructor call skips: the times, mode, owner ids and
+        # comment when the entry has them, the leftover extra fields, the encryption
+        # flag and the creator's host.
         if modified is not None:
             member.modified = modified
         if accessed is not None:
@@ -2701,24 +2823,9 @@ class ZipReader(BaseArchiveReader):
             member.uid, member.gid = owner.ids
         unicode_comment = _NO_UNICODE_PATH
         if entry.comment:
-            # APPNOTE puts the member comment under the name's UTF-8 flag, so a flag
-            # the name's bytes refute is not trusted for the comment either.
-            if entry.flags & _ZIP_MASK_UTF8 and decoded_name.declared_encoding is None:
-                member.comment = _decode_with_fallback(entry.comment)
-            else:
-                # A comment with bit 11 clear and an Info-ZIP Unicode Comment field
-                # (0x6375) whose CRC matches the stored bytes takes the field's text,
-                # ahead of the sniff and of encoding=, as 7-Zip does. The rule is the
-                # Unicode Path field's for a name: the field is read only when bit 11 is
-                # clear, so a flag the name refutes leaves both fields unread, as 7-Zip
-                # 23.01 does. A malformed field is dropped and reported below.
-                if entry.extra and not entry.flags & _ZIP_MASK_UTF8:
-                    unicode_comment = _unicode_comment_text(fields, entry.comment)
-                member.comment = (
-                    unicode_comment.name.decode("utf-8")
-                    if unicode_comment.name is not None
-                    else self._decode_unflagged_comment(entry.comment)
-                )
+            member.comment, unicode_comment = self._member_comment(
+                entry, fields, decoded_name
+            )
         if entry.extra:
             used_tags = list(time_tags)
             if owner.tag is not None:
@@ -2733,102 +2840,41 @@ class ZipReader(BaseArchiveReader):
         if _is_encrypted_entry(entry.flags, method):
             member.is_encrypted = True
         member.create_system = create_system
-        # Each report below names the member by its position in the walk, because
-        # registration has not stamped `_member_id` yet and stamps that same position.
-        inferred_encoding = decoded_name.inferred_encoding
-        declared_encoding = decoded_name.declared_encoding
-        if inferred_encoding is not None and declared_encoding is not None:
-            self._emit_name_encoding_inferred(
+        # 7. Diagnostics. Each report below names the member by its position in the
+        # walk, because registration has not stamped `_member_id` yet and stamps that
+        # same position.
+        if decoded_name.inferred_encoding is not None:
+            self._report_name_encoding(member, index, decoded_name)
+        if decoded_name.unicode_extra_fault is not None:
+            self._emit_extra_field_dropped(
                 member,
                 index,
-                inferred_encoding=inferred_encoding,
-                passed_over=declared_encoding,
-                message=(
-                    f"ZIP member name decoded as {inferred_encoding!r}: its UTF-8 flag "
-                    f"is set but the name is not valid UTF-8: {quoted(member.name)}"
-                ),
-            )
-        elif inferred_encoding is not None:
-            # The codec the name would otherwise have had: for a UTF-8 reading, the
-            # caller's encoding= or the configured fallback; for a configured fallback,
-            # the cp437 APPNOTE default.
-            passed_over = (
-                (self._encoding or self._config.zip_unflagged_fallback_encoding)
-                if inferred_encoding == "utf-8"
-                else "cp437"
-            )
-            self._emit_name_encoding_inferred(
-                member,
-                index,
-                inferred_encoding=inferred_encoding,
-                passed_over=passed_over,
-                message=(
-                    f"ZIP member name decoded as {inferred_encoding!r} rather than "
-                    f"{passed_over!r} (UTF-8 flag not set): {quoted(member.name)}"
-                ),
-            )
-        unicode_extra_fault = decoded_name.unicode_extra_fault
-        if unicode_extra_fault is not None:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
-                    f"The Unicode Path extra field (0x7075) of ZIP member "
-                    f"{quoted(member.name)} is malformed and was dropped "
-                    f"({unicode_extra_fault}); the name was decoded from the header."
-                ),
-                context=MemberHeaderRecordContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    record="unicode_path",
-                    record_id=_ZIP_EXTRA_UNICODE_PATH,
-                    reason=unicode_extra_fault,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
+                field="The Unicode Path extra field (0x7075)",
+                record="unicode_path",
+                tag=_ZIP_EXTRA_UNICODE_PATH,
+                fault=decoded_name.unicode_extra_fault,
+                outcome="the name was decoded from the header.",
             )
         if unicode_comment.fault is not None:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
-                    f"The Unicode Comment extra field (0x6375) of ZIP member "
-                    f"{quoted(member.name)} is malformed and was dropped "
-                    f"({unicode_comment.fault}); the comment was decoded from the "
-                    f"header."
-                ),
-                context=MemberHeaderRecordContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    record="unicode_comment",
-                    record_id=_ZIP_EXTRA_UNICODE_COMMENT,
-                    reason=unicode_comment.fault,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
+            self._emit_extra_field_dropped(
+                member,
+                index,
+                field="The Unicode Comment extra field (0x6375)",
+                record="unicode_comment",
+                tag=_ZIP_EXTRA_UNICODE_COMMENT,
+                fault=unicode_comment.fault,
+                outcome="the comment was decoded from the header.",
             )
         if owner.fault is not None:
             owner_tag, owner_fault = owner.fault
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
-                    f"The Unix owner extra field (0x{owner_tag:04x}) of ZIP member "
-                    f"{quoted(member.name)} is malformed and was dropped "
-                    f"({owner_fault}); the member has no owner ids."
-                ),
-                context=MemberHeaderRecordContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    record="unix_owner",
-                    record_id=owner_tag,
-                    reason=owner_fault,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
+            self._emit_extra_field_dropped(
+                member,
+                index,
+                field=f"The Unix owner extra field (0x{owner_tag:04x})",
+                record="unix_owner",
+                tag=owner_tag,
+                fault=owner_fault,
+                outcome="the member has no owner ids.",
             )
         # member.name is still ``name``: this is the callee's own early return, kept
         # here to skip the call for the common unchanged name.
@@ -2856,24 +2902,7 @@ class ZipReader(BaseArchiveReader):
         if size_wrapped:
             self._emit_size_wrapped(member, entry, index)
         if directory_by_attribute:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_READERS_DISAGREE,
-                message=(
-                    f"ZIP entry {quoted(name_source)} is a directory by its "
-                    "attributes but its name has no final '/': it is listed as the "
-                    f"directory {quoted(member.name)}, as 7-Zip and bsdtar extract "
-                    "it; unzip and zipfile go by the name and write a file."
-                ),
-                context=ReaderDisagreementContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    shape="directory_attribute_without_slash",
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=integrity_logger,
-            )
+            self._report_directory_by_attribute(member, index, name_source)
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; a read delivers them.
@@ -2881,25 +2910,7 @@ class ZipReader(BaseArchiveReader):
                 member, index, reach=self._directory_data_reach(entry)
             )
             if directory_without_anchor:
-                self._diagnostics_collector.emit(
-                    code=DiagnosticCode.DIGEST_UNVERIFIABLE,
-                    message=(
-                        f"Directory {quoted(member.name)} declares {entry.file_size} "
-                        "bytes of data but its CRC-32 field is 0, a directory's "
-                        "conventional value; the bytes a read delivers are not "
-                        "checked against any digest."
-                    ),
-                    context=DigestContext(
-                        archive_name=self._archive_name,
-                        member_name=member.name,
-                        member_id=index,
-                        algorithm="crc32",
-                        reason="no_integrity_anchor",
-                    ),
-                    member=member,
-                    attach_to_member=True,
-                    logger=logger,
-                )
+                self._report_directory_data_unchecked(member, index, entry.file_size)
         if special is not None and member.type is MemberType.FILE:
             # The gate is kept in the shape the 7z reader needs, where a reparse point
             # with a special mode can settle or re-type to FILE. In ZIP the two
@@ -2924,6 +2935,157 @@ class ZipReader(BaseArchiveReader):
                 ),
             )
         return member
+
+    def _member_comment(
+        self, entry: CentralEntry, fields: Sequence[ExtraField], name: _DecodedName
+    ) -> tuple[str, _UnicodePath]:
+        """Decode the non-empty comment of ``entry``, for ``_to_member``.
+
+        Returns the text and what the Unicode Comment extra field said, whose
+        ``fault`` the caller reports. ``name`` is the entry's decoded name: APPNOTE
+        puts the member comment under the name's UTF-8 flag, so a flag the name's
+        bytes refute is not trusted for the comment either.
+        """
+        comment = entry.comment
+        if entry.flags & _ZIP_MASK_UTF8 and name.declared_encoding is None:
+            return _decode_with_fallback(comment), _NO_UNICODE_PATH
+        # A comment with bit 11 clear and an Info-ZIP Unicode Comment field (0x6375)
+        # whose CRC matches the stored bytes takes the field's text, ahead of the
+        # sniff and of encoding=, as 7-Zip does. The rule is the Unicode Path field's
+        # for a name: the field is read only when bit 11 is clear, so a flag the name
+        # refutes leaves both fields unread, as 7-Zip 23.01 does.
+        unicode_comment = _NO_UNICODE_PATH
+        if entry.extra and not entry.flags & _ZIP_MASK_UTF8:
+            unicode_comment = _unicode_comment_text(fields, comment)
+        text = (
+            unicode_comment.name.decode("utf-8")
+            if unicode_comment.name is not None
+            else self._decode_unflagged_comment(comment)
+        )
+        return text, unicode_comment
+
+    def _report_name_encoding(
+        self, member: ArchiveMember, index: int, name: _DecodedName
+    ) -> None:
+        """Report that ``member``'s name was decoded with a codec other than the one
+        its flag or the configuration named (``name.inferred_encoding`` is set)."""
+        inferred_encoding = name.inferred_encoding
+        assert inferred_encoding is not None
+        declared_encoding = name.declared_encoding
+        if declared_encoding is not None:
+            self._emit_name_encoding_inferred(
+                member,
+                index,
+                inferred_encoding=inferred_encoding,
+                passed_over=declared_encoding,
+                message=(
+                    f"ZIP member name decoded as {inferred_encoding!r}: its UTF-8 flag "
+                    f"is set but the name is not valid UTF-8: {quoted(member.name)}"
+                ),
+            )
+            return
+        # The codec the name would otherwise have had: for a UTF-8 reading, the
+        # caller's encoding= or the configured fallback; for a configured fallback,
+        # the cp437 APPNOTE default.
+        passed_over = (
+            (self._encoding or self._config.zip_unflagged_fallback_encoding)
+            if inferred_encoding == "utf-8"
+            else "cp437"
+        )
+        self._emit_name_encoding_inferred(
+            member,
+            index,
+            inferred_encoding=inferred_encoding,
+            passed_over=passed_over,
+            message=(
+                f"ZIP member name decoded as {inferred_encoding!r} rather than "
+                f"{passed_over!r} (UTF-8 flag not set): {quoted(member.name)}"
+            ),
+        )
+
+    def _emit_extra_field_dropped(
+        self,
+        member: ArchiveMember,
+        index: int,
+        *,
+        field: str,
+        record: str,
+        tag: int,
+        fault: str,
+        outcome: str,
+    ) -> None:
+        """Report a malformed extra field that ``_to_member`` dropped.
+
+        ``field`` names it at the start of the message, ``outcome`` says what the
+        member got instead, and ``record`` and ``tag`` identify it in the context.
+        """
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+            message=(
+                f"{field} of ZIP member {quoted(member.name)} is malformed and was "
+                f"dropped ({fault}); {outcome}"
+            ),
+            context=MemberHeaderRecordContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=index,
+                record=record,
+                record_id=tag,
+                reason=fault,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=logger,
+        )
+
+    def _report_directory_by_attribute(
+        self, member: ArchiveMember, index: int, stored_name: str
+    ) -> None:
+        """Report a directory known by its attributes alone, whose stored name has no
+        final "/": other tools disagree on what it is."""
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_READERS_DISAGREE,
+            message=(
+                f"ZIP entry {quoted(stored_name)} is a directory by its "
+                "attributes but its name has no final '/': it is listed as the "
+                f"directory {quoted(member.name)}, as 7-Zip and bsdtar extract "
+                "it; unzip and zipfile go by the name and write a file."
+            ),
+            context=ReaderDisagreementContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=index,
+                shape="directory_attribute_without_slash",
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=integrity_logger,
+        )
+
+    def _report_directory_data_unchecked(
+        self, member: ArchiveMember, index: int, size: int
+    ) -> None:
+        """Report a directory with data and a CRC-32 field of 0, the usual value for a
+        directory: no digest checks the bytes a read delivers."""
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+            message=(
+                f"Directory {quoted(member.name)} declares {size} "
+                "bytes of data but its CRC-32 field is 0, a directory's "
+                "conventional value; the bytes a read delivers are not "
+                "checked against any digest."
+            ),
+            context=DigestContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=index,
+                algorithm="crc32",
+                reason="no_integrity_anchor",
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=logger,
+        )
 
     def _local_crc_for(self, entry: CentralEntry) -> int | None:
         """The CRC-32 the local header of ``entry`` holds, when it replaces the
@@ -2956,6 +3118,9 @@ class ZipReader(BaseArchiveReader):
         local_method: int | None = None,
         central_method: int | None = None,
     ) -> None:
+        """Report that the local header of ``member`` disagrees with its central
+        directory entry on ``field``; the ``local_*`` and ``central_*`` values that
+        apply to ``field`` go into the context."""
         self._diagnostics_collector.emit(
             code=_LOCAL_HEADER_CODES[field],
             message=message,
@@ -3078,7 +3243,11 @@ class ZipReader(BaseArchiveReader):
             decoded_name.text, member_type, backslash_is_separator=False
         )
         method = header.method
-        aes_info = parse_winzip_aes_extra(header.extra) if method == 99 else None
+        aes_info = (
+            parse_winzip_aes_extra(header.extra)
+            if method == _WINZIP_AES_METHOD
+            else None
+        )
         if aes_info is not None:
             algo = _ZIP_COMPRESSION_ALGOS.get(
                 aes_info.actual_method, CompressionAlgorithm.UNKNOWN
@@ -3795,7 +3964,7 @@ class ZipReader(BaseArchiveReader):
         (:func:`_member_crc_anchor`), the one its read is verified against, not the
         header's field.
         """
-        if loc.method == 99:
+        if loc.method == _WINZIP_AES_METHOD:
             aes = loc.aes
             if aes is None:
                 raise UnsupportedFeatureError(
@@ -3950,37 +4119,19 @@ class ZipReader(BaseArchiveReader):
         *,
         payload_complete: Callable[[], bool],
     ) -> MemberStreamParts:
-        """Pick among several possible passwords with a bounded confirm per candidate."""
+        """Pick among several possible passwords with a confirm per candidate.
+
+        Each candidate first runs the per-candidate plan
+        (:func:`_password_confirm_plans`), which reads a bounded prefix only when that
+        can decide.
+        When several pass it and only the member's end can tell them apart, each of
+        those then runs the full plan. The winner is opened afresh for the caller.
+        """
         # The central directory's size, which the plan trusts;
         # the fused verifier on the caller's stream checks it at EOF.
         size = loc.file_size
         stage = cipher.stage
-        crc_anchor = cipher.crc_anchor
-        codec_rejects = cipher.method in _ZIP_REJECTING_METHODS
-        # One substream, the member itself: its CRC is the anchor when the member fits
-        # the prefix, and codec rejection decides a larger one.
-        plan = plan_password_confirm(
-            [(size, crc_anchor)],
-            None,
-            budget=PASSWORD_CONFIRM_PREFIX_BYTES,
-            codec_rejects=codec_rejects,
-        )
-        # WinZip AES authenticates the whole ciphertext, so reading a member to its end
-        # confirms the password (an 80-bit HMAC) whether or not it has a CRC. Take that
-        # walk wherever a CRC walk would be taken: the member fits the budget, or its
-        # codec cannot reject a wrong key on its own.
-        reads_to_hmac = (
-            cipher.is_aes
-            and not plan.confirms
-            and (size <= PASSWORD_CONFIRM_PREFIX_BYTES or not codec_rejects)
-        )
-        if reads_to_hmac:
-            plan = PasswordConfirmPlan(
-                ((size, crc_anchor),),
-                None,
-                confirms=True,
-                bounded=size <= PASSWORD_CONFIRM_PREFIX_BYTES,
-            )
+        plan, reads_to_hmac, full_plan = _password_confirm_plans(cipher, size)
         # A ZipCrypto candidate whose decrypted codec settings tripped a decoder
         # limit counts as failing (it may be a wrong key that passed the one-byte
         # check), and that limit is what is raised when no candidate succeeds.
@@ -3988,19 +4139,6 @@ class ZipReader(BaseArchiveReader):
         # make a garbage size from a wrong key negligible.
         failures = _CandidateFailures()
         candidate_failed = failures.failed
-
-        # The walk to the member's end: its CRC, or for WinZip AES the HMAC. Run for
-        # each candidate that survived the bounded plan when several did, since only
-        # the end can tell them apart. ``None`` when the bounded plan already is it.
-        full_plan: PasswordConfirmPlan | None = None
-        if (
-            not plan.confirms
-            and size > PASSWORD_CONFIRM_PREFIX_BYTES
-            and (crc_anchor is not None or cipher.is_aes)
-        ):
-            full_plan = PasswordConfirmPlan(
-                ((size, crc_anchor),), None, confirms=True, bounded=False
-            )
 
         def run_plan(
             password: bytes, walk: PasswordConfirmPlan, walk_to_hmac: bool
@@ -4050,7 +4188,9 @@ class ZipReader(BaseArchiveReader):
                 raise candidate_failed(ended_early)
             return password, verdict
 
-        def bounded_check(password: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
+        def per_candidate_check(
+            password: bytes,
+        ) -> tuple[bytes, PasswordConfirmVerdict]:
             return run_plan(password, plan, reads_to_hmac)
 
         def full_check(password: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
@@ -4062,7 +4202,7 @@ class ZipReader(BaseArchiveReader):
             lambda: attempt_with_confirm(
                 self._passwords,
                 member,
-                bounded_check,
+                per_candidate_check,
                 None if full_plan is None else full_check,
             ),
             ambiguous_holder=failures.ambiguous,
@@ -4203,7 +4343,8 @@ class ZipReader(BaseArchiveReader):
             self._raise_unverified_candidates(member, ambiguous_failure)
 
         # A provider that exists but returned None without yielding a candidate
-        # must not read as "wrong password" (cli-product P7 / #131 D8 residue).
+        # must not read as "wrong password": nothing was tried, so a password is
+        # still required.
         if not tried:
             required = EncryptionError("Password required to read this ZIP member")
             self._stamp_error_context(required, member.name)
@@ -4589,7 +4730,7 @@ def _is_encrypted_entry(flags: int, method: int) -> bool:
     Writers set bit 0 on WinZip AES members too, but method 99 alone means the data
     is encrypted, so listing and opening both ask this one predicate.
     """
-    return bool(flags & _ZIP_MASK_ENCRYPTED) or method == 99
+    return bool(flags & _ZIP_MASK_ENCRYPTED) or method == _WINZIP_AES_METHOD
 
 
 def _uses_strong_encryption(flags: int, extra: bytes) -> bool:

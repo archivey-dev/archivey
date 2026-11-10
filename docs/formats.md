@@ -70,6 +70,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   needs (gzip, bzip2, xz and LZMA in core, Zstandard as for a `.zst` file). Listing: needs
   decompression. Members: solid. Readable from a pipe. A package with an uncompressed
   payload (rare) lists header by header, and its members are direct.
+- **makeself** (`.run` installers): core; each payload needs what its compressor needs, as for
+  the same compressed TAR. Listing: needs decompression. Members: solid. Readable from a pipe.
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
@@ -920,7 +922,9 @@ archive has to decode cleanly (valid UTF-8 for RAR5, ASCII for an older 8-bit na
 `:`, leading `/`, or empty, `.` or `..` part, and no `\` in a RAR5 name (in an older archive `\`
 is a separator and reads as `/`). The member's own name has no `*` or `?`, no
 part ending in `.`, is ASCII unless `unrar` can be given a UTF-8 name (on Windows, or where a
-UTF-8 locale is installed), and no other name equal to it or below it, ignoring case. A large
+UTF-8 locale is installed), and no other name equal to it or below it, ignoring case and Unicode
+normalization. On Windows the name also has to be in NFC, and when any folder name in the
+archive is not printable ASCII, no name inside a folder is plain there. A large
 member without a plain name is copied to a temporary file like a small one, within
 `SpoolLimits.max_bytes`. In the last two cases, which have no copy to fall back on, a member
 without a plain name raises `UnsupportedFeatureError`. `rar_decompressor="unar"` reads every member
@@ -1132,15 +1136,28 @@ other members because of a member's name any more. Setting it to `True` warns.
 - **Raw CD sector images** (the `.bin` of a `.bin`/`.cue` pair, 2352-byte sectors, or 2448 with
   subchannel data) open as ISO when their data is Mode 1 or Mode 2 Form 1: archivey strips each
   sector to its 2048 bytes of user data as it reads, which gives the same bytes as the plain
-  `.iso`. Only the first track is read, so a mixed-mode disc (data, then audio) lists its data
-  track, and the audio after it is not reported as trailing data. Each sector's sync and mode are
-  checked when it is read; its EDC and ECC error-correction bytes are not. A sector that is not a
-  data sector (damage, or a Mode 2 Form 2 sector, as in Video CD and CD-XA files) fails the read
-  that reaches it: reading the member that holds it, or opening the image when the sector holds
-  the volume descriptors or a directory. The `.cue` sheet is not read: a disc whose filesystem is in a
-  later track or session is not found. A Mode 2 Form 2 image, which holds video or audio and no
-  filesystem, or an unknown sector mode, is refused with `UnsupportedFeatureError` naming the
-  layout.
+  `.iso`. Each sector's sync and mode are checked when it is read; its EDC and ECC
+  error-correction bytes are not. A sector that is not a data sector (damage, or a Mode 2 Form 2
+  sector, as in Video CD and CD-XA files) fails the read that reaches it: reading the member that
+  holds it, or opening the image when the sector holds the volume descriptors or a directory. A
+  Mode 2 Form 2 image, which holds video or audio and no filesystem, or an unknown sector mode, is
+  refused with `UnsupportedFeatureError` naming the layout.
+- **`.cue` sheets.** Open the `.cue`, or the `.bin` when a `.cue` with the same name beside it
+  lists it, and archivey reads the disc the sheet describes, from one track file or one per track
+  (`MODE1/2352`, `MODE2/2352` and `MODE1/2048` data tracks; audio tracks hold no files). It lists
+  the filesystem an operating system mounts: the first data track of the last session that has
+  one. So a mixed-mode disc (data, then audio) lists track 1, an Enhanced CD (audio first, data in
+  a second session) lists its data session, and a multisession data disc lists its newest session,
+  whose tree also holds the files earlier sessions wrote, read from their own tracks. The track
+  files hold no gaps between sessions, so a later session's sector addresses are worked out from
+  the gap recorders leave and checked against the root directory, which names its own address;
+  when they disagree, the address is searched for. A `FILE` that is not a plain name beside the
+  sheet (a path, `..`) or not a regular file (a FIFO, a device) is refused; a symlink is followed.
+  A name not found exactly is matched without case (a sheet written on Windows may say `DISC.BIN`
+  for `disc.bin`), and a missing one is `TruncatedError`. Without a `.cue`, a
+  `.bin` is read from its first track, which finds the filesystem of a mixed-mode disc but not of
+  an Enhanced CD (its `.bin` starts with audio, so it is not recognised). A `.cue` has no magic: it
+  is recognised by its name, and only from a path, since its tracks are files beside it.
 
 ## SquashFS
 
@@ -1342,6 +1359,39 @@ what `makecab` and `gcab` write.
   `UnsupportedFeatureError`. A payload that does not match its header (a missing file, a file
   the header does not list) raises `CorruptionError`.
 
+## makeself
+
+A makeself archive is a `.run` installer: a shell script that unpacks the TARs stored after it.
+NVIDIA's Linux drivers, VirtualBox extension packs and many vendor SDKs are shipped this way.
+Archivey reads the TARs and never runs the script.
+
+- **Needs:** nothing for gzip, bzip2, xz and uncompressed payloads; a Zstandard, LZ4, lzop or
+  bzip3 payload needs what the same `.tar.zst`, `.tar.lz4`, `.tar.lzo` or `.tar.bz3` needs.
+- **Listing:** needs decompression. The members are the TAR's, named as makeself extracts them
+  into its target folder.
+- **Reading members:** solid.
+- **From a pipe:** yes, with `streaming=True`.
+- Archives from makeself 2.2.0 and later are read. They are found by their first two lines,
+  whatever the file's name.
+- **Several payloads.** makeself 2.2.0 to 2.4.0 add a TAR to the archive at each `--append`.
+  Archivey lists each TAR's members after the previous one's, as makeself extracts them.
+- **Checksums.** The header stores a CRC, an MD5 and, with `--sha256`, a SHA-256 of each
+  payload. Archivey checks each one it finds when it reads to the end of the payload. They cover
+  every file of the payload, so a match raises each to `Verification.CHECKSUM`, and a mismatch
+  raises `CorruptionError` and makes `verify_all()` return each file of the payload.
+- **Encryption.** A payload written with `--base64` is read. One encrypted with
+  `--ssl-encrypt` or `--gpg-encrypt` raises `UnsupportedFeatureError`.
+- `ArchiveInfo.format_version` is the makeself version the header names (`"2.4.5"`).
+  `ArchiveInfo.extra` holds `makeself.label`, `makeself.script` (the command run after
+  extraction), `makeself.target_dir`, `makeself.compression` (`"gzip"`, `"xz"`, `"none"`, …),
+  `makeself.encryption` (when there is one: `"base64"`, `"openssl"` or `"gpg"`),
+  `makeself.payloads` and `makeself.signed` (the header has a gpg signature, which is not
+  checked).
+- `format=TAR_GZ` (or any other format) on a makeself archive fails as on any file that is not
+  one, and the error says the file is a makeself archive.
+- A header archivey cannot parse raises `CorruptionError`. The header counts against
+  `max_metadata_bytes`: a longer one raises `ResourceLimitError`.
+
 ## Disk images
 
 A UDIF image (`.dmg`) is recognised by its `koly` block, in its last 512 bytes, or its first 12 when
@@ -1352,6 +1402,8 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 
 - An uncompressed image whose disk is an ISO 9660 filesystem is read as that ISO: `CD001` at byte
   32 769 is checked first.
+- The end is read from a file, an in-memory stream, an fsspec `OpenFile` (one more range request),
+  and a stored ZIP entry or uncompressed TAR member opened with `seekable_members=True`.
 - A pipe is not rewound to read the end. A short image from a pipe is still refused, because
   detection has already read through to its end. A longer one whose first block is bzip2 or xz
   opens as that stream. One whose first block is zlib fails with `FormatDetectionError`, because no
@@ -1416,7 +1468,14 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   cannot see fills in the size of the cut data. `member_state_final` reads `False` until the size
   is filled in, a `streaming=True` pass ends, or the reader closes.
 - **`.xz` size and `.lz` CRC-32** come from the stream's index or the lzip trailer whenever the
-  source can seek: a file path and an in-memory stream both qualify, a pipe does not.
+  source can seek: a file path, an in-memory stream and an fsspec `OpenFile` (one more range
+  request) qualify, a pipe does not. One exception, from an fsspec `OpenFile` only: a file of
+  several `.xz` streams or `.lz` members reads only the last one's index or trailer, sees the
+  earlier ones and stops, so `size` is `None` and the `.lz` CRC is absent. Walking every
+  stream would cost the open a step per stream, and a read from the start never needs it.
+  The same file from a path reports both. The same holds for a `.xz` from an `OpenFile` whose
+  last 64 KiB are stream padding (zeros): the open does not scan back over it. A seek in that member still works: it walks the
+  index then.
   `seekable_members=True` makes no difference, since reading the trailer is a bounded backward peek
   at open. A `.xz` or `.lz` opened from another archive's member stream gets both when the
   member stream is seekable and is a stored ZIP entry or an uncompressed TAR member, whose end is
@@ -1429,7 +1488,8 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   modification time and permission bits the header stores.
 - mozlz4 sets `member.size` at listing, from its header.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is cheap to
-  reach (a path, an in-memory stream, a seekable stored ZIP entry or uncompressed TAR member; not a
+  reach (a path, an in-memory stream, an fsspec `OpenFile`, a seekable stored ZIP entry or
+  uncompressed TAR member; not a
   pipe, a deflated member or a standard-library decompressor). It is the size
   modulo 2^32 only for a file of one gzip member with nothing after it. A file of several members
   stores the last member's size there (a bgzip file stores 0), so it never becomes `member.size`.

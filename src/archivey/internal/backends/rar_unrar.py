@@ -6,6 +6,13 @@ then the trialware writer ``rar``; not ``unrar-free`` / ``unar`` / ``7z``), or o
 Windows in WinRAR's Program Files folder, and
 spawns ``<binary> p`` with the password on stdin (bare ``-p``, secret not in
 argv) and optional ``-n./member`` include masks. Never ``x`` / extract-to-disk.
+
+:mod:`.rar_reader` calls :func:`open_unrar_p` for every member read and solid pass
+that runs ``unrar``, and :func:`decompress_rar3_blob` for a compressed RAR 1.5-4
+comment. :func:`find_rarlab_unrar` is the 6.0 banner probe: :func:`open_unrar_p`
+runs it before each spawn, :mod:`.rar_reader` runs it to resolve
+``RarDecompressor.AUTO``, and ``format_availability`` runs it through
+:func:`rarlab_unrar_missing`.
 """
 
 from __future__ import annotations
@@ -199,6 +206,7 @@ def _is_rarlab_unrar(path: str) -> _UnrarBanner:
 
 
 def _describe_floor_refusal(path: str, version: tuple[int, int] | None) -> str:
+    """One binary's part of :func:`_unrar_floor_message`: why it was turned down."""
     shown = display_path(path)
     if version is None:
         return f"the version of {shown} could not be parsed from its banner"
@@ -274,6 +282,7 @@ def _unrar_missing(message: str) -> PackageNotInstalledError:
 
 
 def _banner_meets_floor(banner: _UnrarBanner) -> bool:
+    """Whether a banner is RARLAB's and reports a version at or above the floor."""
     return (
         banner.is_rarlab
         and banner.version is not None
@@ -635,6 +644,20 @@ def unrar_mask_carries_non_ascii() -> bool:
     return sys.platform == "win32" or _utf8_locale_name() is not None
 
 
+def unrar_matches_names_as_windows() -> bool:
+    """Whether ``unrar`` changes and compares names the way its Windows build does.
+
+    Windows ``unrar`` converts a Unix-host name to NFC (``ConvertToPrecomposed`` in
+    ``arcread.cpp``) before it compares it with a mask, and does not convert the
+    mask. It compares the directory part of a mask with ``CompareStringW``, which
+    ignores some code points (U+00AD, U+200B, ...) and treats canonically
+    equivalent sequences as equal. ``rar_reader._plain_unrar_masks`` takes out of
+    the plain set every name that is not NFC, and, when any name in the archive has
+    a directory that is not printable ASCII, every name with a directory.
+    """
+    return sys.platform == "win32"
+
+
 def unrar_expands_wildcards(path: str | Path) -> bool:
     """Whether ``unrar`` reads ``path``, given as the archive, as a wildcard mask.
 
@@ -649,6 +672,33 @@ def unrar_expands_wildcards(path: str | Path) -> bool:
     if sys.platform == "win32" and text.startswith("\\\\?\\"):
         text = text[4:]
     return "*" in text or "?" in text
+
+
+# The longest archive path that ``unrar`` is trusted to keep whole: UTF-16 code units
+# on Windows, and on POSIX also bytes of the name as it reaches the filesystem. unrar
+# 6.x copies the archive argument into ``wchar ArcName[NM]`` with NM 2048
+# (``cmddata.cpp`` and ``extract.cpp``, unrarsrc 6.2.12), and ``wchar_t`` is UTF-16 on
+# Windows. On POSIX ``File::Open`` converts the name back to bytes in ``char
+# NameA[NM]`` (``WideToChar``, ``file.cpp``), so a non-ASCII path is cut at 2047
+# bytes, which can be far fewer characters (measured on 6.24: a CJK path of 708 units
+# and 2068 bytes opened a file at its 2046-byte prefix). Either way unrar opens
+# whatever file the cut path names. Half of NM leaves margin for a path unrar makes
+# absolute or derives a next volume name from.
+_UNRAR_ARCHIVE_PATH_MAX = 1024
+
+
+def unrar_may_cut_archive_path(path: str | Path) -> bool:
+    """Whether ``path`` is too long to hand to ``unrar`` as the archive.
+
+    Measured as an absolute path, so a short relative path in a deep working
+    directory counts at its full length: in UTF-16 units, and on POSIX also in the
+    bytes ``os.fsencode`` gives, which is what ``unrar`` 6.x cuts there.
+    """
+    text = os.path.abspath(path)
+    size = len(text.encode("utf-16-le", "surrogatepass")) // 2
+    if sys.platform != "win32":
+        size = max(size, len(os.fsencode(text)))
+    return size > _UNRAR_ARCHIVE_PATH_MAX
 
 
 def unrar_member_refusal(member: str) -> str | None:
