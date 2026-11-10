@@ -38,7 +38,7 @@ class UnixCompressCodec(StreamCodec):
         # Native LZW over DecompressorStream: forward decode works on non-seekable
         # sources; CLEAR boundaries become SeekPoints when config.seekable is true.
         return UnixCompressDecompressorStream(
-            source, collector=config.collector, seekable=config.seekable
+            source, collector=config.collector, seekable=config.records_restart_points
         )
 
     @override

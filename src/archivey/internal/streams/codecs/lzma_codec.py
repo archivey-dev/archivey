@@ -135,7 +135,7 @@ class XzCodec(_SizedLzmaCodec):
         return XzDecompressorStream(
             source,
             collector=config.collector,
-            seekable=config.seekable,
+            seekable=config.records_restart_points,
             decoder_limits=config.decoder_limits,
             report_trailing_data=config.report_trailing_data,
             refuse_input_after_end=config.refuse_input_after_end,
@@ -157,7 +157,7 @@ class LzipCodec(_SizedLzmaCodec):
         return LzipDecompressorStream(
             source,
             collector=config.collector,
-            seekable=config.seekable,
+            seekable=config.records_restart_points,
             decoder_limits=config.decoder_limits,
             report_trailing_data=config.report_trailing_data,
             probe_read_bound=config.probe_read_bound,

@@ -142,6 +142,10 @@ forward read never trusts the index.
 
 Without `seekable_members=True`, the stream builds no index and takes no snapshots: the
 default path pays for nothing it does not use (ADR [0003](../decisions/0003-member-streams-opt-in.md)).
+One exception: the codec stream around a compressed TAR (or a sequential format such as
+`.cpio.xz`) opened for random access records restart points anyway
+(`StreamConfig.restart_points`), because every member read after the listing seeks back
+in it. It still declares no seek demand, so accelerator `AUTO` is unchanged.
 
 ## The public stream: `ArchiveStreamImpl`
 

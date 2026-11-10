@@ -2038,7 +2038,28 @@ class SequentialReaderAdapter(_PluginAdapter):
                 if left:
                     forward.skip(left)
                 span = self._walk_next(walk)
+        with boundary, guard:
+            self._read_codec_end()
         self._raise_members_the_codec_checked()
+
+    def _read_codec_end(self) -> None:
+        """Run the outer codec's end checks when the walk stopped at its last byte.
+
+        A codec that read its decoded size from an index (an xz index, a zstd seek
+        table, lzip trailers: random access records restart points, which reads them)
+        stops a read at that size without decoding what follows the data. The walk's
+        views are clamped to the same size, so they never ask past it, and the check
+        after the data would not run. One read at the end decodes the rest, as a
+        codec that does not know its size does on its last read. A TAR walk reaches
+        the same bytes through its end-of-archive checks.
+        """
+        codec = self._codec_stream
+        shared = self._shared
+        if codec is None or shared is None:
+            return
+        size = shared.size
+        if size is not None and codec.tell() == size:
+            codec.read(1)
 
     def _raise_members_the_codec_checked(self) -> None:
         """Raise every listed file to ``CHECKSUM`` once the walk ends at the end of an

@@ -190,9 +190,9 @@ class ZstdCodec(StreamCodec):
         self, params: CodecParams, config: StreamConfig
     ) -> StreamIndex | None:
         del params
-        if not config.seekable:
+        if not config.records_restart_points:
             return None
-        # Declared seek demand only (``seekable-decompressor-streams``): each
+        # Declared seek demand or restart points only (``seekable-decompressor-streams``): each
         # regular frame starts a seek point, and the seekable format's table
         # lists them all without decoding.
         collector = config.collector

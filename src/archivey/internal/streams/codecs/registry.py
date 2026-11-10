@@ -283,7 +283,7 @@ def open_codec_stream(
     as ``ArchiveyError`` subclasses (never raw codec exceptions).
 
     ``config.seekable`` gates native index construction and accelerator ``AUTO``
-    resolution; for the DEFLATE family and bzip2, ``AUTO`` also takes a large sequential
+    resolution (``config.restart_points`` gates the index alone); for the DEFLATE family and bzip2, ``AUTO`` also takes a large sequential
     read (``_sequential_read_pays`` in ``rapidgzip_select.py``,
     ``_bzip2_sequential_read_pays`` in ``bzip2_codec.py``).
     The ArchiveStream seekability hint is separate: pass ``seekable=False`` to force a
@@ -439,6 +439,9 @@ def _decoder_config(
         # source for ``tell``. A compressed TAR opened ``streaming=True`` with
         # ``seekable_members=True`` over a forward-only stream arrives here so.
         changes["seekable"] = False
+    if config.restart_points and not source_seekable:
+        # Nothing seeks back on such a source, so the points would only cost memory.
+        changes["restart_points"] = False
     if source_seekable != config.source_seekable:
         # Lets accelerator AUTO consider a sequential read (``_rapidgzip_wanted``).
         changes["source_seekable"] = source_seekable

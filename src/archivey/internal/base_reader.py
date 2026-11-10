@@ -4012,6 +4012,11 @@ class BaseArchiveReader(ArchiveReader):
                     usage=self._usage,
                 ),
                 report_trailing_data=True,
+                # Random access reads members after the listing has decoded past
+                # them, so each read seeks back. Restart points let it resume near
+                # the member and not decode again from the start. A streaming walk
+                # never seeks back, so it keeps none.
+                restart_points=not streaming,
             ),
             stamp=lambda exc: self._stamp_error_context(exc),
             collector=self._diagnostics_collector,
