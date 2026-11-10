@@ -14,6 +14,7 @@ data are both still possible.
 
 from __future__ import annotations
 
+import array
 import threading
 from collections.abc import Callable, Container, Iterator, Sequence as ABCSequence
 from contextvars import ContextVar
@@ -26,7 +27,6 @@ from archivey.exceptions import (
     _UsageTypeError,
     _UsageValueError,
 )
-from archivey.internal.arg_checks import describe_value
 from archivey.types import ArchiveMember
 
 _T = TypeVar("_T")
@@ -141,6 +141,18 @@ def _to_bytes(password: str | bytes) -> bytes:
         ) from None
 
 
+def _describe_type(value: object) -> str:
+    """Name the type of a password-shaped value for a usage error, never the value.
+
+    ``describe_value`` prints the ``repr``, and a value passed as a password is
+    likely to be one in the wrong type (a ``bytearray`` read from a keyring), so a
+    message that echoes it would put the password into a log or a traceback.
+    """
+    if isinstance(value, type):
+        return f"the {value.__name__} class itself"
+    return f"a value of type {type(value).__name__}"
+
+
 class _PasswordCandidates:
     """Per-archive password state: known-good list, remaining candidates, optional provider.
 
@@ -189,13 +201,21 @@ class _PasswordCandidates:
             return cls()
         if isinstance(password, (str, bytes)):
             return cls(candidates=[_to_bytes(password)])
+        if isinstance(password, (bytearray, memoryview, array.array)):
+            # These buffers are ``ABCSequence``s of ints, so the loop below would take
+            # each element as a candidate and report the first as a wrong-typed item.
+            # The documented type is str or bytes; a buffer is refused as one value.
+            raise _UsageTypeError(
+                f"password= takes a str or bytes, not a {type(password).__name__}. "
+                f"Pass bytes(password) instead."
+            )
         if isinstance(password, ABCSequence) and not isinstance(password, (str, bytes)):
             candidates_list: list[bytes] = []
             for item in password:
                 if not isinstance(item, (str, bytes)):
                     raise _UsageTypeError(
                         f"password= sequence items must be str or bytes, but one was "
-                        f"{describe_value(item)}."
+                        f"{_describe_type(item)}."
                     )
                 candidates_list.append(_to_bytes(item))
             return cls(candidates=candidates_list)
@@ -206,7 +226,7 @@ class _PasswordCandidates:
             # about an argument they passed several operations earlier.
             raise _UsageTypeError(
                 f"password= takes a str, bytes, a sequence of those, a provider "
-                f"callable, or None, but got {describe_value(password)}."
+                f"callable, or None, but got {_describe_type(password)}."
             )
         return cls(provider=password)
 
@@ -320,7 +340,7 @@ class _PasswordCandidates:
             # as `TypeError: a bytes-like object is required`, naming neither the
             # provider nor the password.
             raise _UsageTypeError(
-                f"The password provider returned {describe_value(raw)}; it must "
+                f"The password provider returned {_describe_type(raw)}; it must "
                 f"return a str, bytes, or None."
             )
         return _to_bytes(raw)

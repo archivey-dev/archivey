@@ -110,6 +110,10 @@ class RecheckOutcome:
     unchecked: list[WatchedLink] = field(default_factory=list)
     """Links removed without being resolved, because the budget ran out."""
 
+    unremoved: list[tuple[WatchedLink, OSError]] = field(default_factory=list)
+    """Links of ``escaped`` or ``unchecked`` that the filesystem refused to unlink,
+    each with the error: they are still on disk."""
+
 
 class LinkWatch:
     """The dependency index for one extraction run. Not thread-safe."""
@@ -199,11 +203,11 @@ class LinkWatch:
                     continue
                 outcome.escaped.append(link)
             try:
-                os.unlink(link.path)
-            except OSError:
-                # The same as a link that escapes when it is created: the result
-                # still says BLOCKED, and the caller logs it.
-                pass
+                os.unlink(long_path(link.path))
+            except OSError as exc:
+                # The link is still on disk, and may lead out of the destination:
+                # the caller ends the run with this error.
+                outcome.unremoved.append((link, exc))
             self._forget(link)
             self._enqueue_dependents(link.path, queue)
         return outcome
