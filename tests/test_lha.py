@@ -454,6 +454,19 @@ def test_the_dropped_fork_counts_against_the_ratio_limit(os_id: bytes) -> None:
             reader.read(member)
 
 
+@pytest.mark.parametrize("os_id", [b"U", b"m"])
+def test_the_dropped_fork_honours_the_deprecated_ratio_fields(os_id: bytes) -> None:
+    wrapped = _macbinary(data=b"x", resource=bytes(2_000_000))
+    raw = archive([_mac_member(wrapped, os_id=os_id, method="-lh5-")])
+    with pytest.warns(DeprecationWarning):
+        limits = archivey.ExtractionLimits(max_ratio=10, ratio_activation_threshold=0)
+    config = archivey.ArchiveyConfig(extraction_limits=limits)
+    with open_archive(io.BytesIO(raw), config=config) as reader:
+        (member,) = reader.members()
+        with pytest.raises(archivey.ResourceLimitError, match="max_ratio"):
+            reader.read(member)
+
+
 def test_an_amiga_directory_is_an_empty_nameless_member() -> None:
     members = [
         Member(b"", b"", method="-lh0-", level=2, os_id=b"A", directory=b"dir\xff"),
