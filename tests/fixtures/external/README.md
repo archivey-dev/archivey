@@ -203,6 +203,42 @@ show what Microsoft's own writer does with stored and MSZIP folders, so
 
 How they were made is in libarchive's `test_read_format_cab.c` (`mkcab1` to `mkcab3`).
 
+## `lha_lhasa/`
+
+Eighteen LHA archives from lhasa's test suite (`test/archives/<tool>/<file>`, renamed
+`<tool>_<file>`; lhasa commit `75ed835`, v0.6.0), copied on 2026-11-09. Each was written
+by the tool its directory names, most on the system it ran on; no tool on the test image
+writes LHA, so `tests/test_lha.py` reads them beside the archives `tests/lha_util.py`
+writes. Their expected bytes are what lhasa 0.4.0 extracts.
+
+| Tool | Files | What they hold |
+| --- | --- | --- |
+| LHa for UNIX 1.14i | `lha_unix114i_*` | `-lh5-` level 0, `-lh6-` level 1, `-lh7-` level 2; symlinks; directories with Unix modes |
+| LHA for OS/2 2.08 | `lha_os2_208_*` | level 3, `-lh5-` and directories |
+| UNLHA32.DLL 2.67a | `unlha32_h2_lhx.lzh` | `-lhx-` |
+| LHARK-A 0.4d | `lhark04d_lh7.lzh` | LHARK's `-lh7-`, read as `-lk7-` |
+| LArc 3.33 | `larc333_lz4.lzs` | `-lz4-` (stored) |
+| PMARC2 (MSX-DOS) | `pmarc2_pm0.pma` | `-pm0-` (stored), no time |
+| LhA 1.22 (Amiga) | `lha_amiga_122_*` | `-lh4-`, `-lh1-` (refused), a file in subdirectories |
+| OS-9/68k LHA 2.01 | `lha_osk_201_h2_lh0.lzh` | the level-2 header two bytes longer than its size; OS-9 permissions |
+| MorphOS LhA 2.7.17 | `morphos_lha_2717_h2_metadata.lzh` | a `0x71` comment record, skipped |
+| LH/2 2.22 (OS/2) | `lh2_222_eas.lzh` | mixed levels 0 and 1, OS/2 extended attributes as a file |
+
+lhasa is under the ISC license:
+
+> Copyright (c) 2011-2025, Simon Howard
+>
+> Permission to use, copy, modify, and/or distribute this software for any purpose with
+> or without fee is hereby granted, provided that the above copyright notice and this
+> permission notice appear in all copies.
+>
+> THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD
+> TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO
+> EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
+> DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
+> IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+> CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
 ## `reduce_pkzip092/`
 
 Two raw ZIP Reduce streams (method 5, compression factor 4) that PKZIP 0.92 wrote under

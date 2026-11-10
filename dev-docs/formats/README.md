@@ -25,12 +25,16 @@ Formats:
   links whose data, in newc and crc, comes with the last name.
 - [`ar.md`](ar.md) — static libraries and `.deb`, a built-in written against
   `archivey.formats`.
+- [`lha.md`](lha.md) — LHA and LZH archives: header levels 0 to 3, stored members and
+  the static-Huffman LZ77 methods, with archivey's own decoder.
 - [`cab.md`](cab.md) — Microsoft cabinets: stored, MSZIP and LZX folders, with
   archivey's own LZX decoder.
 - [`deb.md`](deb.md) — Debian packages: an ar layer, and two tars read through the
   nested-archive hook.
 - [`xar.md`](xar.md) — XAR and macOS `.pkg`: a zlib-compressed XML index, read with
   expat, and per-file encoded data.
+- [`makeself.md`](makeself.md) — makeself `.run` installers: a shell header parsed, never
+  run, then one or more compressed TARs.
 - [`rpm.md`](rpm.md) — RPM packages: the file list from the header, the data from a
   CPIO payload in newc or the stripped form.
 - [`dmg.md`](dmg.md) — a UDIF image, recognised by the `koly` block and refused.
@@ -99,7 +103,9 @@ Topic pages are **not** format pages with the nouns swapped, and
 shaped by it — came out looser: shapes in the wild, the mechanism and its tiers, the cost
 argument, *where the formats differ*, sharp edges, decisions, references. Take the
 conventions rather than the section list: the where-it-lives tags, no performance
-numbers, status behind the register link.
+numbers, status behind the register link. Every topic page opens with an **In one
+minute** paragraph in plain words, for a reader who lands there cold, and links the
+[internals guide](../guide/README.md) page that sets it in context.
 
 The split that matters is the same one in both directions. **A format page keeps what the
 format's own structure decides; the topic page keeps the shared machinery.** For prefixed

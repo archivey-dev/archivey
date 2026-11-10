@@ -168,14 +168,23 @@ def test_a_block_larger_than_one_feed_reads(pipe: bool, tmp_path: Path) -> None:
         assert _read(path) == data
 
 
-def test_the_cap_counts_the_decode_buffer_and_its_copy() -> None:
-    """The decode holds the buffer and the bytes copied from it: twice the size."""
-    size = len(_DATA)
-    under = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=2 * size))
+def test_the_cap_counts_the_decode_buffer_its_copy_and_the_block() -> None:
+    """The decode holds the buffer, the bytes copied from it and the compressed block:
+    twice the size plus the block."""
+    size, block = len(_DATA), len(_block(_DATA))
+    need = 2 * size + block
+    under = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=need))
     assert _read(io.BytesIO(_mozlz4(_DATA)), config=under) == _DATA
+    over = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=need - 1))
+    with pytest.raises(ResourceLimitError, match=f"{block}-byte compressed block"):
+        _read(io.BytesIO(_mozlz4(_DATA)), config=over)
+
+
+def test_twice_the_size_is_refused_before_the_block_is_held() -> None:
+    size = len(_DATA)
     over = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=2 * size - 1))
     with pytest.raises(ResourceLimitError, match="twice"):
-        _read(io.BytesIO(_mozlz4(_DATA)), config=over)
+        _read(io.BytesIO(_mozlz4(_DATA)[:20]), format=ArchiveFormat.MOZLZ4, config=over)
 
 
 def test_detection_decodes_at_most_one_mebibyte(

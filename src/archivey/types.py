@@ -94,6 +94,11 @@ class ContainerFormat(StrEnum):
     RPM = "rpm"
     """An RPM package, binary or source: its files, from the CPIO payload that follows
     its headers. Read in one forward pass, so from a pipe too."""
+    MAKESELF = "makeself"
+    """A makeself self-extracting archive (a ``.run`` installer): a shell script that
+    states where its payloads start, followed by one or more compressed TARs. Its
+    files are the TARs' files, payload after payload. Read in one forward pass, so
+    from a pipe too."""
     SQUASHFS = "squashfs"
     """A SquashFS 4.0 filesystem image: a snap package or a live system's root, for
     example. Needs a source that can seek."""
@@ -104,6 +109,11 @@ class ContainerFormat(StrEnum):
     CAB = "cab"
     """A Microsoft cabinet (``.cab``): Windows updates, drivers and installer
     payloads. Stored, MSZIP and LZX folders are read; needs a source that can seek."""
+    LHA = "lha"
+    """An LHA archive (``.lzh``, ``.lha``), from DOS, the Amiga and Japanese PCs.
+    Header levels 0 to 3 are read, with stored members (``-lh0-``, ``-lz4-``,
+    ``-pm0-``) and the ``-lh4-`` to ``-lh7-``, ``-lhx-`` and ``-lk7-`` methods; needs
+    a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -124,10 +134,10 @@ class PluginContainer(StrEnum):
     A plugin subclasses it with one member per container it adds, and builds its
     :class:`~archivey.ArchiveFormat` from that member::
 
-        class LhaContainer(PluginContainer):
-            LHA = "lha"
+        class ArjContainer(PluginContainer):
+            ARJ = "arj"
 
-        LHA = ArchiveFormat(LhaContainer.LHA, StreamFormat.UNCOMPRESSED)
+        ARJ = ArchiveFormat(ArjContainer.ARJ, StreamFormat.UNCOMPRESSED)
 
     Experimental, with the rest of ``archivey.formats``: any release may change it.
     Code that matches on ``ArchiveFormat.container`` needs a default case once a plugin
@@ -271,9 +281,11 @@ class ArchiveFormat:
     DEB: ClassVar[ArchiveFormat]
     CPIO: ClassVar[ArchiveFormat]
     RPM: ClassVar[ArchiveFormat]
+    MAKESELF: ClassVar[ArchiveFormat]
     SQUASHFS: ClassVar[ArchiveFormat]
     XAR: ClassVar[ArchiveFormat]
     CAB: ClassVar[ArchiveFormat]
+    LHA: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -359,11 +371,15 @@ ArchiveFormat.AR = ArchiveFormat(ContainerFormat.AR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DEB = ArchiveFormat(ContainerFormat.DEB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CPIO = ArchiveFormat(ContainerFormat.CPIO, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.RPM = ArchiveFormat(ContainerFormat.RPM, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.MAKESELF = ArchiveFormat(
+    ContainerFormat.MAKESELF, StreamFormat.UNCOMPRESSED
+)
 ArchiveFormat.SQUASHFS = ArchiveFormat(
     ContainerFormat.SQUASHFS, StreamFormat.UNCOMPRESSED
 )
 ArchiveFormat.XAR = ArchiveFormat(ContainerFormat.XAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CAB = ArchiveFormat(ContainerFormat.CAB, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.LHA = ArchiveFormat(ContainerFormat.LHA, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -701,6 +717,9 @@ class CompressionAlgorithm(Enum):
     LZX = "lzx"
     """Microsoft's LZX, as cabinets store it: LZ77 with Huffman codes over a window
     of 32 KiB to 2 MiB."""
+    LZH = "lzh"
+    """LHA's LZ77 with Huffman codes, the ``-lh1-`` to ``-lh7-`` methods and their
+    kin. ``ArchiveMember.extra["lha.method"]`` names the exact method."""
     QUANTUM = "quantum"
     """Quantum, an older cabinet method. archivey lists its members but cannot read
     them."""
@@ -971,6 +990,11 @@ class MemberExtra(dict[str, object]):
     * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
       stripped from the name. Versions of one name share it; the highest is
       listed last and is the current one.
+    * ``lha.method`` (``str``) — the LHA method id as stored (``"-lh5-"``), or
+      ``"-lk7-"`` for LHARK's own ``-lh7-``.
+    * ``lha.header_level`` (``int``) — the LHA header level, 0 to 3.
+    * ``lha.os_id`` (``str``) — the one-character OS id an LHA header names
+      (``"U"`` for LHa for UNIX, ``"M"`` for DOS), when it has one.
     """
 
     __slots__ = ()
@@ -1032,6 +1056,12 @@ class MemberExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
     @overload
+    def __getitem__(self, key: Literal["lha.method"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.header_level"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.os_id"], /) -> str: ...
+    @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
     def __getitem__(self, key: str, /) -> object:
@@ -1068,6 +1098,13 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``rpm.source`` (``bool``)
     * ``rpm.signed`` (``bool``)
     * ``rpm.payload_compressor`` (``str``)
+    * ``makeself.label`` (``str``)
+    * ``makeself.script`` (``str``)
+    * ``makeself.target_dir`` (``str``)
+    * ``makeself.compression`` (``str``)
+    * ``makeself.encryption`` (``str``)
+    * ``makeself.payloads`` (``int``)
+    * ``makeself.signed`` (``bool``)
     """
 
     __slots__ = ()
@@ -1112,6 +1149,20 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["rpm.signed"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["rpm.payload_compressor"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.label"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.script"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.target_dir"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.compression"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.encryption"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.payloads"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.signed"], /) -> bool: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
@@ -1175,7 +1226,12 @@ class ArchiveMember:
     - A 7z member stored with no name is named after the archive source, and
       ``raw_name`` is ``b""``.
     - A RAR5 file-version-history member gets a ``;n`` suffix in ``name`` (as
-      WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it."""
+      WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it.
+    - LHA: ``raw_name`` is the directory record and the name joined with ``/``, with
+      ``0xFF`` separators turned into ``/``, without an Amiga file note (the bytes
+      after a NUL, which go to ``comment``) and, for a symlink, without the
+      ``|target`` after the name (kept when a ``0x7C`` byte in the name is the
+      second byte of a cp932 character, as the cut cannot be placed in the bytes)."""
 
     size: int | None = None
     """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry).
@@ -1817,8 +1873,8 @@ class OnError(Enum):
 
     It covers failures only: damaged data, a write error, an existing entry under
     ``OverwritePolicy.ERROR``. A member refused by a safety check is recorded as
-    ``BLOCKED`` and extraction goes on under either value; ``AbortOn.BLOCKED_MEMBER``
-    stops on one instead.
+    ``BLOCKED`` and extraction goes on under either value; :class:`OnBlocked` says what
+    happens once it ends, and ``AbortOn.BLOCKED_MEMBER`` stops at the first one instead.
     """
 
     STOP = "stop"
@@ -1834,6 +1890,33 @@ class OnError(Enum):
 # case, and a literal can express neither, so this is the canonical spelling.
 # Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
 OnErrorStr = Literal["stop", "continue"]
+
+
+class OnBlocked(StrEnum):
+    """What ``extract_all()`` does when a safety check refused a member.
+
+    A refused member is never written, and the members after it are still extracted
+    under either value. The difference is how the call ends. To stop at the first
+    refused member instead, pass ``abort_on=["blocked_member"]``.
+    """
+
+    RAISE = "raise"
+    """The default. Once every member has been processed, the call raises
+    :class:`~archivey.FilterRejectionError` instead of returning the report. The
+    exception carries the full report as its ``report`` attribute, and its message
+    names the first refused member. As GNU tar does: it extracts what it can, and
+    then exits with an error."""
+    SKIP = "skip"
+    """The call returns the report normally, and the refused members are in it as
+    ``BLOCKED``. Check ``report.ok`` or call ``report.raise_for_failure()``."""
+
+
+# The string spellings of ``OnBlocked``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# case, and a literal can express neither, so this is the canonical spelling.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+OnBlockedStr = Literal["raise", "skip"]
 
 
 class AbortOn(StrEnum):

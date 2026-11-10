@@ -666,8 +666,11 @@ def test_prefixed_path_within_the_limit_reads_under_unar(
         (note,) = archive.cost.notes
         assert "SpoolLimits.max_bytes=" in note
         assert archive.read("zeros.bin") == b"\x00" * 8192
-    # unar's private directory, and the copy made inside it.
-    assert len(temp_artifacts) == 2
+    # unar's private directory, and the copy made inside it. The spy sees every
+    # mkdtemp in the process, so the unar identification probe's own directory shows
+    # up when this test is the first in its worker to run unar: leave it out.
+    made = [p for p in temp_artifacts if not p.name.startswith("archivey-unar-probe-")]
+    assert len(made) == 2
     assert not any(path.exists() for path in temp_artifacts)
 
 

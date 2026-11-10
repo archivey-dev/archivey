@@ -9,16 +9,20 @@ refused ``OpenFile`` fields, and the facts the source settles at open.
 
 from __future__ import annotations
 
+import bz2
 import dataclasses
+import gzip
 import io
 import logging
+import lzma
 import random
 import subprocess
 import sys
 import threading
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 import pytest
 
@@ -49,9 +53,15 @@ from archivey.internal.remote import (  # noqa: E402
     display_url,
     planner_constants,
 )
+from archivey.internal.source import seeks_to_end_are_cheap  # noqa: E402
+from archivey.internal.volumes import ConcatenatedFile  # noqa: E402
 from tests.sample_archives import (  # noqa: E402
     corpus_archive_path,
     skip_unless_runnable,
+)
+from tests.streams_util import (  # noqa: E402
+    make_multi_member_lzip,
+    make_multi_stream_xz,
 )
 from tests.test_short_read_sources import (  # noqa: E402
     _CORPUS_CASES,
@@ -1335,3 +1345,356 @@ def test_iso_extract_all_reads_members_in_growing_runs(tmp_path: Path):
     with open_archive(OpenFile(fs, "/a.iso", mode="rb")) as reader:
         reader.extract_all(tmp_path)
     assert len(fs.fetches) <= 12
+
+
+# --- tail reads (design D1) -------------------------------------------------------------
+
+
+def _udif_after_bzip2() -> bytes:
+    """A bzip2 stream with a UDIF ``koly`` block at the end: an image whose first
+    block is bzip2. The ``koly`` block is past the detection prefix."""
+    koly = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
+    payload = random.Random(44).randbytes(200_000)
+    return bz2.compress(payload) + koly + bytes(512 - len(koly))
+
+
+_TAIL_CASES = {
+    "f.xz": lzma.compress(b"hello" * 1000),
+    "f.gz": gzip.compress(b"x" * 100_000),
+    "img.dmg": _udif_after_bzip2(),
+}
+
+
+def _listing(source: Any) -> list[tuple[str, int | None, dict]]:
+    with open_archive(source) as reader:
+        return [(m.name, m.size, dict(m.extra)) for m in reader.members()]
+
+
+@pytest.mark.parametrize("name", sorted(_TAIL_CASES))
+def test_a_remote_archive_detects_as_a_local_one(
+    name: str, tmp_path: Path, memfs: Any
+) -> None:
+    """The tail reads run on a remote source: the UDIF ``koly`` block outranks the
+    bzip2 hit, as from a path. Red when a range source declines the tail."""
+    data = _TAIL_CASES[name]
+    path = tmp_path / name
+    path.write_bytes(data)
+    memfs.pipe(f"/t/{name}", data)
+    local = detect_format(path)
+    remote = detect_format(fsspec.open(f"memory://t/{name}"))
+    assert remote.format == local.format
+    assert remote.unavailable_tiers == local.unavailable_tiers
+    if name == "img.dmg":
+        assert remote.format == ArchiveFormat.DMG
+
+
+@pytest.mark.parametrize("name", ["f.gz", "f.xz"])
+def test_a_remote_single_file_lists_as_a_local_one(
+    name: str, tmp_path: Path, memfs: Any
+) -> None:
+    """The ``.xz`` index gives ``size`` and the gzip trailer gives ``gzip.isize``
+    from an ``OpenFile`` too. Red when a range source declines the tail."""
+    data = _TAIL_CASES[name]
+    path = tmp_path / name
+    path.write_bytes(data)
+    memfs.pipe(f"/t/{name}", data)
+    local = _listing(path)
+    assert _listing(fsspec.open(f"memory://t/{name}")) == local
+    (entry,) = local
+    if name == "f.xz":
+        assert entry[1] == 5000
+    else:
+        assert entry[2] == {"gzip.isize": 100_000}
+
+
+@pytest.mark.parametrize(
+    ("name", "requests"),
+    [
+        # The head, then the 512-byte koly block: one request for the tail.
+        ("img.dmg", 2),
+        # Detection's head holds the whole file: the tail reads cost nothing more.
+        ("f.gz", 1),
+        ("f.xz", 1),
+    ],
+)
+def test_tail_reads_cost_one_request_each(name: str, requests: int) -> None:
+    """The ruling's price: on a single stream, a tail read is one range request."""
+    data = _TAIL_CASES[name]
+    fs = RecordingFS(data)
+    source = OpenFile(fs, f"/{name}", mode="rb")
+    if name == "img.dmg":
+        detect_format(source)
+    else:
+        _listing(source)
+    assert len(fs.fetches) == requests
+
+
+def test_a_large_remote_xz_reads_its_index_from_the_tail() -> None:
+    """A ``.xz`` past the detection head: the stream footer and the index are read
+    from the tail, so ``size`` is known without decoding it. The tail is one
+    request (the minimum fetch, ending at the end) beside the two the head takes
+    with or without it."""
+    payload = random.Random(45).randbytes(300_000)
+    data = lzma.compress(payload, preset=0)
+    fs = RecordingFS(data)
+    config = ArchiveyConfig(max_read_through=16 * KIB)
+    with (
+        planner_constants(SMALL),
+        open_archive(OpenFile(fs, "/big.xz", mode="rb"), config=config) as reader,
+    ):
+        (member,) = reader.members()
+    assert member.size == len(payload)
+    # The later fetches read the stream header through a buffer whose size is
+    # ``io.DEFAULT_BUFFER_SIZE`` (8 KiB to Python 3.14, 128 KiB from 3.15).
+    assert fs.fetches[:2] == [(0, 16 * KIB), (len(data) - 16 * KIB, len(data))]
+    assert fs.fetches.count((len(data) - 16 * KIB, len(data))) == 1
+
+
+def test_the_tail_read_does_not_take_over_the_head_window() -> None:
+    """With the production constants the tail of a 300 KB ``.xz`` lies within the
+    read-through distance of the head. Detection hints the tail, so it is a run of
+    its own: the head's window survives for the reader, and the listing is the head
+    and the tail. Red without the hint: the run reads through to the end, drops the
+    head, and the reader fetches the head again."""
+    data = lzma.compress(random.Random(45).randbytes(300_000), preset=0)
+    fs = RecordingFS(data)
+    _listing(OpenFile(fs, "/big.xz", mode="rb"))
+    # Without the hint the second fetch reads through from 64 KiB to the end.
+    # What follows depends on ``io.DEFAULT_BUFFER_SIZE`` (the stream header is
+    # read through a buffer of that size), so only the first two are pinned.
+    assert fs.fetches[:2] == [(0, 64 * KIB), (len(data) - 64 * KIB, len(data))]
+    # The header re-read never steps back from the tail across the whole gap.
+    assert all(end - start <= 128 * KIB for start, end in fs.fetches)
+
+
+def _many_lzip_members(count: int) -> bytes:
+    return make_multi_member_lzip([b"a"] * count)
+
+
+_MULTI = {
+    "f.xz": lambda count: lzma.compress(b"a") * count,
+    "f.lz": _many_lzip_members,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_MULTI))
+@pytest.mark.parametrize("count", [2, 200, 20_000])
+def test_a_remote_multi_stream_file_lists_without_walking(
+    name: str, count: int, tmp_path: Path
+) -> None:
+    """Maintainer ruling, 2026-11-08: lazy for multi-stream files, remote only. The
+    open reads the last stream's footer and index (or the last member's trailer),
+    sees an earlier stream, and stops: no size, in the same requests whatever the
+    stream count. A local path keeps the whole walk and the size. Red with the
+    walk at open: 2,000 tiny xz streams took 4 requests, 20,000 took 5."""
+    data = _MULTI[name](count)
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, f"/{name}", mode="rb")) as reader:
+        (member,) = reader.members()
+    assert member.size is None
+    _assert_head_and_tail_only(fs, len(data))
+    path = tmp_path / name
+    path.write_bytes(data)
+    with open_archive(path) as reader:
+        (local,) = reader.members()
+    assert local.size == count
+
+
+def _assert_head_and_tail_only(fs: RecordingFS, size: int) -> None:
+    """The open fetched the head (as the reader's buffered reads ask for it, 128
+    KiB at once on Python 3.15) and the tail once, and nothing between them."""
+    c = PlannerConstants()
+    head = max(c.min_fetch, io.DEFAULT_BUFFER_SIZE)
+    assert len(fs.fetches) <= 2 + io.DEFAULT_BUFFER_SIZE // c.min_fetch
+    assert [f for f in fs.fetches if f[1] == size] == [
+        (max(0, size - c.min_fetch), size)
+    ]
+    assert all(end <= head for start, end in fs.fetches if end != size)
+
+
+@pytest.mark.parametrize(
+    ("name", "build"),
+    [
+        ("f.xz", make_multi_stream_xz),
+        ("f.lz", make_multi_member_lzip),
+    ],
+)
+def test_a_large_last_stream_is_not_read_for_its_header(
+    name: str, build: Callable[[list[bytes]], bytes]
+) -> None:
+    """The open stops at the last stream's footer and index (the last member's
+    trailer): its header, far from both the head and the tail, is not read. Red
+    when the check read it: a read through from the head (65536, 400092), and the
+    head fetched again."""
+    parts = [random.Random(i).randbytes(400_000) for i in range(2)]
+    data = build(parts)
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, f"/{name}", mode="rb")) as reader:
+        (member,) = reader.members()
+    assert member.size is None
+    _assert_head_and_tail_only(fs, len(data))
+
+
+@pytest.mark.parametrize("streams", [1, 2])
+@pytest.mark.parametrize("pad", [8_000_000, 50_000_000])
+def test_long_xz_padding_does_not_make_a_remote_open_scan_it(
+    pad: int, streams: int, tmp_path: Path
+) -> None:
+    """Stream padding after the last xz stream has no length limit. On a remote
+    source the open looks at one tail window: all zeros there means it cannot tell,
+    so no size and no scan. The open then costs the same whatever the padding's
+    length: the head, the tail once, and the reader's bounded look past the stream
+    (``TRAILING_DATA_SEARCH``). A path still scans and gives the size. Red with the
+    scan: 8 MB of zeros took 18 requests and 13 MB, 50 MB took 50 requests and
+    155 MB."""
+    data = lzma.compress(b"hello" * 10) * streams + bytes(pad)
+    fs = RecordingFS(data)
+    c = PlannerConstants()
+    with open_archive(OpenFile(fs, "/f.xz", mode="rb")) as reader:
+        (member,) = reader.members()
+        assert member.size is None
+        assert [f for f in fs.fetches if f[1] == len(data)] == [
+            (len(data) - c.min_fetch, len(data))
+        ]
+        # The head as the reader's buffered reads ask for it (128 KiB at once on
+        # Python 3.15), the tail, and the look past the stream.
+        head = max(c.min_fetch, io.DEFAULT_BUFFER_SIZE)
+        assert len(fs.fetches) <= 8 + io.DEFAULT_BUFFER_SIZE // c.min_fetch
+        fetched = sum(end - start for start, end in fs.fetches)
+        assert fetched <= (1 << 20) + c.min_fetch + 2 * head
+        assert reader.read(member) == b"hello" * 10 * streams
+    path = tmp_path / "f.xz"
+    path.write_bytes(data)
+    with open_archive(path) as reader:
+        (local,) = reader.members()
+    assert local.size == 50 * streams
+
+
+@pytest.mark.parametrize("name", sorted(_MULTI))
+def test_a_seek_on_a_remote_multi_stream_file_walks_a_bounded_index(
+    name: str,
+) -> None:
+    """The walk the open skipped runs when a seek needs it. It steps backward a few
+    bytes per stream; the planner steps its window back and doubles (design D2 rule
+    6), so it costs about as many requests as reading the file forward. Red without
+    rule 6: 75,631 requests for 20,000 tiny xz streams."""
+    data = _MULTI[name](20_000)
+    fs = RecordingFS(data)
+    c = PlannerConstants()
+    with open_archive(
+        OpenFile(fs, f"/{name}", mode="rb"), seekable_members=True
+    ) as reader:
+        (member,) = reader.members()
+        with reader.open(member) as stream:
+            stream.seek(15_000)
+            assert stream.read(10) == b"a" * 10
+    assert len(fs.fetches) <= 2 + len(data) // c.min_fetch + 4
+    assert sum(end - start for start, end in fs.fetches) <= 2 * len(data) + c.max_fetch
+
+
+def test_a_remote_multi_stream_file_reads_start_to_end_without_the_walk() -> None:
+    """A read from start to end never needs the index: about one request per
+    planner fetch, not one per stream."""
+    parts = [random.Random(i).randbytes(20_000) for i in range(50)]
+    data = b"".join(lzma.compress(part, preset=0) for part in parts)
+    fs = RecordingFS(data)
+    with open_archive(OpenFile(fs, "/f.xz", mode="rb")) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == b"".join(parts)
+    assert len(fs.fetches) <= 8
+
+
+def test_a_read_just_before_a_window_steps_it_back() -> None:
+    """Rule 6: the new window ends where the window after it starts and doubles; a
+    window placed by its end moves back again, so the walk holds one run."""
+    source, fs = _source(DATA, gap=8 * KIB)
+    end = len(DATA)
+    source.seek(end - 12)
+    source.read(12)
+    for back in (16 * KIB + 100, 32 * KIB + 100, 64 * KIB + 100):
+        source.seek(end - back)
+        assert source.read(10) == DATA[end - back : end - back + 10]
+    assert fs.fetches == [
+        (end - 16 * KIB, end),
+        (end - 32 * KIB, end - 16 * KIB),
+        (end - 64 * KIB, end - 32 * KIB),
+        (end - 128 * KIB, end - 64 * KIB),
+    ]
+    assert source.pool.run_count == 1
+
+
+def test_a_read_just_before_a_forward_window_starts_its_own_run() -> None:
+    """A window a forward run placed is not stepped back from: a read just before
+    it is a reader starting a new member, and it reads forward. Red when rule 6
+    applies to every window: the TAR cases of the benchmark gate fetch more."""
+    source, fs = _source(DATA, gap=8 * KIB)
+    source.seek(100 * KIB)
+    source.read(10)
+    source.seek(95 * KIB)
+    assert source.read(10) == DATA[95 * KIB : 95 * KIB + 10]
+    assert fs.fetches == [(100 * KIB, 116 * KIB), (95 * KIB, 111 * KIB)]
+
+
+def test_a_new_run_at_the_end_keeps_the_minimum_fetch() -> None:
+    """A tail read that steps backward (a footer, then the index before it) is one
+    request: the first window ends at the end and holds the minimum fetch. Red when
+    the window starts at the read and holds only the bytes to the end."""
+    source, fs = _source(DATA)
+    source.seek(len(DATA) - 12)
+    assert source.read(12) == DATA[-12:]
+    source.seek(len(DATA) - 5000)
+    assert source.read(100) == DATA[-5000:-4900]
+    assert fs.fetches == [(len(DATA) - 16 * KIB, len(DATA))]
+
+
+class _RestartsAtZero(io.BytesIO):
+    """A volume whose seek decodes from its own start, as a member view of a
+    ``.tar.xz`` answers once it clamps a resume point behind its start."""
+
+    seek_is_expensive = True
+
+    def nearest_resume_offset(self, target: int) -> int:
+        return 0
+
+
+def test_a_joined_set_refuses_a_volume_that_restarts_at_zero(tmp_path: Path) -> None:
+    """Red with the ``inner == 0 and target > start`` guard removed: the set would
+    answer the volume's start, which ``seeks_to_end_are_cheap`` takes as cheap for a
+    target within 4 KiB of it."""
+    first = tmp_path / "a.001"
+    first.write_bytes(bytes(5000))
+    joined = ConcatenatedFile([first, cast("BinaryIO", _RestartsAtZero(bytes(3000)))])
+    assert joined.seek_is_expensive
+    # A path volume answers the target.
+    assert joined.nearest_resume_offset(1234) == 1234
+    # The decoding volume: its own start is fine, a later target is no answer.
+    assert joined.nearest_resume_offset(5000) == 5000
+    assert joined.nearest_resume_offset(5100) is None
+    assert not seeks_to_end_are_cheap(cast("BinaryIO", joined))
+    joined.close()
+
+
+def test_a_joined_set_of_cheap_volumes_answers_the_target(tmp_path: Path) -> None:
+    first = tmp_path / "a.001"
+    first.write_bytes(bytes(5000))
+    joined = ConcatenatedFile([first, cast("BinaryIO", io.BytesIO(bytes(3000)))])
+    assert not joined.seek_is_expensive
+    assert joined.nearest_resume_offset(6000) == 6000
+    joined.close()
+
+
+def test_a_range_source_resumes_at_any_offset() -> None:
+    source, _ = _source(DATA)
+    assert source.nearest_resume_offset(12_345) == 12_345
+    assert seeks_to_end_are_cheap(cast("BinaryIO", source))
+
+
+def test_a_joined_set_of_range_sources_asks_the_volume_that_holds_the_target() -> None:
+    pool = WindowPool(SMALL)
+    first, _ = _source(DATA[:1000], pool=pool)
+    second, _ = _source(DATA[1000:5000], pool=pool)
+    joined = ConcatenatedFile([cast("BinaryIO", first), cast("BinaryIO", second)])
+    assert joined.seek_is_expensive
+    assert joined.nearest_resume_offset(3000) == 3000
+    assert joined.nearest_resume_offset(5000) == 5000
+    assert seeks_to_end_are_cheap(cast("BinaryIO", joined))

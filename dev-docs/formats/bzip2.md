@@ -106,7 +106,7 @@ default:
 | --- | --- |
 | `OFF` | The standard library, always |
 | `ON` | `rapidgzip.IndexedBzip2File` in a child process, or `PackageNotInstalledError` without `rapidgzip`, or `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`), or `ResourceUnavailableError` where no child process can start |
-| `AUTO` | The accelerator when seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), the source is seekable, `rapidgzip` is installed and the compressed input is at least `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` (1 MiB) or of unknown size. Otherwise the standard library, silently; where no child process can start, with one warning per process |
+| `AUTO` | The accelerator when seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), the source is seekable, `rapidgzip` is installed and the compressed input is at least `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` (1 MiB) or of unknown size. Without declared seeking, the accelerator too for a read on Linux or macOS from a file on disk (a path, or a byte range of a regular file) of known size at least that threshold, when the process may run on two CPUs or more (`_bzip2_sequential_read_pays`); the stream stays forward-only. Otherwise the standard library, silently; where no child process can start, with one warning per process |
 
 The same rules hold for a bzip2 ZIP member or 7z coder, whose data is one stream
 (`CodecParams.single_stream`). The standard library stops at the first stream's end, and
@@ -124,7 +124,15 @@ is not the reason; the standard library's decoders run in-process. A child that 
 the data hands the read to the standard library, like any data error (§2.3 below). The child
 costs about 45 ms per stream, which the 1 MiB `AUTO` threshold accounts for: a full read
 broke even near 0.6 MiB compressed with 4 cores and near 2 MiB with one
-(`scripts/investigations/bench_bzip2_child.py`). The guards below sit around the child's stream.
+(`scripts/investigations/bench_bzip2_child.py`). A sequential full read gains more, because
+rapidgzip decodes blocks in parallel: on 4 cores it took 0.62 of the standard library's time at
+0.6 MiB compressed and 0.40 at 2.3 MiB, and a 48 MiB `.tar.bz2` read in 0.28 of the time; on 2
+cores 0.86 and 0.63; on one core it was slower (1.24 and 1.05), which is why the sequential rule
+wants two usable CPUs. rapidgzip also reads its bzip2 input about twice: a full read of a 3 MiB
+`.tar.bz2` from a caller's `BytesIO` pulled 2.47 times the archive, against 1.29 with the standard
+library (detection's probe included). From a file the child reads the region itself, through the
+page cache; from a caller's stream every byte crosses the pipe twice, and a remote stream fetches
+it twice. So the sequential rule takes only a file on disk. The guards below sit around the child's stream.
 
 - **A corrupt source must not read as empty.** The bundled decoder returns no output and no
   error for input that is not bzip2 at all: 40 000 zero bytes, a zero-byte file, a bare
