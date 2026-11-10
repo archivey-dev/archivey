@@ -274,9 +274,10 @@ member's data needs that is not installed (``PackageNotInstalledError``: a codec
 ``cryptography`` for WinZip AES) are each about that one member's data. A system that
 did not give a resource for the read (``ResourceUnavailableError``: no descriptor,
 memory or process slot to start ``unrar``) says nothing about the archive, so it does
-not fail the listing either. ``ReadError`` for a command line that is too long cannot happen
-here: a link is read through a placeholder or a plain name of at most 16 384 units. Listing
-and a data pass leave the link targetless and report it
+not fail the listing either. ``ReadError`` for a command line that is too long cannot
+happen here: a link is read through a placeholder, or through a plain name no longer
+than ``rar_unrar.unrar_plain_name_max``, which keeps the mask within argv limits.
+Listing and a data pass leave the link targetless and report it
 (``_report_unreadable_link_target``); opening or extracting the link reads it again and
 raises the error itself. ``EncryptionError`` is not here: the backends catch it where
 they read and report it with its own reason.
@@ -1923,11 +1924,11 @@ class BaseArchiveReader(ArchiveReader):
 
         An error in ``UNREADABLE_LINK_TARGET_ERRORS`` (damage, an undecodable method, a
         missing optional library, a system resource shortage) reading one link's
-        target leaves that link targetless and reported (``_report_unreadable_link_target``), and the others
-        resolve. Past that, when ``error is not None`` (incomplete listing /
-        terminal pass damage), a secondary ``CorruptionError`` is swallowed so the
-        recovered prefix stays publishable. When ``error is None`` (clean EOF / complete
-        listing), it propagates.
+        target leaves that link targetless and reported
+        (``_report_unreadable_link_target``), and the others resolve. Past that, when
+        ``error is not None`` (incomplete listing / terminal pass damage), a secondary
+        ``CorruptionError`` is swallowed so the recovered prefix stays publishable.
+        When ``error is None`` (clean EOF / complete listing), it propagates.
 
         Eager materialization uses a child scope + internal-open exemption for
         link-data reads; a streaming pass's finalization does not open a child scope.
