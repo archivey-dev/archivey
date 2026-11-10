@@ -302,8 +302,16 @@ class LhaReader(IndexedReader[_Location]):
                 f"the member header at offset {offset} has level {level}; LHA has "
                 "levels 0 to 3"
             )
+        end = header.end + header.stored
         size = self._source.size
-        if size is not None and header.end + header.stored > size:
+        if size is not None:
+            cut = end > size
+        else:
+            # A source whose size is not known: is the data's last byte there? That
+            # is ``end > size`` asked of the source, so a cut archive is not listed
+            # as whole.
+            cut = end > header.end and not self._source.read_at(end - 1, 1)
+        if cut:
             raise TruncatedError(
                 f"the LHA archive ends inside the data of the member at offset {offset}"
             )
