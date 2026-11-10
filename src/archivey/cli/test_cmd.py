@@ -118,7 +118,7 @@ def run_test(
             # cut TAR, a failed compressed TAR stream, a pipe ZIP whose local-header
             # walk loses its place) makes the pass raise; so can non-damage errors such
             # as a ListingLimits bound. Further next() then yields StopIteration and
-            # the remaining members are reported "not tested" (P8).
+            # the remaining members are reported "not tested".
             # The ``with`` ends the pass here, deterministically, whatever leaves the
             # loop (Ctrl-C, a broken stderr pipe), rather than leaving a suspended
             # pass for ``reader.close()`` or the garbage collector to end while the
@@ -438,7 +438,7 @@ def _is_link_destination_error(exc: ReadError | ArchiveyUsageError) -> bool:
 
 
 def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:
-    """Untested remainder of an indexed selection; ``0`` when unknown or none (P8).
+    """Untested remainder of an indexed selection; ``0`` when unknown or none.
 
     The summary line and the exit code both read this, so they cannot disagree.
     """
@@ -450,8 +450,8 @@ def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:
 def _test_summary(
     *, ok: int, failed: int, members_total: int | None, not_verified: int = 0
 ) -> str:
-    """Format the quiet test summary, with the untested remainder (P8) and unchecked
-    digests (X6) when there are any.
+    """Format the quiet test summary, with the untested remainder and the unchecked
+    digests when there are any.
     """
     summary = f"{ok} OK, {failed} failed"
     not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)
