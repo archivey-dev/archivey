@@ -242,18 +242,21 @@ _finder = CliToolFinder(
     parse_banner=parse_unar_banner,
     version_floor=UNAR_VERSION_FLOOR,
     install_hint=UNAR_INSTALL_HINT,
+    setting="ArchiveyConfig.unar_path",
     # Looked up at call time, so a test can replace the module function.
     verify=lambda path: unar_rar5_probe_failure(path),
 )
 
 
-def find_unar(*, purpose: str) -> str:
-    """Absolute path of a usable ``unar`` 1.10+ on ``PATH``, or ``PackageNotInstalledError``.
+def find_unar(*, purpose: str, program: str | None = None) -> str:
+    """Absolute path of a usable ``unar`` 1.10+ on ``PATH``, or at the one path the
+    caller pinned, or ``PackageNotInstalledError``.
 
     Usable: it identifies itself, and it decodes the RAR5 test archive
     (:func:`unar_rar5_probe_failure`). Each binary pays for both once per process.
+    ``program`` is ``ArchiveyConfig.unar_path``: when set, it is the only binary tried.
     """
-    return _finder.find(purpose=purpose)
+    return _finder.find(purpose=purpose, program=program)
 
 
 def clear_unar_cache() -> None:
@@ -304,6 +307,7 @@ def open_unar_stdout(
     *,
     purpose: str,
     password: str | None = None,
+    program: str | None = None,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Spawn ``unar`` for the given entries (``None``: all) and return ``(proc, stdout)``.
 
@@ -313,7 +317,7 @@ def open_unar_stdout(
     Reading ``stdout`` has no time bound, for the reason ``open_unrar_p`` gives: a solid
     archive legitimately produces no bytes while earlier entries decode.
     """
-    unar = find_unar(purpose=purpose)
+    unar = find_unar(purpose=purpose, program=program)
     # ``unar`` asks for a missing password on a terminal. With stdin on DEVNULL (the
     # default) it reports the missing password and exits non-zero instead.
     return spawn_for_stdout(

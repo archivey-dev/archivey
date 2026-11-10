@@ -792,6 +792,9 @@ On a compressed tar, the stream's own checksum adds three cases:
 ### Running `unrar`
 
 - `unrar` is preferred when both `unrar` and `rar` are on `PATH`. Archivey refuses a 5.x `unrar`.
+  To run one particular binary instead, set `ArchiveyConfig(unrar_path="/opt/rar/unrar")`, or
+  `unar_path=` for `unar`. Archivey then doesn't look on `PATH`, so a program put there later
+  can't be picked up, and the binary must still identify itself and meet the version floor.
   Debian 12 and Ubuntu 22.04 package `unrar` 6.x, and Ubuntu 24.04 packages 7.00, all recent
   enough; on an older release with 5.x, build from RARLAB's source. RARLAB's RAR for macOS download
   also contains `unrar`. It is not notarized by Apple, so macOS may block it until you allow it in
