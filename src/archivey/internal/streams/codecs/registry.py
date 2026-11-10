@@ -280,8 +280,9 @@ def open_codec_stream(
     as ``ArchiveyError`` subclasses (never raw codec exceptions).
 
     ``config.seekable`` gates native index construction and accelerator ``AUTO``
-    resolution; for the DEFLATE family, ``AUTO`` also takes a large sequential read
-    (``_sequential_read_pays`` in ``rapidgzip_select.py``).
+    resolution; for the DEFLATE family and bzip2, ``AUTO`` also takes a large sequential
+    read (``_sequential_read_pays`` in ``rapidgzip_select.py``,
+    ``_bzip2_sequential_read_pays`` in ``bzip2_codec.py``).
     The ArchiveStream seekability hint is separate: pass ``seekable=False`` to force a
     forward-only public handle (as :func:`~archivey.open_stream` does by default). When
     ``seekable`` is omitted the handle stays seekable so format backends that need
