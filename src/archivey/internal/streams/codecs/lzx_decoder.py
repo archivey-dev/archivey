@@ -20,6 +20,9 @@ stream:
 - the length tree may have no codes, and decoding a symbol with it is damage; any
   other tree whose codes do not fill the code space is damage, an empty one too (a
   tree with only out-of-range lengths is not empty, so it does not fill the space);
+- a tree's codes of at most lzxd.c's first-level width (6 bits for the pretree, 7 for
+  the aligned tree, 12 for the main and length trees) that fill the code space end
+  the tree: a longer code is never reached, so it is dropped, not refused;
 - a match may not cross the end of the window or the end of a frame, nor reach back
   before the first byte of output;
 - the E8 translation runs for the first 32 768 frames only, from the first block that

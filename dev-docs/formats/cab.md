@@ -109,7 +109,7 @@ earlier block's damage reaches the member, so the earlier blocks count too.
 
 `lzx_decoder.py` follows libmspack's `lzxd.c` wherever the format leaves a choice, so the
 two agree on every stream; its docstring lists those choices (code-length runs that spill
-past their range, code lengths a delta wraps out of range, which trees may be empty,
+past their range, code lengths a delta wraps out of range, which trees may be empty, codes past a full first-level table,
 matches that cross a frame or reach before the start, the
 E8 limits). Each tree decodes through a two-level table: a root as wide as the longest
 code, at most 10 bits, and a sub-table under each root entry whose codes are longer. A
