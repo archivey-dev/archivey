@@ -72,7 +72,7 @@ REFUSE_UNKNOWN_COMPRESSION = (
 )
 REFUSE_RAR5_SOLID_AFTER_EMPTY = (
     "unar 1.10 crashes, or reports success with no data, on a RAR5 solid archive when a "
-    "member with data follows an empty file or a directory. " + _USE_UNRAR
+    "member with data follows an empty file, a directory or a junction. " + _USE_UNRAR
 )
 
 
@@ -188,20 +188,18 @@ def _rar5_solid_after_empty(archive: RarArchive) -> set[int]:
 
     Measured with ``unar`` 1.10.1 (SIGSEGV) and XADMaster 1.10.8 (exit 0, no data): a
     member with data that comes after an empty file or a directory in a RAR5 solid
-    archive. An empty entry *last* is harmless, and so is anything before it. A link
-    (a RAR5 redirect: symlink, junction, hard link, file copy or an unknown type) does
-    not count: XADMaster 1.10.8 decodes the members after one exactly, measured on
-    ``symlinks_solid__.rar``, ``winlinks_solid__.rar``, ``hardlinks_solid__.rar`` and
-    ``redirect_unknown_solid__.rar``. RAR3/4 solid archives decoded correctly in every
-    shape measured, so they are not refused; the size and digest check on every member
-    is the net there.
+    archive. An empty entry *last* is harmless, and so is anything before it. A
+    redirect of a measured type (:func:`_measured_redirect`) does not count. Any other
+    redirect counts, and so the gate refuses rather than guesses. RAR3/4 solid archives
+    decoded correctly in every shape measured, so they are not refused; the size and
+    digest check on every member is the net there.
     """
     if archive.version != 5 or not archive.is_solid:
         return set()
     refused: set[int] = set()
     seen_empty = False
     for info in archive.members:
-        if _is_link(info):
+        if _measured_redirect(info):
             continue
         if seen_empty and not _carries_no_solid_data(info):
             refused.add(id(info))
@@ -210,9 +208,20 @@ def _rar5_solid_after_empty(archive: RarArchive) -> set[int]:
     return refused
 
 
-def _is_link(info: RarMemberInfo) -> bool:
-    """A RAR5 redirect or a hard link or file copy: a header with no packed data."""
-    return info.file_redir is not None or info.is_hardlink_or_copy
+# RAR5 redirect types that XADMaster 1.10.8 decodes the members after exactly, in a
+# solid archive: Unix symlink (1), Windows symlink (2), hard link (4), file copy (5),
+# and 6, a type no RAR version writes. Measured on ``links_before_data_solid__.rar``
+# (1, 4, 5), ``winlinks_solid__.rar`` (2) and ``redirect_unknown_solid__.rar`` (6).
+# A junction (3) is written only on Windows, and no fixture has data after one.
+_MEASURED_REDIRECT_TYPES = frozenset({1, 2, 4, 5, 6})
+
+
+def _measured_redirect(info: RarMemberInfo) -> bool:
+    """A redirect (hard links and file copies are redirect types too) of a type in
+    :data:`_MEASURED_REDIRECT_TYPES`."""
+    return (
+        info.file_redir is not None and info.file_redir[0] in _MEASURED_REDIRECT_TYPES
+    )
 
 
 def _rar4_solid_after_encrypted(archive: RarArchive) -> set[int]:

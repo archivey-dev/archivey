@@ -1270,8 +1270,9 @@ system SHALL refuse with `UnsupportedFeatureError`, before spawning `unar`:
   (`unar` 1.10 does not decrypt with it);
 - every member of a multi-volume RAR5 set with encrypted headers (XADMaster 1.10.8
   returns no data for it, and exits 0);
-- in a RAR5 solid archive, a member with data that follows an empty file or a
-  directory (a link before it does not count: XADMaster 1.10.8 decodes it);
+- in a RAR5 solid archive, a member with data that follows an empty file, a
+  directory or a junction (a symlink, hard link or file copy before it does not
+  count: XADMaster 1.10.8 decodes it);
 - a compressed member whose extract version is below 20 (RAR 1.5 algorithm);
 - any member of a multi-volume set that has a prefix before the RAR.
 

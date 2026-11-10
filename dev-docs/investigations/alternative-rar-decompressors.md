@@ -469,11 +469,12 @@ without a failing sample, on the same no-data-in-the-stream grounds). The solid 
 names only the readable members by index, so `unar` never reaches the crash and loses no
 buffered output. RAR4 is not gated; the size and digest check on each member is the net.
 
-*Update 2026-11-10:* links no longer count. XADMaster 1.10.8 decodes every member after a
-RAR5 redirect exactly (symlink, Windows symlink, junction, hard link and an unknown type:
-`symlinks_solid__.rar`, `winlinks_solid__.rar`, `hardlinks_solid__.rar`,
-`redirect_unknown_solid__.rar`), so the gate refuses only after an empty file or a
-directory. Dropping the empty member from a synthetic archive is no workaround either:
+*Update 2026-11-10:* most links no longer count. XADMaster 1.10.8 decodes every member
+after a RAR5 Unix symlink, hard link or file copy (`links_before_data_solid__.rar`), a
+Windows symlink (`winlinks_solid__.rar`) and a redirect of unknown type
+(`redirect_unknown_solid__.rar`) exactly, so the gate skips those. A junction is written
+only on Windows and no fixture has data after one, so it still counts, with empty files
+and directories. Dropping the empty member from a synthetic archive is no workaround either:
 in `basic_solid__.rar` the empty first member's 28 packed bytes carry the Huffman tables
 the later members reuse (their blocks have the table-present bit clear), and `unar`
 fails on the synthetic chain just as on the original.
