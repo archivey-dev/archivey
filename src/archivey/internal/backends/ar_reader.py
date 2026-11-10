@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from datetime import UTC, datetime
 
 from archivey.exceptions import (
     CorruptionError,
@@ -57,6 +56,7 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
 MAGIC = b"!<arch>\n"
@@ -83,20 +83,10 @@ def _field(raw: bytes, base: int, what: str, offset: int) -> int | None:
     # Digits valid in the base: isdigit() alone would let 8 and 9 into an octal mode.
     if not text.isdigit() or (base == 8 and not set(text) <= set(b"01234567")):
         raise CorruptionError(
-            f"ar header at offset {offset}: the {what} field {raw!r} is not a number"
+            f"ar header at offset {offset}: the {what} field "
+            f"{quoted(raw.decode('ascii', 'surrogateescape'))} is not a number"
         )
     return int(text, base)
-
-
-def _time(mtime: int | None) -> datetime | None:
-    """The modification time, or None when the field is blank or past what a
-    ``datetime`` holds (12 decimal digits reach the year 33658)."""
-    if mtime is None:
-        return None
-    try:
-        return datetime.fromtimestamp(mtime, UTC)
-    except (OverflowError, ValueError, OSError):
-        return None
 
 
 # What ends an entry of the GNU long-name table.
@@ -230,16 +220,20 @@ class ArReader(SequentialReader):
         context = self._context
         mtime = _field(raw[16:28], 10, "mtime", offset)
         mode = _field(raw[40:48], 8, "mode", offset)
-        return ArchiveMember(
+        member = ArchiveMember(
             type=MemberType.FILE,
             name=context.decode_name(name),
             raw_name=name,
             size=size,
-            modified=_time(mtime),
             mode=None if mode is None else mode & 0o7777,
             uid=_field(raw[28:34], 10, "uid", offset),
             gid=_field(raw[34:40], 10, "gid", offset),
         )
+        # A blank field records no time; 12 decimal digits reach past what a
+        # datetime holds, which is reported.
+        if mtime is not None:
+            context.set_unix_time(member, "modified", mtime, source="ar")
+        return member
 
 
 class ArHandler(SequentialFormatHandler):
