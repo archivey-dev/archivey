@@ -183,6 +183,17 @@ actually did.
 ::: archivey.detection_cost.TierSkip
 ::: archivey.detection_cost.TierSkipReason
 
+## fsspec file system
+
+`ArchiveyFileSystem` lives in the `archivey.fsspec` module, the only archivey module that
+imports [fsspec](https://filesystem-spec.readthedocs.io/). fsspec finds it as the `archivey`
+protocol without an import, so `pandas.read_csv("archivey://t.csv::s3://bucket/a.7z")` works
+once archivey is installed.
+
+::: archivey.fsspec.ArchiveyFileSystem
+    options:
+      members: [reader, close]
+
 ## Display and naming helpers
 
 These live in the `archivey.terminal` and `archivey.paths` modules and are not
