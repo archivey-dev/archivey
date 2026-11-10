@@ -1,4 +1,13 @@
-"""Public read-only archive interface."""
+"""Public read-only archive interface: the reader and member-stream classes.
+
+:func:`~archivey.open_archive` returns an :class:`ArchiveReader` (random access) or a
+:class:`ForwardArchiveReader` (one forward pass, from a pipe too), and member reads
+return an :class:`ArchiveStream`. The classes here are abstract: they fix the public
+methods and their docstrings, and archivey's implementations live under
+``archivey.internal``. Building an :class:`ArchiveStream` or :class:`MemberPass`
+directly, or through a subclass that leaves an abstract method unimplemented, still
+works with a ``DeprecationWarning`` until 0.4.0 (``_class_to_build``).
+"""
 
 from __future__ import annotations
 
@@ -33,6 +42,8 @@ from archivey.types import (
     ExtractionProgress,
     MemberFilter,
     MemberSelectorArg,
+    OnBlocked,
+    OnBlockedStr,
     OnError,
     OnErrorStr,
     OverwritePolicy,
@@ -618,6 +629,18 @@ class ForwardArchiveReader(ABC):
         members (read once, so a generator works), or ``None`` for all. The yielded
         stream is valid only until the iterator advances.
 
+        **A yielded member may not be final.** The pass hands it over before archivey
+        has read the rest of the archive, and it is updated in place when archivey
+        learns more: a ZIP read from a pipe gets its type, permissions and link target
+        from the index at its end, so a symlink is yielded looking like a file; and in
+        a pass that lists as it goes (every streaming reader, and TAR), a member whose
+        name a later member reuses is yielded with ``is_current`` set to ``True``.
+        While :attr:`~archivey.ArchiveMember.member_state_final` is ``False``, do not
+        act on those fields in a way you cannot take back (an upload, a database row,
+        an event sent on): check it first. The end of the pass settles the listing, but
+        a link target or size that nothing has read yet can still be pending then, so
+        the flag stays the check after the loop too. ``extract_all`` already waits.
+
         The stream is ``None`` for every member that has no data of its own: links,
         special entries, tombstones and most directories. A directory that declares
         data (``MEMBER_DIRECTORY_DATA_IGNORED``, in ZIP, TAR and RAR) gets a stream
@@ -765,6 +788,7 @@ class ForwardArchiveReader(ABC):
         policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
         on_error: OnError | OnErrorStr = OnError.STOP,
+        on_blocked: OnBlocked | OnBlockedStr = OnBlocked.RAISE,
         abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         limits: ExtractionLimits | None = None,
@@ -794,14 +818,22 @@ class ForwardArchiveReader(ABC):
         as the report of a real extraction into the same ``dest`` would, with paths
         under ``dest``.
 
-        A member refused by a safety check is skipped and reported as ``BLOCKED``; it
-        raises only when ``abort_on`` names it.
+        A member refused by a safety check is never written, and the rest still
+        extract. Under ``on_blocked="raise"`` (the default) the call then raises
+        :class:`~archivey.FilterRejectionError`, whose ``report`` attribute is the full
+        report; under ``on_blocked="skip"`` it returns the report, with the member as
+        ``BLOCKED``. ``abort_on=["blocked_member"]`` raises at the first refusal
+        instead, before the rest are extracted (see :class:`~archivey.OnBlocked`).
 
         Raises:
+            FilterRejectionError: Under ``on_blocked="raise"`` (the default), a
+                safety check refused at least one member: raised once every member has
+                been processed, with the full report as its ``report`` attribute. Under
+                ``abort_on=["blocked_member"]``, raised at the first refusal, with
+                ``report`` set to ``None``.
             ExtractionError: Under ``on_error="stop"`` (the default), a member could not
                 be written, such as a file already at its destination under
                 ``overwrite="error"``. Its subclasses
-                :class:`~archivey.FilterRejectionError`,
                 :class:`~archivey.NameCollisionError` and
                 :class:`~archivey.NameRewrittenError` are raised for the events
                 ``abort_on`` names, whatever ``on_error`` says.
@@ -915,10 +947,10 @@ class ArchiveReader(ForwardArchiveReader):
         **Cost, when ``reader.cost.access_cost`` is ``SOLID``** (solid 7z/RAR, any
         compressed tar): members share one compression run, so opening one decodes
         every member before it. Doing that for each member in turn is quadratic in the
-        archive size. On a 7z or RAR reader, the first call that decodes again what an
-        earlier one decoded logs one INFO record per reader on the
-        ``archivey.backends`` logger saying so, and a compressed tar's backward seeks
-        report ``STREAM_REWIND_REDECOMPRESSES``. Prefer
+        archive size. On a 7z or RAR reader, a call that decodes again what an earlier
+        one decoded reports ``SOLID_OPEN_REDECOMPRESSES`` (recorded once per reader,
+        logged at INFO, raised on every such call if the policy raises on it), and a
+        compressed tar's backward seeks report ``STREAM_REWIND_REDECOMPRESSES``. Prefer
         :meth:`~ForwardArchiveReader.stream_members`, which decodes the run once.
 
         Raises:

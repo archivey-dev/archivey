@@ -25,19 +25,23 @@ reader maps each entry to its file the way ``rpm`` does (``lib/rpmfi.c``):
 Every member's metadata comes from the header, as ``rpm`` installs it; a newc entry's
 own size is only checked against it. Members are named as the payload stores them,
 ``./usr/bin/x``, so ``usr/bin/x`` once normalized: what ``rpm2cpio | cpio -i``
-extracts, relative to the directory it is given. A regular file's data follows its entry, except
-in a hard-link set (regular files that share ``FILEDEVICES`` and ``FILEINODES``):
-there only the set's last file in header order carries the data, the earlier entries
-coming first, empty. As for CPIO, this reader holds those back, yields the last as the
-``FILE`` and the others as ``HARDLINK`` members to it. A symlink's target is its entry's
-data; the reader takes it from ``FILELINKTOS`` and skips those bytes. A ``%ghost`` file
-is listed in the header but never stored, and ``rpm2cpio`` does not give it either: it
-is not a member. The payload ends with a newc ``TRAILER!!!`` entry, and every file
-that is not a ghost must have been found by then.
+extracts, relative to the directory it is given. A regular file's data follows its
+entry, except in a hard-link set (regular files that share ``FILEDEVICES`` and
+``FILEINODES``): there only the set's last file in header order carries the data, the
+earlier entries coming first, empty. As for CPIO, this reader holds those back, yields
+the last as the ``FILE`` and the others as ``HARDLINK`` members to it. A symlink's
+target is its entry's data; the reader takes it from ``FILELINKTOS`` and skips those
+bytes. A ``%ghost`` file is listed in the header but never stored, and ``rpm2cpio``
+does not give it either: it is not a member. The payload ends with a newc
+``TRAILER!!!`` entry, and every file that is not a ghost must have been found by then.
 
-``FILEDIGESTS`` holds each regular file's digest in the algorithm ``FILEDIGESTALGO``
-names (MD5 when absent): it is checked as the member is read. Signatures are reported
-in the archive info, not checked.
+The signature header stores digests of the main header, from its magic to the end
+of its data store: ``RPMSIGTAG_SHA256`` and the older ``RPMSIGTAG_SHA1``. The walk
+checks every one of them the package stores as it reads the header, so damage to what
+only the header holds (a link target, a mode, an owner) is ``CorruptionError`` before
+any member is listed. The digests are not signed: they detect damage, not tampering. ``FILEDIGESTS`` holds each regular file's digest in the
+algorithm ``FILEDIGESTALGO`` names (MD5 when absent): it is checked as the member is
+read. Signatures are reported in the archive info, not checked.
 
 The reader is written against ``archivey.formats`` and archivey's public names only,
 as a format added from outside would be; ``register_builtin_format`` is the one
@@ -76,6 +80,7 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
@@ -135,6 +140,13 @@ TAG_RPMFORMAT = 5114
 # RPMSIGTAG_DSA (267), RPMSIGTAG_RSA (268) and the OpenPGP tag (278) over the header.
 # 259 and 262 are the names rpm gives 1002 and 1005 once read, never written.
 _SIGNATURE_TAGS = frozenset({267, 268, 278, 1002, 1005, 1006})
+# Signature-header tags that hold a digest of the main header, from its magic to the
+# end of its data store, as lowercase hexadecimal: RPMSIGTAG_SHA256 (273) and
+# RPMSIGTAG_SHA1 (269). Every one the package stores is checked.
+_HEADER_DIGESTS: tuple[tuple[int, str, Callable[[], Hasher]], ...] = (
+    (273, "SHA-256", hashlib.sha256),
+    (269, "SHA-1", hashlib.sha1),
+)
 
 RPMFILE_GHOST = 1 << 6
 
@@ -197,8 +209,9 @@ class Header:
     def _bad(self, tag: int, why: str) -> CorruptionError:
         return CorruptionError(f"RPM {self._what}: tag {tag} {why}")
 
-    def ints(self, tag: int) -> list[int] | None:
-        """An integer array, unsigned, or None when the tag is absent."""
+    def _int_entry(self, tag: int) -> tuple[_Entry, int, int] | None:
+        """The tag's entry, its integer width and where its array ends, checked to be
+        an integer array inside the data store; None when the tag is absent."""
         entry = self._entries.get(tag)
         if entry is None:
             return None
@@ -208,6 +221,14 @@ class Header:
         end = entry.offset + size * entry.count
         if end > len(self._data):
             raise self._bad(tag, "runs past the end of the header's data")
+        return entry, size, end
+
+    def ints(self, tag: int) -> list[int] | None:
+        """An integer array, unsigned, or None when the tag is absent."""
+        found = self._int_entry(tag)
+        if found is None:
+            return None
+        entry, size, end = found
         if size == 1:
             return list(self._data[entry.offset : end])
         fmt = {2: "H", 4: "I", 8: "Q"}[size]
@@ -216,17 +237,40 @@ class Header:
         )
 
     def number(self, tag: int) -> int | None:
-        values = self.ints(tag)
-        return values[0] if values else None
+        """The first value of an integer array, checked as :meth:`ints` checks it,
+        without building the array: a tag read for one value may declare a count
+        as large as the data store. None when the tag is absent or declares no
+        values."""
+        found = self._int_entry(tag)
+        if found is None:
+            return None
+        entry, size, _end = found
+        if entry.count == 0:
+            return None  # as ``ints`` gives [] for a count of 0
+        if size == 1:
+            return self._data[entry.offset]
+        fmt = {2: ">H", 4: ">I", 8: ">Q"}[size]
+        return struct.unpack_from(fmt, self._data, entry.offset)[0]
 
-    def strings(self, tag: int) -> list[bytes] | None:
-        """A string array (a single string as a list of one), or None when absent."""
+    def _string_entry(self, tag: int) -> _Entry | None:
+        """The tag's entry, checked to be a string or a string array; None when the
+        tag is absent. A single STRING must declare one value, as _read_header and
+        rpm's headerVerifyInfo require."""
         entry = self._entries.get(tag)
         if entry is None:
             return None
         if entry.type not in (_STRING, _STRING_ARRAY, _I18NSTRING):
             raise self._bad(tag, f"has type {entry.type}, not a string")
-        count = 1 if entry.type == _STRING else entry.count
+        if entry.type == _STRING and entry.count != 1:
+            raise self._bad(tag, f"is a single string with count {entry.count}")
+        return entry
+
+    def strings(self, tag: int) -> list[bytes] | None:
+        """A string array (a single string as a list of one), or None when absent."""
+        entry = self._string_entry(tag)
+        if entry is None:
+            return None
+        count = entry.count
         if count > len(self._data) - entry.offset:
             raise self._bad(tag, f"declares {count} strings in fewer bytes")
         values = []
@@ -245,14 +289,37 @@ class Header:
         return 0 if entry is None else entry.count
 
     def string(self, tag: int) -> bytes | None:
-        values = self.strings(tag)
-        return values[0] if values else None
+        """The first string of the tag's entry, checked as :meth:`strings` checks it,
+        without building the list: a tag read for one value, such as ``NAME``, may
+        declare a count as large as the data store. None when the tag is absent or
+        declares no strings."""
+        entry = self._string_entry(tag)
+        if entry is None:
+            return None
+        count = entry.count
+        if count > len(self._data) - entry.offset:
+            raise self._bad(tag, f"declares {count} strings in fewer bytes")
+        if count == 0:
+            return None  # as ``strings`` gives [] for a count of 0
+        first_end = self._data.find(b"\0", entry.offset)
+        # Each of the declared strings ends at a NUL, as ``strings`` requires. A
+        # single string needs only the first; an array is counted to the end.
+        if first_end < 0 or (
+            count > 1 and self._data.count(b"\0", entry.offset) < count
+        ):
+            raise self._bad(tag, "has a string with no NUL before the data's end")
+        return self._data[entry.offset : first_end]
 
 
 def _read_header(
-    stream: ForwardStream, what: str, budget: int | None
+    stream: ForwardStream,
+    what: str,
+    context: ReaderContext,
+    hashers: tuple[Hasher, ...] = (),
 ) -> tuple[Header, int]:
-    """A header at the stream's position, and how many bytes it took."""
+    """A header at the stream's position, and how many bytes it took. The walk keeps
+    it, so its index and data store are charged to ``max_metadata_bytes`` before
+    they are read. Each of ``hashers`` is fed every byte of the header."""
     offset = stream.offset
     intro = stream.read_exact(16)
     if intro[:4] != HEADER_MAGIC:
@@ -264,12 +331,12 @@ def _read_header(
             "of data, over rpm's own bounds"
         )
     total = 16 * count + size
-    if budget is not None and total > budget:
-        raise ResourceLimitError(
-            f"RPM {what} of {total} bytes, over max_metadata_bytes={budget}"
-        )
+    context.charge_metadata(total, what=f"the RPM {what}")
     index = stream.read_exact(16 * count)
     data = stream.read_exact(size)
+    for hasher in hashers:
+        for part in (intro, index, data):
+            hasher.update(part)
     entries: dict[int, _Entry] = {}
     for tag, kind, at, n in struct.iter_unpack(">IIiI", index):
         if tag in entries:
@@ -278,6 +345,11 @@ def _read_header(
             raise CorruptionError(
                 f"RPM {what}: tag {tag} has offset {at} and count {n} in a store "
                 f"of {size} bytes"
+            )
+        if kind == _STRING and n != 1:
+            # rpm's headerVerifyInfo refuses this too: a STRING holds one value.
+            raise CorruptionError(
+                f"RPM {what}: tag {tag} is a single string with count {n}"
             )
         entries[tag] = _Entry(kind, n, at)
     return Header(entries, data, what), 16 + total
@@ -316,13 +388,18 @@ class _Package:
     # (directory, base) -> file index: the bytes objects the header's lists hold.
     by_name: dict[tuple[bytes, bytes], int]
     compressor: StreamFormat | None
-    digest: tuple[str, Callable[[], Hasher]] | None
+    # FILEDIGESTALGO's name and hash constructor; None for an algorithm not in _DIGESTS.
+    digest_algorithm: tuple[str, Callable[[], Hasher]] | None
+    # The header's per-file columns, indexed like ``files``; None for an absent tag.
     digests: list[bytes] | None
     mtimes: list[int] | None
     users: list[bytes] | None
     groups: list[bytes] | None
     targets: list[bytes] | None
+    # Earlier links of a hard-link set, waiting for the set's last file (by its index),
+    # which carries the data.
     held: dict[int, list[_File]] = field(default_factory=dict)
+    # The payload offset of the first CPIO entry: CPIO pads to 4 bytes from there.
     base: int = 0
 
 
@@ -380,18 +457,25 @@ class RpmReader(SequentialReader):
         self._check_end(payload)
 
     def _read_package(self, stream: ForwardStream) -> _Package:
+        """Read the lead and both headers, leaving the stream at the payload."""
         lead = stream.read_exact(LEAD_SIZE)
         if lead[:4] != LEAD_MAGIC:
             raise CorruptionError("No RPM lead at offset 0")
         major = lead[4]
         if major not in (3, 4):
             raise UnsupportedFeatureError(f"RPM lead version {major}")
-        budget = self._context.config.listing_limits.max_metadata_bytes
-        signature, used = _read_header(stream, "signature header", budget)
+        signature, used = _read_header(stream, "signature header", self._context)
         stream.skip(-used % 8)
-        if budget is not None:
-            budget -= used
-        header, _ = _read_header(stream, "header", budget)
+        checks = _header_digests(signature)
+        header, _ = _read_header(
+            stream, "header", self._context, tuple(h for _, _, h in checks)
+        )
+        for name, expected, hasher in checks:
+            if hasher.digest() != expected:
+                raise CorruptionError(
+                    f"RPM header does not match the {name} digest in the signature "
+                    "header"
+                )
         payload_format = header.string(TAG_PAYLOADFORMAT)
         if payload_format not in (None, b"cpio"):
             raise UnsupportedFeatureError(
@@ -420,6 +504,8 @@ class RpmReader(SequentialReader):
         header: Header,
         compressor: bytes | None,
     ) -> None:
+        """Fill the archive info: the package's identity, whether it is signed, and the
+        package format version."""
         extra = ArchiveInfoExtra({})
 
         def text(tag: int) -> str | None:
@@ -545,8 +631,12 @@ class RpmReader(SequentialReader):
                     sets.setdefault(key, []).append(file.index)
             for members in sets.values():
                 if len(members) > 1:
+                    # One tuple per set, shared by its files: a tuple per file would
+                    # take memory with the square of the set's size, and a header
+                    # can give every file one inode.
+                    links = tuple(members)
                     for i in members:
-                        files[i].links = tuple(members)
+                        files[i].links = links
         return files, (mtimes, users, groups, targets)
 
     def _member(self, package: _Package, file: _File) -> ArchiveMember:
@@ -690,6 +780,10 @@ class RpmReader(SequentialReader):
     def _entry(
         self, payload: ForwardStream, package: _Package, file: _File
     ) -> Iterator[MemberSpan]:
+        """The members one payload entry gives: its own, unless it is an earlier link
+        of a hard-link set, which is held until the set's last file comes, or yielded
+        at once as a link to that file if it already came; then the held links of the
+        set it ends."""
         member = self._member(package, file)
         if member.type is MemberType.SYMLINK:
             # The target, which the header already gave.
@@ -717,6 +811,7 @@ class RpmReader(SequentialReader):
 
     @staticmethod
     def _link(member: ArchiveMember, data: ArchiveMember) -> MemberSpan:
+        """Turn ``member`` into a hard link to ``data``, the member with the bytes."""
         member.type = MemberType.HARDLINK
         member.link_target = data.name
         member.size = None
@@ -724,7 +819,7 @@ class RpmReader(SequentialReader):
 
     @staticmethod
     def _digests(package: _Package, file: _File) -> tuple[MemberDigest, ...]:
-        if package.digests is None or package.digest is None:
+        if package.digests is None or package.digest_algorithm is None:
             return ()
         text = package.digests[file.index]
         if not text:
@@ -735,7 +830,7 @@ class RpmReader(SequentialReader):
             raise CorruptionError(
                 f"RPM header: the digest of {_shown(file.raw_name)} is not hexadecimal"
             ) from None
-        name, new = package.digest
+        name, new = package.digest_algorithm
         return (MemberDigest(name, expected, new),)
 
     def _check_end(self, payload: ForwardStream) -> None:
@@ -763,6 +858,26 @@ class RpmReader(SequentialReader):
             scanned += len(chunk)
 
 
+def _header_digests(signature: Header) -> list[tuple[str, bytes, Hasher]]:
+    """Each digest of the main header the signature header stores: the algorithm's
+    name, the digest and a hasher to compare it with. Empty when the package stores
+    none: old packages, and packages a tool rewrote, can lack them, and that is not
+    damage."""
+    checks = []
+    for tag, name, new in _HEADER_DIGESTS:
+        text = signature.string(tag)
+        if text is None:
+            continue
+        try:
+            expected = bytes.fromhex(text.decode("ascii"))
+        except ValueError:
+            raise CorruptionError(
+                f"RPM signature header: the header's {name} digest is not hexadecimal"
+            ) from None
+        checks.append((name, expected, new()))
+    return checks
+
+
 def _split(name: bytes) -> tuple[bytes, bytes]:
     """A path as the header stores it: the directory, with its slash, and the base."""
     cut = name.rfind(b"/") + 1
@@ -781,13 +896,14 @@ def _shown(raw: bytes) -> str:
 def _hex(raw: bytes, what: str, offset: int) -> int:
     try:
         text = raw.decode("ascii")
+        # int() would also take spaces, a sign and underscores.
         if not text.isalnum():
             raise ValueError(text)
         return int(text, 16)
     except ValueError:
         raise CorruptionError(
-            f"RPM payload entry at offset {offset}: the {what} field {raw!r} is not "
-            "a number"
+            f"RPM payload entry at offset {offset}: the {what} field "
+            f"{quoted(raw.decode('ascii', 'surrogateescape'))} is not a number"
         ) from None
 
 

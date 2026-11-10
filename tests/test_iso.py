@@ -28,14 +28,20 @@ from archivey import (
 )
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.diagnostics import ArchiveEofContext, DiagnosticPolicy
 from archivey.exceptions import (
     CorruptionError,
+    DiagnosticRaisedError,
     ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.iso_reader import IsoHandler, _strip_version
+from archivey.internal.backends.iso_reader import (
+    IsoHandler,
+    _strip_version,
+    _tf_modify_access_fields,
+)
 from archivey.internal.format_adapter import IndexedReaderAdapter
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
@@ -1139,7 +1145,7 @@ def test_a_rock_ridge_device_node_without_data_is_other(tmp_path: Path) -> None:
         assert "special_file_type" not in by_name["bbb"].extra
         codes = [d.code for d in ar.diagnostics.retained]
         assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
-        ar.extract_all(tmp_path / "out")
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
     assert not (tmp_path / "out" / "aaa").exists()
     assert (tmp_path / "out" / "bbb").read_bytes() == b"BBBB"
 
@@ -1189,7 +1195,7 @@ def test_a_rock_ridge_device_node_with_data_is_a_file(tmp_path: Path) -> None:
         assert context["member_name"] == "aaa"
         assert context["special_file_type"] == "char_device"
         assert context["size"] == 4
-        ar.extract_all(tmp_path / "out")
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
     assert (tmp_path / "out" / "aaa").read_bytes() == b"AAAA"
     assert (tmp_path / "out" / "bbb").read_bytes() == b"BBBB"
 
@@ -1219,7 +1225,7 @@ def test_plain_iso_versions_keep_the_newest_current(tmp_path: Path) -> None:
         ]
         assert ar.read("FOO") == b"NEW VERSION"
         assert ar.read("FOO.;1") == b"OLD VERSION"
-        ar.extract_all(tmp_path / "out")
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["BAR.TXT", "FOO"]
     assert (tmp_path / "out" / "FOO").read_bytes() == b"NEW VERSION"
 
@@ -1380,7 +1386,10 @@ def test_rock_ridge_tf_modification_time_wins_over_record_date() -> None:
     tf_date = DirectoryRecordDate()
     tf_date.parse(struct.pack("=BBBBBBb", 101, 1, 2, 3, 4, 5, 0))
     record = iso.get_record(rr_path="/a.txt")
-    record.rock_ridge.dr_entries.tf_record.modification_time = tf_date
+    # pycdlib names TF flag bit 1, which RRIP gives the modification time,
+    # ``access_time`` (``_tf_modify_access_fields``).
+    modify_field, _access_field = _tf_modify_access_fields()
+    setattr(record.rock_ridge.dr_entries.tf_record, modify_field, tf_date)
     image = io.BytesIO()
     iso.write_fp(image)
     iso.close()
@@ -1388,6 +1397,42 @@ def test_rock_ridge_tf_modification_time_wins_over_record_date() -> None:
     with open_archive(io.BytesIO(image.getvalue())) as archive:
         (member,) = [m for m in archive.members() if m.name == "a.txt"]
     assert member.modified == datetime(2001, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+
+@requires_binary("xorriso")
+def test_rock_ridge_tf_times_are_read_in_rrip_order(tmp_path: Path) -> None:
+    """RRIP 1.12 gives TF flag bit 1 to the modification time and bit 2 to the access
+    time, as xorriso, genisoimage and the Linux kernel do. pycdlib 1.x names them the
+    other way round, so ``modified`` used to be the file's access time when the image
+    was made (Ubuntu 4.10's install CD: 1083 files 50 s off what xorriso extracts)."""
+    from datetime import UTC, datetime
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "f.txt").write_bytes(b"hi")
+    mtime = datetime(2020, 1, 2, 3, 4, 5, tzinfo=UTC)
+    atime = datetime(2023, 6, 7, 8, 9, 10, tzinfo=UTC)
+    os.utime(src / "f.txt", (atime.timestamp(), mtime.timestamp()))
+    path = tmp_path / "t.iso"
+    subprocess.run(
+        ["xorriso", "-as", "mkisofs", "-quiet", "-R", "-o", str(path), str(src)],
+        check=True,
+        capture_output=True,
+    )
+    with open_archive(path) as archive:
+        member = archive.get("f.txt")
+    assert member.modified == mtime
+    assert member.accessed == atime
+
+
+def test_the_tf_field_probe_names_bit_1_the_modification_time() -> None:
+    import pycdlib.rockridge
+
+    record = pycdlib.rockridge.RRTFRecord()
+    record.parse(b"TF\x0c\x01\x02" + bytes((101, 1, 2, 3, 4, 5, 0)))
+    modify_field, access_field = _tf_modify_access_fields()
+    assert getattr(record, modify_field) is not None
+    assert getattr(record, access_field, None) is None
 
 
 # --- data the directory record's own inode does not cover -----------------------------
@@ -1410,7 +1455,7 @@ def test_the_el_torito_boot_catalog_reads_and_extracts(tmp_path: Path) -> None:
 
     with open_archive(io.BytesIO(image.getvalue())) as ar:
         catalog = ar.read("BOOT.CAT")
-        ar.extract_all(tmp_path)
+        ar.extract_all(tmp_path, on_blocked="skip")
     # The El Torito validation entry: header id 1, key bytes 0x55 0xAA at 30-31.
     assert len(catalog) == 2048
     assert catalog[0] == 1 and catalog[30:32] == b"\x55\xaa"
@@ -1578,7 +1623,7 @@ def test_a_repeated_identifier_without_the_flag_lists_each_file(tmp_path: Path) 
         # The second record is reported: a reader that keeps the first lists another
         # file under that name.
         assert dict(ar.diagnostics.counts) == {DiagnosticCode.MEMBER_NAME_DUPLICATE: 1}
-        ar.extract_all(tmp_path)
+        ar.extract_all(tmp_path, on_blocked="skip")
     assert (tmp_path / "BIG.BIN").read_bytes() == b"b" * 1000
 
 
@@ -1663,7 +1708,7 @@ def test_a_repeated_superseded_version_stays_not_current(tmp_path: Path) -> None
             ("FOO.;1", 1000, False),
             ("FOO", 3, True),
         ]
-        ar.extract_all(tmp_path)
+        ar.extract_all(tmp_path, on_blocked="skip")
     assert [p.name for p in tmp_path.iterdir()] == ["FOO"]
     assert (tmp_path / "FOO").read_bytes() == b"NEW"
 
@@ -1905,6 +1950,10 @@ def _iso_cut_points(*, udf: bool) -> dict[str, int]:
         )
         directory = iso.get_record(rr_path="/d").extent_location() * block
         points["subdirectory"] = directory + 40
+        # The padding of the last directory pycdlib walks, the Joliet ``/d``: a cut
+        # there leaves no later structure to read past it.
+        joliet = iso.get_record(joliet_path="/d").extent_location() * block
+        points["joliet-subdirectory-padding"] = joliet + 1500
     iso.close()
     return points
 
@@ -1923,6 +1972,7 @@ _RICH_CUTS = (
     "joliet-path-table",
     "joliet-root-directory",
     "subdirectory",
+    "joliet-subdirectory-padding",
 )
 _UDF_CUTS = ("udf-volume-recognition", "udf-last-anchor", "udf-file-data")
 
@@ -2030,11 +2080,10 @@ def _damage_root_extent(image: bytearray, block: int) -> None:
     "damage",
     [
         _damage_primary_descriptor,
-        _damage_directory_padding,
         _damage_path_table_size,
         _damage_root_extent,
     ],
-    ids=["primary-descriptor", "directory-padding", "path-table-size", "root-extent"],
+    ids=["primary-descriptor", "path-table-size", "root-extent"],
 )
 def test_a_damaged_image_of_full_length_is_corruption_not_truncation(
     damage: Callable[[bytearray, int], None],
@@ -2046,6 +2095,79 @@ def test_a_damaged_image_of_full_length_is_corruption_not_truncation(
     damage(image, 2048)
     with raises_corruption_not_truncation():
         open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO)
+
+
+def test_damaged_directory_padding_lists_every_file_and_is_reported() -> None:
+    """pycdlib refuses the whole image when a directory block's padding holds a non-zero
+    byte; archivey lists every record and reports the block, which ``STRICT`` refuses,
+    since a record whose length byte was damaged to zero would be lost there."""
+    image = bytearray(_three_file_image(udf=False))
+    clean = open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO)
+    with clean:
+        expected = {m.name: clean.read(m) for m in clean.members() if m.is_file}
+    (root,) = struct.unpack_from("<I", image, 16 * 2048 + 156 + 2)
+    damaged_at = root * 2048 + 2047
+    _damage_directory_padding(image, 2048)
+
+    with open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO) as reader:
+        got = {m.name: reader.read(m) for m in reader.members() if m.is_file}
+        reports = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+        ]
+    assert got == expected
+    assert [d.context for d in reports] == [
+        ArchiveEofContext(
+            archive_name=None,
+            format="iso",
+            expected_marker="directory_padding",
+            expected_bytes=0,
+            observed_bytes=damaged_at,
+            observed_kind="nonzero",
+        )
+    ]
+
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with pytest.raises(DiagnosticRaisedError):
+        open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO, config=strict)
+
+
+#: SHA-256 of pycdlib's own ``_iter_directory_records`` source that the copy in
+#: ``iso_reader`` was checked against (pycdlib 1.22.0).
+_PYCDLIB_WALK_SOURCE_SHA256 = frozenset(
+    {"cc289078d746c0d2678d95c7012ac2add5e1680d5c837807aa644ea210326151"}
+)
+
+
+def test_the_copied_directory_walk_matches_the_installed_pycdlib() -> None:
+    """The tolerant walk is a copy of pycdlib's ``_iter_directory_records``, used in
+    its place during archivey's open. A pycdlib whose walk differs fails here, so its
+    changes are compared with the copy before they are lost under archivey."""
+    import hashlib
+    import inspect
+
+    from archivey.internal.backends import iso_reader
+
+    original = iso_reader._PYCDLIB_ITER_DIRECTORY_RECORDS
+    assert callable(original)
+    digest = hashlib.sha256(inspect.getsource(original).encode()).hexdigest()
+    assert digest in _PYCDLIB_WALK_SOURCE_SHA256, (
+        "pycdlib changed _iter_directory_records: compare it with the copy in "
+        "iso_reader._install_pycdlib_padding_tolerance, then add this digest: " + digest
+    )
+
+
+def test_pycdlib_outside_archivey_still_refuses_damaged_padding() -> None:
+    """The tolerance applies to archivey's own opens only."""
+    import pycdlib
+    from pycdlib.pycdlibexception import PyCdlibInvalidISO
+
+    image = bytearray(_three_file_image(udf=False))
+    _damage_directory_padding(image, 2048)
+    iso = pycdlib.PyCdlib()
+    with pytest.raises(PyCdlibInvalidISO, match="Invalid padding"):
+        iso.open_fp(io.BytesIO(bytes(image)))
 
 
 def test_the_raw_directory_walk_crosses_sector_padding() -> None:
@@ -2195,7 +2317,7 @@ def test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded(
         assert zzz.diagnostics == ()
         assert ar.read("zzz") == _ZISOFS_PLAIN
         assert ar.read("bbb") == b"BBBB"
-        ar.extract_all(tmp_path / "out")
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
     assert (tmp_path / "out" / "zzz").read_bytes() == _ZISOFS_PLAIN
 
 

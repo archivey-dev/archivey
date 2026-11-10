@@ -44,6 +44,16 @@
 - [x] 2.3 `ArchiveSource` uses `RangeSource` for an `OpenFile`; `seek_is_expensive` is
       `True`; `close()` drops the fetched windows, and nothing of the caller's is closed
       (no file object is ever opened).
+- [x] 2.3a Tail reads run on a remote source (design D1, maintainer 2026-11-08):
+      `RangeSource.nearest_resume_offset` answers the target, a joined set asks the
+      volume that holds it, detection's tail read asks `seeks_to_end_are_cheap` and
+      hints its span, and a
+      new run at the end keeps the minimum fetch (D2 rule 5), and a read just before a
+      window steps that window back (D2 rule 6). Tested from a path and
+      from an `OpenFile`: a bzip2-first UDIF image, a `.xz` size, a `.gz` ISIZE.
+      A multi-stream `.xz` or multi-member `.lz` from an `OpenFile` reads only the last
+      stream's index and stops (maintainer 2026-11-08, "lazy for multi-stream only"):
+      `size` is `None`, the walk runs when a seek needs it, a path is unchanged.
 - [x] 2.4 Run the full corpus and the short-returning-source tests through a memory-backed
       `OpenFile`: identical listings and bytes to a path source.
 - [x] 2.5 Change detection, tier 3 (design D7): `SourceChangedError`, the size
@@ -62,7 +72,15 @@
       header: an encoded header (the 7-Zip and py7zr default) is a short record after a
       packed header stream, and one fetch takes both. The pack-stream hint covers the
       folder's first pack stream from its start.
-- [ ] 3.4 ISO extent hints; RAR header-position hints during the listing walk.
+- [x] 3.4 ISO extent hints; RAR header-position hints during the listing walk.
+      ISO reads through the plugin API, so a plugin names a member's spans in the
+      public `MemberData.ranges` field, which the adapter hints when `open_member`
+      returns: data the plugin returns, not a call it must time. ISO names every
+      extent. A source keeps up to 8 pending hints, so members read side by side no
+      longer replace each other's. The RAR header hint is not added: measured on stored
+      RAR5 archives, it turns the walk's read-through into one request per header
+      (20 x 200 KB members: 7 requests and 4.0 MB become 21 and 1.3 MB; 200 x 2 KB: 4
+      become 7), a loss under the design's cost model. The walk keeps rule 2.
 - [ ] 3.5 Batched span fetches for `extract_all()` and `stream_members()` over
       non-solid ZIP and 7z: `merge_offset_ranges` then one `cat_ranges` per batch,
       into the window pool (design D5).
@@ -87,8 +105,10 @@
 
 ## 5. Volumes over fsspec
 
-- [ ] 5.1 Split `discover_volume_siblings` so the naming rules run on a list of names.
-- [ ] 5.2 fsspec discovery through one `ls` of the parent; each volume its own
+- [x] 5.1 Split `discover_volume_siblings` so the naming rules run on a list of names.
+      The rules run on a local `Path` or a `RemoteVolumePath`, whose directory
+      questions are answered from one `ls(detail=True)`; the code is shared, not copied.
+- [x] 5.2 fsspec discovery through one `ls` of the parent; each volume its own
       `RangeSource`. Tests on `memory://` for all three naming schemes.
 
 ## 6. Docs

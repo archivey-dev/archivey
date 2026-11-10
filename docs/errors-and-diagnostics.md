@@ -317,6 +317,11 @@ what you called:
 | `members_report()` | `report.diagnostics`: that one listing |
 | Any listing | `member.diagnostics`: the ones about that member |
 
+To find the diagnostics about a member, read `member.diagnostics`, or compare `context.member_name`
+with `member.name`. Don't search the messages for the name: a message from a format plugin, such
+as the CPIO, RPM, ISO, CAB and XAR readers, can quote a member's name as the archive stores it,
+such as `'./dev'` for the member listed as `dev`.
+
 All but the last are summaries: `counts` has an exact count for each code, and `retained` keeps the
 records themselves. An archive keeps at most 256 records by default, counting those attached to
 members, and `max_retained_diagnostic_references` in `ArchiveyConfig` changes that.
@@ -332,11 +337,13 @@ handle them as they happen instead, pass a function as `on_diagnostic=` in
 it's recorded, the same record the summaries keep. An exception it raises stops the operation and
 reaches your code.
 
-One code is logged at INFO rather than as a warning: `STREAM_REWIND_REDECOMPRESSES`, which
-reports how your code reads a compressed stream (seeking back), not a problem with the archive.
-`logging.basicConfig()` and the `archivey` command without `-v` show only warnings, so it prints
-nothing there. It is still counted in `reader.diagnostics`, passed to `on_diagnostic`, and raised
-by a policy that names it. To see its log line, set the `archivey` logger to INFO.
+Two codes are logged at INFO rather than as a warning, because they report how your code reads
+an archive, not a problem with the archive: `STREAM_REWIND_REDECOMPRESSES` (seeking back in a
+compressed stream) and `SOLID_OPEN_REDECOMPRESSES` (opening members of a solid 7z or RAR archive
+out of order, so the same data is decompressed again). `logging.basicConfig()` and the `archivey`
+command without `-v` show only warnings, so they print nothing there. They are still counted in
+`reader.diagnostics`, passed to `on_diagnostic`, and raised by a policy that names them. To see
+their log lines, set the `archivey` logger to INFO.
 
 ## Raising or quieting a diagnostic
 

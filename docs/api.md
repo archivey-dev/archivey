@@ -85,6 +85,7 @@ See [Extracting](extracting.md).
 ::: archivey.OverwritePolicy
 ::: archivey.OnError
 ::: archivey.AbortOn
+::: archivey.OnBlocked
 ::: archivey.MemberFilter
 ::: archivey.sanitize_names
 

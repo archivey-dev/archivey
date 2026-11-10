@@ -107,11 +107,13 @@ class RespawnStream(ReadOnlyIOStream):
             inner.close()
 
     def _ensure(self) -> BinaryIO:
+        """The inner stream, spawning a fresh one when a backward seek closed it."""
         if self._inner is None:
             self._inner = self._spawn()
         return self._inner
 
     def _inner_needed(self, logical: int) -> int:
+        """How far the inner stream must have read for logical offset ``logical``."""
         return logical if self._size is None else min(logical, self._size)
 
     def _advance(self, count: int) -> None:
@@ -151,6 +153,11 @@ class RespawnStream(ReadOnlyIOStream):
         return 0
 
     def _sync_inner(self) -> BinaryIO:
+        """The inner stream, read forward to the logical position (a deferred seek).
+
+        The inner ending before that point is a truncation when the size is known,
+        and the member's end when it is not.
+        """
         inner = self._ensure()
         want = self._inner_needed(self._pos)
         if want > self._inner_pos:

@@ -11,8 +11,13 @@ Public surface layout (this package root only — not ``internal`` / ``cli``):
 - :mod:`archivey.cost` — listing/access cost receipt
 - :mod:`archivey.diagnostics` — advisory codes, summaries, extraction reports
 - :mod:`archivey.exceptions` — error hierarchy
+- :mod:`archivey.format_policy` — ``FormatPolicy``, which formats one open may use
 - :mod:`archivey.detection_cost` — detection budgets and receipts; public, not re-exported
 - :mod:`archivey.terminal` — terminal-safe display helpers; public, not re-exported
+- :mod:`archivey.paths` — destination naming and member globs for front ends; public,
+  not re-exported
+- :mod:`archivey.formats` — the experimental interface for adding formats; public, not
+  re-exported
 
 Names in ``__all__`` are the documented API, and the root exposes no other public
 name apart from submodules. Niche names, such as the ``*Context`` diagnostic payloads
@@ -119,6 +124,7 @@ from archivey.types import (
     MemberType,
     MissingComponent,
     NameRewrite,
+    OnBlocked,
     OnError,
     OptionalLibrary,
     OverwritePolicy,
@@ -187,6 +193,7 @@ __all__ = [
     "NameCollisionError",
     "NameRewrite",
     "NameRewrittenError",
+    "OnBlocked",
     "OnDiagnostic",
     "OnError",
     "OpenError",

@@ -13,7 +13,9 @@ start and length itself:
 | --- | --- |
 | Sequential run | The first two reads of a run fetch what they ask for, and at least a fixed minimum fetch size (64 KiB). From the third read that continues the last fetch, each fetch doubles, up to a fixed maximum fetch size |
 | Short forward gap | A forward seek no longer than `ArchiveyConfig.max_read_through` (default 1 MiB; `archive-reading` §"Explicit configuration object") continues the run instead of starting a new request |
-| Jump | A backward seek, or a longer forward one, starts a new run at the minimum fetch size |
+| Jump | A backward seek, or a longer forward one, starts a new run at the minimum fetch size, except as the next row says |
+| Step back | A read that ends before the start of a window placed by its end, by at most that window's size and at most `max_read_through`, (the run at the end, or an earlier step back) fetches the bytes before that window, ending where it starts, and doubles as a sequential run does. A walk toward the start of the object (one step per stream or member) fetches each byte about once, in about as many requests as a forward read of the same bytes |
+| Run at the end | A new run that the end of the object would cut short starts earlier, so its fetch still holds the minimum fetch size and ends at the end |
 | Backend range hint | A span the backend declares it will read next is fetched in one request, up to the maximum fetch size, then continued as a run |
 | Known spans of a whole-archive pass | Merged across gaps of at most `max_read_through`, and fetched with `cat_ranges` in groups whose total is at most the pass's maximum fetch; the next group is fetched once the previous one is consumed |
 
@@ -29,9 +31,13 @@ Hints SHALL change only how bytes are fetched, never which bytes a read returns,
 do nothing on a local source. The source facts are those of `archive-reading` §"The source
 facts of an OpenFile".
 
-The ZIP, 7z and ISO backends SHALL hint the index they read at open and each member's
-stored span before reading it. The RAR backend SHALL hint each header position during
-its listing walk.
+The ZIP and 7z backends SHALL hint the index they read at open, and the ZIP, 7z and ISO
+backends SHALL hint each member's stored span before reading it. A format plugin SHALL be
+able to name the spans a member's stream reads in `MemberData.ranges`, which archivey
+SHALL pass to the source as hints when `open_member` returns and which do nothing on a
+local source. A remote source SHALL keep several pending hints, so members read side by
+side each keep their own. The RAR listing walk SHALL NOT be hinted: it reads through by
+the planner's rules.
 
 #### Scenario: ceilings that follow from the format
 
@@ -46,6 +52,9 @@ listed are held by its baseline.
 | 7z, solid | ≤ 2 requests | bytes fetched ≤ (member end − folder start) + `F` |
 | ISO, member within `F` | baseline | list + 1 request |
 | RAR5, TAR, compressed TAR | bytes fetched ≤ archive size + `F` | the same; a compressed RAR member also spools the archive |
+| A single-stream `.xz`, a `.gz` or a UDIF image larger than the first fetch | The tail reads add 1 request | the same |
+| A `.xz` whose last 64 KiB are stream padding | `size` is `None` and the padding is not scanned: the head, the tail once, and the bounded look past the stream (bytes fetched ≤ 1 MiB plus the head and tail windows), whatever the padding's length | the same |
+| A multi-stream `.xz` or a multi-member `.lz` | ≤ 2 requests, whatever the stream count; the member's `size` is `None` (maintainer ruling, 2026-11-08) | read from the start: about one request per planner fetch. A seek: bytes fetched ≤ 2 × archive size + `F` for the index walk |
 
 #### Scenario: concurrent streams share the pool
 
@@ -68,7 +77,13 @@ read at open. A fetch that returns more bytes than it asked for SHALL raise `OSE
 file system ignores range requests, which is not a change of the object. A file system for
 which archivey does not implement version pinning or header forwarding SHALL be treated as
 offering neither. A change that is detected SHALL raise; it MUST NOT return bytes of the
-new object as bytes of the archive.
+new object as bytes of the archive. Once detected, every later read of the source SHALL
+raise it again, and detection, the open and a walk over the members SHALL end with
+`SourceChangedError` rather than an answer or another error, even where a handler for
+damage to the archive caught the first one and recorded a diagnostic for it. An
+`OpenFile` read through fsspec's decompressing file (`compression=`) is not checked for a
+change at all; the reader SHALL record `SOURCE_CHANGE_UNDETECTABLE` for it, naming that
+file in the reason.
 
 #### Scenario: changed object
 
@@ -79,6 +94,8 @@ new object as bytes of the archive.
 | No version, no `ETag` | `SOURCE_CHANGE_UNDETECTABLE` at open; a shorter object raises `SourceChangedError` on the next fetch past its end; a longer one is not detected |
 | A file system that ignores ranges and returns the whole object | `OSError` on the first fetch, not `SourceChangedError` |
 | `DiagnosticPolicy.STRICT`, no version, no `ETag` | Opens; the diagnostic is collected, not raised |
+| A shorter object while detection probes, or while TAR scans past its end marker | The call raises `SourceChangedError`; it does not return another format or end with only a diagnostic |
+| `OpenFile` with `compression=` | `SOURCE_CHANGE_UNDETECTABLE` at open, its reason naming fsspec's decompressing file |
 
 ### Requirement: Multi-volume discovery over fsspec
 
@@ -95,6 +112,8 @@ system that cannot list a directory SHALL be treated as having no siblings.
 | `memory://d/x.7z.001` with `x.7z.002`, `x.7z.003` beside it | One reader over all three; one `ls` of `memory://d` |
 | `memory://d/q.part1.rar` with `q.part2.rar` and `q.part02.rar` | The same choice of part 2 as local discovery |
 | HTTP first volume, server cannot list | Opens as a lone first volume, as a local lone volume does |
+| The listing, or the read of a candidate's RAR signature, is refused with an HTTP 4xx status that is not an `OSError` (`aiohttp.ClientResponseError` for a 403) | The same: no sibling there, logged at DEBUG on `archivey.detection` |
+| The listing fails with an error that is not an `OSError` and has no 4xx status (an HTTP 5xx, a bug in the file system) | The error propagates unchanged |
 
 ### Requirement: ArchiveyFileSystem exposes an archive as a read-only fsspec file system
 

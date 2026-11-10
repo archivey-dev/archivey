@@ -83,7 +83,11 @@ class ToysContainer(PluginContainer):
     SIZED_EMPTY_DIRECTORY = "toys-sized-empty-directory"
     PROBED = "toys-probed"
     HOLDING = "toys-holding"
+    CHARGING = "toys-charging"
+    CHARGING_AT_OPEN = "toys-charging-at-open"
+    CHARGING_BAD_SIZE = "toys-charging-bad-size"
     HOLDING_DECODED = "toys-holding-decoded"
+    CHARGING_DECODED = "toys-charging-decoded"
     YIELDS_NONE = "toys-yields-none"
     REPORTS_LATE = "toys-reports-late"
     REPORTING_DECODED = "toys-reporting-decoded"
@@ -417,6 +421,20 @@ def test_a_long_link_target_is_reported(toys: ArchiveFormat, tmp_path: Path) -> 
         assert long.link_target is None
         assert reader.read("docs/a.txt") == b"alpha\n"
         counts = reader.diagnostics.counts
+    assert counts[DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE] == 1
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_an_empty_link_target_in_the_data_is_reported_once(
+    toys: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    entries = [("empty", MemberType.SYMLINK, b""), *_ENTRIES[1:2]]
+    data = build_toys(entries)
+    source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
+    with open_archive(source, streaming=pipe) as reader:
+        listed = {m.name: m.link_target for m, _ in reader.stream_members()}
+        counts = reader.diagnostics.counts
+    assert listed == {"empty": None, "docs/a.txt": None}
     assert counts[DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE] == 1
 
 
@@ -757,6 +775,64 @@ def test_holding_a_member_twice_is_a_plugin_bug(
         open_archive(path, format=fmt) as reader,
     ):
         reader.members()
+
+
+class _ChargingReader(ToysReader):
+    """Keeps a 100-byte table for the whole walk, charged before its first member,
+    as an ar long-name table is."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        self._context.charge_metadata(100, what="the toy table")
+        yield from super().walk(stream)
+
+
+def test_a_walk_charge_counts_with_the_members(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    """``charge_metadata`` adds to the total the members are counted in, so a limit
+    the members alone fit under refuses them with the table, and the refusal names
+    what was charged. Reads after the listing, which walk nothing again here, are
+    not refused by it."""
+    fmt = _variant(_ChargingReader, ToysContainer.CHARGING)
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    with open_archive(path, format=TOYS) as plain:
+        weight = sum(member_metadata_bytes(m) for m in plain.members())
+    assert _holding_listing(fmt, path, max_metadata_bytes=weight + 100)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=99 .*toy table"):
+        _holding_listing(fmt, path, max_metadata_bytes=99)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        _holding_listing(fmt, path, max_metadata_bytes=weight + 99)
+    config = archivey.ArchiveyConfig(
+        listing_limits=archivey.ListingLimits(max_metadata_bytes=weight + 100)
+    )
+    with open_archive(path, format=fmt, config=config) as reader:
+        reader.members()
+        assert reader.read("b.bin") == _DATA["b.bin"]
+        assert reader.read("docs/a.txt") == _DATA["docs/a.txt"]
+
+
+class _ChargingAtOpen(ToysReader):
+    def __init__(self, context: ReaderContext) -> None:
+        super().__init__(context)
+        context.charge_metadata(1, what="nothing")
+
+
+class _ChargingBadSize(ToysReader):
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        self._context.charge_metadata(-1, what="a negative size")
+        yield from super().walk(stream)
+
+
+def test_a_charge_outside_a_walk_or_of_a_bad_size_is_a_plugin_bug(
+    toys: ArchiveFormat, tmp_path: Path
+) -> None:
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    fmt = _variant(_ChargingAtOpen, ToysContainer.CHARGING_AT_OPEN)
+    with pytest.raises(ArchiveyUsageError, match="only while walk"):
+        open_archive(path, format=fmt).close()
+    fmt = _variant(_ChargingBadSize, ToysContainer.CHARGING_BAD_SIZE)
+    with pytest.raises(ArchiveyUsageError, match="size of 0 or more"):
+        open_archive(path, format=fmt).close()
 
 
 class _Sum16:
@@ -1888,6 +1964,50 @@ def test_a_walk_started_over_for_data_does_not_count_held_members(
             ]
             assert reader.read("c.bin") == _DECODED_DATA["c.bin"]
             assert reader.read("docs/a.txt") == b"alpha\n"
+
+
+class _ChargingDecodedReader(_DecodedReader):
+    """Charges a 100-byte table at the start of every walk, as ar does."""
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        self._context.charge_metadata(100, what="the toy table")
+        yield from super().walk(stream)
+
+
+def _charging_decoded(tmp_path: Path) -> tuple[ArchiveFormat, Path, int]:
+    """The format, the archive, and the members' listed weight."""
+    fmt = _variant(_ChargingDecodedReader, ToysContainer.CHARGING_DECODED)
+    path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
+    with open_archive(path, format=fmt) as reader:
+        weight = sum(member_metadata_bytes(m) for m in reader.members())
+    return fmt, path, weight
+
+
+def test_a_walk_started_over_for_data_charges_nothing(tmp_path: Path) -> None:
+    """Reads that start the walk over do not charge the table again: a limit the
+    listing met exactly (members and table) is not crossed by them. Fails with the
+    ``_REWALK`` early return dropped from ``_charge_metadata``."""
+    with registration_scope():
+        fmt, path, weight = _charging_decoded(tmp_path)
+        _ChargingDecodedReader.walks = 0
+        limits = archivey.ListingLimits(max_metadata_bytes=weight + 100)
+        config = archivey.ArchiveyConfig(listing_limits=limits)
+        with open_archive(path, format=fmt, config=config) as reader:
+            reader.members()
+            for name in ("c.bin", "docs/a.txt", "c.bin", "b.bin"):
+                assert reader.read(name) == _DECODED_DATA[name]
+        assert _ChargingDecodedReader.walks > 2  # some reads walked again
+
+
+def test_a_walk_charge_comes_off_when_the_walk_ends(tmp_path: Path) -> None:
+    """Once the listing walk ends, its table no longer counts: what the listing
+    retains (the resource usage reports it) is the members' weight alone. Fails with
+    the walk bytes not taken off in ``ListingLimitTracker.release_held``."""
+    with registration_scope():
+        fmt, path, weight = _charging_decoded(tmp_path)
+        with open_archive(path, format=fmt) as reader:
+            reader.members()
+            assert reader._resource_usage().listing_metadata_bytes == weight
 
 
 class _RewalkReader(_DecodedReader):
