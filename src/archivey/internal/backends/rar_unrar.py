@@ -604,6 +604,20 @@ def unrar_mask_carries_non_ascii() -> bool:
     return sys.platform == "win32" or _utf8_locale_name() is not None
 
 
+def unrar_matches_names_as_windows() -> bool:
+    """Whether ``unrar`` changes and compares names the way its Windows build does.
+
+    Windows ``unrar`` converts a Unix-host name to NFC (``ConvertToPrecomposed`` in
+    ``arcread.cpp``) before it compares it with a mask, and does not convert the
+    mask. It compares the directory part of a mask with ``CompareStringW``, which
+    ignores some code points (U+00AD, U+200B, ...) and treats canonically
+    equivalent sequences as equal. ``rar_reader._plain_unrar_masks`` takes out of
+    the plain set every name that is not NFC, and, when any name in the archive has
+    a directory that is not printable ASCII, every name with a directory.
+    """
+    return sys.platform == "win32"
+
+
 def unrar_expands_wildcards(path: str | Path) -> bool:
     """Whether ``unrar`` reads ``path``, given as the archive, as a wildcard mask.
 
