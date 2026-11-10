@@ -270,7 +270,7 @@ def _refuse_unjoined_volume_names(
     """
     if resolved.volume_count != 1:
         return
-    # Numbered parts are joined for ZIP and 7z. An explicit other format= (P8)
+    # Numbered parts are joined for ZIP and 7z. An explicit other format=
     # must be honoured or refused as a format conflict, not rewritten as a
     # missing-volume error. With discovery off nothing looked for the other parts,
     # so the part is read as the one file it is, and its reader says what it finds.
@@ -759,7 +759,7 @@ def _decide_format(
     # would raise FormatDetectionError or CorruptionError. Refuse by name first.
     # A joined set has ``volume_count > 1`` and is skipped. An explicit
     # ``format=TAR_GZ`` (etc.) is honoured or refused as a format conflict, never
-    # rewritten as a volume error (P8).
+    # rewritten as a volume error.
     #
     # A lone numbered part names the missing siblings (``TruncatedError``). Info-ZIP
     # ``.zNN`` stays the ZIP rejoin-first ``UnsupportedFeatureError`` — those are
