@@ -2,6 +2,9 @@
 :class:`StreamCodec` base class, helpers that read a source without moving it, and the
 format values several codecs must agree on (the zlib ``wbits``, the gzip magic, the bzip2
 stream header).
+
+Every ``<name>_codec`` module subclasses :class:`StreamCodec` from here, and the
+registry (``registry.py``) holds one instance of each.
 """
 
 from __future__ import annotations
@@ -92,9 +95,13 @@ class Codec(Enum):
     DEFLATE64 = "deflate64"
     SHRINK = "shrink"  # ZIP method 1 (LZW)
     IMPLODE = "implode"  # ZIP method 6 (LZ77 + Shannon-Fano)
+    REDUCE = "reduce"  # ZIP methods 2 to 5 (follower sets + LZ77)
+    DCL_IMPLODE = "dcl_implode"  # ZIP method 10 (PKWARE DCL, as zlib's blast.c reads)
     LZOP = "lzop"  # the .lzo file format
     MOZLZ4 = "mozlz4"  # Firefox's mozLz40 files: one raw LZ4 block
     BZIP3 = "bzip3"  # the .bz3 files the bzip3 tool writes
+    UU = "uu"  # uuencoded files, and their begin-base64 variant
+    BASE64 = "base64"  # bare base64 text
     LZO = "lzo"  # raw LZO1X (a SquashFS block)
     # Filter-only (composed with raw LZMA; see LZMA_FILTER_IDS).
     DELTA = "delta"
@@ -156,6 +163,8 @@ class CodecParams:
       settings, from general-purpose bits 1 (an 8 KiB window, else 4 KiB) and 2 (three
       Shannon-Fano trees, else two). Implode also needs ``unpack_size``: its data has no
       end marker. Shrink (method 1) ends at ``unpack_size`` when it is given.
+    - ``reduce_factor`` — ZIP Reduce's compression factor, 1 to 4 (methods 2 to 5).
+      Reduce also needs ``unpack_size``: its data has no end marker.
     - ``single_stream`` — the coder's data is one stream of its codec: a bzip2 ZIP
       member or 7z coder. The decoder ends at the first stream's end rather than
       reading a further stream as a concatenated file's, so a further stream is
@@ -183,6 +192,7 @@ class CodecParams:
     ppmd_restore_method: int = 0
     implode_large_window: bool = False
     implode_literal_tree: bool = False
+    reduce_factor: int | None = None
     unpack_size: int | None = None
     pack_size: int | None = None
     single_stream: bool = False
@@ -267,7 +277,9 @@ GZIP_MAGIC = b"\x1f\x8b"
 # made for that gate moves what the two walks accept.
 BZIP2_HEADER = re.compile(rb"BZh[1-9]")
 
-# A frame, or a skippable frame (magic 0x184D2A50 to 0x184D2A5F), for both.
+# The skippable-frame magic (0x184D2A50 to 0x184D2A5F, little-endian), as the bytes
+# allowed at each of its four positions. zstd and LZ4 share it, and either format's
+# further stream may start with one, so both stream-start tests include it.
 _SKIPPABLE_FRAME = (range(0x50, 0x60), b"\x2a", b"\x4d", b"\x18")
 
 # Bytes a content probe decodes when the source is not fully visible: the sample is
@@ -590,10 +602,23 @@ class StreamCodec:
         """
         return False
 
+    def header_check(self, prefix: bytes) -> bool:
+        """Whether the source opens with this codec's own self-checking first block.
+
+        For a codec with no magic whose first lines or block still prove the format
+        when built to (uuencode's ``begin`` line and first body line, base64 lines
+        whose decoded bytes hold a known magic). It runs on every source, with or
+        without a name, as ``ReadBackend.HEADER_CHECKS`` does, and a hit is reported as
+        ``PROBABLE``, ``content_probe``: it is a test of the contents, not a magic.
+        Arithmetic over the already-peeked prefix only. Default: no check.
+        """
+        del prefix
+        return False
+
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         """How to phrase ``STREAM_REWIND_REDECOMPRESSES`` for this codec.
 
-        It no longer decides *whether* to report: that is the seek's measured re-decode
+        It does not decide *whether* to report: that is the seek's measured re-decode
         distance, computed by ``ArchiveStream`` against the live seek-point table (a
         format that can carry an index does not always have a useful one — a single-block
         ``.xz`` re-decodes from byte zero like a codec with none). This only supplies the
@@ -693,6 +718,11 @@ class StreamCodec:
     def walks_magic_prefix(self) -> bool:
         """Whether this codec overrides the no-op base :meth:`magic_behind_prefix`."""
         return type(self).magic_behind_prefix is not StreamCodec.magic_behind_prefix
+
+    @property
+    def checks_header(self) -> bool:
+        """Whether this codec overrides the no-op base :meth:`header_check`."""
+        return type(self).header_check is not StreamCodec.header_check
 
     # --- shared probe primitive ---
 

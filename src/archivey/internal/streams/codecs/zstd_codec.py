@@ -1,4 +1,11 @@
-"""Zstandard."""
+"""Zstandard: ``.zst`` files and Zstd member data in ZIP and 7z.
+
+The decoder is the standard library's ``compression.zstd`` on Python 3.14+, else
+``backports.zstd``, driven one frame at a time by ``FramedDecoder``. Under seek demand
+every regular frame is a seek point, and a Seekable Zstandard table at the end of the
+file lists them all without decoding (``zstd_seek_table``). Detection also finds a
+frame behind a run of skippable frames (``zstd_framing``).
+"""
 
 from __future__ import annotations
 

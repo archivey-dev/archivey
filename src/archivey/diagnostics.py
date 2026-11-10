@@ -1,5 +1,16 @@
 """Public diagnostic value types — structured advisories as queryable data.
 
+A reader reports something odd but not fatal, such as a renamed member or a missing
+end-of-archive marker, as a :class:`Diagnostic` with a :class:`DiagnosticCode`.
+Readers emit them through ``archivey.internal.diagnostics_collector``, which applies
+the caller's :class:`DiagnosticPolicy` (ignore, collect or raise
+:exc:`~archivey.DiagnosticRaisedError`) and calls ``ArchiveyConfig.on_diagnostic``.
+Callers read the collected records from ``reader.diagnostics``, a stream's
+``ArchiveStream.diagnostics``, ``ArchiveMember.diagnostics``,
+``FormatInfo.diagnostics`` after detection, an :class:`ExtractionReport` or a
+:class:`MemberListReport`. A raised record is on the error, as
+``DiagnosticRaisedError.diagnostic``.
+
 See ``openspec/specs/diagnostics`` (and the ``diagnostics-warnings-as-data`` change)
 for the lifecycle, retention, and policy contracts.
 
@@ -22,13 +33,14 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import ClassVar, Literal, TypeVar
+from typing import ClassVar, Literal, NoReturn, TypeVar
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
 from archivey.internal.enum_args import coerce_enum_collection
+from archivey.internal.overrides import override
 from archivey.internal.resource_usage import ResourceUsage
 from archivey.terminal import escape_control_chars
-from archivey.types import ArchiveMember, ExtractionResult
+from archivey.types import ArchiveMember, ExtractionResult, ExtractionStatus
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")
@@ -114,7 +126,8 @@ class DiagnosticCode(StrEnum):
     be truncated."""
     ARCHIVE_TRAILING_DATA = "archive_trailing_data"
     """Bytes other than zeros follow the end of the archive or of the compressed
-    stream."""
+    stream, or fill padding the format says is zero, such as the rest of an ISO
+    directory block after its last record."""
     ARCHIVE_UNLISTED_DATA = "archive_unlisted_data"
     """A ZIP read from a pipe holds a member its central directory does not list. It
     is left out of the listing, as a read from a file never sees it."""
@@ -197,8 +210,16 @@ class DiagnosticCode(StrEnum):
     """The archive is read by range requests from an ``fsspec`` file system that
     archivey cannot pin to one version of the object, so a replacement of the same
     length, or a longer one, while it reads would go unseen. A shorter one raises
-    :class:`~archivey.SourceChangedError` on the first fetch past its end. Advisory: it
+    :class:`~archivey.SourceChangedError` on the first fetch past its end. An
+    ``OpenFile`` with ``compression=`` records it too: it is read through fsspec's
+    decompressing file, and archivey checks nothing about the object. Advisory: it
     describes how the archive arrives, not its bytes."""
+    MEMBER_PATH_REFUSED = "member_path_refused"
+    """A member is left out of an ``archivey://`` file system's tree
+    (:class:`~archivey.fsspec.ArchiveyFileSystem`) because the file system's extraction
+    policy refuses its name: ``extract_all(dest, policy=policy)`` would not write it
+    either. Advisory: the archive is read as before, and the member stays reachable
+    through ``fs.reader``."""
     MEMBER_READERS_DISAGREE = "member_readers_disagree"
     """A member takes a shape that real writers produce but readers make different
     trees of: a TAR regular file named like a directory, a link name on a TAR regular
@@ -291,6 +312,8 @@ DiagnosticCodeStr = Literal[
     "member-readers-disagree",
     "source_change_undetectable",
     "source-change-undetectable",
+    "member_path_refused",
+    "member-path-refused",
 ]
 
 
@@ -477,8 +500,13 @@ class ArchiveEofContext(_JsonSafeContext):
       end record, none of whose fields needs it, is used instead. ``observed_kind`` is
       ``"absent"``, ``observed_bytes`` is the locator's offset and ``expected_bytes``
       is 0.
+    - ``"end_of_archive_byte"`` (``ARCHIVE_EOF_MARKER_MISSING``) — an LHA archive
+      ends right after its last member, without the zero byte its writers put after
+      the last header. Every member is listed. ``format`` is ``"lha"``,
+      ``observed_kind`` is ``"absent"``, ``expected_bytes`` is 1 and
+      ``observed_bytes`` 0.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
-      archive's end within the first MiB past it, so the file carries something the
+      archive's end within the first MiB past it (64 KiB for LHA), so the file carries something the
       listing did not account for. ``format`` names where the end was: ``"tar"`` for
       the TAR trailer (complete, or its second block damaged and reported as
       ``"second_zero_block"`` first), ``"7z"`` for the later of a 7z archive's next
@@ -486,10 +514,17 @@ class ArchiveEofContext(_JsonSafeContext):
       block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
       its MBR or GPT lists and the GPT backup header, ``"zip"`` for the end of a ZIP's
       end-of-central-directory record and its declared comment, ``"cpio"`` for the
-      CPIO trailer; a format plugin names its own format. ``observed_bytes`` is
+      CPIO trailer, ``"lha"`` for an LHA archive's end byte (where the scan covers
+      64 KiB and also allows the DOS end-of-file byte 0x1A); a format plugin names
+      its own format. ``observed_bytes`` is
       that byte's offset past the end. RAR emits one per volume, and its offset counts from that
       volume's end block, unlike member offsets, which count across the whole set; the
       message names the volume.
+    - ``"directory_padding"`` (``ARCHIVE_TRAILING_DATA``) — an ISO directory block's
+      padding, which starts at a zero length byte and fills the rest of the logical
+      block, holds a non-zero byte. Every record before it is listed; a record whose
+      length byte was damaged to zero would be missing, so it is reported. ``format``
+      is ``"iso"`` and ``observed_bytes`` is that byte's offset in the image.
     - ``"end_of_stream"`` (``ARCHIVE_TRAILING_DATA``) — a compressed stream (gzip, xz,
       zstd and the other stream codecs) decoded to its end, and bytes follow that end
       which are neither another stream nor padding the format allows. ``format`` names
@@ -972,12 +1007,29 @@ class SourceChangeContext(_JsonSafeContext):
 
     ``protocol`` is the first protocol of the ``fsspec`` file system the archive is
     read from (``"s3"``, ``"https"``, ``"memory"``). ``reason`` says why neither a
-    pinned version nor a conditional request guards the reads.
+    pinned version nor a conditional request guards the reads, or that the archive is
+    read through fsspec's decompressing file (``compression=``), which archivey cannot
+    check at all.
     """
 
     kind: Literal["source_change"] = "source_change"
     archive_name: str | None = None
     protocol: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class PathRefusedContext(_JsonSafeContext):
+    """Why an ``archivey://`` file system's tree leaves a member out. ``policy`` is the
+    file system's :class:`~archivey.ExtractionPolicy` value and ``reason`` the refusal
+    the extraction checks give (``"Path traversal ('..') in member name"``).
+    """
+
+    kind: Literal["path_refused"] = "path_refused"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    policy: str = ""
     reason: str = ""
 
 
@@ -1116,6 +1168,7 @@ DiagnosticContext = (
     | SizeWrapContext
     | UnknownMemberTypeContext
     | SourceChangeContext
+    | PathRefusedContext
     | NameDuplicateContext
     | ReaderDisagreementContext
 )
@@ -1161,6 +1214,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_NAME_DUPLICATE: "name_duplicate",
         DiagnosticCode.MEMBER_READERS_DISAGREE: "reader_disagreement",
         DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE: "source_change",
+        DiagnosticCode.MEMBER_PATH_REFUSED: "path_refused",
     }
 )
 
@@ -1252,6 +1306,11 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nineteen codes are delibera
 - ``SOURCE_CHANGE_UNDETECTABLE`` — describes the transport an ``fsspec`` source
   arrives through, not the archive's bytes, and holds for every read from such a
   store. ``STRICT`` would refuse every remote archive.
+- ``MEMBER_PATH_REFUSED`` — reports what an extraction policy chose for the
+  ``archivey://`` tree, not a new finding about the bytes: a name with hidden
+  characters is already reported (``MEMBER_NAME_BIDI_CONTROL``), and an absolute name
+  is ordinary. ``STRICT`` would refuse a whole archive for one name it can still
+  read.
 - ``MEMBER_NAME_DUPLICATE`` and ``MEMBER_READERS_DISAGREE`` — shapes real archives
   have (``tar -r`` appends, cabal sdists, v7 directories, star and GNU incremental
   headers), which archivey reads as the format's own tool does. ``STRICT`` would refuse
@@ -1339,12 +1398,13 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                         "end_of_archive_block",
                         "end_of_central_directory",
                         "zip64_end_of_central_directory",
+                        "end_of_archive_byte",
                     }
                 ),
             ),
             DiagnosticCode.ARCHIVE_TRAILING_DATA: (
                 "expected_marker",
-                frozenset({"zeros_to_eof", "end_of_stream"}),
+                frozenset({"zeros_to_eof", "end_of_stream", "directory_padding"}),
             ),
             DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: ("field", frozenset({"name"})),
             DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS: (
@@ -1457,6 +1517,16 @@ class DiagnosticSummary:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "counts", _freeze_mapping(self.counts))
+
+    @override
+    def __reduce__(self) -> tuple[object, ...]:
+        # ``counts`` is a read-only mapping proxy, which pickle cannot store. A summary
+        # travels inside the report a FilterRejectionError carries, and every archivey
+        # exception survives pickle, so rebuild it from a plain dict.
+        return (
+            DiagnosticSummary,
+            (self.total_count, dict(self.counts), self.retained, self.dropped_count),
+        )
 
     @staticmethod
     def empty() -> DiagnosticSummary:
@@ -1607,6 +1677,34 @@ class ExtractionReport:
     def __getitem__(self, index: int) -> ExtractionResult:
         return self.results[index]
 
+    @property
+    def ok(self) -> bool:
+        """``True`` when no member was refused (``BLOCKED``) or failed (``FAILED``).
+
+        A member skipped by ``overwrite="skip"``, superseded by a later one with the
+        same name, or a link whose target the archive never recorded does not make it
+        ``False``. Diagnostics do not count: the :class:`DiagnosticPolicy` decides
+        which of them are errors.
+        """
+        return not any(
+            r.status in (ExtractionStatus.BLOCKED, ExtractionStatus.FAILED)
+            for r in self.results
+        )
+
+    def raise_for_failure(self) -> None:
+        """Raise the error of the first ``BLOCKED`` or ``FAILED`` member, in order.
+
+        Does nothing when ``ok`` is ``True``. The error raised is the result's own
+        object, as ``concurrent.futures.Future.result()`` raises its exception, so
+        each call adds to its traceback.
+        """
+        for result in self.results:
+            if (
+                result.status in (ExtractionStatus.BLOCKED, ExtractionStatus.FAILED)
+                and result.error is not None
+            ):
+                raise result.error
+
 
 @dataclass(frozen=True)
 class MemberListReport:
@@ -1637,6 +1735,59 @@ class MemberListReport:
 
     def __getitem__(self, index: int) -> ArchiveMember:
         return self.members[index]
+
+
+@dataclass(frozen=True)
+class VerifyReport:
+    """What :meth:`~archivey.ForwardArchiveReader.verify_all` found.
+
+    ``ok`` is the one answer to "did every check pass": no member failed and nothing
+    stopped the walk through the archive. The fields keep the detail. The report is
+    not a sequence, and testing its truth raises ``TypeError``, so the 0.3.0 idiom
+    ``if not reader.verify_all():`` fails loudly instead of quietly reading the report
+    as true: test ``ok``, or read ``failures`` and ``structure_error`` yourself.
+
+    Diagnostics do not count toward ``ok``: :class:`DiagnosticPolicy` already decides
+    which of them are errors, and a code it raises on stops ``verify_all()`` with
+    :class:`~archivey.DiagnosticRaisedError` instead of returning a report.
+
+    Experimental, like ``verify_all()``: any release, a patch included, may change it.
+    """
+
+    failures: tuple[tuple[ArchiveMember, ArchiveyError], ...]
+    """Each member that failed, with its error, in listing order. A check that covers
+    several members (a 7z folder CRC) pairs each member it covers with the same
+    error."""
+
+    structure_error: ArchiveyError | None
+    """Damage that stopped the walk through the archive, such as a ZIP cut inside its
+    central directory or a TAR cut inside a member: the members after it were never
+    reached. ``None`` when the walk reached the end. The same error as
+    ``members_report().error``."""
+
+    diagnostics: DiagnosticSummary
+    """The diagnostics emitted during this ``verify_all()`` call."""
+
+    @property
+    def ok(self) -> bool:
+        """``True`` when no member failed and the walk reached the end of the archive."""
+        return not self.failures and self.structure_error is None
+
+    def __bool__(self) -> NoReturn:
+        raise TypeError(
+            "test VerifyReport.ok, not the report itself: a report is not empty or "
+            "true when every check passed"
+        )
+
+    def raise_for_failure(self) -> None:
+        """Raise ``structure_error`` if there is one, else the first member's error.
+
+        Does nothing when ``ok`` is ``True``.
+        """
+        if self.structure_error is not None:
+            raise self.structure_error
+        if self.failures:
+            raise self.failures[0][1]
 
 
 OnDiagnostic = Callable[[Diagnostic], None]
@@ -1684,6 +1835,7 @@ __all__ = [
     "NameNormalizationContext",
     "OffsetWrapContext",
     "OnDiagnostic",
+    "PathRefusedContext",
     "ReaderDisagreementContext",
     "ScanRaceContext",
     "SeekIndexContext",
@@ -1698,6 +1850,7 @@ __all__ = [
     "UnknownMemberTypeContext",
     "UnlistedDataContext",
     "UnusedArgumentContext",
+    "VerifyReport",
     "format_path_name",
     "raw_name_to_base64",
     "validate_code_context",

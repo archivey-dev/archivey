@@ -6,8 +6,12 @@ each entry of dest that a member's path, link target or hardlink source names is
 in before the pass looks at it, a file as an empty file and a symlink as a symlink.
 dest itself is only read.
 
-``ExtractionCoordinator.run`` describes what a dry run shows and where it says less
-than a real run would.
+``ExtractionCoordinator`` is the only user. Its ``run`` enters :func:`scratch_for` and
+extracts into the scratch directory with the ``DryRun`` set as ``_dry``. The pass's steps
+call ``bring_in``, ``bring_in_link``, ``target_on_disk``, ``shown``, ``sink`` and
+``check_creatable`` through it, and ``run`` reports through :meth:`DryRun.rebase_result`,
+:meth:`DryRun.rebase_os_error` and :meth:`DryRun.record`. ``ExtractionCoordinator.run``'s
+docstring describes what a dry run shows and where it says less than a real run would.
 """
 
 from __future__ import annotations
@@ -16,7 +20,6 @@ import contextlib
 import errno
 import os
 import re
-import shutil
 import stat
 import tempfile
 import unicodedata
@@ -32,6 +35,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, plain
+from archivey.internal.windows_reparse import entry_is_junction
 from archivey.paths import numbered_name
 from archivey.types import ArchiveMember, ExtractionResult, MemberType
 
@@ -71,9 +75,13 @@ def _fold(name: str) -> str:
 
 
 def _with_ancestors(into: set[str], rel: str) -> None:
-    """Add ``rel``, a ``/``-separated path, and each of its ancestors to ``into``."""
-    parts = rel.split("/")
-    into.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
+    """Add ``rel``, a ``/``-separated path, and each of its ancestors to ``into``.
+
+    Nearest first, stopping at one already there, as its ancestors are too, so a deep
+    tree costs one string per entry rather than one per entry and level."""
+    while rel and rel not in into:
+        into.add(rel)
+        rel = rel.rpartition("/")[0]
 
 
 def scratch_tree(
@@ -112,9 +120,21 @@ def scratch_tree(
     return tuple(sorted(found)), tuple(sorted(links))
 
 
-#: Whether ``remove_scratch`` can walk by directory descriptor (POSIX). ``fwalk``
-#: exists only where ``stat`` takes ``dir_fd``; ``chmod`` is the one it does not imply.
-_FD_WALK = hasattr(os, "fwalk") and os.chmod in os.supports_dir_fd
+#: Whether ``remove_scratch`` can walk by directory descriptor (POSIX): it lists a
+#: directory by its descriptor and removes, changes and opens entries relative to it.
+_FD_WALK = (
+    os.scandir in os.supports_fd
+    and os.open in os.supports_dir_fd
+    and os.unlink in os.supports_dir_fd
+    and os.chmod in os.supports_dir_fd
+)
+
+_DIR_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+)
 
 
 def remove_scratch(root: Path) -> None:
@@ -122,37 +142,141 @@ def remove_scratch(root: Path) -> None:
 
     A stored mode can leave a directory unwritable (or unreadable), and a file read-only,
     which Windows refuses to unlink. Each real entry is opened up first; symlinks are
-    skipped, never followed. A failure is logged rather than raised: the run's own
+    removed, never followed. A failure is logged rather than raised: the run's own
     outcome is what the caller needs to see.
+
+    The walk is a loop over an explicit stack, not ``os.fwalk``, ``os.walk`` or
+    ``shutil.rmtree``: before Python 3.13 those recurse once per level, so a tree
+    deeper than the interpreter's recursion limit (an archive of ``a/a/a/…/f``) would
+    raise ``RecursionError``.
     """
     try:
         # In the long-path form throughout, so the walk can reach a deep entry.
-        top = long_path(root)
+        top = os.fspath(long_path(root))
         os.chmod(top, 0o700)
         if _FD_WALK:
-            # Relative to each directory's descriptor: links in the archive can build
-            # a tree whose full paths pass PATH_MAX, which no path-based call reaches.
-            # (``scratch_tree`` keeps the path form; a tree it cannot list is
-            # reported as ``None``.)
-            for _, dirnames, filenames, dir_fd in os.fwalk(top):
-                for names, mode in ((dirnames, 0o700), (filenames, 0o600)):
-                    for name in names:
-                        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                        if not stat.S_ISLNK(st.st_mode):
-                            os.chmod(name, mode, dir_fd=dir_fd)
+            _remove_tree_by_descriptor(top)
         else:
-            for parent, dirnames, filenames in os.walk(top):
-                for names, mode in ((dirnames, 0o700), (filenames, 0o600)):
-                    for name in names:
-                        path = os.path.join(parent, name)
-                        if not os.path.islink(path):
-                            os.chmod(path, mode)
-        # rmtree removes by descriptor wherever ``rmtree.avoids_symlink_attacks``.
-        shutil.rmtree(top)
+            _remove_tree_by_path(top)
     except OSError as exc:
         logger.warning(
             "Could not remove dry-run scratch directory %r: %s", str(root), exc
         )
+
+
+def _remove_tree_by_descriptor(top: str) -> None:
+    """Remove the directory ``top`` and everything in it, by directory descriptor.
+
+    Relative to each directory's descriptor: links in the archive can build a tree
+    whose full paths pass PATH_MAX, which no path-based call reaches. (``scratch_tree``
+    keeps the path form; a tree it cannot list is reported as ``None``.) At most three
+    descriptors are open, whatever the depth: the walk holds only the current
+    directory's (plus the next one while it moves, and the copy ``os.scandir`` makes),
+    goes back up through ``..``, and checks that it is the directory it came from.
+    """
+    fd = os.open(top, _DIR_FLAGS)
+    try:
+        # One frame per directory from ``top`` down to the current one: its name in
+        # its parent (``None`` for ``top``), its identity, and the subdirectories in it
+        # still to remove.
+        frames: list[tuple[str | None, tuple[int, int], list[str]]] = [
+            (None, _identity(os.fstat(fd)), _clear_files_at(fd))
+        ]
+        while frames:
+            name, _, subdirs = frames[-1]
+            if subdirs:
+                child_name = subdirs.pop()
+                os.chmod(child_name, 0o700, dir_fd=fd)
+                child = os.open(child_name, _DIR_FLAGS, dir_fd=fd)
+                os.close(fd)
+                fd = child
+                frames.append(
+                    (child_name, _identity(os.fstat(fd)), _clear_files_at(fd))
+                )
+                continue
+            frames.pop()
+            if name is None:
+                break
+            parent = os.open("..", _DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = parent
+            if _identity(os.fstat(fd)) != frames[-1][1]:
+                raise OSError(
+                    errno.ESTALE, "Directory moved during removal", os.fsdecode(name)
+                )
+            os.rmdir(name, dir_fd=fd)
+    finally:
+        os.close(fd)
+    os.rmdir(top)
+
+
+def _identity(st: os.stat_result) -> tuple[int, int]:
+    return st.st_dev, st.st_ino
+
+
+def _clear_files_at(fd: int) -> list[str]:
+    """Remove every entry of the directory open as ``fd`` but its subdirectories, and
+    return their names. A symlink is removed, never followed."""
+    with os.scandir(fd) as entries:
+        listed = [
+            (entry.name, entry.is_dir(follow_symlinks=False)) for entry in entries
+        ]
+    subdirs = []
+    for name, is_dir in listed:
+        if is_dir:
+            subdirs.append(name)
+        else:
+            os.unlink(name, dir_fd=fd)
+    return subdirs
+
+
+def _remove_tree_by_path(top: str) -> None:
+    """Remove the directory ``top`` and everything in it, by path (Windows)."""
+    frames = [(top, _clear_files(top))]
+    while frames:
+        path, subdirs = frames[-1]
+        if subdirs:
+            child = os.path.join(path, subdirs.pop())
+            os.chmod(child, 0o700)
+            frames.append((child, _clear_files(child)))
+            continue
+        frames.pop()
+        os.rmdir(path)
+
+
+def _clear_files(directory: str) -> list[str]:
+    """Remove every entry of ``directory`` but its subdirectories, and return their
+    names. A symlink or a junction is removed, never followed; a file is made
+    writable first, as Windows will not unlink a read-only one."""
+    with os.scandir(directory) as entries:
+        listed = [
+            (entry.name, entry.is_dir(follow_symlinks=False), _is_link(entry))
+            for entry in entries
+        ]
+    subdirs = []
+    for name, is_dir, is_link in listed:
+        path = os.path.join(directory, name)
+        if is_link:
+            # ``rmdir`` removes a junction or a symlink to a directory, ``unlink`` a
+            # symlink to anything else; neither touches what it points to.
+            if is_dir:
+                os.rmdir(path)
+            else:
+                os.unlink(path)
+        elif is_dir:
+            subdirs.append(name)
+        else:
+            os.chmod(path, 0o600)
+            os.unlink(path)
+    return subdirs
+
+
+def _is_link(entry: os.DirEntry[str]) -> bool:
+    """Whether ``entry`` is a symlink or a Windows junction: an entry that a walk
+    removes without entering."""
+    return entry.is_symlink() or entry_is_junction(
+        entry, entry.stat(follow_symlinks=False)
+    )
 
 
 class _Copy(NamedTuple):
@@ -361,6 +485,8 @@ class DryRun:
         return path
 
     def rebase_result(self, result: ExtractionResult) -> ExtractionResult:
+        """``result`` with each path in it, and the file names in an ``OSError`` it
+        carries, shown under the caller's dest (``shown``)."""
         if isinstance(result.error, OSError):
             self.rebase_os_error(result.error)
         return copy_with(

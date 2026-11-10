@@ -129,13 +129,17 @@ pytest tests/test_zip.py` stays one process.
 CI also matrixes supported **Python versions** (3.11–3.15 on Linux; 3.11/3.15 on
 macOS/Windows, plus an allowed-to-fail 3.16 prerelease leg). A pull request push runs a
 reduced set (Linux 3.11 and 3.15, one core-only leg, Windows 3.15, free-threaded 3.13t, the benchmark and plugin jobs); the
-merge queue runs every leg plus PyPy, the distribution unar packages and the short
-Atheris fuzz, and a failure there takes the pull request out of the queue. A queued
+merge queue adds macOS 3.15, 3.15 core-only, the 3.16 prerelease, 3.15t, PyPy and the
+distribution unar packages, plus the minimum-versions leg when the change touches
+`pyproject.toml`, `uv.lock`, `.python-version` or `ci.yml`, and a failure there takes the
+pull request out of the queue. Linux 3.12–3.14 and macOS and Windows 3.11 run only on the
+daily run and a dispatched run, so the release gate's dispatch is their last run before
+a release; Atheris runs nightly and in the release gates. A queued
 change that touches no path on `FULL` in `scripts/ci/ci_scope.py` (the library, the
 library tests and the files they read, the benchmarks, the dependencies, the CI, and
 every script outside the folders its `NOT_FULL` lists,
 [`scripts/README.md`](scripts/README.md)) runs only the pull request
-set plus the free-threaded 3.15t leg there, and skips the short fuzz. On a pull request
+set plus the free-threaded 3.15t leg there. On a pull request
 push, such a change runs the lint job alone (it runs the script tests); the library
 legs wait for the queue. `ci.yml` does not
 run again after the merge; a daily run tests `main` with every job. To run the whole set
@@ -494,7 +498,8 @@ new tests and new message-formatting code for each of these:
 
 ### Fuzzing
 
-Atheris coverage-guided fuzz runs on every PR (short sharded budgets) and nightly; the
+Atheris coverage-guided fuzz runs nightly and in the release gates (not on pull requests
+or in the merge queue); the
 workflow, local smoke runs and per-target budgets are in
 [`dev-docs/fuzzing.md`](dev-docs/fuzzing.md). Mutation fuzz
 (`tests/test_mutation_fuzz.py`) and the `ARCHIVEY_FUZZ=1` parser harnesses run in the

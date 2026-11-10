@@ -197,6 +197,22 @@ it too.
 `ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
 UTF-8 wins, then the caller's `encoding=`, then UTF-8 with no byte lost.
 
+Three helpers fill fields many formats store the same way, and report a bad value as a
+built-in format does:
+
+- `unix_member_type(mode, has_data=...)` turns a Unix `st_mode` into the member's `type`,
+  and names a device, FIFO or socket for `extra["special_file_type"]`. Such a file is
+  `OTHER`, or a `FILE` when the archive stores data for it. Type bits it does not know
+  come back as `"unknown"`: store that in `extra` as well, and report it as
+  `MEMBER_TYPE_UNKNOWN`.
+- `ReaderContext.set_unix_time(member, "modified", seconds, nanoseconds=0, source="cpio")`
+  sets a UTC time from seconds since 1970.
+- `ReaderContext.set_dos_time(member, "modified", stamp, source="dos")` sets a local time
+  from a DOS date and time word (`date << 16 | time`). Zero means no time.
+
+A time no `datetime` can hold leaves the field unset and is reported as
+`MEMBER_TIMESTAMP_INVALID` on the member.
+
 The locator is anything your reader needs to find the member's data again: an offset, a
 tuple, or an object from the library you wrap. archivey keeps it and hands it back to
 `open_member()` without looking inside. `IndexedReader[Locator]` tells a type checker what
@@ -547,13 +563,15 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
 - **`stream.take(n)`** gives the next `n` bytes as a stream of their own, read forward
   from the archive as they come, from a pipe too. The walk resumes after them: the next
   `read()`, `skip()`, `take()` or `decompress()` first skips what the inner reader left
-  unread, such as padding after a tar's end.
+  unread, such as padding after a tar's end. A `read(0)` or `skip(0)` moves nothing
+  and leaves the stream open.
 - **`context.open_nested(data, format)`** reads `data` with archivey's reader for
   `format` (`ArchiveFormat.TAR_XZ`, say), in one forward pass, and yields one
   `MemberSpan` per inner member, its decoded data in `MemberSpan.data`. A format that
   needs a seekable source (7z, RAR) raises `UnsupportedFeatureError`, and so does an
   archive nested more than 8 deep, which a format that reads its inner format from its
-  own bytes can be made to reach. Call it from `walk()` only. Stop early by closing the
+  own bytes can be made to reach. Under `FormatPolicy(plugins=False)` a plugin format
+  inside raises it too. Call it from `walk()` only. Stop early by closing the
   iterator it returns; archivey closes one left open when the archive closes.
 - **One archive to the caller.** The inner reader works for the outer one: its listing
   limits and decoder limits are the caller's, and what it reports (a TAR header it had
@@ -572,8 +590,8 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
 
 ### Data a library decodes
 
-Some formats compress each member on its own, with a method only a library decodes (LHA,
-ARJ), or are read through a library that decodes as it walks (a libarchive wrapper).
+Some formats compress each member on its own, with a method only a library decodes (ARJ,
+ACE), or are read through a library that decodes as it walks (a libarchive wrapper).
 There are no stored bytes to describe with `data_length`. Hand archivey the decoded
 data instead, as a stream in `MemberSpan.data`, and leave `data_length` at 0:
 
@@ -701,13 +719,16 @@ opening it.
 Name the member in the report as the archive stores it, the same name you give
 `member.name`. archivey normalizes names only once `iter_members()` or `walk()` yields
 them, so it holds a report made while listing until then, and sends it with the
-normalized name as the context's `member_name`. The message goes out as you wrote it.
-The caller's `DiagnosticPolicy` applies when the report is sent, so a code the caller
-raises on raises from the listing. A report on a member you never yield is sent when
-the walk ends, under your name and with no member id. It raises only if the walk
-reached its end: when the caller stopped the listing early, or damage ended it, the
-report is recorded and the policy does not raise. In a walk archivey starts over to
-reach member data, a report names the member as listed.
+normalized name as the context's `member_name`. The message goes out as you wrote it,
+so it can quote `./dev` for the member listed as `dev`: callers match a report to its
+member by `member_name`, not by the message. The caller's `DiagnosticPolicy` applies
+when the report is sent, so a code the caller raises on raises from the listing. A
+report on a member you never yield is sent when the walk ends, under your name and
+with no member id, or when the reader closes if the walk's first step, taken at open,
+was never listed. It raises only if the walk reached its end: when the caller stopped
+the listing early, or damage ended it, the report is recorded and the policy does not
+raise. In a walk archivey starts over to reach member data, a report names the member
+as listed.
 
 A symlink whose target cannot be read is reported with
 `ReaderContext.link_target_unavailable()`, which also leaves `link_target` unset and
@@ -815,7 +836,7 @@ with open_archive("a.zip", config=MY_ZIP) as reader:
 The replacement is an indexed plugin whose `format` is the built-in one, here
 `ArchiveFormat.ZIP`, and it declares no `extensions`, `magic` or `probe`: the file is
 found by the built-in detection, which does not change. `reader.format` is the built-in
-format and `format_info.from_plugin` is false. ZIP, 7z, RAR, ISO, SquashFS and XAR can be
+format and `format_info.from_plugin` is false. ZIP, 7z, RAR, ISO, SquashFS, XAR, CAB and LHA can be
 replaced.
 `FormatPolicy` checks the plugin when it is built, so a plugin that does not fit fails
 there, before any open.
@@ -824,8 +845,8 @@ The replacement gets what any indexed plugin gets: a source that can seek, from 
 start of the archive. archivey refuses, before `open()` runs, a multi-volume set and an
 archive behind a prefix (a self-extracting stub or other leading bytes) with
 `UnsupportedFeatureError`, a source that
-cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO as
-the built-in reader refuses it, since its bytes are not an ISO 9660 image. The format's own config options, such as
+cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO,
+since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it reads). The format's own config options, such as
 `zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
 `ReaderContext.config`; honouring them is the plugin's job. `password=` does not reach a
 replacement, as it reaches no plugin, so a replaced ZIP, 7z or RAR cannot read an encrypted
@@ -949,7 +970,8 @@ can turn plugin formats and plugin codecs off for a call with
 `ArchiveyConfig(formats=FormatPolicy(plugins=False))`; a format turned off is not detected
 either, so its code does not run. A plugin codec is off inside an archive too: a
 `ReaderContext.decompress` or `ForwardStream.decompress` call that asks for it raises
-`UnsupportedFeatureError`. A
+`UnsupportedFeatureError`, and so does a `ReaderContext.open_nested` call for a plugin
+format. A
 [replacement](#replacing-a-built-in-reader) is not a plugin format, so `plugins=False` does not
 turn it off: a replacement runs only in a call whose config names it in `replace=`.
 
