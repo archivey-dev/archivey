@@ -3,8 +3,11 @@
 ``extract_all`` and ``stream_members`` pass ``members=`` through
 :func:`normalize_member_selector` once. It returns ``None`` for no selection, or else a
 predicate over :class:`~archivey.types.ArchiveMember`. For the collection form that
-predicate is a :class:`CollectionSelector`, which the pass asks at the end which entries matched no
-member, to report them.
+predicate is a :class:`CollectionSelector`, whose
+:meth:`~CollectionSelector.report_unmatched` reports the entries that matched no member.
+``extract_all`` calls it once every member has been offered, before it writes anything
+(so a refusal leaves no directory) and before it places staged members.
+``stream_members`` calls it when the pass reaches the end.
 """
 
 from __future__ import annotations

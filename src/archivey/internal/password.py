@@ -4,9 +4,12 @@ The caller's ``password=`` (a value, a list, or a provider callable) becomes one
 :class:`_PasswordCandidates` per reader. A backend that meets an encrypted unit (a
 member, a 7z folder, an encrypted header) calls :meth:`_PasswordCandidates.attempt`
 with a ``decrypt`` callable; ``attempt`` tries the passwords in order, promotes the one
-that works so later units try it first, and raises one ``EncryptionError`` when none
-does. The module also holds the marks a backend puts on an ``EncryptionError`` so that
-exhaustion and link-target reports can tell a wrong password from damaged data.
+that works so later units try it first (unless a confirmation probe keeps an
+unconfirmed one out), and raises one ``EncryptionError`` when none does. The module
+also holds the marks a backend puts on an ``EncryptionError``: the wrong-password mark
+keeps a confirmed wrong-password message when the candidates run out, and the
+unverified-data mark tells the link-target report that a wrong password and damaged
+data are both still possible.
 """
 
 from __future__ import annotations

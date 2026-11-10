@@ -282,12 +282,12 @@ def infer_member_name_from_archive(
     - Otherwise → ``basename + \".uncompressed\"``.
 
     A stem of only dots and spaces (``\"..gz\"`` → ``\".\"``) is not a usable name (see
-    :func:`_is_usable_stem` for which policies refuse which stems): extracted, it would
-    give the caller an empty directory for an intact payload. Those fall through to the
-    ``.uncompressed`` spelling, which the length guard already gives ``\".gz\"``. The
-    rule does not depend on the policy: ``\"....gz\"`` presents
-    ``\"....gz.uncompressed\"`` under every policy, even though ``TRUSTED`` could write
-    ``\"...\"``.
+    :func:`_is_usable_stem` for which policies refuse which stems): a policy that
+    refuses it would leave the destination empty for an intact payload. Those fall
+    through to the ``.uncompressed`` spelling, which ``\".gz\"`` also gets, because the
+    length guard keeps the suffix there (``\".gz.uncompressed\"``). The rule does not
+    depend on the policy: ``\"....gz\"`` presents ``\"....gz.uncompressed\"`` under
+    every policy, even though ``TRUSTED`` would write ``\"...\"``.
     """
     if archive_name is None:
         return "data"

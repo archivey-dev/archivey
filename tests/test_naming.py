@@ -274,8 +274,9 @@ def test_dots_only_stem_extracts_under_every_policy(
 
     The stem is chosen at listing time, before any extraction policy is known, so one
     name serves all three. ``....gz`` is the case that made the difference: the bare
-    stem ``...`` is refused under ``STRICT`` only, which is exactly the shape a
-    policy-blind chooser gets wrong in one direction.
+    stem ``...`` is refused under ``STRICT`` and ``STANDARD`` and written under
+    ``TRUSTED``, which is exactly the shape a policy-blind chooser gets wrong in one
+    direction.
     """
     import gzip
 
