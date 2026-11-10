@@ -13,7 +13,7 @@ from __future__ import annotations
 import struct
 from collections.abc import Iterable, Iterator, Sequence
 
-from bindings import EntryStream
+from bindings import EntryStream, LibarchiveError
 
 
 def unix_compress(chunks: Iterator[bytes]) -> EntryStream:
@@ -114,3 +114,39 @@ def lzx_folder(
 ) -> EntryStream:
     """Decode one CAB folder of LZX data blocks (see :func:`lzx_folder_bytes`)."""
     return EntryStream(lzx_folder_bytes(blocks, block_sizes, window_bits), "cab")
+
+
+def lzh(
+    method: str, chunks: Iterable[bytes], stored: int, size: int
+) -> Iterator[bytes]:
+    """Decode one ``-lh5-``, ``-lh6-`` or ``-lh7-`` stream of ``stored`` bytes to ``size``.
+
+    A level-0 LHA header with a CRC-16 of zero: the CRC is the LHA reader's check, so
+    the stream ignores the mismatch libarchive reports at the end. libarchive does not
+    hold a member to its header's size (it returned 4,993 bytes for a 5,000-byte member,
+    and 30,037 for a 30,000-byte one, with no error), so this wrapper checks the size
+    itself and raises :class:`LibarchiveError` when it differs. Yields the output.
+    """
+    name = b"a"
+    body = (
+        method.encode()
+        + struct.pack("<IIIBBB", stored, size, 0x5A2C6000, 0x20, 0, len(name))
+        + name
+        + struct.pack("<H", 0)  # CRC-16, left to the reader
+    )
+    header = bytes([len(body), sum(body) & 0xFF]) + body
+
+    def feed() -> Iterator[bytes]:
+        yield header
+        yield from chunks
+        yield b"\0"  # end of archive
+
+    total = 0
+    with EntryStream(feed(), "lha", ignore_final_warning=True) as stream:
+        while data := stream.read():
+            total += len(data)
+            if total > size:
+                break
+            yield data
+    if total != size:
+        raise LibarchiveError(0, f"LZH output is {total} bytes, the header says {size}")

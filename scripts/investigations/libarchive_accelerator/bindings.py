@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from typing import Any, Self
 
 ARCHIVE_EOF = 1
@@ -29,13 +29,12 @@ _READ_CALLBACK = ctypes.CFUNCTYPE(
 
 
 class LibarchiveError(Exception):
-    """A libarchive call failed. ``partial`` holds the output delivered before it."""
+    """A libarchive call failed, or a wrapper's own check did."""
 
-    def __init__(self, code: int, message: str, partial: bytes = b"") -> None:
+    def __init__(self, code: int, message: str) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
-        self.partial = partial
 
 
 def _load() -> ctypes.CDLL:
@@ -48,8 +47,18 @@ def _load() -> ctypes.CDLL:
         "archive_read_new": (vp, []),
         "archive_read_free": (i, [vp]),
         "archive_read_open": (i, [vp, vp, vp, _READ_CALLBACK, vp]),
+        "archive_read_open_memory": (i, [vp, cp, ctypes.c_size_t]),
         "archive_read_next_header": (i, [vp, ctypes.POINTER(vp)]),
         "archive_read_data": (ctypes.c_ssize_t, [vp, vp, ctypes.c_size_t]),
+        "archive_read_data_block": (
+            i,
+            [
+                vp,
+                ctypes.POINTER(vp),
+                ctypes.POINTER(ctypes.c_size_t),
+                ctypes.POINTER(ctypes.c_int64),
+            ],
+        ),
         "archive_error_string": (cp, [vp]),
         "archive_read_add_passphrase": (i, [vp, cp]),
         "archive_read_set_options": (i, [vp, cp]),
@@ -75,9 +84,11 @@ class EntryStream:
 
     ``fmt`` names a libarchive format reader (``cab``, ``lha``, ``zip_streamable``,
     ``raw``), ``filters`` the filters to enable. ``ignore_final_warning`` turns an
-    ``ARCHIVE_WARN`` at the end of the entry into a normal end: the wrappers that build
-    a container with a check value they do not know (a ZIP CRC over still-compressed
-    bytes, an LHA CRC-16) leave that check to archivey.
+    ``ARCHIVE_WARN`` at the end of the entry into a normal end. The LHA wrapper uses it:
+    it writes a CRC-16 of zero, because the member's CRC is the reader's check, not the
+    codec's, and libarchive reports the mismatch as that warning.
+
+    Close the stream (``with``, or :func:`decode_all`): it holds a libarchive handle.
     """
 
     def __init__(
@@ -98,20 +109,30 @@ class EntryStream:
         self._callback_error: BaseException | None = None
         self._ignore_final_warning = ignore_final_warning
         self._done = False
+        self._block, self._size, self._offset = (
+            ctypes.c_void_p(),
+            ctypes.c_size_t(),
+            ctypes.c_int64(),
+        )
         self._a = lib.archive_read_new()
-        getattr(lib, f"archive_read_support_format_{fmt}")(self._a)
-        for f in filters:
-            getattr(lib, f"archive_read_support_filter_{f}")(self._a)
-        if passphrase is not None:
-            lib.archive_read_add_passphrase(self._a, passphrase)
-        if options:
-            self._check(lib.archive_read_set_options(self._a, options.encode()))
-        self._check(lib.archive_read_open(self._a, None, None, self._callback, None))
-        entry = ctypes.c_void_p()
-        r = lib.archive_read_next_header(self._a, ctypes.byref(entry))
-        if r not in (ARCHIVE_OK, ARCHIVE_WARN):
-            self._check(r)
-        self._buf = ctypes.create_string_buffer(1 << 16)
+        try:
+            getattr(lib, f"archive_read_support_format_{fmt}")(self._a)
+            for f in filters:
+                getattr(lib, f"archive_read_support_filter_{f}")(self._a)
+            if passphrase is not None:
+                lib.archive_read_add_passphrase(self._a, passphrase)
+            if options:
+                self._check(lib.archive_read_set_options(self._a, options.encode()))
+            self._check(
+                lib.archive_read_open(self._a, None, None, self._callback, None)
+            )
+            entry = ctypes.c_void_p()
+            r = lib.archive_read_next_header(self._a, ctypes.byref(entry))
+            if r not in (ARCHIVE_OK, ARCHIVE_WARN):
+                self._check(r)
+        except BaseException:
+            self.close()
+            raise
 
     def _read(self, _a: int, _data: int, out: Any) -> int:
         try:
@@ -127,29 +148,36 @@ class EntryStream:
         msg = lib.archive_error_string(self._a)
         return msg.decode("utf-8", "replace") if msg else ""
 
-    def _check(self, r: int, partial: bytes = b"") -> None:
+    def _check(self, r: int) -> None:
         if self._callback_error is not None:
             raise self._callback_error
         if r < ARCHIVE_OK:
-            raise LibarchiveError(r, self._message(), partial)
+            raise LibarchiveError(r, self._message())
 
-    def read(self, size: int = 1 << 16) -> bytes:
-        """At most ``size`` bytes (at most 64 KiB); ``b""`` at the end of the entry."""
-        if self._done:
-            return b""
-        n = lib.archive_read_data(self._a, self._buf, min(size, len(self._buf)))
-        if n > 0:
-            return self._buf.raw[:n]
-        if n == ARCHIVE_WARN and self._ignore_final_warning:
-            # libarchive reports a failed end check (CRC) in place of the last count:
-            # the data was all delivered by the calls before.
-            self._done = True
-            return b""
-        if n == 0:
-            self._done = True
-            return b""
-        self._check(int(n))
-        raise AssertionError("unreachable")
+    def read(self) -> bytes:
+        """The next block libarchive decoded; ``b""`` at the end of the entry.
+
+        Block by block (``archive_read_data_block``), not ``archive_read_data``: the
+        latter copies the last block and then returns the end check's warning in place
+        of its count, so with ``ignore_final_warning`` the last block would be lost.
+        """
+        while not self._done:
+            r = lib.archive_read_data_block(
+                self._a,
+                ctypes.byref(self._block),
+                ctypes.byref(self._size),
+                ctypes.byref(self._offset),
+            )
+            if r == ARCHIVE_OK:
+                if self._size.value:  # an empty block is skipped
+                    return ctypes.string_at(self._block, self._size.value)
+            elif r == ARCHIVE_EOF or (r == ARCHIVE_WARN and self._ignore_final_warning):
+                # A failed end check (CRC) comes on its own call, after the data.
+                self._done = True
+            else:
+                self._check(r)
+                raise AssertionError(f"libarchive returned {r}")
+        return b""
 
     def read_all(self) -> bytes:
         out = []
@@ -169,6 +197,31 @@ class EntryStream:
         self.close()
 
 
-def decode_all(make: Callable[[], EntryStream]) -> bytes:
-    with make() as stream:
+def decode_all(stream: EntryStream) -> bytes:
+    """All of ``stream``'s bytes, closing it."""
+    with stream:
         return stream.read_all()
+
+
+def decode_archive(blob: bytes, fmt: str) -> bytes:
+    """Every entry of an archive held in memory, concatenated.
+
+    For the whole-archive timings only: 7z needs a seekable source, which the
+    callback reader above does not offer.
+    """
+    a = lib.archive_read_new()
+    try:
+        getattr(lib, f"archive_read_support_format_{fmt}")(a)
+        if lib.archive_read_open_memory(a, blob, len(blob)) != ARCHIVE_OK:
+            raise LibarchiveError(ARCHIVE_FATAL, "open failed")
+        buf = ctypes.create_string_buffer(1 << 16)
+        out = []
+        entry = ctypes.c_void_p()
+        while lib.archive_read_next_header(a, ctypes.byref(entry)) == ARCHIVE_OK:
+            while (n := lib.archive_read_data(a, buf, len(buf))) > 0:
+                out.append(buf.raw[:n])
+            if n < 0:
+                raise LibarchiveError(int(n), "read failed")
+        return b"".join(out)
+    finally:
+        lib.archive_read_free(a)

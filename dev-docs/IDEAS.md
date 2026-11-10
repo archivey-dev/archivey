@@ -19,6 +19,9 @@ Each idea carries a status:
 - *In progress* — a pull request or an OpenSpec change named with it carries the work.
 - *Needs design* — we want it, but the shape is not settled. Start with a proposal.
 - *Open idea* — worth doing if someone needs it. Not planned.
+- *Parked* — built or started, then set aside.
+- *Measured, not pursued* — tried and measured; the evidence is linked and the idea
+  stays closed unless that evidence changes.
 
 **Good first contribution** marks an idea that is small and self-contained.
 

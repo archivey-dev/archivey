@@ -1,8 +1,10 @@
 # libarchive as an accelerator for archivey's Python decoders
 
-**Status:** finished evidence, 2026-11-09. Not pursued: the recommendation is no.
+**Status:** finished evidence, 2026-11-09 (re-measured 2026-11-10 on `main` after PR
+1480). Not pursued: the recommendation is no.
 **Measured on:** the system libarchive 3.7.2 (Ubuntu 24.04 build: zlib, liblzma, bz2,
-lz4, zstd; no liblzo2), CPython 3.11, 4 cores. Oracle for LZX: `cabextract` 1.11.
+lz4, zstd; no liblzo2), CPython 3.11.18, 4 cores, archivey at merge `1a440968` plus this
+PR's scripts. Oracle for LZX: `cabextract` 1.11.
 **Code:** [`scripts/investigations/libarchive_accelerator/`](../../scripts/investigations/libarchive_accelerator/)
 (`bindings.py`, `wrappers.py`, `bench.py`, `differential.py`). Not wired into archivey.
 
@@ -16,21 +18,21 @@ DR-5a.
 
 ## Result
 
-**No.** libarchive is as fast as a native port (13x to 28x over the Python decoders),
+**No.** libarchive is as fast as a native port (13x to 26x over the Python decoders),
 but it fails the accelerator rule, and it cannot be made to pass it:
 
 1. **It accepts damaged streams that archivey refuses, and archivey cannot change
-   that.** In 1,000 streams each, 174 cut `.Z` streams (77% of the cut ones) decode
-   with no error in libarchive where archivey raises `TruncatedError`, and 29 damaged
-   LZX folders decode with no error where archivey and `cabextract` refuse them. A fallback to Python on a libarchive
-   error repairs only the other direction.
+   that.** In 1,000 streams each, 188 cut `.Z` streams (78% of the cut ones) decode
+   with no error in libarchive where archivey raises `TruncatedError`, and 43 damaged
+   LZX folders decode with no error where archivey and `cabextract` refuse them. A
+   fallback to Python on a libarchive error repairs only the other direction.
 2. **It needs a child process.** libarchive is C with a long CVE list in exactly these
    readers. DR-20 puts a native codec that can crash in a child process. That costs a
    process start per stream, which is what makes PPMd slow on small members today.
 3. **What a machine gets depends on its libarchive.** The system library differs by
    distribution and version (RHEL 8 has 3.3, Debian 12 has 3.6, Ubuntu 24.04 has 3.7.2
-   without liblzo2), and Windows ships no copy that programs are meant to load. So the same archive could read differently
-   on two machines (DR-5), and a bundled copy would need the same wheel matrix as the
+   without liblzo2), and Windows ships no copy that programs are meant to load. So the
+   same archive could read differently on two machines (DR-5), and a bundled copy would need the same wheel matrix as the
    Rust package, for C code archivey does not control.
 
 The parked Rust package (draft PR 1416) gives the same speed, in-process, with byte-
@@ -59,63 +61,70 @@ bytes, as archivey already does for RAR and `unrar`:
 | Deflate64 (ZIP 9; inflate64 today) | no | |
 | PPMd7 / PPMd8 (pyppmd today) | yes | synthetic 7z / ZIP entry |
 
-The wrappers are small (a CAB header is 64 bytes, a ZIP local header 31), and the coded
-bytes pass through unchanged, pulled through libarchive's read callback in chunks, so
-nothing reads the whole member first. archivey keeps the checks the container carries
-(CFDATA checksums, CRCs), because the wrapper writes zero or ignored check values.
+The wrappers are small (a CAB header is 64 bytes, a ZIP local header 31, an LHA
+level-0 header 24), and the coded bytes pass through unchanged, pulled through
+libarchive's read callback in chunks, so nothing reads the whole member first. archivey
+keeps the checks the container carries (CFDATA checksums, CRCs), because the wrapper
+writes zero or ignored check values. The LHA wrapper also checks the output size
+itself: read as a whole archive, libarchive returned 4,993 bytes for a 5,000-byte
+member and 30,037 for a 30,000-byte one, with no error.
 
 ## Speed
 
 `bench.py`: the same coded bytes fed in 64 KiB chunks to archivey's decoder and to
-libarchive behind the wrapper, best of three, outputs equal. The libarchive column
-includes the wrapper, the callback and the copy out.
+libarchive behind the wrapper, best of three on each side, outputs equal. The
+libarchive column includes the wrapper, the callback and the copy out. The text is the
+interpreter's standard library source, so absolute times depend on the Python build.
 
 | Kernel | Python | libarchive | Speed-up | Rust (PR 1416) |
 | --- | ---: | ---: | ---: | ---: |
-| `.Z`, 11 MB text | 930 ms | 68 ms | **13.8x** | 14x end to end |
-| ZipCrypto decrypt, 11 MB | 2,770 ms | 117 ms | **23.6x** | 32x (131 MB/s) |
-| LZX 16-bit window, 4 MB text | 380 ms | 15 ms | **25.5x** | 32x |
-| LZX 21-bit window, 4 MB text | 422 ms | 15 ms | **28.2x** | 32x |
-| LZH `-lh5-`, 1 MiB (PR 1405's decoder) | 114 ms | 5 ms | **~25x** | not ported |
-| LZH `-lh7-`, 1 MiB | 102 ms | 4 ms | **~27x** | not ported |
+| `.Z`, 11 MB text | 819 ms | 62 ms | **13.3x** | 14x end to end |
+| ZipCrypto decrypt, 11 MB | 2,731 ms | 118 ms | **23.2x** | 32x (131 MB/s) |
+| LZX 16-bit window, 4 MB text | 375 ms | 15 ms | **24.6x** | 32x |
+| LZX 21-bit window, 4 MB text | 397 ms | 15 ms | **26.4x** | 32x |
+| LZH `-lh5-`, 1 MiB text | 69 ms | 4 ms | **16.2x** | not ported |
+| LZH `-lh7-`, 1 MiB text | 60 ms | 4 ms | **16.0x** | not ported |
 
-Whole archives read by libarchive, against archivey reading them end to end (the
-codecs already in C dominate, so these gain little):
+The same script's second part reads whole archives with libarchive (from memory: 7z
+needs a seekable source) against archivey reading them end to end. The codecs already
+in C dominate, so these gain little:
 
 | Archive | archivey | libarchive | Speed-up |
 | --- | ---: | ---: | ---: |
-| 7z ARM64 + LZMA2, 16 MB | 155 ms | 139 ms | 1.1x |
-| 7z BCJ2 + LZMA, 16 MB | 233 ms | 154 ms | 1.5x |
-| 7z PPMd, 11 MB (pyppmd in a child) | 993 ms | 621 ms | 1.6x |
-| ZIP PPMd8, 11 MB (pyppmd in a child) | 1,091 ms | 723 ms | 1.5x |
+| 7z ARM64 + LZMA2, 16 MB | 156 ms | 140 ms | 1.1x |
+| 7z BCJ2 + LZMA, 16 MB | 230 ms | 154 ms | 1.5x |
+| 7z PPMd, 11 MB text (pyppmd in a child) | 669 ms | 479 ms | 1.4x |
+| ZIP PPMd8, 11 MB text (pyppmd in a child) | 657 ms | 472 ms | 1.4x |
 
-The 7z filter and PPMd rows are not worth a wrapper: 1.1x to 1.6x, and PPMd would need
+The 7z filter and PPMd rows are not worth a wrapper: 1.1x to 1.5x, and PPMd would need
 the child process in either library.
 
 ## Parity on damaged input
 
 `differential.py 1000 1`: each stream decoded by archivey's decoder and by libarchive
 behind the wrapper; a tenth clean, the rest with 1 to 3 bit flips, 1 to 8 replaced
-bytes, or a cut.
+bytes, or a cut. The text comes from a fixed seed, so the counts repeat on any machine
+with the same archivey, libarchive and `cabextract`.
 
 | Codec | Same result | Both refuse | archivey accepts, libarchive refuses | **libarchive accepts, archivey refuses** |
 | --- | ---: | ---: | ---: | ---: |
-| `.Z` | 618 | 208 | 0 | **174** (all cuts: 77% of cut streams) |
-| LZX, no CFDATA checksums | 234 | 722 | 15 | **29** |
-| LZH, CRC-16 set to match libarchive's output (500, PR 1405) | 49 | 404 | 0 | **47**, all of a wrong size |
-| ZipCrypto decrypt (200 random) | 193 | - | - | 0 (7 passwords with a NUL byte cannot reach libarchive) |
+| `.Z` | 612 | 200 | 0 | **188** (all cuts: 78% of cut streams) |
+| LZX, no CFDATA checksums | 327 | 629 | 1 | **43** |
+| LZH `-lh5-` to `-lh7-`, codec only, wrapper size check on | 291 | 500 | 209 | 0 |
+| ZipCrypto decrypt (200 random) | 195 | - | - | 0 (5 passwords with a NUL byte cannot reach libarchive) |
 
 - **`.Z`.** A `.Z` stream has no length and no check value. archivey refuses a cut
   stream when bits are left after the last whole code; libarchive returns what it
   decoded. Nothing outside the decoder can tell, so an accelerator would turn
   `TruncatedError` into a short read with no error (DR-1).
 - **LZX.** libarchive accepts trees that do not fill their code space, matches that
-  reach before the stream start, and block types 0 and 4 to 7. `cabextract` refuses
-  all 29, like archivey. The CFDATA checksums catch most damage, but they are optional,
-  and a crafted cabinet carries valid ones.
-- **LZH.** Every lenient case returns more or fewer bytes than the header's size, so a
-  wrapper that compares the size would refuse them all. In this sample that gives
-  parity; the size check is archivey's, not libarchive's.
+  reach before the stream start, and invalid block types. `cabextract` refuses all 43,
+  like archivey. The CFDATA checksums catch most damage, but they are optional, and a
+  crafted cabinet carries valid ones.
+- **LZH.** With the wrapper's size check, libarchive accepted nothing archivey refused.
+  It refused 209 streams archivey decodes ("Bad lzh data"); the LHA reader's CRC-16,
+  which this codec-level test leaves out on both sides, refuses those members in
+  archivey. So LZH parity is reachable, with a Python re-decode for each refusal.
 - **ZipCrypto.** Decryption cannot fail, so the output is the same by construction.
   The one gap is a password with a NUL byte: libarchive takes a C string.
 
@@ -131,22 +140,24 @@ direction is not: archivey cannot add libarchive's missing checks to libarchive.
   could check it against `DecoderLimits.max_decoder_memory`.
 - **Crashes.** The wrapper headers are archivey's, so libarchive's header-parsing CVEs
   (most of its CAB and LHA list) are out of reach; only the decoders see attacker
-  bytes. They are C. Over about 3,000 damaged streams nothing crashed, but DR-20 asks
+  bytes. They are C. Over about 4,000 damaged streams nothing crashed, but DR-20 asks
   for a child process unless a codec's behaviour on damage is measured, and the
   measured behaviour above is not archivey's.
-- **GIL.** ctypes releases the GIL during `archive_read_data`, but each read callback
+- **GIL.** ctypes releases the GIL during `archive_read_data_block`, but each read callback
   takes it back, once per input chunk.
 - **Passwords.** A NUL byte ends a libarchive passphrase, so those members would need
   the Python path.
 
-## Side finding: LZX decodes some damaged folders that `cabextract` refuses
+## Side finding, now fixed: LZX read past the folder's end
 
-With `cabextract` as a third opinion, **15 of 1,000** damaged LZX folders without
-checksums decode in archivey with no error to wrong bytes, while both `cabextract`
-("error in CAB data format") and libarchive refuse them. In a CAB-level run, all 31 such
-cases used the zero padding past the folder's last block. archivey's LZX decoder says it
-follows libmspack's `lzxd.c`, so this is a difference from the tool it matches. Tracked
-internally as a separate fix.
+The first run (on `main` before PR 1480) used `cabextract` as a third opinion and found
+15 of 1,000 damaged LZX folders that archivey decoded to wrong bytes with no error,
+while `cabextract` ("error in CAB data format") and libarchive refused them. Every case
+read into the zero padding past the folder's last block. PR 1480 made archivey refuse
+those streams as `cabextract` does. On the re-run, one folder remains where archivey
+returns wrong bytes and libarchive refuses, and `cabextract` accepts that one, so
+archivey again matches the tool it follows. The other 225 folders that decode to wrong
+bytes are accepted by all three: with no checksums, nothing can tell.
 
 ## Reproduce
 
@@ -155,6 +166,6 @@ uv run python scripts/investigations/libarchive_accelerator/bench.py
 uv run python scripts/investigations/libarchive_accelerator/differential.py 1000 1
 ```
 
-Both need the system libarchive (`libarchive.so.13`) and `ncompress`; the LZX third
-opinion needs `cabextract`. The LZH rows used PR 1405's branch with a variant of the
-differential script.
+Both need the system libarchive (`libarchive.so.13`) and `ncompress`. The LZX third
+opinion needs `cabextract`, and the whole-archive rows need `7zz`; each part is skipped
+without its tool. Every number on this page comes from these two commands.

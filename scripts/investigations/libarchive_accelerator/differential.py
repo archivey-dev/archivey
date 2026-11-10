@@ -5,6 +5,10 @@ An accelerator must give the same bytes or the same refusal as the decoder it re
 cuts) and counts the outcomes. ``cabextract``, when installed, is a third opinion for
 LZX, since archivey's LZX decoder follows libmspack.
 
+The text is generated from a fixed seed (not read from the running interpreter's
+standard library, as ``bench.py`` does), so the same ``N`` and ``SEED`` give the same
+counts on any machine with the same archivey, libarchive and ``cabextract``.
+
     uv run python scripts/investigations/libarchive_accelerator/differential.py [N] [SEED]
 
 Investigation code; ``dev-docs/investigations/libarchive-accelerator.md`` quotes the
@@ -29,20 +33,38 @@ sys.path.insert(0, str(HERE.parents[2] / "tests"))
 
 import ncompress  # noqa: E402
 import wrappers  # noqa: E402
-from bench import corpus  # noqa: E402
-from bindings import LibarchiveError  # noqa: E402
+from bindings import LibarchiveError, decode_all  # noqa: E402
 from cab_util import CabFolder, _folder_blocks  # noqa: E402
+from lha_util import compress as lzh_compress  # noqa: E402
 from zipcrypto import _encrypt  # noqa: E402
 
 import archivey  # noqa: E402
 from archivey.exceptions import ArchiveyError  # noqa: E402
 from archivey.internal.backends.zipcrypto import ZipCryptoKeys  # noqa: E402
+from archivey.internal.streams.codecs.lzh_decoder import LzhDecoder  # noqa: E402
 from archivey.internal.streams.codecs.lzx_decoder import FRAME_SIZE, LzxDecoder  # noqa: E402
 
 logging.disable(logging.CRITICAL)
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 500
 rng = random.Random(int(sys.argv[2]) if len(sys.argv) > 2 else 1)
-TEXT = corpus(4 << 20)
+
+
+def synthetic_text(size: int) -> bytes:
+    """Word-like text from a fixed seed: compresses like prose, same on every machine."""
+    gen = random.Random(0)
+    letters = "etaoinshrdlucmfwypvbgkjqxz"
+    vocab = ["".join(gen.choices(letters, k=gen.randint(1, 10))) for _ in range(5000)]
+    weights = [1 / (k + 1) for k in range(len(vocab))]
+    out: list[str] = []
+    length = 0
+    while length < size:
+        line = " ".join(gen.choices(vocab, weights, k=12)) + ".\n"
+        out.append(line)
+        length += len(line)
+    return "".join(out).encode()[:size]
+
+
+TEXT = synthetic_text(4 << 20)
 Outcome = tuple[str, bytes | str]
 
 
@@ -108,7 +130,7 @@ def unix_compress() -> None:
                 return s.read()
 
         a = run(py)
-        b = run(lambda z=z: wrappers.unix_compress(iter([z])).read_all())
+        b = run(lambda z=z: decode_all(wrappers.unix_compress(iter([z]))))
         verdict = compare(a, b)
         stats[(kind, verdict)] += 1
         if verdict not in ("same bytes", "both refuse") and len(examples[verdict]) < 2:
@@ -167,9 +189,9 @@ def lzx() -> None:
 
         a = run(py)
         b = run(
-            lambda blocks=blocks, sizes=sizes, bits=bits: wrappers.lzx_folder(
-                iter(blocks), sizes, bits
-            ).read_all()
+            lambda blocks=blocks, sizes=sizes, bits=bits: decode_all(
+                wrappers.lzx_folder(iter(blocks), sizes, bits)
+            )
         )
         verdict = compare(a, b)
         stats[(kind, verdict)] += 1
@@ -185,12 +207,59 @@ def lzx() -> None:
             cab = b"".join(wrappers.lzx_folder_bytes(blocks, sizes, bits))
             third[(verdict, f"cabextract {cabextract(cab)}")] += 1
         if a[0] == "ok" and a[1] != data:
-            third[
-                ("archivey: wrong bytes, no error (no checksums)", "libarchive " + b[0])
-            ] += 1
+            key = "archivey: wrong bytes, no error (no checksums)"
+            other = "libarchive " + b[0]
+            if have_cabextract:
+                cab = b"".join(wrappers.lzx_folder_bytes(blocks, sizes, bits))
+                other += f", cabextract {cabextract(cab)}"
+            third[(key, other)] += 1
     report("LZX (one CAB folder, no block checksums)", stats, examples)
     for k, v in sorted(third.items()):
-        print(f"  {k[0]:46} {k[1]:20} {v}")
+        print(f"  {k[0]:46} {k[1]:36} {v}")
+
+
+def lzh() -> None:
+    """LZH as a codec: archivey's decoder against libarchive behind the LHA wrapper.
+
+    Neither side checks the member's CRC-16 (the LHA reader does), so this compares
+    the decoders alone, as an accelerator would replace them.
+    """
+    stats: collections.Counter = collections.Counter()
+    examples: dict = collections.defaultdict(list)
+    for i in range(N):
+        data, method = sample(), rng.choice(["-lh5-", "-lh6-", "-lh7-"])
+        clean = lzh_compress(data, method)
+        comp, kind = (clean, "clean") if i % 10 == 0 else damage(clean)
+
+        def py(comp: bytes = comp, method: str = method, n: int = len(data)) -> bytes:
+            feed = iter([comp])
+            dec = LzhDecoder(method, n, lambda: next(feed, None))
+            out = []
+            while chunk := dec.read(1 << 16):
+                out.append(chunk)
+            return b"".join(out)
+
+        a = run(py)
+        b = run(
+            lambda comp=comp, method=method, data=data: b"".join(
+                wrappers.lzh(method, iter([comp]), len(comp), len(data))
+            )
+        )
+        verdict = compare(a, b)
+        stats[(kind, verdict)] += 1
+        if verdict not in ("same bytes", "both refuse") and len(examples[verdict]) < 2:
+            examples[verdict].append(
+                (
+                    kind,
+                    a[1] if a[0] == "refused" else "ok",
+                    b[1] if b[0] == "refused" else "ok",
+                )
+            )
+    report(
+        "LZH (-lh5- to -lh7-, codec only, with the wrapper's size check)",
+        stats,
+        examples,
+    )
 
 
 def zipcrypto() -> None:
@@ -213,9 +282,9 @@ def zipcrypto() -> None:
         if b"\0" in pw:
             nul += 1
             continue
-        b = wrappers.zipcrypto_decrypt(
-            header12, iter([cipher]), len(cipher), pw, check
-        ).read_all()
+        b = decode_all(
+            wrappers.zipcrypto_decrypt(header12, iter([cipher]), len(cipher), pw, check)
+        )
         same += a == b
     print(
         f"\n== ZipCrypto decrypt: {same} of {N // 5 - nul} random streams give equal bytes"
@@ -226,4 +295,5 @@ def zipcrypto() -> None:
 if __name__ == "__main__":
     unix_compress()
     lzx()
+    lzh()
     zipcrypto()
