@@ -167,7 +167,7 @@ def test_extract(tmp_path: Path, pipe: bool) -> None:
     source = NonSeekableBytesIO(path.read_bytes()) if pipe else path
     dest = tmp_path / "out"
     with open_archive(source, streaming=pipe) as reader:
-        reader.extract_all(dest)
+        reader.extract_all(dest, on_blocked="skip")
     for name, content in CONTENT.items():
         assert (dest / name).read_bytes() == content
     at = dest / "usr" / "share" / "at"

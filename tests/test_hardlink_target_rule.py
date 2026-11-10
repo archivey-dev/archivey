@@ -76,10 +76,10 @@ def _extract(
     kwargs.setdefault("on_error", OnError.CONTINUE)
     if streaming:
         with open_archive(io.BytesIO(path.read_bytes()), streaming=True) as archive:
-            report = archive.extract_all(dest, **kwargs)
+            report = archive.extract_all(dest, **{"on_blocked": "skip", **kwargs})
     else:
         with open_archive(path) as archive:
-            report = archive.extract_all(dest, **kwargs)
+            report = archive.extract_all(dest, **{"on_blocked": "skip", **kwargs})
     return {result.member.name: result for result in report.results}
 
 
@@ -225,6 +225,7 @@ def test_a_hardlink_to_a_targetless_symlink_fails_whether_or_not_it_was_refused(
             policy=ExtractionPolicy.STRICT,
             members=members,
             on_error=OnError.CONTINUE,
+            on_blocked="skip",
         )
     result = {r.member.name: r for r in report.results}["hl"]
     assert result.status is ExtractionStatus.FAILED, result.error

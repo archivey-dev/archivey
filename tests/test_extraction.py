@@ -758,7 +758,7 @@ def test_materialized_hardlink_mode_is_capped_like_a_files(
     archive = _tar_file_and_link(0o600, 0o4777)
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(archive)) as r:
-        r.extract_all(dest, members=["link.bin"], policy=policy)
+        r.extract_all(dest, members=["link.bin"], policy=policy, on_blocked="skip")
     assert (dest / "link.bin").read_bytes() == b"abc"
     assert (dest / "link.bin").stat().st_mode & 0o7777 == expected
 
@@ -799,7 +799,7 @@ def test_filter_dropping_the_mode_still_gets_the_policy_default(
     try:
         dest = tmp_path / "out"
         with open_archive(io.BytesIO(archive)) as r:
-            r.extract_all(dest, filter=drop_mode, policy=policy)
+            r.extract_all(dest, filter=drop_mode, policy=policy, on_blocked="skip")
     finally:
         os.umask(old)
     assert (dest / "d" / "f.txt").stat().st_mode & 0o7777 == 0o644
@@ -1270,7 +1270,9 @@ def test_subset_selection(tmp_path: Path) -> None:
     _write_zip(src, {"a.txt": b"a", "b.txt": b"b", "c.txt": b"c"})
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        results = r.extract_all(dest, members=["a.txt", "c.txt"]).results
+        results = r.extract_all(
+            dest, members=["a.txt", "c.txt"], on_blocked="skip"
+        ).results
     assert (dest / "a.txt").exists() and (dest / "c.txt").exists()
     assert not (dest / "b.txt").exists()
     assert len(results) == 2
@@ -1285,7 +1287,7 @@ def test_user_filter_rename(tmp_path: Path) -> None:
         return m.replace(name="renamed.txt")
 
     with open_archive(src) as r:
-        r.extract_all(dest, filter=rename)
+        r.extract_all(dest, filter=rename, on_blocked="skip")
     assert (dest / "renamed.txt").read_bytes() == b"a"
 
 
@@ -1298,7 +1300,7 @@ def test_user_filter_skip(tmp_path: Path) -> None:
         return None if m.name == "b.txt" else m
 
     with open_archive(src) as r:
-        report = r.extract_all(dest, filter=skip_b)
+        report = r.extract_all(dest, filter=skip_b, on_blocked="skip")
     assert (dest / "a.txt").exists()
     assert not (dest / "b.txt").exists()
     # Filter returning None is a caller-elected exclusion: no ExtractionResult (D1).
@@ -1752,7 +1754,10 @@ def test_selector_skips_do_not_count_toward_max_entries(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     with open_archive(src) as r:
         results = r.extract_all(
-            dest, members=["f0.txt"], limits=ExtractionLimits(max_entries=1)
+            dest,
+            members=["f0.txt"],
+            limits=ExtractionLimits(max_entries=1),
+            on_blocked="skip",
         ).results
     assert (dest / "f0.txt").read_bytes() == b"x"
     assert len(results) == 1
@@ -1770,7 +1775,10 @@ def test_filter_skips_do_not_count_toward_max_entries(tmp_path: Path) -> None:
 
     with open_archive(src) as r:
         results = r.extract_all(
-            dest, filter=keep_one, limits=ExtractionLimits(max_entries=1)
+            dest,
+            filter=keep_one,
+            limits=ExtractionLimits(max_entries=1),
+            on_blocked="skip",
         ).results
     assert (dest / "f0.txt").read_bytes() == b"x"
     assert [res.status for res in results] == [ExtractionStatus.EXTRACTED]
@@ -1789,7 +1797,10 @@ def test_rejected_members_do_not_count_toward_max_entries(tmp_path: Path) -> Non
     dest = tmp_path / "out"
     with open_archive(src) as r:
         results = r.extract_all(
-            dest, limits=ExtractionLimits(max_entries=2), on_error=OnError.CONTINUE
+            dest,
+            limits=ExtractionLimits(max_entries=2),
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
         ).results
     statuses = {res.member.name: res.status for res in results}
     assert statuses["good1.txt"] is ExtractionStatus.EXTRACTED
@@ -1820,7 +1831,12 @@ def test_progress_totals_respect_selector(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     progress = []
     with open_archive(src) as r:
-        r.extract_all(dest, members=["a.txt", "c.txt"], on_progress=progress.append)
+        r.extract_all(
+            dest,
+            members=["a.txt", "c.txt"],
+            on_progress=progress.append,
+            on_blocked="skip",
+        )
     last = progress[-1]
     assert last.members_total == 2
     assert last.members_done == 2
@@ -1839,6 +1855,7 @@ def test_progress_counts_filter_skipped_members_as_done(tmp_path: Path) -> None:
             dest,
             filter=lambda m: None if m.name == "b.txt" else m,
             on_progress=progress.append,
+            on_blocked="skip",
         )
     last = progress[-1]
     assert last.members_total == 3
@@ -1920,7 +1937,7 @@ def test_on_progress_unknown_size_terminal_equals_observed(tmp_path: Path) -> No
     reports: list = []
     with open_archive(src) as r:
         assert r.members()[0].size is None
-        r.extract_all(dest, on_progress=reports.append)
+        r.extract_all(dest, on_progress=reports.append, on_blocked="skip")
 
     assert len(reports) >= 1
     terminal = reports[-1]
@@ -1994,7 +2011,7 @@ def test_tar_symlink_dangling_to_filtered_target(tmp_path: Path) -> None:
     )
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        r.extract_all(dest, members=["link"])  # exclude file.txt
+        r.extract_all(dest, members=["link"], on_blocked="skip")  # exclude file.txt
     link = dest / "link"
     assert link.is_symlink()
     assert not (dest / "file.txt").exists()
@@ -2079,7 +2096,9 @@ def test_extracting_under_a_symlink_loop_raises_eloop(
         src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
     os.symlink("loop", tmp_path / "loop")
     with open_archive(src) as reader, pytest.raises(OSError) as info:
-        reader.extract_all(tmp_path / "loop" / "out", dry_run=dry_run)
+        reader.extract_all(
+            tmp_path / "loop" / "out", dry_run=dry_run, on_blocked="skip"
+        )
     assert info.value.errno == errno.ELOOP
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
 
@@ -2105,7 +2124,7 @@ def test_extracting_into_a_self_looping_symlink_raises_extraction_error(
         open_archive(src) as reader,
         pytest.raises(ExtractionError, match="exists and is not a directory"),
     ):
-        reader.extract_all(tmp_path / "loop", dry_run=dry_run)
+        reader.extract_all(tmp_path / "loop", dry_run=dry_run, on_blocked="skip")
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
 
 
@@ -2444,7 +2463,9 @@ def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
     src = tmp_path / "file.tar"
     src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
     with open_archive(src) as r:
-        report = r.extract_all(tmp_path / "file", overwrite="replace")
+        report = r.extract_all(
+            tmp_path / "file", overwrite="replace", on_blocked="skip"
+        )
     assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED]
     assert (tmp_path / "file" / "f").read_bytes() == b"AAA"
     assert len(refused) == (1 if windows else 0)
@@ -2453,7 +2474,9 @@ def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
     src = tmp_path / "link.tar"
     src.write_bytes(_tar_bytes([("file", "f", b"AAA"), ("hard", "h", "f")]))
     with open_archive(src) as r:
-        report = r.extract_all(tmp_path / "link", overwrite="replace")
+        report = r.extract_all(
+            tmp_path / "link", overwrite="replace", on_blocked="skip"
+        )
     assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED] * 2
     assert (tmp_path / "link" / "h").read_bytes() == b"AAA"
     assert refused
@@ -2464,7 +2487,7 @@ def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
     src = tmp_path / "error.tar"
     src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
     with open_archive(src) as r:
-        report = r.extract_all(tmp_path / "error")
+        report = r.extract_all(tmp_path / "error", on_blocked="skip")
     assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED]
     assert (tmp_path / "error" / "f").read_bytes() == b"AAA"
     assert len(refused) == (0 if windows else 1)
@@ -2483,7 +2506,7 @@ def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:
         return None if m.name == "file.txt" else m
 
     with open_archive(src) as r:
-        results = r.extract_all(dest, filter=drop_source).results
+        results = r.extract_all(dest, filter=drop_source, on_blocked="skip").results
     assert (dest / "hard.txt").read_bytes() == b"data"
     assert not (dest / "file.txt").exists()
     assert [r.status for r in results] == [ExtractionStatus.EXTRACTED]
@@ -2517,7 +2540,10 @@ def test_orphan_written_file_blocks_a_later_orphan_under_it(
 
     with open_archive(src) as r:
         results = r.extract_all(
-            tmp_path / "out", filter=drop_sources, on_error=OnError.CONTINUE
+            tmp_path / "out",
+            filter=drop_sources,
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
         ).results
     by_name = {res.member.name: res for res in results}
     assert by_name["a"].status is ExtractionStatus.EXTRACTED
@@ -2541,13 +2567,13 @@ def test_tar_hardlink_orphan_forward_only_onerror(tmp_path: Path) -> None:
         open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
         pytest.raises(ExtractionError),
     ):
-        r.extract_all(dest, filter=drop_source)
+        r.extract_all(dest, filter=drop_source, on_blocked="skip")
 
     # CONTINUE: records FAILED, does not raise.
     dest2 = tmp_path / "out_continue"
     with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
         results = r.extract_all(
-            dest2, filter=drop_source, on_error=OnError.CONTINUE
+            dest2, filter=drop_source, on_error=OnError.CONTINUE, on_blocked="skip"
         ).results
     statuses = {r.member.name: r.status for r in results}
     assert statuses["hard.txt"] is ExtractionStatus.FAILED
@@ -2593,7 +2619,7 @@ def test_non_seekable_targz_extract(tmp_path: Path) -> None:
     )
     dest = tmp_path / "out"
     with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        r.extract_all(dest)
+        r.extract_all(dest, on_blocked="skip")
     assert (dest / "a.txt").read_bytes() == b"hello"
     assert (dest / "b.txt").read_bytes() == b"world"
 
@@ -2785,6 +2811,7 @@ def test_streaming_targz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
                     max_extracted_bytes=100
                     * 2**20,  # high, so the cap is not what trips
                 ),
+                on_blocked="skip",
             )
 
 
@@ -2805,7 +2832,7 @@ def test_streaming_live_ratio_halts_under_continue(tmp_path: Path) -> None:
                 live_ratio_activation_threshold=1024,
                 max_extracted_bytes=100 * 2**20,
             ),
-            on_error=OnError.CONTINUE,  # global guard halts anyway
+            on_error=OnError.CONTINUE,  # global guard halts anyway, on_blocked="skip"
         )
 
 
@@ -2821,6 +2848,7 @@ def test_streaming_plain_tar_no_live_ratio_trip(tmp_path: Path) -> None:
         r.extract_all(
             dest,
             limits=ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024),
+            on_blocked="skip",
         )
         assert r.compressed_bytes_consumed == len(raw)
     assert (dest / "a.bin").read_bytes() == payload
@@ -2857,6 +2885,7 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
                     live_ratio_activation_threshold=1024,
                     max_extracted_bytes=100 * 2**20,
                 ),
+                on_blocked="skip",
             )
 
 
@@ -2884,7 +2913,7 @@ def test_pipe_size_claim_does_not_switch_off_live_ratio(
         assert r.compressed_source_size is None
         assert r.compressed_bytes_consumed is not None
         with pytest.raises(ResourceLimitError, match="Live decompression ratio"):
-            r.extract_all(tmp_path / "out", limits=limits)
+            r.extract_all(tmp_path / "out", limits=limits, on_blocked="skip")
 
 
 def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
@@ -2909,7 +2938,7 @@ def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
         ("pipe", NonSeekableBytesIO(raw)),
     ]:
         with open_archive(src, streaming=True) as r:
-            r.extract_all(tmp_path / name, limits=limits)
+            r.extract_all(tmp_path / name, limits=limits, on_blocked="skip")
         assert (tmp_path / name / "img.bin").read_bytes() == payload
 
     # A live floor under the blank start judges it before the data arrives: this is the
@@ -2921,6 +2950,7 @@ def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
         r.extract_all(
             tmp_path / "low",
             limits=replace(limits, live_ratio_activation_threshold=1024),
+            on_blocked="skip",
         )
 
 
@@ -2983,7 +3013,7 @@ def test_forged_member_declaration_is_refused_only_after_the_decode(
             assert inner_ar.compressed_source_size == forged
             assert inner_ar.compressed_bytes_consumed is None
             with pytest.raises(TruncatedError):
-                inner_ar.extract_all(out, limits=limits)
+                inner_ar.extract_all(out, limits=limits, on_blocked="skip")
     assert not out.exists() or not any(out.iterdir())
 
 
@@ -3022,6 +3052,7 @@ def test_orphan_first_link_skipped_writes_to_next(tmp_path: Path) -> None:
             members=["L1.txt", "L2.txt"],  # source A.txt excluded
             overwrite=OverwritePolicy.SKIP,
             on_error=OnError.CONTINUE,
+            on_blocked="skip",
         ).results
 
     statuses = {res.member.name: res.status for res in results}
@@ -3059,7 +3090,10 @@ def test_orphan_link_failing_after_the_content_was_placed_fails_alone(
     )
     with open_archive(src) as r:
         results = r.extract_all(
-            dest, members=["L1.txt", "L2.txt"], on_error=OnError.CONTINUE
+            dest,
+            members=["L1.txt", "L2.txt"],
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
         ).results
 
     by_name = {res.member.name: res for res in results}
@@ -3100,6 +3134,7 @@ def test_orphan_link_refused_by_the_policy_fails_alone(
             members=["L1.txt", "L2.txt"],
             overwrite=overwrite,
             on_error=OnError.CONTINUE,
+            on_blocked="skip",
         ).results
 
     by_name = {res.member.name: res for res in results}
@@ -3132,7 +3167,10 @@ def test_orphan_link_refused_by_the_policy_stops_under_stop(tmp_path: Path) -> N
         pytest.raises(ExtractionError, match="Destination already exists"),
     ):
         r.extract_all(
-            dest, members=["L1.txt", "L2.txt"], overwrite=OverwritePolicy.ERROR
+            dest,
+            members=["L1.txt", "L2.txt"],
+            overwrite=OverwritePolicy.ERROR,
+            on_blocked="skip",
         )
     assert not (dest / "L2.txt").exists()
 
@@ -3158,6 +3196,7 @@ def test_orphan_source_failure_keeps_earlier_link_results(
             members=["L1.txt", "L2.txt", "L3.txt"],
             overwrite=OverwritePolicy.SKIP,
             on_error=OnError.CONTINUE,
+            on_blocked="skip",
         ).results
 
     by_name = {res.member.name: res for res in results}
@@ -3188,7 +3227,10 @@ def test_orphan_source_refused_from_its_recorded_size_fails_as_a_group(
     monkeypatch.setattr(BombTracker, "check_recorded_size", refuse)
     with open_archive(src) as r:
         results = r.extract_all(
-            dest, members=["L1.txt", "L2.txt"], on_error=OnError.CONTINUE
+            dest,
+            members=["L1.txt", "L2.txt"],
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
         ).results
 
     assert [res.status for res in results] == [ExtractionStatus.FAILED] * 2
@@ -3245,7 +3287,10 @@ def test_orphan_link_whose_temp_file_is_refused_fails_alone(
     monkeypatch.setattr(extraction_module, "_open_new_file", refuse_in_ro)
     with open_archive(src) as r:
         results = r.extract_all(
-            dest, members=["ro/L1.txt", "L2.txt"], on_error=OnError.CONTINUE
+            dest,
+            members=["ro/L1.txt", "L2.txt"],
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
         ).results
     _assert_first_link_failed_alone(results, dest)
 
@@ -3267,6 +3312,7 @@ def test_orphan_link_in_a_read_only_directory_fails_alone(tmp_path: Path) -> Non
                 members=["ro/L1.txt", "L2.txt"],
                 overwrite=OverwritePolicy.ERROR,
                 on_error=OnError.CONTINUE,
+                on_blocked="skip",
             ).results
     finally:
         (dest / "ro").chmod(0o700)
@@ -3288,6 +3334,7 @@ def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
             dest,
             members=["L1.txt", "L2.txt"],
             overwrite=OverwritePolicy.SKIP,
+            on_blocked="skip",
         ).results
 
     assert [res.status for res in results] == [ExtractionStatus.NOT_OVERWRITTEN] * 2
@@ -3312,6 +3359,7 @@ def test_orphan_all_links_refused_writes_nothing(tmp_path: Path) -> None:
             members=["L1.txt", "L2.txt"],
             overwrite=OverwritePolicy.ERROR,
             on_error=OnError.CONTINUE,
+            on_blocked="skip",
         ).results
 
     assert [res.status for res in results] == [ExtractionStatus.FAILED] * 2
@@ -3353,7 +3401,7 @@ def test_orphan_materialized_source_carries_link_metadata(tmp_path: Path) -> Non
     dest = tmp_path / "out"
 
     with open_archive(src) as r:
-        results = r.extract_all(dest, members=["L1.txt"]).results
+        results = r.extract_all(dest, members=["L1.txt"], on_blocked="skip").results
 
     assert [res.status for res in results] == [ExtractionStatus.EXTRACTED]
     st = (dest / "L1.txt").lstat()
@@ -3375,7 +3423,9 @@ def test_hardlink_duplicate_name_extraction_links_first_inode(tmp_path: Path) ->
     )
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        results = r.extract_all(dest, overwrite=OverwritePolicy.REPLACE).results
+        results = r.extract_all(
+            dest, overwrite=OverwritePolicy.REPLACE, on_blocked="skip"
+        ).results
     # First A.txt is superseded; hardlink still materializes its target bytes;
     # the live A.txt is the last entry.
     assert [res.status for res in results] == [
@@ -3498,7 +3548,7 @@ def test_duplicate_names_extract_the_same_in_both_modes(
                 (dest / name).write_bytes(b"OLD")
         with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
             results = reader.extract_all(
-                dest, overwrite=overwrite, on_error=OnError.CONTINUE
+                dest, overwrite=overwrite, on_error=OnError.CONTINUE, on_blocked="skip"
             ).results
         outcomes[streaming] = (
             [
@@ -3515,7 +3565,7 @@ def test_streaming_duplicate_name_supersedes_the_written_copy(tmp_path: Path) ->
     archive = _tar_bytes([("file", "a.txt", b"first"), ("file", "a.txt", b"last")])
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(archive), streaming=True) as reader:
-        results = reader.extract_all(dest).results
+        results = reader.extract_all(dest, on_blocked="skip").results
     assert [(r.status, r.path) for r in results] == [
         (ExtractionStatus.SUPERSEDED, None),
         (ExtractionStatus.EXTRACTED, dest / "a.txt"),
@@ -3537,7 +3587,9 @@ def test_streaming_duplicate_name_removes_the_copy_a_filter_drops(
             return member if len(seen) == 1 else None  # noqa: B023 - called within this iteration
 
         with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
-            results = reader.extract_all(dest, filter=drop_second).results
+            results = reader.extract_all(
+                dest, filter=drop_second, on_blocked="skip"
+            ).results
         assert [r.status for r in results] == [ExtractionStatus.SUPERSEDED]
         assert not (dest / "a.txt").exists()
 
@@ -3563,7 +3615,7 @@ def test_streaming_duplicate_name_removes_the_copy_when_the_later_one_fails(
 
         with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
             results = reader.extract_all(
-                dest, filter=fail_second, on_error=OnError.CONTINUE
+                dest, filter=fail_second, on_error=OnError.CONTINUE, on_blocked="skip"
             ).results
         assert [r.status for r in results] == [
             ExtractionStatus.SUPERSEDED,
@@ -3589,7 +3641,7 @@ def test_streaming_duplicate_name_is_not_counted_against_the_limits(
     for streaming in (False, True):
         dest = tmp_path / f"out-{streaming}"
         with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
-            results = reader.extract_all(dest, limits=limits).results
+            results = reader.extract_all(dest, limits=limits, on_blocked="skip").results
         assert [r.status for r in results] == [
             ExtractionStatus.SUPERSEDED,
             ExtractionStatus.SUPERSEDED,
@@ -3625,7 +3677,9 @@ def test_streaming_duplicate_name_holds_a_copy_it_could_not_remove(
 
     monkeypatch.setattr(os, "unlink", refusing_unlink)
     with open_archive(io.BytesIO(archive), streaming=True) as reader:
-        results = reader.extract_all(dest, filter=drop_second).results
+        results = reader.extract_all(
+            dest, filter=drop_second, on_blocked="skip"
+        ).results
     assert [r.status for r in results] == [
         ExtractionStatus.SUPERSEDED,
         ExtractionStatus.EXTRACTED,
@@ -3656,7 +3710,9 @@ def test_streaming_duplicate_name_holds_an_unremoved_copy_across_take_backs(
 
     monkeypatch.setattr(os, "unlink", refusing_unlink)
     with open_archive(io.BytesIO(archive), streaming=True) as reader:
-        results = reader.extract_all(dest, filter=rename_middle).results
+        results = reader.extract_all(
+            dest, filter=rename_middle, on_blocked="skip"
+        ).results
     assert [r.status for r in results] == [ExtractionStatus.SUPERSEDED] * 3 + [
         ExtractionStatus.EXTRACTED
     ]
@@ -3697,6 +3753,7 @@ def test_streaming_duplicate_name_unremoved_copy_still_collides(
             filter=drop_second,
             policy=ExtractionPolicy.STANDARD,
             on_error=OnError.CONTINUE,
+            on_blocked="skip",
         ).results
     assert [(r.status, r.collided_with) for r in results] == [
         (ExtractionStatus.SUPERSEDED, None),
@@ -3738,6 +3795,7 @@ def test_streaming_duplicate_name_renames_onto_an_unremoved_copy(
             filter=drop_second_copy,
             policy=ExtractionPolicy.STANDARD,
             overwrite=OverwritePolicy.RENAME,
+            on_blocked="skip",
         )
     tree = _tree(dest)
     tree.pop(("hardlinks",), None)
@@ -3763,6 +3821,7 @@ def test_streaming_duplicate_name_kept_by_a_hardlink_still_counts(
                 dest,
                 on_error=OnError.CONTINUE,
                 limits=ExtractionLimits(max_extracted_bytes=100_000),
+                on_blocked="skip",
             )
 
 
@@ -3807,7 +3866,7 @@ def test_streaming_duplicate_name_anti_item_removes_the_written_copy(
     for streaming in (False, True):
         dest = tmp_path / f"out-{streaming}"
         with _FileThenAntiReader(ArchiveFormat.SEVEN_Z, streaming, "x.7z") as reader:
-            results = reader.extract_all(dest).results
+            results = reader.extract_all(dest, on_blocked="skip").results
         outcomes[streaming] = ([r.status for r in results], _tree(dest))
     assert "a.txt" not in outcomes[False][1]
     assert outcomes[True] == outcomes[False]
@@ -3902,6 +3961,7 @@ def test_hardlink_before_source_is_not_linked_forward(tmp_path: Path) -> None:
             dest,
             on_error=OnError.CONTINUE,
             on_progress=lambda p: progress_bytes.append(p.bytes_written),
+            on_blocked="skip",
         ).results
 
     by_name = {res.member.name: res for res in results}
@@ -3928,14 +3988,19 @@ def test_selector_archivemember_entry_matches_by_identity(tmp_path: Path) -> Non
         assert first.name == second.name == "dup.txt"
         assert first.is_current is False
         assert second.is_current is True
-        results = r.extract_all(tmp_path / "by_member", members=[first]).results
+        results = r.extract_all(
+            tmp_path / "by_member", members=[first], on_blocked="skip"
+        ).results
     assert len(results) == 1
     assert results[0].status is ExtractionStatus.SUPERSEDED
     assert not (tmp_path / "by_member" / "dup.txt").exists()
 
     with open_archive(src) as r:
         results = r.extract_all(
-            tmp_path / "by_name", members=["dup.txt"], overwrite=OverwritePolicy.REPLACE
+            tmp_path / "by_name",
+            members=["dup.txt"],
+            overwrite=OverwritePolicy.REPLACE,
+            on_blocked="skip",
         ).results
     assert len(results) == 2  # a str entry matches every same-named duplicate
     assert [res.status for res in results] == [
@@ -3972,6 +4037,7 @@ def test_opaque_seekable_compressed_source_gets_live_ratio(tmp_path: Path) -> No
                     max_extracted_bytes=100
                     * 2**20,  # high, so the cap is not what trips
                 ),
+                on_blocked="skip",
             )
 
 
@@ -5010,7 +5076,7 @@ def test_o2_orphan_hardlink_honours_collision_map(tmp_path: Path) -> None:
             overwrite=OverwritePolicy.REPLACE,
             members=lambda m: (
                 m.name != "src.bin"
-            ),  # exclude the source -> readme orphans
+            ),  # exclude the source -> readme orphans, on_blocked="skip"
         )
     # One casefold-equivalent file, not README + readme. The deferred link holds its
     # name from its place in archive order, so the later README replaces it there, as
@@ -5223,6 +5289,7 @@ def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> Non
             policy=ExtractionPolicy.TRUSTED,
             overwrite=OverwritePolicy.REPLACE,
             members=lambda m: m.name != "src.bin",
+            on_blocked="skip",
         )
     assert not _overwritten(report)
 
@@ -5238,7 +5305,10 @@ def test_o2_hardlink_folded_onto_its_own_source(
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
         report = reader.extract_all(
-            dest, overwrite=OverwritePolicy.REPLACE, on_error=OnError.CONTINUE
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
         )
     assert [(r.member.name, r.status) for r in report.results] == [
         ("a", ExtractionStatus.OVERWRITTEN),
@@ -5268,6 +5338,7 @@ def test_duplicate_hardlink_name_under_replace_leaves_no_temp(
             policy=policy,
             overwrite=OverwritePolicy.REPLACE,
             on_error=OnError.CONTINUE,
+            on_blocked="skip",
         )
     assert [(r.member.name, r.status) for r in report.results] == [
         ("a", ExtractionStatus.EXTRACTED),
@@ -5291,6 +5362,7 @@ def test_o2_orphan_hardlinks_folded_onto_each_other(tmp_path: Path) -> None:
             members=["L", "l"],
             overwrite=OverwritePolicy.REPLACE,
             on_error=OnError.CONTINUE,
+            on_blocked="skip",
         )
     assert [(r.member.name, r.status) for r in report.results] == [
         ("L", ExtractionStatus.OVERWRITTEN),
@@ -5472,7 +5544,9 @@ def test_three_spellings_filter_rename_then_portable_rewrite(tmp_path: Path) -> 
         report = reader.extract_all(
             dest,
             policy=ExtractionPolicy.STRICT,
-            filter=lambda m: m.replace(name="renamed."),  # trailing dot -> rewritten
+            filter=lambda m: m.replace(
+                name="renamed."
+            ),  # trailing dot -> rewritten, on_blocked="skip"
         )
     (result,) = report.results
     assert result.member.name == "orig.txt"
@@ -5687,7 +5761,9 @@ def test_hardlink_failure_group_is_recorded_on_results(
         report = reader.extract_all(
             dest,
             on_error=OnError.CONTINUE,
-            members=lambda m: m.name != "src.bin",  # orphan both links
+            members=lambda m: (
+                m.name != "src.bin"
+            ),  # orphan both links, on_blocked="skip"
         )
     failed = [r for r in report.results if r.status is ExtractionStatus.FAILED]
     assert len(failed) == 2
@@ -6418,7 +6494,7 @@ def test_a_staging_file_the_filesystem_keeps_is_logged(
     monkeypatch.setattr(ExtractionCoordinator, "_apply_metadata", fail)
     monkeypatch.setattr(os, "unlink", refuse_temp)
     with open_archive(archive) as reader:
-        reader.extract_all(tmp_path / "out", on_error="continue")
+        reader.extract_all(tmp_path / "out", on_error="continue", on_blocked="skip")
     assert "staged for 'f.txt'" in caplog.text
 
 
@@ -6441,7 +6517,7 @@ def test_a_taken_temp_name_moves_on_to_the_next(
     monkeypatch.setattr(extraction_module, "_open_new_file", first_name_taken)
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        r.extract_all(dest)
+        r.extract_all(dest, on_blocked="skip")
     assert (dest / "d" / "f.txt").read_bytes() == b"x"
     assert len(tried) == 2
     assert len(set(tried)) == 2
