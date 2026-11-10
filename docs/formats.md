@@ -70,6 +70,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   needs (gzip, bzip2, xz and LZMA in core, Zstandard as for a `.zst` file). Listing: needs
   decompression. Members: solid. Readable from a pipe. A package with an uncompressed
   payload (rare) lists header by header, and its members are direct.
+- **makeself** (`.run` installers): core; each payload needs what its compressor needs, as for
+  the same compressed TAR. Listing: needs decompression. Members: solid. Readable from a pipe.
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
@@ -1351,6 +1353,39 @@ what `makecab` and `gcab` write.
 - Delta RPMs, and payloads compressed with something archivey cannot decode, raise
   `UnsupportedFeatureError`. A payload that does not match its header (a missing file, a file
   the header does not list) raises `CorruptionError`.
+
+## makeself
+
+A makeself archive is a `.run` installer: a shell script that unpacks the TARs stored after it.
+NVIDIA's Linux drivers, VirtualBox extension packs and many vendor SDKs are shipped this way.
+Archivey reads the TARs and never runs the script.
+
+- **Needs:** nothing for gzip, bzip2, xz and uncompressed payloads; a Zstandard, LZ4, lzop or
+  bzip3 payload needs what the same `.tar.zst`, `.tar.lz4`, `.tar.lzo` or `.tar.bz3` needs.
+- **Listing:** needs decompression. The members are the TAR's, named as makeself extracts them
+  into its target folder.
+- **Reading members:** solid.
+- **From a pipe:** yes, with `streaming=True`.
+- Archives from makeself 2.2.0 and later are read. They are found by their first two lines,
+  whatever the file's name.
+- **Several payloads.** makeself 2.2.0 to 2.4.0 add a TAR to the archive at each `--append`.
+  Archivey lists each TAR's members after the previous one's, as makeself extracts them.
+- **Checksums.** The header stores a CRC, an MD5 and, with `--sha256`, a SHA-256 of each
+  payload. Archivey checks each one it finds when it reads to the end of the payload. They cover
+  every file of the payload, so a match raises each to `Verification.CHECKSUM`, and a mismatch
+  raises `CorruptionError` and makes `verify_all()` return each file of the payload.
+- **Encryption.** A payload written with `--base64` is read. One encrypted with
+  `--ssl-encrypt` or `--gpg-encrypt` raises `UnsupportedFeatureError`.
+- `ArchiveInfo.format_version` is the makeself version the header names (`"2.4.5"`).
+  `ArchiveInfo.extra` holds `makeself.label`, `makeself.script` (the command run after
+  extraction), `makeself.target_dir`, `makeself.compression` (`"gzip"`, `"xz"`, `"none"`, …),
+  `makeself.encryption` (when there is one: `"base64"`, `"openssl"` or `"gpg"`),
+  `makeself.payloads` and `makeself.signed` (the header has a gpg signature, which is not
+  checked).
+- `format=TAR_GZ` (or any other format) on a makeself archive fails as on any file that is not
+  one, and the error says the file is a makeself archive.
+- A header archivey cannot parse raises `CorruptionError`. The header counts against
+  `max_metadata_bytes`: a longer one raises `ResourceLimitError`.
 
 ## Disk images
 

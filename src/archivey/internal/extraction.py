@@ -1,11 +1,12 @@
-"""The extraction coordinator.
+"""The extraction coordinator: writes a reader's members to disk, safely.
 
-``ExtractionCoordinator`` is a **pull-based sink**: it drives the reader
-(``members_report_if_available()``, ``_iter_with_data()``, ``compressed_source_size``) and
-selects an algorithm, rather than a push-model helper that buffers deferred link state.
-Per member it runs the universal safety check on the original, applies the policy
-transform (and optional user filter) to a transient copy, and writes FILE / DIR / SYMLINK
-/ HARDLINK, tracking bomb limits and per-member results.
+``BaseArchiveReader.extract_all`` builds one ``ExtractionCoordinator`` per call and calls
+its ``run()``. The coordinator is a **pull-based sink**: it drives the reader
+(``members_report_if_available()``, ``_stream_members()``) and selects an algorithm,
+rather than a push-model helper that buffers deferred link state.
+Per member it applies the policy transform (and the optional user filter) to a transient
+copy, runs the universal safety check on that copy, and writes FILE / DIR / SYMLINK /
+HARDLINK, tracking bomb limits and per-member results.
 
 Hardlinks (TAR ordering guarantees the source precedes its links) are resolved by one
 **core** algorithm: a sequential forward pass with a conditional second pass. When a
@@ -16,6 +17,33 @@ fails per ``OnError``. See ``safe-extraction`` / ``format-tar`` for the normativ
 The optional *planned single pass* optimization (staging an excluded source during the
 first pass when a free member list exists) is deliberately not implemented here — it is an
 optimization over this core, not a correctness requirement.
+
+How a run flows, and where each step lives in ``ExtractionCoordinator`` (``# ---``
+comments mark its sections):
+
+1. **Entry point.** ``run`` calls ``_run``, under a dry run against a scratch copy of the
+   destination (``archivey.internal.dry_run``). ``_run`` settles the selection and the
+   progress totals, builds the ``_RunState``, and calls ``_run_pass``. However that
+   ends, it then removes the staging directory, remakes symlinks of the wrong kind
+   (Windows) and applies the deferred directory metadata.
+2. **The first pass.** ``_run_pass`` hands each member to ``_handle_member``. A reader
+   whose walk changes members after it yields them (a ZIP read from a pipe) goes
+   through ``_stage_then_place`` instead: the data is staged during the walk, and the
+   members are placed once it ends. A streaming pass that meets a later copy of a name
+   takes the earlier copy back (``_park_earlier_copies``).
+3. **One member.** ``_transform`` applies the policy, the caller's filter and the
+   universal safety check. ``_write_member`` resolves a name collision
+   (``_resolve_collision``) and writes the entry for its type (``_dispatch_write``),
+   where ``_make_room`` / ``_prepare_destination`` apply the overwrite policy first.
+   ``_settle_placement`` records the collision and revises an earlier result that a
+   REPLACE overwrote. ``_handling`` turns a failure into a FAILED or BLOCKED result,
+   applies ``OnError`` and ``AbortOn.BLOCKED_MEMBER``, and rechecks the run's symlinks
+   (``_recheck_links``). The name and collision aborts are raised where they are
+   detected, as ``_AbortExtraction``, which passes through ``_handling``.
+4. **The second pass.** ``_resolve_orphans`` completes the hardlinks whose source was
+   not on disk when the first pass reached them.
+5. **Filesystem helpers.** The destination root, directory creation, atomic landings
+   (a temp file, then ``_swap_into_place``) and metadata.
 """
 
 from __future__ import annotations
@@ -300,7 +328,7 @@ class _AbortExtraction(Exception):
     ``ExtractionError``, so raising it directly would be caught by the per-member
     handlers and turned into a ``FAILED`` result — the opposite of an abort. This
     carrier is a plain ``Exception``, so it passes those handlers untouched (their
-    ``finally`` clauses still close streams) and ``run()`` unwraps it at the top.
+    ``finally`` clauses still close streams) and ``_run()`` unwraps it at the top.
     """
 
     def __init__(self, error: ArchiveyError) -> None:
@@ -362,6 +390,24 @@ def _report_stored_spelling(
         exc.member_name = member.name
     if exc.link_target is not None and exc.link_target == on_disk.link_target:
         exc.link_target = member.link_target
+
+
+def _rerooted_error(before: str, after: str, member_name: str) -> NameRewrittenError:
+    """The error ``AbortOn.NAME_SANITIZED`` stops on when an absolute name is
+    re-rooted from ``before`` to ``after``."""
+    return NameRewrittenError(
+        f"Absolute name re-rooted: {quoted(before)} -> {quoted(after)}",
+        member_name=member_name,
+    )
+
+
+def _portable_error(before: str, after: str, member_name: str) -> NameRewrittenError:
+    """The error ``AbortOn.NAME_SANITIZED`` stops on when the name policy rewrites
+    ``before`` to the portable ``after``."""
+    return NameRewrittenError(
+        f"Name rewritten for portability: {quoted(before)} -> {quoted(after)}",
+        member_name=member_name,
+    )
 
 
 def _final_members_only(
@@ -717,7 +763,8 @@ class _MemberState:
 
 
 class ExtractionCoordinator:
-    """Drives a single forward pass over a reader's members, writing them safely to disk."""
+    """Writes a reader's members safely to disk: one forward pass, then a second pass
+    for orphaned hardlinks when needed. The module docstring maps its sections."""
 
     def __init__(
         self,
@@ -880,6 +927,17 @@ class ExtractionCoordinator:
             self._dry.rebase_os_error(exc, resolved=True)
 
     def _run(self, reader: BaseArchiveReader, dest: Path) -> list[ExtractionResult]:
+        """Extract ``reader`` into ``dest`` (a dry run's scratch copy under ``dry_run``)
+        and return the results.
+
+        The steps: settle the selection and the progress totals, and report a
+        ``members=`` entry that matched nothing when that is known before anything is
+        written; create the destination root and build this run's ``_RunState``; run
+        both passes (``_run_pass``); then, also when the passes raise, finish what the
+        run deferred to its end (staging, symlink kinds, directory metadata); and, when
+        it was not known before the passes, report a ``members=`` entry that matched
+        nothing.
+        """
         ratio = self._ratio
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
@@ -953,15 +1011,16 @@ class ExtractionCoordinator:
         # (_list_before_extraction).
         reader._list_before_extraction()
 
-        # The pass is driven through the public stream_members(), which applies the
-        # selection (skipped members never surface here — they are invisible to progress
-        # and results, matching the totals above). When the totals pre-filtered the free
+        # The pass is driven through ``_stream_members()`` (``stream_members()`` given
+        # this run's file-copy handling), which applies the selection (skipped members
+        # never surface here — they are invisible to progress and results, matching the
+        # totals above). When the totals pre-filtered the free
         # member list, that list is reused as an identity selector, so a user predicate
         # runs once per member (on the index) rather than once per pre-filter plus once
         # per yield; a stateful predicate still sees each member a single time. Without
         # a free list the predicate itself is passed through.
         #
-        # Every pass the coordinator drives hands stream_members() a CollectionSelector
+        # Every pass the coordinator drives hands it a CollectionSelector
         # built here, with no bookkeeping. A selector that stream_members() builds from a
         # collection reports its own unmatched entries, and a collection built here is
         # the coordinator's, not the caller's (the hardlink second pass does the same).
@@ -1022,7 +1081,7 @@ class ExtractionCoordinator:
     ) -> None:
         """The forward pass and the orphan second pass, appending into the results.
 
-        Split out of ``run()`` only so an ``abort_on`` trigger raised anywhere inside it
+        Split out of ``_run()`` only so an ``abort_on`` trigger raised anywhere inside it
         has one place to unwind to; the results are filled in place because an abort
         discards them rather than returning them.
         """
@@ -1425,13 +1484,7 @@ class ExtractionCoordinator:
         """The checks of ``_check_local_name`` on one name: raise its refusal, or
         return the error ``AbortOn.NAME_SANITIZED`` would stop on (``None`` when it
         would not), as ``_transform`` decides them without a filter."""
-        transformed = POLICY_TRANSFORMS[self._policy](member)
-        rerooted_from: str | None = None
-        if self._policy is not ExtractionPolicy.STRICT:
-            rerooted = reroot_absolute(transformed)
-            if rerooted.name != transformed.name:
-                rerooted_from = transformed.name
-            transformed = rerooted
+        transformed, rerooted_from = self._policy_transform(member)
         self._check_universal(transformed)
         portable = apply_name_policy(transformed, self._policy)
         if portable is not transformed:
@@ -1443,17 +1496,9 @@ class ExtractionCoordinator:
         if AbortOn.NAME_SANITIZED not in self._abort_on:
             return None
         if rerooted_from is not None:
-            return NameRewrittenError(
-                f"Absolute name re-rooted: {quoted(rerooted_from)} -> "
-                f"{quoted(transformed.name)}",
-                member_name=member.name,
-            )
+            return _rerooted_error(rerooted_from, transformed.name, member.name)
         if portable.name != transformed.name:
-            return NameRewrittenError(
-                f"Name rewritten for portability: {quoted(transformed.name)} -> "
-                f"{quoted(portable.name)}",
-                member_name=member.name,
-            )
+            return _portable_error(transformed.name, portable.name, member.name)
         return None
 
     def _write_staged(
@@ -1610,6 +1655,8 @@ class ExtractionCoordinator:
                 exc,
             )
 
+    # --- a streaming pass's earlier copies of a name -------------------------------
+
     def _park_earlier_copies(self, name: str, earlier: int | None) -> None:
         """Park every earlier non-directory copy of ``name`` still on disk for the
         member of that name now being handled (streaming only): result ``earlier``,
@@ -1743,18 +1790,6 @@ class ExtractionCoordinator:
             else:
                 state.written_paths.discard(path)
 
-    def _is_callers_entry(self, path: Path, st: os.stat_result) -> bool:
-        """Whether the entry at ``path`` (``st`` its ``lstat``) was there before this
-        run, rather than written or created by it."""
-        state = self._state
-        if path in state.written_paths or path in state.created_dirs:
-            return False
-        return not (stat.S_ISDIR(st.st_mode) and self._is_run_directory(path, st))
-
-    def _occupied(self, path: Path) -> bool:
-        """Whether ``path`` holds an entry, not counting a parked superseded copy."""
-        return path not in self._current.parked and os.path.lexists(long_path(path))
-
     # --- selection / transform -----------------------------------------------------
 
     def _as_written(
@@ -1829,6 +1864,20 @@ class ExtractionCoordinator:
             ends[member_id] = end
         return end
 
+    def _policy_transform(
+        self, member: ArchiveMember
+    ) -> tuple[ArchiveMember, str | None]:
+        """The policy's transform of ``member``, with an absolute name re-rooted under
+        the destination (not under STRICT, whose universal check refuses it), and the
+        name before the re-root when the re-root changed it, else ``None``."""
+        transformed = POLICY_TRANSFORMS[self._policy](member)
+        if self._policy is ExtractionPolicy.STRICT:
+            return transformed, None
+        rerooted = reroot_absolute(transformed)
+        if rerooted.name == transformed.name:
+            return rerooted, None
+        return rerooted, transformed.name
+
     def _transform(
         self, original: ArchiveMember
     ) -> tuple[ArchiveMember | None, str | None, frozenset[NameRewrite]]:
@@ -1841,18 +1890,12 @@ class ExtractionCoordinator:
         reaches disk, else ``None``, and ``rewrites`` names each safety rewrite that
         reached disk (empty exactly when ``presented_name`` is ``None``). Raises a
         ``FilterRejectionError`` on a universal violation."""
-        transformed = POLICY_TRANSFORMS[self._policy](original)
         # The re-root comes before the filter so the filter sees the name that would be
         # written, as it already sees the policy's permission changes, and a filter
         # need not strip roots itself under STANDARD or TRUSTED. Whether the re-root
         # counts as a rewrite is decided after the filter, like the portable one: a
         # member the filter drops or renames never reaches disk under the re-rooted name.
-        rerooted_from: str | None = None
-        if self._policy is not ExtractionPolicy.STRICT:
-            rerooted = reroot_absolute(transformed)
-            if rerooted.name != transformed.name:
-                rerooted_from = transformed.name
-            transformed = rerooted
+        transformed, rerooted_from = self._policy_transform(original)
         rerooted_name = transformed.name
         # The filter runs before the universal check, so it sees every member, the
         # unsafe ones included, and can rename one to something safe. Whatever it
@@ -1921,11 +1964,7 @@ class ExtractionCoordinator:
         # result so the rename is not silent.
         if rerooted_from is not None and AbortOn.NAME_SANITIZED in self._abort_on:
             raise _AbortExtraction(
-                NameRewrittenError(
-                    f"Absolute name re-rooted: {quoted(rerooted_from)} -> "
-                    f"{quoted(transformed.name)}",
-                    member_name=original.name,
-                )
+                _rerooted_error(rerooted_from, transformed.name, original.name)
             )
         portable = apply_name_policy(transformed, self._policy)
         if portable is not transformed:
@@ -1952,11 +1991,7 @@ class ExtractionCoordinator:
         # is why it cannot be reconstructed from ``member.name`` and ``path`` alone.
         if AbortOn.NAME_SANITIZED in self._abort_on:
             raise _AbortExtraction(
-                NameRewrittenError(
-                    f"Name rewritten for portability: {quoted(transformed.name)} -> "
-                    f"{quoted(portable.name)}",
-                    member_name=original.name,
-                )
+                _portable_error(transformed.name, portable.name, original.name)
             )
         # After a re-root, the stored name is the one the caller will recognise.
         return (
@@ -2078,6 +2113,16 @@ class ExtractionCoordinator:
         stream: BinaryIO | None,
         result_index: int,
     ) -> ExtractionResult:
+        """Write a member that ``_transform`` accepted, and return its result for the
+        caller to record.
+
+        An anti-item deletes what this run wrote at its name instead
+        (``_apply_anti_item``). Anything else gets its destination from collision
+        resolution, is written by ``_dispatch_write``, and has its collision recorded
+        by ``_settle_placement``. A write that fails after it removed an entry this run
+        wrote revises that entry's result to ``OVERWRITTEN`` before the error
+        propagates.
+        """
         requested = self._state.dest / transformed.name
         self._current.requested_path = requested
         target = self._follow_renamed_dirs(
@@ -2177,50 +2222,13 @@ class ExtractionCoordinator:
         dest_path: Path,
         result_index: int,
     ) -> ExtractionResult:
+        """Write ``transformed`` at ``dest_path``, the path collision resolution gave
+        it, with the writer for its type, and return its result. A symlink this writes
+        is tracked in ``links``, so a later member that moves what it resolves through
+        gets it rechecked."""
         written_paths = self._state.written_paths
         if transformed.type == MemberType.DIRECTORY:
-            existed = self._occupied(dest_path)
-            callers = self._is_callers_directory(dest_path)
-            if (
-                not self._meet_reservation(transformed, dest_path)
-                or not self._make_room_for_parents(transformed, dest_path)
-                or not self._prepare_destination(transformed, dest_path)
-            ):
-                return ExtractionResult(
-                    original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-                )
-            try:
-                self._makedirs(dest_path, transformed)
-            except FileExistsError as exc:
-                # A non-directory took the name after the existence check, as for the
-                # other landings (``_taken_after_check``). Only this call: a parent
-                # that turned into a file is not this member's name being taken.
-                if not self._taken_after_check(dest_path, atomic=False):
-                    raise
-                raise self._refusal(dest_path, transformed) from exc
-            kept_mode: int | None = None
-            if callers:
-                # A directory the caller already had, the destination root included
-                # (a `./` member): it keeps its own mode and times. Applying the
-                # member's would widen a private 0o700 directory to the policy's
-                # 0o755, or to a world-writable 0o777 under STANDARD. GNU tar has
-                # the same rule as --no-overwrite-dir.
-                wanted = self._effective_mode(transformed)
-                current = stat.S_IMODE(os.stat(long_path(dest_path)).st_mode)
-                if wanted is not None and _dir_mode_as_stored(wanted) != current:
-                    kept_mode = current
-            else:
-                self._defer_directory_metadata(dest_path, transformed)
-            if not existed:
-                written_paths.add(dest_path)
-                self._note_run_directory(dest_path)
-            return ExtractionResult(
-                original,
-                dest_path,
-                ExtractionStatus.EXTRACTED,
-                None,
-                kept_mode=kept_mode,
-            )
+            return self._write_directory(original, transformed, dest_path)
 
         if transformed.type == MemberType.SYMLINK:
             result = self._write_symlink(original, transformed, dest_path)
@@ -2254,6 +2262,56 @@ class ExtractionCoordinator:
                     self._state.stored_targets[result_index] = spelled_from.link_target
         return result
 
+    def _write_directory(
+        self, original: ArchiveMember, transformed: ArchiveMember, dest_path: Path
+    ) -> ExtractionResult:
+        """Create the directory ``transformed`` at ``dest_path``, or merge it into the
+        directory there. Its mode and times wait for the end of the run
+        (``_defer_directory_metadata``); a directory the caller already had keeps its
+        own."""
+        existed = self._occupied(dest_path)
+        callers = self._is_callers_directory(dest_path)
+        if (
+            not self._meet_reservation(transformed, dest_path)
+            or not self._make_room_for_parents(transformed, dest_path)
+            or not self._prepare_destination(transformed, dest_path)
+        ):
+            return ExtractionResult(
+                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+            )
+        try:
+            self._makedirs(dest_path, transformed)
+        except FileExistsError as exc:
+            # A non-directory took the name after the existence check, as for the
+            # other landings (``_taken_after_check``). Only this call: a parent
+            # that turned into a file is not this member's name being taken.
+            if not self._taken_after_check(dest_path, atomic=False):
+                raise
+            raise self._refusal(dest_path, transformed) from exc
+        kept_mode: int | None = None
+        if callers:
+            # A directory the caller already had, the destination root included
+            # (a `./` member): it keeps its own mode and times. Applying the
+            # member's would widen a private 0o700 directory to the policy's
+            # 0o755, or to a world-writable 0o777 under STANDARD. GNU tar has
+            # the same rule as --no-overwrite-dir.
+            wanted = self._effective_mode(transformed)
+            current = stat.S_IMODE(os.stat(long_path(dest_path)).st_mode)
+            if wanted is not None and _dir_mode_as_stored(wanted) != current:
+                kept_mode = current
+        else:
+            self._defer_directory_metadata(dest_path, transformed)
+        if not existed:
+            self._state.written_paths.add(dest_path)
+            self._note_run_directory(dest_path)
+        return ExtractionResult(
+            original,
+            dest_path,
+            ExtractionStatus.EXTRACTED,
+            None,
+            kept_mode=kept_mode,
+        )
+
     def _make_room(
         self,
         original: ArchiveMember,
@@ -2280,6 +2338,8 @@ class ExtractionCoordinator:
             )
         self._makedirs(self._parent(dest_path), transformed)
         return None
+
+    # --- collision resolution ------------------------------------------------------
 
     def _resolve_collision(
         self,
@@ -2511,6 +2571,8 @@ class ExtractionCoordinator:
                 return renamed / requested.relative_to(ancestor)
         return requested
 
+    # --- per-member failure handling -----------------------------------------------
+
     @contextlib.contextmanager
     def _handling(
         self,
@@ -2616,6 +2678,8 @@ class ExtractionCoordinator:
         # placement clause in ``diagnostics``).
         # archivey/cli/logging_config.py matches this format string literally.
         logger.warning("Skipping %s %r: %s", kind, name, error)
+
+    # --- collision claims and keys -------------------------------------------------
 
     def _check_collision_abort(
         self, original: ArchiveMember, collided: Path, *, directory: bool
@@ -2917,6 +2981,8 @@ class ExtractionCoordinator:
             # A freed name can be the first free one for a later RENAME again.
             self._state.rename_next.clear()
 
+    # --- FILE, SYMLINK and HARDLINK writers ----------------------------------------
+
     def _write_file(
         self,
         original: ArchiveMember,
@@ -2924,6 +2990,14 @@ class ExtractionCoordinator:
         stream: BinaryIO | None,
         dest_path: Path,
     ) -> ExtractionResult:
+        """Write a FILE member at ``dest_path`` atomically (``_write_file_atomic``),
+        and record the path as a source for later hardlinks to it.
+
+        The bytes come from one of three places: the member's data read again, for a
+        member that was yielded as a link and turned out a file; the file this run
+        wrote for a RAR file copy's source (``_open_written_source``); or else
+        ``stream``, or the staged file of a pass that stages its members.
+        """
         state = self._state
         declined = self._make_room(original, transformed, dest_path, atomic=True)
         if declined is not None:
@@ -3035,6 +3109,12 @@ class ExtractionCoordinator:
         transformed: ArchiveMember,
         dest_path: Path,
     ) -> ExtractionResult:
+        """Create the symlink ``transformed`` at ``dest_path``, then resolve it on disk
+        and remove it again if it leads out of the destination.
+
+        A link the archive records no target for is ``LINK_TARGET_UNAVAILABLE``; one
+        whose recorded target could not be read fails.
+        """
         target = transformed.link_target
         if target is None and original.link_target_unrecorded:
             # The archive says this is a link and records nowhere for it to point — a
@@ -3241,6 +3321,13 @@ class ExtractionCoordinator:
         dest_path: Path,
         result_index: int,
     ) -> ExtractionResult:
+        """Create the hardlink ``transformed`` at ``dest_path`` against a path this run
+        wrote its source's content to (``_place_link``).
+
+        A source not on disk yet fails the link on a forward-only stream. On a
+        re-readable one the link is queued for the second pass (``_resolve_orphans``),
+        and its result is a ``FAILED`` placeholder that the second pass revises.
+        """
         source = original.link_target_member
         if source is None and original.link_target_unrecorded:
             # A hard link stored with an empty target names no member. GNU tar
@@ -3447,6 +3534,14 @@ class ExtractionCoordinator:
     # --- orphan (second pass) ------------------------------------------------------
 
     def _resolve_orphans(self, reader: BaseArchiveReader) -> None:
+        """The second pass: complete each hardlink the first pass queued as an orphan,
+        and revise its placeholder result.
+
+        The links of a source the first pass wrote after them are linked against it.
+        For each other source, one more pass over the archive writes its content at the
+        first of its links that takes it (``_materialize_orphan_source``), and the rest
+        are linked against that.
+        """
         self._release_reservations()
         orphans_by_source: dict[int, list[_Orphan]] = {}
         for orphan in self._state.orphans:
@@ -3579,6 +3674,8 @@ class ExtractionCoordinator:
     def _tally(
         self, old: ExtractionStatus | None, new: ExtractionStatus | None
     ) -> None:
+        """Move the EXTRACTED and BLOCKED counts from status ``old`` to ``new`` (either
+        can be ``None``: no result)."""
         for status, step in ((old, -1), (new, 1)):
             if status is ExtractionStatus.EXTRACTED:
                 self._state.members_extracted += step
@@ -3812,6 +3909,8 @@ class ExtractionCoordinator:
                 result_index=orphan.result_index,
             )
             self._revise_result(orphan.result_index, result)
+
+    # --- removals, link rechecks and result revisions ------------------------------
 
     @contextlib.contextmanager
     def _readonly_cleared(
@@ -4065,6 +4164,18 @@ class ExtractionCoordinator:
         )
 
     # --- filesystem helpers --------------------------------------------------------
+
+    def _is_callers_entry(self, path: Path, st: os.stat_result) -> bool:
+        """Whether the entry at ``path`` (``st`` its ``lstat``) was there before this
+        run, rather than written or created by it."""
+        state = self._state
+        if path in state.written_paths or path in state.created_dirs:
+            return False
+        return not (stat.S_ISDIR(st.st_mode) and self._is_run_directory(path, st))
+
+    def _occupied(self, path: Path) -> bool:
+        """Whether ``path`` holds an entry, not counting a parked superseded copy."""
+        return path not in self._current.parked and os.path.lexists(long_path(path))
 
     def _ensure_dest_root(self, dest: Path) -> bool:
         """Ensure ``dest`` is a directory to extract into, creating it if absent; under
@@ -4381,13 +4492,13 @@ class ExtractionCoordinator:
                 os.unlink(long_path(tmp))
             except FileNotFoundError:
                 pass
-            except OSError as exc:
-                self._rebase_os_error(exc)
+            except OSError as unlink_exc:
+                self._rebase_os_error(unlink_exc)
                 logger.warning(
                     "Could not remove %r, staged for %r: %s",
                     str(self._shown(tmp)),
                     member.name,
-                    exc,
+                    unlink_exc,
                 )
             raise
 
@@ -4913,6 +5024,9 @@ class ExtractionCoordinator:
     def _estimate_total_bytes(
         self, all_members: list[ArchiveMember] | None
     ) -> int | None:
+        """The progress report's total byte estimate: the sum of the file sizes in the
+        free member list, or ``None`` without a list or when a file's size is
+        unknown."""
         if all_members is None:
             return None
         if any(m.is_file and m.size is None for m in all_members):
@@ -4922,6 +5036,9 @@ class ExtractionCoordinator:
     def _report_progress(
         self, member: ArchiveMember, members_done: int, member_bytes_written: int
     ) -> None:
+        """Send ``on_progress`` a report on ``member``, if the caller set it.
+        ``members_done`` is the number of members handled so far, and
+        ``member_bytes_written`` the bytes written for ``member`` so far."""
         if self._on_progress is None:
             return
         state = self._state

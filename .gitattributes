@@ -7,3 +7,4 @@
 *.a binary
 *.cpio binary
 *.sqfs binary
+*.run binary

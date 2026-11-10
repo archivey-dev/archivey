@@ -1,8 +1,20 @@
-"""The decompression-bomb tracker: the byte and entry-count limits one extraction
-enforces as it writes (``ExtractionLimits``) and the ratio it holds them to
-(``DecoderLimits``), the archive-wide ratio a compressed
-container's decode is held to in every use (:class:`DecodeRatioGuard`), and the ratio
-member reads are held to outside extraction (:class:`MemberRatioGuard`)."""
+"""The decompression-bomb guards: the limits that stop a small archive from writing or
+decoding far more data than it is worth.
+
+Three users share one archive-wide ratio rule (:func:`archive_ratio_refusal`).
+:class:`BombTracker` and :class:`MemberRatioGuard` also check a per-member ratio, each
+with its own code:
+
+- :class:`BombTracker`: the byte and entry-count limits one extraction enforces as it
+  writes (``ExtractionLimits``), and the ratio it holds them to (``DecoderLimits``).
+  The extraction coordinator builds one per call and counts every chunk through it
+  before writing.
+- :class:`DecodeRatioGuard`: the archive-wide ratio a compressed container's decode
+  (a ``.tar.gz``) is held to in every use, listing included. The reader wraps the
+  decoded stream in it.
+- :class:`MemberRatioGuard`: the ratio member reads are held to outside extraction
+  (``open()``, ``stream_members()``). The reader wraps each member stream in it.
+"""
 
 from __future__ import annotations
 
@@ -140,9 +152,12 @@ class BombTracker:
         return self._member_bytes
 
     def start_member(self, member: ArchiveMember) -> None:
-        # Called with the ORIGINAL member (not a filter copy), so compressed_size and any
-        # late-bound fields are accurate. Increments the entry-count guard, which — like
-        # the cumulative byte guard — halts even under OnError.CONTINUE.
+        """Start counting ``member``'s output, and count it toward the entry limit.
+
+        The caller passes the original member, not a filter copy, so
+        ``compressed_size`` and any late-bound fields are accurate. The entry-count
+        guard, like the cumulative byte guard, halts even under ``OnError.CONTINUE``.
+        """
         self._member = member
         self._member_bytes = 0
         self._entry_count += 1
@@ -196,14 +211,14 @@ class BombTracker:
         if self._max_ratio is None or member is None:
             return
         size = member.size
-        cs = member.compressed_size
-        if size is None or not cs or cs <= 0:
+        compressed_size = member.compressed_size
+        if size is None or not compressed_size or compressed_size <= 0:
             return
-        if size > max(self._ratio_floor, self._max_ratio * cs):
+        if size > max(self._ratio_floor, self._max_ratio * compressed_size):
             raise ResourceLimitError(
-                f"Decompression ratio {size / cs:.0f}:1 exceeds limit "
+                f"Decompression ratio {size / compressed_size:.0f}:1 exceeds limit "
                 f"max_ratio={self._max_ratio:.0f}:1 (from recorded sizes: "
-                f"{size} bytes from {cs} compressed)",
+                f"{size} bytes from {compressed_size} compressed)",
                 member_name=member.name,
             )
 
@@ -216,15 +231,15 @@ class BombTracker:
         # Per-member ratio: activates on THIS member's output; a per-member failure
         # (skippable under OnError.CONTINUE).
         member = self._member
-        cs = member.compressed_size if member is not None else None
+        compressed_size = member.compressed_size if member is not None else None
         if (
             self._max_ratio is not None
             and member is not None
             and self._member_bytes > self._ratio_floor
-            and cs
-            and cs > 0
+            and compressed_size
+            and compressed_size > 0
         ):
-            ratio = self._member_bytes / cs
+            ratio = self._member_bytes / compressed_size
             if ratio > self._max_ratio:
                 raise ResourceLimitError(
                     f"Decompression ratio {ratio:.0f}:1 exceeds limit "
@@ -273,13 +288,13 @@ class BombTracker:
             )
 
     def _check_archive_ratio(self) -> None:
-        # Archive-wide ratio: activates on CUMULATIVE output; a whole-archive bomb signal
-        # (always-stop). Uses the static outer compressed size when it is cheaply known,
-        # otherwise a LIVE denominator — the compressed bytes consumed from the source so
-        # far — which works for a streaming/pipe source whose total size is unknown. The two
-        # are mutually exclusive (static when known, live otherwise), so the ratio is never
-        # counted twice.
-        css = self._compressed_source_size
+        """Archive-wide ratio guard (always-stop), judged on the cumulative output.
+
+        The denominator is the static outer compressed size when it is cheaply known,
+        otherwise a live one: the compressed bytes consumed from the source so far,
+        which works for a streaming or pipe source whose total size is unknown. Only one
+        of the two is used, so the ratio is never counted twice.
+        """
         # Decoded output plus the copies made at the link-count limit (``count_copy``).
         output = self._total_bytes + self._link_limit_copied_bytes
         # Says which part was not decoded, so a trip on a store-only archive with many
@@ -297,7 +312,7 @@ class BombTracker:
             max_ratio=self._max_ratio,
             floor=self._ratio_floor,
             live_floor=self._live_ratio_floor,
-            static_size=css,
+            static_size=self._compressed_source_size,
             consumed=(
                 (lambda: source.compressed_bytes_consumed)
                 if source is not None
@@ -369,6 +384,7 @@ class _RatioGuard(DelegatingStream):
         return int(min(left, room))
 
     def _check(self, position: int) -> None:
+        """Judge ``position`` if it is past the furthest offset judged so far."""
         if position <= self._decoded or self._max_ratio is None:
             return
         # Recorded once judged: an offset refused stays unjudged, so a later read that
@@ -592,12 +608,12 @@ class MemberRatioGuard(_RatioGuard):
         # member's own, and the archive-wide one, less what other members read.
         floor = limits.ratio_activation_threshold
         max_ratio = limits.max_ratio
-        cs = member.compressed_size
+        compressed_size = member.compressed_size
         self._member_safe: float = math.inf
         self._archive_safe: float = math.inf
         if max_ratio is not None:
-            if cs and cs > 0:
-                self._member_safe = max(floor, max_ratio * cs)
+            if compressed_size and compressed_size > 0:
+                self._member_safe = max(floor, max_ratio * compressed_size)
             if static_size and static_size > 0:
                 self._archive_safe = max(floor, max_ratio * static_size)
             elif consumed is not None:
@@ -684,12 +700,16 @@ class MemberRatioGuard(_RatioGuard):
         limits = self._limits
         max_ratio = limits.max_ratio
         assert max_ratio is not None  # _check returns first otherwise
-        cs = self._compressed_size
+        compressed_size = self._compressed_size
         if self._size is not None:
             # A seek past the end decodes nothing there.
             position = min(position, self._size)
-        if position > limits.ratio_activation_threshold and cs and cs > 0:
-            ratio = position / cs
+        if (
+            position > limits.ratio_activation_threshold
+            and compressed_size
+            and compressed_size > 0
+        ):
+            ratio = position / compressed_size
             if ratio > max_ratio:
                 raise ResourceLimitError(
                     f"Decompression ratio {ratio:.0f}:1 exceeds limit "

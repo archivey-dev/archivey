@@ -108,6 +108,7 @@ def outer_layer_format(fmt: ArchiveFormat) -> ArchiveFormat | None:
             ContainerFormat.DEB,
             ContainerFormat.CPIO,
             ContainerFormat.RPM,
+            ContainerFormat.MAKESELF,
         )
         or isinstance(fmt.container, PluginContainer)
     ) and fmt.stream is not StreamFormat.UNCOMPRESSED:
