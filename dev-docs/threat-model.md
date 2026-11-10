@@ -334,7 +334,7 @@ decides.
 **Residual.** Directories are not in the collision map, because they merge structurally,
 so a file `Foo` against a directory `foo/` is OS-dependent (ADR 0013). The public
 [policy list](../docs/extracting.md#what-each-policy-does-with-unusual-members) covers
-two files that differ only in case, not this case. There is no public un-escape helper for the
+two files whose names differ only in letter case, not a file against a directory. There is no public un-escape helper for the
 percent spelling; it can be added without breaking anything.
 
 **Tests.** `tests/test_extraction.py`: the `test_o2_*` collision tests,
