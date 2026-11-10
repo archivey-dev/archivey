@@ -106,17 +106,19 @@ refuses or works around each one rather than drop it silently:
 
 ## Archives in several volumes
 
-A 7z, RAR or ZIP split into several files opens from a list of `OpenFile` objects, in order, as
-it does from a list of local files ([What you can open](opening.md#what-you-can-open)):
+A 7z, RAR or ZIP split into several files opens from any one of its parts, as it does from a
+local path ([What you can open](opening.md#what-you-can-open)). Archivey lists the folder that
+holds the part once and finds the others by name, on the same store and with the same options:
 
 ```python
-volumes = [fsspec.open(f"s3://bucket/backup.7z.{n:03}") for n in range(1, 4)]
-with archivey.open_archive(volumes) as archive:
+with archivey.open_archive(fsspec.open("s3://bucket/backup.7z.001")) as archive:
     ...
 ```
 
-A single `OpenFile` opens only the file it names: archivey doesn't look for the other volumes on
-the remote store, so a single `.7z.001` raises `TruncatedError` naming the next part.
+A list of `OpenFile` objects, in order, opens the parts it names, for a set whose names
+archivey can't match or a store that can't list a folder.
+`ArchiveyConfig(discover_volumes=False)` turns the search off, so an `OpenFile` opens only the
+file it names.
 
 ## RAR archives
 
