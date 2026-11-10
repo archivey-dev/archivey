@@ -1,6 +1,6 @@
 # Archivey
 
-Archivey reads ZIP, TAR, 7z, RAR, ISO, SquashFS, CPIO, ar, RPM, CAB, XAR and single compressed files from
+Archivey reads ZIP, TAR, 7z, RAR, ISO, SquashFS, CPIO, ar, RPM, makeself, CAB, XAR and single compressed files from
 Python, with one simple API. Untrusted archives extract safely by default. Archive formats
 hide some slow and error-prone ways of reading, and archivey's defaults steer around them
 whenever possible. The [cheat sheet](cheat-sheet.md) has the main calls on one page, with the
@@ -92,17 +92,21 @@ that happens and what to do about it.
 
 ```python
 with archivey.open_archive("download.zip") as archive:
-    report = archive.extract_all("out/")
-for result in report:
-    if result.status is archivey.ExtractionStatus.BLOCKED:
-        print("refused:", result.member.name, result.error)
+    try:
+        archive.extract_all("out/")
+    except archivey.FilterRejectionError as e:
+        assert e.report is not None  # always set on the end-of-call error
+        for result in e.report:
+            if result.status is archivey.ExtractionStatus.BLOCKED:
+                print("refused:", result.member.name, result.error)
 ```
 
 `extract_all` writes every member under `out/`. By default it refuses anything that would land
 outside that folder, such as `../` paths, absolute paths or links pointing out of it, and it
-stops archives that expand to far more data than they hold. A refused member is skipped and the
-rest still extracts, so the call returns normally: the report it returns is where you see what was
-refused. Pass `abort_on=["blocked_member"]` to raise at the first one instead. [Extracting](extracting.md)
+stops archives that expand to far more data than they hold. A refused member isn't written, and
+the rest still extracts. Then the call raises `FilterRejectionError`, whose `report` lists what
+was refused. Pass `on_blocked="skip"` to get the report back without raising, or
+`abort_on=["blocked_member"]` to raise at the first one instead. [Extracting](extracting.md)
 lists every protection and how to relax them for archives you trust, and also shows how to
 extract only some files. [Security](security.md) covers what archivey relies on and where its
 guarantees stop.

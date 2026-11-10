@@ -47,7 +47,17 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    BinaryIO,
+    ClassVar,
+    Generic,
+    NamedTuple,
+    Protocol,
+    TypeVar,
+    cast,
+)
 
 from archivey.config import ArchiveyConfig, DecoderLimits
 from archivey.diagnostics import DiagnosticCode, DiagnosticContext
@@ -65,6 +75,9 @@ from archivey.types import (
     PluginStream,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 __all__ = [
     "CodecCall",
@@ -525,8 +538,23 @@ class _TakenBytes(io.RawIOBase):
         return got
 
 
+class _SpanningCheck(Protocol):
+    """A check over the data of several members, which a built-in reader runs itself
+    (a makeself payload's digests). The adapter's ``SpanningCheck`` implements it."""
+
+    def cover(self, member: ArchiveMember) -> None: ...
+
+    def passed(self) -> None: ...
+
+    def failed(self, message: str) -> ArchiveyError: ...
+
+
 class ReaderContext:
     """What an open archive needs from archivey. archivey builds it."""
+
+    # ``_spanning_check(key)`` returns the check for one spanning check of the
+    # archive. Internal, set by the adapter; not for plugins.
+    _spanning_check: Callable[[object], _SpanningCheck] | None = None
 
     def __init__(
         self,
@@ -551,8 +579,13 @@ class ReaderContext:
         charge_metadata: Callable[[int, str], None],
         open_nested: Callable[[BinaryIO, ArchiveFormat], Iterator[MemberSpan]]
         | None = None,
+        usage: ResourceUsageRecorder | None = None,
     ) -> None:
         self._encoding = encoding
+        # The open reader's resource-usage recorder, for a built-in reader that checks
+        # a declared allocation itself (``check_decoder_memory``). Not part of the
+        # plugin interface.
+        self._usage = usage
         self._archive_name = archive_name
         self._config = config
         self._decompress = decompress

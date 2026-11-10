@@ -85,7 +85,7 @@ before it decodes a byte, so the number is attacker-chosen memory (§4).
 
 xz is the magic `fd 37 7a 58 5a 00` at offset 0 and lzip `LZIP`, each `CERTAIN`. The
 inner-TAR probe then decodes 512 bytes and upgrades a match to `TAR_XZ`, or
-to TAR over lzip ([`single-file.md`](single-file.md) §2.1).
+to TAR over lzip ([`single-file.md`](single-file.md) §2.2).
 
 LZMA Alone is found by the first of the three content probes. That probe runs only for a
 `.lzma`, `.tar.lzma` or `.tlz` name, under `open_stream`, or with
@@ -113,7 +113,9 @@ lzip trailers backwards from the end at open, whether or not seeking was declare
 (`SingleFileReader._probe_lzip_index` and the xz equivalent). For xz that gives the size;
 for lzip, the size and the CRC-32 of the whole content, combined from each member's
 trailer CRC with `crc32_combine`, in one walk that holds no per-member state. On a pipe,
-neither is known before the read ends. Another archive's member stream, passed to
+neither is known before the read ends. On a remote source a file of several streams or
+members skips the walk at open and reports neither ([`single-file.md`](single-file.md)
+§2.2). Another archive's member stream, passed to
 `open_archive(member_stream)`, is peeked only when its seek resumes near each probe
 target: a stored ZIP entry or an uncompressed TAR member is, a deflated one is not
 ([`single-file.md`](single-file.md) §2.2).
