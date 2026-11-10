@@ -117,6 +117,8 @@ def _build_table(
     bits fill the code space exactly, the longer codes are dropped, not refused. No
     bit pattern reaches them, so the tree decodes the same either way.
     """
+    # A copy: the caller's lengths are the base for the next block's deltas, and a
+    # dropped code keeps its length there, as in lzxd.c.
     lengths = lengths[:count]
     short = sum(1 << (_MAX_CODE - n) for n in lengths if 0 < n <= table_bits)
     if short == 1 << _MAX_CODE and any(table_bits < n <= _MAX_CODE for n in lengths):
