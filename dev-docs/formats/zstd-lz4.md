@@ -16,7 +16,7 @@ behaviour and links the row.
 | Read | zstd and LZ4 frames as one-member archives and inside `.tar.zst` / `.tar.lz4`, and the legacy LZ4 stream (`lz4 -l`) the same way; zstd as a ZIP method; LZ4 as a 7z coder |
 | Write | **Not shipped** |
 | Backends | zstd: the standard library's `compression.zstd` on Python 3.14 and later, `backports.zstd` from `[recommended]` before it. LZ4: `lz4.frame` from `[recommended]`, and `lz4.block` from the same package for the legacy stream |
-| Seeking | zstd, on declared seek demand: from the frame before the target, and the seekable format's seek table gives every frame and the size without decoding (§2.3). LZ4: a backward seek decodes again from the start |
+| Seeking | zstd, on declared seek demand or restart points: from the frame before the target, and the seekable format's seek table gives every frame and the size without decoding (§2.3). LZ4: a backward seek decodes again from the start |
 | Size | `None`, even when the frame header declares it |
 | Digests | None listed. A frame's content checksum, when present, is checked on read; the legacy LZ4 stream has none |
 | Metadata | None beyond the shared fields |

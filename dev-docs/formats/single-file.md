@@ -44,8 +44,10 @@ out on purpose ([`gzip.md`](gzip.md) §6). Bytes after the last stream are neith
 nor ignored: the payload reads in full and the bytes are reported as
 `ARCHIVE_TRAILING_DATA`, although `xz` and `zstd` refuse such a file (§2.3, §3). A
 backward seek decodes again from the start of the stream unless the codec has resume
-points in front of the target. Most formats record none; on declared seek demand, gzip,
-zlib and raw DEFLATE get a zlib snapshot about every MiB a read passes (§2.3). And the gzip header's stored
+points in front of the target. Most formats record none; on declared seek demand, or on
+restart points (which the codec stream of a compressed TAR opened for random access asks
+for, [`tar.md`](tar.md) §2.3), gzip, zlib and raw DEFLATE get a zlib snapshot about
+every MiB a read passes (§2.3). And the gzip header's stored
 filename is reported, never used: the member's name comes from the name of the file
 archivey was given (§2.2).
 
@@ -86,7 +88,7 @@ last member's size, which is why archivey never reports it as the file's size.
 reaches offset N by decoding everything before it, unless the stream has places where
 decoding can restart: xz blocks and streams, lzip members, `.Z` CLEAR codes, and the
 index `rapidgzip` builds as it reads gzip or bzip2. For DEFLATE (gzip, zlib, raw), the
-standard library engine also keeps its own on declared seek demand: a copy of zlib's
+standard library engine also keeps its own on declared seek demand or restart points: a copy of zlib's
 decoder state about every MiB a read passes ([`gzip.md`](gzip.md) §2.3). Where there are none, and for most
 files there are none (default `xz` writes one block, `lzip` one member, and `plzip` one member for a small file), a backward seek
 decodes again from byte zero. The decode engine (§2.3) keeps the points it finds and
@@ -274,11 +276,11 @@ Where resume points come from, per codec:
 | xz | Every block, and every stream in a multi-stream file. Default `xz` writes one block; `xz -T0` and `--block-size` write many |
 | lzip | Every member from the trailer walk; every member with output from a forward read (an empty member's output offset is the next member's, or the end of the output). Default `lzip` writes one; `plzip` one per data block, many with a small `-B` |
 | `.Z` | Every CLEAR code, which `compress` emits when the dictionary stops paying |
-| gzip | On declared seek demand: every member after the first, recorded as a forward read reaches it, and every BGZF member, walked without decoding, and a zlib snapshot about every MiB inside a member ([`gzip.md`](gzip.md) §2.3). With `rapidgzip` engaged, its own index, built as it decodes |
-| zlib, raw DEFLATE | None natively. With `rapidgzip` engaged, its own index, built as it decodes; without it, on declared seek demand, zlib snapshots a read has passed (`gzip.md` §2.3) |
+| gzip | On declared seek demand or restart points: every member after the first, recorded as a forward read reaches it, and every BGZF member, walked without decoding, and a zlib snapshot about every MiB inside a member ([`gzip.md`](gzip.md) §2.3). With `rapidgzip` engaged, its own index, built as it decodes |
+| zlib, raw DEFLATE | None natively. With `rapidgzip` engaged, its own index, built as it decodes; without it, on declared seek demand or restart points, zlib snapshots a read has passed (`gzip.md` §2.3) |
 | bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
-| zstd | On declared seek demand: every regular frame after the first, recorded as a forward read reaches it, and every frame the seekable format's seek table lists ([`zstd-lz4.md`](zstd-lz4.md) §2.3) |
-| bzip3 | On declared seek demand: every block after the first, recorded as a forward read reaches it, and every block from a walk of the block headers, without decoding ([`bzip3.md`](bzip3.md) §2.1) |
+| zstd | On declared seek demand or restart points: every regular frame after the first, recorded as a forward read reaches it, and every frame the seekable format's seek table lists ([`zstd-lz4.md`](zstd-lz4.md) §2.3) |
+| bzip3 | On declared seek demand or restart points: every block after the first, recorded as a forward read reaches it, and every block from a walk of the block headers, without decoding ([`bzip3.md`](bzip3.md) §2.1) |
 | LZMA Alone, LZ4, Brotli | None |
 
 **The rewind report.** A backward seek emits `STREAM_REWIND_REDECOMPRESSES`, once per

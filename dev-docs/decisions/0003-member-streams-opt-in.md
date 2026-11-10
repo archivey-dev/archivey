@@ -49,9 +49,20 @@ once it covered more than member opens: under it every operation on the reader (
 read, passes, `extract_all()`) works as if it ran on a reader of its own. Same default,
 same semantics otherwise.
 
+**Amended (2026-11-10, davitf, PR #1489):** the codec stream around a sequential
+container (a compressed TAR, or a sequential format inside a compressor such as
+`.cpio.xz`) opened for random access keeps restart points by default
+(`StreamConfig.restart_points`): the reader itself seeks back in that stream for every
+member read after the listing, so the table is never unused there. It costs about
+40 KiB per MiB of gzip output, capped at 32 MiB. It declares no seek demand, so
+accelerator `AUTO` resolves as before, and member streams stay as `seekable_members`
+says. A streaming open keeps none.
+
 ## Consequences
 
-- Default path: no shared-handle locks, no seek tables, no accelerators.
+- Default path: no shared-handle locks, no seek tables, no accelerators, except the
+  restart points of a random-access compressed TAR's codec stream (amendment of
+  2026-11-10).
 - Strict default is reversible pre-1.0; permissive-then-gate would be a breaking change.
 - Solid **open-order** cost remains the caller’s algorithm (`AccessCost` /
   `stream_members()`), not something `concurrent_operations=True` erases.

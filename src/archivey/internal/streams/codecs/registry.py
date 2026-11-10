@@ -282,8 +282,9 @@ def open_codec_stream(
     The returned stream wraps the backend so corrupt/truncated/non-seekable errors surface
     as ``ArchiveyError`` subclasses (never raw codec exceptions).
 
-    ``config.seekable`` gates native index construction and accelerator ``AUTO``
-    resolution (``config.restart_points`` gates the index alone); for the DEFLATE family and bzip2, ``AUTO`` also takes a large sequential
+    ``config.records_restart_points`` (seek demand or restart points) gates native
+    index construction, and ``config.seekable`` alone gates accelerator ``AUTO``
+    resolution; for the DEFLATE family and bzip2, ``AUTO`` also takes a large sequential
     read (``_sequential_read_pays`` in ``rapidgzip_select.py``,
     ``_bzip2_sequential_read_pays`` in ``bzip2_codec.py``).
     The ArchiveStream seekability hint is separate: pass ``seekable=False`` to force a
@@ -420,18 +421,20 @@ def _decoder_config(
 ) -> StreamConfig:
     """``config`` as :func:`open_codec_stream`'s decoder sees it.
 
-    Carries ``collector``, drops seek demand that a stream source cannot meet, notes
-    whether the source can seek, fills the known input size, then lets the codec adjust
-    it.
+    Carries ``collector``, drops seek demand and restart points that a stream source
+    cannot use, notes whether the source can seek, fills the known input size, then lets
+    the codec adjust it.
     """
-    # One copy for all four adjustments, and none when nothing changes: a ZIP reader
+    # One copy for all five adjustments, and none when nothing changes: a ZIP reader
     # opens a codec per member, and each copy of this dataclass is a few microseconds.
     changes: dict[str, Any] = {}
     if collector is not None and config.collector is not collector:
         changes["collector"] = collector
     # ``ZipReader._member_config`` fills ``source_seekable`` and clears ``seekable`` by
-    # these two rules before it gets here, so a ZIP member's config is copied once: a
-    # change to either rule belongs there too.
+    # the first two rules before it gets here, so a ZIP member's config is copied once:
+    # a change to either rule belongs there too. A ZIP member's config never sets
+    # ``restart_points`` (only a sequential container's outer codec stream does), so
+    # the third rule has no copy there.
     source_seekable = isinstance(source, (str, os.PathLike)) or is_seekable(source)
     if config.seekable and not source_seekable:
         # Seek demand on a source that cannot seek cannot be met, and it would make
