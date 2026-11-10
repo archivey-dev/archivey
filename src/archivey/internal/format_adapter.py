@@ -140,6 +140,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     read_within_reach,
 )
 from archivey.internal.streams.verification import (
+    SpanningCheckError,
     ask_verification_proofs,
     drop_spanning_ceiling,
     mark_spanning_checksum,
@@ -297,12 +298,18 @@ class _PluginAdapter(BaseArchiveReader):
             open_nested=self._open_nested,
             usage=self._usage,
         )
+        context._spanning_check = self._new_spanning_check
         self._reader = self._open_reader(context)
         self._reader_open = True
 
     def _open_reader(self, context: ReaderContext) -> FormatReader:
         """Call the plugin's ``open``, and check what it returned."""
         raise NotImplementedError
+
+    def _new_spanning_check(self, key: object) -> SpanningCheck:
+        """``ReaderContext._spanning_check()``: a check over several members' data
+        that the reader runs itself, named ``key``."""
+        return SpanningCheck(self, key)
 
     def _wrong_reader(self, reader: object, method: str, noun: str) -> NoReturn:
         # Every interface check raises through ``_plugin_bug()``, wherever it runs.
@@ -559,6 +566,10 @@ class _PluginAdapter(BaseArchiveReader):
             # it stays the ceiling of the members it covers, which verify_all()
             # returns. An xz or bzip2 check failure reads as damage, handled below.
             self._spanning_check_ran("codec")
+            raise
+        except SpanningCheckError:
+            # A check the reader ran failed (``SpanningCheck.failed``), which records
+            # the members it covers itself.
             raise
         except ArchiveyError as e:
             # Damage ended the walk before the outer codec's end, so its checksum
@@ -1117,6 +1128,48 @@ def _outer_copy(member: ArchiveMember) -> ArchiveMember:
     # listing does not look for it in the data, nor report it again.
     copy._link_target_resolved = member._link_target_resolved
     return copy
+
+
+class SpanningCheck:
+    """A check over the data of several members that a built-in reader runs itself,
+    such as a makeself payload's MD5, which covers every file of the TAR in it.
+
+    The reader calls :meth:`cover` on each member the check covers before yielding
+    it, and :meth:`passed` or :meth:`failed` once the check ran. Until it passes, a
+    covered file's ``verifiable`` is ``CHECKSUM``, as for a ``.tar.gz`` trailer; a
+    pass raises every covered file to ``CHECKSUM``, read or not, and a failure makes
+    each one a failure of ``verify_all()``. A walk that stops before the check runs
+    leaves the covered files as failures too (``_note_spanning_unreachable``).
+    """
+
+    __slots__ = ("_adapter", "_covers", "_key")
+
+    def __init__(self, adapter: _PluginAdapter, key: object) -> None:
+        self._adapter = adapter
+        self._key = key
+        self._covers: list[ArchiveMember] = []
+
+    def cover(self, member: ArchiveMember) -> None:
+        """Count ``member`` as covered, if it is a file: other members have no data."""
+        if member.is_file:
+            mark_spanning_checksum(member)
+            self._covers.append(member)
+
+    def passed(self) -> None:
+        """The check matched: every covered file is checked."""
+        self._adapter._spanning_check_ran(self._key)
+        for member in self._covers:
+            raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+
+    def failed(self, message: str) -> SpanningCheckError:
+        """The check did not match. Returns the error for the reader to raise; every
+        later ``verify_all()`` returns each covered file with it."""
+        error = SpanningCheckError(message, covers=tuple(self._covers))
+        error.archive_name = self._adapter._archive_name
+        # Kept until a later walk passes the check: a read of a covered member that
+        # stops before the payload's end does not run it again.
+        self._adapter._spanning_unreachable[self._key] = error
+        return error
 
 
 class _NestedData(io.RawIOBase):
