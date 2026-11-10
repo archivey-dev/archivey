@@ -1,5 +1,13 @@
 # Verification levels
 
+**In one minute.** Each member says how much of its data archivey has proved intact so
+far (`verified`) and how much a full read could prove (`verifiable`), on four levels from
+`NONE` to `CHECKSUM`. A level is never claimed for a check that did not run. This page has
+every rule behind those two fields, including what seeks and checks covering several
+members do. The guide's
+[errors and diagnostics](../guide/09-errors-and-diagnostics.md#verification-levels) page is
+the short version.
+
 What archivey can say about how much of a member's data it has checked, how each check
 feeds that answer, and how the two calls that run the checks behave. The public names are
 `Verification`, `ArchiveMember.verified` and `.verifiable`, the same two properties on

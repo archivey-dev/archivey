@@ -20,6 +20,7 @@ on:
       - Accelerator crash search
       - rapidgzip resume stress
       - PPMd native stress
+      - fsspec consumers
       - Benchmark wall-time
       - Review tally
     types: [completed]

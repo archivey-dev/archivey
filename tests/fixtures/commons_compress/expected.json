@@ -2058,7 +2058,12 @@
     "digest": "cee919627dee81ea"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 1,
+    "digest": "cee919627dee81ea"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "bla.noendheaderoffset.7z": {
@@ -4054,7 +4059,12 @@
     "digest": "788cbe9b419fb426"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 1,
+    "digest": "788cbe9b419fb426"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-amiga-l2.lha": {
@@ -4063,7 +4073,12 @@
     "digest": "cfe55f95455c14b3"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 2,
+    "digest": "cfe55f95455c14b3"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-macos-l0-lh5-rle.lha": {
@@ -4072,7 +4087,12 @@
     "digest": "cee919627dee81ea"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 1,
+    "digest": "cee919627dee81ea"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-macos-l0-lh5.lha": {
@@ -4081,7 +4101,12 @@
     "digest": "788cbe9b419fb426"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 1,
+    "digest": "788cbe9b419fb426"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-macos-l0-lh6.lha": {
@@ -4090,13 +4115,12 @@
     "digest": "788cbe9b419fb426"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 1,
+    "digest": "788cbe9b419fb426"
    },
    "pipe": {
-    "format": "raw_stream/br",
-    "members": 1,
-    "digest": "3b7fe60fb71c0bd0",
-    "failed": 1
+    "error": "StreamNotSeekableError"
    }
   },
   "test-macos-l0-lh7.lha": {
@@ -4105,7 +4129,12 @@
     "digest": "788cbe9b419fb426"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 1,
+    "digest": "788cbe9b419fb426"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-macos-l0.lha": {
@@ -4114,7 +4143,12 @@
     "digest": "9615cd32c7486091"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 5,
+    "digest": "9615cd32c7486091"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-macos-l1.lha": {
@@ -4123,7 +4157,12 @@
     "digest": "9615cd32c7486091"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 5,
+    "digest": "9615cd32c7486091"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-macos-l2.lha": {
@@ -4132,7 +4171,12 @@
     "digest": "9615cd32c7486091"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 5,
+    "digest": "9615cd32c7486091"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-msdos-l0-lz4.lzs": {
@@ -4141,7 +4185,12 @@
     "digest": "8ea4411bcc24d3f3"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 1,
+    "digest": "8ea4411bcc24d3f3"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-msdos-l0.lha": {
@@ -4150,7 +4199,12 @@
     "digest": "4b844071caec7d1d"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 5,
+    "digest": "4b844071caec7d1d"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-msdos-l1.lha": {
@@ -4159,7 +4213,12 @@
     "digest": "4b844071caec7d1d"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 5,
+    "digest": "4b844071caec7d1d"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-msdos-l2-attrib.lha": {
@@ -4168,7 +4227,12 @@
     "digest": "f8113f5bafd982df"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 1,
+    "digest": "f8113f5bafd982df"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-msdos-l2.lha": {
@@ -4177,7 +4241,12 @@
     "digest": "4b844071caec7d1d"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "lha/uncompressed",
+    "members": 5,
+    "digest": "4b844071caec7d1d"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "test-winzip.zip": {

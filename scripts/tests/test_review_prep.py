@@ -241,11 +241,14 @@ def test_outcome_names_what_a_non_red_run_means() -> None:
     assert prep._outcome(2, imported).startswith("errors at collection: ImportError")
 
 
-def test_tier_is_light_only_when_every_path_is_prose_or_tests() -> None:
-    light = prep.tier(["docs/extracting.md", "tests/test_x.py", "README.md"])
+def test_tier_is_light_only_when_every_path_is_maintainer_prose_or_tests() -> None:
+    light = prep.tier(["dev-docs/x.md", "tests/test_x.py", "mkdocs.yml", "NOTES.md"])
     assert (light.name, light.api_changed) == ("light", False)
     # A spec is a contract, and a nested `.md` outside the light folders is not prose.
-    assert prep.tier(["docs/x.md", "openspec/specs/cli/spec.md"]).name == "standard"
+    assert prep.tier(["dev-docs/x.md", "openspec/specs/cli/spec.md"]).name == "standard"
+    # User docs get the Opus round, so they are standard.
+    for user_docs in ("docs/extracting.md", "README.md", "CHANGELOG.md", "SECURITY.md"):
+        assert prep.tier([user_docs]).name == "standard", user_docs
     assert prep.tier(["src/archivey/core.py", "tests/test_x.py"]).name == "standard"
     # The scripts' own tests are tests too; the script they test is not.
     assert prep.tier(["scripts/tests/test_review_tally.py"]).name == "light"
@@ -356,7 +359,8 @@ def test_the_merge_line_names_the_maintainers_decisions() -> None:
     for paths, line in (
         ([".github/workflows/ci.yml"], "the Opus pass and Cursor approve"),
         (["src/archivey/core.py"], "the Opus pass approves"),
-        (["docs/x.md"], "the review approves"),
+        (["dev-docs/x.md"], "the review approves"),
+        (["docs/x.md"], "the Opus pass approves"),
     ):
         assert prep.tier_report(prep.tier(paths))[-1] == (
             f"merge: an agent merges once {line} and CI is green"

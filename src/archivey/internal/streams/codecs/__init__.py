@@ -18,24 +18,57 @@ AES decrypt lives in ``streams/crypto.py``; digest/length verify in
 ``streams/verify.py``. Both compose *around* these codec streams in a pipeline. The
 seekable engine every decoder plugs into is ``streams/decompressor_stream.py``.
 
+How an open goes, from :func:`open_codec_stream`:
+
+1. **Choose the codec.** The caller names a :class:`Codec` (detection maps a file's
+   magic or content probe to one); the registry holds one :class:`StreamCodec` per id.
+2. **Prepare the config.** The registry notes whether the source can seek and how long
+   it is, and the codec fills in what it reads from the source
+   (:meth:`StreamCodec.prepare_config`).
+3. **Pick the engine.** The DEFLATE family and bzip2 may decode through rapidgzip, an
+   optional accelerator that builds a seek index as it reads, depending on the
+   ``use_rapidgzip`` / ``use_indexed_bzip2`` settings, the source size and the seek
+   demand. rapidgzip runs only in a child process, so ``process_isolation=NONE`` never
+   uses it. Every other codec has one engine. :func:`resolve_codec` picks the
+   exception translator that matches the engine.
+4. **Isolate it.** ``process_isolation`` decides which native decoders run in a child
+   process, so a crash on hostile input costs the member and not the caller. Under the
+   default (``KNOWN_CRASHES``), rapidgzip, pyppmd and libbzip3 run in a child.
+   ``NONE`` runs pyppmd and libbzip3 in this process and drops rapidgzip.
+   ``NATIVE_DECODERS`` moves every native decoder into a child.
+5. **Seek and recover.** A backward seek re-decodes from the nearest seek point the
+   decoder knows: an index the format carries (xz, lzip, BGZF, the Seekable Zstandard
+   table), block boundaries a decoder found, or rapidgzip's index. When rapidgzip fails
+   on data, the standard library decodes again, from a block boundary rapidgzip passed
+   where it can, so the accelerator changes speed and never the verdict.
+
 The package, one module per codec plus the shared pieces:
 
 - ``base`` — :class:`Codec`, :class:`CodecParams`, :class:`StreamCodec`, source helpers.
 - ``deps`` — the optional packages, read at call time (patch them there in tests).
 - ``registry`` — :func:`stream_codecs`, lookups, :func:`resolve_codec`,
   :func:`open_codec_stream`.
+- ``<name>_codec`` — one module per codec family: its :class:`StreamCodec`.
+- ``deflate_family_codec`` — the open path gzip, zlib and raw DEFLATE share: the
+  standard library, or rapidgzip.
 - ``rapidgzip_select`` / ``stdlib_takeover`` — the rapidgzip accelerator: choosing it,
   opening it in a child process, and handing a failed decode to the standard library.
   Checks that parse one format (the gzip ISIZE backstop, the zlib Adler-32 check, the
   bzip2 empty-stream check) live in that codec's module.
-- ``<name>_codec`` — one module per codec family: its :class:`StreamCodec`.
-- The engines beside them: ``<name>_decoder`` (``deflate``, ``brotli``, ``ppmd``,
-  ``deflate64``, ``xz``, ``lzip``, ``unix_compress``, ``lzma_filter``,
-  ``zip_legacy``), ``framed_decoder`` for the one-shot decompressors, framing and
-  resume helpers (``zstd_framing``,
-  ``brotli_framing``, ``lz4_legacy``, ``bzip2_resume``, ``deflate_resume``), the 7z
-  filters (``arm64_filter``, ``riscv_filter``, ``bcj2_filter``), and the child processes and worker
-  scripts (``ppmd_child`` / ``ppmd_worker``, ``rapidgzip_child`` / ``rapidgzip_worker``).
+- Process isolation: ``isolated`` builds each native decoder in this process or as a
+  proxy to a child; ``decoder_child`` / ``decoder_worker`` are the parent and child
+  sides of that child, and ``ppmd_child`` is PPMd's use of it. ``rapidgzip_child`` /
+  ``rapidgzip_worker`` are rapidgzip's own child: it starts from the same worker script
+  and frame format, with messages of its own. ``callers_source`` marks an exception that
+  the caller's own source raised, so no layer translates it.
+- The engines: ``<name>_decoder`` (``deflate``, ``brotli``, ``ppmd``, ``deflate64``,
+  ``xz``, ``lzip``, ``lzo``, ``unix_compress``, ``lzma_filter``, ``zip_legacy``, and
+  ``lzx``, which only the CAB reader uses) and ``framed_decoder`` for the libraries
+  that decode one stream at a time.
+- Framing, seek indexes and resume helpers: ``zstd_framing``, ``brotli_framing``,
+  ``lz4_legacy``, ``zstd_seek_table``, ``bgzf_index``, ``bzip2_resume``,
+  ``deflate_resume``.
+- The 7z filters: ``arm64_filter``, ``riscv_filter``, ``bcj2_filter``.
 
 This module re-exports the names other modules use.
 """

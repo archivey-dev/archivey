@@ -31,6 +31,7 @@ from pathlib import Path
 from archivey.exceptions import ExtractionError, FilterRejectionError
 from archivey.internal.long_paths import long_path, plain
 from archivey.internal.naming import BIDI_REORDERING_CONTROLS
+from archivey.terminal import quoted
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
 # Split a member name into path components on either separator; a ".." component after
@@ -334,7 +335,7 @@ def _reject_bidi_override(value: str, *, member_name: str, what: str) -> None:
         return
     spelled = ", ".join(f"U+{ord(char):04X}" for char in found)
     raise FilterRejectionError(
-        f"Bidirectional override ({spelled}) in {what}: {value!r}. It would display "
+        f"Bidirectional override ({spelled}) in {what}: {quoted(value)}. It would display "
         f"as a different name than it is; extract it under a name you choose.",
         member_name=member_name,
     )
@@ -404,6 +405,51 @@ def disk_spelled(member: ArchiveMember) -> ArchiveMember:
     return member.replace(name=name, link_target=disk_target)
 
 
+def check_name_shape(member: ArchiveMember) -> None:
+    """The checks of :func:`check_universal` that need no destination.
+
+    The member's name as a string (a NUL, a name the filesystem encoding cannot hold),
+    an absolute name, a ``..`` segment, a name that is the root itself, and a special
+    file. Raises :class:`FilterRejectionError` on the first. :func:`check_universal`
+    runs these first; the ``archivey://`` file system's tree runs them alone, as it
+    has no destination (:func:`extraction_view`).
+    """
+    name = member.name
+
+    # (1) String checks on member.name. Names are faithful (meaning-preserving
+    # normalization keeps a leading "/" and every ".."), so the danger is visible directly
+    # on member.name — no separate raw_name inspection is needed. Any ".." component is
+    # rejected (escaping and internal alike): a well-formed archive has no reason to carry
+    # one. An absolute name reaching here was not re-rooted: STRICT, or a filter that
+    # returned one (see reroot_absolute).
+    # A name the platform filesystem encoding cannot represent can never be
+    # materialized under dest, and it would otherwise crash the parent resolution in
+    # ``check_universal`` with a raw UnicodeEncodeError. The extraction coordinator passes the
+    # member through ``disk_spelled`` first, so a lone surrogate reaches here as
+    # bytes on POSIX; a caller of this function that does not still gets a
+    # rejection. (Windows' surrogatepass encoding represents lone surrogates.)
+    _check_path_string(name, member_name=name, what="member name")
+    if _is_absolute(name):
+        raise FilterRejectionError("Absolute path not allowed", member_name=name)
+    if ".." in _SEP_SPLIT.split(name):
+        raise FilterRejectionError(
+            "Path traversal ('..') in member name", member_name=name
+        )
+
+    rel = name.rstrip("/")
+    if member.type != MemberType.DIRECTORY and rel in ("", "."):
+        raise FilterRejectionError(
+            "Member name refers to the extraction root",
+            member_name=name,
+        )
+
+    if member.type == MemberType.OTHER:
+        raise FilterRejectionError(
+            "Special file (device/FIFO/socket) not allowed",
+            member_name=name,
+        )
+
+
 def check_universal(
     member: ArchiveMember,
     dest: Path,
@@ -449,40 +495,9 @@ def check_universal(
     no OS call. The coordinator refuses the link instead when it refuses the member
     the link gets its bytes from (``ExtractionCoordinator._source_refused``).
     """
+    check_name_shape(member)
     name = member.name
-
-    # (1) String checks on member.name. Names are faithful (meaning-preserving
-    # normalization keeps a leading "/" and every ".."), so the danger is visible directly
-    # on member.name — no separate raw_name inspection is needed. Any ".." component is
-    # rejected (escaping and internal alike): a well-formed archive has no reason to carry
-    # one. An absolute name reaching here was not re-rooted: STRICT, or a filter that
-    # returned one (see reroot_absolute).
-    # A name the platform filesystem encoding cannot represent can never be
-    # materialized under dest, and it would otherwise crash the parent-resolution
-    # below with a raw UnicodeEncodeError. The extraction coordinator passes the
-    # member through ``disk_spelled`` first, so a lone surrogate reaches here as
-    # bytes on POSIX; a caller of this function that does not still gets a
-    # rejection. (Windows' surrogatepass encoding represents lone surrogates.)
-    _check_path_string(name, member_name=name, what="member name")
-    if _is_absolute(name):
-        raise FilterRejectionError("Absolute path not allowed", member_name=name)
-    if ".." in _SEP_SPLIT.split(name):
-        raise FilterRejectionError(
-            "Path traversal ('..') in member name", member_name=name
-        )
-
     rel = name.rstrip("/")
-    if member.type != MemberType.DIRECTORY and rel in ("", "."):
-        raise FilterRejectionError(
-            "Member name refers to the extraction root",
-            member_name=name,
-        )
-
-    if member.type == MemberType.OTHER:
-        raise FilterRejectionError(
-            "Special file (device/FIFO/socket) not allowed",
-            member_name=name,
-        )
 
     # Pre-extraction path computation: the destination's PARENT directory must resolve
     # within the root. We resolve the parent, not the full path — the final component may
@@ -627,6 +642,47 @@ POLICY_TRANSFORMS: dict[ExtractionPolicy, Callable[[ArchiveMember], ArchiveMembe
 }
 
 
+def policy_transform(
+    member: ArchiveMember, policy: ExtractionPolicy
+) -> tuple[ArchiveMember, str | None]:
+    """The policy's transform of ``member``, then the re-root of an absolute name
+    under ``STANDARD`` and ``TRUSTED``: the first step of every name extraction
+    writes.
+
+    Returns the transformed copy and the name before the re-root, or ``None`` when no
+    re-root changed it. ``extract_all`` runs it before the caller's filter; the
+    ``archivey://`` file system's tree runs it too (:func:`extraction_view`), so
+    both see one name (DR-23a).
+    """
+    transformed = POLICY_TRANSFORMS[policy](member)
+    if policy is ExtractionPolicy.STRICT:
+        return transformed, None
+    rerooted = reroot_absolute(transformed)
+    if rerooted.name == transformed.name:
+        return rerooted, None
+    return rerooted, transformed.name
+
+
+def extraction_view(member: ArchiveMember, policy: ExtractionPolicy) -> ArchiveMember:
+    """``member`` as ``extract_all(dest, policy=policy)`` writes it, with no filter and
+    before anything that depends on ``dest``: its ``name`` is the relative path, in the
+    disk spelling, and a symlink keeps the target the policy gives it.
+
+    The steps extraction runs, in its order: :func:`policy_transform`, the
+    destination-free checks (:func:`check_name_shape`) on the name that reaches disk,
+    :func:`apply_name_policy`, and the checks again on a rewritten name. Raises
+    :class:`FilterRejectionError` for a member the policy refuses. What depends on the
+    members written before it (a name collision, a link to a refused member) is the
+    caller's to decide, as the coordinator does.
+    """
+    transformed, _ = policy_transform(member, policy)
+    check_name_shape(disk_spelled(transformed))
+    portable = apply_name_policy(transformed, policy)
+    if portable is not transformed:
+        check_name_shape(disk_spelled(portable))
+    return disk_spelled(portable)
+
+
 # --- Cross-platform portable-name policy (safe-extraction O3/O4/O7) ------------------
 #
 # These rules are keyed on ``ExtractionPolicy`` and applied to the FINAL member name (after
@@ -749,7 +805,8 @@ def _strip_trailing_dot_space(name: str) -> str:
         stripped = part.rstrip(_DOT_SPACE)
         if stripped == "":
             raise FilterRejectionError(
-                f"Path segment is entirely dots/spaces: {part!r}", member_name=name
+                f"Path segment is entirely dots/spaces: {quoted(part)}",
+                member_name=name,
             )
         return stripped
 
@@ -773,13 +830,13 @@ def _reject_unsafe_segments(
             continue
         if _is_reserved_segment(segment):
             raise FilterRejectionError(
-                f"Windows-reserved device name in {where}: {segment!r}",
+                f"Windows-reserved device name in {where}: {quoted(segment)}",
                 member_name=member_name,
                 link_target=link_target,
             )
         if ":" in segment:
             raise FilterRejectionError(
-                f"Colon in {where} segment (NTFS alternate data stream): {segment!r}",
+                f"Colon in {where} segment (NTFS alternate data stream): {quoted(segment)}",
                 member_name=member_name,
                 link_target=link_target,
             )
