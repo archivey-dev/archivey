@@ -94,6 +94,11 @@ class ContainerFormat(StrEnum):
     RPM = "rpm"
     """An RPM package, binary or source: its files, from the CPIO payload that follows
     its headers. Read in one forward pass, so from a pipe too."""
+    MAKESELF = "makeself"
+    """A makeself self-extracting archive (a ``.run`` installer): a shell script that
+    states where its payloads start, followed by one or more compressed TARs. Its
+    files are the TARs' files, payload after payload. Read in one forward pass, so
+    from a pipe too."""
     SQUASHFS = "squashfs"
     """A SquashFS 4.0 filesystem image: a snap package or a live system's root, for
     example. Needs a source that can seek."""
@@ -271,6 +276,7 @@ class ArchiveFormat:
     DEB: ClassVar[ArchiveFormat]
     CPIO: ClassVar[ArchiveFormat]
     RPM: ClassVar[ArchiveFormat]
+    MAKESELF: ClassVar[ArchiveFormat]
     SQUASHFS: ClassVar[ArchiveFormat]
     XAR: ClassVar[ArchiveFormat]
     CAB: ClassVar[ArchiveFormat]
@@ -359,6 +365,9 @@ ArchiveFormat.AR = ArchiveFormat(ContainerFormat.AR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DEB = ArchiveFormat(ContainerFormat.DEB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CPIO = ArchiveFormat(ContainerFormat.CPIO, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.RPM = ArchiveFormat(ContainerFormat.RPM, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.MAKESELF = ArchiveFormat(
+    ContainerFormat.MAKESELF, StreamFormat.UNCOMPRESSED
+)
 ArchiveFormat.SQUASHFS = ArchiveFormat(
     ContainerFormat.SQUASHFS, StreamFormat.UNCOMPRESSED
 )
@@ -1068,6 +1077,13 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``rpm.source`` (``bool``)
     * ``rpm.signed`` (``bool``)
     * ``rpm.payload_compressor`` (``str``)
+    * ``makeself.label`` (``str``)
+    * ``makeself.script`` (``str``)
+    * ``makeself.target_dir`` (``str``)
+    * ``makeself.compression`` (``str``)
+    * ``makeself.encryption`` (``str``)
+    * ``makeself.payloads`` (``int``)
+    * ``makeself.signed`` (``bool``)
     """
 
     __slots__ = ()
@@ -1112,6 +1128,20 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["rpm.signed"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["rpm.payload_compressor"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.label"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.script"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.target_dir"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.compression"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.encryption"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.payloads"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.signed"], /) -> bool: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
