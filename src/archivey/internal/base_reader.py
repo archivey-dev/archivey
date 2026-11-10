@@ -74,6 +74,7 @@ from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
     EncryptionError,
+    FilterRejectionError,
     LinkTargetNotFoundError,
     LinkTargetNotFoundReason,
     PackageNotInstalledError,
@@ -184,6 +185,7 @@ from archivey.types import (
     ExtractionPolicy,
     ExtractionPolicyStr,
     ExtractionProgress,
+    ExtractionStatus,
     HashAlgorithm,
     MagicSignature,
     MemberFilter,
@@ -191,6 +193,8 @@ from archivey.types import (
     MemberStreams,
     MemberType,
     MissingComponent,
+    OnBlocked,
+    OnBlockedStr,
     OnError,
     OnErrorStr,
     OptionalLibrary,
@@ -307,6 +311,34 @@ def _settle_listing(
             member._link_target_unread = False
         if links_too or sizes_too:
             member._size_unread = False
+
+
+def _raise_if_blocked(report: ExtractionReport, archive_name: str | None) -> None:
+    """Raise once an extraction ended with refused members (``OnBlocked.RAISE``).
+
+    The error names the first refused member and carries the whole report, so a
+    caller that catches it loses nothing a returned report would have told it. The
+    first refusal's own error is its ``__cause__``.
+    """
+    blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
+    if not blocked:
+        return
+    first = blocked[0]
+    reason = raw_message_of(first.error) if first.error is not None else "refused"
+    count = len(blocked)
+    refused = (
+        "Extraction refused this member and did not write it"
+        if count == 1
+        else f"Extraction refused this member and {count - 1} more, and wrote none of them"
+    )
+    error = FilterRejectionError(
+        f"{refused}. The error's report holds what happened to every other member. "
+        f"First refusal: {reason}",
+        archive_name=archive_name,
+        member_name=first.member.name,
+        report=report,
+    )
+    raise error from first.error
 
 
 class SolidRun(NamedTuple):
@@ -505,13 +537,14 @@ class ReadBackend(ABC):
     INSTALL_HINT: str | None = None
 
     @classmethod
-    def missing_programs(cls) -> tuple[MissingComponent, ...]:
+    def missing_programs(cls, config: ArchiveyConfig) -> tuple[MissingComponent, ...]:
         """External programs this backend can use that are not usable here.
 
         A backend that still opens and lists without them makes its format ``PARTIAL``
         in the public ``format_availability()`` query. Only that query calls this: a
         backend may run a program once to identify it, and ``open_archive`` must not
-        pay for that. Empty for backends that run no external program.
+        pay for that. Empty for backends that run no external program. ``config`` is the
+        one the query was passed, for a setting that names a program to run.
         """
         return ()
 
@@ -906,6 +939,8 @@ class BaseArchiveReader(ArchiveReader):
         return _TranslatedErrorBoundary(self, member_name, stamp_encryption)
 
     def _seek_declared(self) -> bool:
+        """Whether the caller asked for seekable member streams
+        (``open_archive(seekable_members=True)``): the most a member stream may offer."""
         return self._state.seekable
 
     def _register_public_stream(
@@ -1686,6 +1721,11 @@ class BaseArchiveReader(ArchiveReader):
         chosen_by: Literal["argument", "extension"],
         detected_format: str | None,
     ) -> None:
+        """Report an empty listing under a format the bytes never confirmed: one the
+        caller's ``format=`` (``"argument"``) or the file extension chose.
+        ``detected_format`` is what content detection names instead, or ``None`` when it
+        refuses the bytes or cannot read them. An extension pick passes ``None`` without
+        running detection again: detection had already declined the bytes."""
         format_name = self._format.display_name
         detected_text = detected_format or "nothing (detection refuses these bytes)"
         self._diagnostics_collector.emit(
@@ -1727,6 +1767,11 @@ class BaseArchiveReader(ArchiveReader):
             return self._publish_materialized(error=error)
 
     def _publish_materialized(self, *, error: ArchiveyError | None) -> _Materialized:
+        """Settle the walk's members and publish them as the reader's listing.
+
+        ``error`` is the damage the walk ended on, kept on the report. Runs under the
+        walk lock, after the links are resolved (:meth:`_finalize_and_publish`).
+        """
         members = self._listed
         # Links are resolved to members now, and is_current was stamped when the walk
         # ended, so nothing changes these members from here. Not when the walk ends: a
@@ -2665,6 +2710,8 @@ class BaseArchiveReader(ArchiveReader):
             self._resolve_link_target_locked(member)
 
     def _resolve_link_target_locked(self, member: ArchiveMember) -> None:
+        """:meth:`_resolve_link_target` under its lock: read the target, report what it
+        found, and memo that the member is done."""
         if member.link_target is not None or member._link_target_resolved:
             return
         try:
@@ -3264,6 +3311,8 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def _index_member_name(self, member: ArchiveMember) -> None:
+        """Add ``member`` to ``_listed_by_name`` under its name, after any member
+        listed under it before."""
         index = self._listed_by_name
         held = index.get(member.name)
         if held is None:
@@ -3311,6 +3360,8 @@ class BaseArchiveReader(ArchiveReader):
         return (held,)
 
     def _last_by_exact_name(self, name: str) -> ArchiveMember | None:
+        """The member listed last under exactly ``name``, which a lookup by name
+        returns, or ``None``."""
         held = self._listed_by_name.get(name)
         if isinstance(held, list):
             return held[-1]
@@ -3477,6 +3528,7 @@ class BaseArchiveReader(ArchiveReader):
         return self._progressive_gen
 
     def _guard_forward_pass_entry(self, op: str) -> None:
+        """Refuse ``op`` once a streaming reader's one forward pass has started."""
         if self._streaming and self._forward_pass_started:
             raise ArchiveyUsageError(
                 f"{op} is not available after a streaming reader's forward pass has "
@@ -3485,6 +3537,7 @@ class BaseArchiveReader(ArchiveReader):
             )
 
     def _enter_forward_pass(self, op: str) -> None:
+        """Start a streaming reader's one forward pass for ``op``, or refuse it."""
         self._guard_forward_pass_entry(op)
         self._forward_pass_started = True
 
@@ -3789,6 +3842,9 @@ class BaseArchiveReader(ArchiveReader):
         return MemberPassImpl(self._iter_pass())
 
     def _iter_pass(self) -> Generator[ArchiveMember, None, None]:
+        """``iter(reader)``. A streaming reader yields its one forward pass as it walks.
+        A random-access reader lists the archive first and yields that listing, then
+        raises the damage the listing stopped at, if any."""
         self._state.require_open("__iter__")
         if self._streaming:
             token = self._state.acquire_pass("__iter__")
@@ -4018,11 +4074,11 @@ class BaseArchiveReader(ArchiveReader):
                 member = found
             else:
                 # Checked before the identity comparison below, which reads a private
-                # attribute: without this, `open(0)` failed as
-                # `AttributeError: 'int' object has no attribute '_archive_id'` —
-                # a private field name crossing the public boundary in place of an
-                # answer. `in` raises TypeError here (a spec'd escape for the operator
-                # protocol); this is an ordinary argument, so it takes the usage error.
+                # attribute: otherwise `open(0)` would fail with an AttributeError
+                # naming `_archive_id`, a private field crossing the public boundary
+                # in place of an answer. `in` raises TypeError here (a spec'd escape
+                # for the operator protocol); this is an ordinary argument, so it
+                # takes the usage error.
                 if not isinstance(member, ArchiveMember):
                     raise _UsageTypeError(
                         f"reader.open() takes a member name (str) or an ArchiveMember "
@@ -4566,6 +4622,16 @@ class BaseArchiveReader(ArchiveReader):
         *,
         hold_to_ratio: bool = False,
     ) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
+        """The ``stream_members()`` pass around the backend's :meth:`_iter_with_data`.
+
+        What it adds, the same for every backend: the pass token, one live-stream slot
+        for all the pass's streams, a file copy's stream closed unopened (the member
+        comes through with ``None``) unless ``copies.streams``, the ``selector``,
+        forward-only member streams, the ratio hold when ``hold_to_ratio``, and closing
+        each stream when the pass moves on. When the pass reaches the end, ``report``
+        records the selector's entries no member matched. A ``close()`` that finds the
+        pass suspended at a yield winds it down (``wind_down``).
+        """
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStreamImpl | None = None
         source_closer: Callable[[], None] | None = None
@@ -4696,6 +4762,7 @@ class BaseArchiveReader(ArchiveReader):
         policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
         on_error: OnError | OnErrorStr = OnError.STOP,
+        on_blocked: OnBlocked | OnBlockedStr = OnBlocked.RAISE,
         abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         limits: ExtractionLimits | None = None,
@@ -4712,6 +4779,9 @@ class BaseArchiveReader(ArchiveReader):
         )
         on_error = coerce_enum(
             on_error, OnError, call="extract_all()", param="on_error="
+        )
+        on_blocked = coerce_enum(
+            on_blocked, OnBlocked, call="extract_all()", param="on_blocked="
         )
         abort_on = coerce_enum_collection(
             abort_on, AbortOn, call="extract_all()", param="abort_on="
@@ -4789,7 +4859,7 @@ class BaseArchiveReader(ArchiveReader):
                 run_ratio.limits = outer
         finally:
             self._state.release_pass(token)
-        return ExtractionReport(
+        report = ExtractionReport(
             results=tuple(results),
             diagnostics=scope.summary(),
             _dry_run_top_level=coordinator.dry_run_top_level,
@@ -4797,6 +4867,9 @@ class BaseArchiveReader(ArchiveReader):
             _dry_run_entries=coordinator.dry_run_entries,
             _resource_usage=self._resource_usage(),
         )
+        if on_blocked is OnBlocked.RAISE:
+            _raise_if_blocked(report, self._archive_name)
+        return report
 
     @override
     def close(self) -> None:

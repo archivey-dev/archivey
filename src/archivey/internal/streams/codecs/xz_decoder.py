@@ -66,6 +66,7 @@ from archivey.internal.streams.decompressor_stream import (
     release_decoder,
     truncated_message,
 )
+from archivey.terminal import quoted
 
 if TYPE_CHECKING:
     from archivey.formats import Decompressor
@@ -129,7 +130,9 @@ def _parse_xz_header(data: bytes) -> int:
     if len(data) < _STREAM_HEADER_SIZE:
         raise CorruptionError(f"XZ stream header too short: {len(data)} bytes")
     if data[:6] != _XZ_STREAM_MAGIC:
-        raise CorruptionError(f"XZ stream header magic not found (got {data[:6]!r})")
+        raise CorruptionError(
+            f"XZ stream header magic not found (got {quoted(data[:6].decode('ascii', 'surrogateescape'))})"
+        )
     stream_flags = data[6:8]
     stored_crc = struct.unpack_from("<I", data, 8)[0]
     computed_crc = zlib.crc32(stream_flags) & 0xFFFFFFFF
@@ -150,7 +153,7 @@ def _parse_xz_footer(data: bytes) -> tuple[int, int]:
         raise CorruptionError(f"XZ stream footer too short: {len(data)} bytes")
     if data[10:12] != _XZ_FOOTER_MAGIC:
         raise CorruptionError(
-            f"XZ stream footer magic 'YZ' not found (got {data[10:12]!r})"
+            f"XZ stream footer magic 'YZ' not found (got {quoted(data[10:12].decode('ascii', 'surrogateescape'))})"
         )
     stored_crc = struct.unpack_from("<I", data, 0)[0]
     backward_size_raw = struct.unpack_from("<I", data, 4)[0]
@@ -430,12 +433,32 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     )
 
 
+class _MoreStreams(Exception):
+    """The walk met a stream before the ones it was allowed to read."""
+
+
+def last_stream_is_the_whole_file(stream: BinaryIO, file_size: int) -> bool:
+    """Whether the last xz stream starts at offset 0, read from its footer and index.
+
+    Reads the last stream's footer and index only (and its header when it starts at
+    offset 0), and stops before any earlier stream: on a remote source a
+    multi-stream file then costs no more requests than a single-stream one
+    (fsspec-integration design D1).
+    """
+    try:
+        _read_xz_index_backwards(stream, file_size, last_stream_only=True)
+    except _MoreStreams:
+        return False
+    return True
+
+
 def _read_xz_index_backwards(
     stream: BinaryIO,
     file_size: int,
     stop_at: int = 0,
     start_decompressed_offset: int = 0,
     on_thinned: Callable[[], None] | None = None,
+    last_stream_only: bool = False,
 ) -> list[_XzBlockBounds]:
     """Walk XZ streams from EOF toward ``stop_at``, building a block index.
 
@@ -447,6 +470,9 @@ def _read_xz_index_backwards(
     resumes correctly (``_XzBlockResume``). Within a stream the records are walked
     forward and thinned there first, so a stream declaring millions of blocks is never
     held whole. The last block is always kept, so the total stays exact.
+
+    With ``last_stream_only``, the walk raises ``_MoreStreams`` when the last stream
+    does not start at ``stop_at``, before reading that stream's header.
     """
     # Keyed on decompressed distance from the block's start to the end of the scan,
     # which only grows as the walk goes back.
@@ -490,6 +516,10 @@ def _read_xz_index_backwards(
         if stream_header_start < 0:
             raise CorruptionError("XZ stream header start computes to negative offset")
 
+        if last_stream_only and stream_header_start > stop_at:
+            # Before the header read: on a remote source the header of a large last
+            # stream is far from both the head and the tail windows.
+            raise _MoreStreams
         stream.seek(stream_header_start)
         header_data = stream.read(_STREAM_HEADER_SIZE)
         if len(header_data) < _STREAM_HEADER_SIZE:
@@ -852,7 +882,7 @@ class _XzState:
                     if self._streams_seen == 0:
                         raise CorruptionError(
                             f"Not valid XZ data: expected magic {_XZ_STREAM_MAGIC!r}, "
-                            f"got {header[:6]!r}"
+                            f"got {quoted(header[:6].decode('ascii', 'surrogateescape'))}"
                         )
                     if near_stream_magic(header, _XZ_STREAM_MAGIC):
                         raise damaged_stream_error(self._header_offset())

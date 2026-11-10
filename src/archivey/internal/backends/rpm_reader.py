@@ -25,15 +25,15 @@ reader maps each entry to its file the way ``rpm`` does (``lib/rpmfi.c``):
 Every member's metadata comes from the header, as ``rpm`` installs it; a newc entry's
 own size is only checked against it. Members are named as the payload stores them,
 ``./usr/bin/x``, so ``usr/bin/x`` once normalized: what ``rpm2cpio | cpio -i``
-extracts, relative to the directory it is given. A regular file's data follows its entry, except
-in a hard-link set (regular files that share ``FILEDEVICES`` and ``FILEINODES``):
-there only the set's last file in header order carries the data, the earlier entries
-coming first, empty. As for CPIO, this reader holds those back, yields the last as the
-``FILE`` and the others as ``HARDLINK`` members to it. A symlink's target is its entry's
-data; the reader takes it from ``FILELINKTOS`` and skips those bytes. A ``%ghost`` file
-is listed in the header but never stored, and ``rpm2cpio`` does not give it either: it
-is not a member. The payload ends with a newc ``TRAILER!!!`` entry, and every file
-that is not a ghost must have been found by then.
+extracts, relative to the directory it is given. A regular file's data follows its
+entry, except in a hard-link set (regular files that share ``FILEDEVICES`` and
+``FILEINODES``): there only the set's last file in header order carries the data, the
+earlier entries coming first, empty. As for CPIO, this reader holds those back, yields
+the last as the ``FILE`` and the others as ``HARDLINK`` members to it. A symlink's
+target is its entry's data; the reader takes it from ``FILELINKTOS`` and skips those
+bytes. A ``%ghost`` file is listed in the header but never stored, and ``rpm2cpio``
+does not give it either: it is not a member. The payload ends with a newc
+``TRAILER!!!`` entry, and every file that is not a ghost must have been found by then.
 
 The signature header stores digests of the main header, from its magic to the end
 of its data store: ``RPMSIGTAG_SHA256`` and the older ``RPMSIGTAG_SHA1``. The walk
@@ -55,7 +55,6 @@ import hashlib
 import struct
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 
 from archivey.diagnostics import (
     ArchiveEofContext,
@@ -77,9 +76,11 @@ from archivey.formats import (
     ReaderContext,
     SequentialFormatHandler,
     SequentialReader,
+    unix_member_type,
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
@@ -171,12 +172,6 @@ _S_IFMT = 0o170000
 _S_IFREG = 0o100000
 _S_IFDIR = 0o040000
 _S_IFLNK = 0o120000
-_SPECIAL = {
-    0o020000: "char_device",
-    0o060000: "block_device",
-    0o010000: "fifo",
-    0o140000: "socket",
-}
 
 _NEWC = b"070701"
 _CRC = b"070702"
@@ -251,14 +246,25 @@ class Header:
         fmt = {2: ">H", 4: ">I", 8: ">Q"}[size]
         return struct.unpack_from(fmt, self._data, entry.offset)[0]
 
-    def strings(self, tag: int) -> list[bytes] | None:
-        """A string array (a single string as a list of one), or None when absent."""
+    def _string_entry(self, tag: int) -> _Entry | None:
+        """The tag's entry, checked to be a string or a string array; None when the
+        tag is absent. A single STRING must declare one value, as _read_header and
+        rpm's headerVerifyInfo require."""
         entry = self._entries.get(tag)
         if entry is None:
             return None
         if entry.type not in (_STRING, _STRING_ARRAY, _I18NSTRING):
             raise self._bad(tag, f"has type {entry.type}, not a string")
-        count = 1 if entry.type == _STRING else entry.count
+        if entry.type == _STRING and entry.count != 1:
+            raise self._bad(tag, f"is a single string with count {entry.count}")
+        return entry
+
+    def strings(self, tag: int) -> list[bytes] | None:
+        """A string array (a single string as a list of one), or None when absent."""
+        entry = self._string_entry(tag)
+        if entry is None:
+            return None
+        count = entry.count
         if count > len(self._data) - entry.offset:
             raise self._bad(tag, f"declares {count} strings in fewer bytes")
         values = []
@@ -281,12 +287,10 @@ class Header:
         without building the list: a tag read for one value, such as ``NAME``, may
         declare a count as large as the data store. None when the tag is absent or
         declares no strings."""
-        entry = self._entries.get(tag)
+        entry = self._string_entry(tag)
         if entry is None:
             return None
-        if entry.type not in (_STRING, _STRING_ARRAY, _I18NSTRING):
-            raise self._bad(tag, f"has type {entry.type}, not a string")
-        count = 1 if entry.type == _STRING else entry.count
+        count = entry.count
         if count > len(self._data) - entry.offset:
             raise self._bad(tag, f"declares {count} strings in fewer bytes")
         if count == 0:
@@ -336,6 +340,11 @@ def _read_header(
                 f"RPM {what}: tag {tag} has offset {at} and count {n} in a store "
                 f"of {size} bytes"
             )
+        if kind == _STRING and n != 1:
+            # rpm's headerVerifyInfo refuses this too: a STRING holds one value.
+            raise CorruptionError(
+                f"RPM {what}: tag {tag} is a single string with count {n}"
+            )
         entries[tag] = _Entry(kind, n, at)
     return Header(entries, data, what), 16 + total
 
@@ -373,13 +382,18 @@ class _Package:
     # (directory, base) -> file index: the bytes objects the header's lists hold.
     by_name: dict[tuple[bytes, bytes], int]
     compressor: StreamFormat | None
-    digest: tuple[str, Callable[[], Hasher]] | None
+    # FILEDIGESTALGO's name and hash constructor; None for an algorithm not in _DIGESTS.
+    digest_algorithm: tuple[str, Callable[[], Hasher]] | None
+    # The header's per-file columns, indexed like ``files``; None for an absent tag.
     digests: list[bytes] | None
     mtimes: list[int] | None
     users: list[bytes] | None
     groups: list[bytes] | None
     targets: list[bytes] | None
+    # Earlier links of a hard-link set, waiting for the set's last file (by its index),
+    # which carries the data.
     held: dict[int, list[_File]] = field(default_factory=dict)
+    # The payload offset of the first CPIO entry: CPIO pads to 4 bytes from there.
     base: int = 0
 
 
@@ -437,6 +451,7 @@ class RpmReader(SequentialReader):
         self._check_end(payload)
 
     def _read_package(self, stream: ForwardStream) -> _Package:
+        """Read the lead and both headers, leaving the stream at the payload."""
         lead = stream.read_exact(LEAD_SIZE)
         if lead[:4] != LEAD_MAGIC:
             raise CorruptionError("No RPM lead at offset 0")
@@ -483,6 +498,8 @@ class RpmReader(SequentialReader):
         header: Header,
         compressor: bytes | None,
     ) -> None:
+        """Fill the archive info: the package's identity, whether it is signed, and the
+        package format version."""
         extra = ArchiveInfoExtra({})
 
         def text(tag: int) -> str | None:
@@ -619,18 +636,9 @@ class RpmReader(SequentialReader):
     def _member(self, package: _Package, file: _File) -> ArchiveMember:
         """The member for a file the payload has reached."""
         context = self._context
-        kind = file.mode & _S_IFMT
-        special = _SPECIAL.get(kind)
-        if kind == _S_IFREG:
-            member_type = MemberType.FILE
-        elif kind == _S_IFDIR:
-            member_type = MemberType.DIRECTORY
-        elif kind == _S_IFLNK:
-            member_type = MemberType.SYMLINK
-        else:
-            # A device, FIFO, socket or a type rpm does not name: no payload data,
-            # since rpm reads none for it (iterReadArchiveNext), so OTHER (DR-25).
-            member_type = MemberType.OTHER
+        # A device, FIFO, socket or a type rpm does not name has no payload data,
+        # since rpm reads none for it (iterReadArchiveNext), so it is OTHER (DR-25).
+        member_type, special = unix_member_type(file.mode, has_data=False)
         raw_name = file.raw_name
         # The header's names are absolute; the payload stores ``./usr/bin/x``,
         # which is what rpm2cpio and cpio extract, inside the directory given.
@@ -642,7 +650,6 @@ class RpmReader(SequentialReader):
             ),
             raw_name=raw_name,
             size=file.size if member_type is MemberType.FILE else None,
-            modified=None if mtimes is None else _time(mtimes[file.index]),
             mode=file.mode & 0o7777,
             uname=None
             if users is None
@@ -651,12 +658,15 @@ class RpmReader(SequentialReader):
             if groups is None
             else groups[file.index].decode("utf-8", "replace"),
         )
+        if mtimes is not None:
+            context.set_unix_time(member, "modified", mtimes[file.index], source="rpm")
         if member_type is MemberType.SYMLINK:
             assert package.targets is not None  # _files checked it
             member.link_target = context.decode_name(package.targets[file.index])
         if special is not None:
             member.extra["special_file_type"] = special
-        elif member_type is MemberType.OTHER:
+        if special == "unknown":
+            kind = file.mode & _S_IFMT
             context.report(
                 DiagnosticCode.MEMBER_TYPE_UNKNOWN,
                 f"RPM member {_shown(raw_name)} has the unknown file type {kind:#o}",
@@ -757,6 +767,10 @@ class RpmReader(SequentialReader):
     def _entry(
         self, payload: ForwardStream, package: _Package, file: _File
     ) -> Iterator[MemberSpan]:
+        """The members one payload entry gives: its own, unless it is an earlier link
+        of a hard-link set, which is held until the set's last file comes, or yielded
+        at once as a link to that file if it already came; then the held links of the
+        set it ends."""
         member = self._member(package, file)
         if member.type is MemberType.SYMLINK:
             # The target, which the header already gave.
@@ -784,6 +798,7 @@ class RpmReader(SequentialReader):
 
     @staticmethod
     def _link(member: ArchiveMember, data: ArchiveMember) -> MemberSpan:
+        """Turn ``member`` into a hard link to ``data``, the member with the bytes."""
         member.type = MemberType.HARDLINK
         member.link_target = data.name
         member.size = None
@@ -791,7 +806,7 @@ class RpmReader(SequentialReader):
 
     @staticmethod
     def _digests(package: _Package, file: _File) -> tuple[MemberDigest, ...]:
-        if package.digests is None or package.digest is None:
+        if package.digests is None or package.digest_algorithm is None:
             return ()
         text = package.digests[file.index]
         if not text:
@@ -802,7 +817,7 @@ class RpmReader(SequentialReader):
             raise CorruptionError(
                 f"RPM header: the digest of {_shown(file.raw_name)} is not hexadecimal"
             ) from None
-        name, new = package.digest
+        name, new = package.digest_algorithm
         return (MemberDigest(name, expected, new),)
 
     def _check_end(self, payload: ForwardStream) -> None:
@@ -868,21 +883,15 @@ def _shown(raw: bytes) -> str:
 def _hex(raw: bytes, what: str, offset: int) -> int:
     try:
         text = raw.decode("ascii")
+        # int() would also take spaces, a sign and underscores.
         if not text.isalnum():
             raise ValueError(text)
         return int(text, 16)
     except ValueError:
         raise CorruptionError(
-            f"RPM payload entry at offset {offset}: the {what} field {raw!r} is not "
-            "a number"
+            f"RPM payload entry at offset {offset}: the {what} field "
+            f"{quoted(raw.decode('ascii', 'surrogateescape'))} is not a number"
         ) from None
-
-
-def _time(mtime: int) -> datetime | None:
-    try:
-        return datetime.fromtimestamp(mtime, UTC)
-    except (OverflowError, ValueError, OSError):
-        return None
 
 
 class RpmHandler(SequentialFormatHandler):

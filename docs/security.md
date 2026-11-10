@@ -98,6 +98,12 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   temporary files archivey makes for RAR archives, listed in the table below. When the archive
   records a member's size in `member.size`, archivey never decodes more than that, and a member
   holding more raises `CorruptionError`.
+- **A self-extracting archive's program is not checked.** A self-extracting archive, such as a 7z
+  or RAR `.exe` or a makeself `.run` installer, is a program with an archive inside. Archivey reads
+  the archive and never runs the program, so it lists what the archive holds, not what running the
+  file would do. A malicious program can install other files, or anything else, whatever the
+  archive lists. Treat a self-extracting file you would not run as you would any program you would
+  not run.
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
   files it wrote before then on disk. 7z, RAR and ISO archives check the limits before they give you
@@ -221,11 +227,13 @@ the time-limit recipe [above](#where-the-guarantees-stop).
 ## Hardening
 
 RAR data is decompressed by an external program found on your `PATH`: `unrar` or `rar`, or `unar`
-when neither is installed. On Windows, archivey also looks in WinRAR's folder under Program Files. Like the optional packages, it's [trusted not to be
-malicious](#what-archivey-relies-on), and archivey checks only that it runs and that archivey works
-with its version, which can be several years old. Older versions can have security bugs that later
-ones fixed, so an up-to-date version is safer. `unar` receives the password on its command line,
-where other users on the same machine can see it while it runs. If you set
+when neither is installed. On Windows, archivey also looks in WinRAR's folder under Program Files.
+To run a binary you chose instead, set `unrar_path=` (or `unar_path=`) in `ArchiveyConfig` to its
+absolute path: archivey then runs that file and searches nowhere else. Like the optional packages,
+it's [trusted not to be malicious](#what-archivey-relies-on), and archivey checks only that it runs
+and that archivey works with its version, which can be several years old. Older versions can have
+security bugs that later ones fixed, so an up-to-date version is safer. `unar` receives the password
+on its command line, where other users on the same machine can see it while it runs. If you set
 `rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig`, archivey never runs `unar`. With
 `RarDecompressor.NONE` it runs no external program at all, so stored RAR members can still be read
 (archivey decrypts an encrypted one itself if `cryptography` is installed, and raises

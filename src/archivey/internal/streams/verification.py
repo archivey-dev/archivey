@@ -4,7 +4,7 @@ Each check runs in its own layer: the member verifier (length and stored digests
 codec's own checksum, the WinZip AES HMAC in the decrypt stage, the password watch
 over a member whose password only a weak check accepted. The public stream asks the
 layer below it with :func:`ask_verification_proofs` and combines the answers into a
-:class:`~archivey.types.Verification` level (``verification-level`` change).
+:class:`~archivey.types.Verification` level.
 
 A layer answers through a private ``_verification_proofs()`` method, duck-typed as
 ``_digest_intact()`` is (:func:`~archivey.internal.streams.verify.ask_digest_intact`).
@@ -131,10 +131,10 @@ def find_frame_watch(stream: object, *, _depth: int = 0) -> Callable[[], bool] |
     return None
 
 
-# The level lock (``verification-level-redesign`` design Decision 4): a leaf lock held
-# only for the compare-and-store below, never across I/O or a callback, and no other
-# lock is taken while it is held. One for the process: the critical section is a few
-# attribute reads and writes, so sharing it costs nothing measurable.
+# The level lock: a leaf lock held only for the compare-and-store below, never across
+# I/O or a callback, and no other lock is taken while it is held. One for the process:
+# the critical section is a few attribute reads and writes, so sharing it costs nothing
+# measurable.
 _LEVEL_LOCK = threading.Lock()
 
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import itertools
+import os
 import re
 from collections.abc import Callable
 from typing import BinaryIO
@@ -23,6 +24,7 @@ from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
 )
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
@@ -48,6 +50,7 @@ from archivey.internal.streams.codecs.rapidgzip_child import (
     reported_by_child,
 )
 from archivey.internal.streams.codecs.rapidgzip_select import (
+    _SEQUENTIAL_PLATFORM,
     _bound_rapidgzip_source,
     _open_rapidgzip,
     _rapidgzip_present,
@@ -74,6 +77,7 @@ from archivey.internal.streams.decompressor_stream import (
 )
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
+from archivey.internal.streams.streamtools.slice import file_region
 from archivey.types import ArchiveFormat, MagicSignature, StreamFormat
 
 
@@ -85,11 +89,67 @@ def _bzip2_wanted(config: StreamConfig, *, available: bool) -> bool:
     if config.process_isolation is ProcessIsolation.NONE:
         return False
     return config.use_indexed_bzip2.enabled_for(
-        seekable=config.seekable,
+        seekable=config.seekable or _bzip2_sequential_read_pays(config),
         available=available,
         input_size=config.compressed_input_size,
         min_size=INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE,
     )
+
+
+def _usable_cpus() -> int:
+    """The CPUs this process may run on: ``os.process_cpu_count()`` (Python 3.13), else
+    its affinity where the platform says, else every CPU.
+
+    None of these sees a cgroup CPU quota: a container limited to one CPU's time but
+    allowed on every core counts every core.
+    """
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    if process_cpu_count is not None:
+        return process_cpu_count() or 1
+    affinity = getattr(os, "sched_getaffinity", None)
+    if affinity is not None:
+        try:
+            return len(affinity(0))
+        except OSError:
+            pass
+    return os.cpu_count() or 1
+
+
+def _bzip2_sequential_read_pays(config: StreamConfig) -> bool:
+    """Whether ``AUTO`` takes a bzip2 read with no declared seek demand through rapidgzip.
+
+    rapidgzip decodes bzip2 blocks in parallel, and the standard library decodes them
+    one after the other. Measured on Linux, 4 cores, text that compresses about 7:1, a
+    full read under ``ON`` took 0.62 of the standard library's time at 0.6 MiB
+    compressed and 0.40 at 2.3 MiB; on 2 cores 0.86 and 0.63. On one core it was
+    slower (1.24 and 1.05), so a single usable CPU keeps the standard library.
+
+    Only on Linux and macOS (the platforms where the DEFLATE rule was measured to pay,
+    ``_SEQUENTIAL_PLATFORM``), for a source that can seek, at or above the same size
+    gate as declared seeking
+    (:data:`~archivey.config.INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`), and only for a
+    file on disk (``source_is_file``). rapidgzip reads its bzip2 input about twice (2.5
+    times a 3 MiB ``.tar.bz2``, against 1.3 for the standard library, detection
+    included): from the page cache that costs nothing, but a caller's stream, remote
+    above all, would serve it all twice.
+    """
+    if not (_sequential_gates_pass(config) and config.source_is_file):
+        return False
+    return _usable_cpus() >= 2
+
+
+def _sequential_gates_pass(config: StreamConfig) -> bool:
+    """The gates of :func:`_bzip2_sequential_read_pays` that read only the config: an
+    ``AUTO`` read with no seek demand, the platform, a source that can seek, and the
+    size."""
+    if (
+        config.use_indexed_bzip2 is not AcceleratorMode.AUTO
+        or config.seekable
+        or not (_SEQUENTIAL_PLATFORM and config.source_seekable)
+    ):
+        return False
+    size = config.compressed_input_size
+    return size is not None and size >= INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE
 
 
 def _bzip2_auto_without_child(config: StreamConfig) -> str | None:
@@ -776,6 +836,17 @@ class Bzip2Codec(StreamCodec):
     magic = (MagicSignature(0, b"BZh", ArchiveFormat.BZ2),)
 
     @override
+    def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:
+        """Note a source that is a file on disk (``source_is_file``), for the
+        sequential rule; asked only when its other gates pass, so a member open that
+        cannot take the rule does no ``fstat``."""
+        if config.source_is_file or not _sequential_gates_pass(config):
+            return config
+        if isinstance(source, (str, os.PathLike)) or file_region(source) is not None:
+            return copy_with(config, source_is_file=True)
+        return config
+
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -885,7 +956,7 @@ class Bzip2Codec(StreamCodec):
 
     @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        # An engaged accelerator no longer suppresses the report: its index can be sparse
+        # An engaged accelerator does not suppress the report: its index can be sparse
         # enough that a backward seek still re-decodes megabytes. The distance decides.
         unused_reason = _rapidgzip_unused_reason(config)
         return RewindWarning(
