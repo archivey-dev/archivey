@@ -205,9 +205,9 @@ How they were made is in libarchive's `test_read_format_cab.c` (`mkcab1` to `mkc
 
 ## `lha_lhasa/`
 
-Twenty-two LHA archives from lhasa's test suite (`test/archives/<tool>/<file>`, renamed
-`<tool>_<file>`; lhasa commit `75ed835`, v0.6.0), copied on 2026-11-09. Each was written
-by the tool its directory names, most on the system it ran on; no tool on the test image
+Twenty-nine LHA archives from lhasa's test suite (`test/archives/<tool>/<file>`, renamed
+`<tool>_<file>`; lhasa commit `75ed835`, v0.6.0), copied on 2026-11-09 (the MacLHA ones
+on 2026-11-10). Each was written by the tool its directory names, most on the system it ran on; no tool on the test image
 writes LHA, so `tests/test_lha.py` reads them beside the archives `tests/lha_util.py`
 writes. Their expected bytes are what lhasa 0.4.0 extracts.
 
@@ -226,6 +226,7 @@ writes. Their expected bytes are what lhasa 0.4.0 extracts.
 | OS-9/68k LHA 2.01 | `lha_osk_201_h2_lh0.lzh` | the level-2 header two bytes longer than its size; OS-9 permissions |
 | MorphOS LhA 2.7.17 | `morphos_lha_2717_h2_metadata.lzh` | a `0x71` comment record, skipped |
 | LH/2 2.22 (OS/2) | `lh2_222_eas.lzh` | mixed levels 0 and 1, OS/2 extended attributes as a file |
+| MacLHA 2.24 | `maclha_224_*` | MacBinary-wrapped members at levels 0 to 2 (`-lh0-`, `-lh1-`, `-lh5-`), one made with "non-Mac" (no wrapper), TeachText files in subdirectories; lhasa's `test-decompress` gives their CRC-32s |
 
 lhasa is under the ISC license:
 

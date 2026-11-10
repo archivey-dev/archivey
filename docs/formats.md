@@ -1289,8 +1289,15 @@ ST and Japanese PCs, and from LHa for UNIX.
 - A self-extracting LHA program reads like an archive: the archive behind a DOS, Windows,
   Amiga, Atari or X68000 stub is found by its first header, as for ZIP, 7z and RAR (see
   [Detection](#detection)). An Amiga self-extractor's own usage text, a small archive inside
-  the stub, is passed over for the archive that ends the file. MacLHA's MacBinary members
-  are read with their MacBinary wrapper for now.
+  the stub, is passed over for the archive that ends the file.
+- A Mac file archived by MacLHA reads as its data fork (or its resource fork, when the
+  data fork is empty), as lhasa reads it: MacLHA wraps the file in MacBinary, a 128-byte
+  header that archivey strips when every field in it matches the LHA header (name, sizes,
+  and a time within 14 hours). `member.size` is the fork's size, and
+  `extra["lha.mac_type"]` and `extra["lha.mac_creator"]` keep the Finder's type and
+  creator codes. The listing decodes the first 128 bytes of each such member to check.
+  A level-0 member has no OS id to say it came from a Mac, so it reads with its wrapper,
+  as in lhasa.
 
 ## ARJ
 
