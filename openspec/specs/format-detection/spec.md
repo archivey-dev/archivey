@@ -935,11 +935,11 @@ applies to it too. A source that can seek but has no cheap size SHALL be measure
 peeking one byte past the completion window (capped at the decode allowance left), and
 completed the same way when it ends within it, so the same bytes within the window get
 the same answer with or without a known size. Past the window the probe sees no size, and
-can still answer differently (`dev-docs/known-issues.md`). A source
-larger than that window, a budget with no completion window (`FAST`), or a forward-only
-source of unknown length keeps the window's answer. The whole-source decode
-is charged to the detection decode allowance; when the allowance cannot cover it, the
-window's answer stands and `probe_completion` is recorded as *budget exhausted*.
+can still answer differently (`dev-docs/known-issues.md`). A source larger than that
+window, a budget with no completion window (`FAST`), or a forward-only source of unknown
+length keeps the window's answer. The whole-source decode is charged to the detection
+decode allowance; when the allowance cannot cover it, the window's answer stands and
+`probe_completion` is recorded as *budget exhausted*.
 
 #### Scenario: completeness matrix
 
