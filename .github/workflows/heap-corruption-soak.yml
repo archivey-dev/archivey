@@ -92,8 +92,12 @@ jobs:
           set -o pipefail
           start=$(date +%s)
           rc=0
+          # timeout_method=signal: the repo's "thread" method ends the whole process
+          # on a slow test (os._exit), which would end the soak at the first test
+          # that runs past 60 s serially under coverage. With "signal" only that
+          # test fails and the pass goes on.
           uv run --no-sync pytest tests/ -v -p no:cacheprovider --cov-report= \
-            > soak.log 2>&1 || rc=$?
+            -o timeout_method=signal > soak.log 2>&1 || rc=$?
           echo "rc=$rc secs=$(( $(date +%s) - start ))" | tee soak-result.txt
           tail -n 3 soak.log
           if [ "$rc" -ne 0 ]; then
@@ -104,7 +108,12 @@ jobs:
             echo "py${{ matrix.python-version }} ${{ matrix.install }} pass ${{ matrix.rep }}: $(cat soak-result.txt)"
             echo '```'; tail -n 1 soak.log; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          exit "$rc"
+          # Only a dead process is the finding (139 SIGSEGV, 134 SIGABRT, or a
+          # faulthandler report). Ordinary test failures are listed, not fatal here.
+          if [ "$rc" -ge 128 ] || grep -q "Fatal Python error" soak.log; then
+            echo "::error::process died (rc=$rc)"; exit 1
+          fi
+          grep -E "^(FAILED|ERROR) " soak.log | head -20 || true
 
       - name: Upload the log of a failed pass
         if: failure()
