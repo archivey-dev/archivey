@@ -524,7 +524,9 @@ def test_unrar_child_runs_under_a_utf8_locale(monkeypatch: pytest.MonkeyPatch) -
 
 
 def _spawn_raising(monkeypatch: pytest.MonkeyPatch, exc: OSError) -> None:
-    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/stub/unrar")
+    monkeypatch.setattr(
+        rar_unrar, "find_rarlab_unrar", lambda _program=None: "/stub/unrar"
+    )
 
     def popen(*_args: object, **_kwargs: object) -> object:
         raise exc

@@ -5449,7 +5449,7 @@ class RarReader(BaseArchiveReader):
                     rar5=self._archive.version == 5,
                     non_ascii=unrar_mask_carries_non_ascii(),
                     windows=unrar_matches_names_as_windows(),
-                    name_max=unrar_plain_name_max(),
+                    name_max=unrar_plain_name_max(self._unrar_program),
                 )
             )
             self._plain_masks = masks

@@ -303,7 +303,9 @@ def test_a_large_member_with_a_name_unrar_cuts_reads_its_own_bytes(
     whole ``-n`` mask. Such a name is not plain, so the read goes through a
     synthetic archive, whose placeholder names are short."""
     if unrar6:
-        monkeypatch.setattr(rar_reader, "unrar_plain_name_max", lambda: 2045)
+        monkeypatch.setattr(
+            rar_reader, "unrar_plain_name_max", lambda _program=None: 2045
+        )
     monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
     monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
     for build in (_nocrc_rar5, _build_rar5):
@@ -324,7 +326,7 @@ def test_a_long_name_is_not_plain(
     outside the BMP counts twice."""
     monkeypatch.setattr(rar_reader, "unrar_mask_carries_non_ascii", lambda: True)
     bound = 1024
-    monkeypatch.setattr(rar_reader, "unrar_plain_name_max", lambda: bound)
+    monkeypatch.setattr(rar_reader, "unrar_plain_name_max", lambda _program=None: bound)
     for names, plain in [
         (["a" * bound], True),
         (["a" * (bound + 1)], False),
@@ -363,7 +365,9 @@ def test_the_name_bound_follows_the_unrar_version(
         st_mtime_ns=0,
         st_size=0,
     )
-    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/stub/unrar")
+    monkeypatch.setattr(
+        rar_unrar, "find_rarlab_unrar", lambda _program=None: "/stub/unrar"
+    )
     monkeypatch.setitem(rar_unrar._cached_unrar, "/stub/unrar", probe)
     assert rar_unrar.unrar_plain_name_max() == bound
 
@@ -371,7 +375,7 @@ def test_the_name_bound_follows_the_unrar_version(
 def test_the_name_bound_without_unrar_is_the_smaller_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def missing() -> str:
+    def missing(_program: str | None = None) -> str:
         raise PackageNotInstalledError("no unrar")
 
     monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", missing)

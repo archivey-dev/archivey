@@ -703,16 +703,17 @@ _UNRAR6_PLAIN_NAME_MAX = 2047 - len("./")
 _UNRAR7_PLAIN_NAME_MAX = 16384
 
 
-def unrar_plain_name_max() -> int:
+def unrar_plain_name_max(program: str | None = None) -> int:
     """The longest name, in UTF-16 units, a mask on the ``unrar`` that reads next
     selects whole (see ``_UNRAR6_PLAIN_NAME_MAX``).
 
-    Taken from the banner version :func:`find_rarlab_unrar` probed. When no usable
+    Taken from the banner version :func:`find_rarlab_unrar` probed for ``program``
+    (``ArchiveyConfig.unrar_path``, or ``None`` to search). When no usable
     ``unrar`` is found, or its version did not parse, the 6.x bound applies: it is
     the smaller one, and the read that follows fails on the missing program anyway.
     """
     try:
-        path = find_rarlab_unrar()
+        path = find_rarlab_unrar(program)
     except PackageNotInstalledError:
         return _UNRAR6_PLAIN_NAME_MAX
     probe = _cached_unrar.get(path)
