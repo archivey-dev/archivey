@@ -23,7 +23,11 @@ import pytest
 
 from archivey import ArchiveFormat, ArchiveyConfig, ArchiveyError, detect_format
 from archivey.detection_cost import FAST_BUDGET, THOROUGH_BUDGET
+from tests.conftest import requires
 from tests.streams_util import ShortReadBytesIO
+
+# Every case here is about the Brotli content probe, which core-only installs lack.
+pytestmark = requires("brotli")
 
 _CONFIG = ArchiveyConfig(always_probe_content=True)
 
