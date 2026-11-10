@@ -99,10 +99,13 @@ the optional accelerators and codecs a change is about. The first round that rea
 verdict on a `standard` or `deep` pull request runs `claude-opus-5-5`: a full first look,
 and its closing comment's marker carries `pass=opus`, which is how later rounds know it
 ran. Every other round runs `claude-sonnet-5-5`: the rounds that re-read fixes, and
-every round of a `light` pull request. An Opus round that dies before its verdict is
-not counted, so the next round is Opus again. The tier comes from the base branch's
-`review_prep.py`, as for the risk label, before the gate runs; a failure to compute it
-makes the round Sonnet's. `OPUS_PASS_TIERS` in the gate holds the rule.
+every round of a `light` pull request. User docs (`docs/`, the README, the CHANGELOG,
+SECURITY.md) are never light, so Opus reads them first
+([DR-22b](design-rules.md#dr-22b-user-docs-are-written-and-reviewed-by-opus)). An
+Opus round that dies before its verdict is not counted, so the next round is Opus again.
+The tier comes from the base branch's `review_prep.py`, as for the risk label, before
+the gate runs; a failure to compute it makes the round Sonnet's. `OPUS_PASS_TIERS` in
+the gate holds the rule.
 
 Why this order (davitf, 2026-10-30): for one day Sonnet reviewed first and Opus read the
 pull request once Sonnet approved. On the ten pull requests that ran that way, Sonnet's

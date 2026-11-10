@@ -250,7 +250,7 @@ Exact matches only (no fuzzy/weak magic). Recognised:
 | RAR 4.x / 5.x | `52 61 72 21 1A 07 00` / `… 01 00` |
 | ISO 9660 | `CD001` at 32769 |
 | SquashFS | `hsqs` at 0 (little-endian SquashFS 4); `sqsh` at 0 (big-endian SquashFS 3 and older, claimed so `format-squashfs` can refuse it by name) |
-| ISO 9660, raw CD sector image | `00 FF×10 00` sector sync at 0 (claimed so `format-iso` can refuse it by name) |
+| ISO 9660, raw CD sector image | `00 FF×10 00` sector sync at 0 (`format-iso` reads Mode 1 and Mode 2 Form 1 and refuses other layouts by name) |
 | UDIF | `6B 6F 6C 79 00 00 00 04 00 00 02 00` (`koly`, version 4, header size 512) at offset 0, or at the start of the last 512 bytes |
 | TAR | `ustar` at 257 |
 | ar | `!<arch>\n` at 0; `!<thin>\n` at 0 (claimed so `format-ar` can refuse it by name) |
@@ -280,7 +280,7 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | The same block one byte off its checksum, or with an empty name, no extension | `FormatDetectionError` |
 | gzip of such a v7 tar | `TAR_GZ`, `PROBABLE`, `content_probe` |
 | gzip of a binary CPIO archive, named `.cpio.gz` or with `always_probe_content`; the same with no name | `(CPIO, GZIP)`, `PROBABLE`, `content_probe`: a container's content probe runs on the first 512 decoded bytes under the rule it follows on an uncompressed source; with no name, `GZ` |
-| Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
+| Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; a Mode 1 or Mode 2 Form 1 image opens, other layouts raise `UnsupportedFeatureError` |
 | `koly` block at offset 0 | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
 | `koly` trailer, and no earlier step matched | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
 | `CD001` at 32 769 and a `koly` trailer, no `koly` at offset 0 | `ISO`, `CERTAIN`, `magic` — far magic already matched, so the trailer is not consulted |

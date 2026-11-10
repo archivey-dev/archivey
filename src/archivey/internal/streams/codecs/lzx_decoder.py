@@ -14,8 +14,12 @@ stream:
 
 - a run of code lengths may write past the end of the range being read (by up to 50
   entries), into lengths the next range or the tree build sees;
-- a tree with no codes is accepted, and decoding a symbol with it is damage; any
-  other tree whose codes do not fill the code space is damage;
+- a code length is a byte: a delta that takes it below 0 wraps once by 17, and one
+  still below 0 wraps as a byte, to 254 or 255; a length above 16 gives its symbol no
+  code, and later deltas from it stay above 16;
+- the length tree may have no codes, and decoding a symbol with it is damage; any
+  other tree whose codes do not fill the code space is damage, an empty one too (a
+  tree with only out-of-range lengths is not empty, so it does not fill the space);
 - a match may not cross the end of the window or the end of a frame, nor reach back
   before the first byte of output;
 - the E8 translation runs for the first 32 768 frames only, from the first block that
@@ -77,10 +81,30 @@ _MAX_PADDING = 8
 
 Tree = huffman_table.Tree
 _MAX_CODE = huffman_table.MAX_CODE
+_ROOT_BITS = huffman_table.ROOT_BITS
 
 
-def _build_table(lengths: list[int], count: int, what: str) -> Tree | None:
-    return huffman_table.build_table(lengths, count, f"LZX {what}")
+def _build_table(
+    lengths: list[int], count: int, what: str, *, may_be_empty: bool = False
+) -> Tree | None:
+    """The decoding table for the canonical code of ``lengths[:count]``, from the
+    shared :func:`huffman_table.build_table`. A length above 16 (a delta that wrapped
+    below 0) gives its symbol no code, as in lzxd. With ``may_be_empty``, ``None`` for
+    a tree whose lengths are all 0; any other empty tree, and a code that overfills or
+    underfills the code space, is damage."""
+    return huffman_table.build_table(
+        lengths, count, f"LZX {what}", may_be_empty=may_be_empty
+    )
+
+
+def _delta(length: int, code: int) -> int:
+    """lzxd's ``z = lens[x] - z; if (z < 0) z += 17;`` into an ``unsigned char``:
+    pretree symbols 17 to 19 read after a code 19 can leave it below 0, which the
+    byte keeps as 254 or 255, a length no code has."""
+    value = length - code
+    if value < 0:
+        value += 17
+    return value & 0xFF
 
 
 class LzxDecoder:
@@ -229,11 +253,11 @@ class LzxDecoder:
             elif code == 19:
                 run = self._read_bits(1) + 4
                 code = self._read_symbol(table, "pretree")
-                value = (lengths[x] - code) % 17
+                value = _delta(lengths[x], code)
                 lengths[x : x + run] = [value] * run
                 x += run
             else:
-                lengths[x] = (lengths[x] - code) % 17
+                lengths[x] = _delta(lengths[x], code)
                 x += 1
 
     def _read_block_header(self) -> None:
@@ -256,7 +280,7 @@ class LzxDecoder:
                 self._intel_started = True
             self._read_lengths(self._length_lengths, 0, _LENGTH_SYMBOLS)
             self._length_table = _build_table(
-                self._length_lengths, _LENGTH_MAX, "length"
+                self._length_lengths, _LENGTH_MAX, "length", may_be_empty=True
             )
         elif block_type == _UNCOMPRESSED:
             self._intel_started = True
@@ -399,10 +423,8 @@ class LzxDecoder:
                 extra = extra_bits[slot]
                 offset = position_base[slot] - 2
                 if extra >= 3 and aligned:
-                    if not aligned_table:
-                        raise CorruptionError(
-                            "LZX aligned symbol read from an empty tree"
-                        )
+                    # An aligned block's header built its aligned tree, which is
+                    # never empty.
                     if extra > 3:
                         nbits -= extra - 3
                         offset += ((bits >> nbits) & ((1 << (extra - 3)) - 1)) << 3

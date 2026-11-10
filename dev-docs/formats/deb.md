@@ -58,7 +58,10 @@ gives; the major version must be 2: `dpkg-deb` reads 2.x and refuses others), sk
 
 - **Control tar.** Each member is renamed under `DEBIAN/`; the tar's `./` root becomes
   `DEBIAN/` itself. `control` and `md5sums` are read whole as they pass (their size first
-  checked against `max_metadata_bytes`, together), and the span is yielded with those
+  charged with `ReaderContext.charge_metadata`, so they count against
+  `max_metadata_bytes` with `debian-binary` and the members listed so far, once, on the
+  listing walk; a walk started over to reach a member read out of order charges nothing,
+  and the charge comes off when the listing ends), and the span is yielded with those
   bytes as its data. `control`'s first paragraph gives `extra["deb.package"]`,
   `["deb.version"]` and `["deb.architecture"]`; `md5sums` gives a name-to-digest map.
   Open takes only the first walk step (the control tar's `./`), so the `deb.*` keys are

@@ -323,15 +323,50 @@ def test_held_control_files_count_against_max_metadata_bytes() -> None:
         open_archive(io.BytesIO(raw), config=config(40)) as reader,
     ):
         reader.members()
-    # The sum counts: control and md5sums each fit, together they do not.
+    # The sum counts, with the members listed so far: control and md5sums each
+    # fit, together they do not.
     held = 4 + len(CONTROL) + len(_md5sums(FILES))
     with (
-        pytest.raises(ResourceLimitError, match=f"held to {held} bytes"),
+        pytest.raises(
+            ResourceLimitError, match="for the Debian package control file md5sums"
+        ),
         open_archive(io.BytesIO(raw), config=config(held - 1)) as reader,
     ):
         reader.members()
     with open_archive(io.BytesIO(raw), config=config(4096)) as reader:
         assert reader.read("usr/a") == b"alpha"
+
+
+def test_reads_out_of_order_charge_the_control_files_once() -> None:
+    """Each out-of-order read walks the package again; the control files it holds
+    again were charged by the listing. Before, every walk added them to a total of
+    its own, so a few reads crossed a limit the listing met."""
+    raw = _deb()
+    with open_archive(io.BytesIO(raw)) as reader:
+        reader.members()
+        # The figure the limit checks.
+        listed = reader._resource_usage().listing_metadata_bytes
+    held = 4 + len(CONTROL) + len(_md5sums(FILES))
+    limits = archivey.ListingLimits(max_metadata_bytes=listed + held)
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    with open_archive(io.BytesIO(raw), config=config) as reader:
+        files = [m.name for m in reader.members() if m.type is MemberType.FILE]
+        for name in reversed(files):
+            reader.read(name)
+
+
+def test_a_hard_link_in_the_control_tar_names_its_target_under_debian() -> None:
+    control = [
+        ("./", None),
+        ("./control", CONTROL),
+        ("./postinst", b"#!/bin/sh\n"),
+        ("./preinst@link", b"./postinst"),
+    ]
+    with open_archive(io.BytesIO(_deb(control=control))) as reader:
+        link = reader.get("DEBIAN/preinst")
+        assert link.type is MemberType.HARDLINK
+        assert link.link_target == "DEBIAN/postinst"
+        assert reader.read(link) == b"#!/bin/sh\n"
 
 
 def test_a_huge_version_member_is_refused_before_it_is_read() -> None:

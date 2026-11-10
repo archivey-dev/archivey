@@ -27,18 +27,29 @@ root entry ``~(start << 5 | bits)`` points to a sub-table at ``start``, indexed 
 """
 
 
-def build_table(lengths: list[int], count: int, what: str) -> Tree | None:
+def build_table(
+    lengths: list[int], count: int, what: str, *, may_be_empty: bool = True
+) -> Tree | None:
     """The two-level decoding table for the canonical code of ``lengths[:count]``.
 
-    ``None`` for a tree with no codes; a code that overfills or underfills the code
-    space is damage.
+    A length above ``MAX_CODE`` (an LZX delta that wrapped below 0) gives its symbol no
+    code. ``None`` for a tree whose lengths are all 0 when ``may_be_empty``; a code
+    that overfills or underfills the code space is damage, and so is any other empty
+    tree.
     """
     by_length: list[list[int]] = [[] for _ in range(MAX_CODE + 1)]
+    nonzero = False
     for symbol in compress(range(count), lengths[:count]):
-        by_length[lengths[symbol]].append(symbol)
+        nonzero = True
+        if lengths[symbol] <= MAX_CODE:
+            by_length[lengths[symbol]].append(symbol)
+    if not nonzero:
+        if may_be_empty:
+            return None
+        raise CorruptionError(f"{what} tree has no codes")
     longest = max((n for n in range(1, MAX_CODE + 1) if by_length[n]), default=0)
     if not longest:
-        return None
+        raise CorruptionError(f"{what} tree does not fill its code space")
     root = min(longest, ROOT_BITS)
     # ``pos`` is where the next code starts, in units of 2**-16 of the code space.
     full = 1 << MAX_CODE
