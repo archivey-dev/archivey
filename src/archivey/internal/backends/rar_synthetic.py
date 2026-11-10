@@ -82,7 +82,7 @@ class SyntheticUnsupported(Exception):
     """This member cannot be put in a synthetic archive; the caller keeps its route.
 
     Not an :class:`~archivey.exceptions.ArchiveyError`: it never reaches a caller.
-    The one case today is a RAR 1.5-4 member joined from parts past 4 GiB whose
+    The one case is a RAR 1.5-4 member joined from parts past 4 GiB whose
     last header has no 64-bit size fields.
     """
 
@@ -93,6 +93,8 @@ def placeholder_name(index: int) -> str:
 
 
 def _vint(value: int) -> bytes:
+    """A RAR5 variable-length integer: 7 bits a byte, low bits first, the top bit
+    set on every byte but the last."""
     out = bytearray()
     while True:
         byte = value & 0x7F
@@ -110,6 +112,7 @@ def _rar5_block(body: bytes) -> bytes:
 
 
 def _rar3_block(kind: int, flags: int, rest: bytes) -> bytes:
+    """CRC16, type, flags and header size, then ``rest`` (the fields after them)."""
     body = struct.pack("<BHH", kind, flags, 7 + len(rest)) + rest
     return struct.pack("<H", zlib.crc32(body) & 0xFFFF) + body
 

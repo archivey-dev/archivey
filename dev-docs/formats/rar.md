@@ -938,7 +938,8 @@ never starts `unrar` and is never asked for a password.
 
 **A solid archive can mix stored and compressed members.** RAR picks the method per
 file: `rar -s -m3 -msbin` compresses most files and stores the `.bin` ones as they are.
-A stored member still gets its own solid flag (`file_solid`), which on a compressed
+A stored member still gets its own solid flag (`file_solid`: the header bit, or for
+a RAR 1.3-1.5 member the archive-wide rule in §3), which on a compressed
 member means "continue from the previous member's decoder state". Its bytes are
 plaintext in the archive all the same, so the direct slice reads them and ignores the
 flag. `unrar` decodes every compressed member ahead of it to reach those bytes, which is
@@ -1227,7 +1228,13 @@ pinned RARLAB source tree instead of trusting a third-party tap.
 **Old archives are still readable and still surprising.** RAR 1.5 and 2.x archives (extract
 version ≤ 20) share the RAR3 block layout, so they list and read; extract version alone is
 never a rejection. `rar15-comment.rar` and `rar202-comment-nopsw.rar` are borrowed from
-`rarfile`'s own corpus because modern `rar` cannot emit them. RAR3's two name fields are the
+`rarfile`'s own corpus because modern `rar` cannot emit them. RAR 1.3-1.5 writers never set
+the per-file solid flag: only the MAIN header says the archive is solid, and `unrar` decodes
+every file with extract version 15 or lower after the first file on top of the ones before
+it (`extract.cpp`, `FileCount>1 && Arc.Solid`). The parser sets `file_solid` on those
+members (`_settle_rar15_solid`), so the synthetic chain, the stream-source pass and `unar`'s
+solid runs start at the right member. Neither borrowed fixture is solid; the test patches
+the headers of `basic_solid__rar4.rar` instead. RAR3's two name fields are the
 other legacy trap: the compressed name is UTF-16, which truncates a non-BMP character to a
 single code unit — an emoji arrives as a private-use `U+F600` — and the 8-bit field is
 preferred where it recovers the real character, without overriding a private-use character
@@ -1344,6 +1351,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | A RAR on a pipe or socket cannot be opened at all, in either access mode | **format** | Block headers are chained forward but the walk still seeks; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | A RAR 1.5-4 name stored only as 8-bit bytes can list in the wrong code page | **format** | The header records none. Archivey guesses strict UTF-8, then cp437 for a DOS or Windows host and windows-1252 otherwise; `encoding=` overrides the guess, as in ZIP. Reading is unaffected (§2.2) |
 | A member whose name is not plain raises `UnsupportedFeatureError` on the `unrar` path, and reads with `rar_decompressor='unar'` | **archivey** | Only when no synthetic archive can hold it: a RAR 1.5-4 member split past 4 GiB with no 64-bit sizes, or a solid chain with data out of reach. The original archive is then read through a mask, which is trusted only for a plain name (§2.3) |
+| `unrar` given an archive path in place can open a file other than the one archivey parsed | **library** / **archivey** | Two causes. `unrar` 6.x keeps only a prefix of a long archive path and opens the file that prefix names: on POSIX it cuts at 2047 bytes of the multibyte name (`File::Open`; measured on 6.24), on Windows at 2047 wide units (from the 6.2.12 source, not run). And every version expands `*` and `?` in the archive name, even after `--`, so `rep*.rar` also opens a `rep-a.rar` beside it, or blocks forever on a FIFO of that name. Archivey's answer is staging (`_choose_unrar_volume_paths`): when a volume path holds `*` or `?`, or is longer than 1024 UTF-16 units or, on POSIX, 1024 bytes, the volumes are linked under fixed names in a private directory and `unrar` gets that short path (§2.2) |
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
 | Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_operations=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ArchiveyUsageError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
 | A compressed RAR 1.5 / 2.x old-style comment is `None` without RARLAB `unrar` | **archivey** | Listing and stored old-style comments stay native; the proprietary compressed blob is decoded only when the optional binary is available (§2.2) |

@@ -1,5 +1,16 @@
 """Public diagnostic value types — structured advisories as queryable data.
 
+A reader reports something odd but not fatal, such as a renamed member or a missing
+end-of-archive marker, as a :class:`Diagnostic` with a :class:`DiagnosticCode`.
+Readers emit them through ``archivey.internal.diagnostics_collector``, which applies
+the caller's :class:`DiagnosticPolicy` (ignore, collect or raise
+:exc:`~archivey.DiagnosticRaisedError`) and calls ``ArchiveyConfig.on_diagnostic``.
+Callers read the collected records from ``reader.diagnostics``, a stream's
+``ArchiveStream.diagnostics``, ``ArchiveMember.diagnostics``,
+``FormatInfo.diagnostics`` after detection, an :class:`ExtractionReport` or a
+:class:`MemberListReport`. A raised record is on the error, as
+``DiagnosticRaisedError.diagnostic``.
+
 See ``openspec/specs/diagnostics`` (and the ``diagnostics-warnings-as-data`` change)
 for the lifecycle, retention, and policy contracts.
 
@@ -26,9 +37,10 @@ from typing import ClassVar, Literal, TypeVar
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
 from archivey.internal.enum_args import coerce_enum_collection
+from archivey.internal.overrides import override
 from archivey.internal.resource_usage import ResourceUsage
 from archivey.terminal import escape_control_chars
-from archivey.types import ArchiveMember, ExtractionResult
+from archivey.types import ArchiveMember, ExtractionResult, ExtractionStatus
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")
@@ -198,7 +210,9 @@ class DiagnosticCode(StrEnum):
     """The archive is read by range requests from an ``fsspec`` file system that
     archivey cannot pin to one version of the object, so a replacement of the same
     length, or a longer one, while it reads would go unseen. A shorter one raises
-    :class:`~archivey.SourceChangedError` on the first fetch past its end. Advisory: it
+    :class:`~archivey.SourceChangedError` on the first fetch past its end. An
+    ``OpenFile`` with ``compression=`` records it too: it is read through fsspec's
+    decompressing file, and archivey checks nothing about the object. Advisory: it
     describes how the archive arrives, not its bytes."""
     MEMBER_READERS_DISAGREE = "member_readers_disagree"
     """A member takes a shape that real writers produce but readers make different
@@ -978,7 +992,9 @@ class SourceChangeContext(_JsonSafeContext):
 
     ``protocol`` is the first protocol of the ``fsspec`` file system the archive is
     read from (``"s3"``, ``"https"``, ``"memory"``). ``reason`` says why neither a
-    pinned version nor a conditional request guards the reads.
+    pinned version nor a conditional request guards the reads, or that the archive is
+    read through fsspec's decompressing file (``compression=``), which archivey cannot
+    check at all.
     """
 
     kind: Literal["source_change"] = "source_change"
@@ -1464,6 +1480,16 @@ class DiagnosticSummary:
     def __post_init__(self) -> None:
         object.__setattr__(self, "counts", _freeze_mapping(self.counts))
 
+    @override
+    def __reduce__(self) -> tuple[object, ...]:
+        # ``counts`` is a read-only mapping proxy, which pickle cannot store. A summary
+        # travels inside the report a FilterRejectionError carries, and every archivey
+        # exception survives pickle, so rebuild it from a plain dict.
+        return (
+            DiagnosticSummary,
+            (self.total_count, dict(self.counts), self.retained, self.dropped_count),
+        )
+
     @staticmethod
     def empty() -> DiagnosticSummary:
         return DiagnosticSummary(total_count=0, counts={}, retained=(), dropped_count=0)
@@ -1612,6 +1638,34 @@ class ExtractionReport:
 
     def __getitem__(self, index: int) -> ExtractionResult:
         return self.results[index]
+
+    @property
+    def ok(self) -> bool:
+        """``True`` when no member was refused (``BLOCKED``) or failed (``FAILED``).
+
+        A member skipped by ``overwrite="skip"``, superseded by a later one with the
+        same name, or a link whose target the archive never recorded does not make it
+        ``False``. Diagnostics do not count: the :class:`DiagnosticPolicy` decides
+        which of them are errors.
+        """
+        return not any(
+            r.status in (ExtractionStatus.BLOCKED, ExtractionStatus.FAILED)
+            for r in self.results
+        )
+
+    def raise_for_failure(self) -> None:
+        """Raise the error of the first ``BLOCKED`` or ``FAILED`` member, in order.
+
+        Does nothing when ``ok`` is ``True``. The error raised is the result's own
+        object, as ``concurrent.futures.Future.result()`` raises its exception, so
+        each call adds to its traceback.
+        """
+        for result in self.results:
+            if (
+                result.status in (ExtractionStatus.BLOCKED, ExtractionStatus.FAILED)
+                and result.error is not None
+            ):
+                raise result.error
 
 
 @dataclass(frozen=True)

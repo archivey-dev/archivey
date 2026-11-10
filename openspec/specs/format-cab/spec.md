@@ -54,12 +54,15 @@ set (flag `PREV` or `NEXT`), and when reading a Quantum member or one of an unkn
 method. It SHALL raise `CorruptionError` for a folder index past the folders, a
 "continued" folder index, a name with no NUL within 256 bytes or an empty name (as
 libmspack's `cabd_read_string`), an LZX window outside 2^15 to 2^21, a block over 38 912
-stored or 32 768 decoded bytes, a block checksum that does not match, an MSZIP block that
+stored or 32 768 decoded bytes, a block of 0 decoded bytes (libmspack's mark for a block
+split across cabinets), a block checksum that does not match, an MSZIP block that
 does not start with `CK` or does not decode to its size, LZX that does not decode, and a
 file past its folder's output. A cut cabinet SHALL raise `TruncatedError` for what it cuts
 off, and still read the files before the cut. The block tables the backend keeps, one per
 folder read, SHALL be weighed against `max_metadata_bytes` as they are read, 256 bytes a
-block, and crossing it SHALL raise `ResourceLimitError`.
+block, and crossing it SHALL raise `ResourceLimitError`. An LZX window over
+`DecoderLimits.max_decoder_memory` SHALL raise `ResourceLimitError` when a member of the
+folder is read. A member of size 0 SHALL read as empty without decoding its folder.
 
 #### Scenario: CAB refusals
 
@@ -71,6 +74,8 @@ block, and crossing it SHALL raise `ResourceLimitError`.
 | Random bit flips in an LZX folder with no checksums | An `ArchiveyError`, never another exception |
 | A cabinet cut inside its last folder | The earlier files read; `TruncatedError` for the cut one |
 | An LZX match reaching before the stream start, or past the frame | `CorruptionError` |
-| An LZX match past its block or the window, from more than a window back, or an aligned match with no aligned tree; a tree that over- or underfills its code space | `CorruptionError` |
+| An LZX match past its block or the window, or from more than a window back; a tree that over- or underfills its code space, or a pretree, aligned or main tree with no codes | `CorruptionError` |
+| A block of 0 decoded bytes, or over the size limits, in any method | The members before it read; `CorruptionError` for a member that reaches it |
+| A 2^21 LZX window under a 1 MiB `max_decoder_memory` | `ResourceLimitError` on read |
 | An LZX stream that reads more than two bytes past its input | `TruncatedError` |
 | Folders that all name one run of 20 000 blocks | `ResourceLimitError` once the kept tables pass `max_metadata_bytes` |

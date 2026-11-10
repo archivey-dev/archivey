@@ -56,6 +56,7 @@ attribute archivey.ArchiveFormat.LZ4 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.LZIP = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.LZMA_ALONE = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.LZOP = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.MAKESELF = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.MOZLZ4 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.RAR = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.RPM = ArchiveFormat(...)
@@ -137,7 +138,7 @@ class archivey.ArchiveReader(ForwardArchiveReader)
 method archivey.ArchiveReader.close(self) -> None
 property archivey.ArchiveReader.cost: CostReceipt
 property archivey.ArchiveReader.diagnostics: DiagnosticSummary
-method archivey.ArchiveReader.extract_all(self, dest: str | Path, *, members: MemberSelector = None, filter: MemberFilter | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR, on_error: OnError | OnErrorStr = OnError.STOP, abort_on: Collection[AbortOn | AbortOnStr] = (), on_progress: Callable[[ExtractionProgress], None] | None = None, limits: ExtractionLimits | None = None, dry_run: bool = False) -> ExtractionReport
+method archivey.ArchiveReader.extract_all(self, dest: str | Path, *, members: MemberSelector = None, filter: MemberFilter | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR, on_error: OnError | OnErrorStr = OnError.STOP, on_blocked: OnBlocked | OnBlockedStr = OnBlocked.RAISE, abort_on: Collection[AbortOn | AbortOnStr] = (), on_progress: Callable[[ExtractionProgress], None] | None = None, limits: ExtractionLimits | None = None, dry_run: bool = False) -> ExtractionReport
 property archivey.ArchiveReader.format: ArchiveFormat
 property archivey.ArchiveReader.format_info: FormatInfo | None
 method archivey.ArchiveReader.get(self, name: str, default: ArchiveMember | None = None) -> ArchiveMember | None
@@ -212,6 +213,8 @@ value archivey.CompressionAlgorithm.BCJ2 = 'bcj2'
 value archivey.CompressionAlgorithm.DELTA = 'delta'
 value archivey.CompressionAlgorithm.SHRINK = 'shrink'
 value archivey.CompressionAlgorithm.IMPLODE = 'implode'
+value archivey.CompressionAlgorithm.REDUCE = 'reduce'
+value archivey.CompressionAlgorithm.DCL_IMPLODE = 'dcl_implode'
 value archivey.CompressionAlgorithm.LZO = 'lzo'
 value archivey.CompressionAlgorithm.LZX = 'lzx'
 value archivey.CompressionAlgorithm.QUANTUM = 'quantum'
@@ -233,6 +236,7 @@ value archivey.ContainerFormat.AR = 'ar'
 value archivey.ContainerFormat.DEB = 'deb'
 value archivey.ContainerFormat.CPIO = 'cpio'
 value archivey.ContainerFormat.RPM = 'rpm'
+value archivey.ContainerFormat.MAKESELF = 'makeself'
 value archivey.ContainerFormat.SQUASHFS = 'squashfs'
 value archivey.ContainerFormat.XAR = 'xar'
 value archivey.ContainerFormat.CAB = 'cab'
@@ -382,6 +386,8 @@ class archivey.ExtractionReport()
 init archivey.ExtractionReport(results: tuple[ExtractionResult, ...], diagnostics: DiagnosticSummary) -> None
 field archivey.ExtractionReport.diagnostics: DiagnosticSummary
 field archivey.ExtractionReport.results: tuple[ExtractionResult, ...]
+property archivey.ExtractionReport.ok: bool
+method archivey.ExtractionReport.raise_for_failure(self) -> None
 class archivey.ExtractionResult()
 init archivey.ExtractionResult(member: ArchiveMember, path: Path | None, status: ExtractionStatus, error: ArchiveyError | OSError | None = None, requested_path: Path | None = None, presented_name: str | None = None, rewrites: frozenset[NameRewrite] = {}, failure_group_id: str | None = None, failure_group_size: int | None = None, collided_with: Path | None = None, kept_mode: int | None = None) -> None
 field archivey.ExtractionResult.collided_with: Path | None = None
@@ -405,7 +411,7 @@ value archivey.ExtractionStatus.BLOCKED = 'blocked'
 value archivey.ExtractionStatus.FAILED = 'failed'
 value archivey.ExtractionStatus.LINK_TARGET_UNAVAILABLE = 'link_target_unavailable'
 class archivey.FilterRejectionError(ExtractionError)
-init archivey.FilterRejectionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+init archivey.FilterRejectionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False, report: ExtractionReport | None = None) -> None
 class archivey.FormatAvailability()
 init archivey.FormatAvailability(format: ArchiveFormat, support: FormatSupport, missing: tuple[MissingComponent, ...] = (), required_source: StreamCapability = StreamCapability.SEEKABLE) -> None
 field archivey.FormatAvailability.format: ArchiveFormat
@@ -444,7 +450,7 @@ class archivey.ForwardArchiveReader(ABC)
 method archivey.ForwardArchiveReader.close(self) -> None
 property archivey.ForwardArchiveReader.cost: CostReceipt
 property archivey.ForwardArchiveReader.diagnostics: DiagnosticSummary
-method archivey.ForwardArchiveReader.extract_all(self, dest: str | Path, *, members: MemberSelector = None, filter: MemberFilter | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR, on_error: OnError | OnErrorStr = OnError.STOP, abort_on: Collection[AbortOn | AbortOnStr] = (), on_progress: Callable[[ExtractionProgress], None] | None = None, limits: ExtractionLimits | None = None, dry_run: bool = False) -> ExtractionReport
+method archivey.ForwardArchiveReader.extract_all(self, dest: str | Path, *, members: MemberSelector = None, filter: MemberFilter | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR, on_error: OnError | OnErrorStr = OnError.STOP, on_blocked: OnBlocked | OnBlockedStr = OnBlocked.RAISE, abort_on: Collection[AbortOn | AbortOnStr] = (), on_progress: Callable[[ExtractionProgress], None] | None = None, limits: ExtractionLimits | None = None, dry_run: bool = False) -> ExtractionReport
 property archivey.ForwardArchiveReader.format: ArchiveFormat
 property archivey.ForwardArchiveReader.format_info: FormatInfo | None
 property archivey.ForwardArchiveReader.info: ArchiveInfo
@@ -512,6 +518,10 @@ value archivey.NameRewrite.REROOTED = 'rerooted'
 value archivey.NameRewrite.PORTABLE_NAME = 'portable_name'
 class archivey.NameRewrittenError(ExtractionError)
 init archivey.NameRewrittenError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.OnBlocked(StrEnum)
+enum archivey.OnBlocked
+value archivey.OnBlocked.RAISE = 'raise'
+value archivey.OnBlocked.SKIP = 'skip'
 alias archivey.OnDiagnostic = Callable[[Diagnostic], None]
 class archivey.OnError(Enum)
 enum archivey.OnError

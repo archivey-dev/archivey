@@ -107,30 +107,81 @@ measurements; this baseline has no correctness speed threshold.
 | Operation raises or closes | Translation/logging/lifecycle/callback work runs without the ISO handle lock held |
 | Future throughput optimization proposed | Evidence compares wall/lock timing and practical seek/byte counters; adds peak memory only if buffering/materialization changes |
 
-### Requirement: Refuse raw CD sector images by name
+### Requirement: Read raw CD sector images of a data track
 
 The ISO backend SHALL recognise a raw CD sector image — a dump whose sectors begin with
-the 12-byte sync pattern `00 FF×10 00`, as the `.bin` of a `.bin`/`.cue` pair does —
-and SHALL refuse it with `UnsupportedFeatureError` naming the layout found, rather than
-read it or let detection fail. Detection SHALL claim such a file as `ISO` from the sync
-pattern at offset 0 so that the refusal is reachable, and the refusal SHALL NOT depend on
-`pycdlib` being installed.
+the 12-byte sync pattern `00 FF×10 00`, as the `.bin` of a `.bin`/`.cue` pair does.
+Detection SHALL claim such a file as `ISO` from the sync pattern at offset 0.
 
-The layout named SHALL be the sector mode (Mode 1, Mode 2 Form 1, Mode 2 Form 2, or an
-unknown mode byte) and, when a second sync is found, the sector size: 2352, or 2448 for a
-dump carrying subchannel data. Reading a raw image by stripping sectors to their payload
-is deferred past 0.2.0 and documentation SHALL NOT claim it.
+When the first sector is Mode 1 or Mode 2 Form 1 and a second sync shows the sector size
+(2352, or 2448 for a dump carrying subchannel data), the backend SHALL read the image as
+the plain ISO it holds: each sector stripped to its 2048 bytes of user data (after the
+16-byte header, and for Mode 2 also the 8-byte subheader). Each sector SHALL be checked
+when it is read: a sector without the sync or with another mode byte SHALL raise
+`CorruptionError` and a Mode 2 Form 2 sector `UnsupportedFeatureError`, for the read that
+reaches it; a sector read ahead and not asked for SHALL NOT fail a read. EDC and ECC bytes
+are not checked, and documentation SHALL say so. Without a `.cue` sheet beside it (next
+requirement) only the first track is read. The trailing-data check SHALL scan only the data sectors that
+continue the track after the volume space, so a mixed-mode disc's audio is not reported.
+Read hints SHALL name the raw sectors that hold a member's extents.
+
+Any other layout (Mode 2 Form 2, an unknown mode byte, no second sync) SHALL be refused
+with `UnsupportedFeatureError` naming the layout, before the availability check, so the
+refusal SHALL NOT depend on `pycdlib` being installed. A replacement reader
+(`FormatPolicy.replace`) SHALL be refused every raw image.
 
 #### Scenario: raw-sector matrix
 
 | Case | Expected |
 | --- | --- |
-| Raw Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors | `UnsupportedFeatureError` naming the layout and pointing at converting to `.iso` |
+| Raw Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors | Lists and reads as the plain `.iso` does, with no diagnostic |
+| Data track followed by audio sectors | Reads; no `ARCHIVE_TRAILING_DATA` |
+| Non-zero data sectors past the volume space | `ARCHIVE_TRAILING_DATA` |
+| A file's sector with a broken sync | Reading that file raises `CorruptionError`; other files read |
+| A Mode 2 Form 2 sector inside a file | Reading that file raises `UnsupportedFeatureError` |
+| Image cut inside a file | Reading that file raises `TruncatedError` |
 | Raw Mode 2 Form 2 image | `UnsupportedFeatureError` saying it holds no ISO 9660 filesystem |
-| Unknown mode byte | `UnsupportedFeatureError` naming the mode |
+| Unknown mode byte, or a single sector | `UnsupportedFeatureError` naming the layout |
 | `detect_format` on a raw image | `ISO`, `CERTAIN`, `detected_by="magic"` |
-| `pycdlib` not installed | The same refusal |
+| `pycdlib` not installed, unread layout | The same refusal |
+| Replacement ISO reader | `UnsupportedFeatureError` naming the replacement |
 | Plain `.iso` | Unaffected: it starts with the zero-filled system area, never the sync |
+
+### Requirement: Read the disc a `.cue` sheet describes
+
+The ISO backend SHALL claim the `.cue` extension. Opened from a path, a `.cue` sheet, or a
+raw `.bin` that a `.cue` with the same stem beside it lists, SHALL be read as the disc the
+sheet describes: its `FILE`s, their `MODE1/2352`, `MODE2/2352` and `MODE1/2048` data
+tracks and other tracks, their `INDEX 01` starts, `PREGAP`s and `REM SESSION` numbers.
+Every data sector SHALL be placed at its absolute address: a file's sectors follow the
+previous files', and a later session starts after the gap recorders leave (11 400 sectors
+after the first session, 6 900 after later ones). The backend SHALL list the first data
+track of the last session that has one, reading its volume descriptors from that track's
+start plus 16, as a drive mounting it does. The address SHALL be checked: when the root
+directory's `.` record is not at the sector it names, the backend SHALL search the
+track's first 4096 sectors for it and move the session there. A read of a sector in no
+data track SHALL raise `CorruptionError`; a track file that ends early, `TruncatedError`.
+
+A `FILE` name that is not a plain name in the sheet's directory (a path separator, `..`,
+an absolute or drive name) SHALL raise `UnsupportedFeatureError`, before any file is
+opened; a missing file SHALL raise `TruncatedError`. A sheet over 64 KiB, a sheet with no
+data track, or a track mode it does not know SHALL raise `UnsupportedFeatureError`, and a
+malformed `TRACK`, `INDEX` or time, a track without `INDEX 01`, or more than 99 tracks
+`CorruptionError`. Member data hints SHALL be empty, since the opened file is the sheet.
+
+#### Scenario: cue matrix
+
+| Case | Expected |
+| --- | --- |
+| One `MODE1/2352`, `MODE2/2352` or `MODE1/2048` track | Reads as the plain `.iso` |
+| Data track, then audio, one file | Track 1 is listed; no diagnostic; the `.bin` alone finds the sheet |
+| Two data sessions, standard gap | The newest session; files from session 1 read from track 1 |
+| Two data sessions, another gap | The same, through the root-directory search |
+| Audio session, then data session (Enhanced CD) | The data session |
+| `FILE "../x.bin"`, `"/etc/passwd"`, `"sub/x.bin"` | `UnsupportedFeatureError` |
+| Missing track file | `TruncatedError` |
+| Audio only | `UnsupportedFeatureError` |
+| `detect_format` on a `.cue` | `ISO`, `GUESS`, `detected_by="extension"` |
 
 ### Requirement: List every ISO directory record as its own member
 

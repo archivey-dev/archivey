@@ -84,7 +84,12 @@ the reader closes. A synthetic read SHALL NOT copy a stream source whole.
 For a solid archive the reader SHALL keep one synthetic file per solid stream for its
 lifetime. A read past the last member in the file SHALL append the missing members and a
 new ENDARC; a read of a member already in the file SHALL copy nothing. Every byte of the
-stream SHALL be copied at most once per reader.
+stream SHALL be copied at most once per reader while the streams read fit
+`SpoolLimits.max_bytes` together. When a copy does not fit and removing the files of other
+streams that no member stream holds would make room, the reader SHALL remove them, least
+recently read first, until it fits, and give back their bytes. When removing them all would
+not make room, it SHALL remove none and refuse or fall back. A later read of a removed
+stream copies it again.
 
 #### Scenario: solid stream file matrix
 
@@ -93,6 +98,9 @@ stream SHALL be copied at most once per reader.
 | `open()` of members 1, 2, … n of one solid stream in order | Total bytes written = the packed bytes up to member n, once |
 | `open()` of member 5 after member 50 | Nothing written; `unrar` decodes from the stream start, at most to member 50 |
 | Members in two `rar -s<N>` groups | Two files, one per group |
+| Last members of three groups read in turn, limit fits the largest group alone | Each read succeeds; the earlier group's file is removed first |
+| A copy over the limit even with every idle file removed | Refused or falls back; no file is removed |
+| The same, while a member stream of the first group is open | The second read raises `ResourceLimitError` |
 
 ### Requirement: Keep the original archive for a large plainly named member of a path source
 

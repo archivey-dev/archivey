@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import array
 import ast
 import re
 import subprocess
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -317,6 +319,67 @@ def test_password_candidates_str_with_lone_surrogates() -> None:
     assert list(candidates.iter_candidates()) == [b"caf\xe9", b"x"]
     with pytest.raises(ArchiveyUsageError):
         _PasswordCandidates.from_input("\ud800")
+
+
+_SECRET = "WRONGPW-9f3"
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        pytest.param([bytearray(_SECRET.encode())], id="list-of-bytearray"),
+        pytest.param([memoryview(_SECRET.encode())], id="list-of-memoryview"),
+        pytest.param([_SECRET, bytearray(_SECRET.encode())], id="mixed-list"),
+        pytest.param({_SECRET}, id="set-of-str"),
+        pytest.param(bytearray(_SECRET.encode()), id="bytearray"),
+        pytest.param(memoryview(_SECRET.encode()), id="memoryview"),
+        pytest.param(array.array("B", _SECRET.encode()), id="array"),
+    ],
+)
+def test_a_wrong_typed_password_is_refused_without_its_value(password: Any) -> None:
+    """The usage error names the type only: the value may be a real password.
+
+    A top-level ``bytearray`` or ``memoryview`` is refused as a whole. It is not a
+    sequence of passwords, so the error must not report one of its bytes either.
+    """
+    with pytest.raises(ArchiveyUsageError) as caught:
+        _PasswordCandidates.from_input(password)
+    message = str(caught.value)
+    assert isinstance(caught.value, TypeError)
+    assert _SECRET not in message
+    assert "WRONGPW" not in message
+    assert "(int)" not in message
+    assert not re.search(r"\b87\b", message), message  # ord("W"), the first byte
+
+
+def test_a_class_given_as_a_password_is_named_as_a_class() -> None:
+    with pytest.raises(ArchiveyUsageError) as caught:
+        _PasswordCandidates.from_input([str])  # type: ignore[list-item]
+    assert "str class itself" in str(caught.value)
+    candidates = _PasswordCandidates.from_input(lambda request: str)  # type: ignore[arg-type,return-value]
+    with pytest.raises(ArchiveyUsageError) as caught:
+        list(candidates.iter_provider_answers(None, set()))
+    assert "str class itself" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param(bytearray(_SECRET.encode()), id="bytearray"),
+        pytest.param(memoryview(_SECRET.encode()), id="memoryview"),
+        pytest.param([_SECRET], id="list"),
+    ],
+)
+def test_a_provider_answer_of_the_wrong_type_is_refused_without_its_value(
+    answer: Any,
+) -> None:
+    candidates = _PasswordCandidates.from_input(lambda request: answer)
+    with pytest.raises(ArchiveyUsageError) as caught:
+        list(candidates.iter_provider_answers(None, set()))
+    message = str(caught.value)
+    assert isinstance(caught.value, TypeError)
+    assert type(answer).__name__ in message
+    assert "WRONGPW" not in message
 
 
 @requires_binary("7z")
