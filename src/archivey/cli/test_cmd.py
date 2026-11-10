@@ -112,7 +112,7 @@ def run_test(
         member_error: BaseException | None = None
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
-            # count as FAIL and still reach the summary (F4). A member's data error is
+            # count as FAIL and still reach the summary. A member's data error is
             # raised from its own stream read and the pass goes on, solid archives
             # included. Of the damage cases, only damage to the archive's structure (a
             # cut TAR, a failed compressed TAR stream, a pipe ZIP whose local-header
