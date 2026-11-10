@@ -411,23 +411,47 @@ def test_the_crc_covers_the_whole_wrapper(method: str) -> None:
             reader.read(member)
 
 
-@pytest.mark.parametrize("cut", [100, 128 + len(_HELLO) - 1, 128 + len(_HELLO) + 4])
-def test_a_cut_wrapper_is_truncated(cut: int) -> None:
-    # The listing refuses a cut archive first, so the stream is cut by hand: in the
-    # header, in the fork, and in the bytes it drops after the fork.
+def _cut_stream(cut: int) -> io.RawIOBase:
     wrapped = _macbinary()
     locator = lha_reader._Location(
         0, len(wrapped), "-lh0-", crc16(wrapped), len(wrapped), len(_HELLO)
     )
-    stream = lha_reader._MacBinaryStream(io.BytesIO(wrapped[:cut]), locator)
-    got = b""
-    try:
-        while data := stream.read(len(_HELLO)):
-            got += data
-    except TruncatedError:
-        return
-    # Cut inside the fork: the stream ends short, which archivey reads as truncated.
-    assert len(got) < len(_HELLO)
+    return lha_reader._MacBinaryStream(io.BytesIO(wrapped[:cut]), locator)
+
+
+@pytest.mark.parametrize(
+    ("cut", "message"),
+    [
+        (100, "inside its MacBinary header"),
+        (128 + len(_HELLO) + 4, "inside its MacBinary wrapper"),
+    ],
+)
+def test_a_wrapper_cut_outside_the_fork_raises(cut: int, message: str) -> None:
+    # The listing refuses a cut archive first, so the stream is cut by hand.
+    stream = _cut_stream(cut)
+    with pytest.raises(TruncatedError, match=message):
+        while stream.read(len(_HELLO)):
+            pass
+
+
+def test_a_wrapper_cut_inside_the_fork_ends_short() -> None:
+    # The member handle turns the short fork into TruncatedError.
+    stream = _cut_stream(128 + len(_HELLO) - 1)
+    assert stream.read(len(_HELLO)) == _HELLO[:-1]
+    assert stream.read(len(_HELLO)) == b""
+
+
+@pytest.mark.parametrize("os_id", [b"U", b"m"])
+def test_the_dropped_fork_counts_against_the_ratio_limit(os_id: bytes) -> None:
+    # A one-byte data fork and 20 MB of zeros in the resource fork: the dropped bytes
+    # are decoded too, so the member is refused as the same bytes unwrapped are.
+    zeros = bytes(20_000_000)
+    wrapped = _macbinary(data=b"x", resource=zeros)
+    raw = archive([_mac_member(wrapped, os_id=os_id, method="-lh5-")])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        with pytest.raises(archivey.ResourceLimitError, match="max_ratio"):
+            reader.read(member)
 
 
 def test_an_amiga_directory_is_an_empty_nameless_member() -> None:

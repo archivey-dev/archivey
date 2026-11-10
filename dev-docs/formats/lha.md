@@ -132,7 +132,10 @@ reads the data 64 KiB at a time. Both check the CRC-16 as the read reaches the e
 member read whole is `Verification.CHECKSUM`. A MacBinary member is read through
 `_MacBinaryStream`: it drops the 128-byte header, returns the fork, and with the fork's
 last byte decodes the rest and checks the CRC-16 itself (`checked=True`), since the CRC
-covers bytes the caller never sees. A method archivey does not decode raises
+covers bytes the caller never sees. The member handle's ratio guard never sees those bytes either,
+so `open_member` refuses the member first when the header's whole size breaks
+`max_ratio` against its stored size (the recorded-sizes check), as the unwrapped bytes
+would be refused. A method archivey does not decode raises
 `UnsupportedFeatureError` when read; it is listed like any other member, with
 `compression` `LZH` for any `-lh?-` method and `UNKNOWN` for the rest.
 

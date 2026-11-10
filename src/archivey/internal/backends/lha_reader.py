@@ -50,6 +50,7 @@ from archivey.diagnostics import (
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -788,6 +789,7 @@ class LhaReader(_Headers, IndexedReader[_Location]):
             )
         stream = self._decode(locator)
         if locator.fork is not None:
+            self._check_hidden_ratio(member, locator)
             # The CRC covers the whole wrapper, so the stream checks it itself.
             unwrapped = _MacBinaryStream(stream, locator)
             return MemberData(unwrapped, checked=True, bounded=True, ranges=span)
@@ -795,6 +797,28 @@ class LhaReader(_Headers, IndexedReader[_Location]):
         if method in _STORED:
             return MemberData(stream, digests=digests)
         return MemberData(stream, digests=digests, bounded=True, ranges=span)
+
+    def _check_hidden_ratio(self, member: ArchiveMember, locator: _Location) -> None:
+        """Refuse a MacBinary member whose whole decode breaks the ratio limit.
+
+        The stream decodes the other fork and the padding to check the CRC, and the
+        member handle never sees those bytes, so its ratio guard cannot count them. The
+        decoders stop at the header's size, so that size bounds the decode; the check
+        is the one archivey makes from recorded sizes before an extraction."""
+        limits = self._context.config.decoder_limits
+        if limits.max_ratio is None or not locator.stored:
+            return
+        floor = max(
+            limits.ratio_activation_threshold, limits.max_ratio * locator.stored
+        )
+        if locator.size > floor:
+            raise ResourceLimitError(
+                f"Decompression ratio {locator.size / locator.stored:.0f}:1 exceeds "
+                f"limit max_ratio={limits.max_ratio:.0f}:1 (from recorded sizes: "
+                f"{locator.size} bytes from {locator.stored} compressed, MacBinary "
+                "wrapper included)",
+                member_name=member.name,
+            )
 
     def _decode(self, locator: _Location) -> BinaryIO | _LzhStream:
         """The member's decoded bytes, the MacBinary wrapper included."""
@@ -852,7 +876,8 @@ class _LzhStream(io.RawIOBase):
 #
 # MacLHA (OS id ``m``) stores a Mac file as a MacBinary file: a 128-byte header with
 # the Finder's type, creator and fork lengths, then the data fork and the resource
-# fork, each padded to 128 bytes. The header has no magic, so as in lhasa's
+# fork, the whole padded to 128 bytes (the size check rounds the total once, as
+# lhasa's does). The header has no magic, so as in lhasa's
 # ``macbinary.c`` it counts only when every field agrees with the LHA header: version
 # and reserved bytes zero, the member's own name, fork lengths that pad to the
 # member's size, and a modification time within 14 hours (a time zone) of the
