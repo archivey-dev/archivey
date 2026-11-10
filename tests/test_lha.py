@@ -692,10 +692,16 @@ def _outcome(source: object) -> object:
 def test_a_cut_archive_reads_the_same_when_its_size_is_unknown() -> None:
     # A source archivey cannot size cheaply still finds the cut: a member whose data
     # runs past the end is truncated, not listed as whole.
-    raw = archive(_members("-lh5-", 2))
+    raw = archive(
+        [
+            Member(b"a.txt", b"first member " * 20, method="-lh5-", level=level)
+            for level in (0, 1, 2)
+        ]
+    )
     for n in range(7, len(raw)):
         cut = raw[:n]
-        assert _outcome(ShortReadBytesIO(cut)) == _outcome(io.BytesIO(cut)), n
+        unsized = ShortReadBytesIO(cut, max_chunk=64)
+        assert _outcome(unsized) == _outcome(io.BytesIO(cut)), n
 
 
 def test_the_fuzz_cut_with_an_unknown_size() -> None:
