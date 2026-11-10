@@ -150,6 +150,7 @@ from archivey.internal.backends.rar_unrar import (
     unrar_expands_wildcards,
     unrar_mask_carries_non_ascii,
     unrar_may_cut_archive_path,
+    unrar_plain_name_max,
 )
 from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
@@ -967,19 +968,7 @@ def _psw_check_usable(enc: RarEncryptionInfo) -> bool:
     )
 
 
-# The longest name, in UTF-16 code units, that ``_plain_unrar_text`` trusts ``unrar``
-# to keep whole. ``unrar`` cuts a stored name to a fixed buffer, but the ``-n`` mask it
-# is compared with is the full argument, so a longer name matches no mask, and two names
-# that share the kept prefix match one. ``unrar`` 7.00 keeps 65 536 characters (measured).
-# 6.x keeps NM - 1 = 2047 ``wchar_t`` units of the name, and also of each ``-n`` mask
-# (``FileName[NM]`` in ``headers.hpp``, ``CurMask[NM]`` in ``cmdfilter.cpp``,
-# unrarsrc 6.2.12), and the mask carries a ``./`` prefix. ``wchar_t`` is UTF-16 on
-# Windows, so the count is in UTF-16 units, which is never fewer than code points.
-# Half of NM leaves margin for the prefix and for a version suffix.
-_UNRAR_PLAIN_NAME_MAX = 1024
-
-
-def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool) -> str | None:
+def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool, name_max: int) -> str | None:
     """``raw``'s name as ``unrar`` reads it, when that reading is plain text.
 
     ``None`` when the name does not decode cleanly (RAR5 bytes that are not UTF-8,
@@ -988,9 +977,10 @@ def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool) -> str | None:
     (RAR5), a NUL or ``:``, a leading ``/``, or an empty, ``.`` or ``..`` component.
     A RAR 1.5-4 ``\\`` is a separator and reads as ``/``. A RAR5 history row gets
     its ``;n`` suffix, as ``unrar -ver`` names it; a RAR 1.5-4 one already stores it
-    in the name (as :func:`rar_synthetic.placeholder_mask` assumes). A name longer
-    than :data:`_UNRAR_PLAIN_NAME_MAX` UTF-16 units is not plain: ``unrar`` keeps only
-    a prefix of it.
+    in the name (as :func:`rar_synthetic.placeholder_mask` assumes). A name, with
+    that suffix, longer than ``name_max`` UTF-16 units
+    (:func:`rar_unrar.unrar_plain_name_max`) is not plain: ``unrar`` keeps only a
+    prefix of it.
     """
     stored = raw.orig_filename
     if stored is None:
@@ -1014,7 +1004,7 @@ def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool) -> str | None:
         return None
     if rar5 and raw.is_file_version_history():
         text = f"{text};{raw.file_version}"
-    if len(text.encode("utf-16-le")) // 2 > _UNRAR_PLAIN_NAME_MAX:
+    if len(text.encode("utf-16-le")) // 2 > name_max:
         return None
     return text
 
@@ -1027,7 +1017,7 @@ def _fold(text: str) -> str:
 
 
 def _plain_unrar_masks(
-    members: list[ArchiveMember], *, rar5: bool, non_ascii: bool
+    members: list[ArchiveMember], *, rar5: bool, non_ascii: bool, name_max: int
 ) -> dict[int, str]:
     """The members an ``-n`` mask on the original archive selects alone, by
     ``id(member)``, with the mask text for each.
@@ -1047,7 +1037,7 @@ def _plain_unrar_masks(
         raw = member._raw
         if not isinstance(raw, RarMemberInfo):
             continue
-        text = _plain_unrar_text(raw, rar5=rar5)
+        text = _plain_unrar_text(raw, rar5=rar5, name_max=name_max)
         if text is None:
             return {}
         texts.append((member, raw, text.rstrip("/")))
@@ -5383,6 +5373,7 @@ class RarReader(BaseArchiveReader):
                     self._members,
                     rar5=self._archive.version == 5,
                     non_ascii=unrar_mask_carries_non_ascii(),
+                    name_max=unrar_plain_name_max(),
                 )
             )
             self._plain_masks = masks
