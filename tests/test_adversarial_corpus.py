@@ -199,7 +199,10 @@ def test_adversarial_extract_has_exact_outcome(
 
         if entry.extract_outcome in _REFUSAL_MESSAGE:
             results = archive.extract_all(
-                dest, members=[target], policy=ExtractionPolicy.TRUSTED
+                dest,
+                members=[target],
+                policy=ExtractionPolicy.TRUSTED,
+                on_blocked="skip",
             ).results
             assert len(results) == 1
             assert results[0].status is ExtractionStatus.BLOCKED
@@ -226,7 +229,10 @@ def test_adversarial_extract_has_exact_outcome(
             # ordinary "success" at every policy — that pair is the regression net for
             # the reject set being the override ranges only.
             trusted = archive.extract_all(
-                dest, members=[target], policy=ExtractionPolicy.TRUSTED
+                dest,
+                members=[target],
+                policy=ExtractionPolicy.TRUSTED,
+                on_blocked="skip",
             ).results
             assert len(trusted) == 1
             assert trusted[0].status is ExtractionStatus.EXTRACTED
@@ -236,7 +242,10 @@ def test_adversarial_extract_has_exact_outcome(
 
             for policy in (ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD):
                 blocked = archive.extract_all(
-                    dest / policy.value, members=[target], policy=policy
+                    dest / policy.value,
+                    members=[target],
+                    policy=policy,
+                    on_blocked="skip",
                 ).results
                 assert len(blocked) == 1
                 assert blocked[0].status is ExtractionStatus.BLOCKED
@@ -249,7 +258,10 @@ def test_adversarial_extract_has_exact_outcome(
             # filesystems extract the member normally.
             try:
                 results = archive.extract_all(
-                    dest, members=[target], policy=ExtractionPolicy.TRUSTED
+                    dest,
+                    members=[target],
+                    policy=ExtractionPolicy.TRUSTED,
+                    on_blocked="skip",
                 ).results
             except ExtractionError as exc:
                 cause = exc.__cause__
@@ -264,7 +276,10 @@ def test_adversarial_extract_has_exact_outcome(
         else:
             assert entry.extract_outcome == "success"
             results = archive.extract_all(
-                dest, members=[target], policy=ExtractionPolicy.TRUSTED
+                dest,
+                members=[target],
+                policy=ExtractionPolicy.TRUSTED,
+                on_blocked="skip",
             ).results
             assert len(results) == 1
             assert results[0].status is ExtractionStatus.EXTRACTED

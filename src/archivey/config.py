@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import pathlib
 import threading
 import warnings
 from collections.abc import Callable, Sequence
@@ -15,7 +17,7 @@ from archivey.detection_cost import (
     DetectionBudgetPreset,
 )
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
-from archivey.exceptions import ArchiveyUsageError
+from archivey.exceptions import ArchiveyUsageError, _UsageTypeError, _UsageValueError
 from archivey.format_policy import FormatPolicy
 from archivey.internal.arg_checks import (
     check_callable,
@@ -27,6 +29,7 @@ from archivey.internal.arg_checks import (
 from archivey.internal.config_copy import copying_config
 from archivey.internal.enum_args import coerce_enum
 from archivey.internal.overrides import override
+from archivey.terminal import quoted
 from archivey.types import ArchiveMember, OptionalLibrary
 
 
@@ -67,9 +70,10 @@ class AcceleratorMode(Enum):
         ``PackageNotInstalledError`` if the package is missing — the user asked for it
         explicitly; ``min_size`` is ignored). ``AUTO`` enables it only when ``seekable``
         is true and the package is available, so a missing package falls back silently.
-        ``seekable`` is the demand for the accelerator: declared seeking, or for the
-        DEFLATE family also a large sequential read judged worth it
-        (``_sequential_read_pays`` in ``codecs/rapidgzip_select.py``). When ``min_size``
+        ``seekable`` is the demand for the accelerator: declared seeking, or a large
+        sequential read judged worth it (``_sequential_read_pays`` in
+        ``codecs/rapidgzip_select.py`` for the DEFLATE family,
+        ``_bzip2_sequential_read_pays`` in ``codecs/bzip2_codec.py``). When ``min_size``
         is set and ``input_size`` is known and strictly below that threshold, ``AUTO``
         also falls back (tiny members do not repay per-stream accelerator setup).
         Unknown ``input_size`` keeps the pre-threshold AUTO behaviour.
@@ -217,7 +221,9 @@ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
 # for itself much sooner than for DEFLATE: a full read broke even near 0.6 MiB
 # compressed with 4 cores, and near 2 MiB with one
 # (``scripts/investigations/bench_bzip2_child.py``). 1 MiB sits between the two. A
-# caller that seeks backward a lot gains from the index sooner, and can set ``ON``.
+# caller that seeks backward a lot gains from the index sooner, and can set ``ON``. The
+# same threshold gates a large sequential read on two or more CPUs, where the parallel
+# decoder pays more (``_bzip2_sequential_read_pays`` in ``codecs/bzip2_codec.py``).
 INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE: int = 1024 * 1024
 
 
@@ -386,8 +392,13 @@ class ListingLimits:
     for the whole image, every tree together.
     RPM refuses a header that lists more files than ``max_members`` at open, before it
     builds the file list.
+    makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at
+    open.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than is left of ``max_metadata_bytes``, before reading it.
+    A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
+    ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
+    ``max_metadata_bytes``, before reading it.
     SquashFS walks the whole directory tree before it lists a member, and weighs the
     paths it finds, and the symlink targets it keeps for later, against
     ``max_metadata_bytes`` as it goes: a listing whose names and kept targets cross the
@@ -1123,8 +1134,25 @@ class ArchiveyConfig:
     to each reader as well.
     """
 
+    unrar_path: str | os.PathLike[str] | None = None
+    """The RARLAB ``unrar`` or ``rar`` program to run, as an absolute path, or ``None``
+    to look for ``unrar`` and then ``rar`` on ``PATH``.
+
+    When set, archivey runs that file and no other RARLAB program: ``PATH`` is not
+    searched, so a program put there later cannot be picked up. It is still identified
+    before it first runs, and one that is not RARLAB's, or older than 6.0, is refused as
+    a missing one is. A relative path is refused, since it would depend on the current
+    directory. Stored as a ``str``. :func:`~archivey.format_availability` answers for it
+    when passed the config."""
+
+    unar_path: str | os.PathLike[str] | None = None
+    """The ``unar`` program to run, as an absolute path, or ``None`` to look for
+    ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
+    ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
+
     def __post_init__(self) -> None:
-        """Check the fields at construction, and convert the two that hold enums.
+        """Check the fields at construction, and convert the two that hold enums and
+        the two program paths.
 
         A config field is read wherever it is needed, which is never where it was
         written: ``ArchiveyConfig(extraction_limits="none")`` builds fine and then
@@ -1247,6 +1275,12 @@ class ArchiveyConfig:
                     param=f"{field_name}=",
                 ),
             )
+        for field_name in ("unrar_path", "unar_path"):
+            object.__setattr__(
+                self,
+                field_name,
+                _coerce_program_path(field_name, getattr(self, field_name)),
+            )
         object.__setattr__(
             self,
             "rar_decompressor",
@@ -1284,6 +1318,34 @@ class ArchiveyConfig:
                         "which turns that accelerator off. Use AUTO or OFF, or drop "
                         "the exclusion."
                     )
+
+
+def _coerce_program_path(field_name: str, value: object) -> str | None:
+    """An ``unrar_path=`` / ``unar_path=`` value as an absolute ``str``, or ``None``."""
+    if value is None:
+        return None
+    if isinstance(value, bytes) or not isinstance(value, (str, os.PathLike)):
+        raise _UsageTypeError(
+            f"ArchiveyConfig({field_name}=) takes a path as a str or os.PathLike, "
+            f"got {type(value).__name__}."
+        )
+    path = os.fspath(value)
+    if not isinstance(path, str):
+        raise _UsageTypeError(
+            f"ArchiveyConfig({field_name}=) takes a str path, got a bytes one."
+        )
+    # ``PurePath.is_absolute`` needs a drive or share on Windows on every version;
+    # ``os.path.isabs`` before 3.13 accepts a root-relative ``/usr/bin/unrar``.
+    if not path or not pathlib.PurePath(path).is_absolute():
+        raise _UsageValueError(
+            f"ArchiveyConfig({field_name}=) takes an absolute path, got {quoted(path)}: a "
+            "relative one would depend on the current directory."
+        )
+    if "\0" in path:
+        raise _UsageValueError(
+            f"ArchiveyConfig({field_name}=) got a path with a NUL character."
+        )
+    return path
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()

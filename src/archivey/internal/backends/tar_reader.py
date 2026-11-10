@@ -6,8 +6,12 @@ On-disk layout::
     [ 512 zero bytes ][ 512 zero bytes ]   # two null end-of-archive trailers
 
 There is no central directory: listing is a header walk (``REQUIRES_SCANNING``) or a
-progressive forward pass. Compressed forms (``.tar.gz`` / …) wrap the same layout in
-a stream codec and behave as **solid** for random member opens.
+progressive forward pass. :class:`~archivey.internal.backends.tar_parser.TarWalker`
+does the walk and applies each member's extended headers; this module turns each
+``TarEntry`` it returns into an :class:`~archivey.ArchiveMember`
+(:meth:`TarReader._to_member`), reports what the walk found, and opens member data
+from the ``TarSpan`` each member keeps. Compressed forms (``.tar.gz`` / …) wrap the
+same layout in a stream codec and behave as **solid** for random member opens.
 
 Random-access reading (``streaming=False``) needs a seekable source (decompressing
 first for a compressed tar) and opens any member on demand: a member's stream is a
@@ -129,7 +133,10 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.decompressor_stream import StreamChecksumError
-from archivey.internal.streams.resume import ask_resume_offset
+from archivey.internal.streams.resume import (
+    ask_resume_offset,
+    restarts_follow_decoding,
+)
 from archivey.internal.streams.streamtools import (
     LockedStream,
     ReadAheadStream,
@@ -399,6 +406,174 @@ def _tar_time_issue(
     )
 
 
+def _modified_time(
+    entry: TarEntry, name: str, issues: list[TimestampIssue]
+) -> datetime | None:
+    """The member's ``modified``: a PAX ``mtime`` when there is one, else the
+    header's. A time that is bad or out of range is ``None``, and its issue is added
+    to ``issues``. ``name`` is the decoded name, for the message."""
+    if entry.pax and _pax_text(entry, b"mtime") is not None:
+        modified, issue = _pax_time(entry, "mtime", name)
+        if issue is not None:
+            issues.append(issue)
+        return modified
+    if entry.header.mtime is None:
+        # A field of only NULs and blanks records no time; GNU tar and tarfile
+        # read all NULs as 0, but 1970 would be a guess (DR-1), so the member
+        # has no ``modified``.
+        return None
+    # A hostile out-of-range value (a base-256 mtime beyond datetime's range)
+    # must not sink the whole listing, so it degrades to None and is reported.
+    modified = unix_to_datetime(entry.header.mtime)
+    if modified is None:
+        issues.append(
+            _tar_time_issue(name, "mtime", repr(entry.header.mtime), pax_record=False)
+        )
+    return modified
+
+
+def _set_pax_times(
+    member: ArchiveMember,
+    entry: TarEntry,
+    name: str,
+    issues: list[TimestampIssue],
+) -> None:
+    """Set the times only PAX records hold: ``accessed``, ``ctime`` and
+    ``created``. A bad record leaves its field unset and adds its issue to
+    ``issues``."""
+    accessed, issue = _pax_time(entry, "atime", name)
+    if accessed is not None:
+        member.accessed = accessed
+    elif issue is not None:
+        issues.append(issue)
+    # PAX ``ctime`` is st_ctime (inode change), never a birth time, so it is
+    # ``ctime``, never ``created``.
+    ctime, issue = _pax_time(entry, "ctime", name)
+    if ctime is not None:
+        member.ctime = ctime
+    elif issue is not None:
+        issues.append(issue)
+    # libarchive writes the source's birth time, where the OS has one, as a PAX
+    # extension keyword. It is the only TAR writer known to store a birth time.
+    birth, issue = _pax_time(entry, "LIBARCHIVE.creationtime", name)
+    if birth is not None:
+        member.created = birth
+    elif issue is not None:
+        issues.append(issue)
+
+
+def _ambiguity_description(ambiguity: Ambiguity, key: bytes) -> str:
+    """What a ``MEMBER_HEADER_AMBIGUOUS`` message says the headers have, for one
+    field ``key``, and how the walk read it."""
+    field = key.decode("ascii", "backslashreplace")
+    if ambiguity is Ambiguity.BOTH_FAMILIES:
+        gnu = "long name" if key == b"path" else "long link name"
+        return f"a GNU {gnu} header that a PAX record overrides; the PAX record is used"
+    if ambiguity is Ambiguity.REPEATED:
+        return (
+            f"{field} set more than once; the last value is used (the first in "
+            "a global header)"
+        )
+    if ambiguity is Ambiguity.GLOBAL_MEMBER_FIELD:
+        return (
+            f"a global PAX header setting {field}, which then applies to every "
+            "member after it"
+        )
+    if ambiguity is Ambiguity.NUL_IN_VALUE and b"\x00" in key:
+        return (
+            f"a PAX record whose keyword {field} holds a NUL byte; the whole "
+            "keyword is used"
+        )
+    if ambiguity is Ambiguity.NUL_IN_VALUE:
+        return f"a PAX {field} record holding a NUL byte; the value ends there"
+    if ambiguity is Ambiguity.MIXED_CHAIN:
+        return (
+            "both a GNU long name (or link name) header and a PAX x header; "
+            "both apply to the member"
+        )
+    if ambiguity is Ambiguity.GLOBAL_IN_CHAIN:
+        return (
+            "a global PAX header between an extended header and the member; "
+            "the extended header applies to the member"
+        )
+    if ambiguity is Ambiguity.EMPTY_VALUE:
+        return (
+            f"an empty PAX {field} record; it is skipped, and the value in "
+            "force before it stays"
+        )
+    if ambiguity is Ambiguity.LEADING_ZERO:
+        return f"a PAX {field} with a leading zero; it is read as decimal"
+    if ambiguity is Ambiguity.FIELD_TAIL:
+        # An extended header's size comes as "x size", "L size", ...
+        typeflag, _, header_field = field.rpartition(" ")
+        where = (
+            f"the {header_field} field of the {typeflag} header before it"
+            if typeflag
+            else f"a {field} field"
+        )
+        return (
+            f"{where}, with bytes after the NUL or blank that ends it; they are ignored"
+        )
+    if ambiguity is Ambiguity.SIZE_ON_NO_DATA:
+        return (
+            "a size on a directory or link header that another header follows; "
+            "the size names no data"
+        )
+    if ambiguity is Ambiguity.SIGNED_CHECKSUM:
+        return (
+            "a header checksum that matches only the signed sum of its bytes; "
+            "it is accepted"
+        )
+    if ambiguity is Ambiguity.MAGIC_VERSION:
+        return (
+            "the POSIX magic with a version other than 00 or NULs; the header "
+            "is read as ustar"
+        )
+    if ambiguity is Ambiguity.NEWLINE_IN_VALUE and b"\n" in key:
+        return (
+            f"a PAX record whose keyword {field} holds a newline; records are "
+            "framed by their length, so it is part of the keyword"
+        )
+    if ambiguity is Ambiguity.NEWLINE_IN_VALUE:
+        return (
+            f"a PAX {field} value holding a newline; records are framed by "
+            "their length, so it is part of the value"
+        )
+    if ambiguity is Ambiguity.GLOBAL_REPLACED:
+        return (
+            f"a global PAX header that drops the {field} an earlier global header "
+            "set; it no longer applies"
+        )
+    assert_never(ambiguity)
+
+
+def _other_fields_sentence(others: list[bytes]) -> str:
+    """The sentence that names the other fields of one ambiguity report: the first
+    ``_AMBIGUOUS_FIELDS_NAMED`` of them, then a count of the rest. Empty when there
+    are none."""
+    if not others:
+        return ""
+    names = [
+        quoted(k.decode("ascii", "backslashreplace"))
+        for k in others[:_AMBIGUOUS_FIELDS_NAMED]
+    ]
+    rest = len(others) - len(names)
+    if rest > 0:
+        names.append(f"{rest} more")
+    listed = (
+        names[0]
+        if len(names) == 1
+        else ", ".join(names[:-1])
+        + ("," if len(names) > 2 else "")
+        + f" and {names[-1]}"
+    )
+    # Names the other fields only: under one shape a field can be read otherwise
+    # than the first (a NUL in a keyword or in a value, a long name or a long link
+    # name).
+    fields = "field" if len(others) == 1 else "fields"
+    return f" Also on {len(others)} more {fields}: {listed}."
+
+
 # Chunk for a skip decoded through: one chunk of extra memory, whatever the skip.
 _SKIP_READ = 64 * 1024
 
@@ -413,7 +588,11 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
     members (``TarReader._raise_members_the_codec_checked``). This handle reads those
     bytes instead, at the same decoding cost, and keeps the proof. A skip that a
     restart point can jump (an indexed codec: bgzip, Seekable Zstandard) still seeks,
-    since its bytes are never decoded. Any other seek passes through.
+    since its bytes are never decoded. A restart point of rapidgzip's index does not
+    count: rapidgzip indexes only output its prefetch has decoded, so that seek would
+    skip no decoding and would lose the proof (``restarts_follow_decoding``). Reading
+    those bytes is also faster than asking the child for a restart point at every
+    member. Any other seek passes through.
 
     Borrows the codec stream: the reader closes it, never this handle.
     """
@@ -421,6 +600,10 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
     def __init__(self, inner: BinaryIO) -> None:
         super().__init__()
         self._inner = inner
+        # Asked once. A standard-library takeover can replace the rapidgzip layer
+        # later; the walk then reads through where it could have seeked, which is
+        # never wrong.
+        self._restarts_skip_decoding = not restarts_follow_decoding(inner)
 
     @override
     def read(self, n: int = -1, /) -> bytes:
@@ -429,20 +612,25 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         inner = self._inner
-        if whence == io.SEEK_SET:
-            here = inner.tell()
-            if offset > here:
-                resume = ask_resume_offset(inner, offset)
-                if resume is None or resume <= here:
-                    remaining = offset - here
-                    while remaining > 0:
-                        chunk = read_blocking(inner, min(remaining, _SKIP_READ))
-                        if not chunk:
-                            # Past the end: the codec stream's own seek says where.
-                            return inner.seek(offset, whence)
-                        remaining -= len(chunk)
-                    return offset
-        return inner.seek(offset, whence)
+        if whence != io.SEEK_SET:
+            return inner.seek(offset, whence)
+        here = inner.tell()
+        if offset <= here:
+            return inner.seek(offset, whence)
+        resume = (
+            ask_resume_offset(inner, offset) if self._restarts_skip_decoding else None
+        )
+        if resume is not None and resume > here:
+            # A restart point past here: the seek skips decoding.
+            return inner.seek(offset, whence)
+        remaining = offset - here
+        while remaining > 0:
+            chunk = read_blocking(inner, min(remaining, _SKIP_READ))
+            if not chunk:
+                # Past the end: the codec stream's own seek says where.
+                return inner.seek(offset, whence)
+            remaining -= len(chunk)
+        return offset
 
     @override
     def tell(self) -> int:
@@ -506,7 +694,7 @@ class TarReader(BaseArchiveReader):
         # A compressed tar's codec stream, in either mode. In random access nothing
         # wraps it, so it is closed here explicitly (streaming's buffer also closes it;
         # a second close is a no-op): left to the garbage collector, a stream held by a
-        # failed open's traceback kept its rapidgzip child process running.
+        # failed open's traceback would keep its rapidgzip child process running.
         self._owned_codec_stream: BinaryIO | None = None
         # Random access only: the current walk's own buffered view (see _new_walker).
         self._walker_view: BinaryIO | None = None
@@ -1291,9 +1479,9 @@ class TarReader(BaseArchiveReader):
         in force included, as text.
 
         A read-only copy. Members that carry only the PAX global records share one,
-        as the walker shares the records: one per member cost the global records once
-        for every 512-byte member header. Read-only so that sharing it is invisible: a
-        change made through one member cannot show on another.
+        as the walker shares the records: one per member would cost the global records
+        once for every 512-byte member header. Read-only so that sharing it is
+        invisible: a change made through one member cannot show on another.
         """
         if entry.has_own_pax:
             return _ReadOnlyDict(self._pax_headers_text(entry.pax))
@@ -1368,7 +1556,13 @@ class TarReader(BaseArchiveReader):
 
     def _to_member(self, entry: TarEntry, index: int) -> ArchiveMember:
         """Type one member. ``index`` is its position in the walk, the id registration
-        stamps, so the diagnostics raised here can name it before it has one."""
+        stamps, so the diagnostics raised here can name it before it has one.
+
+        The walker has already applied the extended headers, so ``entry`` holds the
+        final name, sizes and PAX records. This decodes the names, reads the times,
+        builds ``extra``, and then reports what the walk found about the member
+        (:meth:`_report_member_findings`).
+        """
         member_type = _member_type(entry)
         presented, inferred = self._decode_name(
             entry.name, entry.name_source, entry.name_binary
@@ -1389,33 +1583,70 @@ class TarReader(BaseArchiveReader):
             )
 
         timestamp_issues: list[TimestampIssue] = []
-        modified: datetime | None
-        if entry.pax and _pax_text(entry, b"mtime") is not None:
-            modified, issue = _pax_time(entry, "mtime", presented)
-            if issue is not None:
-                timestamp_issues.append(issue)
-        elif entry.header.mtime is None:
-            # A field of only NULs and blanks records no time; GNU tar and tarfile
-            # read all NULs as 0, but 1970 would be a guess (DR-1), so the member
-            # has no ``modified``.
-            modified = None
-        else:
-            # A hostile out-of-range value (a base-256 mtime beyond datetime's range)
-            # must not sink the whole listing, so it degrades to None and is reported.
-            modified = unix_to_datetime(entry.header.mtime)
-            if modified is None:
-                timestamp_issues.append(
-                    _tar_time_issue(
-                        presented, "mtime", repr(entry.header.mtime), pax_record=False
-                    )
-                )
+        modified = _modified_time(entry, presented, timestamp_issues)
 
         compression = (
             _STORED_COMPRESSION
             if member_type in (MemberType.FILE, MemberType.HARDLINK)
             else ()
         )
+        # Refuses a device or FIFO header that declares data.
+        extra = self._member_extra(entry, name)
 
+        member = ArchiveMember(
+            type=member_type,
+            name=name,
+            raw_name=entry.name,
+            # An old-style directory keeps its declared size: its regular-file
+            # typeflag gives it a data area, which open() and a pass deliver (DR-3), and
+            # so does a DIRTYPE one whose size is a PAX record. A DIRTYPE header's own
+            # size names no data area, so it is dropped here and judged at the end of
+            # the walk (_verify_tar_eof).
+            size=entry.size
+            if member_type == MemberType.FILE or _directory_has_data(entry)
+            else None,
+            modified=modified,
+            # The permission bits are the low twelve, which is what stat.S_IMODE
+            # keeps. Masked here rather than through S_IMODE, which refuses the
+            # negative or wider-than-32-bit value a GNU base-256 mode field can hold.
+            mode=entry.header.mode & 0o7777,
+            uid=entry.uid,
+            gid=entry.gid,
+            compression=compression,
+            extra=extra,
+            # The span alone, so _open_member needs no name/id lookup table and the
+            # parsed entry (header, names, PAX records) is not kept per member.
+            _raw=entry.span(),
+        )
+        # The fields below are set only when there is a value: their defaults are
+        # None or False, and skipping the assignment is cheaper on the listing's hot
+        # path.
+        if entry.pax:
+            _set_pax_times(member, entry, presented, timestamp_issues)
+        uname = self._owner_name(entry.uname, entry.uname_pax)
+        if uname:
+            member.uname = uname
+        gname = self._owner_name(entry.gname, entry.gname_pax)
+        if gname:
+            member.gname = gname
+        if link_target is not None and member_type in (
+            MemberType.SYMLINK,
+            MemberType.HARDLINK,
+        ):
+            member.link_target = link_target
+        # All four GNU encodings: an ``S`` in an old GNU header and PAX sparse 0.0 / 0.1 /
+        # 1.0, which GNU tar writes under ``--format=pax`` with a plain ``0`` typeflag.
+        if entry.sparse_format is not None:
+            member.is_sparse = True
+        self._report_member_findings(
+            member, entry, index, presented, timestamp_issues, inferred=inferred
+        )
+        return member
+
+    def _member_extra(self, entry: TarEntry, name: str) -> MemberExtra:
+        """The member's ``extra``: the stored typeflag, the special file type, the
+        PAX records and the device numbers. ``name`` is the normalized name, for the
+        message when a device or FIFO header declares data, which is refused here."""
         # The typeflag as stored: NUL or 0 for an old-style directory, so a caller can
         # tell it from a DIRTYPE one.
         extra = MemberExtra({"tar.type": entry.typeflag})
@@ -1445,71 +1676,25 @@ class TarReader(BaseArchiveReader):
             # header holds no device number, and GNU tar reads none there.
             extra["tar.devmajor"] = entry.header.devmajor
             extra["tar.devminor"] = entry.header.devminor
+        return extra
 
-        member = ArchiveMember(
-            type=member_type,
-            name=name,
-            raw_name=entry.name,
-            # An old-style directory keeps its declared size: its regular-file
-            # typeflag gives it a data area, which open() and a pass deliver (DR-3), and
-            # so does a DIRTYPE one whose size is a PAX record. A DIRTYPE header's own
-            # size names no data area, so it is dropped here and judged at the end of
-            # the walk (_verify_tar_eof).
-            size=entry.size
-            if member_type == MemberType.FILE or _directory_has_data(entry)
-            else None,
-            modified=modified,
-            # The permission bits are the low twelve, which is what stat.S_IMODE
-            # keeps. Masked here rather than through S_IMODE, which refuses the
-            # negative or wider-than-32-bit value a GNU base-256 mode field can hold.
-            mode=entry.header.mode & 0o7777,
-            uid=entry.uid,
-            gid=entry.gid,
-            compression=compression,
-            extra=extra,
-            # The span alone, so _open_member needs no name/id lookup table and the
-            # parsed entry (header, names, PAX records) is not kept per member.
-            _raw=entry.span(),
-        )
-        # Skip defaulted None/False fields on the listing hot path (perf review L2).
-        if entry.pax:
-            accessed, issue = _pax_time(entry, "atime", presented)
-            if accessed is not None:
-                member.accessed = accessed
-            elif issue is not None:
-                timestamp_issues.append(issue)
-            # PAX ``ctime`` is st_ctime (inode change), never a birth time, so it is
-            # ``ctime``, never ``created``.
-            ctime, issue = _pax_time(entry, "ctime", presented)
-            if ctime is not None:
-                member.ctime = ctime
-            elif issue is not None:
-                timestamp_issues.append(issue)
-            # libarchive writes the source's birth time, where the OS has one, as a PAX
-            # extension keyword. It is the only TAR writer known to store a birth time.
-            birth, issue = _pax_time(entry, "LIBARCHIVE.creationtime", presented)
-            if birth is not None:
-                member.created = birth
-            elif issue is not None:
-                timestamp_issues.append(issue)
-        uname = self._owner_name(entry.uname, entry.uname_pax)
-        if uname:
-            member.uname = uname
-        gname = self._owner_name(entry.gname, entry.gname_pax)
-        if gname:
-            member.gname = gname
-        if link_target is not None and member_type in (
-            MemberType.SYMLINK,
-            MemberType.HARDLINK,
-        ):
-            member.link_target = link_target
-        # All four GNU encodings: an ``S`` in an old GNU header and PAX sparse 0.0 / 0.1 /
-        # 1.0, which GNU tar writes under ``--format=pax`` with a plain ``0`` typeflag.
-        if entry.sparse_format is not None:
-            member.is_sparse = True
-        # member.name is still ``name``: this is the callee's own early return, kept
-        # here to skip the call for the common unchanged name.
-        if name != presented:
+    def _report_member_findings(
+        self,
+        member: ArchiveMember,
+        entry: TarEntry,
+        index: int,
+        presented: str,
+        timestamp_issues: list[TimestampIssue],
+        *,
+        inferred: bool,
+    ) -> None:
+        """Emit the diagnostics about one member, once it is built: a normalized
+        name, bad times, a name decoded as UTF-8 over ``encoding=``, and what the
+        walk found in its headers. ``presented`` is the decoded name before
+        normalization."""
+        # emit_member_name_normalized makes the same check; making it here skips the
+        # call for the common unchanged name.
+        if member.name != presented:
             emit_member_name_normalized(
                 self._diagnostics_collector,
                 member=member,
@@ -1573,7 +1758,7 @@ class TarReader(BaseArchiveReader):
             self._emit_member_type_unknown(member, index, entry.typeflag)
         if entry.old_style_directory:
             self._emit_readers_disagree(member, index, "file_named_as_directory")
-        elif member_type is MemberType.FILE and (
+        elif member.type is MemberType.FILE and (
             entry.header.linkname
             or (entry.pax and _pax_text(entry, b"linkpath") is not None)
         ):
@@ -1584,7 +1769,6 @@ class TarReader(BaseArchiveReader):
             and entry.name_source is NameSource.HEADER
         ):
             self._emit_readers_disagree(member, index, entry.header.prefix_shape)
-        return member
 
     def _emit_readers_disagree(
         self, member: ArchiveMember, member_id: int, shape: _TarDisagreement
@@ -1646,116 +1830,12 @@ class TarReader(BaseArchiveReader):
         another name or size. In ``ARCHIVE_INTEGRITY_CODES``: ``STRICT`` refuses it.
 
         One report for every field of ``keys`` the shape holds for: the first one is
-        described, and the message names a few of the others
-        (``_AMBIGUOUS_FIELDS_NAMED``) and counts the rest.
+        described (:func:`_ambiguity_description`), and the message names a few of
+        the others (``_AMBIGUOUS_FIELDS_NAMED``) and counts the rest.
         """
         key, others = keys[0], keys[1:]
-        field = key.decode("ascii", "backslashreplace")
-        if ambiguity is Ambiguity.BOTH_FAMILIES:
-            gnu = "long name" if key == b"path" else "long link name"
-            what = (
-                f"a GNU {gnu} header that a PAX record overrides; the PAX record is "
-                "used"
-            )
-        elif ambiguity is Ambiguity.REPEATED:
-            what = (
-                f"{field} set more than once; the last value is used (the first in "
-                "a global header)"
-            )
-        elif ambiguity is Ambiguity.GLOBAL_MEMBER_FIELD:
-            what = (
-                f"a global PAX header setting {field}, which then applies to every "
-                "member after it"
-            )
-        elif ambiguity is Ambiguity.NUL_IN_VALUE and b"\x00" in key:
-            what = (
-                f"a PAX record whose keyword {field} holds a NUL byte; the whole "
-                "keyword is used"
-            )
-        elif ambiguity is Ambiguity.NUL_IN_VALUE:
-            what = f"a PAX {field} record holding a NUL byte; the value ends there"
-        elif ambiguity is Ambiguity.MIXED_CHAIN:
-            what = (
-                "both a GNU long name (or link name) header and a PAX x header; "
-                "both apply to the member"
-            )
-        elif ambiguity is Ambiguity.GLOBAL_IN_CHAIN:
-            what = (
-                "a global PAX header between an extended header and the member; "
-                "the extended header applies to the member"
-            )
-        elif ambiguity is Ambiguity.EMPTY_VALUE:
-            what = (
-                f"an empty PAX {field} record; it is skipped, and the value in "
-                "force before it stays"
-            )
-        elif ambiguity is Ambiguity.LEADING_ZERO:
-            what = f"a PAX {field} with a leading zero; it is read as decimal"
-        elif ambiguity is Ambiguity.FIELD_TAIL:
-            # An extended header's size comes as "x size", "L size", ...
-            typeflag, _, header_field = field.rpartition(" ")
-            where = (
-                f"the {header_field} field of the {typeflag} header before it"
-                if typeflag
-                else f"a {field} field"
-            )
-            what = (
-                f"{where}, with bytes after the NUL or blank that ends it; "
-                "they are ignored"
-            )
-        elif ambiguity is Ambiguity.SIZE_ON_NO_DATA:
-            what = (
-                "a size on a directory or link header that another header follows; "
-                "the size names no data"
-            )
-        elif ambiguity is Ambiguity.SIGNED_CHECKSUM:
-            what = (
-                "a header checksum that matches only the signed sum of its bytes; "
-                "it is accepted"
-            )
-        elif ambiguity is Ambiguity.MAGIC_VERSION:
-            what = (
-                "the POSIX magic with a version other than 00 or NULs; the header "
-                "is read as ustar"
-            )
-        elif ambiguity is Ambiguity.NEWLINE_IN_VALUE and b"\n" in key:
-            what = (
-                f"a PAX record whose keyword {field} holds a newline; records are "
-                "framed by their length, so it is part of the keyword"
-            )
-        elif ambiguity is Ambiguity.NEWLINE_IN_VALUE:
-            what = (
-                f"a PAX {field} value holding a newline; records are framed by "
-                "their length, so it is part of the value"
-            )
-        elif ambiguity is Ambiguity.GLOBAL_REPLACED:
-            what = (
-                f"a global PAX header that drops the {field} an earlier global header "
-                "set; it no longer applies"
-            )
-        else:
-            assert_never(ambiguity)
-        also = ""
-        if others:
-            names = [
-                quoted(k.decode("ascii", "backslashreplace"))
-                for k in others[:_AMBIGUOUS_FIELDS_NAMED]
-            ]
-            rest = len(others) - len(names)
-            if rest > 0:
-                names.append(f"{rest} more")
-            listed = (
-                names[0]
-                if len(names) == 1
-                else ", ".join(names[:-1])
-                + ("," if len(names) > 2 else "")
-                + f" and {names[-1]}"
-            )
-            # Names the other fields only: under one shape a field can be read
-            # otherwise than the first (a NUL in a keyword or in a value, a long
-            # name or a long link name).
-            fields = "field" if len(others) == 1 else "fields"
-            also = f" Also on {len(others)} more {fields}: {listed}."
+        what = _ambiguity_description(ambiguity, key)
+        also = _other_fields_sentence(others)
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
             message=(
@@ -1769,7 +1849,7 @@ class TarReader(BaseArchiveReader):
                 member_name=member.name,
                 member_id=member_id,
                 ambiguity=ambiguity.value,
-                field=field,
+                field=key.decode("ascii", "backslashreplace"),
                 more_fields=len(others),
             ),
             member=member,

@@ -44,8 +44,9 @@ The same code works for a ZIP, 7z or RAR download, because `open_archive` identi
 from the file's contents. `overwrite="replace"` lets the script run again over an earlier run's
 files. Without it, the first file that's already there stops the extraction. With
 `abort_on=["blocked_member"]`, a member that would land outside `data/`, such as `../evil.txt`,
-stops the extraction with an exception. Without it, that member is skipped and the report lists it
-as `ExtractionStatus.BLOCKED`. [Extracting](extracting.md#options) explains both options.
+stops the extraction with an exception. Without it, that member is skipped, the rest are
+extracted, and the call then raises `FilterRejectionError`, whose `report` lists the member as
+`ExtractionStatus.BLOCKED`. [Extracting](extracting.md#options) explains both options.
 
 By default, an extraction raises `ResourceLimitError` once it has written 2 GiB or 262,144 entries,
 or when data expands more than 800 times. A sparse TAR member, such as a disk image, can expand

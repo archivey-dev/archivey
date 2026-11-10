@@ -386,6 +386,7 @@ def test_an_error_while_writing_names_the_member_as_listed(tmp_path: Path) -> No
             policy=ExtractionPolicy.TRUSTED,
             filter=rename,
             on_error="continue",
+            on_blocked="skip",
         )
     assert isinstance(result.error, LinkTargetNotFoundError)
     assert result.error.member_name == "h\ud800"
@@ -440,6 +441,7 @@ def test_a_deferred_hardlink_error_names_the_member_as_listed(
             policy=ExtractionPolicy.TRUSTED,
             filter=rename,
             on_error="continue",
+            on_blocked="skip",
         )
     (failed,) = [r for r in results if r.member.name == failing]
     assert failed.error is not None
@@ -481,7 +483,11 @@ def test_a_removed_symlink_names_its_target_as_listed(
 
     with archivey.open_archive(archive) as reader:
         results = reader.extract_all(
-            tmp_path / "out", policy=policy, filter=add_surrogate, on_error="continue"
+            tmp_path / "out",
+            policy=policy,
+            filter=add_surrogate,
+            on_error="continue",
+            on_blocked="skip",
         )
     (removed,) = [r for r in results if r.member.name == "l"]
     assert removed.status is ExtractionStatus.BLOCKED

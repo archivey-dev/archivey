@@ -327,15 +327,25 @@ the `PackageNotInstalledError` SHALL name both `unrar` and `cryptography`. Each 
 member split across volumes has its own encryption record, so a split encrypted member
 is read by the program. All other
 member data SHALL be read by invoking a system RARLAB decompressor: `unrar` if a usable
-binary is on `PATH`, otherwise `rar`. A usable binary is identified by a RARLAB banner
+binary is on `PATH`, otherwise `rar`, and on Windows otherwise WinRAR's `UnRAR.exe` or
+`Rar.exe` from Program Files (`packaging-and-extras`). A usable binary is identified by a RARLAB banner
 (`Alexander Roshal` or `RARLAB`, plus a standalone `UNRAR` or `RAR` token that does not
 match inside `UNRAR`) whose parsed major.minor is 6.0 or later. If a decompressor is
 required and missing or incompatible, the system SHALL raise `PackageNotInstalledError`
 naming RARLAB `unrar` or `rar`. Archivey MUST NOT use `unrar-free`, `bsdtar`, `7z`, or a
 degraded backend. The spawn SHALL be the `p` (print to stdout) command only. This
 requirement applies when `ArchiveyConfig.rar_decompressor` is `unrar`, or `auto` (the
-default) with a usable RARLAB binary on `PATH`; `unar` is covered by `Read RAR member
+default) with a usable RARLAB binary found; `unar` is covered by `Read RAR member
 data with unar`.
+
+`ArchiveyConfig.unrar_path`, when set, SHALL be the only RARLAB binary tried, in place of
+the `PATH` and WinRAR-folder search, by every read and by `format_availability(config=)`;
+`unar_path` SHALL do the same for `unar`. The pinned binary SHALL pass the same
+identification (banner, version floor, and for `unar` the RAR5 check), and a missing or
+refused one SHALL raise `PackageNotInstalledError` that names the setting and SHALL NOT
+fall back to `PATH`. `AUTO` SHALL resolve with the pinned paths. Each SHALL be an absolute
+`str` or `os.PathLike[str]`, stored as `str`; a relative or empty path, a NUL, or a
+non-path SHALL be refused at construction.
 
 #### Scenario: unrar dependency matrix
 
@@ -355,6 +365,10 @@ data with unar`.
 | RARLAB `unrar` older than 6.0 and no usable `rar`, or a RARLAB banner with no parseable version | `PackageNotInstalledError` names the floor and the version found; refused at identification |
 | RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed member data and encrypted data archivey does not decrypt; spawn is `rar p` |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
+| `unrar_path` names a RARLAB 6.0+ binary, another on `PATH` | The pinned one is used |
+| `unrar_path` names a missing file, a usable `unrar` on `PATH` | `PackageNotInstalledError` naming `ArchiveyConfig.unrar_path`; `PATH` is not searched |
+| `unrar_path="unrar"` | `ArchiveyUsageError` (a `ValueError`) at construction |
+| Windows, nothing usable on `PATH`, WinRAR 6.0+ in Program Files | WinRAR's `UnRAR.exe` is used |
 | Listing only, both missing | No data dependency is checked |
 | Listing only, both missing, archive has a compressed RAR 1.5-4 comment | The comment is `None`; nothing else depends on a data program |
 
@@ -1214,7 +1228,7 @@ encrypted.
 ### Requirement: Read RAR member data with unar
 
 When `ArchiveyConfig.rar_decompressor` is `unar`, or `auto` with no usable RARLAB
-`unrar` or `rar` on `PATH`, the system SHALL read compressed member data by invoking
+`unrar` or `rar` found, the system SHALL read compressed member data by invoking
 `unar` 1.10 or later, identified on `PATH` by its `unar -h` banner with the same probe
 timeout and stat-keyed cache as RARLAB `unrar`. An identified `unar` SHALL also decode a
 small embedded RAR5 archive once, under the same timeout and cache, and SHALL NOT be

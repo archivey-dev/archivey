@@ -17,9 +17,12 @@ compressed TAR is solid, and so are most 7z archives, since 7-Zip creates solid 
 default. RAR archives are solid only when created with that option. On a solid archive,
 reading members by name can decompress the same data again and again. `stream_members`
 decompresses it once. archivey tells you when this happens: on a solid 7z or RAR archive, the
-first open that decompresses data an earlier open already decompressed logs one INFO message
-on the `archivey.backends` logger. Reading the same member twice counts only the data before it in the archive. The message
-shows only if your application turns logging on.
+first open that decompresses data an earlier open already decompressed records the diagnostic
+`SOLID_OPEN_REDECOMPRESSES`, once per reader. Reading the same member twice counts only the data
+before it in the archive. The diagnostic is in `reader.diagnostics` and logged at INFO on the
+`archivey.backends` logger, so the message shows only if your application turns logging on. To
+make it an error instead, pass `DiagnosticPolicy(raise_on={"solid_open_redecompresses"})`: every
+open that would decompress data again then raises `DiagnosticRaisedError`.
 
 If your code needs to know whether an archive is solid, `archive.cost` tells you before you read
 anything. Its `access_cost` is `AccessCost.SOLID` when reaching a member means decompressing others
@@ -34,6 +37,17 @@ seek, and `StreamCapability.FORWARD_ONLY` when it can only be read forward, as a
 costs, but it never allows or refuses one: the options below do that.
 
 ## Reading once
+
+!!! warning "A member from a pass may not be final yet"
+    A `stream_members` loop gives you each member as soon as archivey reaches it, before it has
+    read the rest of the archive, and archivey updates that same object when it learns more. A ZIP
+    from a pipe keeps permissions and symlinks in an index at its end, so until the pass gets
+    there a symlink looks like a file. A member whose name a later member reuses can have
+    `is_current` set to `True` until the loop ends. Check `member.member_state_final` before you do
+    something with a member that you can't take back, such as uploading it or recording it in a
+    database. The end of the loop settles the listing, but a link target or size that nothing has
+    read yet can still be pending then, so check the flag after the loop too. `extract_all` already
+    waits.
 
 ```python
 import sys
@@ -174,7 +188,7 @@ with archivey.open_archive("data.zip", config=config) as archive:
 
 The standard library then decodes everything. A backward seek in bzip2 data decompresses again from
 the start of the member, one in DEFLATE data from the nearest place a read has passed (above), and a
-large gzip file is read on one core.
+large gzip file, or a large bzip2 file on disk, is read on one core.
 
 ## Why these aren't on by default
 
