@@ -22,9 +22,9 @@ as a built-in, as CAB, XAR and ar are.
 | Refuses | Methods it does not decode, when read; a header level past 3; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-lha/spec.md` |
 
-Not here, though a reader might look for it: MacLHA's MacBinary members
-read with the MacBinary wrapper still around their data; PMarc's `-pm1-` and `-pm2-`
-methods are not decoded; multi-volume archives (a `0x39` record) are
+Not here, though a reader might look for it: PMarc's `-pm1-` and `-pm2-`
+methods are not decoded; MacLHA's resource fork, when the member has a data fork too, is
+dropped as lhasa drops it; multi-volume archives (a `0x39` record) are
 not joined; OS/2 extended attributes and MorphOS LhA's comment record (`0x71`) are not
 read, as lhasa does not read them.
 
@@ -109,11 +109,30 @@ The end: no zero byte after the last member reports `ARCHIVE_EOF_MARKER_MISSING`
 Macintosh, `w` VFAT, `W` NTFS, `C` CP/M, `a` Atari ST, `' '` LHARK on DOS; others
 `UNKNOWN`).
 
+MacBinary: MacLHA (OS id `m`) stores a Mac file as a MacBinary file, a 128-byte header
+(name, Finder type and creator, fork lengths, Mac times) and then the data and resource
+forks, padded to 128 bytes. The header has no magic, so the listing follows lhasa's
+`macbinary.c`: for a `FILE` member with OS id `m` and a size of 128 or more, it decodes
+the first 128 bytes and accepts them only when the version and reserved bytes are zero,
+the name is the member's own name (its last part, zero-padded to 63 bytes), the fork
+lengths plus 128, rounded up to 128, are the member's size, and the modification time is
+within 14 hours (a time zone) of the header's (a DOS time is read as UTC here). A
+member that passes reads as its data fork, or its resource fork when the data fork is
+empty: `size` is that fork's length, and `lha.mac_type` and `lha.mac_creator` (4 bytes
+each) join `extra`. A member that fails reads whole, so an archived MacBinary file, which
+rarely matches the name and the time, keeps its wrapper. Level 0 has no OS id, so its
+members keep their wrapper, as in lhasa. The check costs one decode of 128 bytes per
+such member at listing; a member that fails to decode is left as it is, and its read
+fails as before.
+
 ### 2.3 Read
 
 A stored member is a view of its data. An LZH member is decoded by `LzhDecoder`, which
 reads the data 64 KiB at a time. Both check the CRC-16 as the read reaches the end, so a
-member read whole is `Verification.CHECKSUM`. A method archivey does not decode raises
+member read whole is `Verification.CHECKSUM`. A MacBinary member is read through
+`_MacBinaryStream`: it drops the 128-byte header, returns the fork, and with the fork's
+last byte decodes the rest and checks the CRC-16 itself (`checked=True`), since the CRC
+covers bytes the caller never sees. A method archivey does not decode raises
 `UnsupportedFeatureError` when read; it is listed like any other member, with
 `compression` `LZH` for any `-lh?-` method and `UNKNOWN` for the rest.
 
@@ -200,7 +219,9 @@ LHA archives match its listing (`tests/test_commons_compress_corpus.py`).
 Measured once (2026-11-09) against lhasa 0.4.0 on lhasa's whole test suite and
 libarchive's LHA tests, 247 files: every member lhasa extracts with a method archivey
 decodes read byte for byte the same. The differences were the methods not decoded yet,
-self-extracting programs, MacBinary members, and a few damaged archives: where lhasa
+self-extracting programs, MacBinary members (read with their wrapper then; since
+stripped, and lhasa's sixteen MacLHA 2.24 archives match its CRCs), and a few damaged
+archives: where lhasa
 stops quietly (a name past its header, a 4 GB level-3 header), archivey raises
 `CorruptionError`, and where lhasa stops at an empty name, archivey lists the members
 after it.
