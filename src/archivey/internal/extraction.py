@@ -586,8 +586,17 @@ class _RunState:
     # Result index -> output bytes counted for it, for each member that reached
     # ``tracker.start_member``: what a streaming take-back refunds.
     counted: dict[int, int] = field(default_factory=dict)
-    # Source member id -> the on-disk paths holding that source's content.
-    source_paths: dict[int, list[Path]] = field(default_factory=dict)
+    # Source member id -> the on-disk paths holding that source's content, oldest
+    # first. A dict used as an ordered set: a hardlink checks and drops a path in
+    # constant time, so an archive of many links to one file stays linear.
+    source_paths: dict[int, dict[Path, None]] = field(default_factory=dict)
+    # The reverse of ``source_paths``: path -> the one source whose content it holds,
+    # so forgetting a path is one lookup however many sources the run has.
+    source_of: dict[Path, int] = field(default_factory=dict)
+    # Path -> the source it held when it was forgotten, until it is recorded again. A
+    # replaced or parked path is forgotten before the Windows read-only clear looks for
+    # its other names, and those names are still on this source.
+    forgotten_source: dict[Path, int] = field(default_factory=dict)
     # The entries this run has written under ``dest``.
     written_paths: set[Path] = field(default_factory=set)
     # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> the claim
@@ -1738,7 +1747,7 @@ class ExtractionCoordinator:
         The earlier result becomes ``SUPERSEDED`` here, before the later copy is
         filtered: random access supersedes it whatever then happens to the later copy.
         Its file is parked (see ``_park_earlier_copies``). Its claim, its place in the
-        hardlink source lists and its bomb-limit counts are released now. A hardlink
+        hardlink source map and its bomb-limit counts are released now. A hardlink
         already made to it is its own directory entry and stays, and its bytes stay
         counted against the byte cap while it holds them. A directory is removed now if
         it is empty; one that other members were written into stays, as their parent,
@@ -3049,7 +3058,7 @@ class ExtractionCoordinator:
 
         # Record this FILE's path under the ORIGINAL member id so later hardlinks whose
         # link_target_member is this member can os.link against it.
-        state.source_paths.setdefault(original.member_id, []).append(dest_path)
+        self._record_source_path(original.member_id, dest_path)
         return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
 
     def _keep_copy_source(self, source: ArchiveMember) -> bool:
@@ -3367,12 +3376,12 @@ class ExtractionCoordinator:
         if source.member_id in self._state.source_paths:
             # Taken before ``_make_room``: under REPLACE a link can land on one of its
             # own source's paths, which ``_make_room`` then forgets.
-            candidates = list(self._state.source_paths[source.member_id])
+            on_source = dest_path in self._state.source_paths[source.member_id]
             declined = self._make_room(original, transformed, dest_path, atomic=True)
             if declined is not None:
                 return declined
             dest_path = self._place_link(
-                source.member_id, candidates, dest_path, transformed
+                source.member_id, dest_path, transformed, on_source=on_source
             )
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
@@ -3824,9 +3833,7 @@ class ExtractionCoordinator:
                     )
                 else:
                     self._state.written_paths.add(resolved)
-                    self._state.source_paths.setdefault(
-                        source_member.member_id, []
-                    ).append(resolved)
+                    self._record_source_path(source_member.member_id, resolved)
                     result = ExtractionResult(
                         orphan.original, resolved, ExtractionStatus.EXTRACTED, None
                     )
@@ -3884,14 +3891,14 @@ class ExtractionCoordinator:
             # last path; ``_place_link`` then fails this link as well. No archive
             # reaches that alone: the earlier link has to fail in ``os.link`` or
             # ``os.replace``, which needs the filesystem to change under the run.
-            candidates = list(self._state.source_paths.get(source_id, ()))
+            on_source = resolved in self._state.source_paths.get(source_id, ())
             result = self._make_room(
                 orphan.original, orphan.transformed, resolved, atomic=True
             )
             if result is None:
                 try:
                     resolved = self._place_link(
-                        source_id, candidates, resolved, orphan.transformed
+                        source_id, resolved, orphan.transformed, on_source=on_source
                     )
                 except _NameTakenSince:
                     result = ExtractionResult(
@@ -3954,15 +3961,30 @@ class ExtractionCoordinator:
         ):
             yield
             return
-        others: list[Path] = []
+        other_name: Path | None = None
         if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
+            # One other name is enough to put the attribute back, as it belongs to
+            # the file. The run's other names of this file are links to the same
+            # source, so only that source's paths are looked at, newest first; a path
+            # of another device's copy has another identity and is passed. A replaced
+            # path and a superseded copy are forgotten before they are cleared, so
+            # for them it is the source they held when forgotten. Only a path never
+            # recorded as a source looks at every recorded path.
             identity = (st.st_dev, st.st_ino)
-            for paths in state.source_paths.values():
-                for other in paths:
-                    with contextlib.suppress(OSError):
-                        ost = os.lstat(long_path(other))
-                        if other != path and (ost.st_dev, ost.st_ino) == identity:
-                            others.append(other)
+            source_id = state.source_of.get(path)
+            if source_id is None:
+                source_id = state.forgotten_source.get(path)
+            candidates: Iterator[Path] = (
+                reversed(state.source_paths.get(source_id, {}))
+                if source_id is not None
+                else (p for paths in state.source_paths.values() for p in paths)
+            )
+            for other in candidates:
+                with contextlib.suppress(OSError):
+                    ost = os.lstat(long_path(other))
+                    if other != path and (ost.st_dev, ost.st_ino) == identity:
+                        other_name = other
+                        break
         os.chmod(long_path(path), st.st_mode | stat.S_IWRITE)
         try:
             yield
@@ -3971,9 +3993,9 @@ class ExtractionCoordinator:
                 # Still the same file: the block failed.
                 os.chmod(long_path(path), st.st_mode)
             raise
-        for other in others:
+        if other_name is not None:
             with contextlib.suppress(OSError):
-                os.chmod(long_path(other), st.st_mode)
+                os.chmod(long_path(other_name), st.st_mode)
 
     def _forget_source_path(self, path: Path) -> bool:
         """Stop offering ``path`` as a hardlink source: something else is going there.
@@ -3986,16 +4008,17 @@ class ExtractionCoordinator:
         A source left with no path is re-read by the second pass where the source is
         seekable, as an excluded one is.
         """
-        source_paths = self._state.source_paths
-        content_kept = False
-        for source_id, paths in list(source_paths.items()):
-            if path in paths:
-                paths.remove(path)
-                if paths:
-                    content_kept = True
-                else:
-                    del source_paths[source_id]
-        return content_kept
+        state = self._state
+        source_id = state.source_of.pop(path, None)
+        if source_id is None:
+            return False
+        state.forgotten_source[path] = source_id
+        paths = state.source_paths[source_id]
+        del paths[path]
+        if paths:
+            return True
+        del state.source_paths[source_id]
+        return False
 
     def _resolutions_changed(self) -> None:
         """Forget the cached parent resolutions: a symlink was created or removed."""
@@ -4574,20 +4597,23 @@ class ExtractionCoordinator:
     def _place_link(
         self,
         source_id: int,
-        candidates: list[Path],
         new_path: Path,
         member: ArchiveMember,
+        *,
+        on_source: bool,
     ) -> Path:
-        """Create ``new_path`` as a hardlink to the source's content, trying
-        ``candidates`` (the source's recorded on-disk paths, taken before
-        ``_make_room`` cleared ``new_path``) newest first; when none takes the link for
-        a reason of its own (see ``_link_refused_here``), copy from an existing path.
+        """Create ``new_path`` as a hardlink to the source's content, trying the
+        source's recorded on-disk paths (``source_paths``) newest first; when none takes
+        the link for a reason of its own (see ``_link_refused_here``), copy from an
+        existing path. ``on_source`` says whether ``new_path`` was one of those paths
+        before ``_make_room`` cleared it; that is the one path ``_make_room`` can have
+        forgotten since, so the rest are read live rather than copied for each link,
+        which would make a fan-out of n links cost n² steps.
         Records ``new_path`` under ``source_id`` so a later same-device link can reuse
         it — which is what keeps a fan-out across one device boundary to a single copy
         per device rather than one per link, and a fan-out past the link-count limit to
-        one copy per full file. When ``new_path`` already named the source's file, it
-        is not recorded twice: the name existed, so ``_prepare_destination`` dropped it
-        from the list (``_forget_source_path``) before this method ran.
+        one copy per full file. ``_record_source_path`` keeps each path once, as the
+        newest.
 
         The first path at the link-count limit ends the search with a copy. The paths
         recorded before it are older names of the same file, of a file that filled up
@@ -4610,18 +4636,17 @@ class ExtractionCoordinator:
         a destination symlink is replaced rather than written through. Returns the name
         the link landed on, which under RENAME can be another free name
         (``_land_on_free_name``); that is the name recorded."""
-        if new_path in candidates and _is_regular_file(new_path):
+        if on_source and _is_regular_file(new_path):
             # The link landed on a path that already holds its source's content (a
             # case-folded name under REPLACE). The callers' ``_make_room`` ran with
             # ``atomic=True``, which leaves an existing file for the swap rather than
             # unlinking it, so the file is still in place and there is nothing to link.
-            self._state.source_paths.setdefault(source_id, []).append(new_path)
+            self._record_source_path(source_id, new_path)
             return new_path
         # Each path was a regular file this run wrote, and ``_forget_source_path``
-        # drops one once another member replaces it. ``candidates`` was taken before
-        # the callers' ``_make_room``, so the one path that can be stale here is
-        # ``new_path``: the early return above takes it while it is a regular file,
-        # and the check below skips it when it is not. Checked again here because
+        # drops one once another member replaces it. The one path that can be stale
+        # here is ``new_path``: the early return above takes it while it is a regular
+        # file, and the check below skips it when it is not. Checked again here because
         # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
         # every platform): a link made through one would name a file this run did not
         # write. Checked one path at a time as the loop reaches it, so the common case,
@@ -4632,7 +4657,8 @@ class ExtractionCoordinator:
             linked = False
             at_link_limit = False
             copy_from: Path | None = None
-            for candidate in reversed(candidates):
+            # Nothing below changes ``source_paths`` before the loop ends.
+            for candidate in reversed(self._state.source_paths.get(source_id, {})):
                 if not _is_regular_file(candidate):
                     continue
                 if copy_from is None:
@@ -4679,8 +4705,23 @@ class ExtractionCoordinator:
             with contextlib.suppress(OSError):
                 os.unlink(long_path(tmp))
             raise
-        self._state.source_paths.setdefault(source_id, []).append(landed)
+        self._record_source_path(source_id, landed)
         return landed
+
+    def _record_source_path(self, source_id: int, path: Path) -> None:
+        """Record ``path`` as the newest on-disk path holding ``source_id``'s content.
+
+        A path holds one file, so it belongs to one source: recorded again, it moves
+        to the newest place, and recorded under another source, it leaves the first.
+        """
+        state = self._state
+        if state.source_of.get(path, source_id) != source_id:
+            self._forget_source_path(path)
+        paths = state.source_paths.setdefault(source_id, {})
+        paths.pop(path, None)
+        paths[path] = None
+        state.source_of[path] = source_id
+        state.forgotten_source.pop(path, None)
 
     def _already_exists(self, dest: Path, member: ArchiveMember) -> ExtractionError:
         """The error ``OverwritePolicy.ERROR`` raises for an entry at ``dest``, from the
