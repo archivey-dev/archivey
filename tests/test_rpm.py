@@ -932,7 +932,7 @@ def test_an_unknown_file_type_is_listed_and_reported() -> None:
         codes = [d.code for d in reader.diagnostics.retained]
     odd = members["opt/odd"]
     assert odd.type is MemberType.OTHER
-    assert "special_file_type" not in odd.extra
+    assert odd.extra["special_file_type"] == "unknown"
     assert codes == [DiagnosticCode.MEMBER_TYPE_UNKNOWN]
     assert [d.code for d in odd.diagnostics] == [DiagnosticCode.MEMBER_TYPE_UNKNOWN]
 

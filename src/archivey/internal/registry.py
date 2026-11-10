@@ -33,7 +33,7 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import TYPE_CHECKING, Protocol
 
-from archivey.config import ArchiveyConfig, ProcessIsolation
+from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ProcessIsolation
 from archivey.cost import StreamCapability
 from archivey.exceptions import (
     PackageNotInstalledError,
@@ -488,6 +488,7 @@ class BackendRegistry:
         check_programs: bool = False,
         excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
         replacement: type[FormatHandler] | None = None,
+        config: ArchiveyConfig = DEFAULT_ARCHIVEY_CONFIG,
     ) -> FormatAvailability:
         """Compute the tri-state support of ``fmt`` compositionally (see ``backend-registry``).
 
@@ -499,6 +500,8 @@ class BackendRegistry:
         ``excluded`` and ``replacement`` are a call's ``FormatPolicy`` answers: the
         packages it turns off, which count as absent, and the plugin that reads ``fmt``
         in place of the registered backend (``FormatPolicy._replacement_for``).
+        ``config`` is handed to ``missing_programs``, for a setting that names the
+        program to run (``ArchiveyConfig.unrar_path``).
         """
         if replacement is not None:
             # Imported here: the plugin adapter imports this module.
@@ -510,6 +513,7 @@ class BackendRegistry:
                 check_programs=check_programs,
                 member_codecs=False,
                 excluded=excluded,
+                config=config,
             )
         backend_cls = self._backend_for(fmt)
         if backend_cls is None:
@@ -522,6 +526,7 @@ class BackendRegistry:
             check_programs=check_programs,
             member_codecs=True,
             excluded=excluded,
+            config=config,
         )
 
     def _backend_availability(
@@ -532,6 +537,7 @@ class BackendRegistry:
         check_programs: bool,
         member_codecs: bool,
         excluded: frozenset[OptionalLibrary],
+        config: ArchiveyConfig,
     ) -> FormatAvailability:
         """The support of ``fmt`` when ``backend_cls`` reads it.
 
@@ -596,7 +602,7 @@ class BackendRegistry:
                 assert requirement is not None  # an optional codec always declares one
                 missing.append(requirement)
         if check_programs:
-            missing.extend(backend_cls.missing_programs())
+            missing.extend(backend_cls.missing_programs(config))
 
         if not missing:
             return FormatAvailability(fmt, FormatSupport.FULL, (), required_source)
@@ -810,6 +816,7 @@ def format_availability(
         check_programs=check_programs,
         excluded=policy.exclude_libraries,
         replacement=policy._replacement_for(resolved),
+        config=config,
     )
 
 
