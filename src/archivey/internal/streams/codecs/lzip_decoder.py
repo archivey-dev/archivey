@@ -68,6 +68,7 @@ from archivey.internal.streams.decompressor_stream import (
     near_stream_magic,
     release_decoder,
 )
+from archivey.terminal import quoted
 
 if TYPE_CHECKING:
     from archivey.formats import Decompressor
@@ -249,7 +250,7 @@ def _iter_trailers_backwards(
         if header[:4] != _MAGIC:
             raise CorruptionError(
                 f"Lzip magic not found at expected member start {compressed_start} "
-                f"(got {header[:4]!r}); member_size in trailer may be corrupt"
+                f"(got {quoted(header[:4].decode('ascii', 'surrogateescape'))}); member_size in trailer may be corrupt"
             )
         _check_version(header, compressed_start)
         yield compressed_start, int(data_size), int(member_size), int(crc32)
@@ -367,7 +368,7 @@ class _LzipState:
                 # trailing data is allowed only *after* a member (lzip spec §7).
                 if head != _MAGIC[: len(head)]:
                     raise CorruptionError(
-                        f"Not a valid lzip file: expected magic {_MAGIC!r}, got {head!r}"
+                        f"Not a valid lzip file: expected magic {_MAGIC!r}, got {quoted(head.decode('ascii', 'surrogateescape'))}"
                     )
                 self.truncated = True
                 return b"", []
@@ -483,7 +484,7 @@ class _LzipState:
         if header[:4] != _MAGIC:
             if self._members_seen == 0:
                 raise CorruptionError(
-                    f"Not a valid lzip file: expected magic {_MAGIC!r}, got {header[:4]!r}"
+                    f"Not a valid lzip file: expected magic {_MAGIC!r}, got {quoted(header[:4].decode('ascii', 'surrogateescape'))}"
                 )
             if near_stream_magic(header, _MAGIC):
                 # lzip's own rule: "corrupt header in multimember file".

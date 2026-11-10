@@ -74,9 +74,11 @@ To choose the folder yourself, pass `-d out/`, or `-d .` for the current directo
     as `notes (1).txt`; with `error`, `skip` or `replace`, the folder stays in `photos/` instead.
 
     For an archive that doesn't list its members up front, such as a TAR, archivey extracts into
-    `photos/` first and moves the folder out at the end. It leaves the folder in `photos/`, and
-    prints why, if the move could change what a link points to (the folder is a symlink, or holds
-    one that leads outside it), or if part of it couldn't be listed.
+    `photos/` first and moves the folder out at the end. It does the same for any archive whose
+    single folder holds a link, or whose member names start with `/`, `\` or a drive letter. It
+    leaves the folder in `photos/`, and prints why, if the move could change what a link points to
+    (the folder is a symlink, holds one that leads outside it, or holds one and would merge into a
+    folder of the same name that is already there), or if part of it couldn't be listed.
 
 Extraction uses the `strict` policy by default: a member that would land outside the destination,
 or a link that points outside it, is refused and reported, and the rest are still extracted.
