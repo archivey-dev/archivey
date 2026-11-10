@@ -176,6 +176,16 @@ declaration is about seeking the member stream, and the peek hands nobody a stre
 it to the flag would make the same `.xz` report `size=None` on a plain open and its size
 with the flag. The peeks run with the accelerators off, since they decode nothing.
 
+On a remote source (an fsspec `OpenFile`, `ArchiveSource.remote_sources` non-empty) the
+peek reads only the last stream's footer and index, or the last member's trailer, and
+stops when that shows an earlier one (`SingleFileReader._remote_with_earlier_streams`):
+`size` is `None` and the lzip CRC is absent. This is the maintainer's ruling of
+2026-11-08, "lazy for multi-stream only": the walk costs a step per stream on every open,
+and a read from the start never needs it. A path keeps the whole walk. A seek in the
+member walks the index then. A `.xz` whose last 64 KiB are all zeros (stream padding,
+which has no length limit) is treated the same way: the scan back over the padding
+would read every byte of it.
+
 A source whose seek may decode what it skips (`seek_is_expensive`: another archive's
 member stream passed to `open_archive(member_stream)`, or a standard-library `GzipFile`,
 `BZ2File`, `LZMAFile` or `ZipExtFile`) is peeked only when it says the peek is cheap

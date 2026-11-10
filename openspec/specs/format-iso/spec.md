@@ -120,8 +120,8 @@ the plain ISO it holds: each sector stripped to its 2048 bytes of user data (aft
 when it is read: a sector without the sync or with another mode byte SHALL raise
 `CorruptionError` and a Mode 2 Form 2 sector `UnsupportedFeatureError`, for the read that
 reaches it; a sector read ahead and not asked for SHALL NOT fail a read. EDC and ECC bytes
-are not checked, and documentation SHALL say so. Only the first track is read; the `.cue`
-sheet is not consulted. The trailing-data check SHALL scan only the data sectors that
+are not checked, and documentation SHALL say so. Without a `.cue` sheet beside it (next
+requirement) only the first track is read. The trailing-data check SHALL scan only the data sectors that
 continue the track after the volume space, so a mixed-mode disc's audio is not reported.
 Read hints SHALL name the raw sectors that hold a member's extents.
 
@@ -146,6 +146,42 @@ refusal SHALL NOT depend on `pycdlib` being installed. A replacement reader
 | `pycdlib` not installed, unread layout | The same refusal |
 | Replacement ISO reader | `UnsupportedFeatureError` naming the replacement |
 | Plain `.iso` | Unaffected: it starts with the zero-filled system area, never the sync |
+
+### Requirement: Read the disc a `.cue` sheet describes
+
+The ISO backend SHALL claim the `.cue` extension. Opened from a path, a `.cue` sheet, or a
+raw `.bin` that a `.cue` with the same stem beside it lists, SHALL be read as the disc the
+sheet describes: its `FILE`s, their `MODE1/2352`, `MODE2/2352` and `MODE1/2048` data
+tracks and other tracks, their `INDEX 01` starts, `PREGAP`s and `REM SESSION` numbers.
+Every data sector SHALL be placed at its absolute address: a file's sectors follow the
+previous files', and a later session starts after the gap recorders leave (11 400 sectors
+after the first session, 6 900 after later ones). The backend SHALL list the first data
+track of the last session that has one, reading its volume descriptors from that track's
+start plus 16, as a drive mounting it does. The address SHALL be checked: when the root
+directory's `.` record is not at the sector it names, the backend SHALL search the
+track's first 4096 sectors for it and move the session there. A read of a sector in no
+data track SHALL raise `CorruptionError`; a track file that ends early, `TruncatedError`.
+
+A `FILE` name that is not a plain name in the sheet's directory (a path separator, `..`,
+an absolute or drive name) SHALL raise `UnsupportedFeatureError`, before any file is
+opened; a missing file SHALL raise `TruncatedError`. A sheet over 64 KiB, a sheet with no
+data track, or a track mode it does not know SHALL raise `UnsupportedFeatureError`, and a
+malformed `TRACK`, `INDEX` or time, a track without `INDEX 01`, or more than 99 tracks
+`CorruptionError`. Member data hints SHALL be empty, since the opened file is the sheet.
+
+#### Scenario: cue matrix
+
+| Case | Expected |
+| --- | --- |
+| One `MODE1/2352`, `MODE2/2352` or `MODE1/2048` track | Reads as the plain `.iso` |
+| Data track, then audio, one file | Track 1 is listed; no diagnostic; the `.bin` alone finds the sheet |
+| Two data sessions, standard gap | The newest session; files from session 1 read from track 1 |
+| Two data sessions, another gap | The same, through the root-directory search |
+| Audio session, then data session (Enhanced CD) | The data session |
+| `FILE "../x.bin"`, `"/etc/passwd"`, `"sub/x.bin"` | `UnsupportedFeatureError` |
+| Missing track file | `TruncatedError` |
+| Audio only | `UnsupportedFeatureError` |
+| `detect_format` on a `.cue` | `ISO`, `GUESS`, `detected_by="extension"` |
 
 ### Requirement: List every ISO directory record as its own member
 

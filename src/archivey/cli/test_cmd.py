@@ -162,12 +162,16 @@ def run_test(
                         member_bytes = _read_member(
                             stream, member, progress, on_progress
                         )
-                        ok += 1
                         progress.files_done += 1
                         if on_progress is not None:
                             on_progress(progress.event(member, member_bytes))
                         if verbose:
                             print(f"OK   {escape_member_name(member.name)}", file=err)
+                        # Counted after the member's last progress event and its -v
+                        # line, the writes in this ``try``: an OSError from either
+                        # fails the member below, and a member is counted only once,
+                        # OK or failed.
+                        ok += 1
                     except BrokenPipeError:
                         # The -v line or the progress bar lost its reader: not a
                         # member failure. main() exits 141 for it, with no message.

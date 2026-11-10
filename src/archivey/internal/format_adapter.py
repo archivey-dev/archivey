@@ -295,6 +295,7 @@ class _PluginAdapter(BaseArchiveReader):
             hold=self._hold,
             charge_metadata=self._charge_metadata,
             open_nested=self._open_nested,
+            usage=self._usage,
         )
         self._reader = self._open_reader(context)
         self._reader_open = True

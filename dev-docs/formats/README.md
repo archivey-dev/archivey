@@ -99,7 +99,9 @@ Topic pages are **not** format pages with the nouns swapped, and
 shaped by it — came out looser: shapes in the wild, the mechanism and its tiers, the cost
 argument, *where the formats differ*, sharp edges, decisions, references. Take the
 conventions rather than the section list: the where-it-lives tags, no performance
-numbers, status behind the register link.
+numbers, status behind the register link. Every topic page opens with an **In one
+minute** paragraph in plain words, for a reader who lands there cold, and links the
+[internals guide](../guide/README.md) page that sets it in context.
 
 The split that matters is the same one in both directions. **A format page keeps what the
 format's own structure decides; the topic page keeps the shared machinery.** For prefixed

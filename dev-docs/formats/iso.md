@@ -105,7 +105,19 @@ track is read (no `.cue`), and the trailing-data scan stops at the first sector 
 not a data sector, so a mixed-mode disc's audio is not reported. Other layouts are refused
 by name in `open_archive` with `UnsupportedFeatureError`, before the availability check,
 so a caller without `pycdlib` is not told to install it first
-(`refuse_raw_sector_image`); a replacement reader is refused every raw image. A non-seekable source is also refused ahead of that
+(`refuse_raw_sector_image`); a replacement reader is refused every raw image.
+
+A `.cue` sheet (claimed by extension; it has no magic) or a `.bin` with a same-stem
+`.cue` beside it that lists it is read through `cue_sheet.disc_source`: a `DiscSource`
+that places every data track's sectors at its absolute address (files back to back,
+plus `PREGAP`s and the 11 400 / 6 900-sector gaps between sessions), reads sectors 0 to
+the end of the volume descriptor set (plus the version descriptor after it) from the
+chosen track's start, and fails a read of a sector in no data track. The chosen track
+is the first data track of the last session with one, as a mount picks it. The session
+gap is checked against the root directory's `.` record (it names its own sector) and
+searched for in the track's first 4096 sectors when it disagrees. `FILE` names must be
+plain names beside the sheet. The trailing-data scan covers only the rest of the chosen
+track, and member hints are empty (the opened file is the sheet). A non-seekable source is also refused ahead of that
 check, with `StreamNotSeekableError`, because `pycdlib` could not read it either. The
 extension is `.iso`.
 

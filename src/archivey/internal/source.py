@@ -1,7 +1,10 @@
 """``ArchiveSource`` — the one object every archive source becomes at the boundary.
 
-``open_archive`` and ``open_stream`` build one of these from whatever the caller passed —
-a path, a stream, or a volume list — and hand it to detection and then to the backend.
+``open_archive`` and ``detect_format`` build one of these from whatever the caller
+passed — a path, a stream, an fsspec ``OpenFile`` or a volume list — through
+:func:`~archivey.internal.volumes.resolve_source`, and hand it to detection and then to
+the backend. ``open_stream`` uses ``resolve_source`` for an ``OpenFile`` and calls
+:meth:`ArchiveSource.for_path` or :meth:`ArchiveSource.for_stream` otherwise.
 It **is** the stream they read (third-party parsers such as ``pycdlib`` get it
 directly), and it carries every guarantee the raw source must give:
 
@@ -40,6 +43,12 @@ its own full-count reads can fill without waiting for a writer that keeps a pipe
 A non-seekable source also holds the **detection replay prefix**: :meth:`peek` fills it
 without consuming, and ``read`` drains it before reaching the source. Detection and the
 backend therefore see the same object, and nothing is swapped in between.
+
+A seekable caller stream needs no replay prefix: detection seeks it back to where it
+found it. The archive may start past offset 0 there, wherever the caller left the
+stream. Before a backend
+reads it, :meth:`ArchiveSource.rebase_to_current_position` **rebases** the source so
+that position reads as offset 0.
 
 Only a size that is a **fact** clamps a read — ``stat`` on a path, a ``BytesIO``'s buffer,
 ``fstat`` on a regular file, a joined set's measured parts. An integer ``size`` attribute
@@ -521,7 +530,9 @@ class ArchiveSource(ReadOnlyIOStream):
         ``OpenFile``.
 
         Its size is a fact (``fs.size`` at open), its reads are full-count, and a seek
-        may cost a request, so it is marked ``seek_is_expensive``. It has no path: a
+        may cost a request, so it is marked ``seek_is_expensive``. A seek decodes
+        nothing (:meth:`nearest_resume_offset` answers the target), so the tail reads
+        run as on a path, one request each (design D1). It has no path: a
         backend that needs one spools, as for any stream. Closing this source closes the
         range source, which drops its fetched windows; nothing of the caller's is
         closed, since no file object was ever opened.
@@ -705,10 +716,12 @@ class ArchiveSource(ReadOnlyIOStream):
         (:attr:`seek_is_expensive`) passes the question to that stream, under any
         pass-through buffer: a stored ZIP entry or an uncompressed TAR member, a slice
         of its archive's bytes, answers ``target``, and a decoder answers where it
-        would restart.
-        ``None`` when nothing answers (a remote file, a joined set, a stream with no
-        such method) and on a source that cannot seek. Offsets are the borrowed
-        stream's own, as :meth:`seek`'s are.
+        would restart. A remote source (a ``RangeSource``) answers ``target``: a
+        range request starts anywhere. A joined set asks the volume that holds
+        ``target``.
+        ``None`` when nothing answers (a stream with no such method) and on a source
+        that cannot seek. Offsets are the borrowed stream's own, as :meth:`seek`'s
+        are.
         """
         if not self._seekable:
             return None
@@ -735,6 +748,10 @@ class ArchiveSource(ReadOnlyIOStream):
         return self._seekable
 
     def _stream(self) -> BinaryIO:
+        """The stream reads go to, opening a path source's handle on first use.
+
+        Raises once the source is closed, and for a directory, which has no stream.
+        """
         reader = self._reader
         if reader is not None:
             return reader
@@ -759,7 +776,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # which proves there is nothing to replay and no gathering (the class
         # docstring's table). This is ``read_within_reach``'s clamp branch; every read
         # of an archive pays for this method's frames, so the rest of the dispatch is
-        # kept off it (task 8.2 of the change).
+        # kept off it.
         reader = self._reader
         length = self._length
         if length is not None and reader is not None:
@@ -1196,9 +1213,10 @@ def seeks_to_end_are_cheap(stream: BinaryIO) -> bool:
     the last bytes, where the trailers sit; the middle, which an index walk may cross;
     and the current position, which the probe restores. A stored ZIP entry or an
     uncompressed TAR member, a slice of its archive's bytes, answers every target
-    itself. A member of a compressed TAR is a slice of decoded data and answers its
-    decoder's resume point. A resume at 0 for a later target is not cheap, since a
-    member view clamps a point behind its own start to 0. The end itself is not
+    itself, and so does a remote source, whose tail costs one range request
+    (fsspec-integration design D1). A member of a compressed TAR is a slice of decoded
+    data and answers its decoder's resume point. A resume at 0 for a later target is
+    not cheap, since a member view clamps a point behind its own start to 0. The end itself is not
     asked: a decoder can resume there, with nothing left to decode, and still decode
     everything before it. A stream that has no cheap length or does not answer is not
     cheap.
