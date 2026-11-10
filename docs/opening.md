@@ -175,8 +175,11 @@ formats a call opens. A format is a container and its compression, and both have
 ```python
 from archivey import ArchiveyConfig, ContainerFormat as C, FormatPolicy, StreamFormat as S
 
+# The formats people send today, for files you didn't make. See below.
+UPLOADS = ArchiveyConfig(formats=FormatPolicy.COMMON)
+
 # ZIP, and TAR with or without gzip or xz. Nothing else opens.
-UPLOADS = ArchiveyConfig(formats=FormatPolicy(only={C.ZIP, C.TAR, S.GZIP, S.XZ}))
+ZIP_OR_TAR = ArchiveyConfig(formats=FormatPolicy(only={C.ZIP, C.TAR, S.GZIP, S.XZ}))
 
 # Everything except RAR, and no plugin formats.
 NO_RAR = ArchiveyConfig(formats=FormatPolicy(exclude={C.RAR}, plugins=False))
@@ -186,6 +189,14 @@ A file in a format the policy turns off raises `UnsupportedFeatureError`, and th
 which entry would let it open. `format=` doesn't get around it. `detect_format` still reports
 what a file is, and `config.formats.allows(info.format)` tells you whether it would open. A plugin
 format that's turned off isn't detected at all, so its code doesn't run.
+
+`FormatPolicy.COMMON` is a preset for files you didn't make, such as uploads. It opens ZIP, TAR,
+RAR and 7z, and gzip, bzip2, xz and zstd, as a whole file or around a TAR. It refuses ZIP members
+compressed with Shrink, Implode, Reduce or DCL Implode, methods only PKZIP 1.x and earlier wrote.
+Everything else is refused: disk images, packages, cabinets, the rarer compressions, plugin
+formats, and any format a later release adds. Their readers and their pure-Python decoders then
+never run on what you're sent. To add a format, build on it:
+`FormatPolicy(only=FormatPolicy.COMMON.only | {S.LZ4}, exclude=FormatPolicy.COMMON.exclude)`.
 
 `exclude_libraries=` turns off optional packages for the call, even when they're installed:
 
@@ -209,6 +220,11 @@ only if it checks `config.formats.exclude_libraries` itself.
 `only=` and `exclude=` check the file you open, not what's inside it. `S.XZ` there means a file
 compressed with xz as a whole, such as a `.xz` or `.tar.xz` file, not the xz codec: a ZIP member
 compressed with xz can still be read under `exclude={S.XZ}`, because the file is a ZIP.
+A [`CompressionAlgorithm`][archivey.CompressionAlgorithm] in `exclude=` is the exception: it
+checks every member instead. `exclude={CompressionAlgorithm.IMPLODE}` still lists an imploded ZIP
+member, but opening, reading or extracting it raises `UnsupportedFeatureError` before anything is
+decoded. So `CompressionAlgorithm.XZ` refuses xz-compressed members but not a `.xz` file, the
+reverse of `S.XZ`. `only=` takes no methods.
 `plugins=False` and `exclude_libraries=` are different, since they turn off the code that
 decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format runs in the
 call, even for a member or an archive inside an archive: reading a member that needs one raises

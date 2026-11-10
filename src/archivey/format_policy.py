@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from archivey.exceptions import _UsageTypeError, _UsageValueError
 from archivey.internal.arg_checks import check_instance
@@ -20,6 +20,8 @@ from archivey.internal.excluded_libraries import is_excluded_module
 from archivey.internal.overrides import override
 from archivey.types import (
     ArchiveFormat,
+    CompressionAlgorithm,
+    CompressionMethod,
     ContainerFormat,
     OptionalLibrary,
     PluginContainer,
@@ -36,26 +38,44 @@ __all__ = ["FormatPolicy"]
 # One entry of ``only`` or ``exclude``: a container or a compression, each half of an
 # ArchiveFormat.
 _FormatEntry = ContainerFormat | PluginContainer | StreamFormat | PluginStream
+# One entry of ``exclude``: a format entry, or a member compression method.
+_ExcludeEntry = _FormatEntry | CompressionAlgorithm
+
+# Methods ``exclude`` cannot name: no decoder runs for either, so turning one off would
+# refuse nothing or everything.
+_UNEXCLUDABLE_METHODS = frozenset(
+    {CompressionAlgorithm.STORED, CompressionAlgorithm.UNKNOWN}
+)
 
 _CALL = "FormatPolicy()"
 
 
-def _entry_name(entry: _FormatEntry) -> str:
+def _entry_name(entry: _ExcludeEntry) -> str:
     return f"{type(entry).__name__}.{entry.name}"
 
 
-def _coerce_entries(values: object, *, param: str) -> frozenset[_FormatEntry]:
+def _coerce_entries(
+    values: object, *, param: str, methods: bool = False
+) -> frozenset[_ExcludeEntry]:
     """``values`` as a frozenset of members, refusing anything that is not one.
 
     Members only, not their string spellings: ``"zip"`` would name a container and
     ``"gz"`` a compression, so a string cannot say which half of the format it is.
+    ``methods`` admits :class:`~archivey.CompressionAlgorithm` members (``exclude=``
+    only).
     """
+    kinds = (
+        "ContainerFormat, PluginContainer, StreamFormat, PluginStream and "
+        "CompressionAlgorithm"
+        if methods
+        else "ContainerFormat, PluginContainer, StreamFormat and PluginStream"
+    )
     if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
         raise _UsageTypeError(
-            f"{_CALL} takes a collection of ContainerFormat, PluginContainer, "
-            f"StreamFormat and PluginStream members for {param}, got {values!r}."
+            f"{_CALL} takes a collection of {kinds} members for {param}, got "
+            f"{values!r}."
         )
-    entries: set[_FormatEntry] = set()
+    entries: set[_ExcludeEntry] = set()
     for value in values:
         if isinstance(value, ArchiveFormat):
             raise _UsageTypeError(
@@ -63,12 +83,26 @@ def _coerce_entries(values: object, *, param: str) -> frozenset[_FormatEntry]:
                 f"format {value!r}: pass {_entry_name(value.container)}, and "
                 f"{_entry_name(value.stream)} for its compression."
             )
+        if isinstance(value, CompressionAlgorithm):
+            if not methods:
+                raise _UsageTypeError(
+                    f"{_CALL} got {_entry_name(value)} in {param}, which takes formats "
+                    "only: a member's compression method can be refused with "
+                    "exclude=, not allowed with only=."
+                )
+            if value in _UNEXCLUDABLE_METHODS:
+                raise _UsageValueError(
+                    f"{_CALL} got {_entry_name(value)} in {param}: STORED decodes "
+                    "nothing and UNKNOWN names no method, so neither can be turned "
+                    "off."
+                )
+            entries.add(value)
+            continue
         if not isinstance(
             value, (ContainerFormat, PluginContainer, StreamFormat, PluginStream)
         ):
             raise _UsageTypeError(
-                f"{_CALL} takes ContainerFormat, PluginContainer, StreamFormat and "
-                f"PluginStream members for {param}, got {value!r} "
+                f"{_CALL} takes {kinds} members for {param}, got {value!r} "
                 f"({type(value).__name__})."
             )
         if value is ContainerFormat.UNKNOWN:
@@ -224,6 +258,9 @@ class FormatPolicy:
     format. ``plugins`` and ``exclude_libraries`` turn off the code that decodes,
     wherever it runs, so they hold for every member too: under ``plugins=False`` no
     plugin codec decodes anything in the call, and an excluded package decodes nothing.
+    A :class:`~archivey.CompressionAlgorithm` in ``exclude`` is the one entry about
+    members: it refuses every member compressed with that method, in every archive the
+    call opens.
 
     :func:`~archivey.open_archive` and :func:`~archivey.open_stream` refuse a format
     the policy does not allow with :class:`~archivey.UnsupportedFeatureError`,
@@ -244,7 +281,24 @@ class FormatPolicy:
     reader (see :attr:`replace`)::
 
         MY_ZIP = ArchiveyConfig(formats=FormatPolicy(replace={C.ZIP: MyZipPlugin}))
+
+    One preset is provided:
+
+    - ``FormatPolicy.COMMON`` is for files you did not make, such as uploads: the
+      formats people send today and nothing else. It is
+      ``FormatPolicy(only={C.ZIP, C.TAR, C.RAR, C.SEVEN_Z, C.RAW_STREAM, S.GZIP,
+      S.BZIP2, S.XZ, S.ZSTD}, exclude={SHRINK, IMPLODE, REDUCE, DCL_IMPLODE})``, the
+      last four being the ZIP methods only PKZIP 1.x and earlier wrote. Disk images,
+      packages, cabinets, the rarer compressions and plugin formats are refused, so
+      their readers and their pure-Python decoders do not run, and so is a format a
+      later release adds. Each entry is a deliberate choice, and a release changes
+      one only with a changelog line. To add a format, build on it:
+      ``FormatPolicy(only=FormatPolicy.COMMON.only | {S.LZ4},
+      exclude=FormatPolicy.COMMON.exclude)``. It bounds which code runs, not how long
+      it runs: a 7z member's BCJ2 filter and ZipCrypto still decode in Python.
     """
+
+    COMMON: ClassVar[FormatPolicy]
 
     only: (
         frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
@@ -256,13 +310,37 @@ class FormatPolicy:
     Only the file the call opens is checked. A member's compression is not: under
     ``only={C.ZIP}`` an xz-compressed ZIP member still decodes."""
 
-    exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
-    """The containers and compressions of the file the call may not open.
+    exclude: frozenset[
+        ContainerFormat
+        | PluginContainer
+        | StreamFormat
+        | PluginStream
+        | CompressionAlgorithm
+    ]
+    """The containers and compressions of the file the call may not open, and the
+    member compression methods it may not decode.
 
-    Only the file the call opens is checked. ``exclude={S.XZ}`` refuses a ``.xz`` or
-    ``.tar.xz`` file, but an xz-compressed ZIP member, or a plugin's xz payload, still
-    decodes. To turn off the code that decodes, use ``plugins`` or
-    ``exclude_libraries``, which hold for every member."""
+    A container or a :class:`~archivey.StreamFormat` is checked against the file the
+    call opens only. ``exclude={S.XZ}`` refuses a ``.xz`` or ``.tar.xz`` file, but an
+    xz-compressed ZIP member, or a plugin's xz payload, still decodes.
+
+    A :class:`~archivey.CompressionAlgorithm` is checked against every member instead,
+    in every archive the call opens, whatever its format. A member whose
+    :attr:`~archivey.ArchiveMember.compression` lists one is still listed, with its
+    metadata, but opening, reading or extracting it raises
+    :class:`~archivey.UnsupportedFeatureError` that names the entry, before any of its
+    data is decoded. A symbolic link whose target is stored as such data is listed
+    without a target and reported, as one whose target cannot be decoded is. So
+    ``exclude={CompressionAlgorithm.XZ}`` refuses an xz-compressed ZIP member but not a
+    ``.xz`` file, the reverse of ``S.XZ``. ``STORED`` and ``UNKNOWN`` cannot be listed:
+    the first decodes nothing, and the second names no method. ``only`` takes no
+    methods.
+
+    Use it to keep slow or rarely used decoders from running on files you did not
+    make: ``{CompressionAlgorithm.SHRINK, CompressionAlgorithm.IMPLODE,
+    CompressionAlgorithm.REDUCE, CompressionAlgorithm.DCL_IMPLODE}`` turns off the ZIP
+    methods only PKZIP 1.x and earlier wrote, which archivey decodes in pure Python.
+    To turn off a package wherever it decodes, use ``exclude_libraries``."""
 
     plugins: bool
     """Whether registered plugin formats and plugin codecs may run in this call. Use
@@ -328,14 +406,23 @@ class FormatPolicy:
         only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
         | None = None,
         exclude: Iterable[
-            ContainerFormat | PluginContainer | StreamFormat | PluginStream
+            ContainerFormat
+            | PluginContainer
+            | StreamFormat
+            | PluginStream
+            | CompressionAlgorithm
         ] = (),
         plugins: bool = True,
         replace: Mapping[ContainerFormat, type[IndexedFormatHandler]] | None = None,
         exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = (),
     ) -> None:
-        only_parsed = None if only is None else _coerce_entries(only, param="only=")
-        exclude_parsed = _coerce_entries(exclude, param="exclude=")
+        only_parsed = (
+            None
+            if only is None
+            # Without ``methods``, every entry is a format entry.
+            else cast("frozenset[_FormatEntry]", _coerce_entries(only, param="only="))
+        )
+        exclude_parsed = _coerce_entries(exclude, param="exclude=", methods=True)
         check_instance(plugins, bool, call="FormatPolicy(plugins=…)", allow_none=False)
         if StreamFormat.UNCOMPRESSED in exclude_parsed:
             raise _UsageValueError(
@@ -401,6 +488,17 @@ class FormatPolicy:
             f"ArchiveyConfig.formats does not allow {fmt.display_name}: "
             f"{', and '.join(reasons)}."
         )
+
+    def _excluded_methods(
+        self, compression: tuple[CompressionMethod, ...]
+    ) -> tuple[CompressionAlgorithm, ...]:
+        """The methods of a member's ``compression`` chain that :attr:`exclude` lists,
+        in chain order and once each; empty when the member may decode."""
+        hits: list[CompressionAlgorithm] = []
+        for method in compression:
+            if method.algo in self.exclude and method.algo not in hits:
+                hits.append(method.algo)
+        return tuple(hits)
 
     def _codec_refusal(self, codec: StreamFormat | PluginStream) -> str | None:
         """The refusal text for ``codec`` decoding inside an open (a member's data, or
@@ -470,4 +568,29 @@ class FormatPolicy:
     def _turns_off_plugins(self) -> bool:
         """Whether some plugin format could be off: the cheap test detection makes
         before it filters each plugin signal through :meth:`allows`."""
-        return not self.plugins or self.only is not None or bool(self.exclude)
+        return (
+            not self.plugins
+            or self.only is not None
+            or any(not isinstance(e, CompressionAlgorithm) for e in self.exclude)
+        )
+
+
+FormatPolicy.COMMON = FormatPolicy(
+    only={
+        ContainerFormat.ZIP,
+        ContainerFormat.TAR,
+        ContainerFormat.RAR,
+        ContainerFormat.SEVEN_Z,
+        ContainerFormat.RAW_STREAM,
+        StreamFormat.GZIP,
+        StreamFormat.BZIP2,
+        StreamFormat.XZ,
+        StreamFormat.ZSTD,
+    },
+    exclude={
+        CompressionAlgorithm.SHRINK,
+        CompressionAlgorithm.IMPLODE,
+        CompressionAlgorithm.REDUCE,
+        CompressionAlgorithm.DCL_IMPLODE,
+    },
+)
