@@ -266,6 +266,9 @@ def _method(raw: bytes) -> str:
 class LhaReader(IndexedReader[_Location]):
     """One open LHA archive."""
 
+    # LHA has no index: listing reads each header and seeks past its member's data.
+    member_list_upfront = False
+
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
         self._context = context

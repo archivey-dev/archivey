@@ -21,6 +21,7 @@ from archivey import (
     CorruptionError,
     CreateSystem,
     DiagnosticCode,
+    ListingCost,
     MemberType,
     TruncatedError,
     UnsupportedFeatureError,
@@ -369,6 +370,14 @@ def test_a_name_decodes_with_encoding() -> None:
 def test_detection() -> None:
     raw = archive(_members("-lh5-", 1))
     assert detect_format(io.BytesIO(raw)).format == ArchiveFormat.LHA
+
+
+def test_listing_is_a_header_walk() -> None:
+    with _open(archive(_members("-lh0-", 1))) as reader:
+        assert reader.cost.listing_cost is ListingCost.REQUIRES_SCANNING
+        assert reader.members_report_if_available() is None
+        reader.members()
+        assert reader.members_report_if_available() is not None
 
 
 def test_format_is_listed() -> None:
