@@ -409,6 +409,30 @@ def test_a_symlink_to_a_directory_lists_and_reads_through(memfs: Any) -> None:
         assert sorted(fs.find("", withdirs=True)) == ["d", "d/f", "d/up", "s"]
 
 
+def test_a_symlink_to_the_root_is_a_directory(memfs: Any, tmp_path: Path) -> None:
+    data = _tar_entries(
+        [
+            ("file", "f", b"A"),
+            ("sym", "s", "."),
+            ("dir", "d", ""),
+            ("sym", "d/up", ".."),
+        ]
+    )
+    memfs.pipe("/d/sr.tar", data)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.extract_all(dest)
+    with ArchiveyFileSystem("memory://d/sr.tar") as fs:
+        for link in ("s", "d/up"):
+            assert (dest / link).is_dir()
+            assert fs.info(link)["type"] == "directory"
+            listed = sorted(
+                name.rpartition("/")[2] for name in fs.ls(link, detail=False)
+            )
+            assert listed == sorted(os.listdir(dest / link))
+            assert fs.cat(f"{link}/f") == b"A"
+
+
 @pytest.mark.parametrize("policy", list(ExtractionPolicy))
 def test_tree_matches_extraction_on_links_and_collisions(
     memfs: Any, tmp_path: Path, policy: ExtractionPolicy

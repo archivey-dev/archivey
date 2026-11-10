@@ -409,7 +409,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     @staticmethod
     def _aliased(entry: dict[str, Any], written: str, path: str) -> dict[str, Any]:
         """``entry``, whose path starts with ``written``, named under ``path``."""
-        return {**entry, "name": path + entry["name"][len(written) :]}
+        rest = entry["name"][len(written) :] if written else "/" + entry["name"]
+        return {**entry, "name": path + rest}
 
     @override
     def walk(  # pyrefly: ignore[bad-override]
@@ -543,9 +544,11 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             if not entry.get("islink") or name not in tree._targets:
                 continue  # not a symlink as written: a hard link to a file
             dest = tree.link_destination(name)
-            reached = dir_cache.get(dest) if dest is not None else None
+            reached = dir_cache.get(dest) if dest else None
             read_as: ArchiveMember | None = None
-            if reached is None or reached["type"] == "other":
+            if dest == "":
+                entry.update(type="directory", size=0)  # the destination itself
+            elif reached is None or reached["type"] == "other":
                 entry.update(type="other", size=None)
             elif reached["type"] == "directory":
                 entry.update(type="directory", size=0)
