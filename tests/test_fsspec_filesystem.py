@@ -248,6 +248,13 @@ LINKS_AND_COLLISIONS = [
     ("file", "r", b"lost r"),  # not written under STRICT and STANDARD: R has its key
     ("hard", "k", "r"),  # its source is not on disk: made in the second pass
     ("file", "K", b"later K"),  # refused under STRICT and STANDARD: k has its key
+    # A symlink reads what its target text leads to among the written paths, not the
+    # member stored under that name.
+    ("sym", "told", "d/y"),  # "through dl": the stored d/y lost its name to dl/y
+    ("sym", "viachain", "dl/w"),  # "two links": no member is named dl/w
+    ("sym", "toa", "a.txt"),  # dangling under STRICT and STANDARD: a.txt lost
+    ("sym", "tof", "f."),  # dangling under STRICT, which writes f. as f
+    ("sym", "toetc", "etc/y"),  # "SECRET" where /etc/y is re-rooted
 ]
 
 
@@ -256,7 +263,9 @@ def _written(dest: Path) -> dict[str, tuple[Any, ...]]:
     for path in dest.rglob("*"):
         rel = path.relative_to(dest).as_posix()
         if path.is_symlink():
-            out[rel] = ("link",)
+            # What the link reads on disk: the bytes of the file it leads to, or
+            # nothing for a directory, a dangling link or a loop.
+            out[rel] = ("link", path.read_bytes() if path.is_file() else None)
         elif path.is_dir():
             out[rel] = ("dir",)
         else:
@@ -275,7 +284,7 @@ def _listed(fs: ArchiveyFileSystem) -> dict[str, tuple[Any, ...]]:
             or info["type"] != "file"
             or info["destination"] != info["member"].link_target
         ):
-            out[path] = ("link",)
+            out[path] = ("link", fs.cat(path) if info["type"] == "file" else None)
         elif info["type"] == "directory":
             out[path] = ("dir",)
         else:
@@ -433,7 +442,8 @@ def test_tree_matches_extraction_on_links_and_collisions(
             # c under every policy, and under TRUSTED, which keys on the exact name,
             # the files too. Q -> q names itself there, a loop extraction refuses.
             # The tree does not model the disk.
-            folded = ["C", "Q"]
+            # A link to a lost or rewritten name reaches the winner there.
+            folded = ["C", "Q", "toa", "tof"]
             if policy is ExtractionPolicy.TRUSTED:
                 folded += ["a.txt", "f.", "HC", "r", "k"]
             for name in folded:
