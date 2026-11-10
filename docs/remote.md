@@ -1,9 +1,10 @@
 # Remote archives
 
 Archivey can read an archive that lives on S3, Google Cloud Storage, Azure, an HTTP server that
-answers range requests, or any other store that [fsspec](https://filesystem-spec.readthedocs.io/) reaches, without
-downloading it first. Listing a ZIP or a 7z archive, or reading one of its members, then fetches
-little more than the bytes it needs.
+answers range requests, or any other store that [fsspec](https://filesystem-spec.readthedocs.io/)
+reaches, without downloading it first. Listing a ZIP or a 7z archive, or reading a member of a
+ZIP, then fetches little more than the bytes it needs. Reading a member of a solid archive, as
+most 7z archives are, also fetches the members before it ([What reading costs](#what-reading-costs)).
 
 ```python
 import fsspec
@@ -17,9 +18,12 @@ with archivey.open_archive(fsspec.open("s3://bucket/dataset.zip", anon=True)) as
 
 `fsspec.open(url, **options)` returns an `OpenFile`: a description of the file, with the file
 system that holds it and its path, which nothing has opened yet. Pass it to `open_archive`,
-`open_stream` or `detect_format` as is, without a `with` block around it. Archivey never opens it
-as a file. It asks the file system for the object's size once, at open, and then reads the bytes
-it needs as ranges, which most stores serve as one request each.
+`open_stream` or `detect_format` as is, without a `with` block around it. Unless the `OpenFile`
+has a `compression` ([below](#what-archivey-takes-from-an-openfile)), archivey never opens it as a
+file. It asks the file system for the object's size once, at open, and then reads the bytes it
+needs as ranges, which most stores serve as one request each. A name that a part of a split
+archive could have, such as `.rar`, `.exe`, `.sfx` or `.001`, also lists the folder that holds
+it, once, to look for the other parts ([Archives in several volumes](#archives-in-several-volumes)).
 
 Archivey doesn't depend on fsspec, and no extra installs it. The package for your store, such as
 `s3fs`, `gcsfs` or `adlfs`, installs it; HTTP needs `fsspec` and `aiohttp`. The URL and its
@@ -106,8 +110,8 @@ refuses or works around each one rather than drop it silently:
 
 ## Archives in several volumes
 
-A 7z, RAR or ZIP split into several files opens from any one of its parts, as it does from a
-local path ([What you can open](opening.md#what-you-can-open)). Archivey lists the folder that
+A 7z or RAR archive split into several files, or a ZIP split by 7-Zip (`.zip.001`,
+`.zip.002`, …), opens from any one of its parts, as it does from a local path ([What you can open](opening.md#what-you-can-open)). Archivey lists the folder that
 holds the part once and finds the others by name, on the same store and with the same options:
 
 ```python
@@ -118,16 +122,23 @@ with archivey.open_archive(fsspec.open("s3://bucket/backup.7z.001")) as archive:
 A list of `OpenFile` objects, in order, opens the parts it names, for a set whose names
 archivey can't match or a store that can't list a folder.
 `ArchiveyConfig(discover_volumes=False)` turns the search off, so an `OpenFile` opens only the
-file it names.
+file it names and no folder is listed. On a store where listing a folder is slow, such as an S3
+prefix holding many objects, that saves the listing for a `.rar` or `.exe` that is not part of a
+set.
 
 ## RAR archives
 
 Compressed RAR members are decoded by the `unrar` program ([The program for RAR](formats.md#the-program-for-rar)),
-which reads a local file. For each member read, archivey fetches that member's bytes and writes
+which reads a local file. For each read, archivey fetches the member's packed bytes and writes
 them to a temporary file for `unrar`, so reading one member of a large RAR archive doesn't
-download the rest. A solid RAR archive needs the members before the one read, as in any solid
-archive. [Running `unrar`](formats.md#running-unrar) says what each temporary file holds, and
-`SpoolLimits.max_bytes` bounds its size.
+download the rest. A pass with `stream_members()` or `extract_all()` copies several small
+members at a time. A solid RAR archive needs the members before the one read, as in any solid
+archive. [Running `unrar`](formats.md#running-unrar) says what each temporary file holds.
+
+`SpoolLimits.max_bytes` (default 1 GiB) caps each copy, and a remote archive has no way around
+it: an archive opened from a local path reads a large member in place, but a remote one can't.
+So a member whose packed bytes pass the limit, or in a solid archive the part of the stream up
+to that member, raises `ResourceLimitError`. Raising the limit lets archivey read it.
 
 ## If the remote file changes
 
