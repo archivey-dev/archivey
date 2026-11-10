@@ -374,11 +374,13 @@ class DecoderChild:
         # decoder is being built (see ``_death_error``).
         self._building = False
         # What was sent since ``OPEN``, while the child is a reused one (see the class
-        # docstring); ``None`` in a fresh child.
-        # Each entry: the request, and the CRC-32 of the output it got.
+        # docstring); ``None`` in a fresh child. Each entry: the request, and the CRC-32
+        # of the output it got.
         self._log: list[tuple[int, int, tuple[bytes, ...], int]] | None = None
         self._log_size = 0
         process = POOL.take()
+        # A one-item list rather than the lease: the finalizer must not hold ``self``,
+        # and ``_replace_process`` swaps in a new lease that the finalizer must release.
         self._holder = [_Lease(process, reuse)]
         self._finalizer = weakref.finalize(self, _release, self._holder)
         try:
@@ -438,6 +440,7 @@ class DecoderChild:
     # -- requests -------------------------------------------------------------------
 
     def _check_usable(self) -> _Process:
+        """The current child, or raise why this decoder cannot send another request."""
         if self._death is not None:
             raise _unraised(self._death)
         if self._interrupted:
@@ -458,6 +461,8 @@ class DecoderChild:
     def _exchange(
         self, tag: int, arg: int, parts: tuple[bytes, ...]
     ) -> tuple[int, bytes, bytes]:
+        """Send one request and take its reply. A child that goes away raises
+        ``_Died``."""
         process = self._check_usable()
         try:
             process.send(tag, arg, *parts)

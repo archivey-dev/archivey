@@ -376,6 +376,9 @@ data its pass keeps for link targets beside it.
   `max_metadata_bytes` both the decoded table's size (from the header, before
   decoding) and every full path it builds there, since nested directories make the
   paths grow with the square of the depth before any member exists (`xar_reader.py`).
+  makeself weighs its shell header against `max_metadata_bytes` as it reads it, parses
+  it in one pass and keeps only the variables it uses; the header is parsed, never run
+  (`makeself_reader.py`).
   CAB weighs the block tables it keeps, one per folder read, against
   `max_metadata_bytes` as they are read, at 256 bytes a block: folders may all name one
   run of block headers, so the tables are not bounded by the file (`cab_reader.py`).
@@ -598,7 +601,12 @@ size to the member's `max_metadata_bytes` budget before it reads anything
 `read_within_reach` in 64 KiB steps. A forward-only walk skips a member's data area in
 64 KiB steps too, and stops with `TruncatedError` at the first short read. Member data a
 caller reads through that walk is read in 1 MiB steps (`DATA_READ_STEP`): a member that
-declares 3 GiB over 100 KB of data peaks at 1 MiB. pycdlib reads
+declares 3 GiB over 100 KB of data peaks at 1 MiB. The format
+adapter's walk (`internal/format_adapter.py` `_layer_forward`), the `ForwardStream`
+every `SequentialReader` gets (ar, deb, RPM and CPIO, and a plugin's), reads header bytes
+through `read_within_reach` in 64 KiB steps too (`_HEADER_READ_STEP`): before that, a
+1 KB ar, deb or RPM file that declared a 60 MiB header peaked at 60 MiB from a `BytesIO`
+and 120 MiB from a pipe in streaming mode, and now peaks under 0.2 MiB. pycdlib reads
 through archivey's source (`internal/source.py` `ArchiveSource`), which applies
 `read_within_reach` as well. Where the remaining length is a fact (a path's `stat`, a
 `BytesIO` buffer, a regular file's `fstat`) the read is clamped to it; otherwise it is
@@ -1224,6 +1232,14 @@ still bounds the amount, only the rate is lower. Detection of an unrecognised fi
 no known extension scans up to 2 MiB for an archive behind leading bytes, and 2 MiB of
 back-to-back ZIP local-header signatures costs about 2.4 s to reject, one validation each
 ([prefixed archives §3](topics/prefixed-archives.md#3-cost-is-what-tiers-this-not-false-positives)).
+Extraction resolves each member's parent from the destination root before it writes
+the member, because an earlier member can have changed the tree, and a dry run also
+walks each member's path from the scratch root to copy in what dest holds there
+(`DryRun.bring_in`). Each is one `lstat` per level, so a tree costs its members times its
+depth, and `PATH_MAX` is the only bound on the depth. A tar listing `a`, `a/a`, … 1000
+levels deep (14 KB gzipped at 800 levels) extracts in about 6 s and dry-runs in about
+19 s (CPython 3.11). The directories a run creates under one member are resolved from
+their parent's answer instead, so a single member that deep costs about 0.2 s.
 Callers who need a time bound run
 archivey in a worker they can kill. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
@@ -1424,6 +1440,19 @@ RARLAB binary is found. A read that needs no password passes none
 (`_member_needs_password`): the member and the headers are plaintext, and in a solid
 archive no encrypted member comes before it.
 Public: [hardening](../docs/security.md#hardening).
+
+### A self-extracting archive's stub is not run
+
+A self-extracting archive (a 7z, RAR or ZIP SFX, a makeself `.run`) holds an archive
+behind a program: an executable stub, or a shell script. archivey reads the archive and
+never runs the program, so what it lists is what the archive holds, not what running
+the file would put on disk. A hostile stub can write other files, change or skip the
+ones listed, or do anything else a program can do, and nothing in the archive tells.
+Even a stub that only extracts can read its payload another way than archivey does: a
+makeself script trusts its own `skip=` and `filesizes=` lines, which archivey parses but
+does not execute. Accepted by the maintainer (2026-11-08): reading the payload is the
+job, and judging the program is a malware scanner's. Public:
+[security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### A file system's own error can carry a URL's credentials
 
