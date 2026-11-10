@@ -1214,7 +1214,9 @@ where an ordinary directory lists at about 5 ns, because each signature is check
 swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). An LZX stream in a
 cabinet made of nothing but block headers decodes at about 2 µs an input byte (0.5 MB/s),
 producing nothing, since each header builds its trees
-([CAB §2.4](formats/cab.md#24-the-lzx-decoder)). On declared seek demand,
+([CAB §2.4](formats/cab.md#24-the-lzx-decoder)); an LHA member made of blocks with no
+commands and full tables does the same, at about 2 µs an input byte
+([LHA §2.4](formats/lha.md#24-the-lzh-decoder)). On declared seek demand,
 a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
 Zstandard seek table, and a forward seek past the known points or a `SEEK_END` walks a
 BGZF file's members. Both scans are linear but run one

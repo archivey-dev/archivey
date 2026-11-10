@@ -492,8 +492,13 @@ class ArchiveEofContext(_JsonSafeContext):
       end record, none of whose fields needs it, is used instead. ``observed_kind`` is
       ``"absent"``, ``observed_bytes`` is the locator's offset and ``expected_bytes``
       is 0.
+    - ``"end_of_archive_byte"`` (``ARCHIVE_EOF_MARKER_MISSING``) — an LHA archive
+      ends right after its last member, without the zero byte its writers put after
+      the last header. Every member is listed. ``format`` is ``"lha"``,
+      ``observed_kind`` is ``"absent"``, ``expected_bytes`` is 1 and
+      ``observed_bytes`` 0.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
-      archive's end within the first MiB past it, so the file carries something the
+      archive's end within the first MiB past it (64 KiB for LHA), so the file carries something the
       listing did not account for. ``format`` names where the end was: ``"tar"`` for
       the TAR trailer (complete, or its second block damaged and reported as
       ``"second_zero_block"`` first), ``"7z"`` for the later of a 7z archive's next
@@ -501,7 +506,9 @@ class ArchiveEofContext(_JsonSafeContext):
       block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
       its MBR or GPT lists and the GPT backup header, ``"zip"`` for the end of a ZIP's
       end-of-central-directory record and its declared comment, ``"cpio"`` for the
-      CPIO trailer; a format plugin names its own format. ``observed_bytes`` is
+      CPIO trailer, ``"lha"`` for an LHA archive's end byte (where the scan covers
+      64 KiB and also allows the DOS end-of-file byte 0x1A); a format plugin names
+      its own format. ``observed_bytes`` is
       that byte's offset past the end. RAR emits one per volume, and its offset counts from that
       volume's end block, unlike member offsets, which count across the whole set; the
       message names the volume.
@@ -1361,6 +1368,7 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                         "end_of_archive_block",
                         "end_of_central_directory",
                         "zip64_end_of_central_directory",
+                        "end_of_archive_byte",
                     }
                 ),
             ),

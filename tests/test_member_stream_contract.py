@@ -948,6 +948,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         ),
     ),
     (
+        "lha",
+        "no corpus builder (needs an LHA writer); tests/test_lha.py seeks inside members",
+    ),
+    (
         "rpm",
         "no corpus builder (needs rpmbuild); tests/test_rpm.py seeks inside members",
     ),
@@ -976,6 +980,7 @@ _UNTESTED_FORMATS = {
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP3): "bzip3",
     ArchiveFormat.XAR: "xar",
     ArchiveFormat.CAB: "cab",
+    ArchiveFormat.LHA: "lha",
     **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},
     **{ArchiveFormat(ContainerFormat.MAKESELF, s): "makeself" for s in StreamFormat},
 }
