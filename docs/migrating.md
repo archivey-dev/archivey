@@ -184,8 +184,9 @@ warn about it. The Extracting page has [a longer
 table](extracting.md#what-each-policy-does-with-unusual-members), with more kinds of member and
 every policy.
 
-When archivey refuses a member, it skips it and goes on with the others, where tarfile's data
-filter raises and ends the whole extraction. `abort_on=["blocked_member"]` makes archivey stop too.
+When archivey refuses a member, it skips it and goes on with the others, then raises
+`FilterRejectionError` at the end, where tarfile's data filter raises and ends the whole extraction
+at once. `abort_on=["blocked_member"]` makes archivey stop at once too.
 If you want zipfile's renaming, pass `filter=archivey.sanitize_names`. `filter=` also takes your own
 function, which can rename, skip or change each member ([Extracting all or some
 members](extracting.md#extracting-all-or-some-members)).

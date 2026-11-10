@@ -1,5 +1,13 @@
 # Blind exception handlers
 
+**In one minute.** archivey never catches every exception and calls it corruption: an
+error it does not recognize propagates unchanged. A few places still need
+`except Exception` (cleanup, combining two errors, a finalizer). This page lists the seven
+shapes such a handler may take. Each one either re-raises the same exception or says on
+the same line why dropping it is correct. The guide's
+[errors and diagnostics](../guide/09-errors-and-diagnostics.md) page describes the error
+model around it.
+
 When `except Exception` or `except BaseException` is the right handler in `src/`, and
 which shape it takes. The contract these serve is `CONTRIBUTING.md` §Exception
 translation: archive problems surface as `ArchiveyError` subclasses through a translator,
