@@ -753,6 +753,56 @@ def test_lzx_a_stream_that_reads_past_its_end_is_truncated() -> None:
         _decoder(whole[:-4]).decode_frame(800)
 
 
+@pytest.mark.parametrize("size", [800, 801], ids=["word-end", "mid-word-end"])
+def test_lzx_a_frame_lzxd_reads_past_the_two_zero_bytes_for_is_truncated(
+    size: int,
+) -> None:
+    """lzxd.c reads 16 bits ahead of each symbol, and one more word at the end of a
+    frame whose last word it has not used up. With the last word cut, the zeros
+    after the input still decode to the right bytes here, but lzxd.c needs more
+    than its two zero bytes to read them, so it refuses the stream (cabextract:
+    "error in CAB data format"). Checking only the bits used accepted it.
+    """
+    w = _raw_lzx(size, {0: 1, 1: 1})
+    w.bits(0, size)
+    whole = _end(w, pad=0)
+    assert _decoder(whole).decode_frame(size) == bytes(size)
+    with pytest.raises(TruncatedError, match="ends before its output"):
+        _decoder(whole[:-2]).decode_frame(size)
+
+
+def test_lzx_a_frame_with_nothing_read_ahead_may_end_in_the_zero_bytes() -> None:
+    """When the last field of a frame ends on a word boundary and fills what
+    lzxd.c read for the symbol before it, lzxd.c holds no bits ahead, and the
+    two zero bytes after the input may be the frame's last word."""
+    # A 2**17 window, with the match symbol for slot 32 (15 extra bits) as the code
+    # "0": the code and its extra bits are one word. Two frames of 'A' first, so
+    # the match (distance 65 534, all extra bits zero) reaches back into them.
+    match = 256 + 32 * 8  # slot 32, a match of 2
+    size = 2 * FRAME + 10
+    w = BitWriter()
+    w.bits(0, 1)
+    w.bits(1, 3)  # a verbatim block
+    w.bits(size >> 8, 16)
+    w.bits(size & 0xFF, 8)
+    lengths = [0] * (256 + 34 * 8)
+    lengths[match], lengths[65], lengths[66] = 1, 2, 2  # "0", "10", "11"
+    _lengths(w, lengths, 0, 256, 0)
+    _lengths(w, lengths, 256, len(lengths), 0)
+    _lengths(w, [0] * 249, 0, 249, 0)
+    for frame_symbols in (FRAME, FRAME, 8):
+        for _ in range(frame_symbols):
+            w.bits(0b10, 2)  # 'A'
+        w.align()
+    w.bits(0, 16)  # the match: code "0" and 15 zero extra bits
+    data = w.take()
+    expected = [b"A" * FRAME, b"A" * FRAME, b"A" * 10]
+    for stream in (data, data[:-2]):
+        chunks = iter([stream])
+        decoder = LzxDecoder(17, lambda chunks=chunks: next(chunks, None))
+        assert [decoder.decode_frame(len(f)) for f in expected] == expected
+
+
 def test_format_is_listed() -> None:
     assert ArchiveFormat.CAB in archivey.list_supported_formats()
 

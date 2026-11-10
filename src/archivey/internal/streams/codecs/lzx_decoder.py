@@ -19,7 +19,11 @@ stream:
 - a match may not cross the end of the window or the end of a frame, nor reach back
   before the first byte of output;
 - the E8 translation runs for the first 32 768 frames only, from the first block that
-  can produce an ``E8`` byte, and leaves the last 10 bytes of each frame alone.
+  can produce an ``E8`` byte, and leaves the last 10 bytes of each frame alone;
+- past the end of the input come two zero bytes, and a stream lzxd.c would read
+  further for is refused. It reads 16 bits ahead of each Huffman symbol, and one more
+  word to realign at the end of a frame, so how far it reads decides, not how many
+  bits the stream uses.
 
 Every Huffman code is at most 16 bits. Each tree decodes through a two-level table:
 a root indexed by the next ``min(longest code, 10)`` bits, and, under each root entry
@@ -166,6 +170,9 @@ class LzxDecoder:
         self._bits = 0
         self._nbits = 0
         self._padding = 0  # zero bytes appended past the end of the input
+        # Bits read since the last Huffman symbol began: lzxd.c looks 16 bits ahead
+        # from the start of each symbol, so its look-ahead is ``16 - _since_symbol``.
+        self._since_symbol = _MAX_CODE
         # Decoder state that lives across blocks and frames.
         self._main_lengths = [0] * (_MAIN_MAX + _RUN_SLACK)
         self._length_lengths = [0] * (_LENGTH_MAX + _RUN_SLACK)
@@ -202,8 +209,8 @@ class LzxDecoder:
         """The unread input with at least two bytes more, pulling the next run.
 
         Past the end of the input come zero bytes, so the decoder can look ahead as
-        it does inside the stream; :meth:`_check_overread` refuses a stream that
-        uses more of them than lzxd.c's two.
+        it does inside the stream; :meth:`_realign` refuses a stream that
+        lzxd.c would have read more than two of them for.
         """
         # Keep the last few bytes read: words read ahead into the bit buffer go back
         # to the byte input before an uncompressed block (``_align_for_raw``).
@@ -219,18 +226,38 @@ class LzxDecoder:
             rest += data
         return rest, pos
 
-    def _check_overread(self) -> None:
-        """Refuse a stream that used more than two bytes past the end of the input."""
-        if not self._padding:
-            return
+    def _realign(self) -> None:
+        """Realign the input to a 16-bit word at the end of a frame, and refuse a
+        stream that lzxd.c would have read more than two bytes past its end for.
+
+        lzxd.c reads the input 16 bits at a time, only when it needs them: 16 bits
+        ahead of the start of each Huffman symbol, and the bits a fixed-width field
+        takes. At the end of a frame, if its bit buffer is not empty, it reads one
+        more word before it drops the rest of the current one. It refuses the stream
+        when a read needs more than the two zero bytes it puts after the input. So
+        what counts is how far it has read, not how far the stream used: a stream
+        whose last frame ends in the last two bytes may still be refused.
+        """
         unread = (len(self._buf) - self._pos) * 8 + self._nbits
-        if self._padding * 8 - unread > _PADDING_ALLOWED * 8:
+        partial = self._nbits % 16  # bits left in the current word
+        # The bits lzxd.c holds now: the fewest at least its look-ahead that end
+        # on a word boundary. Then the realignment reads a word if they are 1-15.
+        ahead = partial
+        if ahead < _MAX_CODE - self._since_symbol:
+            ahead += 16
+        if 0 < ahead < 16:
+            ahead += 16
+        if self._padding and ahead > unread - self._padding * 8 + _PADDING_ALLOWED * 8:
             raise TruncatedError("LZX stream ends before its output")
+        self._nbits -= partial
+        # Whatever it read past the word boundary is look-ahead for the next frame.
+        self._since_symbol = _MAX_CODE - (ahead - partial)
 
     def _read_bits(self, n: int) -> int:
         if self._nbits < n:
             self._refill(n)
         self._nbits -= n
+        self._since_symbol += n
         return (self._bits >> self._nbits) & ((1 << n) - 1)
 
     def _read_symbol(self, tree: Tree | None, what: str) -> int:
@@ -240,6 +267,7 @@ class LzxDecoder:
             self._refill(_MAX_CODE)
         table, root = tree
         bits, nbits = self._bits, self._nbits
+        start = nbits
         entry = table[(bits >> (nbits - root)) & ((1 << root) - 1)]
         if entry < 0:
             nbits -= root
@@ -247,6 +275,7 @@ class LzxDecoder:
             sub = entry & 31
             entry = table[(entry >> 5) + ((bits >> (nbits - sub)) & ((1 << sub) - 1))]
         self._nbits = nbits - (entry & 31)
+        self._since_symbol = start - self._nbits
         return entry >> 5
 
     def _raw_bytes(self, n: int) -> bytes:
@@ -256,10 +285,16 @@ class LzxDecoder:
         while len(buf) - pos < n:
             data = None if self._padding else self._more()
             if data is None:
-                raise TruncatedError("LZX stream ends inside an uncompressed block")
+                # As lzxd.c, read the two zero bytes past the end, but no further.
+                if self._padding >= _PADDING_ALLOWED:
+                    raise TruncatedError("LZX stream ends inside an uncompressed block")
+                self._padding += _PADDING_ALLOWED
+                data = bytes(_PADDING_ALLOWED)
             keep = min(pos, 8)
             buf, pos = buf[pos - keep :] + data, keep
         self._buf, self._pos = buf, pos + n
+        # lzxd.c reads stored bytes as it uses them: it holds nothing ahead.
+        self._since_symbol = _MAX_CODE
         return buf[pos : pos + n]
 
     def _align_for_raw(self) -> None:
@@ -361,9 +396,7 @@ class LzxDecoder:
             todo -= done
         if self._window_pos - frame_start != frame_size:
             raise CorruptionError("LZX match runs past the end of a frame")
-        # Realign the input to a 16-bit word.
-        self._nbits -= self._nbits % 16
-        self._check_overread()
+        self._realign()
         out = bytes(self._window[frame_start : self._window_pos])
         if self._intel_started and self._intel_size and self._frame < 32768:
             out = self._undo_e8(out)
@@ -398,6 +431,8 @@ class LzxDecoder:
         bits, nbits = self._bits, self._nbits
         buf, bpos = self._buf, self._pos
         blen = len(buf)
+        # ``nbits`` where the last Huffman symbol began, for ``_since_symbol``.
+        top = nbits
         while pos < end:
             if nbits < 32:
                 if bpos + 4 <= blen:
@@ -412,6 +447,7 @@ class LzxDecoder:
                 else:
                     bits, nbits, buf, bpos = self._slow_fill(bits, nbits, buf, bpos)
                     blen = len(buf)
+            top = nbits
             entry = main_table[(bits >> (nbits - main_root)) & main_mask]
             if entry < 0:
                 nbits -= main_root
@@ -431,6 +467,7 @@ class LzxDecoder:
             if length == _PRIMARY_LENGTHS:
                 if not length_table:
                     raise CorruptionError("LZX length symbol read from an empty tree")
+                top = nbits
                 entry = length_table[(bits >> (nbits - length_root)) & length_mask]
                 if entry < 0:
                     nbits -= length_root
@@ -456,8 +493,10 @@ class LzxDecoder:
             else:
                 # At most 17 verbatim bits, or 14 and a 16-bit aligned peek.
                 if nbits < 32:
+                    filled = nbits
                     bits, nbits, buf, bpos = self._slow_fill(bits, nbits, buf, bpos)
                     blen = len(buf)
+                    top += nbits - filled
                 extra = extra_bits[slot]
                 offset = position_base[slot] - 2
                 if extra >= 3 and aligned:
@@ -469,6 +508,7 @@ class LzxDecoder:
                         nbits -= extra - 3
                         offset += ((bits >> nbits) & ((1 << (extra - 3)) - 1)) << 3
                     # Aligned codes are at most 7 bits: the root holds them all.
+                    top = nbits
                     entry = aligned_table[
                         (bits >> (nbits - aligned_root)) & aligned_mask
                     ]
@@ -499,6 +539,7 @@ class LzxDecoder:
             pos += length
         self._r0, self._r1, self._r2 = r0, r1, r2
         self._bits, self._nbits, self._buf, self._pos = bits, nbits, buf, bpos
+        self._since_symbol = top - nbits
         self._window_pos = pos
         return pos - start
 
