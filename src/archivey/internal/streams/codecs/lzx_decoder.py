@@ -29,12 +29,12 @@ stream but one kind (below the list):
   word to realign at the end of a frame, so how far it reads decides, not how many
   bits the stream uses.
 
-The one deliberate difference: a tree whose short codes already fill the code space
-and that has a longer code as well is refused as overfull. ``lzxd.c`` builds its first
-table level (6 bits for the pretree, 7 for the aligned tree, 12 for the others) and
-stops once those codes fill it, so it never sees the longer code and decodes on. No
-encoder writes such a tree; it comes from damage, and the bytes after it are wrong, so
-archivey refuses the stream rather than return them.
+The one deliberate difference: a tree whose codes no longer than ``lzxd.c``'s first
+table level (6 bits for the pretree, 7 for the aligned tree, 12 for the others) already
+fill the code space, and that also has a code longer than that level, is refused as
+overfull. ``lzxd.c`` stops building once the first level is full, so it never sees the
+longer code and decodes on. No encoder writes such a tree; it comes from damage, and the
+bytes after it are wrong, so archivey refuses the stream rather than return them.
 
 Every Huffman code is at most 16 bits. Each tree decodes through a two-level table:
 a root indexed by the next ``min(longest code, 10)`` bits, and, under each root entry
