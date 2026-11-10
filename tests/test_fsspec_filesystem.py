@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gc
 import io
+import multiprocessing
 import os
 import pickle
 import subprocess
@@ -19,6 +20,7 @@ import warnings
 import weakref
 import zipfile
 from collections.abc import Iterator
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -610,3 +612,61 @@ def test_dask_bag_reads_members(tmp_path: Path) -> None:
     archive.write_bytes(_zip_bytes([("a.txt", b"1\n2\n"), ("b.txt", b"3\n")]))
     bag = db.read_text(f"archivey://*.txt::{archive.as_posix()}")
     assert sorted(bag.compute(scheduler="threads")) == ["1\n", "2\n", "3\n"]
+
+
+@pytest.fixture(scope="module")
+def _resource_tracker() -> None:
+    """Start multiprocessing's resource tracker before the leak oracle's snapshot.
+
+    A ``spawn`` pool starts it on first use and it lives as long as this process, so the
+    oracle would report it as the test's child. Module scope sets it up first.
+    """
+    if sys.platform != "win32":
+        from multiprocessing import resource_tracker
+
+        resource_tracker.ensure_running()
+
+
+def _spawn_pool() -> ProcessPoolExecutor:
+    """Two fresh worker processes, closed by the test that uses them.
+
+    ``spawn`` starts each worker from nothing, so a task reaches it only pickled, as on
+    a dask cluster. dask's default pool would outlive the test.
+    """
+    return ProcessPoolExecutor(2, mp_context=multiprocessing.get_context("spawn"))
+
+
+def test_pandas_reads_through_a_nested_chain(memfs: Any) -> None:
+    pd = pytest.importorskip("pandas")
+    inner = _zip_bytes([("t.csv", b"x\n5\n6\n")])
+    memfs.pipe("/d/outer.tar", _tar_bytes({"inner.zip": inner}))
+    frame = pd.read_csv("archivey://t.csv::archivey://inner.zip::memory://d/outer.tar")
+    assert frame["x"].tolist() == [5, 6]
+
+
+@pytest.mark.usefixtures("_resource_tracker")
+def test_dask_worker_processes_read_through_a_nested_chain(tmp_path: Path) -> None:
+    """The process scheduler pickles each task's file system into another process.
+
+    ``memory://`` is per process, so the outer archive is a local file.
+    """
+    db = pytest.importorskip("dask.bag")
+    inner = _zip_bytes([("a.txt", b"1\n2\n"), ("b.txt", b"3\n")])
+    outer = tmp_path / "outer.tar"
+    outer.write_bytes(_tar_bytes({"inner.zip": inner}))
+    bag = db.read_text(f"archivey://*.txt::archivey://inner.zip::{outer.as_posix()}")
+    with _spawn_pool() as pool:
+        lines = bag.compute(scheduler="processes", pool=pool)
+    assert sorted(lines) == ["1\n", "2\n", "3\n"]
+
+
+@pytest.mark.usefixtures("_resource_tracker")
+def test_dask_dataframe_reads_members_in_worker_processes(tmp_path: Path) -> None:
+    dd = pytest.importorskip("dask.dataframe")
+    archive = tmp_path / "t.zip"
+    archive.write_bytes(_zip_bytes([("p/a.csv", b"n\n1\n2\n"), ("p/b.csv", b"n\n3\n")]))
+    frame = dd.read_csv(f"archivey://p/*.csv::{archive.as_posix()}")
+    assert frame.npartitions == 2
+    with _spawn_pool() as pool:
+        total = frame["n"].sum().compute(scheduler="processes", pool=pool)
+    assert total == 6
