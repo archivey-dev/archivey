@@ -784,7 +784,22 @@ def test_an_afio_time_past_the_datetime_range(mtime: int) -> None:
     OverflowError or ValueError."""
     data = _afio_large_member(b"f", b"x", ino=1, uid=0, mtime=mtime) + _odc_trailer()
     with open_archive(io.BytesIO(data)) as reader:
-        assert [m.modified for m in reader.members()] == [None]
+        (member,) = reader.members()
+    assert member.modified is None
+    codes = [d.code for d in member.diagnostics]
+    assert codes == [DiagnosticCode.MEMBER_TIMESTAMP_INVALID]
+
+
+def test_an_unknown_file_type_is_listed_as_other_and_reported(tmp_path: Path) -> None:
+    """File-type bits no Unix type uses: OTHER, the type recorded as ``"unknown"``,
+    as every format records it, and reported."""
+    data = _newc((b"odd", 0o030644, 1, 1, b""))
+    with open_archive(_archive(tmp_path, data)) as reader:
+        (member,) = reader.members()
+    assert member.type is MemberType.OTHER
+    assert member.extra["special_file_type"] == "unknown"
+    codes = [d.code for d in member.diagnostics]
+    assert codes == [DiagnosticCode.MEMBER_TYPE_UNKNOWN]
 
 
 def test_afio_large_header_damage(tmp_path: Path) -> None:
