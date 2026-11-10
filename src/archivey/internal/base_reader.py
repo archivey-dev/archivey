@@ -1219,7 +1219,16 @@ class BaseArchiveReader(ArchiveReader):
                 if close_previous and previous is not None:
                     previous.close()
                     previous = None
-                stream = open_member(member)
+                # A member whose method the policy excludes gets a stream that
+                # raises the refusal when read, and the backend's hook is not asked
+                # to open one: its decoder never starts.
+                stream = (
+                    self._refused_member_stream(member)
+                    if pass_has_data(member)
+                    else None
+                )
+                if stream is None:
+                    stream = open_member(member)
                 if stream is not None:
                     previous = stream
                 yield member, stream
@@ -1352,6 +1361,60 @@ class BaseArchiveReader(ArchiveReader):
         except UNREADABLE_LINK_TARGET_ERRORS as exc:
             self._report_unreadable_link_target(member, exc)
 
+    def _check_member_method(self, member: ArchiveMember) -> None:
+        """Raise :class:`UnsupportedFeatureError` if ``config.formats`` excludes a
+        method in ``member``'s compression chain.
+
+        Every path that hands out or reads a member's data calls it before the
+        member's decoder runs: :meth:`_open_member_handle`, :meth:`_lazy_member_stream`,
+        a data pass (:meth:`_drive_pass_streams`) and a link target read
+        (:meth:`_read_link_target_data`, and the 7z pass's own capture).
+
+        A file whose data is another member's (a RAR5 file copy, listed ``STORED``
+        with that member as its ``link_target_member``) is checked by the member
+        whose data is decoded.
+        """
+        decoded = member
+        if member.type is MemberType.FILE and member.link_target_member is not None:
+            decoded = member.link_target_member
+        excluded = self._config.formats._excluded_methods(
+            member.compression + decoded.compression
+            if decoded is not member
+            else member.compression
+        )
+        if not excluded:
+            return
+        names = ", ".join(f"CompressionAlgorithm.{m.name}" for m in excluded)
+        subject = (
+            f"{quoted(member.name)} is"
+            if decoded is member
+            else f"{quoted(member.name)} copies {quoted(decoded.name)}, which is"
+        )
+        raise UnsupportedFeatureError(
+            f"{subject} compressed with {names}, which ArchiveyConfig.formats turns "
+            f"off: exclude= lists {'it' if len(excluded) == 1 else 'them'}.",
+            source_format=self._format,
+            archive_name=self._archive_name,
+            member_name=member.name,
+        )
+
+    def _refused_member_stream(self, member: ArchiveMember) -> ArchiveStreamImpl | None:
+        """A pass's stream for ``member`` when its method is excluded: one that raises
+        the refusal on its first read, as a lazy stream raises an open error. ``None``
+        when the member may decode."""
+        try:
+            self._check_member_method(member)
+        except UnsupportedFeatureError as exc:
+            refusal = exc
+
+            def _refuse() -> BinaryIO:
+                raise refusal
+
+            return self._wrap_member_stream(
+                member.name, _refuse, size=member.size, track_output=False
+            )
+        return None
+
     def _lazy_member_stream(
         self,
         member: ArchiveMember,
@@ -1375,9 +1438,14 @@ class BaseArchiveReader(ArchiveReader):
         one by one.
         """
         opener = self._open_member if open_member is None else open_member
+
+        def _open() -> BinaryIO | MemberStreamParts:
+            self._check_member_method(member)
+            return opener(member)
+
         stream = self._wrap_member_stream(
             member.name,
-            lambda: opener(member),
+            _open,
             size=member.size,
             # Default False: ``_open_member`` already counts, in ``_member_parts``.
             track_output=track_output,
@@ -1777,6 +1845,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def _open_member_handle(self, member: ArchiveMember) -> ArchiveStreamImpl:
         """``_open_member`` as an open handle, for code that reads the member itself."""
+        self._check_member_method(member)
         return self._member_stream(self._open_member(member))
 
     # --- Publishing the listing: empty-archive checks, link finalization --------------
@@ -3206,6 +3275,7 @@ class BaseArchiveReader(ArchiveReader):
         if not self._link_data_refused_by_size(
             member, is_reparse_point=is_reparse_point
         ):
+            self._check_member_method(member)
             with open_data() as stream:
                 data = self._read_bounded_link_data(
                     stream, is_reparse_point=is_reparse_point

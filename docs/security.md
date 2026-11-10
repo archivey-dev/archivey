@@ -320,6 +320,13 @@ The per-reader limits still apply. Decoder memory stays a per-decoder limit, and
 use are bounded by running the job in a process you can stop. See the
 [archives inside the upload](recipes.md#archives-inside-the-upload) recipe.
 
+For files you didn't make, `ArchiveyConfig(formats=FormatPolicy.COMMON)` opens only the formats
+people send today (ZIP, TAR, RAR, 7z, and gzip, bzip2, xz and zstd) and refuses ZIP members in the
+methods only PKZIP 1.x and earlier wrote, so the readers and pure-Python decoders for everything
+else never run on them ([Configuration](opening.md#configuration)). It narrows which code runs,
+not how long it runs: a 7z member's BCJ2 filter and ZipCrypto still decode in Python, so a time
+bound still needs a worker you can stop.
+
 If you know which formats you accept, a [`FormatPolicy`](opening.md#configuration) with an
 `only=` list refuses the rest before any reader runs on them, including formats a later archivey
 release adds and plugin formats that another library registers. An `exclude=` list refuses only

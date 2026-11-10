@@ -100,6 +100,8 @@ class Codec(Enum):
     LZOP = "lzop"  # the .lzo file format
     MOZLZ4 = "mozlz4"  # Firefox's mozLz40 files: one raw LZ4 block
     BZIP3 = "bzip3"  # the .bz3 files the bzip3 tool writes
+    UU = "uu"  # uuencoded files, and their begin-base64 variant
+    BASE64 = "base64"  # bare base64 text
     LZO = "lzo"  # raw LZO1X (a SquashFS block)
     # Filter-only (composed with raw LZMA; see LZMA_FILTER_IDS).
     DELTA = "delta"
@@ -600,6 +602,19 @@ class StreamCodec:
         """
         return False
 
+    def header_check(self, prefix: bytes) -> bool:
+        """Whether the source opens with this codec's own self-checking first block.
+
+        For a codec with no magic whose first lines or block still prove the format
+        when built to (uuencode's ``begin`` line and first body line, base64 lines
+        whose decoded bytes hold a known magic). It runs on every source, with or
+        without a name, as ``ReadBackend.HEADER_CHECKS`` does, and a hit is reported as
+        ``PROBABLE``, ``content_probe``: it is a test of the contents, not a magic.
+        Arithmetic over the already-peeked prefix only. Default: no check.
+        """
+        del prefix
+        return False
+
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
         """How to phrase ``STREAM_REWIND_REDECOMPRESSES`` for this codec.
 
@@ -703,6 +718,11 @@ class StreamCodec:
     def walks_magic_prefix(self) -> bool:
         """Whether this codec overrides the no-op base :meth:`magic_behind_prefix`."""
         return type(self).magic_behind_prefix is not StreamCodec.magic_behind_prefix
+
+    @property
+    def checks_header(self) -> bool:
+        """Whether this codec overrides the no-op base :meth:`header_check`."""
+        return type(self).header_check is not StreamCodec.header_check
 
     # --- shared probe primitive ---
 

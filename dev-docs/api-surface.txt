@@ -42,6 +42,7 @@ init archivey.ArchiveFormat(container: ContainerFormat | PluginContainer, stream
 field archivey.ArchiveFormat.container: ContainerFormat | PluginContainer
 field archivey.ArchiveFormat.stream: StreamFormat | PluginStream
 attribute archivey.ArchiveFormat.AR = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.BASE64 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BROTLI = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZ2 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.BZIP3 = ArchiveFormat(...)
@@ -52,6 +53,7 @@ attribute archivey.ArchiveFormat.DIRECTORY = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.DMG = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.GZ = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.ISO = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.LHA = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.LZ4 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.LZIP = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.LZMA_ALONE = ArchiveFormat(...)
@@ -69,6 +71,7 @@ attribute archivey.ArchiveFormat.TAR_LZ4 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.TAR_XZ = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.TAR_ZST = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.UNKNOWN = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.UU = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.XAR = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.XZ = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.Z = ArchiveFormat(...)
@@ -226,6 +229,7 @@ value archivey.CompressionAlgorithm.REDUCE = 'reduce'
 value archivey.CompressionAlgorithm.DCL_IMPLODE = 'dcl_implode'
 value archivey.CompressionAlgorithm.LZO = 'lzo'
 value archivey.CompressionAlgorithm.LZX = 'lzx'
+value archivey.CompressionAlgorithm.LZH = 'lzh'
 value archivey.CompressionAlgorithm.QUANTUM = 'quantum'
 value archivey.CompressionAlgorithm.RAR = 'rar'
 value archivey.CompressionAlgorithm.UNKNOWN = 'unknown'
@@ -249,6 +253,7 @@ value archivey.ContainerFormat.MAKESELF = 'makeself'
 value archivey.ContainerFormat.SQUASHFS = 'squashfs'
 value archivey.ContainerFormat.XAR = 'xar'
 value archivey.ContainerFormat.CAB = 'cab'
+value archivey.ContainerFormat.LHA = 'lha'
 value archivey.ContainerFormat.DMG = 'dmg'
 value archivey.ContainerFormat.DIRECTORY = 'directory'
 value archivey.ContainerFormat.RAW_STREAM = 'raw_stream'
@@ -347,8 +352,9 @@ value archivey.DiagnosticCode.MEMBER_SIZE_WRAPPED = 'member_size_wrapped'
 value archivey.DiagnosticCode.MEMBER_TYPE_UNKNOWN = 'member_type_unknown'
 value archivey.DiagnosticCode.MEMBER_NAME_DUPLICATE = 'member_name_duplicate'
 value archivey.DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE = 'source_change_undetectable'
+value archivey.DiagnosticCode.MEMBER_PATH_REFUSED = 'member_path_refused'
 value archivey.DiagnosticCode.MEMBER_READERS_DISAGREE = 'member_readers_disagree'
-alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | NameDuplicateContext | ReaderDisagreementContext
+alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | ReaderDisagreementContext
 class archivey.DiagnosticPolicy()
 init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
 field archivey.DiagnosticPolicy.ignore: frozenset[DiagnosticCode]
@@ -443,12 +449,13 @@ field archivey.FormatInfo.prefixed: bool = False
 field archivey.FormatInfo.unavailable_tiers: tuple[TierSkip, ...] = ()
 property archivey.FormatInfo.from_plugin: bool
 class archivey.FormatPolicy()
-init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[IndexedFormatHandler]] | None = None, exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = ()) -> None
-field archivey.FormatPolicy.exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream]
+init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream | CompressionAlgorithm] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[IndexedFormatHandler]] | None = None, exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = ()) -> None
+field archivey.FormatPolicy.exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream | CompressionAlgorithm]
 field archivey.FormatPolicy.exclude_libraries: frozenset[OptionalLibrary]
 field archivey.FormatPolicy.only: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None
 field archivey.FormatPolicy.plugins: bool
 field archivey.FormatPolicy.replace: Mapping[ContainerFormat, type[IndexedFormatHandler]]
+attribute archivey.FormatPolicy.COMMON = FormatPolicy(...)
 method archivey.FormatPolicy.allows(self, fmt: ArchiveFormat) -> bool
 class archivey.FormatSupport(Enum)
 enum archivey.FormatSupport
@@ -613,6 +620,8 @@ value archivey.StreamFormat.UNIX_COMPRESS = 'Z'
 value archivey.StreamFormat.LZOP = 'lzo'
 value archivey.StreamFormat.BZIP3 = 'bz3'
 value archivey.StreamFormat.MOZLZ4 = 'mozlz4'
+value archivey.StreamFormat.UU = 'uu'
+value archivey.StreamFormat.BASE64 = 'b64'
 class archivey.StreamNotSeekableError(OpenError)
 init archivey.StreamNotSeekableError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.TruncatedError(CorruptionError)
@@ -760,6 +769,8 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'member_readers_disagree'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-readers-disagree'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'source_change_undetectable'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'source-change-undetectable'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_path_refused'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-path-refused'
 reexport archivey.diagnostics.DiagnosticContext = archivey.DiagnosticContext
 reexport archivey.diagnostics.DiagnosticPolicy = archivey.DiagnosticPolicy
 reexport archivey.diagnostics.DiagnosticSummary = archivey.DiagnosticSummary
@@ -910,6 +921,15 @@ field archivey.diagnostics.OffsetWrapContext.record: Literal['local_header', 'ce
 field archivey.diagnostics.OffsetWrapContext.stored_offset: int = 0
 method archivey.diagnostics.OffsetWrapContext.to_dict(self) -> dict[str, object]
 reexport archivey.diagnostics.OnDiagnostic = archivey.OnDiagnostic
+class archivey.diagnostics.PathRefusedContext(_JsonSafeContext)
+init archivey.diagnostics.PathRefusedContext(kind: Literal['path_refused'] = 'path_refused', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, policy: str = '', reason: str = '') -> None
+field archivey.diagnostics.PathRefusedContext.archive_name: str | None = None
+field archivey.diagnostics.PathRefusedContext.kind: Literal['path_refused'] = 'path_refused'
+field archivey.diagnostics.PathRefusedContext.member_id: int | None = None
+field archivey.diagnostics.PathRefusedContext.member_name: str = ''
+field archivey.diagnostics.PathRefusedContext.policy: str = ''
+field archivey.diagnostics.PathRefusedContext.reason: str = ''
+method archivey.diagnostics.PathRefusedContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.ReaderDisagreementContext(_JsonSafeContext)
 init archivey.diagnostics.ReaderDisagreementContext(kind: Literal['reader_disagreement'] = 'reader_disagreement', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, shape: Literal['file_named_as_directory', 'link_name_on_file', 'star_prefix', 'gnu_prefix_bytes', 'hardlink_to_symlink', 'nul_in_name', 'directory_attribute_without_slash', 'file_only_in_joliet', 'file_only_in_iso9660', 'file_only_in_udf'] = 'file_named_as_directory') -> None
 field archivey.diagnostics.ReaderDisagreementContext.archive_name: str | None = None
@@ -1178,6 +1198,26 @@ module archivey.terminal
 function archivey.terminal.display_path(path: str | os.PathLike[str]) -> str
 function archivey.terminal.escape_control_chars(text: str) -> str
 function archivey.terminal.quoted(text: str) -> str
+module archivey.fsspec
+class archivey.fsspec.ArchiveyFileSystem(AbstractArchiveFileSystem)
+init archivey.fsspec.ArchiveyFileSystem(fo: str | os.PathLike[str] | OpenFile | BinaryIO = '', *, target_protocol: str | None = None, target_options: dict[str, Any] | None = None, format: ArchiveFormat | str | None = None, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, **kwargs: Any) -> None
+attribute archivey.fsspec.ArchiveyFileSystem.cachable = False
+method archivey.fsspec.ArchiveyFileSystem.close(self) -> None
+method archivey.fsspec.ArchiveyFileSystem.cp_file(self, *args: Any, **kwargs: Any) -> Any
+method archivey.fsspec.ArchiveyFileSystem.info(self, path: str, **kwargs: Any) -> dict[str, Any]
+method archivey.fsspec.ArchiveyFileSystem.ls(self, path: str, detail: bool = True, **kwargs: Any) -> list[Any]
+method archivey.fsspec.ArchiveyFileSystem.makedirs(self, *args: Any, **kwargs: Any) -> Any
+method archivey.fsspec.ArchiveyFileSystem.mkdir(self, *args: Any, **kwargs: Any) -> Any
+method archivey.fsspec.ArchiveyFileSystem.mv(self, *args: Any, **kwargs: Any) -> Any
+method archivey.fsspec.ArchiveyFileSystem.pipe_file(self, *args: Any, **kwargs: Any) -> Any
+attribute archivey.fsspec.ArchiveyFileSystem.protocol = 'archivey'
+method archivey.fsspec.ArchiveyFileSystem.put_file(self, *args: Any, **kwargs: Any) -> Any
+method archivey.fsspec.ArchiveyFileSystem.rm(self, *args: Any, **kwargs: Any) -> Any
+method archivey.fsspec.ArchiveyFileSystem.rm_file(self, *args: Any, **kwargs: Any) -> Any
+method archivey.fsspec.ArchiveyFileSystem.rmdir(self, *args: Any, **kwargs: Any) -> Any
+attribute archivey.fsspec.ArchiveyFileSystem.root_marker = ''
+method archivey.fsspec.ArchiveyFileSystem.touch(self, *args: Any, **kwargs: Any) -> Any
+method archivey.fsspec.ArchiveyFileSystem.walk(self, path: str, maxdepth: int | None = None, topdown: bool = True, on_error: Any = 'omit', **kwargs: Any) -> Iterator[tuple[str, Any, Any]]
 cli-exit EXIT_BROKEN_PIPE = 141
 cli-exit EXIT_FAIL = 1
 cli-exit EXIT_INTERRUPTED = 130
