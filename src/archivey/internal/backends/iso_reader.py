@@ -71,6 +71,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta, timezone
 from functools import cache
+from pathlib import Path
 from types import ModuleType
 from typing import (
     TYPE_CHECKING,
@@ -130,6 +131,12 @@ from archivey.internal.backends.cd_sectors import (
     RawSectorLayout,
     cooked_source,
     raw_sector_layout,
+)
+from archivey.internal.backends.cue_sheet import (
+    DiscSource,
+    disc_source,
+    parse_cue,
+    read_cue_text,
 )
 from archivey.internal.base_reader import special_file_has_data_report
 from archivey.internal.format_adapter import register_builtin_format
@@ -1553,17 +1560,24 @@ class _ZisofsStream(io.RawIOBase):
 
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
-        # Views released on return: see try_readinto.
+        # Views released on return: see try_readinto. Full-count (ADR 0014): archivey
+        # takes a short read from its own stream as the member's end, so a read goes
+        # on past a block's end until the buffer is full or the file ends.
         with memoryview(b) as outer, outer.cast("B") as view:
-            if self._position >= self._size or not len(view):
-                return 0
-            index = self._position >> self._log2
-            block = self._block(index)
-            start = self._position - (index << self._log2)
-            count = min(len(view), len(block) - start)
-            view[:count] = block[start : start + count]
-            self._position += count
-            return count
+            filled = 0
+            while filled < len(view) and self._position < self._size:
+                index = self._position >> self._log2
+                block = self._block(index)
+                start = self._position - (index << self._log2)
+                count = min(len(view) - filled, len(block) - start)
+                # _block returns exactly the block's bytes (it raises otherwise) and
+                # start is inside it, so each turn copies at least one byte. A short
+                # count here would end the member early (ADR 0014).
+                assert count > 0, (count, start, len(block))
+                view[filled : filled + count] = block[start : start + count]
+                self._position += count
+                filled += count
+            return filled
 
     def _block(self, index: int) -> bytes:
         if index == self._cached_index:
@@ -1800,7 +1814,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             image_length=self._image_length,
         )
         image_length = self._image_length
-        if isinstance(self._source, CookedSource) and end < image_length:
+        if isinstance(self._source, DiscSource):
+            # Only the rest of the chosen track: what follows it is another track
+            # of the disc, which the .cue sheet accounts for.
+            end, image_length = self._source.trailing_window(end, MAX_TRAILING_SCAN)
+        elif isinstance(self._source, CookedSource) and end < image_length:
             # A raw image holds every track of the disc, and only the first is read.
             # What follows the data track (audio, or another track's pregap) is the
             # disc's own; only data sectors that continue the track are scanned.
@@ -2983,6 +3001,9 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # The hints name bytes of the file archivey reads, which for a raw image
             # are the whole sectors holding each extent.
             ranges = tuple(self._source.raw_range(*span) for span in ranges)
+        elif isinstance(self._source, DiscSource):
+            # The opened file is the .cue sheet; the data is in the track files.
+            ranges = ()
         return MemberData(
             self._data_stream(spans, zisofs, member),
             bounded=True,
@@ -3067,7 +3088,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 self._iso.close()
                 self._iso_opened = False
         finally:
-            self._iso_fp.close()
+            try:
+                self._iso_fp.close()
+            finally:
+                if isinstance(self._source, DiscSource):
+                    self._source.close()
 
     @override
     def close(self) -> None:
@@ -3126,11 +3151,41 @@ def refuse_raw_sector_image(
     )
 
 
+def _cue_for(path: Path | None, raw: bool) -> Path | None:
+    """The ``.cue`` sheet to read: ``path`` itself, or for a raw ``.bin`` the sheet
+    beside it with the same stem that names it. ``None`` for anything else, and for a
+    source with no path (a stream)."""
+    if path is None:
+        return None
+    if path.suffix.lower() == ".cue":
+        return path
+    if not raw:
+        return None
+    try:
+        siblings = [
+            p
+            for p in path.parent.iterdir()
+            if p.suffix.lower() == ".cue" and p.stem.lower() == path.stem.lower()
+        ]
+    except OSError:
+        return None
+    for sheet in siblings:
+        try:
+            names = [f.name.lower() for f in parse_cue(read_cue_text(sheet))]
+        except (OSError, ArchiveyError):
+            continue
+        if path.name.lower() in names:
+            return sheet
+    return None
+
+
 class IsoHandler(IndexedFormatHandler):
     """ISO 9660 images, read through ``archivey.formats`` (requires ``pycdlib``)."""
 
     format = ArchiveFormat.ISO
-    extensions = (".iso",)
+    # A .cue sheet is text with no magic: it is found by its name, and the disc it
+    # describes is read from the track files beside it (cue_sheet.py).
+    extensions = (".iso", ".cue")
     # pycdlib addresses the image by absolute offsets (volume descriptors at 32 KiB),
     # so even a forward-only pass needs a seekable source.
     non_seekable_reason = (
@@ -3152,16 +3207,24 @@ class IsoHandler(IndexedFormatHandler):
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> IsoReader:
         layout = raw_sector_layout(source.read_at(0, PROBE_SIZE))
+        if layout is not None and not layout.readable:
+            # open_archive refuses these first; this covers a caller that reaches
+            # the handler some other way.
+            raise UnsupportedFeatureError(
+                f"The file is a raw CD sector image ({layout.describe()}) that "
+                "cannot be read as an ISO 9660 image.",
+                source_format=ArchiveFormat.ISO,
+                archive_name=context.archive_name,
+            )
+        cue = _cue_for(source.path, layout is not None)
+        if cue is not None:
+            disc = disc_source(cue, context.archive_name)
+            try:
+                return IsoReader(disc, context)
+            except BaseException:
+                disc.close()
+                raise
         if layout is not None:
-            if not layout.readable:
-                # open_archive refuses these first; this covers a caller that reaches
-                # the handler some other way.
-                raise UnsupportedFeatureError(
-                    f"The file is a raw CD sector image ({layout.describe()}) that "
-                    "cannot be read as an ISO 9660 image.",
-                    source_format=ArchiveFormat.ISO,
-                    archive_name=context.archive_name,
-                )
             source = cooked_source(source, layout, context.archive_name)
         return IsoReader(source, context)
 

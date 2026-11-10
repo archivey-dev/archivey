@@ -1245,7 +1245,7 @@ def test_unknown_redirect_in_a_solid_run_is_other_and_carries_no_bytes(
         streamed = {m.name: s.read() for m, s in archive.stream_members() if s}
         assert streamed == expected
     with open_archive(fixture) as archive:
-        archive.extract_all(tmp_path)
+        archive.extract_all(tmp_path, on_blocked="skip")
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt", "b.txt"]
     assert (tmp_path / "b.txt").read_bytes() == expected["b.txt"]
 

@@ -454,7 +454,7 @@ def test_unix_special_file_without_data_is_other(tmp_path: Path) -> None:
         codes = [d.code for d in archive.diagnostics.retained]
         assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
         assert archive.read(members[2]) == payloads["@atfile"]
-        archive.extract_all(tmp_path / "out")
+        archive.extract_all(tmp_path / "out", on_blocked="skip")
     assert not (tmp_path / "out" / "-inul").exists()
     assert (tmp_path / "out" / "@atfile").read_bytes() == payloads["@atfile"]
 
