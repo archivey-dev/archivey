@@ -174,10 +174,11 @@ def whole_archives(text: bytes) -> None:
         print("\n(whole archives skipped: no 7zz)")
         return
     print(f"\n{'whole archive':34} {'archivey':>11} {'libarchive':>11} {'speed-up':>7}")
-    lib = max(
-        Path("/usr/lib/x86_64-linux-gnu").glob("*.so*"), key=lambda p: p.stat().st_size
-    )
-    exe = (lib.read_bytes() * 16)[: 16 << 20]
+    # Machine code for the filter rows: the running interpreter's own binary, which
+    # exists on every platform, repeated to 16 MiB.
+    exe_path = Path(sys.executable).resolve()
+    exe = (exe_path.read_bytes() * 64)[: 16 << 20]
+    print(f"(filter rows: {exe_path.name}, {exe_path.stat().st_size} bytes, repeated)")
     cases = [
         ("7z ARM64 + LZMA2, 16 MB", "7zip", exe, ["-mf=ARM64", "-m0=lzma2"]),
         (

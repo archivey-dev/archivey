@@ -87,17 +87,19 @@ interpreter's standard library source, so absolute times depend on the Python bu
 
 The same script's second part reads whole archives with libarchive (from memory: 7z
 needs a seekable source) against archivey reading them end to end. The codecs already
-in C dominate, so these gain little:
+in C dominate, so these gain little. The filter rows compress the interpreter's own
+binary (here the 6.6 MB x86-64 `python3.11`), repeated to 16 MiB:
 
 | Archive | archivey | libarchive | Speed-up |
 | --- | ---: | ---: | ---: |
-| 7z ARM64 + LZMA2, 16 MB | 156 ms | 140 ms | 1.1x |
-| 7z BCJ2 + LZMA, 16 MB | 230 ms | 154 ms | 1.5x |
-| 7z PPMd, 11 MB text (pyppmd in a child) | 669 ms | 479 ms | 1.4x |
-| ZIP PPMd8, 11 MB text (pyppmd in a child) | 657 ms | 472 ms | 1.4x |
+| 7z ARM64 + LZMA2, 16 MB | 346 ms | 313 ms | 1.1x |
+| 7z BCJ2 + LZMA, 16 MB | 612 ms | 280 ms | 2.2x |
+| 7z PPMd, 11 MB text (pyppmd in a child) | 696 ms | 471 ms | 1.5x |
+| ZIP PPMd8, 11 MB text (pyppmd in a child) | 691 ms | 465 ms | 1.5x |
 
-The 7z filter and PPMd rows are not worth a wrapper: 1.1x to 1.5x, and PPMd would need
-the child process in either library.
+The 7z filter and PPMd rows are not worth a wrapper: 1.1x to 2.2x, the Rust BCJ2
+kernel gives 1.75x in-process, and PPMd would need the child process in either
+library.
 
 ## Parity on damaged input
 
@@ -140,9 +142,9 @@ direction is not: archivey cannot add libarchive's missing checks to libarchive.
   could check it against `DecoderLimits.max_decoder_memory`.
 - **Crashes.** The wrapper headers are archivey's, so libarchive's header-parsing CVEs
   (most of its CAB and LHA list) are out of reach; only the decoders see attacker
-  bytes. They are C. Over about 4,000 damaged streams nothing crashed, but DR-20 asks
-  for a child process unless a codec's behaviour on damage is measured, and the
-  measured behaviour above is not archivey's.
+  bytes. They are C. Over 2,700 damaged streams (900 each for `.Z`, LZX and LZH) nothing
+  crashed, but DR-20 asks for a child process unless a codec's behaviour on damage is
+  measured, and the measured behaviour above is not archivey's.
 - **GIL.** ctypes releases the GIL during `archive_read_data_block`, but each read callback
   takes it back, once per input chunk.
 - **Passwords.** A NUL byte ends a libarchive passphrase, so those members would need
