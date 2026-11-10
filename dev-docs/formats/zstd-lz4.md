@@ -186,9 +186,11 @@ to the end of the file, with no checksum and no end mark. archivey detects it by
 so a Firefox `addonStartup.json.lz4` reads as mozlz4 (the extension's LZ4 claim is logged as
 a format conflict). The size is listed from the header and enforced: the block must decode
 to exactly that many bytes. The block decodes only at the end of the input, so a pipe gives
-its first byte when the writer closes. Twice the size (the decode buffer and python-lz4's
-copy) is checked against `max_decoder_memory`, a detection probe decodes at most 1 MiB, and
-the size is checked against what the block can decode to (255 bytes per input byte) before
+its first byte when the writer closes. The decode holds the buffer, python-lz4's copy of
+it and the compressed block, so a block of incompressible data peaks at about three times
+the size. Twice the size is checked against `max_decoder_memory` from the header, and twice
+the size plus the block's length again before the decode. A detection probe decodes at most
+1 MiB, and the size is checked against what the block can decode to (255 bytes per input byte) before
 the decode allocates it; a block longer than `LZ4_COMPRESSBOUND(size)` is refused as it
 arrives. Found by the backup-drive scan
 ([`../investigations/2026-10-backup-scan.md`](../investigations/2026-10-backup-scan.md) §6).

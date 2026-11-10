@@ -48,6 +48,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     BinaryIO,
     ClassVar,
@@ -83,6 +84,9 @@ from archivey.types import (
     SpecialFileType,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 __all__ = [
     "CodecCall",
@@ -548,8 +552,23 @@ class _TakenBytes(io.RawIOBase):
         return got
 
 
+class _SpanningCheck(Protocol):
+    """A check over the data of several members, which a built-in reader runs itself
+    (a makeself payload's digests). The adapter's ``SpanningCheck`` implements it."""
+
+    def cover(self, member: ArchiveMember) -> None: ...
+
+    def passed(self) -> None: ...
+
+    def failed(self, message: str) -> ArchiveyError: ...
+
+
 class ReaderContext:
     """What an open archive needs from archivey. archivey builds it."""
+
+    # ``_spanning_check(key)`` returns the check for one spanning check of the
+    # archive. Internal, set by the adapter; not for plugins.
+    _spanning_check: Callable[[object], _SpanningCheck] | None = None
 
     def __init__(
         self,
@@ -574,8 +593,13 @@ class ReaderContext:
         charge_metadata: Callable[[int, str], None],
         open_nested: Callable[[BinaryIO, ArchiveFormat], Iterator[MemberSpan]]
         | None = None,
+        usage: ResourceUsageRecorder | None = None,
     ) -> None:
         self._encoding = encoding
+        # The open reader's resource-usage recorder, for a built-in reader that checks
+        # a declared allocation itself (``check_decoder_memory``). Not part of the
+        # plugin interface.
+        self._usage = usage
         self._archive_name = archive_name
         self._config = config
         self._decompress = decompress
@@ -622,13 +646,16 @@ class ReaderContext:
         A report on a member being listed is held until the member is yielded, and
         sent then: archivey sets the ``member_name`` of ``details`` to the name the
         member is listed by, normalized, so a reader reports with the name as the
-        archive stores it. The ``message`` is sent as written. The caller's
+        archive stores it. The ``message`` is sent as written, stored name and all:
+        callers match a report to a member by ``member_name``. The caller's
         ``DiagnosticPolicy`` applies when the report is sent, so a code it raises on
         raises then, from the listing. A report on a member that is never yielded is
-        sent when the walk ends, under the reader's name and with no member id; it
+        sent when the walk ends, under the reader's name and with no member id (or at
+        close, for a sequential walk's first step taken at open and never listed); it
         raises only from a walk that reached its end, and is recorded without raising
-        when the walk was stopped part-way or ended by an error. In a walk archivey
-        starts over to reach member data, a report names the member as listed.
+        when the walk was stopped part-way, ended by an error, or never listed. In a
+        walk archivey starts over to reach member data, a report names the member as
+        listed.
 
         For ``SYMLINK_TARGET_UNAVAILABLE`` use :meth:`link_target_unavailable`.
         """

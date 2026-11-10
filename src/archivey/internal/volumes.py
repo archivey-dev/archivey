@@ -1,4 +1,23 @@
-"""Multi-volume path discovery and joining (concatenation; RAR keeps volume-1 path)."""
+"""Turn what the caller passed to ``open_archive`` into one :class:`ArchiveSource`.
+
+:func:`resolve_source` is the entry point; ``core`` and ``detection`` call it. A path,
+a stream, an ``fsspec`` ``OpenFile`` or a list of volumes all come out as one source:
+
+1. A list of two or more volumes is read back to back through a
+   :class:`ConcatenatedFile`. When every part has a name (a path or an ``OpenFile``),
+   the names are checked first (:func:`_validate_volume_sequence_bases`,
+   :func:`_validate_numbered_volume_completeness`). A one-element list is resolved
+   as a single source.
+2. A single path or ``OpenFile`` may be one part of a set. Discovery
+   (:func:`discover_volume_siblings`) finds the other parts beside it from the three
+   naming schemes below. Numbered parts (``x.7z.001``) are raw byte slices, so they
+   are joined. A local RAR set keeps the path of the first volume present, because
+   unrar walks the set on disk itself; a remote set of either kind is joined. The
+   RAR backend also uses the RAR naming helpers here.
+3. Anything else is one source: a path is read as the one file it names, an
+   ``OpenFile`` is read by range (or through fsspec's decompression when it has a
+   ``compression``), and a binary stream is wrapped as it is.
+"""
 
 from __future__ import annotations
 
@@ -38,6 +57,7 @@ from archivey.internal.arg_checks import (
     raise_if_text_stream,
     reject_source,
 )
+from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
 from archivey.internal.remote import (
     DEFAULT_MAX_READ_THROUGH,
@@ -57,7 +77,10 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
     source_name,
 )
-from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.streamtools.binaryio import (
+    ask_resume_offset,
+    read_blocking,
+)
 from archivey.terminal import display_path
 
 if TYPE_CHECKING:
@@ -116,12 +139,12 @@ _MAX_VOLUME_PART = 999_999
 # This pattern and ``_RAR_PART_RE`` end in ``\Z``, not ``$``: ``$`` also matches before
 # a final newline, which would read ``name.7z.001\n`` as a volume name. Digits are
 # ``[0-9]``, not ``\d``: on a ``str`` pattern ``\d`` matches any Unicode digit, so
-# ``0.7z.\u066000`` (an Arabic-Indic zero, then two ASCII zeros) was a numbered part
-# (``\d{3,6}`` took all three) *and* an old-scheme RAR continuation (its
-# ``[^.0-9]`` took the Arabic-Indic zero as the letter), so the schemes overlapped.
-# ``re.ASCII`` does the same for ``re.IGNORECASE``, which otherwise folds ``\u0131``
-# and ``\u0130`` into ``i`` and ``\u017f`` into ``s`` and so read ``x.z\u0131p.001`` as
-# a ZIP volume.
+# ``0.7z.\u066000`` (an Arabic-Indic zero, then two ASCII zeros) would be a numbered
+# part (``\d{3,6}`` takes all three) *and* an old-scheme RAR continuation (its
+# ``[^.0-9]`` takes the Arabic-Indic zero as the letter), so the schemes would
+# overlap. ``re.ASCII`` does the same for ``re.IGNORECASE``, which otherwise folds
+# ``\u0131`` and ``\u0130`` into ``i`` and ``\u017f`` into ``s`` and so would read
+# ``x.z\u0131p.001`` as a ZIP volume.
 _NUMBERED_VOLUME_RE = re.compile(
     r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>[0-9]{3,6})\Z", re.IGNORECASE | re.ASCII
 )
@@ -263,9 +286,9 @@ def next_rar_volume_name(name: str, *, old_numbering: bool) -> str | None:
 
 # Each ordering key reads the part number back out of the pattern that classified the
 # name, so a base that happens to contain another pattern's marker cannot capture it.
-# A scan for the first ``.partN`` anywhere in the name used to, and sorted every part of
-# ``my.part1.zip.001 … .003`` under the same key 1 — leaving the concatenation order to
-# ``iterdir``, which is arbitrary.
+# A scan for the first ``.partN`` anywhere in the name would sort every part of
+# ``my.part1.zip.001 … .003`` under the same key 1, and leave the concatenation order
+# to ``iterdir``, which is arbitrary.
 def _numbered_part_number(name: str) -> int:
     match = _NUMBERED_VOLUME_RE.match(name)
     return int(match.group("part")) if match is not None else 0
@@ -332,8 +355,8 @@ def _pick_volume(
        names carry ``.rar`` whichever way it walks, part 1 included;
     6. the lowest name.
 
-    The last step makes the pick deterministic, where taking the first match in
-    ``iterdir`` order read a stray of another width into the set.
+    The last step makes the pick deterministic. Taking the first match in ``iterdir``
+    order instead could read a stray of another width into the set.
     """
     pattern = _VOLUME_SCHEMES[scheme]
     predicted = _predicted_volume_name(scheme, named, part)
@@ -401,6 +424,47 @@ def _old_rar_listed_file(
     return candidates[0] if candidates else None
 
 
+# Discovery is best-effort when it is refused: a directory it may not list (a local one of
+# mode ``0711``, a store or HTTP server that refuses the request) or a file whose first
+# bytes it may not read reads as "no sibling there". The file the caller named then
+# opens alone, as with ``discover_volumes=False``, and a part it needs is reported
+# missing by the check that refuses an incomplete set. What counts: any ``OSError`` (a
+# refusal is ``PermissionError`` or ``FileNotFoundError``; a ``TimeoutError`` is an
+# ``OSError`` too and counts the same), a file system with no ``ls``
+# (``NotImplementedError``), and an HTTP 4xx answer, which fsspec's HTTP file system
+# raises as ``aiohttp.ClientResponseError`` for every status but 404. That one is
+# recognised by its integer ``status``, so that core does not import ``aiohttp``.
+# Anything else (a 5xx, a bug in a file system, ``MemoryError``, an archivey error)
+# propagates, as DR-15a rules for an unknown exception.
+def _is_discovery_miss(exc: Exception) -> bool:
+    if isinstance(exc, (OSError, NotImplementedError)):
+        return True
+    status = getattr(exc, "status", None)
+    return type(status) is int and 400 <= status < 500
+
+
+def _log_discovery_miss(what: str, path: object, exc: BaseException) -> None:
+    logger.debug(
+        "Volume discovery could not %s %r, so it looks for no volumes there: %r",
+        what,
+        path,
+        exc,
+    )
+
+
+def _listed(parent: _VP) -> list[_VP]:
+    """The entries of ``parent``, or none when listing it is refused
+    (:func:`_is_discovery_miss`). A ``RemoteVolumePath`` handles its own failure, in
+    ``_listing``."""
+    try:
+        return list(parent.iterdir())
+    except Exception as exc:
+        if not _is_discovery_miss(exc):
+            raise
+        _log_discovery_miss("list", _shown(parent), exc)
+        return []
+
+
 class RemoteVolumePath:
     """A path on an ``fsspec`` file system, for volume discovery.
 
@@ -461,12 +525,11 @@ class RemoteVolumePath:
         if listing is None:
             try:
                 entries = self.fs.ls(self.path, detail=True)
-            except (OSError, NotImplementedError):
-                # A file system that cannot list a directory (a store that refuses
-                # the request, which fsspec raises as PermissionError or
-                # FileNotFoundError, or one with no ``ls``) has no siblings to
-                # offer: the named file opens alone, as a lone local volume does. Any
-                # other failure (a timeout, expired credentials) propagates.
+            except Exception as exc:
+                # Refused, or no ``ls``: no siblings to offer (``_is_discovery_miss``).
+                if not _is_discovery_miss(exc):
+                    raise
+                _log_discovery_miss("list", str(self), exc)
                 entries = []
             listing = {
                 posixpath.basename(str(entry["name"]).rstrip("/")): entry
@@ -545,13 +608,18 @@ def rar_volume_number(name: str) -> int | None:
 
 
 def _starts_like_rar(path: Path | RemoteVolumePath) -> bool:
+    """Whether ``path`` starts with a RAR signature; ``False`` when reading it is
+    refused (:func:`_is_discovery_miss`)."""
     try:
         if isinstance(path, Path):
             with path.open("rb") as handle:
                 head = handle.read(len(_RAR_MARKER_PREFIX))
         else:
             head = path.head(len(_RAR_MARKER_PREFIX))
-    except (OSError, NotImplementedError):  # as ``RemoteVolumePath._listing``
+    except Exception as exc:
+        if not _is_discovery_miss(exc):
+            raise
+        _log_discovery_miss("read", _shown(path), exc)
         return False
     return head == _RAR_MARKER_PREFIX
 
@@ -566,18 +634,19 @@ def _collect_old_rar_volumes(parent: _VP, base: str) -> list[_VP] | None:
     from an SFX stub, ``discover_volume_siblings``' fast reject first needs
     ``<stem>.r00`` or ``<stem>.R00`` with the stub's own base spelling. Of two names
     that differ only in case, the one spelling ``base`` as given wins, then the one
-    spelling the predicted name as given. The walk is bounded by ``_MAX_VOLUME_PART``, and by the listing: each step
-    needs a file in it.
+    spelling the predicted name as given. The walk is bounded by
+    ``_MAX_VOLUME_PART``, and by the listing: each step needs a file in it.
 
     Past the first missing name, and when volume 1 itself is missing, the other
     old-scheme names of the listing are placed by :func:`rar_volume_number`, so a
-    set with a gap is still one set (ruled 2026-10-06: list everything in the
-    volumes present). Those names are taken only when the file starts with a RAR
-    signature, because the shape alone also matches an Info-ZIP ``backup.z01`` or a
-    ``notes.t01``; the contiguous walk from volume 1 needs no such check, as before.
+    set with a gap is still one set, and the reader lists everything in the volumes
+    present. Those names are taken only when the file starts with a RAR signature,
+    because the shape alone also matches an Info-ZIP ``backup.z01`` or a
+    ``notes.t01``. The contiguous walk from volume 1 needs no such check: unrar
+    itself would look for each of those names.
     """
     by_name: dict[str, list[_VP]] = {}
-    for candidate in parent.iterdir():
+    for candidate in _listed(parent):
         by_name.setdefault(candidate.name.lower(), []).append(candidate)
     first = None
     for suffix in _OLD_RAR_FIRST_VOLUME_SUFFIXES:
@@ -625,7 +694,7 @@ def _siblings_with_base(parent: _VP, pattern: re.Pattern[str], base: str) -> lis
     folded = base.lower()
     return [
         candidate
-        for candidate in parent.iterdir()
+        for candidate in _listed(parent)
         if (match := pattern.match(candidate.name)) is not None
         and match.group("base").lower() == folded
         and candidate.is_file()
@@ -670,10 +739,16 @@ def _discovered_link_error(
 
 
 def _discover_volume_siblings(path: _VP) -> list[_VP] | None:
+    """:func:`discover_volume_siblings` without the symlink refusal.
+
+    Classifies ``path``'s name first and touches the filesystem only for a name
+    that can be a volume. An old-scheme continuation is part of the set only when
+    :func:`_collect_old_rar_volumes` places it there.
+    """
     name = path.name
     lower = name.lower()
     # Fast reject before any filesystem op: most opens (ZIP/TAR/gz/plain .7z) are
-    # not volume-shaped. Saves a ``stat`` per open_archive (perf review L3).
+    # not volume-shaped, so this saves a ``stat`` on every open_archive.
     # ``_volume_scheme_and_base`` also classifies SFX first members
     # (``*.exe.001``, ``*.part1.sfx``).
     classified = _volume_scheme_and_base(name)
@@ -780,7 +855,7 @@ def first_volume_for_stub(path: Path) -> Path | None:
     return None
 
 
-# LRU of open Path volume handles. Two or three absorb SharedView pairs that
+# Size of the LRU of open Path volume handles. Two or three absorb SharedView pairs that
 # straddle a part boundary (concurrent_operations=True). Not a refusal: a 100-part
 # set still reads. Past this many distinct Path volumes in the working set, each
 # cache miss is an open()+close() on that read. Growing the cache to the volume
@@ -813,6 +888,14 @@ def _raise_volume_open_error(path: Path, exc: OSError) -> NoReturn:
 
 @dataclass
 class _CachedPathHandle:
+    """An open handle on one Path volume, kept in :class:`ConcatenatedFile`'s LRU.
+
+    ``synced`` is true while the handle's position is known to match the
+    concatenation's cursor in that volume, so a sequential read needs no ``seek``.
+    A seek into the volume, or a read that advances into it, clears it, so the next
+    read seeks the handle first.
+    """
+
     stream: BinaryIO
     synced: bool = False
 
@@ -865,8 +948,8 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                     st = os.stat(source)
                 except OSError as exc:
                     # A volume path that is missing or unreadable, listed by the
-                    # caller or discovered, raises its OSError, as the first does. A numbering gap among
-                    # paths that exist is TruncatedError in
+                    # caller or discovered, raises its OSError, as the first does.
+                    # A numbering gap among paths that exist is TruncatedError in
                     # _validate_numbered_volume_completeness — discovery expected a
                     # part that is not in the set.
                     _raise_volume_open_error(source, exc)
@@ -917,6 +1000,30 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     def seek_is_expensive(self) -> bool:
         """Whether a stream volume may re-decode on a seek (see ``seek_is_expensive``)."""
         return self._seek_is_expensive
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """The offset, at or before ``target``, that a seek to ``target`` reads from.
+
+        ``target`` when no volume's seek is expensive. Otherwise the volume that holds
+        ``target`` is asked, in its own offsets: a path answers ``target``, a remote
+        volume (a ``RangeSource``) too, and a member stream its decoder's restart
+        point. ``None`` when that volume cannot answer, or answers 0 for a later
+        target: a member view clamps a point behind its own start to 0, and
+        ``seeks_to_end_are_cheap`` refuses that 0 only at the start of the set.
+        """
+        if not self._seek_is_expensive:
+            return target
+        if target < 0 or self._size == 0:
+            return None
+        index = min(bisect_right(self._offsets, target) - 1, self.volume_count - 1)
+        start = self._offsets[index]
+        source = self._volume_items[index]
+        if isinstance(source, Path):
+            return target
+        inner = ask_resume_offset(source, target - start)
+        if inner is None or (inner == 0 and target > start):
+            return None
+        return start + inner
 
     @property
     def volume_ranges(self) -> list[tuple[int, int]]:
@@ -1021,9 +1128,9 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             stream.seek(self._vol_offset)
             cached.synced = True
             return
-        # Borrowed: the caller may have moved it. Seek every time, as we did
-        # when every volume was an already-open handle. ``synced`` is Path-only
-        # because that invariant is not enforceable on a stream we do not own.
+        # Borrowed: the caller may have moved it, so seek every time. ``synced`` is
+        # Path-only because that invariant is not enforceable on a stream we do
+        # not own.
         stream.seek(self._vol_offset)
 
     @override
@@ -1094,6 +1201,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             super().close()
 
 
+# How many part numbers an error message spells out before it gives a count instead.
 _MAX_ENUMERATED_PARTS = 8
 
 
@@ -1397,7 +1505,8 @@ def incomplete_lone_numbered_volume_error(
     ``name.7z.001`` / ``name.zip.001`` / ``name.exe.001`` would otherwise fall
     through to detection and surface as ``CorruptionError``. The missing parts
     are a truncated set, not a format-specific spanned-ZIP refusal. Callers
-    skip this when ``format=`` is an explicit non-ZIP / non-7z (P8).
+    skip this when ``format=`` names a format other than ZIP or 7z: that format
+    is honoured or refused as a conflict, not reported as a missing volume.
     """
     if not archive_name:
         return None
@@ -1408,9 +1517,8 @@ def incomplete_lone_numbered_volume_error(
     base = match.group("base")
     part = int(match.group("part"))
     # The part number comes from the name alone, so it must not size the list: a
-    # lone ``a.zip.999999`` used to spell out every earlier part and build a ~14 MB
-    # message (``a.zip.9999999``, ~150 MB, before part numbers were capped). Only the
-    # prefix worth printing is enumerated, the same cap
+    # lone ``a.zip.999999`` spelling out every earlier part would build a ~14 MB
+    # message. Only the prefix worth printing is enumerated, the same cap
     # :func:`_numbered_volume_sequence_error` uses, and the rest is a count.
     earlier = part - 1
     missing = [
@@ -1458,6 +1566,12 @@ class ResolvedSource:
 def _coerce_path_or_stream(
     item: object, ranges: _RangeSources | None = None
 ) -> Path | BinaryIO:
+    """One element of a volume list, as a part :class:`ConcatenatedFile` can join.
+
+    A ``str`` becomes a :class:`~pathlib.Path`, an ``OpenFile`` becomes a range source
+    opened through ``ranges``, and a binary stream passes through. Anything else is
+    refused as a source type archivey does not take.
+    """
     if ranges is not None and is_open_file(item):
         return cast("BinaryIO", ranges.open(item))
     if isinstance(item, (str, Path)):
@@ -1562,11 +1676,30 @@ def resolve_source(
     )
 
 
+def _part_name(raw: object, item: Path | BinaryIO) -> PurePath | None:
+    """The name the volume-sequence checks read for one part, or ``None``.
+
+    A path is its own name and an ``OpenFile`` has its remote path. A caller's
+    stream has no name to check.
+    """
+    if isinstance(item, Path):
+        return item
+    if is_open_file(raw):
+        return PurePosixPath(cast("OpenFile", raw).path)
+    return None
+
+
 def _resolve_volume_list(
     raw_items: Sequence[object],
     max_read_through: int,
     sizes: dict[str, int] | None = None,
 ) -> ResolvedSource:
+    """Join two or more parts, given by the caller or found by remote discovery.
+
+    ``sizes`` holds part sizes, by remote path, that a directory listing already
+    gave. The range sources opened for ``OpenFile`` parts close with the
+    returned source, or here if joining fails.
+    """
     ranges = _RangeSources(max_read_through, sizes)
     try:
         items = [_coerce_path_or_stream(item, ranges) for item in raw_items]
@@ -1578,11 +1711,7 @@ def _resolve_volume_list(
             # names: a remote set with a gap is refused as a local one is. A list
             # holding a caller's stream has no name to check.
             names = [
-                item
-                if isinstance(item, Path)
-                else PurePosixPath(cast("OpenFile", raw).path)
-                if is_open_file(raw)
-                else None
+                _part_name(raw, item)
                 for raw, item in zip(raw_items, items, strict=True)
             ]
             named = [name for name in names if name is not None]
@@ -1629,6 +1758,12 @@ def _remote_volume_siblings(
 def _resolve_single(
     source: object, *, discover_volumes: bool, max_read_through: int
 ) -> ResolvedSource:
+    """Resolve one source, which may still turn out to be part of a volume set.
+
+    An ``OpenFile`` is read by range, or through fsspec's decompression when it
+    has a ``compression``. A path is a directory, a part of a set found beside it,
+    or one file. Anything else must be a binary stream, which is wrapped as it is.
+    """
     if is_open_file(source):
         if open_file_compression(source) is not None:
             # fsspec decompresses: the archive is the decompressed stream. archivey
@@ -1667,8 +1802,8 @@ def _resolve_single(
         siblings = discover_volume_siblings(path) if discover_volumes else None
         if siblings is not None:
             # Numbered parts are byte slices, so they are joined into one stream.
-            # RAR keeps volume 1's path instead: unrar walks the set itself and needs
-            # the sibling files on disk.
+            # RAR keeps the path of the first volume present instead: unrar walks the
+            # set itself and needs the sibling files on disk.
             name = source_name(siblings[0])
             if _NUMBERED_VOLUME_RE.match(siblings[0].name):
                 return ResolvedSource(

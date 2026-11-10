@@ -2675,6 +2675,56 @@ def test_comment_terminator_is_trimmed_a_code_unit_at_a_time() -> None:
         _read_comment(_Cursor(b"\x00abc"))
 
 
+def test_comment_terminator_trim_is_one_pass_over_a_long_run_of_nuls() -> None:
+    """Trimming two bytes per loop pass copied the payload on every pass.
+
+    A comment of 4 MiB of NULs in a 762-byte archive (LZMA2-compressed header) took
+    over 300 s to list. Counting the calls the trim makes keeps the check
+    deterministic: the old loop made one ``endswith`` call per code unit, 32 768 here.
+    The trimmed result must still be the per-code-unit one, checked against the old
+    loop over every short tail.
+    """
+    import itertools
+    import sys
+
+    from archivey.internal.backends.sevenzip_parser import _Cursor, _read_comment
+
+    payload = "hi".encode("utf-16le") + b"\x00" * 65_536
+    calls = 0
+
+    def count(frame: object, event: str, arg: object) -> None:
+        nonlocal calls
+        if event in ("call", "c_call"):
+            calls += 1
+
+    sys.setprofile(count)
+    try:
+        result = _read_comment(_Cursor(b"\x00" + payload))
+    finally:
+        sys.setprofile(None)
+    assert result == "hi"
+    assert calls < 50, calls
+
+    def loop_trim(data: bytes) -> bytes:
+        while data.endswith(b"\x00\x00"):
+            data = data[:-2]
+        return data
+
+    for length in range(7):
+        for tail in itertools.product((b"\x00", b"a"), repeat=length):
+            data = b"".join(tail)
+            expected = loop_trim(data)
+            if not expected:
+                assert _read_comment(_Cursor(b"\x00" + data)) is None
+            elif len(expected) % 2:
+                with raises_corruption_not_truncation(match="odd byte length"):
+                    _read_comment(_Cursor(b"\x00" + data))
+            else:
+                assert _read_comment(_Cursor(b"\x00" + data)) == expected.decode(
+                    "utf-16le", errors="surrogatepass"
+                )
+
+
 def _encode_7z_number(value: int) -> bytes:
     """7z ``NUMBER``: leading 1-bits of the first byte count the extra LE bytes."""
     for extra in range(8):
@@ -3052,7 +3102,7 @@ def test_real_7z_cli_fifo_is_other_and_not_extracted(tmp_path: Path) -> None:
     with open_archive(archive) as reader:
         types = {m.name: m.type for m in reader.members()}
         assert types == {"fifo": MemberType.OTHER, "reg.txt": MemberType.FILE}
-        reader.extract_all(tmp_path / "out")
+        reader.extract_all(tmp_path / "out", on_blocked="skip")
     assert not (tmp_path / "out" / "fifo").exists()
     assert (tmp_path / "out" / "reg.txt").read_bytes() == b"hi"
 

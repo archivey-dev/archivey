@@ -719,13 +719,16 @@ opening it.
 Name the member in the report as the archive stores it, the same name you give
 `member.name`. archivey normalizes names only once `iter_members()` or `walk()` yields
 them, so it holds a report made while listing until then, and sends it with the
-normalized name as the context's `member_name`. The message goes out as you wrote it.
-The caller's `DiagnosticPolicy` applies when the report is sent, so a code the caller
-raises on raises from the listing. A report on a member you never yield is sent when
-the walk ends, under your name and with no member id. It raises only if the walk
-reached its end: when the caller stopped the listing early, or damage ended it, the
-report is recorded and the policy does not raise. In a walk archivey starts over to
-reach member data, a report names the member as listed.
+normalized name as the context's `member_name`. The message goes out as you wrote it,
+so it can quote `./dev` for the member listed as `dev`: callers match a report to its
+member by `member_name`, not by the message. The caller's `DiagnosticPolicy` applies
+when the report is sent, so a code the caller raises on raises from the listing. A
+report on a member you never yield is sent when the walk ends, under your name and
+with no member id, or when the reader closes if the walk's first step, taken at open,
+was never listed. It raises only if the walk reached its end: when the caller stopped
+the listing early, or damage ended it, the report is recorded and the policy does not
+raise. In a walk archivey starts over to reach member data, a report names the member
+as listed.
 
 A symlink whose target cannot be read is reported with
 `ReaderContext.link_target_unavailable()`, which also leaves `link_target` unset and

@@ -32,7 +32,11 @@ from archivey.detection_cost import (
 )
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
-from archivey.internal.source import ArchiveSource, seek_is_expensive
+from archivey.internal.source import (
+    ArchiveSource,
+    seek_is_expensive,
+    seeks_to_end_are_cheap,
+)
 from archivey.internal.streams.streamtools import (
     is_seekable,
     read_arrived,
@@ -62,6 +66,12 @@ class CandidateView(Protocol):
     """
 
     def __call__(self, end: int, start: int = 0, /) -> bytes: ...
+
+
+#: What :meth:`PrefixWorkspace.seek_view` reads on its first peek: more than a 7z
+#: start header (32 bytes), a ZIP local header with a name of normal length, or a RAR 5
+#: main header of normal size (about 220 bytes), so one seek judges the candidate.
+SEEK_VIEW_FIRST_READ = 512
 
 
 class PrefixWorkspace:
@@ -334,6 +344,46 @@ class PrefixWorkspace:
 
         return peek_more
 
+    def seek_view(self, candidate_origin: int, *, length: int) -> CandidateView | None:
+        """A :meth:`candidate_view`-shaped callable over the ``length`` bytes from
+        ``candidate_origin``, read by seeking (:meth:`read_at`), or ``None`` when the
+        source has no cheap random access: a forward-only source, or a stream whose
+        backward seek may re-decode.
+
+        For one candidate whose place a header gives, past the bytes the prefix
+        holds: the prefix does not grow through the bytes before it. The first peek
+        reads :data:`SEEK_VIEW_FIRST_READ` bytes (or ``length``, when smaller) in one
+        seek, which holds every validator's header of normal size, and the view keeps
+        what it read: a validator's growing peeks then cost no more reads, and only a
+        longer header costs one read for each peek past what is held. A peek
+        past ``length`` is cut short and noted, as a ``limit`` is for
+        :meth:`candidate_view` (:meth:`take_clamped_view_read`).
+        """
+        if candidate_origin < 0 or length < 0:
+            raise ValueError("candidate_origin and length must be non-negative")
+        if self._cheap_random_access_handle() is None:
+            return None
+        held = bytearray()
+        ended = False
+
+        def peek_more(end: int, start: int = 0, /) -> bytes:
+            nonlocal ended
+            if start < 0:
+                raise ValueError("start must be non-negative")
+            if end > length:
+                self._clamped_view_read = True
+                end = length
+            if end > len(held) and not ended:
+                wanted = end - len(held)
+                if not held:
+                    wanted = max(wanted, min(SEEK_VIEW_FIRST_READ, length))
+                data = self.read_at(candidate_origin + len(held), wanted) or b""
+                ended = len(data) < wanted
+                held.extend(data)
+            return bytes(held[start:end])
+
+        return peek_more
+
     def take_clamped_view_read(self) -> bool:
         """Return and clear whether a limited view truncated a peek since last take."""
         flagged = self._clamped_view_read
@@ -391,6 +441,20 @@ class PrefixWorkspace:
             return None
         return self._handle
 
+    def _cheap_tail_handle(self) -> BinaryIO | None:
+        """Handle for :meth:`read_tail`'s one seek to the end, or ``None``.
+
+        Wider than :meth:`_cheap_random_access_handle`: a stream whose seek may cost
+        something still qualifies when a seek to its tail decodes nothing
+        (``seeks_to_end_are_cheap``). A remote source costs one request for the
+        tail (fsspec-integration design D1), and a stored ZIP entry or an
+        uncompressed TAR member is a slice of its archive. A deflated member does not
+        qualify: reaching its end decodes all of it.
+        """
+        if self._handle is None or not seeks_to_end_are_cheap(self._handle):
+            return None
+        return self._handle
+
     def _read_at_via_seek(self, handle: BinaryIO, offset: int, length: int) -> bytes:
         assert self._entry_pos is not None
         entry = self._entry_pos
@@ -415,11 +479,14 @@ class PrefixWorkspace:
         A path or a plain seekable stream seeks there and restores the handle, the
         same way :meth:`read_at` does, and does not grow the prefix through the
         middle of the file. The part the prefix already holds is taken from it, not
-        fetched again, and the fetched bytes count in ``unique_bytes_read``. A
-        non-seekable source, and an ``ArchiveStream`` whose backward seek may
-        re-decode, returns ``None`` rather than buffering the whole source to reach
-        the end. Those declines record ``tier`` as ``CAPABILITY_UNAVAILABLE``: the
-        source has a tail detection did not look at. The trailer step passes
+        fetched again, and the fetched bytes count in ``unique_bytes_read``. So
+        does a source whose seek to the tail decodes nothing
+        (``seeks_to_end_are_cheap``): a remote source, at one range request, and a
+        stored ZIP entry or an uncompressed TAR member. A non-seekable source, and
+        an ``ArchiveStream`` that would re-decode to reach its tail, returns
+        ``None`` rather than buffering the whole source to reach the end. Those
+        declines record ``tier`` as ``CAPABILITY_UNAVAILABLE``: the source has a
+        tail detection did not look at. The trailer step passes
         ``"trailer"``; the PE tail probe passes ``"sfx_tail"`` and the payload end.
 
         Ending at the end of the source, a source shorter than ``length`` has no
@@ -443,10 +510,17 @@ class PrefixWorkspace:
         held = len(self._buf)
         if end <= held:
             return bytes(self._buf[origin:end])
-        handle = self._cheap_random_access_handle()
+        handle = self._cheap_tail_handle()
         if handle is None:
             self.record_skip(tier, TierSkipReason.CAPABILITY_UNAVAILABLE)
             return None
+        # A remote source then fetches the tail as a run of its own, rather than
+        # read through to it from the prefix and drop the prefix's window, which
+        # the backend reads next (``ArchiveSource.will_read``).
+        will_read = getattr(handle, "will_read", None)
+        if callable(will_read):
+            assert self._entry_pos is not None
+            will_read(self._entry_pos + max(origin, held), self._entry_pos + end)
         if origin < held:
             return bytes(self._buf[origin:held]) + self._read_at_via_seek(
                 handle, held, end - held

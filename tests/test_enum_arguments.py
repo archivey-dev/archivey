@@ -34,6 +34,7 @@ from archivey import (
     AbortOn,
     ExtractionPolicy,
     ExtractionStatus,
+    OnBlocked,
     OnError,
     OverwritePolicy,
 )
@@ -54,6 +55,7 @@ from archivey.types import (
     AbortOnStr,
     ContainerFormat,
     ExtractionPolicyStr,
+    OnBlockedStr,
     OnErrorStr,
     OptionalLibrary,
     OptionalLibraryStr,
@@ -67,6 +69,7 @@ PUBLIC_ENUMS: tuple[type[Enum], ...] = (
     ExtractionPolicy,
     OverwritePolicy,
     OnError,
+    OnBlocked,
     AbortOn,
     AcceleratorMode,
     RarDecompressor,
@@ -349,6 +352,7 @@ LITERAL_ALIASES: tuple[tuple[type[Enum], object], ...] = (
     (OverwritePolicy, OverwritePolicyStr),
     (OnError, OnErrorStr),
     (AbortOn, AbortOnStr),
+    (OnBlocked, OnBlockedStr),
     (DiagnosticCode, DiagnosticCodeStr),
     (OptionalLibrary, OptionalLibraryStr),
 )
