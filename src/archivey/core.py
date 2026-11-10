@@ -1,25 +1,39 @@
 """Public entry points: open archives and query format support.
 
-``open_archive`` pipeline (in order): register backends → refuse a wrong-typed
-``format=`` → validate streaming/concurrency → resolve source → incomplete
-numbered-volume refuse (``.7z.NNN`` / ``.zip.NNN`` / ``.exe.NNN``) then Info-ZIP
-``.zNN`` (both skipped when ``format=`` is an explicit non-joinable format) →
-detect or accept format (a stub-only ``.exe`` / ``.sfx`` with no archive magic
-follows the split first volume beside it) → other multi-volume checks → raw CD
-sector image refusal (ISO, seekable source) → recognised-only refusal (DMG) →
-read-once capability refusal (a non-seekable source for a format that needs seek in
-either mode; its ``password=`` / ``encoding=`` diagnostics are emitted first) →
-backend lookup and availability check (``PackageNotInstalledError``) →
-``password=`` / ``encoding=`` diagnostics → access-mode refusal (a non-seekable
-source with ``streaming=False``) → normalize stream origin →
-``backend.open_read(...)``.
+:func:`open_archive` runs these steps in order. The order matters: each refusal comes
+before the steps whose message would mislead the caller (for example, a format that
+cannot be read from a pipe is refused before the caller is told to install its
+package).
+
+1. Check the arguments: a wrong-typed or ``UNKNOWN`` ``format=``, a bad config or
+   encoding, ``streaming=True`` with ``concurrent_operations=True``.
+2. Resolve the source (``resolve_source``): a path, a
+   stream, or a list of volumes becomes one ``ArchiveSource``.
+3. Decide the format (``_decide_format``): refuse a lone numbered volume
+   (``.7z.NNN`` / ``.zip.NNN`` / ``.exe.NNN``, then Info-ZIP ``.zNN``), unless
+   ``format=`` names a format other than the one the parts join into (ZIP or 7z; ZIP
+   for ``.zNN``) or volume discovery is off for the numbered parts; then take the
+   directory, ``format=``, or detection. A stub-only ``.exe`` / ``.sfx`` with no archive magic
+   is followed to the split first volume beside it.
+4. Refuse a format this open can never read (``_refuse_unopenable_format``): off
+   by policy, out of a replacement plugin's reach, a volume set for a format without
+   volumes, a raw CD sector image, or a recognised-only format (DMG).
+5. Pick the backend (``_backend_for_source``): refuse a non-seekable source for a
+   format that needs to seek in either mode, look up the backend
+   (``PackageNotInstalledError``), emit the ``password=`` / ``encoding=``
+   diagnostics, and refuse a non-seekable source with ``streaming=False``.
+6. Open: rebase the source, then ``backend.open_read(...)`` over the payload region
+   that detection found.
+
+:func:`open_stream` is the smaller counterpart for one compressed stream with no
+archive container.
 """
 
 from __future__ import annotations
 
 import errno
 import os
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Literal, NoReturn, cast, overload
 
@@ -39,6 +53,7 @@ from archivey.diagnostics import (
 from archivey.exceptions import (
     ArchiveyError,
     FormatDetectionError,
+    SourceChangedError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
     _UsageTypeError,
@@ -51,7 +66,10 @@ from archivey.internal.arg_checks import (
     raise_if_text_stream,
     raise_if_write_only_stream,
 )
-from archivey.internal.backends.iso_reader import refuse_raw_sector_image
+from archivey.internal.backends.iso_reader import (
+    raw_layout_of,
+    refuse_raw_sector_image,
+)
 from archivey.internal.backends.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
@@ -84,6 +102,7 @@ from archivey.internal.remote import (
     emit_source_change_undetectable,
     is_open_file,
     noting_fsspec_decoding,
+    raising_source_change,
     refuse_compressed_open_file_stream,
 )
 from archivey.internal.sfx import read_payload_end
@@ -148,22 +167,19 @@ __all__ = [
 def _forced_payload_end(
     archive_source: ArchiveSource, backend_cls: type[ReadBackend]
 ) -> int | None:
-    """Where a signed executable's certificate table starts, for a source opened with a
-    forced ``format=`` (detection, which reads it otherwise, did not run); ``None``
-    when nothing ends the region early.
+    """Where a signed executable's certificate table starts, for an open that has no
+    executable judgement from detection: a forced ``format=``, or a format detection
+    guessed from the name; ``None`` when nothing ends the region early.
 
     Read from the source's first :data:`~archivey.internal.sfx.LAYOUT_PREFIX` bytes
-    with the function detection uses, so the forced open sees the end auto-detection
+    with the function detection uses, so the open sees the end auto-detection
     reports. Only for a backend that can carry a stub (``SFX_MAGIC``); the others
     refuse an end. Not for a source that cannot seek, whose size is unknown and whose
-    table therefore cannot be placed (detection gives none there either), nor for a
-    volume set, whose parts are joined and where no part's table ends the join.
+    table therefore cannot be placed (detection gives none there either). A volume
+    set is read as its joined bytes, as detection reads it: the last part's table
+    ends the join.
     """
-    if (
-        not backend_cls.SFX_MAGIC
-        or not archive_source.seekable()
-        or archive_source.volume_count > 1
-    ):
+    if not backend_cls.SFX_MAGIC or not archive_source.seekable():
         return None
     return read_payload_end(archive_source, archive_source.size)
 
@@ -200,16 +216,6 @@ def _format_provenance(
     return FormatProvenance(chosen_by="argument", source=source_path)
 
 
-def _raise_multi_volume_not_supported(
-    fmt: ArchiveFormat, archive_name: str | None
-) -> None:
-    raise UnsupportedFeatureError(
-        f"Format {fmt!r} does not support multi-volume archives.",
-        source_format=fmt,
-        archive_name=archive_name,
-    )
-
-
 def _refuse_unjoined_volume_names(
     resolved: ResolvedSource,
     format: ArchiveFormat | None,
@@ -217,6 +223,12 @@ def _refuse_unjoined_volume_names(
     *,
     discover_volumes: bool = True,
 ) -> None:
+    """Refuse a single source whose name says it is one part of a split set.
+
+    A middle or last part usually has no magic at offset 0, so detection would give a
+    misleading answer; the name gives a clear one. A joined set (more than one volume)
+    passes.
+    """
     if resolved.volume_count != 1:
         return
     # Numbered parts are joined for ZIP and 7z. An explicit other format= (P8)
@@ -607,7 +619,7 @@ def _note_unused_arguments(
     # `password=` and `encoding=` are *resources offered for use if needed*, not
     # assertions about this archive, so a backend that cannot use one is a diagnostic
     # rather than a refusal (``archive-reading`` §"assertion vs resource"). `format=` is
-    # the assertion, and ``_open_resolved`` still refuses it for a directory path.
+    # the assertion, and ``_decide_format`` still refuses it for a directory path.
     if passwords.has_concrete_passwords() and not backend_cls.SUPPORTS_PASSWORD:
         # Every form opens alike: none is refused. Only a concrete value is recorded,
         # because a provider callable offers a password only if asked, and a format
@@ -664,24 +676,41 @@ def _note_unused_arguments(
         )
 
 
-def _open_resolved(
+@dataclass(frozen=True)
+class _FormatDecision:
+    """What :func:`_decide_format` settled for an open: the source and its format."""
+
+    resolved: ResolvedSource
+    """The source to read. A followed stub replaces the one the caller named."""
+
+    format: ArchiveFormat
+    """The format to open the source as."""
+
+    detected: FormatInfo | None
+    """Detection's answer, or ``None`` when detection did not run: the caller passed
+    ``format=``, or the source is a directory."""
+
+    format_info: FormatInfo | None
+    """What ``reader.format_info`` reports: ``detected``, or the fixed answer
+    :func:`detect_format` gives a directory."""
+
+
+def _decide_format(
     slot: _SourceSlot,
     resolved: ResolvedSource,
     *,
     format: ArchiveFormat | None,
-    streaming: bool,
-    passwords: _PasswordCandidates,
-    encoding: str | None,
     config: ArchiveyConfig,
     collector: DiagnosticCollector,
-    member_streams: MemberStreams,
-    open_site: OpenSite | None,
-) -> ArchiveReader:
-    """Detect the format of a resolved source and hand it to its backend.
+) -> _FormatDecision:
+    """Settle which format to open the source as: the directory, ``format=``, or
+    detection.
 
-    ``slot`` holds the one source detection and the backend read. It changes when a
-    self-extracting stub is followed to its volume or a RAR set is reopened from volume
-    1; ``open_archive`` closes whatever it holds if this raises.
+    May switch ``slot`` to the split volume beside a stub-only ``.exe`` / ``.sfx``.
+    Raises for a lone numbered volume; for a ``format=`` that conflicts with the source
+    either way round (a directory path with a file format, or a file or stream with
+    ``DIRECTORY``); when following a stub finds a volume of another container than
+    ``format=``, or a volume that is a symbolic link; and when detection finds nothing.
     """
     archive_source = slot.current
     archive_name = resolved.archive_name
@@ -700,9 +729,6 @@ def _open_resolved(
         resolved, format, archive_name, discover_volumes=config.discover_volumes
     )
 
-    # --- Resolve format: a directory path is DIRECTORY (and a conflicting explicit
-    # format= is rejected, not ignored); else caller format, else magic detect. ---
-    resolved_format = format
     if archive_source.is_directory:
         # Silently overruling format= here would hand back a reader over the directory
         # tree for a caller who asserted something else -- the wrong data, succeeding.
@@ -715,8 +741,15 @@ def _open_resolved(
                 f"{format!r} was requested. Pass a path to an archive file, or "
                 f"format=ArchiveFormat.DIRECTORY to read the directory tree."
             )
-        resolved_format = ArchiveFormat.DIRECTORY
-    elif format is not None and format.container is ContainerFormat.DIRECTORY:
+        # A directory is decided without running detection, but ``detect_format``
+        # gives it a fixed answer, so the reader reports that answer too.
+        return _FormatDecision(
+            resolved=resolved,
+            format=ArchiveFormat.DIRECTORY,
+            detected=None,
+            format_info=directory_format_info() if format is None else None,
+        )
+    if format is not None and format.container is ContainerFormat.DIRECTORY:
         # The mirror of the conflict above, refused the same way; tested on the
         # container, so an unnamed pair such as (DIRECTORY, GZIP) gets this message
         # rather than "no read backend". A path the OS cannot stat (missing, under a
@@ -735,15 +768,7 @@ def _open_resolved(
             f"directory path, or the archive's own format (or None to auto-detect)."
         )
 
-    detected: FormatInfo | None = None
-    # What ``reader.format_info`` reports. A directory is decided without running
-    # detection, but ``detect_format`` gives it a fixed answer, so the reader does too.
-    format_info: FormatInfo | None = (
-        directory_format_info()
-        if archive_source.is_directory and format is None
-        else None
-    )
-    if resolved_format is None:
+    if format is None:
         # A non-seekable source keeps what detection peeks in its own replay prefix,
         # so the backend gets the same object and reads those bytes first.
         # Probe *this* file only. Public detect_format follows a stub-only exe to
@@ -764,12 +789,18 @@ def _open_resolved(
             detected = detect_format_into(
                 slot.current, config=config, collector=collector
             )
-        resolved_format = detected.format
-        format_info = detected
-    elif archive_source.path is not None and is_sfx_stub_name(archive_source.path.name):
-        # format= still follows a stub-only miss. Skipping this made
-        # detect_format(p); open_archive(p, format=info.format) open the MZ
-        # bytes as ZIP/7z while auto-detect joined the split set.
+        return _FormatDecision(
+            resolved=resolved,
+            format=detected.format,
+            detected=detected,
+            format_info=detected,
+        )
+
+    if archive_source.path is not None and is_sfx_stub_name(archive_source.path.name):
+        # format= follows a stub-only miss too, as auto-detection does: otherwise
+        # detect_format(p) followed by open_archive(p, format=info.format) would open
+        # the executable stub's bytes as ZIP/7z while auto-detection joins the split
+        # set beside it.
         try:
             detect_format(
                 archive_source,
@@ -777,29 +808,44 @@ def _open_resolved(
                 follow_stub_volumes=False,
             )
         except FormatDetectionError:
-            resolved = _follow_stub_volume(slot, resolved_format, config) or resolved
-    archive_source = slot.current
-    archive_name = resolved.archive_name
-    if detected is None:
-        # ``format=`` skipped detection, which records it otherwise
-        # (``detect_format_into``).
-        emit_source_change_undetectable(
-            archive_source.remote_sources, collector, archive_name
-        )
+            resolved = _follow_stub_volume(slot, format, config) or resolved
+    return _FormatDecision(
+        resolved=resolved, format=format, detected=None, format_info=None
+    )
+
+
+def _refuse_unopenable_format(
+    config: ArchiveyConfig,
+    decision: _FormatDecision,
+    archive_source: ArchiveSource,
+    replacement: type[FormatHandler] | None,
+) -> None:
+    """Refuse a format this open can never read, whatever the access mode.
+
+    Covers, in order: a format ``config.formats`` turns off, what a replacement plugin
+    cannot read, a volume set for a format without volumes, a raw CD sector image, and
+    a recognised-only format (DMG). All of these come before the backend lookup, so
+    the caller is not told to install a package for an open that would fail anyway.
+    """
+    resolved_format = decision.format
+    archive_name = decision.resolved.archive_name
 
     # The caller's format policy first: a format it turns off is refused whatever else
     # would be said about the file, so the caller is not told to install a package or
     # buffer a pipe for a format it does not want to open.
     _refuse_format_off_by_policy(config, resolved_format, archive_name)
-    replacement = config.formats._replacement_for(resolved_format)
     if replacement is not None:
         # A replacement gets what any indexed plugin gets: the archive from its start,
         # in one file. What the built-in reader does around that is not offered.
-        if resolved.volume_count > 1:
+        if decision.resolved.volume_count > 1:
             _refuse_for_replacement(
                 replacement, "a multi-volume set", resolved_format, archive_name
             )
-        if detected is not None and detected.prefixed:
+        # Best effort: ``prefixed`` is what detection found. A file whose name names
+        # the format and whose first bytes are not an executable header or ``#!`` is
+        # guessed from the name with no search for a prefix, and reaches the
+        # replacement, which then sees any prefix as its own bytes.
+        if decision.detected is not None and decision.detected.prefixed:
             _refuse_for_replacement(
                 replacement,
                 "an archive behind a prefix (a self-extracting stub or other leading "
@@ -812,33 +858,65 @@ def _open_resolved(
     # Info-ZIP's spanned sets never reach this point as a joined source (they are not
     # volume-shaped to ``discover_volume_siblings``); an explicitly passed sequence of
     # their parts is still caught by the reader's EOCD disk-field check.
-    if resolved.volume_count > 1 and resolved_format.container not in (
+    if decision.resolved.volume_count > 1 and resolved_format.container not in (
         ContainerFormat.SEVEN_Z,
         ContainerFormat.RAR,
         ContainerFormat.ZIP,
     ):
-        _raise_multi_volume_not_supported(resolved_format, archive_name)
+        raise UnsupportedFeatureError(
+            f"Format {resolved_format!r} does not support multi-volume archives.",
+            source_format=resolved_format,
+            archive_name=archive_name,
+        )
 
-    # A raw CD sector image is claimed as ISO only so it can be refused by name. Ahead
-    # of the availability check, so the answer does not depend on pycdlib; a
-    # non-seekable source is left to the read-once refusal below, which is also ahead
-    # of it. A replacement reader is refused it too: the bytes are not an ISO 9660
-    # image, whichever reader would open them.
+    # A raw CD sector image the built-in reader cannot read (Mode 2 Form 2, an unknown
+    # mode) is refused by name, ahead of the availability check, so the answer does
+    # not depend on pycdlib; a non-seekable source is left to the read-once refusal in
+    # _backend_for_source, which is also ahead of it. A replacement reader is refused
+    # every raw image: the bytes are not an ISO 9660 image, and only the built-in
+    # reader strips the sectors.
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
+        if replacement is not None and raw_layout_of(archive_source) is not None:
+            _refuse_for_replacement(
+                replacement, "a raw CD sector image", resolved_format, archive_name
+            )
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
     # Detection claims a recognised-only format (DMG) so this refusal can name it and
     # carry ``archive_name``. It comes before ``reader_for_format``, which raises the
     # same text but takes no archive name. Such a backend's own ``open_read`` must
     # raise the same refusal too, as ``UdifBackend`` does; nothing provides that.
-    registry = get_registry()
-    unread_message = registry.unread_format_message(resolved_format)
+    unread_message = get_registry().unread_format_message(resolved_format)
     if unread_message is not None:
         raise UnsupportedFeatureError(
             unread_message,
             source_format=resolved_format,
             archive_name=archive_name,
         )
+
+
+def _backend_for_source(
+    decision: _FormatDecision,
+    archive_source: ArchiveSource,
+    replacement: type[FormatHandler] | None,
+    *,
+    streaming: bool,
+    passwords: _PasswordCandidates,
+    encoding: str | None,
+    config: ArchiveyConfig,
+    collector: DiagnosticCollector,
+) -> type[ReadBackend]:
+    """Look up the backend class for the format, and refuse a source it cannot read.
+
+    A non-seekable source is refused in two halves. The capability half refuses a
+    format that needs to seek in either access mode, before the availability check;
+    the mode half refuses ``streaming=False``, after it. Both emit the ``password=`` /
+    ``encoding=`` diagnostics first. Raises ``PackageNotInstalledError`` when the
+    backend's optional package is missing.
+    """
+    resolved_format = decision.format
+    archive_name = decision.resolved.archive_name
+    registry = get_registry()
 
     # Access-mode contract: streaming=False never implicitly buffers a pipe.
     # streaming=True still needs a format with a front-to-back walk (TAR, ZIP's local
@@ -915,6 +993,56 @@ def _open_resolved(
             source_format=resolved_format,
             archive_name=archive_name,
         )
+    return backend_cls
+
+
+def _open_resolved(
+    slot: _SourceSlot,
+    resolved: ResolvedSource,
+    *,
+    format: ArchiveFormat | None,
+    streaming: bool,
+    passwords: _PasswordCandidates,
+    encoding: str | None,
+    config: ArchiveyConfig,
+    collector: DiagnosticCollector,
+    member_streams: MemberStreams,
+    open_site: OpenSite | None,
+) -> ArchiveReader:
+    """Detect the format of a resolved source and hand it to its backend.
+
+    Three steps: :func:`_decide_format` settles the format, the two refusal helpers
+    turn away what cannot be read, and the backend builds the reader over the payload
+    region detection found.
+
+    ``slot`` holds the one source detection and the backend read. It changes when a
+    self-extracting stub is followed to its volume or a RAR set is reopened from volume
+    1; ``open_archive`` closes whatever it holds if this raises.
+    """
+    decision = _decide_format(
+        slot, resolved, format=format, config=config, collector=collector
+    )
+    archive_source = slot.current
+    archive_name = decision.resolved.archive_name
+    resolved_format = decision.format
+    detected = decision.detected
+    if detected is None:
+        # ``format=`` skipped detection, which records this otherwise
+        # (``detect_format_into``).
+        emit_source_change_undetectable(archive_source, collector, archive_name)
+
+    replacement = config.formats._replacement_for(resolved_format)
+    _refuse_unopenable_format(config, decision, archive_source, replacement)
+    backend_cls = _backend_for_source(
+        decision,
+        archive_source,
+        replacement,
+        streaming=streaming,
+        passwords=passwords,
+        encoding=encoding,
+        config=config,
+        collector=collector,
+    )
 
     # Mid-file seekable streams: rebase so every backend sees tell()==0 at the first
     # archive byte (done after detection, which peeked from the same origin).
@@ -930,12 +1058,14 @@ def _open_resolved(
     payload_offset = detected.payload_offset if detected is not None else 0
     # Where the archive's region ends: a signed executable's certificate table follows
     # it. Passed beside the start, with the same promise (``ReadBackend.open_read``).
-    # Detection reads it from the executable's headers. A forced ``format=`` reads it
-    # here from the same headers, so the two open the same region and list the same
-    # members: what an archive holds never depends on whether its format was named.
+    # Detection reads it from the executable's headers when it judged the prefix. Any
+    # other open reads it here from the same headers: a forced ``format=``, and a
+    # format detection took from the name with the scan off or cut short. So every
+    # open reads the same region and lists the same members: what an archive holds
+    # never depends on whether its format was named, nor on the detection budget.
     payload_end = (
         detected.payload_end
-        if detected is not None
+        if detected is not None and detected.prefixed
         else _forced_payload_end(archive_source, backend_cls)
     )
 
@@ -951,41 +1081,50 @@ def _open_resolved(
         is_directory=archive_source.is_directory,
     )
     backend = backend_cls()
+    reader: ArchiveReader | None = None
     try:
-        reader = backend.open_read(
-            archive_source,
-            format=resolved_format,
-            streaming=streaming,
-            passwords=passwords,
-            encoding=encoding,
-            archive_name=archive_name,
-            config=config,
-            collector=collector,
-            member_streams=member_streams,
-            open_site=open_site,
-            start_offset=payload_offset,
-            end_offset=payload_end,
-        )
-    except ArchiveyError as exc:
-        # A backend that reads its first headers while it is built (7z, RAR, ZIP)
-        # raises before the reader that stamps its errors exists. Stamp them here, so a
-        # cut download names the file and the format, and says when only the filename
-        # chose that format, as every later error does.
-        stamp_error_context(
-            exc,
-            archive_format=resolved_format,
-            archive_name=archive_name,
-            provenance=provenance,
-            collector=collector,
-        )
-        raise
-    reader._format_provenance = provenance
-    reader._format_info = format_info
-    # After provenance, so an open-time decode failure carries format_unconfirmed.
-    try:
-        reader._validate_at_open()
-    except BaseException:
-        reader.close()
+        # A backend that reads its index while it is built can take a change of a
+        # remote object for damage it salvages or reports; the open ends with the
+        # change instead (``fsspec-integration`` design D7).
+        with raising_source_change(archive_source.remote_sources):
+            reader = backend.open_read(
+                archive_source,
+                format=resolved_format,
+                streaming=streaming,
+                passwords=passwords,
+                encoding=encoding,
+                archive_name=archive_name,
+                config=config,
+                collector=collector,
+                member_streams=member_streams,
+                open_site=open_site,
+                start_offset=payload_offset,
+                end_offset=payload_end,
+            )
+            reader._format_provenance = provenance
+            reader._format_info = decision.format_info
+            # After provenance, so an open-time decode failure carries
+            # format_unconfirmed.
+            reader._validate_at_open()
+    except BaseException as exc:
+        if reader is not None:
+            reader.close()
+        if isinstance(exc, ArchiveyError) and (
+            reader is None or isinstance(exc, SourceChangedError)
+        ):
+            # A backend that reads its first headers while it is built (7z, RAR,
+            # ZIP) raises before the reader that stamps its errors exists, and the
+            # change that ends the open is raised past it. Stamp them here, so a cut
+            # download names the file and the format, and says when only the
+            # filename chose that format, as every later error does. An error from
+            # the built reader's own check is the reader's to stamp.
+            stamp_error_context(
+                exc,
+                archive_format=resolved_format,
+                archive_name=archive_name,
+                provenance=provenance,
+                collector=collector,
+            )
         raise
     return reader
 
@@ -1056,8 +1195,8 @@ def open_stream(
     """
     import archivey.internal.backends  # noqa: F401
 
-    # Before any I/O: a value of neither format type used to fall through to
-    # auto-detection, which silently discards the caller's assertion.
+    # Before any I/O: a value of neither format type must not fall through to
+    # auto-detection, which would silently discard the caller's assertion.
     format = coerce_stream_or_archive_format(format, call="open_stream(format=…)")
     if (
         isinstance(format, ArchiveFormat)
@@ -1089,7 +1228,7 @@ def open_stream(
             # ``format=`` skips detection, which records it otherwise.
             try:
                 emit_source_change_undetectable(
-                    codec_input.remote_sources, collector, codec_input.name
+                    codec_input, collector, codec_input.name
                 )
             except BaseException:
                 codec_input.close()
@@ -1148,6 +1287,11 @@ def _open_stream_from_source(
     effective_config: ArchiveyConfig,
     collector: DiagnosticCollector,
 ) -> ArchiveStream:
+    """Decide the codec for ``codec_input`` and return the decompressing stream.
+
+    The second half of :func:`open_stream`, after the source is built: the caller
+    closes ``codec_input`` if this raises, and the returned stream closes it after.
+    """
     source_is_seekable = codec_input.seekable()
 
     if seekable and not source_is_seekable:

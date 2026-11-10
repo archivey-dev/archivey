@@ -1,4 +1,13 @@
-"""Public read-only archive interface."""
+"""Public read-only archive interface: the reader and member-stream classes.
+
+:func:`~archivey.open_archive` returns an :class:`ArchiveReader` (random access) or a
+:class:`ForwardArchiveReader` (one forward pass, from a pipe too), and member reads
+return an :class:`ArchiveStream`. The classes here are abstract: they fix the public
+methods and their docstrings, and archivey's implementations live under
+``archivey.internal``. Building an :class:`ArchiveStream` or :class:`MemberPass`
+directly, or through a subclass that leaves an abstract method unimplemented, still
+works with a ``DeprecationWarning`` until 0.4.0 (``_class_to_build``).
+"""
 
 from __future__ import annotations
 
@@ -29,6 +38,8 @@ from archivey.types import (
     ExtractionProgress,
     MemberFilter,
     MemberSelectorArg,
+    OnBlocked,
+    OnBlockedStr,
     OnError,
     OnErrorStr,
     OverwritePolicy,
@@ -765,6 +776,7 @@ class ForwardArchiveReader(ABC):
         policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
         on_error: OnError | OnErrorStr = OnError.STOP,
+        on_blocked: OnBlocked | OnBlockedStr = OnBlocked.RAISE,
         abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         limits: ExtractionLimits | None = None,
@@ -794,14 +806,22 @@ class ForwardArchiveReader(ABC):
         as the report of a real extraction into the same ``dest`` would, with paths
         under ``dest``.
 
-        A member refused by a safety check is skipped and reported as ``BLOCKED``; it
-        raises only when ``abort_on`` names it.
+        A member refused by a safety check is never written, and the rest still
+        extract. Under ``on_blocked="raise"`` (the default) the call then raises
+        :class:`~archivey.FilterRejectionError`, whose ``report`` attribute is the full
+        report; under ``on_blocked="skip"`` it returns the report, with the member as
+        ``BLOCKED``. ``abort_on=["blocked_member"]`` raises at the first refusal
+        instead, before the rest are extracted (see :class:`~archivey.OnBlocked`).
 
         Raises:
+            FilterRejectionError: Under ``on_blocked="raise"`` (the default), a
+                safety check refused at least one member: raised once every member has
+                been processed, with the full report as its ``report`` attribute. Under
+                ``abort_on=["blocked_member"]``, raised at the first refusal, with
+                ``report`` set to ``None``.
             ExtractionError: Under ``on_error="stop"`` (the default), a member could not
                 be written, such as a file already at its destination under
                 ``overwrite="error"``. Its subclasses
-                :class:`~archivey.FilterRejectionError`,
                 :class:`~archivey.NameCollisionError` and
                 :class:`~archivey.NameRewrittenError` are raised for the events
                 ``abort_on`` names, whatever ``on_error`` says.

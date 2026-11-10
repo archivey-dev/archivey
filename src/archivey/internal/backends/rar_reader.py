@@ -2,25 +2,44 @@
 
 Module split:
 
+- :mod:`.rar_detect` — validates a RAR signature hit for format detection
 - :mod:`.rar_parser` — metadata, offsets, encryption headers, multi-volume merge
-- :mod:`.rar_unrar` — spawn RARLAB ``unrar p`` (password on stdin; ``-n./member``)
+- :mod:`.rar_unrar` — find and spawn RARLAB ``unrar p`` (password on stdin; ``-n./member``)
 - :mod:`.rar_unar` — the refusals and pipe layout when the caller selects ``unar``
   (``ArchiveyConfig.rar_decompressor``); the process itself is
   :mod:`archivey.internal.external.unar`
+- :mod:`.rar_synthetic` — small RAR files holding only the headers and packed bytes
+  one read needs, so ``unrar`` neither walks nor copies the whole archive
+- :mod:`.rar_copy_sources` — keeps the bytes a solid pass decodes for the RAR5 file
+  copies that read them later
 - this module — ``BaseArchiveReader``: list from the parser; member **data** via unrar,
-  or via ``unar`` when selected (same shapes, entries named by index instead of mask)
+  or via ``unar`` when selected
 
-Data-open shapes:
+Data-open shapes, under ``unrar``:
 
-- Solid archive → one ``unrar p`` ALL-pipe + :class:`SolidBlockReader` demux
 - Stored, unencrypted, every part found → direct sliced view (no ``unrar``),
   whatever the solid flag; a split member's part views are joined
 - Stored, encrypted with AES (RAR 2.9 and later), in one part → the direct view
   decrypted here (no ``unrar``), when ``cryptography`` is installed
 - ``RarDecompressor.NONE`` → only those direct views; every other read is refused
-- Other non-solid → per-member named ``unrar p -n./…`` opens
-- Stream / non-path sources may be materialized to a temp ``.rar`` so ``unrar``
-  can open a real path (and resolve sibling volumes)
+- Any other ``open()`` → one ``unrar p`` per read, on a synthetic archive of the
+  member (non-solid) or of its solid stream up to it (solid). A large member of an
+  archive on disk, and a header the synthetic archive cannot carry, are read from
+  the original archive with an include mask instead (``RarReader._synthetic_file``)
+- Solid pass (``stream_members`` / extraction) → one program's output, read
+  through :class:`SolidBlockReader` and cut by offset
+  (``RarReader._drive_solid_pass``). Over a stream source, when the pass splits into
+  runs (``RarReader._solid_pass_run_plan``), one ``unrar`` run per run of whole solid
+  streams (:class:`_SolidPassPipe`); otherwise one pipe over a copy of the whole
+  archive
+- Stream / non-path sources may be copied to a temp file when a program needs the
+  original archive, so it can open a real path (and resolve sibling volumes)
+
+Under ``unar`` the direct views are the same, but no synthetic archive is built:
+``open()`` runs ``unar -i <index>``, and a solid pass runs one ``unar`` over every entry,
+or over the readable ones by index when some are refused (:mod:`.rar_unar`). Both read
+the whole archive, from a private directory that holds its volumes linked or copied
+(``RarReader._unar_archive_path``).
 
 WinRAR ``-ver`` history members are presented as ``path;n`` (see
 :func:`_presented_filename`). Passwords feed three places: header parse, ``unrar``,
@@ -129,6 +148,7 @@ from archivey.internal.backends.rar_unrar import (
     rarlab_unrar_missing,
     unrar_expands_wildcards,
     unrar_mask_carries_non_ascii,
+    unrar_may_cut_archive_path,
 )
 from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
@@ -1385,7 +1405,11 @@ class _CheckedRun(ReadOnlyIOStream):
 
 
 class _SolidStream:
-    """The synthetic archive of one solid stream, kept for the reader's lifetime.
+    """The synthetic archive of one solid stream, kept until the reader closes.
+
+    A stream no read holds is removed earlier, its charge given back, when another
+    copy does not fit the spool limit and removing it makes room
+    (:meth:`RarReader._reserve_synthetic`).
 
     It holds the stream's members with packed data, from the stream start, as far
     as reads have reached: a read further in appends the members between, and a
@@ -1398,9 +1422,10 @@ class _SolidStream:
     A read further in while another read holds the file starts a new generation:
     a new :class:`_SolidStream` for the same stream start, which later reads
     extend. The old one is :attr:`retired`, and removed, its charge given back,
-    when its last read closes. So each packed byte is copied once per generation;
-    only reads that each go further in while every earlier one is still open copy
-    the stream's start again each time.
+    when its last read closes. So each packed byte is copied once per generation,
+    and again after its file was removed to make room; only reads that each go
+    further in while every earlier one is still open copy the stream's start again
+    each time.
     """
 
     def __init__(self, version: int) -> None:
@@ -1420,7 +1445,8 @@ class _SolidStream:
 class _SolidRead:
     """One read's hold on a :class:`_SolidStream`: the file and the mask its
     ``unrar`` runs use. :meth:`close` lets the stream grow again; the reader removes
-    the file itself, at its own close."""
+    the file itself, at its own close, or earlier when another copy needs the room
+    and no read holds the stream."""
 
     def __init__(self, reader: RarReader, stream: _SolidStream, mask: str) -> None:
         self._reader = reader
@@ -1523,6 +1549,25 @@ class RarReader(BaseArchiveReader):
         start_offset: int = 0,
         end_offset: int | None = None,
     ) -> None:
+        """Open the source, parse every header, and build the member table.
+
+        The steps, in order: set up per-reader state; refuse a non-seekable source;
+        find the volumes and where the RAR starts and ends in the source
+        (:meth:`_open_shared_source`); note what the source's shape will cost to copy
+        (:meth:`_source_copy_notes`); parse the headers, trying the passwords
+        (:meth:`_parse_archive`); decide how ``unrar`` will reach the volumes
+        (:meth:`_choose_unrar_volume_paths`); work out what is encrypted and what a
+        solid decode reaches only through encrypted data; revise the copy notes for
+        the data program (:meth:`_program_copy_notes`); check the listing's metadata
+        budget (:meth:`_check_header_metadata_budget`, which can refuse the archive);
+        decode compressed comments; build the members and link RAR5 file copies to
+        their sources (:meth:`_resolve_file_copies`); note a member no direct read
+        serves under ``RarDecompressor.NONE``; price each member's dictionary memory;
+        and report damaged service headers (:meth:`_emit_service_header_diagnostics`,
+        which a strict policy turns into a refusal). No member data is decoded here; the
+        one decode at open is a compressed RAR 1.5-4 comment
+        (:meth:`_resolve_rar3_comment`).
+        """
         super().__init__(
             ArchiveFormat.RAR,
             streaming,
@@ -1570,9 +1615,9 @@ class RarReader(BaseArchiveReader):
         # unar is handed. The directory is removed on close.
         self._unar_dir: Path | None = None
         self._unar_path: Path | None = None
-        # Guards the check-then-write in ``_ensure_archive_path``: two concurrent
-        # compressed opens used to both see ``None`` and both copy, and close
-        # only removed the winner.
+        # Guards the check-then-write in ``_ensure_archive_path``: without it, two
+        # concurrent compressed opens could both see ``None`` and both copy, and
+        # close would remove only one of the copies.
         self._materialize_lock = threading.Lock()
         # The one spool allowance for this reader's copies, made on the first copy
         # (``_spool_budget``) and kept, so a refused copy is not retried.
@@ -1581,7 +1626,8 @@ class RarReader(BaseArchiveReader):
         # close removes any a member stream left (``_SyntheticFile``).
         self._synthetic_files: set[_SyntheticFile] = set()
         # One synthetic archive per solid stream, by the archive index of its first
-        # member with data; removed at reader close.
+        # member with data, least recently read first; removed at reader close, or
+        # earlier to make room (``_reserve_synthetic``).
         self._solid_streams: dict[int, _SolidStream] = {}
         # Older generations still held by a read (:class:`_SolidStream`).
         self._retired_streams: set[_SolidStream] = set()
@@ -1635,24 +1681,7 @@ class RarReader(BaseArchiveReader):
         # volume set is left as it is: its parts are joined, and no part's table ends
         # the join.
         self._end: int | None = end_offset if self._volume_set_size() <= 1 else None
-        # Open-time caveat from source shape, not from later materialization
-        # (CostReceipt is a static snapshot; see access-mode-and-cost). With no
-        # program nothing is ever copied, so there is no copy to warn about.
-        self._cost_notes = (
-            ()
-            if self._decompressor is RarDecompressor.NONE
-            else _rar_stream_copy_cost_notes(
-                source,
-                self._config.spool_limits,
-                self._spool_copy_size(),
-                self._decompressor_name(),
-            )
-        )
-        if (
-            self._config.rar_decompressor is RarDecompressor.AUTO
-            and self._decompressor is RarDecompressor.UNAR
-        ):
-            self._cost_notes = (AUTO_CHOSE_UNAR_NOTE, *self._cost_notes)
+        self._cost_notes = self._source_copy_notes(source)
         self._archive, self._unrar_password = self._parse_archive()
         self._choose_unrar_volume_paths()
         # unrar only consults the password when something is actually encrypted, so
@@ -1670,18 +1699,7 @@ class RarReader(BaseArchiveReader):
         self._archive_has_encryption = self._archive.has_header_encryption or any(
             info.is_encrypted for info in self._archive.members
         )
-        # Members a solid decode reaches only through an encrypted (or possibly
-        # encrypted) one: everything after the first such member. Read by
-        # ``_member_needs_password``.
-        self._behind_encryption: set[int] = set()
-        if self._archive.is_solid:
-            seen_encrypted = False
-            for info in self._archive.members:
-                if seen_encrypted:
-                    self._behind_encryption.add(id(info))
-                seen_encrypted = (
-                    seen_encrypted or info.is_encrypted or info.encryption_unknown
-                )
+        self._behind_encryption = self._members_behind_encryption()
         if self._in_set:
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
         # Each compressed member's solid run under unar (``_unar_solid_runs``).
@@ -1693,36 +1711,11 @@ class RarReader(BaseArchiveReader):
             if self._decompressor is RarDecompressor.UNAR
             else None
         )
-        if self._unar_policy is None and self._decompressor is not RarDecompressor.NONE:
-            # Reads through unrar copy one member, or one solid stream, not the
-            # archive.
-            self._cost_notes = _rar_member_copy_notes(
-                source, self._config.spool_limits, solid=self._archive.is_solid
-            )
+        self._cost_notes = self._program_copy_notes(source, self._cost_notes)
         # Members an unknown-version member ahead of them keeps from being decoded:
         # by any program in its solid stream, by ``unrar`` in the rest of a solid
         # archive. Keyed by ``id`` of the parsed member.
         self._solid_after_unknown = solid_after_unknown_compression(self._archive)
-        if (
-            self._unar_policy is not None
-            and source.path is not None
-            and self._volume_set_size() <= 1
-            and self._origin + self._archive.sfx_offset > 0
-        ):
-            # ``_unar_archive_path`` copies a prefixed file from where the RAR starts,
-            # within the spool limit; the size is known, so the note can say whether
-            # the copy will be refused.
-            self._cost_notes = (
-                *self._cost_notes,
-                *_bounded_copy_notes(
-                    _single_disk_copy_note("unar"),
-                    "the archive",
-                    "a prefixed archive for unar",
-                    self._config.spool_limits,
-                    self._unar_copy_size(),
-                    "unar",
-                ),
-            )
         self._check_header_metadata_budget()
         self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
         for info in self._archive.members:
@@ -1732,10 +1725,101 @@ class RarReader(BaseArchiveReader):
             for index, info in enumerate(self._archive.members)
         ]
         self._resolve_file_copies()
+        if (
+            self._decompressor is RarDecompressor.NONE
+            and self._some_member_needs_a_program()
+        ):
+            self._cost_notes = (*self._cost_notes, _NO_DECOMPRESSOR_NOTE)
+        # The dictionary memory each member's read costs under the program that will
+        # run it, keyed by ``id(member)``, checked against
+        # ``DecoderLimits.max_decoder_memory`` before that program starts. The two
+        # programs allocate differently, so each has a rule. Under ``NONE`` nothing runs
+        # and nothing consults this.
+        self._dictionary_costs = self._dictionary_cost_map()
+        # SERVICE headers (``CMT``, ``QO``) are not members, so the walk above never
+        # reaches them, and a damaged one would otherwise report nothing under any
+        # policy.
+        self._emit_service_header_diagnostics()
+
+    def _source_copy_notes(self, source: ArchiveSource) -> tuple[str, ...]:
+        """The open-time cost notes the source's shape calls for.
+
+        They come from the source shape, not from later materialization
+        (CostReceipt is a static snapshot; see access-mode-and-cost). With no
+        program nothing is ever copied, so there is no copy to warn about.
+        """
+        notes = (
+            ()
+            if self._decompressor is RarDecompressor.NONE
+            else _rar_stream_copy_cost_notes(
+                source,
+                self._config.spool_limits,
+                self._spool_copy_size(),
+                self._decompressor_name(),
+            )
+        )
+        if (
+            self._config.rar_decompressor is RarDecompressor.AUTO
+            and self._decompressor is RarDecompressor.UNAR
+        ):
+            notes = (AUTO_CHOSE_UNAR_NOTE, *notes)
+        return notes
+
+    def _program_copy_notes(
+        self, source: ArchiveSource, notes: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """Revise ``notes`` once the listing says what the data program will copy."""
+        if self._unar_policy is None and self._decompressor is not RarDecompressor.NONE:
+            # Reads through unrar copy one member, or one solid stream, not the
+            # archive.
+            notes = _rar_member_copy_notes(
+                source, self._config.spool_limits, solid=self._archive.is_solid
+            )
+        if (
+            self._unar_policy is not None
+            and source.path is not None
+            and self._volume_set_size() <= 1
+            and self._origin + self._archive.sfx_offset > 0
+        ):
+            # ``_unar_archive_path`` copies a prefixed file from where the RAR starts,
+            # within the spool limit; the size is known, so the note can say whether
+            # the copy will be refused.
+            notes = (
+                *notes,
+                *_bounded_copy_notes(
+                    _single_disk_copy_note("unar"),
+                    "the archive",
+                    "a prefixed archive for unar",
+                    self._config.spool_limits,
+                    self._unar_copy_size(),
+                    "unar",
+                ),
+            )
+        return notes
+
+    def _members_behind_encryption(self) -> set[int]:
+        """Members a solid decode reaches only through an encrypted one, by ``id``.
+
+        That is everything after the first member that is encrypted, or possibly
+        encrypted. Empty for a non-solid archive. Read by ``_member_needs_password``.
+        """
+        behind: set[int] = set()
+        if self._archive.is_solid:
+            seen_encrypted = False
+            for info in self._archive.members:
+                if seen_encrypted:
+                    behind.add(id(info))
+                seen_encrypted = (
+                    seen_encrypted or info.is_encrypted or info.encryption_unknown
+                )
+        return behind
+
+    def _some_member_needs_a_program(self) -> bool:
+        """Whether some file's data cannot be read without ``unrar`` or ``unar``."""
         # Not ``not _can_direct_read``: a member whose header stopped before its
         # encryption record can still be served by ``_confirm_unsettled_plaintext``,
         # and a file copy's refusal comes from its source, which is in this walk too.
-        if self._decompressor is RarDecompressor.NONE and any(
+        return any(
             member.is_file
             and not info.is_file_copy()
             and (
@@ -1746,26 +1830,18 @@ class RarReader(BaseArchiveReader):
                 )
             )
             for member, info in zip(self._members, self._archive.members, strict=True)
-        ):
-            self._cost_notes = (*self._cost_notes, _NO_DECOMPRESSOR_NOTE)
-        # The dictionary memory each member's read costs under the program that will
-        # run it, keyed by ``id(member)``, checked against
-        # ``DecoderLimits.max_decoder_memory`` before that program starts. The two
-        # programs allocate differently, so each has a rule. Under ``NONE`` nothing runs
-        # and nothing consults this.
+        )
+
+    def _dictionary_cost_map(self) -> dict[int, _DictionaryCost]:
+        """Each member's dictionary cost under the chosen program, by ``id(member)``."""
         if self._unar_policy is not None:
-            self._dictionary_costs = self._unar_dictionary_cost_map()
-        else:
-            self._dictionary_costs = {
-                id(member): cost
-                for member, cost in zip(
-                    self._members, _unrar_dictionary_costs(self._archive), strict=True
-                )
-            }
-        # SERVICE headers (``CMT``, ``QO``) are not members, so the walk above never
-        # reaches them, and a damaged one would otherwise report nothing under any
-        # policy.
-        self._emit_service_header_diagnostics()
+            return self._unar_dictionary_cost_map()
+        return {
+            id(member): cost
+            for member, cost in zip(
+                self._members, _unrar_dictionary_costs(self._archive), strict=True
+            )
+        }
 
     def _open_shared_source(self, source: ArchiveSource) -> SharedSource:
         """Build SharedSource, discovering/materializing volumes as needed."""
@@ -1833,12 +1909,17 @@ class RarReader(BaseArchiveReader):
         A path holding a wildcard character is staged too: unrar expands one in
         the archive name (:func:`unrar_expands_wildcards`), so ``rep*.rar`` would
         also open a planted ``rep-a.rar``, or block on a FIFO of that name. The
-        staged names are fixed and hold none.
+        staged names are fixed and hold none. So is a path longer than unrar 6.x
+        keeps (:func:`unrar_may_cut_archive_path`): it would open the file that the
+        cut path names. The private directory's path is short.
         """
         if self._archive_path is None or self._stage_volume_paths:
             return
         if (
-            not any(unrar_expands_wildcards(path) for path in self._volume_paths)
+            not any(
+                unrar_expands_wildcards(path) or unrar_may_cut_archive_path(path)
+                for path in self._volume_paths
+            )
             and self._volume_numbers is None
             and _unrar_finds_exactly(
                 self._volume_paths,
@@ -2170,132 +2251,18 @@ class RarReader(BaseArchiveReader):
         return joined.volume_ranges
 
     def _parse_archive(self) -> tuple[RarArchive, str | None]:
-        max_members = self._config.listing_limits.max_members
-        max_metadata_bytes = self._config.listing_limits.max_metadata_bytes
+        """Parse the headers, trying the password candidates when they are encrypted.
 
-        def parse(password: bytes | None) -> RarArchive:
-            if len(self._volume_paths) > 1:
-                handles: list[BinaryIO] = []
-                try:
-                    for index, path in enumerate(self._volume_paths):
-                        handle = path.open("rb")
-                        if index == 0 and self._volume0_parse_origin:
-                            handle.seek(self._volume0_parse_origin)
-                        handles.append(handle)
-                    return parse_rar_volumes(
-                        handles,
-                        password=password,
-                        max_members=max_members,
-                        max_metadata_bytes=max_metadata_bytes,
-                        kdf_cache=self._kdf_cache,
-                        excluded=self._excluded,
-                        name_encoding=self._encoding,
-                        volume_numbers=self._volume_numbers,
-                    )
-                finally:
-                    for handle in handles:
-                        handle.close()
-
-            if len(self._stream_volume_items) > 1:
-                # Stream volumes, not yet copied anywhere. The header walk needs
-                # each volume as its own stream positioned at its start, which
-                # the concatenation cannot be, so mint one bounded view per
-                # volume over the same source. Views are non-owning and take the
-                # shared lock, so nothing here touches the caller's streams.
-                views: list[BinaryIO] = []
-                try:
-                    for index, (start, size) in enumerate(self._stream_volume_ranges()):
-                        view = self._shared.view(start, size)
-                        views.append(view)
-                        if index == 0 and self._volume0_parse_origin:
-                            view.seek(self._volume0_parse_origin)
-                    return parse_rar_volumes(
-                        views,
-                        password=password,
-                        max_members=max_members,
-                        max_metadata_bytes=max_metadata_bytes,
-                        kdf_cache=self._kdf_cache,
-                        excluded=self._excluded,
-                        name_encoding=self._encoding,
-                    )
-                finally:
-                    for view in views:
-                        view.close()
-
-            # Single volume: a path source, or a lone stream. Nothing is copied
-            # on this path any more — a stream volume *set* is handled above, from
-            # views over the originals, and the copy waits for a member read.
-            if self._volume_paths:
-                with self._volume_paths[0].open("rb") as file:
-                    handle: BinaryIO = (
-                        file
-                        if self._end is None
-                        else SlicingStream(file, start=0, length=self._end)
-                    )
-                    handle.seek(self._origin)
-                    try:
-                        archive = parse_rar_archive(
-                            handle,
-                            password=password,
-                            max_members=max_members,
-                            max_metadata_bytes=max_metadata_bytes,
-                            kdf_cache=self._kdf_cache,
-                            excluded=self._excluded,
-                            name_encoding=self._encoding,
-                        )
-                    except UnsupportedFeatureError:
-                        # "Need first volume": a later volume alone. Its name says
-                        # which one, so it is read as a set missing the others.
-                        if self._lone_volume_number is None:
-                            raise
-                        self._volume_numbers = [self._lone_volume_number]
-                        handle.seek(self._origin)
-                        return parse_rar_volumes(
-                            [handle],
-                            password=password,
-                            max_members=max_members,
-                            max_metadata_bytes=max_metadata_bytes,
-                            kdf_cache=self._kdf_cache,
-                            excluded=self._excluded,
-                            name_encoding=self._encoding,
-                            volume_numbers=self._volume_numbers,
-                        )
-                    return archive
-
-            view = self._shared.view(0, self._end)
-            try:
-                view.seek(self._origin)
-                archive = parse_rar_archive(
-                    view,
-                    password=password,
-                    max_members=max_members,
-                    max_metadata_bytes=max_metadata_bytes,
-                    kdf_cache=self._kdf_cache,
-                    excluded=self._excluded,
-                    name_encoding=self._encoding,
-                )
-                if archive.is_volume and not archive.needs_next_volume:
-                    # A lone volume that says nothing follows it is a later
-                    # volume, or the only one, of a set. One that says another
-                    # follows is volume 1 here: the parse refuses a later volume
-                    # from its volume number (RAR5 MAIN, RAR 3.0+ end block) or a
-                    # first member that continues an earlier one. Only a RAR 1.5 /
-                    # 2.x later volume whose first member starts on its boundary
-                    # records neither, and lists as volume 1 of an incomplete set.
-                    raise TruncatedError(
-                        "Incomplete RAR multi-volume set: additional volumes required"
-                    )
-                return archive
-            finally:
-                view.close()
-
+        Returns the listing and the password to hand ``unrar`` (see the comment at
+        the return).
+        """
         try:
             try:
-                archive = parse(None)
+                archive = self._parse_headers(None)
             except EncryptionError:
                 if not self._passwords.has_passwords():
                     raise
-                archive = self._passwords.attempt(None, parse)
+                archive = self._passwords.attempt(None, self._parse_headers)
             # A set whose last volume present says another follows: list what the
             # volumes hold, then raise (``_iter_members``), as for a cut file.
             mark_missing_next_volume(
@@ -2321,6 +2288,141 @@ class RarReader(BaseArchiveReader):
                 else "Password required to decrypt RAR headers"
             )
             raise EncryptionError(message) from exc
+
+    def _parse_headers(self, password: bytes | None) -> RarArchive:
+        """Run the header parser over the source, in the shape the source has.
+
+        A set of volume files, a set of stream volumes, one file, and one stream
+        each need their own handles; the parse itself is the same.
+        """
+        if len(self._volume_paths) > 1:
+            return self._parse_volume_files(password)
+        if len(self._stream_volume_items) > 1:
+            return self._parse_stream_volumes(password)
+        # Single volume: a path source, or a lone stream. Nothing is copied here: a
+        # stream volume *set* is parsed from views over the originals (above), and
+        # any copy waits for a member read.
+        if self._volume_paths:
+            return self._parse_lone_file(password)
+        return self._parse_lone_stream(password)
+
+    def _parse_volume_files(self, password: bytes | None) -> RarArchive:
+        """Parse a set of volume files, each opened on its own."""
+        handles: list[BinaryIO] = []
+        try:
+            for index, path in enumerate(self._volume_paths):
+                handle = path.open("rb")
+                if index == 0 and self._volume0_parse_origin:
+                    handle.seek(self._volume0_parse_origin)
+                handles.append(handle)
+            return parse_rar_volumes(
+                handles,
+                password=password,
+                max_members=self._config.listing_limits.max_members,
+                max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
+                kdf_cache=self._kdf_cache,
+                excluded=self._excluded,
+                name_encoding=self._encoding,
+                volume_numbers=self._volume_numbers,
+            )
+        finally:
+            for handle in handles:
+                handle.close()
+
+    def _parse_stream_volumes(self, password: bytes | None) -> RarArchive:
+        """Parse a set of stream volumes, not yet copied anywhere."""
+        # The header walk needs each volume as its own stream positioned at its
+        # start, which the concatenation cannot be, so mint one bounded view per
+        # volume over the same source. Views are non-owning and take the shared
+        # lock, so nothing here touches the caller's streams.
+        views: list[BinaryIO] = []
+        try:
+            for index, (start, size) in enumerate(self._stream_volume_ranges()):
+                view = self._shared.view(start, size)
+                views.append(view)
+                if index == 0 and self._volume0_parse_origin:
+                    view.seek(self._volume0_parse_origin)
+            return parse_rar_volumes(
+                views,
+                password=password,
+                max_members=self._config.listing_limits.max_members,
+                max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
+                kdf_cache=self._kdf_cache,
+                excluded=self._excluded,
+                name_encoding=self._encoding,
+            )
+        finally:
+            for view in views:
+                view.close()
+
+    def _parse_lone_file(self, password: bytes | None) -> RarArchive:
+        """Parse one archive file; a later volume alone is read as an incomplete set."""
+        max_members = self._config.listing_limits.max_members
+        max_metadata_bytes = self._config.listing_limits.max_metadata_bytes
+        with self._volume_paths[0].open("rb") as file:
+            handle: BinaryIO = (
+                file
+                if self._end is None
+                else SlicingStream(file, start=0, length=self._end)
+            )
+            handle.seek(self._origin)
+            try:
+                archive = parse_rar_archive(
+                    handle,
+                    password=password,
+                    max_members=max_members,
+                    max_metadata_bytes=max_metadata_bytes,
+                    kdf_cache=self._kdf_cache,
+                    excluded=self._excluded,
+                    name_encoding=self._encoding,
+                )
+            except UnsupportedFeatureError:
+                # "Need first volume": a later volume alone. Its name says
+                # which one, so it is read as a set missing the others.
+                if self._lone_volume_number is None:
+                    raise
+                self._volume_numbers = [self._lone_volume_number]
+                handle.seek(self._origin)
+                return parse_rar_volumes(
+                    [handle],
+                    password=password,
+                    max_members=max_members,
+                    max_metadata_bytes=max_metadata_bytes,
+                    kdf_cache=self._kdf_cache,
+                    excluded=self._excluded,
+                    name_encoding=self._encoding,
+                    volume_numbers=self._volume_numbers,
+                )
+            return archive
+
+    def _parse_lone_stream(self, password: bytes | None) -> RarArchive:
+        """Parse one archive stream; a lone later volume is refused as incomplete."""
+        view = self._shared.view(0, self._end)
+        try:
+            view.seek(self._origin)
+            archive = parse_rar_archive(
+                view,
+                password=password,
+                max_members=self._config.listing_limits.max_members,
+                max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
+                kdf_cache=self._kdf_cache,
+                excluded=self._excluded,
+                name_encoding=self._encoding,
+            )
+            if archive.is_volume and not archive.needs_next_volume:
+                # A lone volume that says nothing follows it is a later
+                # volume, or the only one, of a set. One that says another
+                # follows is volume 1 here: the parse refuses a later volume
+                # from its volume number (RAR5 MAIN, RAR 3.0+ end block) or a
+                # first member that continues an earlier one. Only a RAR 1.5 /
+                # 2.x later volume whose first member starts on its boundary
+                # records neither, and lists as volume 1 of an incomplete set.
+                raise TruncatedError(
+                    "Incomplete RAR multi-volume set: additional volumes required"
+                )
+            return archive
+        finally:
+            view.close()
 
     def _unrar_data_password(self) -> str | None:
         """The password to hand an ``unrar`` spawn, or ``None`` when none is needed.
@@ -3683,8 +3785,12 @@ class RarReader(BaseArchiveReader):
         that, and a batch of one, keep their own read. So does a member whose
         dictionary is over ``max_decoder_memory``: ``unrar`` decodes a batch's
         members past the one read, so each must fit before the run starts, and the
-        member read alone is refused as ``open()`` refuses it. Every other member is
-        read as ``open()`` reads it and takes no place in a batch's output.
+        member read alone is refused as ``open()`` refuses it. So does a member
+        whose own solid flag is set: ``unrar`` honours that flag even when the MAIN
+        header is not solid, so in a batch it would decode on top of the member
+        before it, where read alone it decodes on an empty window. Every other
+        member is read as ``open()`` reads it and takes no place in a batch's
+        output.
         """
         if self._unar_policy is not None:
             return []
@@ -3701,6 +3807,7 @@ class RarReader(BaseArchiveReader):
                 and info.is_payload_file()
                 and has_packed_data(info)
                 and not info.is_file_copy()
+                and not info.file_solid
                 and not info.is_encrypted
                 and not info.encryption_unknown
                 and info.crc32 is not None
@@ -3753,14 +3860,18 @@ class RarReader(BaseArchiveReader):
         with self._materialize_lock:
             if not self._spool_budget(None).try_reserve(charge):
                 return _CheckedRun(None, batch), _no_cleanup
-        synthetic = SyntheticArchive(version)
+        synthetic: SyntheticArchive | None = None
 
         def cleanup() -> None:
-            synthetic.close()
+            if synthetic is not None:
+                synthetic.close()
             with self._materialize_lock:
                 self._spool_budget(None).release(charge)
 
+        # The file is made inside the ``try``: a temporary file that cannot be
+        # made must give the charge back too.
         try:
+            synthetic = SyntheticArchive(version)
             synthetic.append(entries)
             proc, stdout = open_unrar_p(
                 synthetic.path,
@@ -3966,14 +4077,18 @@ class RarReader(BaseArchiveReader):
                 self._reserve_synthetic(
                     charge, False, name, "the packed bytes of one run of solid streams"
                 )
-            synthetic = SyntheticArchive(version, solid=True)
+            synthetic: SyntheticArchive | None = None
 
             def cleanup() -> None:
-                synthetic.close()
+                if synthetic is not None:
+                    synthetic.close()
                 with self._materialize_lock:
                     self._spool_budget(None).release(charge)
 
+            # The file is made inside the ``try``: a temporary file that cannot be
+            # made must give the charge back too.
             try:
+                synthetic = SyntheticArchive(version, solid=True)
                 synthetic.append(entries)
                 proc, stdout = open_unrar_p(
                     synthetic.path,
@@ -4093,41 +4208,9 @@ class RarReader(BaseArchiveReader):
                 return None
             size = _member_stream_size(member)
             hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
-            slot: int | Callable[[], BinaryIO]
-            missing = self._missing_data_error(member, raw)
-            if missing is not None:
-                # Every member from the first missing volume on is refused here,
-                # and the output ends at that volume, so leaving them out of
-                # ``plan`` shifts no offset a member before it is read at.
-                def _refused() -> BinaryIO:
-                    error = self._missing_data_error(member, raw)
-                    assert error is not None
-                    raise error
-
-                slot = _refused
-            else:
-                planned = plan(member, raw, size, bool(hashes))
-                if planned is None:
-                    return self._lazy_member_stream(member, register=False)
-                slot = planned
-                # The pass has no native-decrypt or unsettled-plaintext branch: every
-                # member it does not slice directly and ``plan`` does not hand back
-                # to ``open()`` (above) is served from the program's output, stored
-                # encrypted ones included. So for the members that reach here this
-                # one test is the whole of "a member a program would decode".
-                # ``plan`` still runs for a cut member, so the offsets of any member
-                # listed after it do not move.
-                if (
-                    not self._can_direct_read(raw)
-                    and self._cut_data_error(member, raw) is not None
-                ):
-
-                    def _cut() -> BinaryIO:
-                        error = self._cut_data_error(member, raw)
-                        assert error is not None
-                        raise error
-
-                    slot = _cut
+            slot = self._solid_pass_slot(member, raw, plan, size, bool(hashes))
+            if slot is None:
+                return self._lazy_member_stream(member, register=False)
             open_fn: Callable[[], BinaryIO]
             if isinstance(slot, int):
                 offset = slot
@@ -4175,6 +4258,56 @@ class RarReader(BaseArchiveReader):
             close_previous=True,
             cleanup=_cleanup,
         )
+
+    def _solid_pass_slot(
+        self,
+        member: ArchiveMember,
+        raw: RarMemberInfo,
+        plan: Callable[
+            [ArchiveMember, RarMemberInfo, int, bool],
+            int | Callable[[], BinaryIO] | None,
+        ],
+        size: int,
+        has_hash: bool,
+    ) -> int | Callable[[], BinaryIO] | None:
+        """Where a payload member of a solid pass is served from.
+
+        The member's offset in the program's output, an ``open_fn`` that serves it
+        some other way (a refusal for missing or cut data), or ``None`` to serve it
+        as ``open()`` does. ``plan`` is :meth:`_drive_solid_pass`'s.
+        """
+        if self._missing_data_error(member, raw) is not None:
+            # Every member from the first missing volume on is refused here,
+            # and the output ends at that volume, so leaving them out of
+            # ``plan`` shifts no offset a member before it is read at.
+            def _refused() -> BinaryIO:
+                error = self._missing_data_error(member, raw)
+                assert error is not None
+                raise error
+
+            return _refused
+        planned = plan(member, raw, size, has_hash)
+        if planned is None:
+            return None
+        # The pass has no native-decrypt or unsettled-plaintext branch: every
+        # member it does not slice directly and ``plan`` does not hand back
+        # to ``open()`` (by answering ``None``) is served from the program's output, stored
+        # encrypted ones included. So for the members that reach here this
+        # one test is the whole of "a member a program would decode".
+        # ``plan`` still runs for a cut member, so the offsets of any member
+        # listed after it do not move.
+        if (
+            not self._can_direct_read(raw)
+            and self._cut_data_error(member, raw) is not None
+        ):
+
+            def _cut() -> BinaryIO:
+                error = self._cut_data_error(member, raw)
+                assert error is not None
+                raise error
+
+            return _cut
+        return planned
 
     @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
@@ -4609,6 +4742,12 @@ class RarReader(BaseArchiveReader):
 
     @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
+        """Fill in a symlink's target when listing could not.
+
+        A RAR5 link carries its target in the header's redirect record. A RAR 1.5-4
+        link stores it as the member's data: read here when stored, decrypted here
+        when stored and encrypted, and otherwise reported as unavailable.
+        """
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
         raw = member._raw
@@ -4626,53 +4765,7 @@ class RarReader(BaseArchiveReader):
             and (raw.file_size > 0 or raw.compress_size > 0)
             and _data_is_reachable(raw)
         ):
-            # As for the member read, neither a solid flag nor a split holds the
-            # target back: a stored target needs no decoder, and split parts are
-            # joined in order. ``encryption_unknown`` needs no arm in
-            # the reason chain below: only the RAR5 extra-area walk sets it, and a
-            # RAR5 symlink has ``file_redir`` and returned above.
-            #
-            # A stored target is its packed bytes, so the two sizes must agree, as
-            # ``_open_member`` requires of any stored member. A header that declares
-            # more would have the read take the next header, and whatever follows
-            # it, as the target. This comes before the cap below, so a header whose
-            # sizes disagree is reported as damage rather than as an oversized target
-            # it does not hold.
-            if raw.file_size != raw.compress_size:
-                raise CorruptionError(
-                    "The stored symlink target's declared size "
-                    f"({raw.file_size} bytes) does not match its packed size "
-                    f"({raw.compress_size} bytes)",
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    source_format=ArchiveFormat.RAR,
-                )
-            # Stored, so the read is the header's own size and cannot amplify; it is
-            # still held to the cap every data-stored target is, and an oversized one
-            # is refused before any of it is read.
-            if raw.file_size > MAX_LINK_TARGET_BYTES:
-                self._emit_link_target_too_long(member)
-                return
-            view = self._direct_view(raw, raw.file_size)
-            try:
-                data = view.read()
-            finally:
-                view.close()
-            # The header's data CRC32 covers these bytes, and the header CRC does not,
-            # so past the size check above this is the only check a damaged target
-            # meets. Held to it as ZIP and 7z hold theirs: a mismatch raises, and the
-            # listing, or a pass when it reaches the link, lists the link targetless
-            # (`_report_unreadable_link_target`) while open/extract re-raise.
-            # A short read is caught by the same comparison. Encrypted members never
-            # reach here, so the CRC is never a RAR5 key-tweaked one.
-            if raw.crc32 is not None and zlib.crc32(data) != raw.crc32:
-                raise CorruptionError(
-                    "The stored symlink target does not match its CRC32 checksum",
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    source_format=ArchiveFormat.RAR,
-                )
-            member.link_target = data.decode("utf-8", errors="surrogateescape")
+            self._read_stored_link_target(member, raw)
             return
         if (
             raw.is_encrypted
@@ -4685,7 +4778,7 @@ class RarReader(BaseArchiveReader):
             # 7z. The read is capped like any data-stored target. A target with both
             # sizes zero passes ``_natively_decryptable``, decrypts to no bytes and is
             # reported by the shared empty-target check (``target_empty``), not by
-            # the ``no_target_data`` arm below.
+            # the ``no_target_data`` reason of ``_report_unreachable_link_target``.
             self._link_target_from_data(
                 member,
                 lambda: self._member_stream(
@@ -4694,14 +4787,72 @@ class RarReader(BaseArchiveReader):
                 reparse_fallback=None,
             )
             return
+        self._report_unreachable_link_target(member, raw)
+
+    def _read_stored_link_target(
+        self, member: ArchiveMember, raw: RarMemberInfo
+    ) -> None:
+        """Read a RAR 1.5-4 symlink target stored, unencrypted, as the member's data."""
+        # As for the member read, neither a solid flag nor a split holds the
+        # target back: a stored target needs no decoder, and split parts are
+        # joined in order. ``encryption_unknown`` needs no reason in
+        # ``_report_unreachable_link_target``: only the RAR5 extra-area walk sets
+        # it, and a RAR5 symlink takes its target from ``file_redir`` instead.
+        #
+        # A stored target is its packed bytes, so the two sizes must agree, as
+        # ``_open_member`` requires of any stored member. A header that declares
+        # more would have the read take the next header, and whatever follows
+        # it, as the target. This comes before the cap below, so a header whose
+        # sizes disagree is reported as damage rather than as an oversized target
+        # it does not hold.
+        if raw.file_size != raw.compress_size:
+            raise CorruptionError(
+                "The stored symlink target's declared size "
+                f"({raw.file_size} bytes) does not match its packed size "
+                f"({raw.compress_size} bytes)",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
+        # Stored, so the read is the header's own size and cannot amplify; it is
+        # still held to the cap every data-stored target is, and an oversized one
+        # is refused before any of it is read.
+        if raw.file_size > MAX_LINK_TARGET_BYTES:
+            self._emit_link_target_too_long(member)
+            return
+        view = self._direct_view(raw, raw.file_size)
+        try:
+            data = view.read()
+        finally:
+            view.close()
+        # The header's data CRC32 covers these bytes, and the header CRC does not,
+        # so past the size check above this is the only check a damaged target
+        # meets. Held to it as ZIP and 7z hold theirs: a mismatch raises, and the
+        # listing, or a pass when it reaches the link, lists the link targetless
+        # (`_report_unreadable_link_target`) while open/extract re-raise.
+        # A short read is caught by the same comparison. Encrypted members never
+        # reach here, so the CRC is never a RAR5 key-tweaked one.
+        if raw.crc32 is not None and zlib.crc32(data) != raw.crc32:
+            raise CorruptionError(
+                "The stored symlink target does not match its CRC32 checksum",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
+        member.link_target = data.decode("utf-8", errors="surrogateescape")
+
+    def _report_unreachable_link_target(
+        self, member: ArchiveMember, raw: RarMemberInfo
+    ) -> None:
+        """Report why a RAR 1.5-4 symlink's target is left unset."""
         # Encrypted / compressed target without usable direct bytes: leave unset. The
         # reason still has to reach the caller — `SYMLINK_TARGET_UNAVAILABLE` is in
         # `ARCHIVE_INTEGRITY_CODES`, so a strict policy refuses the archive, and a
         # lenient one gets a diagnostic instead of a link whose absence is unexplained.
         #
         # Only the last of these is the archive recording no target; the other three
-        # are targets this direct read cannot reach, and the member keeps the
-        # per-member failure it had before `LINK_TARGET_UNAVAILABLE` existed. The
+        # are targets in the archive that this direct read cannot reach, which
+        # extraction reports as a per-member failure (``target_in_archive``). The
         # encrypted one is a target archivey cannot decrypt itself (compressed, split,
         # RAR 2.0's cipher, or no ``cryptography``) rather than a missing password, so
         # it does not claim that a password would help.
@@ -4733,7 +4884,6 @@ class RarReader(BaseArchiveReader):
             ),
             target_in_archive=in_archive,
         )
-        return
 
     @override
     def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
@@ -5273,8 +5423,8 @@ class RarReader(BaseArchiveReader):
         """The synthetic archive an ``unrar`` read of ``member`` gets, or ``None``.
 
         A nonsolid member gets a file of its own; a solid member, its stream's file
-        (:meth:`_solid_synthetic`). ``None`` keeps today's read of the original
-        archive with an include mask: a member of an archive on disk whose file
+        (:meth:`_solid_synthetic`). ``None`` reads the original archive with an
+        include mask instead: a member of an archive on disk whose file
         would pass :data:`_SYNTHETIC_IN_PLACE_THRESHOLD` packed bytes or the spool
         limit, and a RAR 1.5-4 member joined past 4 GiB without 64-bit size fields.
         A stream source falls back only for that unsupported header, and then
@@ -5346,23 +5496,57 @@ class RarReader(BaseArchiveReader):
         )
 
     def _reserve_synthetic(
-        self, charge: int, in_place: bool, name: str, what: str
+        self,
+        charge: int,
+        in_place: bool,
+        name: str,
+        what: str,
+        *,
+        keep: _SolidStream | None = None,
     ) -> bool:
         """Charge a synthetic copy to the spool budget; under ``_materialize_lock``.
 
-        ``False`` sends a source on disk back to the original archive. A stream
-        source has no such fallback: the refusal raises, naming ``what``, and is not
-        recorded, so a smaller copy later still fits.
+        When the charge does not fit and removing the solid streams no read holds
+        would make room, those streams are removed, least recently read first,
+        until it fits; ``keep`` is the stream the copy extends, never removed. A
+        read of a removed stream later copies it again. Without that, earlier reads
+        would refuse a copy that fits the limit on its own. When removing them all
+        would not make room, nothing is removed. ``False`` sends a source on disk
+        back to the original archive. A stream source has no such fallback: the
+        refusal raises, naming ``what``, and is not recorded, so a smaller copy
+        later still fits.
         """
         # Named only when this copy refuses: a fallback's own copy names itself.
         budget = self._spool_budget(None)
         if budget.try_reserve(charge):
             return True
+        idle = [
+            (start, stream)
+            for start, stream in self._solid_streams.items()
+            if not stream.readers and stream is not keep
+        ]
+        if budget.would_fit(charge, freed=sum(stream.charge for _, stream in idle)):
+            for start, stream in idle:
+                self._drop_solid_stream(start, stream)
+                if budget.try_reserve(charge):
+                    return True
         if not in_place:
             budget = self._spool_budget(what)
             with self._translated_errors(name):
                 budget.check_fits(charge)
         return False
+
+    def _drop_solid_stream(self, start: int, stream: _SolidStream) -> None:
+        """Remove ``stream``, which no read holds, and give back its charge; under
+        ``_materialize_lock``. A retired generation is not in ``_solid_streams``:
+        it is removed when its last read closes."""
+        assert not stream.readers
+        del self._solid_streams[start]
+        file, stream.file = stream.file, None
+        self._spool_budget(None).release(stream.charge)
+        stream.charge = 0
+        if file is not None:
+            file.close()
 
     def _member_position(self, member: ArchiveMember) -> int:
         """``member``'s index in the member list, which is the parsed list's order."""
@@ -5400,10 +5584,16 @@ class RarReader(BaseArchiveReader):
         what = "the packed bytes of this member's solid stream up to it"
         mask = placeholder_mask(len(chain) - 1, raw, self._archive.version)
         with self._materialize_lock:
-            stream = self._solid_streams.get(chain[0])
-            if stream is None:
-                stream = _SolidStream(self._archive.version)
-                self._solid_streams[chain[0]] = stream
+            # Taken out and put back last, so the dict runs from the least
+            # recently read stream to the most, the order _reserve_synthetic
+            # removes idle streams in. A new stream goes in only once its file
+            # is written, so a copy that is refused leaves no empty entry.
+            current = self._solid_streams.pop(chain[0], None)
+            if current is not None:
+                self._solid_streams[chain[0]] = current
+            stream = (
+                current if current is not None else _SolidStream(self._archive.version)
+            )
             have = len(stream.indices)
             assert stream.indices[: len(chain)] == chain[:have]
             if have >= len(chain):
@@ -5427,7 +5617,9 @@ class RarReader(BaseArchiveReader):
                 charge += overhead
             if in_place and stream.size() + charge > _SYNTHETIC_IN_PLACE_THRESHOLD:
                 return None
-            if not self._reserve_synthetic(charge, in_place, member.name, what):
+            if not self._reserve_synthetic(
+                charge, in_place, member.name, what, keep=stream
+            ):
                 return None
             created = stream.file is None
             try:
@@ -5441,11 +5633,10 @@ class RarReader(BaseArchiveReader):
                     stream.file.close()
                     stream.file = None
                 raise
-            current = self._solid_streams[chain[0]]
-            if current is not stream:
+            if current is not None and current is not stream:
                 current.retired = True
                 self._retired_streams.add(current)
-                self._solid_streams[chain[0]] = stream
+            self._solid_streams[chain[0]] = stream
             stream.indices.extend(chain[have:])
             stream.charge += charge
             stream.readers += 1
@@ -5470,10 +5661,21 @@ class RarReader(BaseArchiveReader):
         """The header keys of this ``-hp`` archive.
 
         The header password is the one the listing decrypted with; the KDF cache
-        already holds its derivation.
+        already holds its derivation. Raises ``CorruptionError`` when the listing
+        decrypted with the empty password.
         """
         password = self._unrar_password
-        assert password is not None, "an -hp archive lists only with its password"
+        if password is None:
+            # The listing decrypted with the empty password, which ``unrar`` takes
+            # as no password at all. Only a damaged or crafted archive gets this
+            # far: its crypt header has no password check (RARLAB's ``rar -hp``
+            # always writes one), so any candidate "decrypts" it, and no writer
+            # encrypts headers under the empty password. No other password helps,
+            # so this is damage, not a password problem.
+            raise CorruptionError(
+                "RAR archive's crypt header has no password check and its headers "
+                "decrypted with the empty password, which no writer uses"
+            )
         return HeaderKeys(self._kdf_cache, password)
 
     def _synthetic_spawner(

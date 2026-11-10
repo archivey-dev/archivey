@@ -26,6 +26,7 @@ from archivey import (
     open_archive,
 )
 from archivey.diagnostics import MemberTimestampContext, UnknownMemberTypeContext
+from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.xar_util import ENCODINGS, HEADER, XarFile, pack_xar, write_xar
 
@@ -126,6 +127,43 @@ def test_every_file_checksum_is_a_member_hash(digest: str) -> None:
         assert list(member.hashes) == [HashAlgorithm(digest)]
         assert reader.read("a.txt") == TEXT
         assert member.verified is Verification.CHECKSUM
+
+
+@pytest.mark.parametrize(
+    ("attrs", "style"),
+    [(' style="sha224"', "sha224"), ("", ""), (' style=""', "")],
+    ids=["unsupported style", "no style", "empty style"],
+)
+def test_a_file_checksum_archivey_cannot_check_is_reported(
+    attrs: str, style: str
+) -> None:
+    digest = hashlib.sha224(b"0123456789").hexdigest()
+    toc = (
+        '<?xml version="1.0"?><xar><toc><file id="1"><name>a</name><type>file</type>'
+        "<data><length>10</length><offset>0</offset><size>10</size>"
+        '<encoding style="application/octet-stream"/>'
+        f"<extracted-checksum{attrs}>{digest}</extracted-checksum></data>"
+        "</file></toc></xar>"
+    ).encode()
+    with _open(pack_xar(toc, b"0123456789", algorithm=0)) as reader:
+        (member,) = reader.members()
+        assert member.hashes == {}
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code is DiagnosticCode.DIGEST_UNVERIFIABLE
+        assert diagnostic.context.algorithm == style  # type: ignore[union-attr]
+        assert reader.read("a") == b"0123456789"
+        assert member.verified is Verification.LENGTH
+
+
+def test_a_file_with_no_checksum_reports_nothing() -> None:
+    toc = (
+        b'<?xml version="1.0"?><xar><toc><file id="1"><name>a</name><type>file</type>'
+        b"<data><length>10</length><offset>0</offset><size>10</size>"
+        b'<encoding style="application/octet-stream"/></data></file></toc></xar>'
+    )
+    with _open(pack_xar(toc, b"0123456789", algorithm=0)) as reader:
+        (member,) = reader.members()
+        assert not member.diagnostics
 
 
 def test_a_file_that_fails_its_checksum_is_reported() -> None:
@@ -492,6 +530,25 @@ def test_toc_damage() -> None:
     deep = b"<xar>" + b"<toc>" * 2100 + b"</toc>" * 2100 + b"</xar>"
     with pytest.raises(CorruptionError, match="nests more than 2048"):
         _open(pack_xar(deep, b"", algorithm=0), format=ArchiveFormat.XAR)
+
+
+def test_text_of_many_lines_is_not_kept_one_piece_per_line() -> None:
+    # expat hands character data over one line at a time unless asked to buffer it,
+    # and the parser kept each piece in a list: 8 bytes of list slot for each byte of
+    # a TOC of "a\n" lines, so a 64 MiB TOC took 704 MB to open. Here the peak was
+    # 11x the TOC. Buffered, it is about 4x: the TOC, the pieces and their join.
+    head = b'<xar><toc><file id="1"><name>a</name><type>file</type><mode>'
+    tail = b"</mode></file></toc></xar>"
+    xml = head + b"a\n" * (1 << 20) + tail
+    raw = pack_xar(xml, b"", algorithm=0)
+
+    def list_it() -> None:
+        with _open(raw, format=ArchiveFormat.XAR) as reader:
+            assert [m.name for m in reader.members()] == ["a"]
+
+    list_it()
+    peak = traced_peak(list_it)
+    assert peak < 7 * len(xml), peak
 
 
 def test_the_toc_size_must_match_its_header() -> None:
