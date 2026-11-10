@@ -1156,7 +1156,10 @@ are refused before it runs; a read `unrar` refuses is not retried with `unar` ei
 failures (empty files with a success exit, a missing plugin, gigabytes written for a
 stored member) are invisible to the caller. A non-RARLAB `unrar` raises
 `PackageNotInstalledError`. Both paths use a banner probe with a timeout and a
-stat-keyed cache. `internal/backends/rar_unrar.py` passes a member name only inside a
+stat-keyed cache. `ArchiveyConfig(unrar_path=, unar_path=)` pins the program to one
+absolute path: that file is the only one tried, under the same banner and version checks,
+and `PATH` is not searched; a pinned program that fails them is refused naming the
+setting, never replaced by one from `PATH`. `internal/backends/rar_unrar.py` passes a member name only inside a
 `-n./<name>` include-mask switch, so a leading `-` cannot become an option. The name is a
 placeholder or a plain name with no `*` or `?`, so `unrar`'s matcher, which
 backtracks exponentially on a hostile mask, never sees a glob (`unrar_member_refusal`
@@ -1170,9 +1173,11 @@ The public `format_availability()` runs the same `unrar` banner probe with no ar
 in play, whatever `rar_decompressor` says, so `archivey --version -v` runs it too;
 `check_programs=False` skips it.
 
-**Residual.** The program is found on the process `PATH` and is part of the deployment's
-trust boundary. On Windows `shutil.which` also searches the current directory, so the
-probe and a read can run a program from there. `unar`'s password is [visible to other users](#the-unar-password-is-on-its-command-line).
+**Residual.** Unless pinned, the program is found on the process `PATH` and is part of
+the deployment's trust boundary. On Windows `shutil.which` also searches the current
+directory, so the probe and a read can run a program from there; a pin
+(`unrar_path=`, `unar_path=`) removes both. A pinned file is still trusted: archivey
+checks what it reports, not who wrote it. `unar`'s password is [visible to other users](#the-unar-password-is-on-its-command-line).
 
 ### Concurrent member streams are race-free where declared
 
