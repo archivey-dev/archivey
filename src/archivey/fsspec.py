@@ -132,6 +132,21 @@ class _Tree:
         for depth in range(1, len(parts) + 1):
             self._kinds.setdefault("/".join(parts[:depth]), "dir")
 
+    def written_path(self, name: str) -> str | None:
+        """Where ``name`` leads on the disk extraction writes, every symlink on the
+        way followed, the last one too: a path that need not exist, or ``None`` for
+        a loop or a way out."""
+        resolved = self._resolve(name, final=True)
+        return None if isinstance(resolved, _Refusal) else resolved
+
+    def link_destination(self, path: str) -> str | None:
+        """Where the link written at ``path`` leads once every member is written, as
+        the destination resolves its target text, or ``None``."""
+        target = self._targets.get(path)
+        if target is None:
+            return None
+        return self.written_path(posixpath.join(posixpath.dirname(path), target))
+
     def directories(self) -> list[str]:
         """Every directory extraction makes: those a member names and those made as
         parents, including a looping link's, which extraction makes before it
@@ -222,12 +237,18 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     symlink, with its target read from the hard link's own directory, as
     extraction (and GNU tar) write it.
 
-    A link whose target is a member is listed as the target's type, with
-    ``"islink": True`` and ``"destination"`` in its ``info()``, and opens the target.
-    A symlink that resolves to nothing is listed as ``"other"``, and opening it raises
-    ``FileNotFoundError``. A hard link is listed only when extraction makes it: its
-    source is a file listed before it. A hard link to a symlink is that symlink, with
-    the symlink's target as its ``"destination"``.
+    A symlink's target text is resolved among the written paths, as the destination
+    resolves it once every member is written: the symlink is listed as what it
+    reaches there, with ``"islink": True`` and ``"destination"`` in its ``info()``,
+    and opens it. A name extraction did not write is not reached, even when the
+    archive stored a member under it, and a symlink that reaches nothing written is
+    listed as ``"other"``; opening it raises ``FileNotFoundError``. A symlink to a
+    directory lists that directory's entries under its own name (``ls("s")``, and
+    ``s/f`` under ``s -> d`` is ``d/f``); ``walk``, ``find`` and ``glob`` list it
+    and do not descend into it, as ``os.walk`` does, since it can lead back above
+    itself. A hard link is listed only when extraction makes it: its source is a
+    file listed before it. A hard link to a symlink is that symlink, with the
+    symlink's target as its ``"destination"``.
 
     The instance owns its reader: :meth:`close`, or leaving a ``with`` block, closes it,
     and so does collecting the instance. A member stream from ``open()`` keeps the
@@ -287,8 +308,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         self.dir_cache: dict[str, dict[str, Any]] | None = None
         self._dirs_lock = threading.Lock()
         self._children: dict[str, list[str]] = {}
-        # A hard link to a symlink, by path: the member its own target text reaches.
+        # A symlink, or a hard link to one, by path: the member its target reaches
+        # among the written paths, ``None`` when it reaches no file.
         self._read_as: dict[str, ArchiveMember | None] = {}
+        self._tree: _Tree | None = None
 
     @classmethod
     @override
@@ -333,7 +356,15 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         dir_cache = cast("dict[str, dict[str, Any]]", self.dir_cache)
         path = self._strip_protocol(path).rstrip("/")
         names = self._children.get(path)
-        if names is not None:
+        written = self._written_path(path) if names is None and path else None
+        if written is not None and written != path and written in self._children:
+            # A directory reached through a symlink: its entries, named under
+            # ``path``, as ``os.listdir`` lists a symlink to a directory.
+            entries = [
+                self._aliased(dir_cache[name], written, path)
+                for name in self._children[written]
+            ]
+        elif names is not None:
             entries = [dir_cache[name] for name in names]
         elif not path:
             entries = []  # an archive with nothing in its tree
@@ -344,6 +375,41 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             entries = [] if info["type"] == "directory" else [info]
         entries.sort(key=lambda entry: entry["name"])
         return entries if detail else [entry["name"] for entry in entries]
+
+    @override
+    def info(self, path: str, **kwargs: Any) -> dict[str, Any]:
+        """fsspec's archive ``info``, and a path through one of the archive's
+        symlinks to a directory: ``s/f`` under ``s -> d`` is ``d/f``'s entry, named
+        ``s/f``."""
+        try:
+            return super().info(path, **kwargs)
+        except FileNotFoundError:
+            stripped = self._strip_protocol(path).rstrip("/")
+            written = self._written_parent(stripped)
+            dir_cache = cast("dict[str, dict[str, Any]]", self.dir_cache)
+            if written is None or written == stripped or written not in dir_cache:
+                raise
+            return self._aliased(dir_cache[written], written, stripped)
+
+    def _written_path(self, path: str) -> str | None:
+        """Where ``path`` leads among the written paths, its symlinks followed."""
+        self._get_dirs()
+        tree = self._tree
+        return tree.written_path(path) if tree is not None and path else path
+
+    def _written_parent(self, path: str) -> str | None:
+        """``path`` with its parent's symlinks followed and its last component kept,
+        as ``lstat`` finds it: ``l/s`` under ``l -> d`` is ``d/s``, a link itself."""
+        parent, _, last = path.rpartition("/")
+        if not parent:
+            return path
+        written = self._written_path(parent)
+        return None if written is None else f"{written}/{last}" if written else last
+
+    @staticmethod
+    def _aliased(entry: dict[str, Any], written: str, path: str) -> dict[str, Any]:
+        """``entry``, whose path starts with ``written``, named under ``path``."""
+        return {**entry, "name": path + entry["name"][len(written) :]}
 
     @override
     def walk(  # pyrefly: ignore[bad-override]
@@ -389,7 +455,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                 pathname = info["name"].rstrip("/")
                 name = pathname.rsplit("/", 1)[-1]
                 if info["type"] == "directory" and pathname != top:
-                    full_dirs[name] = pathname
+                    # A symlink to a directory is listed, not followed, as
+                    # ``os.walk`` does: it can lead back to a directory above it.
+                    if not info.get("islink"):
+                        full_dirs[name] = pathname
                     dirs[name] = info
                 elif pathname == top:
                     files[""] = info
@@ -407,7 +476,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                     continue
             # Reversed, so the first directory is listed next, as recursion would.
             for name in reversed(list(shown_dirs)):
-                stack.append((full_dirs[name], depth, None))
+                if name in full_dirs:
+                    stack.append((full_dirs[name], depth, None))
 
     def _build_tree(self) -> dict[str, dict[str, Any]]:
         files: dict[str, dict[str, Any]] = {}
@@ -451,6 +521,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                 dir_cache[parent] = {"name": parent, "size": 0, "type": "directory"}
                 parent = posixpath.dirname(parent)
         dir_cache.update(files)
+        self._resolve_links(tree, dir_cache)
+        self._tree = tree
         # Each directory's entries, so ``ls`` reads one directory's worth, not the
         # whole tree: fsspec's own ``ls`` scans every path, which makes a full walk
         # quadratic in the member count. Set before ``dir_cache``, which marks the
@@ -460,6 +532,27 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             children.setdefault(posixpath.dirname(name), []).append(name)
         self._children = children
         return dir_cache
+
+    def _resolve_links(self, tree: _Tree, dir_cache: dict[str, dict[str, Any]]) -> None:
+        """Give each symlink entry the type, size and bytes of what its target text
+        reaches among the written paths, as the destination resolves it once every
+        member is written: a later member, a name re-rooted or renamed by the
+        policy, a path through another link. A name extraction did not write is not
+        reached, even when the archive holds a member of that name."""
+        for name, entry in dir_cache.items():
+            if not entry.get("islink") or name not in tree._targets:
+                continue  # not a symlink as written: a hard link to a file
+            dest = tree.link_destination(name)
+            reached = dir_cache.get(dest) if dest is not None else None
+            read_as: ArchiveMember | None = None
+            if reached is None or reached["type"] == "other":
+                entry.update(type="other", size=None)
+            elif reached["type"] == "directory":
+                entry.update(type="directory", size=0)
+            else:
+                entry.update(type="file", size=reached["size"])
+                read_as = self._read_as.get(dest, reached["member"]) if dest else None
+            self._read_as[name] = read_as
 
     def _view(
         self,
@@ -473,8 +566,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         if view.type is MemberType.HARDLINK:
             # A hard link to a symlink is a second name for the symlink, written as a
             # symlink with its target, as extraction's ``_as_written`` does (and GNU
-            # tar). Its target text is then read from the hard link's own directory,
-            # so it can lead to another member than the symlink's does.
+            # tar). Its target text is then read from the hard link's own directory
+            # (``_resolve_links``), so it can lead elsewhere than the symlink's does.
             reader = cast("BaseArchiveReader", self.reader)
             direct = hardlink_chain_end(reader, member, hardlink_ends)
             if (
@@ -482,16 +575,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                 and direct.type is MemberType.SYMLINK
                 and direct.link_target is not None
             ):
-                as_symlink = member.replace(
-                    type=MemberType.SYMLINK,
-                    link_target=direct.link_target,
-                    link_target_member=None,
-                )
-                reader._resolve_link(as_symlink, {})
                 view = view.replace(
                     type=MemberType.SYMLINK,
                     link_target=direct.link_target,
-                    link_target_member=as_symlink.link_target_member,
+                    link_target_member=None,
                 )
         if view.type is MemberType.SYMLINK:
             # Where its target points: a target that leaves the destination is refused
@@ -544,9 +631,6 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         if modified is not None:
             entry["mtime"] = modified.timestamp()
         entry["member"] = member
-        if member.type is MemberType.HARDLINK and view.type is MemberType.SYMLINK:
-            # Read through the target as resolved from this name, not the symlink's.
-            self._read_as[name] = view.link_target_member
         return entry
 
     def _report_refused(self, member: ArchiveMember, reason: str) -> None:
@@ -589,7 +673,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             raise IsADirectoryError(path)
         if info["type"] != "file":
             raise FileNotFoundError(path)
-        member = self._read_as.get(path, info["member"])
+        written = self._written_parent(path.rstrip("/")) or path
+        member = self._read_as.get(written, info["member"])
         if member is None:
             raise FileNotFoundError(path)
         stream = self.reader.open(member)

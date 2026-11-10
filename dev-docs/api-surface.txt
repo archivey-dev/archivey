@@ -1184,6 +1184,7 @@ init archivey.fsspec.ArchiveyFileSystem(fo: str | os.PathLike[str] | OpenFile | 
 attribute archivey.fsspec.ArchiveyFileSystem.cachable = False
 method archivey.fsspec.ArchiveyFileSystem.close(self) -> None
 method archivey.fsspec.ArchiveyFileSystem.cp_file(self, *args: Any, **kwargs: Any) -> Any
+method archivey.fsspec.ArchiveyFileSystem.info(self, path: str, **kwargs: Any) -> dict[str, Any]
 method archivey.fsspec.ArchiveyFileSystem.ls(self, path: str, detail: bool = True, **kwargs: Any) -> list[Any]
 method archivey.fsspec.ArchiveyFileSystem.makedirs(self, *args: Any, **kwargs: Any) -> Any
 method archivey.fsspec.ArchiveyFileSystem.mkdir(self, *args: Any, **kwargs: Any) -> Any

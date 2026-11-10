@@ -309,6 +309,106 @@ def test_a_hard_link_to_a_symlink_reads_its_target_from_its_own_directory(
         assert fs.info("x")["destination"] == "t"
 
 
+# Symlinks whose target text names a member the policy wrote elsewhere, or not at
+# all: on disk the target resolves among the written paths, not the stored names.
+_SYMLINKS_BY_WRITTEN_PATH = {
+    "loser through a link": (
+        [
+            ("dir", "d", ""),
+            ("file", "d/y", b"A"),
+            ("sym", "l", "d"),
+            ("file", "l/y", b"B"),  # written as d/y: loses to the d/y before it
+            ("sym", "s", "l/y"),
+        ],
+        ExtractionPolicy.STRICT,
+    ),
+    "renamed loser": (
+        [("file", "data", b"Y"), ("file", "data.", b"X"), ("sym", "s", "data.")],
+        ExtractionPolicy.STRICT,
+    ),
+    "case loser": (
+        [("file", "README", b"A"), ("file", "readme", b"B"), ("sym", "s", "readme")],
+        ExtractionPolicy.STRICT,
+    ),
+    "renamed target": (
+        [("file", "data.", b"A"), ("sym", "s", "data.")],
+        ExtractionPolicy.STRICT,
+    ),
+    "target named as written": (
+        [("file", "data.", b"A"), ("sym", "s", "data")],
+        ExtractionPolicy.STRICT,
+    ),
+    "target through a link": (
+        [
+            ("dir", "d", ""),
+            ("file", "d/f", b"A"),
+            ("sym", "l", "d"),
+            ("sym", "s", "l/f"),
+        ],
+        ExtractionPolicy.STRICT,
+    ),
+    "re-rooted target": (
+        [("file", "/abs/f", b"A"), ("sym", "s", "abs/f")],
+        ExtractionPolicy.STANDARD,
+    ),
+    "hard link to a symlink, case loser": (
+        [
+            ("file", "README", b"A"),
+            ("file", "readme", b"B"),
+            ("sym", "s", "readme"),
+            ("hard", "h", "s"),
+        ],
+        ExtractionPolicy.STRICT,
+    ),
+}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a Windows disk folds case")
+@pytest.mark.parametrize("shape", list(_SYMLINKS_BY_WRITTEN_PATH))
+def test_a_symlink_reads_what_its_target_reaches_on_disk(
+    memfs: Any, tmp_path: Path, shape: str
+) -> None:
+    entries, policy = _SYMLINKS_BY_WRITTEN_PATH[shape]
+    data = _tar_entries(entries)
+    memfs.pipe("/d/sl.tar", data)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.extract_all(dest, policy=policy, on_error="continue", on_blocked="skip")
+    links = [p.name for p in dest.iterdir() if p.is_symlink()]
+    assert links
+    with ArchiveyFileSystem("memory://d/sl.tar", policy=policy) as fs:
+        for name in links:
+            if (dest / name).is_dir():
+                assert fs.info(name)["type"] == "directory"
+            elif (dest / name).exists():
+                assert fs.info(name)["type"] == "file"
+                assert fs.cat(name) == (dest / name).read_bytes()
+            else:
+                assert fs.info(name)["type"] == "other"
+                with pytest.raises(FileNotFoundError):
+                    fs.cat(name)
+
+
+def test_a_symlink_to_a_directory_lists_and_reads_through(memfs: Any) -> None:
+    data = _tar_entries(
+        [
+            ("dir", "d", ""),
+            ("file", "d/f", b"A"),
+            ("sym", "d/up", ".."),  # back to the root: listed, not walked into
+            ("sym", "s", "d"),
+        ]
+    )
+    memfs.pipe("/d/sd.tar", data)
+    with ArchiveyFileSystem("memory://d/sd.tar") as fs:
+        assert fs.isdir("s")
+        assert fs.ls("s", detail=False) == ["s/f", "s/up"]
+        assert fs.cat("s/f") == b"A"
+        assert fs.info("s/f")["name"] == "s/f"
+        assert fs.info("s/up")["islink"]
+        assert fs.cat("s/up/d/f") == b"A"
+        assert sorted(fs.find("", withdirs=True)) == ["d", "d/f", "d/up", "s"]
+
+
 @pytest.mark.parametrize("policy", list(ExtractionPolicy))
 def test_tree_matches_extraction_on_links_and_collisions(
     memfs: Any, tmp_path: Path, policy: ExtractionPolicy

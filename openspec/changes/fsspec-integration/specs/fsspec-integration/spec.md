@@ -165,8 +165,10 @@ symlink, with its target read from the hard link's own directory, as extraction 
 | `info(path)` | `name`, `size` (declared size, or `None`), `type` (`"file"`, `"directory"` or `"other"`), `mtime` (POSIX seconds) when known, and `member` (the `ArchiveMember`) |
 | `ls`, `find`, `glob`, `walk` | From the tree above; no member data read |
 | `open(path, "rb")` | A seekable member stream; backward seeks MAY re-decode (loud-slow-rewind) |
-| A link that resolves to a member | Listed as the target's type with `islink: True` and `destination`; opens the target |
-| A symlink that resolves to nothing | Listed as `"other"`; `open` raises `FileNotFoundError` |
+| A symlink that resolves to a written path | Its target text resolved among the written paths, as the destination resolves it once every member is written. Listed as that path's type with `islink: True` and `destination`; opens what is written there. A name extraction did not write is not reached, even when a member was stored under it |
+| A symlink that resolves to nothing written | Listed as `"other"`; `open` raises `FileNotFoundError` |
+| A path through a symlink to a directory | `ls` lists the directory's entries under the link's name, and `info` and `open` reach them (`s/f` under `s -> d` is `d/f`). `walk`, `find` and `glob` list the link and do not descend into it, as `os.walk` does |
+| A hard link to a file | Listed as the file, with `islink: True`; opens its source |
 | A hard link with no file listed before it as its source | Absent, as extraction does not make it; a hard link to a symlink is listed as that symlink |
 | Missing path | `FileNotFoundError` |
 | `open` on a directory | `IsADirectoryError` |
