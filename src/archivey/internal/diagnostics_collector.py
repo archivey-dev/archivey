@@ -1,6 +1,12 @@
 """Lifecycle diagnostic collector and emission path.
 
-Owns exact counts, bounded retention (aggregate + member attachments), watermark-based
+Each detection run, reader, top-level extract and standalone stream owns one
+:class:`DiagnosticCollector`. Format readers, codecs and the extraction path report a
+condition by calling :meth:`DiagnosticCollector.emit`; the public ``diagnostics``
+summaries are built from :meth:`DiagnosticCollector.snapshot` and
+:meth:`DiagnosticScope.summary`.
+
+The collector owns exact counts, bounded retention (aggregate + member attachments), watermark-based
 ranged snapshots, per-operation scopes, policy resolution, logging/callback delivery,
 and RAISE escalation.
 
@@ -61,6 +67,8 @@ class DiagnosticWatermark:
 
 @dataclass
 class _RetainedEntry:
+    """One diagnostic kept in full, tagged for ranged and scoped summaries."""
+
     sequence: int
     diagnostic: Diagnostic
     # The scopes open on the emitting thread, for :meth:`DiagnosticScope.summary`.
@@ -137,6 +145,8 @@ def leave_scope(stack: list[DiagnosticScope], scope: DiagnosticScope) -> None:
 
 @dataclass(slots=True)
 class _EmitDetail:
+    """What a repeat of a recorded emit returns, and whether it re-attaches it."""
+
     diagnostic: Diagnostic
     attached: bool
 
@@ -171,6 +181,9 @@ class EmitLog:
 
 @dataclass(slots=True)
 class _Replay:
+    """A ``replaying()`` block open on one thread: its log, and the index of the next
+    recorded emit the work is expected to repeat."""
+
     log: EmitLog
     cursor: int = 0
 
@@ -497,12 +510,7 @@ class DiagnosticCollector:
         ``escalate_as`` only when the disposition is already ``RAISE``.
         """
         validate_code_context(code, context)
-        offset = getattr(self._local, "member_id_offset", 0)
-        if offset:
-            member_id = getattr(context, "member_id", None)
-            if member_id is not None:
-                # Every context with a member_id field is a dataclass.
-                context = replace(cast(Any, context), member_id=member_id + offset)
+        context = self._shift_member_id(context)
         ignored = code in self._policy.ignore
         raising = code in self._policy.raise_on
         log = logger if logger is not None else self._logger
@@ -511,85 +519,25 @@ class DiagnosticCollector:
         with self._lock:
             replay = self._replays.get(thread_id)
             if replay is not None:
-                emit_log = replay.log
-                at = replay.cursor
-                if at < len(emit_log.codes) and emit_log.codes[at] is code:
-                    replay.cursor += 1
-                    if emit_log.details is not None:
-                        detail = emit_log.details[at]
-                        replayed = detail.diagnostic
-                        if (
-                            detail.attached
-                            and member is not None
-                            and replayed not in member._diagnostics
-                        ):
-                            _attach_diagnostic(member, replayed)
-                    else:
-                        # A settled log kept no diagnostic; this one is recorded nowhere.
-                        replayed = Diagnostic(
-                            occurrence_id=uuid.uuid4().hex,
-                            code=code,
-                            message=message,
-                            context=context,
-                        )
-                    if emit_log.raised is not None and at in emit_log.raised:
-                        again = emit_log.raised[at]
-                        # Raising an object adds the frames it passes to its traceback;
-                        # clear it, or each repeat makes the stored exception's longer.
-                        # ``ArchiveStreamImpl._raise_verdict`` raises a copy caused by
-                        # the first raise instead, because it short-circuits without
-                        # reaching the damage again. A replay re-runs the work up to this emit, so the
-                        # current path is where this raise happens, and ``emit`` never
-                        # regains control after the recording raise to capture its
-                        # traceback.
-                        again.__traceback__ = None
-                        if not self._hold(thread_id, again):
-                            raise again
+                replayed = self._repeat_recorded_emit(
+                    replay, thread_id, code, message, context, member
+                )
+                if replayed is not None:
                     return replayed
-                emit_log._truncate(at)
             if thread_id in self._emitting_threads:
                 raise ArchiveyUsageError(
                     "Diagnostic callback/reentrancy: cannot drive another operation on "
                     "the same reader/stream while a diagnostic is being emitted."
                 )
-            self._sequence += 1
-            sequence = self._sequence
-            diagnostic = Diagnostic(
-                occurrence_id=uuid.uuid4().hex,
-                code=code,
-                message=message,
-                context=context,
+            diagnostic, attached = self._count_and_retain(
+                code,
+                message,
+                context,
+                member=member,
+                attach_to_member=attach_to_member,
+                ignored=ignored,
             )
-            self._total_count += 1
-            self._counts[code] += 1
-            open_scopes = getattr(self._local, "stack", None)
-            scopes: tuple[DiagnosticScope, ...] = ()
-            if open_scopes:
-                scopes = tuple(open_scopes)
-                for scope in scopes:
-                    scope._total += 1
-                    scope._counts[code] = scope._counts.get(code, 0) + 1
-
-            retained_aggregate = False
-            attached = False
-            if not ignored:
-                if self._slots_used < self._max_retained:
-                    self._retained.append(
-                        _RetainedEntry(
-                            sequence=sequence, diagnostic=diagnostic, scopes=scopes
-                        )
-                    )
-                    self._slots_used += 1
-                    retained_aggregate = True
-                if (
-                    retained_aggregate
-                    and attach_to_member
-                    and member is not None
-                    and self._slots_used < self._max_retained
-                ):
-                    _attach_diagnostic(member, diagnostic)
-                    self._slots_used += 1
-                    attached = True
+            # Where this emit sits in the replay log, for a raise below to be recorded at.
             logged_at: int | None = None
             if replay is not None:
                 emit_log = replay.log
@@ -604,22 +552,7 @@ class DiagnosticCollector:
 
         try:
             if not ignored:
-                level = logging.INFO if code in _INFO_LOG_CODES else logging.WARNING
-                log.log(
-                    level,
-                    "%s",
-                    diagnostic.message,
-                    extra={
-                        "diagnostic_code": code,
-                        "diagnostic_occurrence_id": diagnostic.occurrence_id,
-                    },
-                )
-                if self._on_diagnostic is not None:
-                    try:
-                        self._on_diagnostic(diagnostic)
-                    except Exception as exc:
-                        if not self._hold(thread_id, exc):
-                            raise
+                self._deliver(diagnostic, log, thread_id)
             # Only the raise this emit makes is part of what a replay repeats; one out of
             # the logger or the callback, a KeyboardInterrupt included, is not.
             raised: BaseException | None = None
@@ -642,6 +575,152 @@ class DiagnosticCollector:
                 self._emitting_threads.discard(thread_id)
 
         return diagnostic
+
+    def _shift_member_id(self, context: DiagnosticContext) -> DiagnosticContext:
+        """``context`` with its ``member_id`` shifted by this thread's
+        :meth:`member_ids_from` offset, so it names the member the caller sees."""
+        offset = getattr(self._local, "member_id_offset", 0)
+        if not offset:
+            return context
+        member_id = getattr(context, "member_id", None)
+        if member_id is None:
+            return context
+        # Every context with a member_id field is a dataclass.
+        return replace(cast(Any, context), member_id=member_id + offset)
+
+    def _repeat_recorded_emit(
+        self,
+        replay: _Replay,
+        thread_id: int,
+        code: DiagnosticCode,
+        message: str,
+        context: DiagnosticContext,
+        member: ArchiveMember | None,
+    ) -> Diagnostic | None:
+        """Repeat the emit a :meth:`replaying` log recorded at this point, if it matches.
+
+        Returns the recorded diagnostic (re-attached to ``member`` if it was attached
+        the first time), or raises the exception the first run raised here (held
+        instead for an open :meth:`deferring_raises` block, and the diagnostic
+        returned). Returns
+        ``None`` when the log holds no emit of ``code`` at this point: the log is cut
+        there, and the caller records this emit as a new one. The caller holds the lock.
+        """
+        emit_log = replay.log
+        at = replay.cursor
+        if at >= len(emit_log.codes) or emit_log.codes[at] is not code:
+            emit_log._truncate(at)
+            return None
+        replay.cursor += 1
+        if emit_log.details is not None:
+            detail = emit_log.details[at]
+            replayed = detail.diagnostic
+            if (
+                detail.attached
+                and member is not None
+                and replayed not in member._diagnostics
+            ):
+                _attach_diagnostic(member, replayed)
+        else:
+            # A settled log kept no diagnostic; this one is recorded nowhere.
+            replayed = Diagnostic(
+                occurrence_id=uuid.uuid4().hex,
+                code=code,
+                message=message,
+                context=context,
+            )
+        if emit_log.raised is not None and at in emit_log.raised:
+            again = emit_log.raised[at]
+            # Raising an object adds the frames it passes to its traceback; clear it,
+            # or each repeat makes the stored exception's longer. A replay re-runs the
+            # work up to this emit, so the current path is where this raise happens,
+            # and ``emit`` never regains control after the recording raise to capture
+            # its traceback. (``ArchiveStreamImpl._raise_verdict`` raises a copy caused
+            # by the first raise instead, because it short-circuits without reaching
+            # the damage again.)
+            again.__traceback__ = None
+            if not self._hold(thread_id, again):
+                raise again
+        return replayed
+
+    def _count_and_retain(
+        self,
+        code: DiagnosticCode,
+        message: str,
+        context: DiagnosticContext,
+        *,
+        member: ArchiveMember | None,
+        attach_to_member: bool,
+        ignored: bool,
+    ) -> tuple[Diagnostic, bool]:
+        """Build the diagnostic, count it here and in this thread's open scopes, and
+        retain it while the budget allows.
+
+        An ignored code is counted but not retained. A retained diagnostic is also
+        attached to ``member`` when asked and a second slot is free. Returns the
+        diagnostic and whether it was attached. The caller holds the lock.
+        """
+        self._sequence += 1
+        sequence = self._sequence
+        diagnostic = Diagnostic(
+            occurrence_id=uuid.uuid4().hex,
+            code=code,
+            message=message,
+            context=context,
+        )
+        self._total_count += 1
+        self._counts[code] += 1
+        open_scopes = getattr(self._local, "stack", None)
+        scopes: tuple[DiagnosticScope, ...] = ()
+        if open_scopes:
+            scopes = tuple(open_scopes)
+            for scope in scopes:
+                scope._total += 1
+                scope._counts[code] = scope._counts.get(code, 0) + 1
+
+        if ignored or self._slots_used >= self._max_retained:
+            return diagnostic, False
+        self._retained.append(
+            _RetainedEntry(sequence=sequence, diagnostic=diagnostic, scopes=scopes)
+        )
+        self._slots_used += 1
+        if (
+            not attach_to_member
+            or member is None
+            or self._slots_used >= self._max_retained
+        ):
+            return diagnostic, False
+        _attach_diagnostic(member, diagnostic)
+        self._slots_used += 1
+        return diagnostic, True
+
+    def _deliver(
+        self, diagnostic: Diagnostic, log: logging.Logger, thread_id: int
+    ) -> None:
+        """Log ``diagnostic`` and pass it to ``on_diagnostic``.
+
+        An ``Exception`` out of the callback is held for an open
+        :meth:`deferring_raises` block, or raised.
+        """
+        code = diagnostic.code
+        level = logging.INFO if code in _INFO_LOG_CODES else logging.WARNING
+        log.log(
+            level,
+            "%s",
+            diagnostic.message,
+            extra={
+                "diagnostic_code": code,
+                "diagnostic_occurrence_id": diagnostic.occurrence_id,
+            },
+            # The record names ``emit``, the collector's entry point, not this helper.
+            stacklevel=2,
+        )
+        if self._on_diagnostic is not None:
+            try:
+                self._on_diagnostic(diagnostic)
+            except Exception as exc:
+                if not self._hold(thread_id, exc):
+                    raise
 
     def escalate_only(
         self,

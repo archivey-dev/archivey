@@ -52,6 +52,7 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import (
     ArchiveyError,
+    CorruptionError,
     FormatDetectionError,
     SourceChangedError,
     StreamNotSeekableError,
@@ -70,6 +71,7 @@ from archivey.internal.backends.iso_reader import (
     raw_layout_of,
     refuse_raw_sector_image,
 )
+from archivey.internal.backends.makeself_reader import MAGIC as MAKESELF_MAGIC
 from archivey.internal.backends.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
@@ -127,7 +129,7 @@ from archivey.internal.volumes import (
     resolve_source,
 )
 from archivey.reader import ArchiveReader, ArchiveStream, ForwardArchiveReader
-from archivey.terminal import display_path
+from archivey.terminal import display_path, escape_control_chars
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
@@ -182,6 +184,43 @@ def _forced_payload_end(
     if not backend_cls.SFX_MAGIC or not archive_source.seekable():
         return None
     return read_payload_end(archive_source, archive_source.size)
+
+
+def _name_makeself(
+    exc: ArchiveyError, archive_source: ArchiveSource, format: ArchiveFormat
+) -> None:
+    """Say so in ``exc`` when a forced ``format=`` failed on a makeself archive.
+
+    A makeself ``.run`` holds compressed TARs behind its shell header, so
+    ``format=TAR_GZ`` fails at byte 0 and does not look for them: the same file must
+    not list one way when its format is named and another when detected. The error
+    names the format that reads it instead. Only a source that can seek is looked
+    at again; a stream's first bytes are gone.
+    """
+    if (
+        format.container is ContainerFormat.MAKESELF
+        or not isinstance(exc, CorruptionError)
+        or not archive_source.seekable()
+    ):
+        return
+    try:
+        position = archive_source.tell()
+        archive_source.seek(0)
+        head = archive_source.read(len(MAKESELF_MAGIC))
+        archive_source.seek(position)
+    except (OSError, ValueError):
+        return
+    if head != MAKESELF_MAGIC:
+        return
+    message = (
+        f"{exc.raw_message.rstrip('.')}. The file is a makeself archive: open it "
+        "with format=ArchiveFormat.MAKESELF, or with no format=, to read the TARs "
+        "after its shell header"
+    )
+    escaped = escape_control_chars(message)
+    exc.raw_message = message
+    exc.message = escaped
+    exc.args = (escaped,)
 
 
 def _format_provenance(
@@ -404,10 +443,10 @@ def open_archive(
 
     ``encoding`` names the codec for member names whose encoding the archive does not
     declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO, RAR 1.5-4, CPIO, ar,
-    RPM, SquashFS, CAB and XAR). A name whose bytes are valid UTF-8 is decoded as UTF-8 in every format,
+    RPM, makeself, SquashFS, CAB and XAR). A name whose bytes are valid UTF-8 is decoded as UTF-8 in every format,
     with or without ``encoding``, and ``encoding`` replaces only the format's fallback
     (cp437 or ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code
-    page for RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar, RPM, SquashFS, CAB and XAR).
+    page for RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar, RPM, makeself, SquashFS, CAB and XAR).
     ``member.raw_name`` keeps the stored bytes. A ZIP comment without the UTF-8 flag
     (the archive comment always) and an 8-bit RAR 1.5-4 comment decode the same way as
     a name without a declared encoding, and a byte the codec does not define survives
@@ -1109,6 +1148,8 @@ def _open_resolved(
     except BaseException as exc:
         if reader is not None:
             reader.close()
+        if isinstance(exc, ArchiveyError) and reader is None and detected is None:
+            _name_makeself(exc, archive_source, resolved_format)
         if isinstance(exc, ArchiveyError) and (
             reader is None or isinstance(exc, SourceChangedError)
         ):
