@@ -57,6 +57,7 @@ from archivey.internal.arg_checks import (
     raise_if_text_stream,
     reject_source,
 )
+from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
 from archivey.internal.remote import (
     DEFAULT_MAX_READ_THROUGH,
@@ -76,7 +77,10 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
     source_name,
 )
-from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.streamtools.binaryio import (
+    ask_resume_offset,
+    read_blocking,
+)
 from archivey.terminal import display_path
 
 if TYPE_CHECKING:
@@ -420,6 +424,47 @@ def _old_rar_listed_file(
     return candidates[0] if candidates else None
 
 
+# Discovery is best-effort when it is refused: a directory it may not list (a local one of
+# mode ``0711``, a store or HTTP server that refuses the request) or a file whose first
+# bytes it may not read reads as "no sibling there". The file the caller named then
+# opens alone, as with ``discover_volumes=False``, and a part it needs is reported
+# missing by the check that refuses an incomplete set. What counts: any ``OSError`` (a
+# refusal is ``PermissionError`` or ``FileNotFoundError``; a ``TimeoutError`` is an
+# ``OSError`` too and counts the same), a file system with no ``ls``
+# (``NotImplementedError``), and an HTTP 4xx answer, which fsspec's HTTP file system
+# raises as ``aiohttp.ClientResponseError`` for every status but 404. That one is
+# recognised by its integer ``status``, so that core does not import ``aiohttp``.
+# Anything else (a 5xx, a bug in a file system, ``MemoryError``, an archivey error)
+# propagates, as DR-15a rules for an unknown exception.
+def _is_discovery_miss(exc: Exception) -> bool:
+    if isinstance(exc, (OSError, NotImplementedError)):
+        return True
+    status = getattr(exc, "status", None)
+    return type(status) is int and 400 <= status < 500
+
+
+def _log_discovery_miss(what: str, path: object, exc: BaseException) -> None:
+    logger.debug(
+        "Volume discovery could not %s %r, so it looks for no volumes there: %r",
+        what,
+        path,
+        exc,
+    )
+
+
+def _listed(parent: _VP) -> list[_VP]:
+    """The entries of ``parent``, or none when listing it is refused
+    (:func:`_is_discovery_miss`). A ``RemoteVolumePath`` handles its own failure, in
+    ``_listing``."""
+    try:
+        return list(parent.iterdir())
+    except Exception as exc:
+        if not _is_discovery_miss(exc):
+            raise
+        _log_discovery_miss("list", _shown(parent), exc)
+        return []
+
+
 class RemoteVolumePath:
     """A path on an ``fsspec`` file system, for volume discovery.
 
@@ -480,12 +525,11 @@ class RemoteVolumePath:
         if listing is None:
             try:
                 entries = self.fs.ls(self.path, detail=True)
-            except (OSError, NotImplementedError):
-                # A file system that cannot list a directory (a store that refuses
-                # the request, which fsspec raises as PermissionError or
-                # FileNotFoundError, or one with no ``ls``) has no siblings to
-                # offer: the named file opens alone, as a lone local volume does. Any
-                # other failure (a timeout, expired credentials) propagates.
+            except Exception as exc:
+                # Refused, or no ``ls``: no siblings to offer (``_is_discovery_miss``).
+                if not _is_discovery_miss(exc):
+                    raise
+                _log_discovery_miss("list", str(self), exc)
                 entries = []
             listing = {
                 posixpath.basename(str(entry["name"]).rstrip("/")): entry
@@ -564,13 +608,18 @@ def rar_volume_number(name: str) -> int | None:
 
 
 def _starts_like_rar(path: Path | RemoteVolumePath) -> bool:
+    """Whether ``path`` starts with a RAR signature; ``False`` when reading it is
+    refused (:func:`_is_discovery_miss`)."""
     try:
         if isinstance(path, Path):
             with path.open("rb") as handle:
                 head = handle.read(len(_RAR_MARKER_PREFIX))
         else:
             head = path.head(len(_RAR_MARKER_PREFIX))
-    except (OSError, NotImplementedError):  # as ``RemoteVolumePath._listing``
+    except Exception as exc:
+        if not _is_discovery_miss(exc):
+            raise
+        _log_discovery_miss("read", _shown(path), exc)
         return False
     return head == _RAR_MARKER_PREFIX
 
@@ -597,7 +646,7 @@ def _collect_old_rar_volumes(parent: _VP, base: str) -> list[_VP] | None:
     itself would look for each of those names.
     """
     by_name: dict[str, list[_VP]] = {}
-    for candidate in parent.iterdir():
+    for candidate in _listed(parent):
         by_name.setdefault(candidate.name.lower(), []).append(candidate)
     first = None
     for suffix in _OLD_RAR_FIRST_VOLUME_SUFFIXES:
@@ -645,7 +694,7 @@ def _siblings_with_base(parent: _VP, pattern: re.Pattern[str], base: str) -> lis
     folded = base.lower()
     return [
         candidate
-        for candidate in parent.iterdir()
+        for candidate in _listed(parent)
         if (match := pattern.match(candidate.name)) is not None
         and match.group("base").lower() == folded
         and candidate.is_file()
@@ -951,6 +1000,30 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     def seek_is_expensive(self) -> bool:
         """Whether a stream volume may re-decode on a seek (see ``seek_is_expensive``)."""
         return self._seek_is_expensive
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """The offset, at or before ``target``, that a seek to ``target`` reads from.
+
+        ``target`` when no volume's seek is expensive. Otherwise the volume that holds
+        ``target`` is asked, in its own offsets: a path answers ``target``, a remote
+        volume (a ``RangeSource``) too, and a member stream its decoder's restart
+        point. ``None`` when that volume cannot answer, or answers 0 for a later
+        target: a member view clamps a point behind its own start to 0, and
+        ``seeks_to_end_are_cheap`` refuses that 0 only at the start of the set.
+        """
+        if not self._seek_is_expensive:
+            return target
+        if target < 0 or self._size == 0:
+            return None
+        index = min(bisect_right(self._offsets, target) - 1, self.volume_count - 1)
+        start = self._offsets[index]
+        source = self._volume_items[index]
+        if isinstance(source, Path):
+            return target
+        inner = ask_resume_offset(source, target - start)
+        if inner is None or (inner == 0 and target > start):
+            return None
+        return start + inner
 
     @property
     def volume_ranges(self) -> list[tuple[int, int]]:

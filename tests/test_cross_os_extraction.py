@@ -1116,6 +1116,9 @@ def test_filesystem_calls_take_the_long_path_form(
                     ("hard", "d/h", "d/f"),
                     ("file", "D/F", b"3"),
                     ("dir", "d/sub", None),
+                    # ``d/x`` makes ``d/e`` escape, so the recheck removes ``d/e``.
+                    ("sym", "d/e", "x/../../secret"),
+                    ("sym", "d/x", "."),
                 ]
             )
         ),
@@ -1127,17 +1130,20 @@ def test_filesystem_calls_take_the_long_path_form(
     )
     assert seen
     statuses = [r.status for r in report.results]
+    # The recheck blocks ``d/e`` under every policy.
+    assert statuses[-2:] == [ExtractionStatus.BLOCKED, ExtractionStatus.EXTRACTED]
     if policy is ExtractionPolicy.TRUSTED:
         # No case-only collision: D/F is its own file.
-        assert statuses == [ExtractionStatus.EXTRACTED] * 7, report.results
+        assert statuses[:-2] == [ExtractionStatus.EXTRACTED] * 7, report.results
     else:
-        assert statuses.count(ExtractionStatus.EXTRACTED) == 6, report.results
+        assert statuses.count(ExtractionStatus.EXTRACTED) == 7, report.results
     if dry_run:
         # One top-level directory, so its links were walked and recorded.
-        assert report._dry_run_links == (("d/l", "f"),)
+        assert report._dry_run_links == (("d/l", "f"), ("d/x", "."))
     else:
         assert (dest / "d" / "h").read_bytes() == b"1"
         assert os.readlink(dest / "d" / "l") == "f"
+        assert not os.path.lexists(dest / "d" / "e")
     assert calls
     unrouted = [call for call in calls if not call.split(" ", 1)[1].startswith("//")]
     assert unrouted == []
@@ -1154,16 +1160,16 @@ def test_long_path_errors_name_the_plain_path(
     _fake_long_paths(monkeypatch)
     dest = tmp_path / "out"
     dest.mkdir()
-    real_makedirs = os.makedirs
+    real_mkdir = os.mkdir
 
     def refuse_taken(name: str, *args: object, **kwargs: object) -> None:
         # The filesystem refuses the folder, as a read-only one would refuse a
         # caller that is not root. ``name`` is the long form.
         if str(name).endswith("/taken"):
             raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), name)
-        real_makedirs(name, *args, **kwargs)  # type: ignore[arg-type]
+        real_mkdir(name, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(os, "makedirs", refuse_taken)
+    monkeypatch.setattr(os, "mkdir", refuse_taken)
     report = open_and_extract(
         io.BytesIO(_tar([("file", "taken/f", b"x")])),
         dest,
@@ -1560,13 +1566,13 @@ def _another_writer_takes(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     ``name`` as a file between the existence check and the landing, and the landing
     refused with access denied, as Windows refuses it (seen with two extractions into
     one folder) and POSIX does in a sticky directory. ``os.symlink`` and
-    ``os.makedirs`` refuse a taken name on every OS. Under ERROR a FILE or HARDLINK
+    ``os.mkdir`` refuse a taken name on every OS. Under ERROR a FILE or HARDLINK
     lands with ``os.rename`` on Windows, whose refusal is the clash; on POSIX with
     ``os.link``, whose access-denied refusal hands the landing to ``os.replace``, whose
     refusal is the clash. A plain taken-name refusal (``FileExistsError``) is
     ``_another_writer_takes_before_the_landing``'s case."""
     real_replace = os.replace
-    real_makedirs = os.makedirs
+    real_mkdir = os.mkdir
     real_link = os.link
     real_rename = os.rename
 
@@ -1596,15 +1602,15 @@ def _another_writer_takes(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
         take(dst)
         raise FileExistsError(errno.EEXIST, "File exists", str(dst))
 
-    def makedirs(path: str, mode: int = 0o777, exist_ok: bool = False) -> None:
+    def mkdir(path: str, mode: int = 0o777, **kwargs: object) -> None:
         if os.path.basename(str(path)) == name:
             take(path)
             raise FileExistsError(errno.EEXIST, "File exists", str(path))
-        real_makedirs(path, mode, exist_ok)
+        real_mkdir(path, mode, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(os, "replace", replace)
     monkeypatch.setattr(os, "symlink", symlink)
-    monkeypatch.setattr(os, "makedirs", makedirs)
+    monkeypatch.setattr(os, "mkdir", mkdir)
     monkeypatch.setattr(os, "link", link)
     monkeypatch.setattr(os, "rename", rename)
 

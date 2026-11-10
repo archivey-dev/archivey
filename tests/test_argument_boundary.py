@@ -697,6 +697,7 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("extract_all", "policy"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "overwrite"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "on_error"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract_all", "on_blocked"): "coerced by enum_args; test_enum_arguments.py",
     # Collection[AbortOn], not an enum, so the container shape is a second way to get
     # it wrong. ``coerce_enum_collection`` refuses both: a bare string, which would
     # otherwise iterate into characters and silently disable every abort, and a
