@@ -35,7 +35,7 @@ from archivey.exceptions import (
 from archivey.types import ArchiveMember, MemberType
 
 # Codes saying a digest went unchecked: the bytes were read but nothing confirmed them,
-# so the run is not a clean verification (X6). Archive-level digests count too, such as
+# so the run is not a clean verification. Archive-level digests count too, such as
 # a gzip trailer past the trailing-data scan bound.
 _UNVERIFIED_CODES = (
     DiagnosticCode.DIGEST_UNVERIFIABLE,
