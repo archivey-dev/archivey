@@ -36,8 +36,8 @@ added from outside would be: a ``*Handler`` declares the format and opens a
 - :mod:`.squashfs_reader` — SquashFS 4.0
 - :mod:`.xar_reader` — XAR (``.xar``, macOS ``.pkg`` and ``.xip``)
 - :mod:`.cab_reader` — Microsoft cabinets (stored, MSZIP, LZX)
-- :mod:`.lha_reader` — LHA (header levels 0-3; stored, ``-lh4-`` to ``-lh7-``,
-  ``-lhx-``, ``-lk7-``)
+- :mod:`.lha_reader` — LHA (header levels 0-3; stored, ``-lh1-``, ``-lh4-`` to
+  ``-lh7-``, ``-lhx-``, ``-lk7-``, ``-lzs-``, ``-lz5-``)
 - :mod:`.arj_reader` — ARJ (methods 0 to 4)
 
 Format-specific helpers that are not readers live here too, next to the parser they share

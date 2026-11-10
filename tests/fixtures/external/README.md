@@ -205,7 +205,7 @@ How they were made is in libarchive's `test_read_format_cab.c` (`mkcab1` to `mkc
 
 ## `lha_lhasa/`
 
-Eighteen LHA archives from lhasa's test suite (`test/archives/<tool>/<file>`, renamed
+Twenty-two LHA archives from lhasa's test suite (`test/archives/<tool>/<file>`, renamed
 `<tool>_<file>`; lhasa commit `75ed835`, v0.6.0), copied on 2026-11-09. Each was written
 by the tool its directory names, most on the system it ran on; no tool on the test image
 writes LHA, so `tests/test_lha.py` reads them beside the archives `tests/lha_util.py`
@@ -219,7 +219,10 @@ writes. Their expected bytes are what lhasa 0.4.0 extracts.
 | LHARK-A 0.4d | `lhark04d_lh7.lzh` | LHARK's `-lh7-`, read as `-lk7-` |
 | LArc 3.33 | `larc333_lz4.lzs` | `-lz4-` (stored) |
 | PMARC2 (MSX-DOS) | `pmarc2_pm0.pma` | `-pm0-` (stored), no time |
-| LhA 1.22 (Amiga) | `lha_amiga_122_*` | `-lh4-`, `-lh1-` (refused), a file in subdirectories |
+| LhA 1.22 (Amiga) | `lha_amiga_122_*` | `-lh4-`, `-lh1-`, a file in subdirectories |
+| LHarc 1.13 | `lharc113_lh1.lzh` | `-lh1-` |
+| LArc 3.33 | `larc333_lz5.lzs`, `larc333_initial.lzs` | `-lz5-`; one crafted to copy the whole starting ring (`initial.bin`), with no end byte |
+| By hand (lhasa's `lz5-to-lzs` script) | `generated_lzs.lzs` | `-lzs-`, with no end byte |
 | OS-9/68k LHA 2.01 | `lha_osk_201_h2_lh0.lzh` | the level-2 header two bytes longer than its size; OS-9 permissions |
 | MorphOS LhA 2.7.17 | `morphos_lha_2717_h2_metadata.lzh` | a `0x71` comment record, skipped |
 | LH/2 2.22 (OS/2) | `lh2_222_eas.lzh` | mixed levels 0 and 1, OS/2 extended attributes as a file |

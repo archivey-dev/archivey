@@ -2253,7 +2253,7 @@ def _leading_bytes_scan(
     The SFX scan's window and validators without its executable cue, as 7-Zip, unrar
     and unzip find one. Last, so only a source every other step declined pays for the
     window. An executable cue already ran the scan. A known non-archive signature is
-    not a prefix, and a name that names a format keeps its guess: the ZIP, 7z and RAR
+    not a prefix, and a name that names a format keeps its guess: the ZIP, 7z, RAR and LHA
     readers find a prefixed archive themselves, and the ZIP reader from the end, where
     the first local header the scan meets may belong to a later member (a ZIP missing
     its first bytes). An unnamed ZIP missing its first bytes is knowingly left to
