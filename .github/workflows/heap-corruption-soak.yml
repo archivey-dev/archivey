@@ -48,6 +48,12 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
         install: [all, all-lowest]
         rep: ${{ fromJSON(needs.plan.outputs.reps) }}
+        # [all-lowest] runs on 3.11 only, as in ci.yml: the dependency floors (pyyaml
+        # 6.0 among them) do not build on newer Pythons.
+        exclude:
+          - { python-version: "3.12", install: all-lowest }
+          - { python-version: "3.13", install: all-lowest }
+          - { python-version: "3.14", install: all-lowest }
     env:
       UV_PYTHON: ${{ matrix.python-version }}
       PYTHONFAULTHANDLER: "1"
