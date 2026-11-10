@@ -1,0 +1,115 @@
+name: Linux heap-corruption soak
+
+# Soak for the "Intermittent Linux full-suite heap corruption" entry in
+# dev-docs/known-issues.md (recipe in dev-docs/investigations/linux-heap-corruption-soak.md).
+#
+# Each job runs the WHOLE suite once in ONE long-lived pytest process, serial, with
+# pytest-cov on (the addopts default), on ubuntu-latest with [all] or [all-lowest]. That is
+# the shape the recorded crashes came from, before CI split the suite into four steps. The
+# required CI legs no longer run that shape, so they cannot tell us whether the crash is
+# still there; this job can. A job that dies with exit 139 (SIGSEGV) or 134 (SIGABRT) is the
+# finding: its log ends with the faulthandler stack and the last test names.
+#
+# Runs on demand and on a PR that changes this file. Not a required check.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/heap-corruption-soak.yml"
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: "Whole-suite passes per Python and install (one job each)"
+        required: false
+        default: "3"
+
+concurrency:
+  group: heap-soak-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      reps: ${{ steps.reps.outputs.reps }}
+    steps:
+      - id: reps
+        run: |
+          n="${{ inputs.repeats || '3' }}"
+          echo "reps=$(python3 -c "import json; print(json.dumps(list(range(1, int('$n') + 1))))")" >> "$GITHUB_OUTPUT"
+
+  soak:
+    needs: plan
+    name: py${{ matrix.python-version }} / ${{ matrix.install }} / pass ${{ matrix.rep }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        install: [all, all-lowest]
+        rep: ${{ fromJSON(needs.plan.outputs.reps) }}
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install all extras + dev group
+        if: matrix.install == 'all'
+        run: uv sync --python ${{ matrix.python-version }} --group dev --extra all
+
+      - name: Install all extras + dev group (minimum versions)
+        if: matrix.install == 'all-lowest'
+        run: >
+          uv sync --python ${{ matrix.python-version }}
+          --group dev --extra all --resolution lowest-direct
+
+      # unrar is on the path of one recorded crash (open_unrar_p); xorriso and bgzip
+      # keep the suite's shape close to CI's. The unar and 7-Zip source builds are
+      # left out: their tests skip, and no recorded crash stacks in them.
+      - name: Install unrar, xorriso and bgzip
+        run: sudo apt-get update && sudo apt-get install -y unrar xorriso tabix
+
+      - name: Record versions
+        run: >
+          uv pip list --python .venv/bin/python 2>/dev/null
+          | grep -iE '^(rapidgzip|pyppmd|lz4|brotli|backports.zstd|inflate64|cffi|hypothesis|coverage|pytest) '
+          || true
+
+      - name: Whole suite, one process, serial, coverage on
+        shell: bash
+        run: |
+          set -o pipefail
+          start=$(date +%s)
+          rc=0
+          uv run --no-sync pytest tests/ -v -p no:cacheprovider --cov-report= \
+            > soak.log 2>&1 || rc=$?
+          echo "rc=$rc secs=$(( $(date +%s) - start ))" | tee soak-result.txt
+          tail -n 3 soak.log
+          if [ "$rc" -ne 0 ]; then
+            echo "::group::last 120 lines"; tail -n 120 soak.log; echo "::endgroup::"
+            grep -n "Fatal Python error\|Extension modules:" soak.log || true
+          fi
+          {
+            echo "py${{ matrix.python-version }} ${{ matrix.install }} pass ${{ matrix.rep }}: $(cat soak-result.txt)"
+            echo '```'; tail -n 1 soak.log; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Upload the log of a failed pass
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: heap-soak-py${{ matrix.python-version }}-${{ matrix.install }}-${{ matrix.rep }}
+          path: soak.log
