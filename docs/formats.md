@@ -886,7 +886,7 @@ them wrong, sometimes with a success exit:
   encrypted headers it refuses every member;
 - a password that is not ASCII;
 - a multi-volume RAR5 set with encrypted headers (Homebrew's `unar` 1.10.8 returns nothing for it);
-- in a solid RAR5 archive, a member with data after an empty file, a directory or a link;
+- in a solid RAR5 archive, a member with data after an empty file or a directory (links do not count);
 - a member compressed with the RAR 1.5 algorithm;
 - an old-style volume set (`.rar`, `.r00`, ...) of more than 901 volumes: `unar` stops at `.z99`;
 - a multi-volume set with data before the first volume (an SFX stub). A single file with such a

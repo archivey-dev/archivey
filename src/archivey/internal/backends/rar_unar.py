@@ -72,7 +72,7 @@ REFUSE_UNKNOWN_COMPRESSION = (
 )
 REFUSE_RAR5_SOLID_AFTER_EMPTY = (
     "unar 1.10 crashes, or reports success with no data, on a RAR5 solid archive when a "
-    "member with data follows an empty file, a directory or a link. " + _USE_UNRAR
+    "member with data follows an empty file or a directory. " + _USE_UNRAR
 )
 
 
@@ -188,10 +188,11 @@ def _rar5_solid_after_empty(archive: RarArchive) -> set[int]:
 
     Measured with ``unar`` 1.10.1 (SIGSEGV) and XADMaster 1.10.8 (exit 0, no data): a
     member with data that comes after an empty file or a directory in a RAR5 solid
-    archive. An empty entry *last* is harmless, and so is anything before it. Links are
-    included on the same grounds as directories (no data in the solid stream), without
-    a failing sample: a link before data in a solid RAR5 archive is untested, and this
-    refuses rather than guesses. RAR3/4 solid archives decoded correctly in every
+    archive. An empty entry *last* is harmless, and so is anything before it. A link
+    (a RAR5 redirect: symlink, junction, hard link, file copy or an unknown type) does
+    not count: XADMaster 1.10.8 decodes the members after one exactly, measured on
+    ``symlinks_solid__.rar``, ``winlinks_solid__.rar``, ``hardlinks_solid__.rar`` and
+    ``redirect_unknown_solid__.rar``. RAR3/4 solid archives decoded correctly in every
     shape measured, so they are not refused; the size and digest check on every member
     is the net there.
     """
@@ -200,11 +201,18 @@ def _rar5_solid_after_empty(archive: RarArchive) -> set[int]:
     refused: set[int] = set()
     seen_empty = False
     for info in archive.members:
+        if _is_link(info):
+            continue
         if seen_empty and not _carries_no_solid_data(info):
             refused.add(id(info))
         if _carries_no_solid_data(info):
             seen_empty = True
     return refused
+
+
+def _is_link(info: RarMemberInfo) -> bool:
+    """A RAR5 redirect or a hard link or file copy: a header with no packed data."""
+    return info.file_redir is not None or info.is_hardlink_or_copy
 
 
 def _rar4_solid_after_encrypted(archive: RarArchive) -> set[int]:

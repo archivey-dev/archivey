@@ -21,7 +21,7 @@ exits 0 with empty output. RAR4 is unaffected.
 is found, under `auto` for a member `unrar` cannot name whose read needs no password,
 or with `ArchiveyConfig.rar_decompressor="unar"`). `internal/backends/rar_unar.py`
 refuses, from the native listing, every RAR5 solid member with data that follows an empty
-file, a directory or a link, and names only the readable members to `unar`, so it never
+file or a directory, and names only the readable members to `unar`, so it never
 reaches the crash. The same module handles the six other `unar` failures found on the
 fixtures: it refuses RAR 1.5 compression, encrypted RAR 2.x to 4.x data (and compressed
 members after it in the same solid stream), non-ASCII passwords, header-encrypted RAR5
