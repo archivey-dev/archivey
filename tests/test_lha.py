@@ -21,6 +21,7 @@ from archivey import (
     CorruptionError,
     CreateSystem,
     DiagnosticCode,
+    ListingCost,
     MemberType,
     TruncatedError,
     UnsupportedFeatureError,
@@ -39,6 +40,7 @@ from tests.lha_util import (
     member_bytes,
     write_block,
 )
+from tests.streams_util import ShortReadBytesIO
 
 LHASA = Path(__file__).parent / "fixtures" / "external" / "lha_lhasa"
 _RNG = random.Random(11)
@@ -325,6 +327,17 @@ def test_a_symlink_splits_at_its_bar() -> None:
     assert got.raw_name == b"dir/link"
 
 
+def test_a_symlink_bar_in_the_directory_record() -> None:
+    # lhasa's parse_symlink splits the joined path: the bar can sit in the directory.
+    member = Member(
+        b"etc", method="-lhd-", level=2, mode=0o120777, directory=b"etc|..\xff..\xff"
+    )
+    with _open(archive([member])) as reader:
+        (got,) = reader.members()
+    assert (got.name, got.link_target) == ("etc", "../../etc")
+    assert got.raw_name == b"etc"
+
+
 def test_a_cp932_symlink_keeps_its_stored_name() -> None:
     # The second byte of ポ is 0x7C, so the bytes cannot be cut where the name was.
     stored = "ポ|t".encode("cp932")
@@ -368,6 +381,14 @@ def test_a_name_decodes_with_encoding() -> None:
 def test_detection() -> None:
     raw = archive(_members("-lh5-", 1))
     assert detect_format(io.BytesIO(raw)).format == ArchiveFormat.LHA
+
+
+def test_listing_is_a_header_walk() -> None:
+    with _open(archive(_members("-lh0-", 1))) as reader:
+        assert reader.cost.listing_cost is ListingCost.REQUIRES_SCANNING
+        assert reader.members_report_if_available() is None
+        reader.members()
+        assert reader.members_report_if_available() is not None
 
 
 def test_format_is_listed() -> None:
@@ -535,6 +556,38 @@ def test_a_cut_archive_is_truncated() -> None:
     raw = archive(_members("-lh5-", 2))
     with pytest.raises(TruncatedError), _open(raw[: len(raw) // 2]) as reader:
         reader.members()
+
+
+def _outcome(source: object) -> object:
+    try:
+        with open_archive(source, format=ArchiveFormat.LHA) as reader:  # type: ignore[arg-type]
+            return [m.name for m in reader.members()]
+    except archivey.ArchiveyError as exc:
+        return type(exc)
+
+
+def test_a_cut_archive_reads_the_same_when_its_size_is_unknown() -> None:
+    # A source archivey cannot size cheaply still finds the cut: a member whose data
+    # runs past the end is truncated, not listed as whole.
+    raw = archive(
+        [
+            Member(b"a.txt", b"first member " * 20, method="-lh5-", level=level)
+            for level in (0, 1, 2)
+        ]
+    )
+    for n in range(7, len(raw)):
+        cut = raw[:n]
+        unsized = ShortReadBytesIO(cut, max_chunk=64)
+        assert _outcome(unsized) == _outcome(io.BytesIO(cut)), n
+
+
+def test_the_fuzz_cut_with_an_unknown_size() -> None:
+    # A level-2 header that declares 0x1a00 stored bytes, with none after it.
+    raw = (
+        b"\x1a\x00-lh5-\x00\x00\x1a\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        b"\x00\x02\x00\x00\x00\x00\x00"
+    )
+    assert _outcome(ShortReadBytesIO(raw)) is TruncatedError
 
 
 def test_a_file_that_is_not_lha() -> None:

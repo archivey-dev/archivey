@@ -266,6 +266,9 @@ def _method(raw: bytes) -> str:
 class LhaReader(IndexedReader[_Location]):
     """One open LHA archive."""
 
+    # LHA has no index: listing reads each header and seeks past its member's data.
+    member_list_upfront = False
+
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
         self._context = context
@@ -302,8 +305,16 @@ class LhaReader(IndexedReader[_Location]):
                 f"the member header at offset {offset} has level {level}; LHA has "
                 "levels 0 to 3"
             )
+        end = header.end + header.stored
         size = self._source.size
-        if size is not None and header.end + header.stored > size:
+        if size is not None:
+            cut = end > size
+        else:
+            # A source whose size is not known: is the data's last byte there? That
+            # is ``end > size`` asked of the source, so a cut archive is not listed
+            # as whole.
+            cut = end > header.end and not self._source.read_at(end - 1, 1)
+        if cut:
             raise TruncatedError(
                 f"the LHA archive ends inside the data of the member at offset {offset}"
             )
@@ -580,6 +591,9 @@ class LhaReader(IndexedReader[_Location]):
         special = None
         if method == _DIRECTORY and file_type == stat.S_IFLNK:
             member_type = MemberType.SYMLINK
+            # The separator is the first bar of the directory and the name joined:
+            # some archives put it in the directory record (``etc|../../`` then
+            # ``etc``), and lhasa splits the joined path too.
             bars = name.count("|")
             name, bar, link_target = name.partition("|")
             if not bar:
