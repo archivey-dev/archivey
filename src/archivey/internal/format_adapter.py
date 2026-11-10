@@ -322,7 +322,7 @@ class _PluginAdapter(BaseArchiveReader):
 
     def _refuse_codec_off_by_policy(self, method: object) -> None:
         """Refuse a codec ``config.formats`` turns off, before its code runs."""
-        if not isinstance(method, (StreamFormat, PluginStream)):
+        if not isinstance(method, (StreamFormat, PluginStream, CompressionAlgorithm)):
             return
         refusal = self._config.formats._codec_refusal(method)
         if refusal is not None:
