@@ -353,11 +353,11 @@ class FormatPolicy:
     data is decoded. A symbolic link whose target is stored as such data is listed
     without a target and reported, as one whose target cannot be decoded is. A
     format that compresses data inside itself without listing the method on its
-    members (a ``.deb``'s ``data.tar.xz``, an RPM payload, SquashFS blocks, a makeself
-    payload) is refused when it opens, with ``UnsupportedFeatureError``. ``.Z`` and bzip3 have no method member, so only
-    ``S.UNIX_COMPRESS`` and ``S.BZIP3`` refuse them. ``STORED`` and ``UNKNOWN`` cannot be
-    listed: the first decodes nothing, and the second names no method. ``only`` takes
-    no methods.
+    members (a ``.deb``'s ``data.tar.xz``, an RPM payload, SquashFS blocks, a
+    makeself payload) is refused when it opens, with ``UnsupportedFeatureError``.
+    ``.Z`` and bzip3 have no method member, so only ``S.UNIX_COMPRESS`` and
+    ``S.BZIP3`` refuse them. ``STORED`` and ``UNKNOWN`` cannot be listed: the first
+    decodes nothing, and the second names no method. ``only`` takes no methods.
 
     Use it to keep slow or rarely used decoders from running on files you did not
     make: ``{CompressionAlgorithm.SHRINK, CompressionAlgorithm.IMPLODE,
