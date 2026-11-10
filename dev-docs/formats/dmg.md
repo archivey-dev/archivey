@@ -76,7 +76,10 @@ bzip2 or xz header is near magic, and the trailer lists both in `preempts`, so
 that hit is replaced before the inner-TAR probe. The `.dmg` suffix is not
 registered.
 
-A pipe and an `ArchiveStream` are not seeked to the end. A short image is still
+A remote source (an fsspec `OpenFile`) reads the block at one range request, and so
+does a stored ZIP entry or an uncompressed TAR member, whose seek is a slice
+(`seeks_to_end_are_cheap`). A pipe and an `ArchiveStream` that would re-decode to
+reach its end are not seeked to the end. A short image is still
 refused, because the far-magic peek has already read through to the block. A
 longer zlib-first image on a pipe opens as zlib.
 

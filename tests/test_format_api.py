@@ -209,7 +209,7 @@ def test_stream_members_and_extract(toya: ArchiveFormat, tmp_path: Path) -> None
     assert seen["docs/a.txt"] == b"alpha\n"
     dest = tmp_path / "out"
     with open_archive(path) as reader:
-        reader.extract_all(dest)
+        reader.extract_all(dest, on_blocked="skip")
     assert (dest / "docs" / "a.txt").read_bytes() == b"alpha\n"
     assert (dest / "b.bin").read_bytes() == bytes(range(256)) * 4
 
@@ -253,7 +253,7 @@ def test_dotdot_member_not_written_outside(toya: ArchiveFormat, tmp_path: Path) 
     dest = tmp_path / "out"
     dest.mkdir()
     with open_archive(path) as reader:
-        reader.extract_all(dest)
+        reader.extract_all(dest, on_blocked="skip")
     assert not (tmp_path / "escape.txt").exists()
     assert (dest / "docs" / "a.txt").read_bytes() == b"alpha\n"
     assert (dest / "b.bin").exists()
@@ -1043,7 +1043,7 @@ def test_a_bad_open_member_is_not_reported_as_corruption_on_any_path(
                 if stream is not None:
                     stream.read()
         else:
-            archive.extract_all(tmp_path / "out")
+            archive.extract_all(tmp_path / "out", on_blocked="skip")
     assert not isinstance(exc_info.value, CorruptionError)
 
 

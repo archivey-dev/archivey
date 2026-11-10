@@ -65,9 +65,11 @@ from tests.atheris_fuzz.seeds import (
     filter_seeds,
     gzip_seeds,
     iso_seeds,
+    lha_seeds,
     lz4_seeds,
     lzip_seeds,
     lzma_alone_seeds,
+    makeself_seeds,
     open_detected_seeds,
     rar_seeds,
     rpm_seeds,
@@ -305,6 +307,20 @@ def cab_open_one(data: bytes) -> None:
         return
 
 
+def lha_open_one(data: bytes) -> None:
+    """List an LHA archive and read the first members: every header level, the
+    extended headers, then stored or LZH data and its CRC-16."""
+    try:
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.LHA, config=_FUZZ_CONFIG
+        ) as arc:
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
+    except ArchiveyError:
+        return
+
+
 def ar_open_one(data: bytes) -> None:
     """Walk an ar archive, plain or inside a compression stream, and read the first
     members' data."""
@@ -321,6 +337,12 @@ def rpm_open_one(data: bytes) -> None:
     """Walk an RPM package: its headers, then its payload in whichever compressor the
     header names, and read the first members' data, held hard links included."""
     _sequential_open_one(data, ContainerFormat.RPM)
+
+
+def makeself_open_one(data: bytes) -> None:
+    """Parse a makeself header, then walk each payload's TAR through its compressor or
+    base64, and the payload digests."""
+    _sequential_open_one(data, ContainerFormat.MAKESELF)
 
 
 def _sequential_open_one(data: bytes, container: ContainerFormat) -> None:
@@ -941,6 +963,13 @@ def iter_target_specs() -> list[dict]:
             "per_input_timeout": stream_timeout,
         },
         {
+            "name": "lha",
+            "fn": lha_open_one,
+            "seeds": lha_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
             "name": "ar",
             "fn": ar_open_one,
             "seeds": ar_seeds,
@@ -958,6 +987,13 @@ def iter_target_specs() -> list[dict]:
             "name": "rpm",
             "fn": rpm_open_one,
             "seeds": rpm_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "makeself",
+            "fn": makeself_open_one,
+            "seeds": makeself_seeds,
             "fixup": None,
             "per_input_timeout": stream_timeout,
         },
@@ -1057,4 +1093,18 @@ def iter_target_specs() -> list[dict]:
             }
         )
 
+    # Oracle targets: two reads of the same input must agree (oracles.py). Each
+    # input is opened two to four times, so it gets that many stream slices.
+    from tests.atheris_fuzz.oracles import ORACLE_TARGETS, oracle_seeds
+
+    for name, fn in ORACLE_TARGETS.items():
+        specs.append(
+            {
+                "name": name,
+                "fn": fn,
+                "seeds": oracle_seeds,
+                "fixup": None,
+                "per_input_timeout": 4 * stream_timeout,
+            }
+        )
     return specs

@@ -134,8 +134,13 @@ from archivey.internal.streams.streamtools import (
     read_arrived,
     source_byte_size,
 )
-from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.streamtools.binaryio import (
+    ReadableStream,
+    read_blocking,
+    read_within_reach,
+)
 from archivey.internal.streams.verification import (
+    SpanningCheckError,
     ask_verification_proofs,
     drop_spanning_ceiling,
     mark_spanning_checksum,
@@ -291,13 +296,20 @@ class _PluginAdapter(BaseArchiveReader):
             hold=self._hold,
             charge_metadata=self._charge_metadata,
             open_nested=self._open_nested,
+            usage=self._usage,
         )
+        context._spanning_check = self._new_spanning_check
         self._reader = self._open_reader(context)
         self._reader_open = True
 
     def _open_reader(self, context: ReaderContext) -> FormatReader:
         """Call the plugin's ``open``, and check what it returned."""
         raise NotImplementedError
+
+    def _new_spanning_check(self, key: object) -> SpanningCheck:
+        """``ReaderContext._spanning_check()``: a check over several members' data
+        that the reader runs itself, named ``key``."""
+        return SpanningCheck(self, key)
 
     def _wrong_reader(self, reader: object, method: str, noun: str) -> NoReturn:
         # Every interface check raises through ``_plugin_bug()``, wherever it runs.
@@ -554,6 +566,10 @@ class _PluginAdapter(BaseArchiveReader):
             # it stays the ceiling of the members it covers, which verify_all()
             # returns. An xz or bzip2 check failure reads as damage, handled below.
             self._spanning_check_ran("codec")
+            raise
+        except SpanningCheckError:
+            # A check the reader ran failed (``SpanningCheck.failed``), which records
+            # the members it covers itself.
             raise
         except ArchiveyError as e:
             # Damage ended the walk before the outer codec's end, so its checksum
@@ -831,7 +847,7 @@ class _PluginAdapter(BaseArchiveReader):
         with self._translated_errors(), self._handle_guard():
             info = self._reader.archive_info()
         cost = self._cost(info)
-        # A plugin's keys are its own, namespaced by its format (``"lha.method"``), so
+        # A plugin's keys are its own, namespaced by its format (``"arj.method"``), so
         # they are not in the inventory of built-in keys and are copied in as data. A
         # built-in format-API reader's keys (``"cpio.variant"``) are in that inventory.
         extra = ArchiveInfoExtra()
@@ -1114,6 +1130,48 @@ def _outer_copy(member: ArchiveMember) -> ArchiveMember:
     return copy
 
 
+class SpanningCheck:
+    """A check over the data of several members that a built-in reader runs itself,
+    such as a makeself payload's MD5, which covers every file of the TAR in it.
+
+    The reader calls :meth:`cover` on each member the check covers before yielding
+    it, and :meth:`passed` or :meth:`failed` once the check ran. Until it passes, a
+    covered file's ``verifiable`` is ``CHECKSUM``, as for a ``.tar.gz`` trailer; a
+    pass raises every covered file to ``CHECKSUM``, read or not, and a failure makes
+    each one a failure of ``verify_all()``. A walk that stops before the check runs
+    leaves the covered files as failures too (``_note_spanning_unreachable``).
+    """
+
+    __slots__ = ("_adapter", "_covers", "_key")
+
+    def __init__(self, adapter: _PluginAdapter, key: object) -> None:
+        self._adapter = adapter
+        self._key = key
+        self._covers: list[ArchiveMember] = []
+
+    def cover(self, member: ArchiveMember) -> None:
+        """Count ``member`` as covered, if it is a file: other members have no data."""
+        if member.is_file:
+            mark_spanning_checksum(member)
+            self._covers.append(member)
+
+    def passed(self) -> None:
+        """The check matched: every covered file is checked."""
+        self._adapter._spanning_check_ran(self._key)
+        for member in self._covers:
+            raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+
+    def failed(self, message: str) -> SpanningCheckError:
+        """The check did not match. Returns the error for the reader to raise; every
+        later ``verify_all()`` returns each covered file with it."""
+        error = SpanningCheckError(message, covers=tuple(self._covers))
+        error.archive_name = self._adapter._archive_name
+        # Kept until a later walk passes the check: a read of a covered member that
+        # stops before the payload's end does not run it again.
+        self._adapter._spanning_unreachable[self._key] = error
+        return error
+
+
 class _NestedData(io.RawIOBase):
     """An inner member's data (``ReaderContext.open_nested``): what the inner reader
     reports while it is read names the member as the outer listing numbers it."""
@@ -1356,6 +1414,23 @@ class _Decoded:
 _SKIP_BY_READING = 64 * 1024
 # The walk's read buffer: headers are small reads.
 _WALK_BUFFER = 64 * 1024
+
+
+class _BlockingReads:
+    """A ``read`` that refuses a non-blocking stream's ``None`` (``read_blocking``),
+    as the inner of ``read_within_reach``."""
+
+    __slots__ = ("read",)
+
+    def __init__(self, read: Callable[[int], bytes]) -> None:
+        self.read = read
+
+
+# What one read of header bytes may ask the walk's stream for at a time. A header read
+# larger than this is served in steps of it, so a size field that lies costs at most
+# one step more than the bytes the stream really has (``tar_parser.READ_STEP`` is the
+# same size).
+_HEADER_READ_STEP = 64 * 1024
 
 
 class _ForwardInput(ReadOnlyIOStream):
@@ -1738,8 +1813,26 @@ class SequentialReaderAdapter(_PluginAdapter):
                     )
                 left -= len(chunk)
 
+        # Each step refuses a ``None`` read, as ``skip`` does: ``read_within_reach`` takes
+        # its inner's results as bytes.
+        refusing = cast(
+            "ReadableStream", _BlockingReads(functools.partial(read_blocking, stream))
+        )
+
+        def read(n: int) -> bytes:
+            # A walk reads header bytes a size field of the archive asked for, so the
+            # read must not allocate what the field says before the stream shows it
+            # has the bytes (threat model, "Allocations sized by a header field").
+            # A plain file of known size clamps the read to what is left, as ``skip``
+            # trusts that size: no step copies, so a large honest table (an ar ``//``
+            # member) costs one buffer, not the steps and their join.
+            remaining = size - stream.tell() if seekable and size is not None else None
+            return read_within_reach(
+                refusing, n, remaining=remaining, step=_HEADER_READ_STEP
+            )
+
         layer.forward = ForwardStream(
-            functools.partial(read_blocking, stream),
+            read,
             skip,
             functools.partial(self._decompress_layer, walk, layer),
         )
@@ -2832,6 +2925,7 @@ REPLACEABLE_CONTAINERS = frozenset(
         ContainerFormat.SQUASHFS,
         ContainerFormat.XAR,
         ContainerFormat.CAB,
+        ContainerFormat.LHA,
     }
 )
 

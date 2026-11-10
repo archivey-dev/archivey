@@ -98,6 +98,7 @@ from archivey.internal.config import (
     KeyDerivationBudget,
     StreamConfig,
     stream_config_from_archivey,
+    without_accelerators,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
@@ -2034,7 +2035,12 @@ class SevenZipReader(BaseArchiveReader):
             folder,
             password=kdf_password,
             key_cache=self._key_cache,
-            stream_config=self._stream_config,
+            # The confirm reads a prefix, under the cap. A parallel decoder in a child
+            # reads ahead of what it delivers, and hands a cut at the cap back to the
+            # standard library, which reads the capped input again: the packed bytes
+            # read would pass the cap. The codec sees the folder's packed size, not the
+            # cap, so its size gates would not keep the child out.
+            stream_config=without_accelerators(self._stream_config),
             collector=self._diagnostics_collector,
         )
         try:

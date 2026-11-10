@@ -37,9 +37,10 @@ from typing import ClassVar, Literal, TypeVar
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
 from archivey.internal.enum_args import coerce_enum_collection
+from archivey.internal.overrides import override
 from archivey.internal.resource_usage import ResourceUsage
 from archivey.terminal import escape_control_chars
-from archivey.types import ArchiveMember, ExtractionResult
+from archivey.types import ArchiveMember, ExtractionResult, ExtractionStatus
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")
@@ -491,8 +492,13 @@ class ArchiveEofContext(_JsonSafeContext):
       end record, none of whose fields needs it, is used instead. ``observed_kind`` is
       ``"absent"``, ``observed_bytes`` is the locator's offset and ``expected_bytes``
       is 0.
+    - ``"end_of_archive_byte"`` (``ARCHIVE_EOF_MARKER_MISSING``) — an LHA archive
+      ends right after its last member, without the zero byte its writers put after
+      the last header. Every member is listed. ``format`` is ``"lha"``,
+      ``observed_kind`` is ``"absent"``, ``expected_bytes`` is 1 and
+      ``observed_bytes`` 0.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
-      archive's end within the first MiB past it, so the file carries something the
+      archive's end within the first MiB past it (64 KiB for LHA), so the file carries something the
       listing did not account for. ``format`` names where the end was: ``"tar"`` for
       the TAR trailer (complete, or its second block damaged and reported as
       ``"second_zero_block"`` first), ``"7z"`` for the later of a 7z archive's next
@@ -500,7 +506,9 @@ class ArchiveEofContext(_JsonSafeContext):
       block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
       its MBR or GPT lists and the GPT backup header, ``"zip"`` for the end of a ZIP's
       end-of-central-directory record and its declared comment, ``"cpio"`` for the
-      CPIO trailer; a format plugin names its own format. ``observed_bytes`` is
+      CPIO trailer, ``"lha"`` for an LHA archive's end byte (where the scan covers
+      64 KiB and also allows the DOS end-of-file byte 0x1A); a format plugin names
+      its own format. ``observed_bytes`` is
       that byte's offset past the end. RAR emits one per volume, and its offset counts from that
       volume's end block, unlike member offsets, which count across the whole set; the
       message names the volume.
@@ -1360,6 +1368,7 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                         "end_of_archive_block",
                         "end_of_central_directory",
                         "zip64_end_of_central_directory",
+                        "end_of_archive_byte",
                     }
                 ),
             ),
@@ -1478,6 +1487,16 @@ class DiagnosticSummary:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "counts", _freeze_mapping(self.counts))
+
+    @override
+    def __reduce__(self) -> tuple[object, ...]:
+        # ``counts`` is a read-only mapping proxy, which pickle cannot store. A summary
+        # travels inside the report a FilterRejectionError carries, and every archivey
+        # exception survives pickle, so rebuild it from a plain dict.
+        return (
+            DiagnosticSummary,
+            (self.total_count, dict(self.counts), self.retained, self.dropped_count),
+        )
 
     @staticmethod
     def empty() -> DiagnosticSummary:
@@ -1627,6 +1646,34 @@ class ExtractionReport:
 
     def __getitem__(self, index: int) -> ExtractionResult:
         return self.results[index]
+
+    @property
+    def ok(self) -> bool:
+        """``True`` when no member was refused (``BLOCKED``) or failed (``FAILED``).
+
+        A member skipped by ``overwrite="skip"``, superseded by a later one with the
+        same name, or a link whose target the archive never recorded does not make it
+        ``False``. Diagnostics do not count: the :class:`DiagnosticPolicy` decides
+        which of them are errors.
+        """
+        return not any(
+            r.status in (ExtractionStatus.BLOCKED, ExtractionStatus.FAILED)
+            for r in self.results
+        )
+
+    def raise_for_failure(self) -> None:
+        """Raise the error of the first ``BLOCKED`` or ``FAILED`` member, in order.
+
+        Does nothing when ``ok`` is ``True``. The error raised is the result's own
+        object, as ``concurrent.futures.Future.result()`` raises its exception, so
+        each call adds to its traceback.
+        """
+        for result in self.results:
+            if (
+                result.status in (ExtractionStatus.BLOCKED, ExtractionStatus.FAILED)
+                and result.error is not None
+            ):
+                raise result.error
 
 
 @dataclass(frozen=True)
