@@ -255,14 +255,14 @@
     },
     "tar_gz_extract_all_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 575632,
+      "bytes_fetched": 592016,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "extract_all",
-      "overfetch": 1.128,
-      "range_requests": 10
+      "overfetch": 1.161,
+      "range_requests": 11
     },
     "tar_gz_list_default": {
       "archive_size": 510096,
@@ -288,14 +288,14 @@
     },
     "tar_gz_list_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 575632,
+      "bytes_fetched": 592016,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "list",
-      "overfetch": 1.128,
-      "range_requests": 10
+      "overfetch": 1.161,
+      "range_requests": 11
     },
     "tar_gz_read_first_default": {
       "archive_size": 510096,
@@ -321,14 +321,14 @@
     },
     "tar_gz_read_first_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 575632,
+      "bytes_fetched": 657552,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "read_first",
-      "overfetch": 1.128,
-      "range_requests": 10
+      "overfetch": 1.289,
+      "range_requests": 12
     },
     "tar_gz_read_last_default": {
       "archive_size": 510096,
@@ -354,14 +354,14 @@
     },
     "tar_gz_read_last_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 968848,
+      "bytes_fetched": 1050768,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "read_last",
-      "overfetch": 1.899,
-      "range_requests": 16
+      "overfetch": 2.06,
+      "range_requests": 18
     },
     "tar_gz_read_middle_default": {
       "archive_size": 510096,
@@ -387,14 +387,14 @@
     },
     "tar_gz_read_middle_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 772240,
+      "bytes_fetched": 854160,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "read_middle",
-      "overfetch": 1.514,
-      "range_requests": 13
+      "overfetch": 1.675,
+      "range_requests": 15
     },
     "tar_gz_stream_members_default": {
       "archive_size": 510096,
@@ -420,14 +420,14 @@
     },
     "tar_gz_stream_members_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 575632,
+      "bytes_fetched": 592016,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "stream_members",
-      "overfetch": 1.128,
-      "range_requests": 10
+      "overfetch": 1.161,
+      "range_requests": 11
     },
     "tar_list_default": {
       "archive_size": 542720,

@@ -171,6 +171,13 @@ def plugin_codec_class(handler: type[CodecHandler]) -> type[PluginCodec]:
 
 
 def _check_handler(handler: type[CodecHandler]) -> PluginStream:
+    """Refuse a handler ``register_codec`` cannot take, before anything is registered;
+    return its stream format.
+
+    Its stream value, ``format=`` spellings and extensions (alone and after each
+    sequential format's, as in ``.cpio.toy``) must be new, so a registration never
+    changes what an existing spelling or extension means.
+    """
     # Imported here: archivey.formats imports this module's neighbours.
     from archivey.formats import CodecHandler
 

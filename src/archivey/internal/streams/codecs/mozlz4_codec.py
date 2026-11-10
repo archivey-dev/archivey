@@ -11,13 +11,17 @@ block runs to the end of the file, so it decodes only once the input has ended
 (:meth:`MozLz4Decompressor.end_input`).
 
 **What the file can make this allocate.** The decoded size is 32 bits, and it is the
-size of the buffer the block decodes into, and python-lz4 copies that buffer into the
-``bytes`` it returns, so the decode peaks at twice the size. Twice the size is checked
-against ``DecoderLimits.max_decoder_memory`` before any input is held, and the size
-against the most the block can decode to (255 bytes per input byte) before the decode
-allocates it. A detection probe decodes at most 1 MiB (``_size_check``). The compressed
-block is held whole until the input ends; it can be no longer than LZ4's bound for the
-declared size (``LZ4_COMPRESSBOUND``), and a longer one is refused as it arrives.
+size of the buffer the block decodes into. python-lz4 copies that buffer into the
+``bytes`` it returns, and the compressed block is held for the whole decode, so the
+decode peaks at twice the size plus the block. The block is held whole until the input
+ends; it can be no longer than LZ4's bound for the declared size
+(``LZ4_COMPRESSBOUND``), and a longer one is refused as it arrives. So a block of
+incompressible data makes the peak about three times the size.
+``DecoderLimits.max_decoder_memory`` is checked twice: against twice the size before
+any input is held, and against twice the size plus the block's length when the input
+ends, before the decode. The size is also checked against the most the block can
+decode to (255 bytes per input byte) before the decode allocates it. A detection probe
+decodes at most 1 MiB (``_size_check``).
 """
 
 from __future__ import annotations
@@ -74,7 +78,7 @@ class MozLz4Decompressor:
     """
 
     def __init__(
-        self, check_size: Callable[[int], None], natives: Natives = IN_PROCESS
+        self, check_size: Callable[[int, int], None], natives: Natives = IN_PROCESS
     ) -> None:
         self._check_size = check_size
         self._natives = natives
@@ -112,7 +116,7 @@ class MozLz4Decompressor:
                     f"mozlz4 header declares {size} decoded bytes, more than one LZ4 "
                     "block holds"
                 )
-            self._check_size(size)
+            self._check_size(size, 0)
             self._size = size
             del self._input[:_HEADER_SIZE]
         if len(self._input) > _compress_bound(self._size):
@@ -148,6 +152,8 @@ class MozLz4Decompressor:
                 f"mozlz4 header declares {size} decoded bytes, more than its "
                 f"{len(self._input)}-byte block can decode to"
             )
+        # The block is held for the whole decode, next to the buffer and its copy.
+        self._check_size(size, len(self._input))
         # One copy of the input at a time: the bytearray goes before the decode.
         block = bytes(self._input)
         self._input = bytearray()
@@ -166,12 +172,16 @@ class MozLz4Decompressor:
 _PROBE_DECODED_MAX = 1 << 20
 
 
-def _size_check(config: StreamConfig) -> Callable[[int], None]:
-    """What refuses the header's decoded size before any of the block is held.
+def _size_check(config: StreamConfig) -> Callable[[int, int], None]:
+    """What refuses the header's decoded size and the compressed block held for it.
 
-    A read charges ``DecoderLimits.max_decoder_memory`` twice the declared size:
-    python-lz4 decodes into a buffer of that size and copies it into the ``bytes`` it
-    returns, so the peak holds both (measured: 1.9 GB declared, 3.8 GiB resident).
+    It is called with the declared size and the length of the block held: 0 when the
+    header is read, before any of the block is held, and the whole block when the input
+    ends, before the decode. A read charges ``DecoderLimits.max_decoder_memory`` twice
+    the declared size plus the block: python-lz4 decodes into a buffer of that size and
+    copies it into the ``bytes`` it returns, and the block is held through the decode,
+    so the peak holds all three (measured: 1.9 GB declared, 3.8 GiB resident; 200 MiB
+    of random data, whose block is as long again, about 600 MiB resident).
     A detection probe (``probe_read_bound``) decodes a block only when it reaches the
     end of the file, which happens for a small file; it refuses a declared size over
     ``max(probe_read_bound, 1 MiB)`` as ``ResourceLimitError``, which a probe reads as
@@ -181,20 +191,23 @@ def _size_check(config: StreamConfig) -> Callable[[int], None]:
     bound = config.probe_read_bound
     ceiling = None if bound is None else max(bound, _PROBE_DECODED_MAX)
 
-    def check(size: int) -> None:
+    def check(size: int, block: int) -> None:
         if ceiling is not None and size > ceiling:
             raise ResourceLimitError(
                 f"a mozlz4 header declares {size} decoded bytes, over the "
                 f"{ceiling} a detection probe decodes"
             )
+        counted_from = (
+            f"twice the {size}-byte decoded size the header declares (the decode "
+            "buffer and the copy returned)"
+        )
+        if block:
+            counted_from += f", and the {block}-byte compressed block held"
         check_decoder_memory(
-            2 * size,
+            2 * size + block,
             limits=limits,
             what="a mozlz4 decode",
-            counted_from=(
-                f"twice the {size}-byte decoded size the header declares (the "
-                "decode buffer and the copy returned)"
-            ),
+            counted_from=counted_from,
             usage=usage,
         )
 

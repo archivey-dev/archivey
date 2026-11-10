@@ -68,6 +68,7 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
 TRAILER = b"TRAILER!!!"
@@ -198,7 +199,8 @@ def _number(raw: bytes, base: int, what: str, offset: int) -> int:
         return int(text, base)
     except ValueError:
         raise CorruptionError(
-            f"CPIO header at offset {offset}: the {what} field {raw!r} is not a number"
+            f"CPIO header at offset {offset}: the {what} field "
+            f"{quoted(raw.decode('ascii', 'surrogateescape'))} is not a number"
         ) from None
 
 

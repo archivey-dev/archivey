@@ -68,6 +68,10 @@ class StreamConfig:
     seek: a sequential read (no declared seek demand) can still go through an
     accelerator under AUTO, which needs a source it can seek. A reader may fill it
     first with the same value, as the ZIP reader does to save a copy per member.
+    ``source_is_file`` is set by the bzip2 codec (``Bzip2Codec.prepare_config``) when
+    the source is a path or a byte range of a regular file (``file_region``), and only
+    when its sequential rule would otherwise take the read: the accelerator reads such a
+    source itself, and reads its input about twice.
     ``decoder_limits`` is the caller's :class:`~archivey.config.DecoderLimits`,
     carried down so a codec can refuse an archive-declared allocation before making
     it; it defaults to the public default rather than to "unlimited", because a
@@ -116,6 +120,7 @@ class StreamConfig:
     gzip_isize_backstop: bool = False
     gzip_isize: int | None = None
     source_seekable: bool = False
+    source_is_file: bool = False
     decoder_limits: DecoderLimits = DecoderLimits()
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
     collector: DiagnosticCollector | None = field(default=None, compare=False)
