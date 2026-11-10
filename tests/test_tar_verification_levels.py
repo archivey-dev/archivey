@@ -259,7 +259,7 @@ def test_a_check_that_did_not_run_names_the_archive_once(
     path = tmp_path / "cut.tar.gz"
     path.write_bytes(gzip.compress(tar, mtime=0)[:-cut])
     with open_archive(path) as reader:
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
     assert failures
     text = str(failures[0][1])
     assert "did not run" in text
@@ -270,7 +270,7 @@ def test_a_check_that_did_not_run_names_the_archive_once(
 def test_a_check_that_did_not_run_escapes_each_name_once() -> None:
     data = gzip.compress(_plain_tar({"a\\b": b"x" * 3000, "c": b"y"}), mtime=0)[:-20]
     with open_archive(io.BytesIO(data)) as reader:
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
     assert failures
     text = str(failures[0][1])
     assert "'a\\\\b'" in text
@@ -339,7 +339,7 @@ def test_a_listing_through_rapidgzip_still_raises_every_file(tmp_path: Path) -> 
     with open_archive(path, config=config) as reader:
         members = reader.members()
         assert {(m.verified, m.verifiable) for m in members} == {_CHECKED}
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
 
 
 _WORDS = [bytes(f"w{n:x}", "ascii") * (1 + n % 5) for n in range(3000)]
