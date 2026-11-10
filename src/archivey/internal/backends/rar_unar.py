@@ -110,7 +110,8 @@ def _carries_no_solid_data(info: RarMemberInfo) -> bool:
     """An entry with no data to decode: :func:`_carries_no_data`, or an empty file.
 
     :func:`_rar5_solid_after_empty` refuses, under ``unar``, the members with data
-    that follow one in a RAR5 solid archive. Unlike :func:`uses_no_dictionary`, this
+    that follow one in a RAR5 solid archive, after it has skipped the redirects of a
+    measured type (:func:`_measured_redirect`). Unlike :func:`uses_no_dictionary`, this
     check ignores the dictionary an empty compressed member declares.
     """
     return _carries_no_data(info) or info.file_size == 0
