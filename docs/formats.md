@@ -205,7 +205,7 @@ A CRC-32 is four big-endian bytes, so a CRC you computed compares as
   checks, but it is not a digest `hashes` can hold.
 - **LHA:** none. Each member stores a CRC-16 of its data, which a full read checks, but it
   is not a digest `hashes` can hold.
-- **ARJ:** none. Each member stores a CRC-32 of its data, which a full read checks.
+- **ARJ:** `crc32`, for files, from the member's header. A full read checks it.
 - **Debian packages:** `md5`, for the files the package's `DEBIAN/md5sums` lists. It comes from
   the control tar, so it is known once listing has decompressed that, before the data tar.
 - **TAR, SquashFS, ar, directory, and every other single compressed file:** none.

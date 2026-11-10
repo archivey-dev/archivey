@@ -62,6 +62,7 @@ from archivey.types import (
     CompressionAlgorithm,
     CompressionMethod,
     CreateSystem,
+    HashAlgorithm,
     MemberType,
 )
 
@@ -105,7 +106,7 @@ _CREATE_SYSTEMS = {
     7: CreateSystem.ATARI_ST,
     8: CreateSystem.UNIX,  # NeXT
     9: CreateSystem.OPENVMS,
-    10: CreateSystem.WINDOWS_NTFS,  # Windows 95
+    10: CreateSystem.VFAT,  # Windows 95
     11: CreateSystem.WINDOWS_NTFS,  # Win32
 }
 
@@ -118,7 +119,12 @@ _UX_SYMLINK = 2
 _UX_CHAR = 3
 _UX_BLOCK = 4
 _UX_LONG = 0x1F
-_UX_SPECIAL_NAMES = {_UX_FIFO: "fifo", _UX_CHAR: "char", _UX_BLOCK: "block"}
+# The shared ``extra["special_file_type"]`` names; any other kind is "unknown".
+_UX_SPECIAL_NAMES = {
+    _UX_FIFO: "fifo",
+    _UX_CHAR: "char_device",
+    _UX_BLOCK: "block_device",
+}
 
 _DATA_CHUNK = 1 << 16
 _TAIL_SCAN = 1 << 16
@@ -179,6 +185,9 @@ class _Header:
 
 class ArjReader(IndexedReader[_Location]):
     """One open ARJ archive."""
+
+    # The listing walks the headers through the file: there is no index.
+    member_list_upfront = False
 
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
@@ -382,11 +391,16 @@ class ArjReader(IndexedReader[_Location]):
                 link_target = context.decode_name(data)
             else:
                 member_type = MemberType.OTHER
-                special = _UX_SPECIAL_NAMES.get(kind)
+                special = _UX_SPECIAL_NAMES.get(kind, "unknown")
         else:
             member_type = MemberType.OTHER
         method = header.method
-        if not is_file:
+        # A directory whose header declares data keeps it: listing reports it
+        # (MEMBER_DIRECTORY_DATA_IGNORED), a read delivers it, extraction drops it.
+        has_data = is_file or (
+            member_type is MemberType.DIRECTORY and bool(header.size or header.stored)
+        )
+        if not has_data:
             compression: tuple[CompressionMethod, ...] = ()
         elif method == _METHOD_STORED:
             compression = (CompressionMethod(CompressionAlgorithm.STORED),)
@@ -401,8 +415,8 @@ class ArjReader(IndexedReader[_Location]):
             type=member_type,
             name=name,
             raw_name=raw,
-            size=header.size if is_file else None,
-            compressed_size=header.stored if is_file else None,
+            size=header.size if has_data else None,
+            compressed_size=header.stored if has_data else None,
             mode=header.mode & 0o7777 if unix else None,
             # The other hosts store DOS attributes there.
             windows_attrs=None if unix else header.mode & 0xFF,
@@ -410,7 +424,11 @@ class ArjReader(IndexedReader[_Location]):
             compression=compression,
             comment=context.decode_name(header.comment) if header.comment else None,
             create_system=_CREATE_SYSTEMS.get(header.host_os, CreateSystem.UNKNOWN),
-            is_encrypted=bool(header.flags & _FLAG_GARBLED) and is_file,
+            is_encrypted=bool(header.flags & _FLAG_GARBLED),
+            # The CRC-32 of the data, in the basic header, known before a read.
+            hashes={HashAlgorithm.CRC32: header.crc.to_bytes(4, "big")}
+            if has_data
+            else {},
         )
         member.extra["arj.method"] = method
         member.extra["arj.file_type"] = file_type
@@ -421,7 +439,9 @@ class ArjReader(IndexedReader[_Location]):
             ("accessed", header.accessed),
             ("created", header.created),
         ):
-            if value:
+            # A DOS time of 0 is unset. A Unix modification time of 0 is the epoch;
+            # the access and creation fields are 0 when the header has none.
+            if value or (unix and field == "modified"):
                 self._set_time(member, field, value, unix=unix)
         return member
 

@@ -179,18 +179,20 @@ def _header(
     size: int = 0,
     crc: int = 0,
     extended: tuple[bytes, ...] = (),
+    host: int = 0,  # MS-DOS
+    modified: int = 0x5A6E_5000,  # a DOS time in 2025
 ) -> bytes:
     fixed = struct.pack(
         "<BBBBBBBBIIIIHHBB",
         30,
         11,
         1,
-        0,  # MS-DOS
+        host,
         flags,
         method,
         file_type,
         0,
-        0x5A6E_5000,  # a DOS time in 2025
+        modified,
         stored,
         size,
         crc,
@@ -434,3 +436,80 @@ def test_method4_last_match_is_cut_at_the_size() -> None:
 def test_method4_match_before_the_output_is_corruption() -> None:
     with pytest.raises(CorruptionError, match="before the start of the output"):
         _fast(_bits(*_MATCH_3_BACK_1), 3)
+
+
+# --- shared member fields ------------------------------------------------------------
+
+
+def _one(*headers: bytes) -> list:
+    out = _header(b"test.arj", file_type=2) + b"".join(headers) + b"\x60\xea\0\0"
+    with open_archive(io.BytesIO(out)) as reader:
+        members = reader.members()
+        codes = [d.code for d in reader.diagnostics.retained]
+        reads = [reader.read(m) if m.size is not None else None for m in members]
+    return [members, codes, reads]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [(0, "fifo"), (3, "char_device"), (4, "block_device"), (5, "unknown")],
+)
+def test_a_unix_special_uses_the_shared_type_names(kind: int, expected: str) -> None:
+    ext = b"U\x00" + bytes([kind << 5])
+    (members, _codes, _reads) = _one(_header(b"dev", file_type=6, extended=(ext,)))
+    assert members[0].type is MemberType.OTHER
+    assert members[0].extra["special_file_type"] == expected
+
+
+def test_a_directory_that_declares_data_keeps_it_and_says_so() -> None:
+    body = b"SECRET"
+    header = _header(
+        b"dir",
+        file_type=3,
+        stored=len(body),
+        size=len(body),
+        crc=zlib.crc32(body),
+    )
+    (members, codes, reads) = _one(header + body)
+    assert members[0].type is MemberType.DIRECTORY
+    assert members[0].size == len(body)
+    assert codes == [DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED]
+    assert reads == [body]
+
+
+def test_the_header_crc_is_a_stored_digest() -> None:
+    from archivey import HashAlgorithm
+
+    data = _archive((b"a.txt", b"alpha"))
+    with open_archive(io.BytesIO(data)) as reader:
+        member = reader.get("a.txt")
+        assert member.hashes[HashAlgorithm.CRC32] == zlib.crc32(b"alpha").to_bytes(
+            4, "big"
+        )
+
+
+def test_the_listing_is_a_header_walk() -> None:
+    from archivey import ListingCost
+
+    with open_archive(_FIXTURES / "method1.arj") as reader:
+        assert reader.cost.listing_cost is ListingCost.REQUIRES_SCANNING
+
+
+def test_a_unix_time_of_zero_is_the_epoch() -> None:
+    header = _header(b"a", file_type=0, host=2, modified=0)
+    (members, _codes, _reads) = _one(header)
+    assert members[0].modified == datetime(1970, 1, 1, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("host", "system"),
+    [(10, CreateSystem.VFAT), (11, CreateSystem.WINDOWS_NTFS)],
+)
+def test_windows_hosts(host: int, system: CreateSystem) -> None:
+    (members, _codes, _reads) = _one(_header(b"a", file_type=0, host=host))
+    assert members[0].create_system is system
+
+
+def test_a_garbled_flag_marks_any_member_encrypted() -> None:
+    (members, _codes, _reads) = _one(_header(b"d", file_type=3, flags=0x01))
+    assert members[0].is_encrypted

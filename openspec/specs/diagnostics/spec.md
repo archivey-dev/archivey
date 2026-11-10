@@ -96,7 +96,8 @@ archive that ends without its 4-byte end header (`format="arj"`,
 `"zeros_to_eof"` for the trailing-bytes check after an archive's end (a TAR
 trailer, a 7z next header or last packed stream, whichever is later, a RAR
 end-of-archive block, an ISO image's volume space and partitions, a ZIP end record
-and its declared comment, or an LHA end byte, after which 0x1A also counts as padding), whose `format`
+and its declared comment, or an LHA end byte or ARJ end header, after either of which
+0x1A also counts as padding), whose `format`
 names the archive format and whose `observed_bytes` is the offset of the first non-zero
 byte past that end;
 `"end_of_stream"` for bytes after a compressed stream's end, whose `format` is the

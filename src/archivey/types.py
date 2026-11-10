@@ -758,8 +758,8 @@ class CreateSystem(Enum):
       ``MACINTOSH`` or ``BEOS``; ``UNKNOWN`` for any other host byte.
     - RAR5: ``WINDOWS_NTFS`` or ``UNIX``.
     - ARJ: ``FAT`` (MS-DOS), ``UNIX`` (and NeXT), ``AMIGA``, ``MACINTOSH``,
-      ``OS2_HPFS``, ``ATARI_ST``, ``OPENVMS`` or ``WINDOWS_NTFS`` (Windows 95 and
-      Win32); ``UNKNOWN`` for any other host byte.
+      ``OS2_HPFS``, ``ATARI_ST``, ``OPENVMS``, ``VFAT`` (Windows 95) or
+      ``WINDOWS_NTFS`` (Win32); ``UNKNOWN`` for any other host byte.
     - 7z records no host. archivey reports ``UNIX`` when the member stores a Unix mode,
       and ``WINDOWS_NTFS`` otherwise.
     - TAR, ISO, a directory and a single-file format such as ``.gz`` leave
