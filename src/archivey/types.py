@@ -1,4 +1,14 @@
-"""Core data types for the Archivey public API."""
+"""Core data types for the Archivey public API.
+
+The values a caller gets back from a reader or passes to one: formats
+(:class:`ArchiveFormat` and the enums it is built from), members
+(:class:`ArchiveMember` and its ``extra``), archive-level :class:`ArchiveInfo`,
+format availability, and the extraction policies, progress and results. Readers build
+these values; nothing here reads an archive. :mod:`archivey` re-exports the names a
+caller uses, and callers should import them from there. The few it leaves out
+(:class:`MemberStreams`, :class:`MagicSignature` and :class:`TrailerSignature`) are
+used by archivey's own readers and detector, not by callers.
+"""
 
 from __future__ import annotations
 

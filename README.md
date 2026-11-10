@@ -6,11 +6,12 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
 
 ## Features
 
-- **One interface for every format:** ZIP, TAR (plain or compressed with gzip, bzip2, xz,
-  zstd, lz4 or Unix compress), 7z, RAR, ISO 9660, SquashFS, CPIO, ar (static libraries,
-  `.deb`), RPM packages, makeself `.run` installers, Microsoft cabinets, XAR (macOS `.pkg`), LHA (`.lzh`), ARJ, plain directories, and single-file streams (gzip, bzip2, xz, lzip, LZMA, zstd,
-  lz4, zlib, Brotli, Unix compress). List members, read one, or stream them all in one
-  pass, the same way for each.
+- **One interface for every format:** ZIP, TAR (plain or compressed with any of the
+  single-file formats below), 7z, RAR, ISO 9660, SquashFS, CPIO, ar (static libraries,
+  `.deb`), RPM packages, makeself `.run` installers, Microsoft cabinets, XAR (macOS
+  `.pkg`), LHA (`.lzh`), ARJ, plain directories, and single-file streams (gzip, bzip2,
+  bzip3, xz, lzip, LZMA, zstd, lz4, Firefox's mozlz4, LZO, zlib, Brotli, Unix compress).
+  List members, read one, or stream them all in one pass, the same way for each.
 - **Automatic format detection** from the file's content, so a misnamed file still opens.
 - **Safe extraction by default:** path traversal, symlink and hardlink escapes, special
   files and archive bombs are blocked unless you opt out.
@@ -24,6 +25,9 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
   archive order and in one pass, so a solid 7z or RAR is decoded once and a large member
   is read in chunks rather than held in memory. TAR, ZIP and the single-file formats can
   also be read straight from a pipe.
+- **Remote archives:** an archive on S3, an HTTP server or another store reached through
+  [fsspec](https://filesystem-spec.readthedocs.io/) opens without a download. Listing a ZIP or 7z
+  archive there, or reading a member of a ZIP, fetches little more than the bytes it needs.
 - **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z, and RAR encryption.
 - **Native 7z and RAR metadata readers.** 7z data decodes in-process; RAR data needs
   RARLAB `unrar` or `rar`, or `unar`.
@@ -72,6 +76,7 @@ Coding agents can read the docs as Markdown, starting from
 [Install](https://archivey-dev.github.io/archivey/install/) ·
 [Opening an archive](https://archivey-dev.github.io/archivey/opening/) ·
 [Choosing how to read](https://archivey-dev.github.io/archivey/reading/) ·
+[Remote archives](https://archivey-dev.github.io/archivey/remote/) ·
 [Extracting](https://archivey-dev.github.io/archivey/extracting/) ·
 [Security](https://archivey-dev.github.io/archivey/security/) ·
 [Formats and extras](https://archivey-dev.github.io/archivey/formats/) ·

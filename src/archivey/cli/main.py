@@ -131,7 +131,7 @@ def _inject_default_list(argv: list[str]) -> list[str]:
             # default verb goes ahead of the separator (``list -- -weird.zip``).
             return argv[:i] + ["list"] + argv[i:]
         # Bare "-" is the stdin positional (read by cat, reserved for the other
-        # verbs), not an option (F6).
+        # verbs), not an option.
         if tok.startswith("-") and tok != "-":
             key = tok.split("=", 1)[0]
             # Only the main parser's own options (today just ``--password``): before
@@ -299,7 +299,7 @@ def _common_parent(*, suppress_defaults: bool) -> _ArchiveyArgumentParser:
         ),
     )
     # Pre-verb globals include reserved --salvage so it gets the same "not yet"
-    # message as post-verb (P13), not argparse's "unrecognized arguments".
+    # message as post-verb, not argparse's "unrecognized arguments".
     p.add_argument(
         "--salvage",
         action="store_true",
@@ -977,7 +977,7 @@ def _parse_and_dispatch(
             print("archivey: on the command line, pass --probe-content", file=err)
         return EXIT_FAIL
     except BrokenPipeError:
-        # BrokenPipeError ⊂ OSError — must precede the OSError handler (F2), which
+        # BrokenPipeError ⊂ OSError — must precede the OSError handler, which
         # would print to the closed pipe and return 1. main() turns it into 141.
         raise
     except OSError as exc:
