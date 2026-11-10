@@ -327,6 +327,17 @@ def test_a_symlink_splits_at_its_bar() -> None:
     assert got.raw_name == b"dir/link"
 
 
+def test_a_symlink_bar_in_the_directory_record() -> None:
+    # lhasa's parse_symlink splits the joined path: the bar can sit in the directory.
+    member = Member(
+        b"etc", method="-lhd-", level=2, mode=0o120777, directory=b"etc|..\xff..\xff"
+    )
+    with _open(archive([member])) as reader:
+        (got,) = reader.members()
+    assert (got.name, got.link_target) == ("etc", "../../etc")
+    assert got.raw_name == b"etc"
+
+
 def test_a_cp932_symlink_keeps_its_stored_name() -> None:
     # The second byte of ポ is 0x7C, so the bytes cannot be cut where the name was.
     stored = "ポ|t".encode("cp932")

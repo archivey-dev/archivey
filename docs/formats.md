@@ -1266,7 +1266,7 @@ ST and Japanese PCs, and from LHa for UNIX.
 - **From a pipe:** no, for now: the listing seeks past each member's data.
 - Header levels 0 to 3 all read. Stored members (`-lh0-`, `-lz4-`, `-pm0-`) and the
   `-lh4-` to `-lh7-` methods, UNLHA32's `-lhx-` and LHARK's `-lk7-` decode; other methods
-  (`-lh1-`, `-lzs-`, `-lz5-`, PMarc's `-pm1-` and `-pm2-`) are listed and raise
+  (`-lh1-`, `-lh2-`, `-lh3-`, `-lzs-`, `-lz5-`, PMarc's `-pm1-` and `-pm2-`) are listed and raise
   `UnsupportedFeatureError` when read. `member.compression` is `LZH` for every `-lh?-`
   method, and `extra["lha.method"]` names the exact one.
 - Each member stores a CRC-16 of its data, which a read checks, so a member read to its
