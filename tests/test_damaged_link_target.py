@@ -30,8 +30,10 @@ from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy, SymlinkTarget
 from archivey.exceptions import (
     DiagnosticRaisedError,
     PackageNotInstalledError,
+    ResourceUnavailableError,
     UnsupportedFeatureError,
 )
+from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.streams import codecs as codecs_module, crypto as crypto_module
 from archivey.reader import ArchiveReader
 from archivey.types import MemberType, OnError
@@ -555,4 +557,29 @@ def test_7z_link_target_without_its_codec_keeps_the_listing(
         assert ar.get("link").link_target is None
         assert _reasons(ar) == ["package_not_installed"]
         with pytest.raises(PackageNotInstalledError, match="pyppmd"):
+            ar.open(ar.get("link"))
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["seekable", "streaming"])
+def test_resource_shortage_reading_a_link_target_keeps_the_listing(
+    monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    """A shortage (no descriptor, memory or process slot) says nothing about the
+    archive: the link is listed targetless with its own reason, not as an
+    undecodable method, and opening it reads again and raises."""
+
+    def short(self: object, member: object) -> None:
+        raise ResourceUnavailableError("could not start a helper program: EMFILE")
+
+    monkeypatch.setattr(BaseArchiveReader, "_resolve_link_target_locked", short)
+    blob = _undecodable_zip_symlink()
+    with open_archive(io.BytesIO(blob), streaming=streaming) as ar:
+        names = [member.name for member, _ in ar.stream_members()]
+        assert names == ["target.txt", "link", "after.txt"]
+        assert _reasons(ar) == ["resource_unavailable"]
+    with open_archive(io.BytesIO(blob)) as ar:
+        assert [m.name for m in ar.members()] == ["target.txt", "link", "after.txt"]
+        assert ar.get("link").link_target is None
+        assert _reasons(ar) == ["resource_unavailable"]
+        with pytest.raises(ResourceUnavailableError):
             ar.open(ar.get("link"))

@@ -91,6 +91,7 @@ EXPERIMENTAL = (
     "archivey.ArchiveMember.verifiable",
     "archivey.ForwardArchiveReader.verify_all",
     "archivey.ArchiveReader.verify_all",
+    "archivey.VerifyReport",
     "archivey.BackendUse",
     "archivey.BackendKindStr",
     "archivey.ForwardArchiveReader.backends_used",

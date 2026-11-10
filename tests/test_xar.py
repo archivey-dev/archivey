@@ -102,7 +102,7 @@ def test_bsdtar_archives_list_and_read(encoding: str) -> None:
         assert read["dir/a.txt"] == b"hello\n"
         assert read["caf�.txt"] == b"latin-1 name\n"
         assert len(read["b.txt"]) == text.size
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert not reader.diagnostics.retained
 
 
@@ -170,7 +170,7 @@ def test_a_file_that_fails_its_checksum_is_reported() -> None:
     raw = bytearray(write_xar([XarFile("a.txt", TEXT, encoding="none")]))
     raw[-1] ^= 1
     with _open(bytes(raw)) as reader:
-        ((member, error),) = reader.verify_all()
+        ((member, error),) = reader.verify_all().failures
         assert member.name == "a.txt"
         assert isinstance(error, CorruptionError)
     with _open(bytes(raw)) as reader, pytest.raises(CorruptionError):

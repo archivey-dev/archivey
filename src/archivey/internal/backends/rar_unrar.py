@@ -687,6 +687,42 @@ def unrar_expands_wildcards(path: str | Path) -> bool:
 _UNRAR_ARCHIVE_PATH_MAX = 1024
 
 
+# The longest member name, in UTF-16 code units, that ``unrar`` keeps whole when it
+# compares it with a ``-n`` mask. ``unrar`` cuts a stored name to a fixed buffer, but
+# the mask is the full argument, so a longer name matches no mask, and two names that
+# share the kept prefix match one. 6.x keeps NM - 1 = 2047 ``wchar_t`` units of the
+# name and of each mask (``FileName[NM]`` in ``headers.hpp``, ``CurMask[NM]`` in
+# ``cmdfilter.cpp``, unrarsrc 6.2.12), and the mask carries a ``./`` prefix, so 2045
+# units of name fit. 7.00 keeps 65 536 characters of both (measured on Linux: a
+# 65 536-character name read alone through ``-n./<name>``, a 65 537-character one
+# matched nothing), but the mask must also reach it as one argument: a Windows
+# command line holds 32 767 units in all, and Linux refuses one argument over 128 KiB
+# (``MAX_ARG_STRLEN``) with E2BIG. 16 384 units leave the rest of the Windows command
+# line half of it, and are at most 49 152 bytes of UTF-8. ``wchar_t`` is UTF-16 on
+# Windows, so the count is in UTF-16 units, which is never fewer than code points.
+_UNRAR6_PLAIN_NAME_MAX = 2047 - len("./")
+_UNRAR7_PLAIN_NAME_MAX = 16384
+
+
+def unrar_plain_name_max(program: str | None = None) -> int:
+    """The longest name, in UTF-16 units, a mask on the ``unrar`` that reads next
+    selects whole (see ``_UNRAR6_PLAIN_NAME_MAX``).
+
+    Taken from the banner version :func:`find_rarlab_unrar` probed for ``program``
+    (``ArchiveyConfig.unrar_path``, or ``None`` to search). When no usable
+    ``unrar`` is found, or its version did not parse, the 6.x bound applies: it is
+    the smaller one, and the read that follows fails on the missing program anyway.
+    """
+    try:
+        path = find_rarlab_unrar(program)
+    except PackageNotInstalledError:
+        return _UNRAR6_PLAIN_NAME_MAX
+    probe = _cached_unrar.get(path)
+    if probe is not None and probe.version is not None and probe.version >= (7, 0):
+        return _UNRAR7_PLAIN_NAME_MAX
+    return _UNRAR6_PLAIN_NAME_MAX
+
+
 def unrar_may_cut_archive_path(path: str | Path) -> bool:
     """Whether ``path`` is too long to hand to ``unrar`` as the archive.
 

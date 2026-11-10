@@ -171,7 +171,7 @@ def test_makecab_cabinets(fixture: str, method: CompressionAlgorithm) -> None:
         assert reader.read("empty") == b""
         if "zero" in members:
             assert reader.read("zero") == bytes(33000)
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
 
 
 def test_a_code_page_name_decodes_with_encoding() -> None:
