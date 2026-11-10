@@ -3,7 +3,8 @@
 The NTFS FILETIME conversion (100 ns ticks since 1601-01-01 UTC → ``datetime``) is used by
 every backend that reads Windows-origin timestamps — ZIP's NTFS extra field, the native
 7z reader, and RAR5 FILETIME extras — and the Unix-seconds ones by TAR, ZIP's extended
-timestamp, RAR, gzip and the directory backend, so each lives here rather than being
+timestamp, RAR, gzip, the directory backend and ``archivey.formats`` (for ar, CPIO,
+RPM and plugins), so each lives here rather than being
 copy-pasted per backend. The answers are ``datetime`` + ``timedelta`` arithmetic, which
 gives the same value on every platform and raises ``OverflowError`` everywhere for a
 value outside ``datetime``'s range. For a field wide enough to hold such a value that

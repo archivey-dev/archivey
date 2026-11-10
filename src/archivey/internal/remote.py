@@ -2,10 +2,20 @@
 
 ``open_archive()``, ``open_stream()`` and ``detect_format()`` accept the unentered
 object ``fsspec.open(url, **options)`` returns (``openspec`` change
-``fsspec-integration``, design D1). archivey never enters it and opens no file object
-from it: every byte comes from ``fs.cat_file(path, start, end)`` on the ``OpenFile``'s
-file system, through :class:`RangeSource`, so fsspec's file caches are never in the
-path. The size comes from one ``fs.size(path)`` at open and is a fact.
+``fsspec-integration``, design D1). archivey never enters it and, unless it carries a
+``compression`` (:func:`open_decompressed`), opens no file object from it: every byte
+comes from ``fs.cat_file(path, start, end)`` on the ``OpenFile``'s file system, through
+:class:`RangeSource`, so fsspec's file caches are never in the path. The size comes
+from one ``fs.size(path)`` at open and is a fact.
+:func:`~archivey.internal.volumes.resolve_source` builds the :class:`RangeSource` (one per
+volume of a set, all drawing on one :class:`WindowPool`) and wraps it in an
+:class:`~archivey.internal.source.ArchiveSource`, so detection and the backends read it
+as any other seekable source.
+
+A change of the object that a fetch catches stays caught (design D7): the
+:class:`RangeSource` raises :class:`~archivey.SourceChangedError` on every later read,
+and :func:`source_change` gives the error that ends the operation, so a handler that
+takes the first one for damage to the archive cannot turn it into a result.
 
 This module imports nothing from fsspec at import time. :func:`is_open_file` looks for
 ``fsspec.core`` in ``sys.modules``: a caller who has not imported fsspec cannot hold an
@@ -50,7 +60,7 @@ import sys
 import threading
 from collections.abc import Generator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 from archivey.exceptions import (
     FormatDetectionError,
@@ -64,6 +74,7 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.source import ArchiveSource
 
 
 @dataclass(frozen=True)
@@ -147,9 +158,40 @@ def check_open_file(of: Any) -> None:
         )
 
 
+# Schemes whose query is dropped from display text. A signed HTTP URL carries its
+# secret there (``X-Amz-Signature=``, an Azure SAS ``sig=``). On other schemes a ``?``
+# can be part of the object's name (an S3 key), so it is kept.
+_QUERY_DROPPED_SCHEMES = frozenset({"http", "https"})
+
+
+def display_url(url: str) -> str:
+    """``url`` as archivey shows it in a message, a name or a diagnostic.
+
+    The ``user:password@`` part of the authority is removed, and for HTTP(S) so are the
+    query and the fragment, because a signed URL keeps its signature in the query.
+    Anything without ``scheme://`` (a plain fsspec path) is returned unchanged. This
+    is for text only: the I/O always uses the URL as given.
+    """
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    end = len(rest)
+    for stop in "/?#":
+        at = rest.find(stop)
+        if at != -1:
+            end = min(end, at)
+    authority, tail = rest[:end], rest[end:]
+    authority = authority.rpartition("@")[2]
+    if scheme.lower() in _QUERY_DROPPED_SCHEMES:
+        for stop in "?#":
+            tail = tail.partition(stop)[0]
+    return f"{scheme}://{authority}{tail}"
+
+
 def open_file_name(of: Any) -> str:
-    """The name archivey gives an ``OpenFile``: its path on its file system."""
-    return str(of.path)
+    """The name archivey gives an ``OpenFile``: its path on its file system, as
+    :func:`display_url` shows it."""
+    return display_url(str(of.path))
 
 
 def open_file_compression(of: Any) -> str | None:
@@ -158,28 +200,69 @@ def open_file_compression(of: Any) -> str | None:
     return getattr(of, "compression", None)
 
 
-def open_decompressed(of: Any) -> Any:
+def open_decompressed(of: Any) -> tuple[BinaryIO, BinaryIO]:
     """Open ``of`` as fsspec delivers it: its file, decompressed by fsspec.
 
     For an ``OpenFile`` with a ``compression``, the archive is the decompressed bytes,
     so archivey reads that stream as it reads any caller stream: forward, a seek back
     re-decoding, and without range requests. One WARNING says so, with the faster way
     when archivey can decode the compression itself.
+
+    Returns ``(decoded, raw)``: the decompressor and fsspec's file under it. archivey
+    opened both, so the caller closes both, ``decoded`` first. A decompressor handed a
+    file object leaves it open, and the raw file holds fsspec's read-ahead cache (and,
+    on some file systems, a connection). The two are built as ``OpenFile.open()``
+    builds them, without entering ``of``: entering it would keep them in
+    ``of.fobjects``, where the caller's own ``of.close()`` would close a stream
+    archivey is still reading.
     """
     check_open_file(of)
     compression = open_file_compression(of)
+    assert compression is not None  # only an OpenFile with one is opened here
     streams_logger.warning(
         "%r is opened with fsspec compression=%r, so archivey reads fsspec's "
         "decompressed stream: no range requests, and a seek back decodes again. %s",
-        of.path,
+        open_file_name(of),
         compression,
         _COMPRESSION_HINT.get(
-            compression or "",
+            compression,
             "archivey cannot decode this compression itself, so this is the only way "
             "to read it.",
         ),
     )
-    return of.open()
+    # The caller holds an OpenFile, so fsspec is imported already.
+    from fsspec.compression import compr
+
+    # ``compr`` starts as ``{None: noop_file}``, so a checker infers ``None`` keys.
+    opener = cast("dict[str | None, Any]", compr)[compression]
+    raw = of.fs.open(of.path, mode="rb")
+    try:
+        decoded = opener(raw, mode="r")
+    except BaseException:
+        raw.close()
+        raise
+    return decoded, raw
+
+
+@dataclass(frozen=True)
+class FsspecDecompressed:
+    """An ``OpenFile`` read through fsspec's own decompressing file (``compression=``).
+
+    Kept on the source so that open can say what :class:`RangeSource` would otherwise
+    say: nothing checks the object for a change while it is read
+    (``SOURCE_CHANGE_UNDETECTABLE``).
+    """
+
+    url: str
+    protocol: str
+    compression: str
+
+    @classmethod
+    def of(cls, of: Any) -> FsspecDecompressed:
+        fs = of.fs
+        unstrip = getattr(fs, "unstrip_protocol", None)
+        url = unstrip(of.path) if callable(unstrip) else str(of.path)
+        return cls(url, protocol_of(fs), str(open_file_compression(of)))
 
 
 @contextlib.contextmanager
@@ -231,6 +314,7 @@ class _Run:
     """One sequential run on one source, and its window (the bytes of its last fetch)."""
 
     __slots__ = (
+        "backward",
         "data",
         "fetches",
         "last_use",
@@ -246,6 +330,10 @@ class _Run:
         self.data = b""
         self.fetches = 0
         self.last_use = tick
+        # Whether the window was placed by where it ends rather than where it starts:
+        # at the end of the object (rule 5) or before the window it stepped back
+        # from (rule 6). Only such a window is stepped back from.
+        self.backward = False
         # The furthest offset a read has taken from the window.
         self.served_end = start
 
@@ -327,6 +415,26 @@ class WindowPool:
                 best = run
         return best, False
 
+    def _run_ahead(self, source: RangeSource, at: int, want: int) -> _Run | None:
+        """The nearest end-placed window of ``source`` (``_Run.backward``) that
+        starts after ``at``, with a gap from the read's end to it of at most its own
+        size and at most ``max_read_through``: a read just before it steps backward
+        from it (rule 6). A walk's steps are short, so a longer gap is a read of
+        something else (a header at the start), which gets a run of its own rather
+        than fetching the whole gap. A window a forward run placed is not stepped
+        back from: a read just before it is a reader starting a new member, which
+        reads forward."""
+        best: _Run | None = None
+        for run in self._runs:
+            if run.source is not source or not run.backward or run.start <= at:
+                continue
+            gap = run.start - (at + want)
+            if gap <= min(len(run.data), source.max_read_through) and (
+                best is None or run.start < best.start
+            ):
+                best = run
+        return best
+
     def read(self, source: RangeSource, pos: int, view: memoryview) -> int:
         """Fill ``view`` from ``source`` at ``pos``; the caller clamped it to the size."""
         with self._lock:
@@ -366,15 +474,26 @@ class WindowPool:
         hinted = hint is not None
         if hinted:
             assert hint is not None
-            if run is not None and hint[0] > run.end and not run.finished():
+            if (
+                run is not None
+                and hint[0] > run.end
+                and (not run.finished() or hint[0] - run.end > len(run.data))
+            ):
                 # The span starts past the window of a run that reads have not taken
                 # to its end, so another stream on the source may still be reading
                 # it: the span gets a run of its own rather than taking that window
-                # over. A window read to its end is continued through the gap (rule
-                # 2), so members that lie almost back to back (an ISO extent's
-                # padding, a span that leaves out a header) keep one growing run
-                # rather than a request each.
+                # over. A window read to its end is continued through a gap no
+                # larger than itself (rule 2), so members that lie almost back to
+                # back (an ISO extent's padding, a span that leaves out a header)
+                # keep one growing run rather than a request each. A span further
+                # off (a tail read, design D1) is a jump: continuing the run would
+                # fetch the whole gap and drop the head's window, which the reader
+                # reads next.
                 run = None
+        ahead = None
+        if run is None and not hinted and source.max_read_through != 0:
+            ahead = self._run_ahead(source, at, want)
+        backward_end: int | None = None
         if run is not None:
             # Continue the run from its end, reading through the gap (rule 2). A
             # hint that starts inside the window continues it the same way.
@@ -382,6 +501,23 @@ class WindowPool:
             fetches = run.fetches + 1
             runs = len(self._runs)
             old = len(run.data)
+            run.backward = False
+        elif ahead is not None and (
+            max(ahead.start, at + want) - at <= self._max_fetch(len(self._runs))
+        ):
+            # Rule 6: a read just before an end-placed window steps back from it.
+            # The new window ends where that one starts, doubling as a forward run does,
+            # so a walk toward the start (the xz index of each stream, the lzip
+            # trailer of each member) costs about as many requests as a forward
+            # read of the same bytes, and fetches each byte once. The window moves
+            # back: the walk does not return to the bytes it leaves.
+            backward_end = max(ahead.start, at + want)
+            fetches = ahead.fetches + 1
+            run = ahead
+            runs = len(self._runs)
+            old = len(run.data)
+            span = max(backward_end - at, self._fetch_size(fetches, runs))
+            start = max(0, backward_end - span)
         else:
             # Rule 3: a hinted span is fetched from its start, which may lie before
             # the read (a backend may read a span's end first: a ZIP end record).
@@ -407,6 +543,21 @@ class WindowPool:
             length = max(length, hint[1] - start)
             # The run continues from the span as if it had doubled to that size.
             fetches = max(fetches, 2 + (length // c.min_fetch).bit_length())
+        if backward_end is not None:
+            length = backward_end - start
+        if (
+            run is None
+            and source.max_read_through != 0
+            and start + length > source.size
+        ):
+            # A new run that the end would cut short starts earlier, so its window
+            # still holds the minimum fetch (design D2 rule 5). A tail read comes in
+            # pieces that step backward (the xz footer, then its index), and each
+            # piece would otherwise be a request of its own. A hinted span ends at
+            # or before the end, so the window still holds all of it.
+            start = max(0, source.size - length)
+            need = at - start + want
+            backward_end = source.size
         length = min(length, source.size - start)
         if need > cap:
             # A read longer than any window: fetch exactly it, keep nothing. The run
@@ -434,7 +585,7 @@ class WindowPool:
             self._trim_oversized(cap, keep=run)
             room = c.pool_bytes - (self._held - old)
         if at_limit or room < need:
-            # No window to be had: unbuffered (rule 3).
+            # No window to be had: unbuffered (rule 4).
             data = source.fetch(at, at + want)
             view[: len(data)] = data
             return len(data)
@@ -443,6 +594,7 @@ class WindowPool:
         if run is None:
             run = _Run(source, start, self._tick)
             self._runs.append(run)
+        run.backward = backward_end is not None
         self._held += len(data) - len(run.data)
         run.start = start
         run.data = data
@@ -498,6 +650,10 @@ class RangeSource(io.RawIOBase):
     Every byte comes from ``fs.cat_file(path, start, end)`` through the
     :class:`WindowPool`. ``read(n)`` returns ``n`` bytes unless the end comes first.
     ``close()`` drops this source's windows and closes nothing of the caller's.
+
+    Once a fetch has seen the object change, every later read raises
+    :class:`~archivey.SourceChangedError` again, a read a window still holds too
+    (:attr:`change`).
     """
 
     def __init__(
@@ -519,6 +675,8 @@ class RangeSource(io.RawIOBase):
         # The spans backends declared they read next (``will_read``), newest last,
         # each until a fetch uses it. Several, so streams side by side each keep one.
         self.pending_hints: list[tuple[int, int]] = []
+        # The message of the first ``SourceChangedError`` a fetch raised (design D7).
+        self.change: str | None = None
 
     @classmethod
     def from_open_file(
@@ -546,12 +704,16 @@ class RangeSource(io.RawIOBase):
         if size is None:
             size = fs.size(path)
         if not isinstance(size, int) or size < 0:
-            raise OSError(f"fsspec file system gave no size for {path!r}: {size!r}")
+            raise OSError(
+                f"fsspec file system gave no size for {display_url(str(path))!r}: "
+                f"{size!r}"
+            )
         return cls(fs, path, size=size, pool=pool, max_read_through=max_read_through)
 
     @property
     def name(self) -> str:
-        return self.path
+        """The path, as :func:`display_url` shows it: it reaches ``archive_name``."""
+        return display_url(self.path)
 
     def add_hint(self, start: int, end: int) -> None:
         """Keep ``[start, end)`` as pending, dropping the oldest past the limit."""
@@ -579,17 +741,30 @@ class RangeSource(io.RawIOBase):
 
     @property
     def url(self) -> str:
-        """The object as a URL (``s3://bucket/a.zip``), for messages. An fsspec path
-        is ``/``-separated on every OS, so it needs no ``display_path``."""
+        """The object as a URL (``s3://bucket/a.zip``), for messages, without
+        credentials (:func:`display_url`). An fsspec path is ``/``-separated on every
+        OS, so it needs no ``display_path``."""
         unstrip = getattr(self.fs, "unstrip_protocol", None)
-        return unstrip(self.path) if callable(unstrip) else self.path
+        return display_url(unstrip(self.path) if callable(unstrip) else self.path)
 
     @property
     def seek_is_expensive(self) -> bool:
-        """A seek may cost a request: detection and the tail probes stay off it, as
+        """A seek may cost a request, so detection's mid-file probes stay off it, as
         they do for a member stream (``archivey.internal.source.seek_is_expensive``).
+        A read of the tail costs one request and no decode
+        (:meth:`nearest_resume_offset`), so the tail reads run, as on a local file
+        (design D1).
         """
         return True
+
+    def nearest_resume_offset(self, target: int) -> int:
+        """``target``: a range request starts at any offset, so a seek decodes nothing.
+
+        This lets ``seeks_to_end_are_cheap`` answer ``True``. The detection trailer,
+        the single-file tail probes and the gzip ISIZE read then each cost one request,
+        and the same bytes give the same result as from a path (design D1).
+        """
+        return target
 
     def fetch(self, start: int, end: int) -> bytes:
         """One range request, ``[start, end)``, which lies inside the size read at open.
@@ -612,7 +787,9 @@ class RangeSource(io.RawIOBase):
         object. That is all a fetch can see. A replacement of the same length, or a
         longer one, returns the full range and is not detected without a pinned
         version (not implemented yet); ``SOURCE_CHANGE_UNDETECTABLE`` says so at open.
+        The change is kept (:attr:`change`): this source raises it again from then on.
         """
+        self._raise_if_changed()
         data = self.fs.cat_file(self.path, start=start, end=end)
         if len(data) > end - start:
             raise OSError(
@@ -621,12 +798,20 @@ class RangeSource(io.RawIOBase):
                 f"which reading an archive remotely needs"
             )
         if len(data) < end - start:
-            raise SourceChangedError(
+            self.change = (
                 f"{self.url}: the object changed while it was read: fetching bytes "
                 f"{start}-{end} of the {self.size} bytes seen at open returned "
                 f"{len(data)} bytes"
             )
+            self._raise_if_changed()
         return bytes(data)
+
+    def _raise_if_changed(self) -> None:
+        # A new exception each time: one instance raised from several places would
+        # gather every traceback, and a later ``raise ... from`` would rewrite its
+        # cause for every holder.
+        if self.change is not None:
+            raise SourceChangedError(self.change)
 
     @override
     def readable(self) -> bool:
@@ -660,6 +845,9 @@ class RangeSource(io.RawIOBase):
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
         self._checkClosed()
+        # Before the pool: a window fetched before the change still holds bytes of
+        # the object as it was, and serving them would read on past the change.
+        self._raise_if_changed()
         with memoryview(b) as outer, outer.cast("B") as whole:
             limit = min(len(whole), max(self.size - self._pos, 0))
             if limit == 0:
@@ -688,7 +876,7 @@ class RangeSource(io.RawIOBase):
 
     @override
     def __repr__(self) -> str:
-        return f"<RangeSource {self.path!r} size={self.size}>"
+        return f"<RangeSource {self.name!r} size={self.size}>"
 
 
 def protocol_of(fs: Any) -> str:
@@ -699,34 +887,97 @@ def protocol_of(fs: Any) -> str:
     return str(protocol)
 
 
+def source_change(
+    ranges: tuple[RangeSource, ...], cause: BaseException | None = None
+) -> SourceChangedError | None:
+    """The error that ends an operation on ``ranges`` once one of them saw a change.
+
+    Called where an operation ends (detection's answer, an open, the end of a member
+    walk), with ``cause`` the exception it is about to raise, if any. A change makes
+    whatever the operation concluded after it unreliable: a handler built for damage
+    to the archive may have taken the ``SourceChangedError`` for damage and answered
+    with another format, a diagnostic or a missing size, or a later step may have
+    failed on what that handler left. ``None`` when nothing changed, or when ``cause``
+    already is the change.
+    """
+    if isinstance(cause, SourceChangedError):
+        return None
+    for ranged in ranges:
+        if ranged.change is not None:
+            return SourceChangedError(ranged.change)
+    return None
+
+
+@contextlib.contextmanager
+def raising_source_change(
+    ranges: tuple[RangeSource, ...], *, archive_name: str | None = None
+) -> Generator[None]:
+    """End the block with :func:`source_change`'s error, whether the block returns or
+    raises another ``Exception`` (which becomes its cause). The error carries
+    ``archive_name``, as the errors of the call that ends with it do."""
+    try:
+        yield
+    except Exception as exc:
+        changed = source_change(ranges, exc)
+        if changed is not None:
+            changed.archive_name = archive_name
+            raise changed from exc
+        raise
+    changed = source_change(ranges)
+    if changed is not None:
+        changed.archive_name = archive_name
+        raise changed
+
+
 def emit_source_change_undetectable(
-    ranges: tuple[RangeSource, ...],
+    source: ArchiveSource,
     collector: DiagnosticCollector,
     archive_name: str | None,
 ) -> None:
-    """Record ``SOURCE_CHANGE_UNDETECTABLE`` once for a source read through ``ranges``.
+    """Record ``SOURCE_CHANGE_UNDETECTABLE`` once for a remote ``source``.
 
-    archivey pins no object version and sends no ``If-Match`` yet (design D7, tiers 1
-    and 2), so every file system gets tier 3: a fetch catches a change of length only.
+    Read by range (``remote_sources``): archivey pins no object version and sends no
+    ``If-Match`` yet (design D7, tiers 1 and 2), so every file system gets tier 3, and
+    a fetch catches a change of length only. Read through fsspec's decompressing file
+    (``fsspec_decompressed``): archivey checks nothing, because every read goes through
+    fsspec's file and its cache, never through a fetch it can compare with the size
+    seen at open. A local source records nothing.
     """
-    if not ranges:
-        return
-    from archivey.diagnostics import DiagnosticCode, SourceChangeContext
-
-    protocol = protocol_of(ranges[0].fs)
-    collector.emit(
-        code=DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
-        message=(
+    ranges = source.remote_sources
+    decompressed = source.fsspec_decompressed
+    if ranges:
+        protocol = protocol_of(ranges[0].fs)
+        message = (
             f"{archive_name or ranges[0].url} is read by range requests over "
             f"{protocol or 'fsspec'}, and archivey cannot pin one version of the "
             f"object: a replacement of the same length, or a longer one, while it "
             f"is read would not be detected"
-        ),
+        )
+        reason = (
+            "archivey implements no version pinning or If-Match for this file system"
+        )
+    elif decompressed is not None:
+        protocol = decompressed.protocol
+        compression = f"compression={decompressed.compression!r}"
+        message = (
+            f"{archive_name or decompressed.url} is read through fsspec's "
+            f"decompressing file ({compression}) over {protocol or 'fsspec'}, and "
+            f"archivey checks nothing about the object while it reads it: a "
+            f"replacement while it is read would not be detected"
+        )
+        reason = (
+            f"read through fsspec's decompressing file ({compression}), which "
+            f"archivey cannot check for a change"
+        )
+    else:
+        return
+    from archivey.diagnostics import DiagnosticCode, SourceChangeContext
+
+    collector.emit(
+        code=DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
+        message=message,
         context=SourceChangeContext(
-            archive_name=archive_name,
-            protocol=protocol,
-            reason="archivey implements no version pinning or If-Match for this "
-            "file system",
+            archive_name=archive_name, protocol=protocol, reason=reason
         ),
     )
 
@@ -734,11 +985,15 @@ def emit_source_change_undetectable(
 __all__ = [
     "DEFAULT_MAX_READ_THROUGH",
     "DEFAULT_PLANNER_CONSTANTS",
+    "FsspecDecompressed",
     "PlannerConstants",
     "RangeSource",
     "WindowPool",
     "check_open_file",
+    "display_url",
     "emit_source_change_undetectable",
     "is_open_file",
     "planner_constants",
+    "raising_source_change",
+    "source_change",
 ]

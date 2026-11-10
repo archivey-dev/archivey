@@ -12,10 +12,11 @@ import gzip
 import io
 import random
 import tarfile
+from pathlib import Path
 
 import pytest
 
-from archivey import Verification, open_archive
+from archivey import ArchiveyConfig, Verification, open_archive
 from archivey.types import ArchiveMember
 from tests.test_audit_tar_streams import _TRAILER, _gnu_sparse, _member
 
@@ -220,6 +221,62 @@ def test_damage_that_ends_the_walk_keeps_the_ceiling_and_fails_the_files(
     }
 
 
+_NOISE = random.Random(0).randbytes(6000)
+
+
+def _plain_tar(files: dict[str, bytes]) -> bytes:
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w") as tar:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return out.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("tar", "cut", "cause"),
+    [
+        # Only the 8-byte trailer is cut: the deflate data is whole, so the read
+        # ends early and no error stopped the check.
+        pytest.param(_tar("w"), 8, "ends early", id="ended"),
+        # The cut lands inside b's data, which does not compress, so it stays inside
+        # it whichever zlib build made the stream: an error stopped the check.
+        pytest.param(
+            _plain_tar({"a": _NOISE[:3000], "b": _NOISE[3000:]}),
+            100,
+            "truncated",
+            id="error",
+        ),
+    ],
+)
+def test_a_check_that_did_not_run_names_the_archive_once(
+    tmp_path: Path, tar: bytes, cut: int, cause: str
+) -> None:
+    """The error for the members a spanning check did not reach, as ``verify_all()``
+    returns it, names the archive once, both when the read ended early and when an
+    error stopped the check."""
+    path = tmp_path / "cut.tar.gz"
+    path.write_bytes(gzip.compress(tar, mtime=0)[:-cut])
+    with open_archive(path) as reader:
+        failures = reader.verify_all()
+    assert failures
+    text = str(failures[0][1])
+    assert "did not run" in text
+    assert cause in text
+    assert text.count("archive=") == 1
+
+
+def test_a_check_that_did_not_run_escapes_each_name_once() -> None:
+    data = gzip.compress(_plain_tar({"a\\b": b"x" * 3000, "c": b"y"}), mtime=0)[:-20]
+    with open_archive(io.BytesIO(data)) as reader:
+        failures = reader.verify_all()
+    assert failures
+    text = str(failures[0][1])
+    assert "'a\\\\b'" in text
+    assert "'a\\\\\\\\b'" not in text
+
+
 @pytest.mark.parametrize("cut", [8, 20])
 def test_damage_found_while_listing_still_fails_the_files_later(cut: int) -> None:
     # A random-access reader walks its listing once: the files whose check the
@@ -260,3 +317,29 @@ def test_an_xz_check_that_fails_keeps_the_ceiling(streaming: bool) -> None:
     failed = {id(m) for m, _e in failures}
     for member in files:
         assert id(member) in failed or member.verified is Verification.CHECKSUM
+
+
+def test_a_listing_through_rapidgzip_still_raises_every_file(tmp_path: Path) -> None:
+    """rapidgzip indexes only what its prefetch has decoded. A walk that seeks over
+    member data through that index skips no decoding, and must not lose the proof
+    the trailer gives: before the fix every file of a listed ``.tar.gz`` past
+    rapidgzip's size gate was a ``verify_all()`` failure, "the archive ends early"."""
+    pytest.importorskip("rapidgzip")
+    rng = random.Random(7)
+    path = tmp_path / "big.tar.gz"
+    with tarfile.open(path, mode="w:gz", compresslevel=1) as tar:
+        for index in range(40):
+            # Text-like data, so the gzip stream has many DEFLATE blocks for
+            # rapidgzip to index, and members far apart in the decoded stream.
+            data = b" ".join(rng.choice(_WORDS) for _ in range(40_000))
+            info = tarfile.TarInfo(f"m{index}")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    config = ArchiveyConfig(use_rapidgzip="on")
+    with open_archive(path, config=config) as reader:
+        members = reader.members()
+        assert {(m.verified, m.verifiable) for m in members} == {_CHECKED}
+        assert reader.verify_all() == ()
+
+
+_WORDS = [bytes(f"w{n:x}", "ascii") * (1 + n % 5) for n in range(3000)]
