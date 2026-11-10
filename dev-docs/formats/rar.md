@@ -981,7 +981,15 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   (`_plain_unrar_masks`): every name in the archive decodes cleanly (valid UTF-8 for RAR5,
   ASCII for an 8-bit RAR 1.5-4 name, no lone surrogate in a Unicode one) with no `\` (RAR5;
   a RAR 1.5-4 `\` is a separator), NUL, `:`, leading `/`, or empty, `.` or `..` component,
-  so `unrar`'s reading of each name is archivey's; and the target has no `*` or `?`,
+  and none is longer than `unrar` keeps whole (`unrar_plain_name_max`), so `unrar`'s
+  reading of each name is archivey's. `unrar` cuts a stored name to a fixed buffer but
+  compares it with the full mask, so a longer name matches no mask, and two names that
+  share the kept prefix match one. 6.x keeps 2047 wide units of a name and of a mask
+  (`FileName[NM]`, `CurMask[NM]`, unrarsrc 6.2.12), less the mask's `./`: 2045 units.
+  7.00 keeps 65 536 characters (measured on Linux), but the mask must also pass as one
+  argument (32 767 units for a whole Windows command line, 128 KiB per argument on
+  Linux), so the bound there is 16 384 units. The version comes from the banner probe;
+  without one the 6.x bound applies. The target has no `*` or `?`,
   no component ending in `.`, is ASCII unless `unrar_mask_carries_non_ascii()` (Windows,
   or a UTF-8 locale for the child on POSIX), and no other name equal to it or starting with it plus
   `/`, compared after NFC and `upper().casefold()` (Windows `unrar` converts a Unix-host

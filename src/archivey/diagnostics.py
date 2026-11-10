@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import ClassVar, Literal, TypeVar
+from typing import ClassVar, Literal, NoReturn, TypeVar
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
 from archivey.internal.enum_args import coerce_enum_collection
@@ -1737,6 +1737,59 @@ class MemberListReport:
         return self.members[index]
 
 
+@dataclass(frozen=True)
+class VerifyReport:
+    """What :meth:`~archivey.ForwardArchiveReader.verify_all` found.
+
+    ``ok`` is the one answer to "did every check pass": no member failed and nothing
+    stopped the walk through the archive. The fields keep the detail. The report is
+    not a sequence, and testing its truth raises ``TypeError``, so the 0.3.0 idiom
+    ``if not reader.verify_all():`` fails loudly instead of quietly reading the report
+    as true: test ``ok``, or read ``failures`` and ``structure_error`` yourself.
+
+    Diagnostics do not count toward ``ok``: :class:`DiagnosticPolicy` already decides
+    which of them are errors, and a code it raises on stops ``verify_all()`` with
+    :class:`~archivey.DiagnosticRaisedError` instead of returning a report.
+
+    Experimental, like ``verify_all()``: any release, a patch included, may change it.
+    """
+
+    failures: tuple[tuple[ArchiveMember, ArchiveyError], ...]
+    """Each member that failed, with its error, in listing order. A check that covers
+    several members (a 7z folder CRC) pairs each member it covers with the same
+    error."""
+
+    structure_error: ArchiveyError | None
+    """Damage that stopped the walk through the archive, such as a ZIP cut inside its
+    central directory or a TAR cut inside a member: the members after it were never
+    reached. ``None`` when the walk reached the end. The same error as
+    ``members_report().error``."""
+
+    diagnostics: DiagnosticSummary
+    """The diagnostics emitted during this ``verify_all()`` call."""
+
+    @property
+    def ok(self) -> bool:
+        """``True`` when no member failed and the walk reached the end of the archive."""
+        return not self.failures and self.structure_error is None
+
+    def __bool__(self) -> NoReturn:
+        raise TypeError(
+            "test VerifyReport.ok, not the report itself: a report is not empty or "
+            "true when every check passed"
+        )
+
+    def raise_for_failure(self) -> None:
+        """Raise ``structure_error`` if there is one, else the first member's error.
+
+        Does nothing when ``ok`` is ``True``.
+        """
+        if self.structure_error is not None:
+            raise self.structure_error
+        if self.failures:
+            raise self.failures[0][1]
+
+
 OnDiagnostic = Callable[[Diagnostic], None]
 """Optional synchronous callback invoked for COLLECT/RAISE diagnostics."""
 
@@ -1797,6 +1850,7 @@ __all__ = [
     "UnknownMemberTypeContext",
     "UnlistedDataContext",
     "UnusedArgumentContext",
+    "VerifyReport",
     "format_path_name",
     "raw_name_to_base64",
     "validate_code_context",
