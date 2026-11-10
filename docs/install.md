@@ -78,7 +78,8 @@ $p = [Environment]::GetEnvironmentVariable('Path', 'User')
 You can do the same in the Start menu: search for "environment variables", open "Edit environment
 variables for your account", select **Path**, click **Edit**, then **New**, and enter the folder.
 Programs that are already running keep their old `PATH`, so open a new terminal, and restart your
-editor if you run archivey from it.
+editor if you run archivey from it. You can also skip the `PATH` search and pass the full path as
+`ArchiveyConfig(unrar_path=...)`.
 
 On macOS, Homebrew no longer ships `unrar`. You can install it from an unofficial Homebrew tap,
 which builds or downloads RARLAB's program:
@@ -118,8 +119,9 @@ the packages its `FormatPolicy(exclude_libraries=)` turns off as missing.
 
 ## Python versions and platforms
 
-Archivey needs Python 3.11 or later. Every change is tested on Linux with CPython 3.11 to 3.15
-and PyPy 3.11, and on macOS and Windows with CPython 3.11 and 3.15. Other platforms aren't
+Archivey needs Python 3.11 or later. Every release is tested on Linux with CPython 3.11 to 3.15
+and PyPy 3.11, and on macOS and Windows with CPython 3.11 and 3.15. Each change runs part of that
+set before it merges, and the whole set runs every day. Other platforms aren't
 tested, and PyPy has some limits ([PyPy](#pypy) lists them). [How it is built](how-it-is-built.md) has the full test
 setup.
 

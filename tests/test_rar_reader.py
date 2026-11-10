@@ -1245,7 +1245,7 @@ def test_unknown_redirect_in_a_solid_run_is_other_and_carries_no_bytes(
         streamed = {m.name: s.read() for m, s in archive.stream_members() if s}
         assert streamed == expected
     with open_archive(fixture) as archive:
-        archive.extract_all(tmp_path)
+        archive.extract_all(tmp_path, on_blocked="skip")
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt", "b.txt"]
     assert (tmp_path / "b.txt").read_bytes() == expected["b.txt"]
 
@@ -4021,7 +4021,7 @@ def test_open_unrar_p_spawns_p_not_extract(
     fake.chmod(0o755)
     archive = tmp_path / "member.rar"
     archive.write_bytes(b"x")
-    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: str(fake))
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda _program=None: str(fake))
 
     class _FakeStdout:
         def read(self, _n: int = -1) -> bytes:
@@ -4947,7 +4947,9 @@ def test_open_unrar_p_missing_stdout_pipe_is_typed(
             return 0
 
     proc = _NoStdout()
-    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/bin/true")
+    monkeypatch.setattr(
+        rar_unrar, "find_rarlab_unrar", lambda _program=None: "/bin/true"
+    )
     monkeypatch.setattr(rar_unrar.subprocess, "Popen", lambda *a, **k: proc)
 
     with pytest.raises(ArchiveyError):

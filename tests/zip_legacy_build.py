@@ -429,3 +429,234 @@ def unshrink_reference(data: bytes, size: int) -> bytes:
         prev_first = entry[0]
         out += entry
     return bytes(out)
+
+
+# --- Reduce (methods 2 to 5) and DCL Implode (method 10) ---
+
+_ESCAPE = 0x90
+
+
+@dataclass
+class ReduceStats:
+    copies: int = 0
+    long_copies: int = 0
+    escaped_literals: int = 0
+    far_copies: int = 0
+    before_start: int = 0
+    follower_sizes: set[int] = field(default_factory=set)
+
+
+def _longest_match(
+    data: bytes, pos: int, max_distance: int, max_length: int, *, start: int = 0
+) -> tuple[int, int]:
+    """The longest earlier copy of ``data[pos:]``: (length, distance). A distance past
+    ``start`` reaches before the output, which reads zeros (``before_start`` copies)."""
+    best_length = 0
+    best_distance = 0
+    limit = min(max_length, len(data) - pos)
+    for distance in range(1, max_distance + 1):
+        length = 0
+        while length < limit:
+            source = pos - distance + length
+            byte = data[source] if source >= start else 0
+            if byte != data[pos + length]:
+                break
+            length += 1
+        if length > best_length:
+            best_length, best_distance = length, distance
+            if length == limit:
+                break
+    return best_length, best_distance
+
+
+def reduce(
+    data: bytes,
+    *,
+    factor: int,
+    max_distance: int | None = None,
+    zeros_before: bool = True,
+) -> tuple[bytes, ReduceStats]:
+    """Reduce ``data`` with compression factor 1 to 4: a greedy LZ77 behind the 0x90
+    escape, then follower sets of each byte's most common next bytes.
+
+    ``max_distance`` bounds the copy search, which is slow; the format allows up to
+    ``256 << factor``. ``zeros_before`` lets copies reach before the start, as the
+    zeros a decoder reads there.
+    """
+    stats = ReduceStats()
+    length_bits = 8 - factor
+    length_mask = (1 << length_bits) - 1
+    format_distance = 256 << factor
+    search = min(max_distance or format_distance, format_distance)
+    max_length = length_mask + 255 + 3
+    escaped = bytearray()
+    pos = 0
+    while pos < len(data):
+        length, distance = _longest_match(
+            data, pos, min(search, pos + (search if zeros_before else 0)), max_length
+        )
+        # A copy whose first byte would be zero (length 3, distance 256 or less) reads
+        # as an escaped literal, so it cannot be written.
+        if length == 3 and distance <= 256:
+            length = 0
+        if length >= 3:
+            stats.copies += 1
+            stats.far_copies += distance > 256
+            stats.before_start += distance > pos
+            extra = length - 3
+            high = (distance - 1) >> 8
+            first = (high << length_bits) | min(extra, length_mask)
+            escaped += bytes([_ESCAPE, first])
+            if extra >= length_mask:
+                stats.long_copies += 1
+                escaped.append(extra - length_mask)
+            escaped.append((distance - 1) & 0xFF)
+            pos += length
+            continue
+        byte = data[pos]
+        if byte == _ESCAPE:
+            stats.escaped_literals += 1
+            escaped += bytes([_ESCAPE, 0])
+        else:
+            escaped.append(byte)
+        pos += 1
+
+    pairs: dict[int, dict[int, int]] = {}
+    last = 0
+    for byte in escaped:
+        counts = pairs.setdefault(last, {})
+        counts[byte] = counts.get(byte, 0) + 1
+        last = byte
+    followers: dict[int, list[int]] = {}
+    for byte, counts in pairs.items():
+        ranked = sorted(counts, key=lambda b: (-counts[b], b))
+        # Vary the set sizes, so every index width is used: byte b keeps up to
+        # (b % 32) + 1 followers.
+        followers[byte] = ranked[: (byte % 32) + 1]
+        stats.follower_sizes.add(len(followers[byte]))
+
+    out = BitWriter()
+    for byte in range(255, -1, -1):
+        chosen = followers.get(byte, [])
+        out.write(len(chosen), 6)
+        for member in chosen:
+            out.write(member, 8)
+    last = 0
+    for byte in escaped:
+        chosen = followers.get(last, [])
+        if not chosen:
+            out.write(byte, 8)
+        elif byte in chosen:
+            out.write(0, 1)
+            bits = max(1, (len(chosen) - 1).bit_length())
+            out.write(chosen.index(byte), bits)
+        else:
+            out.write(1, 1)
+            out.write(byte, 8)
+        last = byte
+    return out.getvalue(), stats
+
+
+def reduce_entry(name: str, data: bytes, *, factor: int) -> LegacyEntry:
+    return LegacyEntry(
+        name, data, 1 + factor, reduce(data, factor=factor, max_distance=300)[0]
+    )
+
+
+@dataclass
+class DclStats:
+    copies: int = 0
+    two_byte_copies: int = 0
+    longest: int = 0
+
+
+def _dcl_codes(packed: bytes) -> list[tuple[int, int]]:
+    """Each symbol's (code, length), from ``blast.c``'s run-length table."""
+    lengths: list[int] = []
+    for byte in packed:
+        lengths.extend([byte & 0x0F] * ((byte >> 4) + 1))
+    codes = [(0, 0)] * len(lengths)
+    code = 0
+    for length in range(1, max(lengths) + 1):
+        for symbol, symbol_length in enumerate(lengths):
+            if symbol_length == length:
+                codes[symbol] = (code, length)
+                code += 1
+        code <<= 1
+    return codes
+
+
+# The tables of zlib's contrib/blast/blast.c (Mark Adler, zlib license).
+_DCL_LITERALS = _dcl_codes(
+    bytes.fromhex(
+        "0b7c08071c07bc0d4c040a080c0a0c0a08170809070607080706370817180c0b"
+        "07090b0c060716050718060b09060716070b26070908190b080b090c080c0526"
+        "0526050b07050615060a350807180a1b2cfdfdfdfcfcfc0d0c2d0c2d0c3d0c2d"
+        "2cad"
+    )
+)
+_DCL_LENGTHS = _dcl_codes(bytes([2, 35, 36, 53, 38, 23]))
+_DCL_DISTANCES = _dcl_codes(bytes([2, 20, 53, 230, 247, 151, 248]))
+_DCL_BASE = (3, 2, 4, 5, 6, 7, 8, 9, 10, 12, 16, 24, 40, 72, 136, 264)
+_DCL_EXTRA = (0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8)
+
+
+def _write_dcl_code(out: BitWriter, code: tuple[int, int]) -> None:
+    value, length = code
+    out.write_msb_first(value ^ ((1 << length) - 1), length)
+
+
+def _write_dcl_length(out: BitWriter, length: int) -> None:
+    for symbol in range(15, -1, -1):
+        base = _DCL_BASE[symbol]
+        if base <= length < base + (1 << _DCL_EXTRA[symbol]):
+            _write_dcl_code(out, _DCL_LENGTHS[symbol])
+            out.write(length - base, _DCL_EXTRA[symbol])
+            return
+    raise AssertionError(length)
+
+
+def dcl_implode(
+    data: bytes, *, coded: bool, window_bits: int, max_distance: int = 300
+) -> tuple[bytes, DclStats]:
+    """A DCL Implode stream: a greedy LZ77 over the format's fixed codes, raw or coded
+    literals, a 1, 2 or 4 KiB window (``window_bits`` 4 to 6), then the end code."""
+    stats = DclStats()
+    out = BitWriter()
+    out.write(int(coded), 8)
+    out.write(window_bits, 8)
+    window = 64 << window_bits
+    pos = 0
+    while pos < len(data):
+        length, distance = _longest_match(
+            data, pos, min(max_distance, window, pos), 518
+        )
+        if length == 2 and distance > 256:
+            length = 0
+        if length >= 2:
+            stats.copies += 1
+            stats.two_byte_copies += length == 2
+            stats.longest = max(stats.longest, length)
+            out.write(1, 1)
+            _write_dcl_length(out, length)
+            low_bits = 2 if length == 2 else window_bits
+            _write_dcl_code(out, _DCL_DISTANCES[(distance - 1) >> low_bits])
+            out.write((distance - 1) & ((1 << low_bits) - 1), low_bits)
+            pos += length
+            continue
+        out.write(0, 1)
+        if coded:
+            _write_dcl_code(out, _DCL_LITERALS[data[pos]])
+        else:
+            out.write(data[pos], 8)
+        pos += 1
+    out.write(1, 1)
+    _write_dcl_length(out, 519)
+    return out.getvalue(), stats
+
+
+def dcl_implode_entry(
+    name: str, data: bytes, *, coded: bool, window_bits: int
+) -> LegacyEntry:
+    compressed, _ = dcl_implode(data, coded=coded, window_bits=window_bits)
+    return LegacyEntry(name, data, 10, compressed)

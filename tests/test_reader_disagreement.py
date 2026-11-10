@@ -324,7 +324,7 @@ def test_a_nul_in_a_cpio_name_is_reported() -> None:
 
 def test_a_member_named_with_a_nul_is_not_extracted(tmp_path: pathlib.Path) -> None:
     with open_archive(io.BytesIO(_zip_with_nul_name())) as ar:
-        ar.extract_all(tmp_path)
+        ar.extract_all(tmp_path, on_blocked="skip")
     assert list(tmp_path.iterdir()) == []
 
 
@@ -365,7 +365,7 @@ def test_a_zip_directory_by_attribute_is_a_directory(
     ]
     source = NonSeekableBytesIO(archive) if streaming else io.BytesIO(archive)
     with open_archive(source, streaming=streaming) as ar:
-        ar.extract_all(tmp_path)
+        ar.extract_all(tmp_path, on_blocked="skip")
     assert (tmp_path / "d").is_dir()
 
 

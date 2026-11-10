@@ -337,3 +337,36 @@ def test_tar_hardlink_through_dot_dot_reads_the_member_it_names(
         target = members["x"].link_target_member
         assert target is not None and target.name == "a/../b"
         assert ar.read("x") == b"REAL-TARGET"
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        # A leading "/" is part of the name the copy refers to, and is kept.
+        ("/a", "/a"),
+        ("/d/./a", "/d/a"),
+        # A space is a character, not a separator.
+        ("dir one/f", "dir one/f"),
+        ("a/../b", "a/../b"),
+    ],
+)
+def test_a_hardlink_target_kept_within_the_root(target: str, expected: str) -> None:
+    from archivey.internal.naming import resolve_link_target_name
+
+    resolved = resolve_link_target_name(
+        "copy", target, MemberType.HARDLINK, within_root=True
+    )
+    assert resolved == expected
+
+
+@pytest.mark.parametrize("suffixes", [[".gz", ".tar.gz"], [".tar.gz", ".gz"]])
+def test_the_longest_matching_suffix_wins_in_any_order(suffixes: list[str]) -> None:
+    from archivey.internal.naming import infer_member_name_from_archive
+
+    assert infer_member_name_from_archive("x.tar.gz", strip_suffixes=suffixes) == "x"
+
+
+def test_a_suffix_given_without_its_dot_still_strips_the_dot() -> None:
+    from archivey.internal.naming import infer_member_name_from_archive
+
+    assert infer_member_name_from_archive("x.gz", strip_suffixes=["gz"]) == "x"

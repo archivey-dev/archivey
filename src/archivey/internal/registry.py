@@ -1,4 +1,5 @@
-"""Backend registry: maps ArchiveFormat to ReadBackend classes.
+"""Backend registry: maps each :class:`~archivey.ArchiveFormat` to the
+:class:`ReadBackend` class that reads it.
 
 Registration is **unconditional**: every known backend — core and optional alike —
 registers when its module is imported. Availability is then derived centrally from the
@@ -6,6 +7,22 @@ optional dependency's module-or-``None`` sentinel, so the registry can report a 
 compositional :class:`~archivey.FormatSupport` (FULL / PARTIAL / NONE) and produce install-hint
 errors, rather than silently dropping a format whose dependency is absent (see
 ``backend-registry``).
+
+Who writes it:
+
+* each module in ``archivey.internal.backends`` registers its backend on import: with
+  :func:`register_reader`, or, for a format written against ``archivey.formats``, with
+  ``format_adapter.register_builtin_format``, which calls :func:`register_reader`
+  itself;
+* ``format_adapter.register_plugin`` (``archivey.formats.register_format``) registers
+  a plugin's backend with :meth:`BackendRegistry.register_plugin_backend`, after them.
+
+Who reads it: ``detection`` builds its tables from the detection methods (magic,
+extensions, content probes), and ``open_archive`` asks
+:meth:`BackendRegistry.reader_for_format` for the backend class of the format it
+settled on. A call's ``FormatPolicy`` can name a plugin that replaces a built-in
+container; that plugin's backend (``format_adapter.replacement_backend``) is answered
+in place of the registered one and is never registered itself.
 """
 
 from __future__ import annotations
@@ -16,7 +33,7 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import TYPE_CHECKING, Protocol
 
-from archivey.config import ArchiveyConfig, ProcessIsolation
+from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ProcessIsolation
 from archivey.cost import StreamCapability
 from archivey.exceptions import (
     PackageNotInstalledError,
@@ -116,10 +133,6 @@ _CONTAINER_OPTIONAL_CODECS: dict[
     ContainerFormat.ZIP: (Codec.DEFLATE64, Codec.ZSTD, Codec.PPMD),
 }
 
-# How each optional codec is obtained (install hint surfaced to the caller) now lives on
-# the codec descriptors; read via codec_requirement() so a codec's package / extra / hint
-# is declared in exactly one place (see ``backend-registry``).
-
 
 @functools.cache
 def _optional(name: str) -> ModuleType | None:
@@ -158,10 +171,17 @@ class BackendRegistry:
         # detection table lists them after the built-in backends and the stream codecs:
         # detection takes the first match in table order, so a built-in signal wins.
         self._plugin_classes: list[type[ReadBackend]] = []
+        # The backend with ``RAW_STREAMS``, which reads a bare single-file compressed
+        # stream (``.gz``, ``.xz``): those formats have no ``_readers`` entry of their
+        # own, so a codec registered later is readable too (``_backend_for``).
         self._raw_stream_backend: type[ReadBackend] | None = None
         self._extension_map_cache: dict[str, ArchiveFormat] | None = None
 
     def register_reader(self, backend_cls: type[ReadBackend]) -> None:
+        """Register a built-in backend for each format in its ``FORMATS``.
+
+        A later registration for a format replaces the earlier one.
+        """
         if backend_cls not in self._reader_classes:
             self._reader_classes.append(backend_cls)
         for fmt in backend_cls.FORMATS:
@@ -395,7 +415,8 @@ class BackendRegistry:
 
         Cached after first build: registration is import-time (and rare in tests), while
         detection (``_detect_format_body``) looks the map up on every ``detect_format``
-        call, so once per ``open_archive``. Invalidated on ``register_reader``.
+        call, so once per ``open_archive``. Every registration of a backend or a codec
+        invalidates it.
         """
         cached = self._extension_map_cache
         if cached is not None:
@@ -443,16 +464,19 @@ class BackendRegistry:
 
     # --- availability --------------------------------------------------------------------
 
+    @staticmethod
+    def _needed_modules(backend_cls: type[ReadBackend]) -> tuple[str, ...]:
+        """The modules ``backend_cls`` needs to read: its ``OPTIONAL_DEPENDENCY``, then
+        its ``REQUIRED_MODULES``."""
+        dep = backend_cls.OPTIONAL_DEPENDENCY
+        return (*((dep,) if dep is not None else ()), *backend_cls.REQUIRED_MODULES)
+
     def _missing_dependency(
         self, backend_cls: type[ReadBackend], excluded: frozenset[OptionalLibrary]
     ) -> str | None:
         """The first module the backend needs that does not import, or that
         ``excluded`` turns off, else ``None``. An excluded one is not imported."""
-        dep = backend_cls.OPTIONAL_DEPENDENCY
-        for name in (
-            *((dep,) if dep is not None else ()),
-            *backend_cls.REQUIRED_MODULES,
-        ):
+        for name in self._needed_modules(backend_cls):
             if is_excluded_module(name, excluded) or _optional(name) is None:
                 return name
         return None
@@ -464,6 +488,7 @@ class BackendRegistry:
         check_programs: bool = False,
         excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
         replacement: type[FormatHandler] | None = None,
+        config: ArchiveyConfig = DEFAULT_ARCHIVEY_CONFIG,
     ) -> FormatAvailability:
         """Compute the tri-state support of ``fmt`` compositionally (see ``backend-registry``).
 
@@ -475,6 +500,8 @@ class BackendRegistry:
         ``excluded`` and ``replacement`` are a call's ``FormatPolicy`` answers: the
         packages it turns off, which count as absent, and the plugin that reads ``fmt``
         in place of the registered backend (``FormatPolicy._replacement_for``).
+        ``config`` is handed to ``missing_programs``, for a setting that names the
+        program to run (``ArchiveyConfig.unrar_path``).
         """
         if replacement is not None:
             # Imported here: the plugin adapter imports this module.
@@ -486,6 +513,7 @@ class BackendRegistry:
                 check_programs=check_programs,
                 member_codecs=False,
                 excluded=excluded,
+                config=config,
             )
         backend_cls = self._backend_for(fmt)
         if backend_cls is None:
@@ -498,6 +526,7 @@ class BackendRegistry:
             check_programs=check_programs,
             member_codecs=True,
             excluded=excluded,
+            config=config,
         )
 
     def _backend_availability(
@@ -508,6 +537,7 @@ class BackendRegistry:
         check_programs: bool,
         member_codecs: bool,
         excluded: frozenset[OptionalLibrary],
+        config: ArchiveyConfig,
     ) -> FormatAvailability:
         """The support of ``fmt`` when ``backend_cls`` reads it.
 
@@ -572,7 +602,7 @@ class BackendRegistry:
                 assert requirement is not None  # an optional codec always declares one
                 missing.append(requirement)
         if check_programs:
-            missing.extend(backend_cls.missing_programs())
+            missing.extend(backend_cls.missing_programs(config))
 
         if not missing:
             return FormatAvailability(fmt, FormatSupport.FULL, (), required_source)
@@ -622,13 +652,8 @@ class BackendRegistry:
         backend = self._backend_for(fmt)
         if backend is None or not excluded:
             return False
-        dep = backend.OPTIONAL_DEPENDENCY
         return any(
-            is_excluded_module(name, excluded)
-            for name in (
-                *((dep,) if dep is not None else ()),
-                *backend.REQUIRED_MODULES,
-            )
+            is_excluded_module(name, excluded) for name in self._needed_modules(backend)
         )
 
     def registered_reader(self, fmt: ArchiveFormat) -> type[ReadBackend] | None:
@@ -727,15 +752,20 @@ class BackendRegistry:
         ]
 
 
-# Module-level singleton
+# The process-wide registry. Built-in backends register on import; a plugin registers
+# when ``register_format`` or ``register_codec`` is called, which may be mid-process.
+# Nothing unregisters, except ``format_adapter.registration_scope``, which tests use to
+# undo plugin and codec registrations.
 _registry = BackendRegistry()
 
 
 def register_reader(backend_cls: type[ReadBackend]) -> None:
+    """Register a built-in backend (:meth:`BackendRegistry.register_reader`)."""
     _registry.register_reader(backend_cls)
 
 
 def get_registry() -> BackendRegistry:
+    """The process-wide :class:`BackendRegistry`."""
     return _registry
 
 
@@ -768,9 +798,10 @@ def format_availability(
     whose ``requires`` count as a registered plugin's do. Whether the format may open is
     another question, answered by ``config.formats.allows(fmt)``; a caller needs both.
     """
-    # A non-ArchiveFormat used to fall through to a fabricated record — NONE with an
-    # empty ``missing``, indistinguishable from a legitimate unsupported answer, and a
-    # ``format`` field violating its own declared type. The check is here rather than on
+    # Anything that is not a format is refused here: a StreamFormat, a ContainerFormat
+    # or a stray string would otherwise reach the method and fail with an untranslated
+    # AttributeError, where the caller should get an ArchiveyUsageError that names the
+    # pairs. The check is here rather than on
     # the method so internal callers, which hold an ArchiveFormat by construction, keep
     # the plain lookup.
     resolved = coerce_archive_format(
@@ -785,6 +816,7 @@ def format_availability(
         check_programs=check_programs,
         excluded=policy.exclude_libraries,
         replacement=policy._replacement_for(resolved),
+        config=config,
     )
 
 
