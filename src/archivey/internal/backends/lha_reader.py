@@ -297,8 +297,11 @@ class _HeaderSource(Protocol):
 class _Headers:
     """Reads member headers, checking each as it is read."""
 
-    def __init__(self, source: _HeaderSource) -> None:
+    def __init__(self, source: _HeaderSource, *, probe_cut: bool = True) -> None:
         self._source = source
+        # Whether a source of unknown size is asked for a member's last byte. The
+        # self-extracting scan's peek does not: a byte past the peek says nothing.
+        self._probe_cut = probe_cut
 
     # ── Headers ──────────────────────────────────────────────────────────────────────
 
@@ -328,8 +331,20 @@ class _Headers:
                 f"the member header at offset {offset} has level {level}; LHA has "
                 "levels 0 to 3"
             )
+        end = header.end + header.stored
         size = self._source.size
-        if size is not None and header.end + header.stored > size:
+        if size is not None:
+            cut = end > size
+        else:
+            # A source whose size is not known: is the data's last byte there? That
+            # is ``end > size`` asked of the source, so a cut archive is not listed
+            # as whole.
+            cut = (
+                self._probe_cut
+                and end > header.end
+                and not self._source.read_at(end - 1, 1)
+            )
+        if cut:
             raise TruncatedError(
                 f"the LHA archive ends inside the data of the member at offset {offset}"
             )
@@ -842,7 +857,7 @@ def _validate_header(
     ends the file. lhasa skips it by the stub's name; the walk needs no name.
     """
     source = _PeekSource(peek_more, remaining)
-    headers = _Headers(source)
+    headers = _Headers(source, probe_cut=False)
     try:
         header = headers._read_header(0)
     except _ShortPeek:
