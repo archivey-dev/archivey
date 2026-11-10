@@ -122,7 +122,7 @@
 - [ ] 6.2 `dev-docs/threat-model.md`: a remote-source section with two lines: chained
       URLs reach the protocol they name, and a same-length replacement of an unpinned
       remote object is not detected (design D7).
-- [ ] 6.3 IDEAS.md: replace the fsspec entry with a pointer to this change, and add
+- [x] 6.3 IDEAS.md: replace the fsspec entry with a pointer to this change, and add
       a persisted member index (offsets saved so a later open lists with no walk) as a
       separate idea.
 

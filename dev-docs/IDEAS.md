@@ -16,9 +16,7 @@ is added here.
 
 Each idea carries a status:
 
-- *Planned for 0.2.0* — committed for the first public release; the OpenSpec change
-  named with it carries the work.
-- *Planned after 0.2.0* — we intend to do it, after the first public release.
+- *In progress* — a pull request or an OpenSpec change named with it carries the work.
 - *Needs design* — we want it, but the shape is not settled. Start with a proposal.
 - *Open idea* — worth doing if someone needs it. Not planned.
 
@@ -56,14 +54,17 @@ Each idea carries a status:
   prints the raw-name samples), with no guessing. That is how we would collect the corpus
   a detector needs.
 - **`unar` for formats archivey does not decode.** *Open idea.* `unar` reads StuffIt,
-  LHA, ARJ, ACE, CAB, old Mac archives and codecs that have no Python library. The process
+  ACE, old Mac archives and codecs that have no Python library. (CAB is read natively,
+  and native LHA and ARJ readers are in progress.) The process
   layer (`internal/external/unar.py`) is already format-agnostic, so a backend would add
   its own refusals and entry mapping, as `rar_unar.py` does for RAR.
-- **libarchive backend.** *Open idea.* `python-libarchive-c` as an additional backend for
-  several formats, behind its own extra. It brings a native C dependency and weak random
-  access.
-- **Decode RAR without `unrar`.** *Open idea (research).* Build a minimal synthetic
-  one-file RAR stream and feed it to libarchive's RAR decoder, as `rarfile` does. It could
+- **libarchive backend.** *Parked.* A separate plugin package that reads LHA through the
+  system libarchive, in a child process, was built and parked: LHA is its only real use,
+  and a native LHA reader is preferred. What is still open is libarchive as an
+  accelerator for streams archivey decodes in Python, which is being measured first.
+- **Decode RAR without `unrar`.** *Open idea (research).* Feed a minimal one-file RAR
+  stream to libarchive's RAR decoder, as `rarfile` does. archivey already builds such a
+  stream for `unrar` (`backends/rar_synthetic.py`), so the open part is the decoder. It could
   drop the `unrar` requirement for common cases, but RAR decode correctness is hard, and
   `unrar` stays the reference.
 - **Subprocess decompressor streams.** *Open idea.* One reusable stream that pipes data
@@ -96,7 +97,8 @@ Each idea carries a status:
   formats are equally well supported by the evidence, detection should raise a dedicated
   error. Later, opening could try each tied candidate; that needs limits on cumulative
   work and a rule for when several succeed.
-- **Makeself-aware payload location.** *Open idea.* A makeself `.run` stub states where
+- **Makeself-aware payload location.** *In progress* (a makeself reader that parses
+  the stub). A makeself `.run` stub states where
   its payload starts (`SKIP`) and how it is compressed (`COMPRESS`). Reading that would
   replace a 2 MiB scan with one seek and would name compressors archivey does not read.
   It needs a corpus of current and old installers first
@@ -117,15 +119,11 @@ Each idea carries a status:
 
 ## Reading and verification
 
-- **Raise a stream's verification level on demand.** *Open idea.* A member stream
-  reports `verified` and `verifiable` (`Verification`: `NONE`, `UNLOCKED`, `LENGTH`,
-  `CHECKSUM`). A `verify(at_least=…)` method could read what is left to reach a level,
-  and a `reader.verify(member)` could check a member without handing out its bytes.
-  Retiring `ENCRYPTED_MEMBER_UNVERIFIED` in favour of the level is a separate call.
-- **Count the xz, zstd and LZ4 checksums in the level.** *Open idea.* These formats
-  carry a checksum per stream or frame only when the writer added one, so their
-  streams stop at `LENGTH` today. Each decoder would report, per frame, that a check
-  was present and passed.
+- **Check one member without handing out its bytes.** *Open idea.* `stream.verify()`
+  reads a stream until it reaches `verifiable`, and `reader.verify_all()` does that for
+  every member. A `reader.verify(member)` for one member does not exist
+  ([`topics/verification.md`](topics/verification.md)). Retiring
+  `ENCRYPTED_MEMBER_UNVERIFIED` in favour of the level is a separate call.
 - **Say when a WinZip AES seek re-reads the ciphertext.** *Open idea.* **Good first
   contribution.** To keep the HMAC across seeks, the read that returns an AES member's last
   byte first reads the ciphertext the seeks skipped. The user docs don't state this, and
@@ -149,7 +147,8 @@ Each idea carries a status:
   every path would do the same everywhere. It is not clear cut: for a member cut short
   inside a truncated archive, `TruncatedError` is the right answer, so first find out
   which sources raise it, and when.
-- **Salvage mode.** *Needs design.* Backups are full of truncated and corrupt archives.
+- **Salvage mode.** *Needs design* (two design drafts wait for review: salvage step 1,
+  and salvage in every format). Backups are full of truncated and corrupt archives.
   Reads already return the readable prefix and then raise, and a member's data error
   already leaves `stream_members()` running wherever the next member is reachable (ZIP,
   7z, RAR, ISO, plain TAR; `archive-reading` spec). What is left is damage to the
@@ -160,11 +159,6 @@ Each idea carries a status:
 
 ## Performance
 
-- **Hold the solid-block decoder across `open()` calls.** *Needs design.* Each random
-  `open()` on a solid 7z rebuilds the folder decoder from the start, so opening every
-  member costs about 4.5× one pass. Keeping one decoder and reusing it when the next target
-  is ahead would remove that. The open question is what to keep under
-  `concurrent_operations=True`, where several decoders can be live at once.
 - **Batch small members into one `unrar` call.** *Open idea.* A non-solid
   `stream_members()` pass spawns one `unrar` per member, about 5 ms each. Small adjacent
   members could share a process and be split by size, as the solid path already does.
@@ -227,9 +221,12 @@ Each idea carries a status:
   the pass would hold the small sidecar back until it has seen the next member.
 - **Pathlib-like navigation.** *Open idea.* An `ArchivePath` with `/`, `iterdir()`,
   `glob()` and `read_bytes()`, as `zipfile.Path` does.
-- **fsspec integration.** *Open idea.* Expose an opened archive as an fsspec file system,
-  so pandas, dask and pyarrow read members by path. Opening from a URL could follow, with
-  fsspec's listing used to find sibling volumes.
+- **fsspec integration.** *In progress* (the `fsspec-integration` OpenSpec change).
+  An fsspec `OpenFile` or URL already opens as a remote source. The file system that
+  lets pandas, dask and pyarrow read members by path is in review.
+- **A persisted member index.** *Open idea.* Save the member offsets a listing found, so
+  a later open of the same archive (a remote one above all) lists with no walk. It needs
+  a way to tell that the archive has not changed since.
 - **Best available digest without decompression.** *Open idea.* **Good first
   contribution.** A helper that returns the strongest digest an archive already stores
   for a member, and says whether it was stored or computed. The recipe is in
@@ -240,18 +237,20 @@ Each idea carries a status:
   start of a self-checking stream, and `CHECKSUM` without a full decode where a format allows
   it (`reports/partial-crc-candidates-2026-10-22.md`). The result and the errors must stay
   the same, so each can land in a patch release.
-- **Public backend API.** *Needs design.* Export the backend base class and registry so
-  rare formats (CAB, CPIO, SquashFS, WIM, XAR) can be third-party plugins. It constrains
-  how freely the backend contract can change, so decide before 1.0.
+- **A stable plugin interface.** *Needs design.* Third-party formats and codecs plug in
+  through the experimental `archivey.formats` interface (the `plugin-api` OpenSpec
+  change, [Adding a format](../docs/adding-a-format.md)). Which of its names become stable,
+  and what 1.0 promises for them, is a decision to make before 1.0, since it constrains
+  how freely the reader contract can change.
 - **A lifecycle rule: a refused `open()` leaves nothing behind.** *Open idea.* Today this
   is specified for one case only. Before writing the general rule, audit each backend for
   the gap between creating a resource and the object that owns it.
 
 ## CLI
 
-- **Read the archive from stdin.** *Open idea.* A piped archive is already read through
-  `/dev/stdin` on Linux and macOS. What is still open is wiring the reserved `-` archive
-  argument to it.
+- **Read the archive from stdin in every verb.** *Open idea.* `archivey cat -` reads a
+  piped archive, and the other verbs read one through `/dev/stdin` on Linux and macOS.
+  They still refuse the `-` argument, and Windows has no `/dev/stdin`.
 - **`--json` output.** *Needs design.* Waits for a designed member schema. The flag name
   is `--json`.
 - **`--raw` names.** *Open idea.* An escape hatch that prints exact names, for scripts that

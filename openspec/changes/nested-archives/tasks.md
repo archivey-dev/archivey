@@ -12,4 +12,4 @@
 
 ## 2. First user
 
-- [ ] 2.1 The deb reader (its own pull request).
+- [x] 2.1 The deb reader (its own pull request).
