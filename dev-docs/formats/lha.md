@@ -165,9 +165,14 @@ when nothing else matched: a `.COM`, Amiga hunk or Atari TOS stub has no cue.
 `format=LHA` reads what detection finds (`SFX_PARSER_SCANS`).
 
 Where lhasa skips the first header after the names `LHA-SFX` and `LhASFX V1.2,`, the
-validator walks the members it can see instead: an archive that ends, with more than
-padding after its end byte, before the file does is `VALID_SHORT`, and the scan looks
-on. Amiga LhASFX keeps its usage text as such an archive inside the stub. ExpLzh's
+validator walks the members after the first instead: an archive that ends, with more
+than padding after its end byte, before the file does is `VALID_SHORT`, and the scan
+looks on. Amiga LhASFX keeps its usage text as such an archive inside the stub. The walk
+stops after `_WALK_MAX` (8) members and then grades the candidate `VALID`, so a decoy of
+nine or more members is taken: a window of valid headers makes each one a candidate,
+and an unbounded walk from each costs time quadratic in the window. A next header that
+does not read grades the candidate `DAMAGED`, so a stub header that passes its 8-bit sum
+by chance loses to the real archive; opening still falls back to it. ExpLzh's
 DECLHA stubs carry no decoy, and lhasa's skip passes over their real archive (it lists
 nothing); archivey reads it.
 
