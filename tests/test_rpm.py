@@ -167,7 +167,7 @@ def test_extract(tmp_path: Path, pipe: bool) -> None:
     source = NonSeekableBytesIO(path.read_bytes()) if pipe else path
     dest = tmp_path / "out"
     with open_archive(source, streaming=pipe) as reader:
-        reader.extract_all(dest)
+        reader.extract_all(dest, on_blocked="skip")
     for name, content in CONTENT.items():
         assert (dest / name).read_bytes() == content
     at = dest / "usr" / "share" / "at"
@@ -932,7 +932,7 @@ def test_an_unknown_file_type_is_listed_and_reported() -> None:
         codes = [d.code for d in reader.diagnostics.retained]
     odd = members["opt/odd"]
     assert odd.type is MemberType.OTHER
-    assert "special_file_type" not in odd.extra
+    assert odd.extra["special_file_type"] == "unknown"
     assert codes == [DiagnosticCode.MEMBER_TYPE_UNKNOWN]
     assert [d.code for d in odd.diagnostics] == [DiagnosticCode.MEMBER_TYPE_UNKNOWN]
 
@@ -948,6 +948,67 @@ def test_payload_bytes_for_a_type_rpm_reads_none_for_are_damage(mode: int) -> No
     )
     with pytest.raises(CorruptionError, match="the header gives 0"):
         _open(data).members()
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["bytesio", "pipe"])
+def test_streaming_header_store_size_does_not_drive_the_allocation(
+    pipe: bool,
+) -> None:
+    """A streaming open reads the signature header's data store in steps, so a 1 KB
+    package that declares a 60 MiB store is not given 60 MiB of memory before it is
+    found cut. Before the fix the walk asked its stream for the declared size in one
+    read, which peaked at 60 MiB from a ``BytesIO`` and 120 MiB from a pipe."""
+    lead = b"\xed\xab\xee\xdb\x03" + b"\0" * 91
+    signature = (
+        b"\x8e\xad\xe8\x01\0\0\0\0" + struct.pack(">II", 1, 60 * 2**20) + b"\0" * 16
+    )
+    data = lead + signature + b"x" * 1000
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+
+    def walk() -> None:
+        with (
+            pytest.raises(TruncatedError),
+            open_archive(source, format=RPM, streaming=True) as reader,
+        ):
+            for _member, _stream in reader.stream_members():
+                pass
+
+    peak = traced_peak(walk)
+    assert peak < 8 * 2**20, f"peak {peak} bytes for a {len(data)}-byte package"
+
+
+def _retype(data: bytes, tag: int, kind: int) -> bytes:
+    """The package with the main header's index entry for ``tag`` given type ``kind``."""
+    # The signature header starts at 96, after the lead: the next magic is the main one.
+    header = data.index(b"\x8e\xad\xe8\x01", 96 + 1)
+    (count,) = struct.unpack_from(">I", data, header + 8)
+    raw = bytearray(data)
+    for i in range(count):
+        at = header + 16 + 16 * i
+        if struct.unpack_from(">I", raw, at)[0] == tag:
+            struct.pack_into(">I", raw, at + 4, kind)
+            return bytes(raw)
+    raise AssertionError(f"no tag {tag}")
+
+
+@pytest.mark.parametrize("tag", [1027, 1035, 1036, 1039, 1040])
+def test_a_single_string_entry_with_a_count_over_one_is_damage(tag: int) -> None:
+    """rpm's headerVerifyInfo refuses a STRING entry whose count is not 1. A count
+    equal to the file count must not pass a per-file column check with one value."""
+    files = _tree()
+    package = _Package(files, compressor=None)
+    if tag == 1027:
+        package = _Package(
+            files,
+            compressor=None,
+            drop_tags=(1116, 1117, 1118),
+            extra_tags={1027: (_STRING_ARRAY, [f.path for f in files])},
+        )
+    data = _retype(_build(package), tag, _STRING)
+    with pytest.raises(CorruptionError, match=f"tag {tag}"), _open(data) as reader:
+        for _, stream in reader.stream_members():
+            if stream is not None:
+                stream.read()
 
 
 # Edges the mutation sweep found untested: each test below fails when one bound,
@@ -1028,9 +1089,7 @@ def test_a_string_entry_reads_its_values_and_no_further() -> None:
     data = b"one\0two\0three\0"
     header = _store(
         {
-            1: rpm_reader._Entry(
-                _STRING, 5, 0
-            ),  # a STRING is one value, whatever the count
+            1: rpm_reader._Entry(_STRING, 1, 0),
             2: rpm_reader._Entry(_STRING_ARRAY, 2, 4),
             3: rpm_reader._Entry(_I18NSTRING, 1, 8),
         },
@@ -1043,6 +1102,16 @@ def test_a_string_entry_reads_its_values_and_no_further() -> None:
     assert header.strings(4) is None
     assert header.count(2) == 2
     assert header.count(4) == 0
+
+
+def test_a_string_entry_with_a_count_over_one_is_damage() -> None:
+    """A STRING holds one value; rpm's headerVerifyInfo refuses any other count."""
+    header = _store({1: rpm_reader._Entry(_STRING, 5, 0)}, b"one\0two\0three\0")
+    for read in (header.strings, header.string):
+        with pytest.raises(
+            CorruptionError, match="tag 1 is a single string with count 5"
+        ):
+            read(1)
 
 
 @pytest.mark.parametrize(
@@ -1402,7 +1471,7 @@ def test_a_payload_field_that_is_not_hexadecimal_names_it() -> None:
     at = data.index(entry) - 104 + 48
     data = data[:at] + b"0000 006" + data[at + 8 :]
     with pytest.raises(
-        CorruptionError, match=r"the filesize field b'0000 006' is not a number"
+        CorruptionError, match=r"the filesize field '0000 006' is not a number"
     ):
         _open(data).members()
 
