@@ -25,9 +25,11 @@ name. A member's data is checked against its CRC-16.
 The reader follows lhasa (the tool Debian ships as ``lha``) where writers disagree:
 Amiga LHA's directories stored as an empty ``-lh0-`` member with no name, LHARK's own
 ``-lh7-`` (read as ``-lk7-``), and OS-9/68k's level-2 size. The methods decoded are
-``-lh0-``, ``-lz4-`` and ``-pm0-`` (stored) and ``-lh4-`` to ``-lh7-``, ``-lhx-`` and
-``-lk7-`` (:mod:`~archivey.internal.streams.codecs.lzh_decoder`). Other methods are
-listed and refused when read. The handbook page is ``dev-docs/formats/lha.md``.
+``-lh0-``, ``-lz4-`` and ``-pm0-`` (stored), ``-lh4-`` to ``-lh7-``, ``-lhx-`` and
+``-lk7-`` (:mod:`~archivey.internal.streams.codecs.lzh_decoder`), and ``-lh1-``,
+``-lzs-`` and ``-lz5-`` (:mod:`~archivey.internal.streams.codecs.lharc_decoder`).
+PMarc's methods and any other are listed and refused when read. The handbook page is
+``dev-docs/formats/lha.md``.
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.internal.streams.codecs.lharc_decoder import DECODERS as _OLD_DECODERS
 from archivey.internal.streams.codecs.lzh_decoder import (
     METHODS as _LZH_METHODS,
     LzhDecoder,
@@ -615,7 +618,7 @@ class LhaReader(IndexedReader[_Location]):
             compression: tuple[CompressionMethod, ...] = ()
         elif method in _STORED:
             compression = (CompressionMethod(CompressionAlgorithm.STORED),)
-        elif method in _LZH_METHODS or method[:3] == "-lh":
+        elif method in _LZH_METHODS or method[:3] == "-lh" or method[:3] == "-lz":
             compression = (CompressionMethod(CompressionAlgorithm.LZH),)
         else:
             compression = (CompressionMethod(CompressionAlgorithm.UNKNOWN),)
@@ -695,7 +698,7 @@ class LhaReader(IndexedReader[_Location]):
             return MemberData(
                 self._source.view(locator.offset, locator.stored), digests=digests
             )
-        if method not in _LZH_METHODS:
+        if method not in _LZH_METHODS and method not in _OLD_DECODERS:
             raise UnsupportedFeatureError(
                 f"{quoted(member.name)} uses LHA method {method}, which archivey "
                 "does not read"
@@ -715,7 +718,12 @@ class _LzhStream(io.RawIOBase):
 
     def __init__(self, source: ReaderSource, locator: _Location, size: int) -> None:
         self._view = source.view(locator.offset, locator.stored)
-        self._decoder = LzhDecoder(locator.method, size, self._more)
+        old = _OLD_DECODERS.get(locator.method)
+        self._decoder = (
+            LzhDecoder(locator.method, size, self._more)
+            if old is None
+            else old(size, self._more)
+        )
 
     def _more(self) -> bytes | None:
         assert self._view is not None

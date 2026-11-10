@@ -30,6 +30,7 @@ from archivey import (
     open_archive,
 )
 from archivey.internal.backends import lha_reader
+from archivey.internal.streams.codecs.lharc_decoder import DECODERS
 from archivey.internal.streams.codecs.lzh_decoder import LzhDecoder
 from tests.lha_util import (
     BitWriter,
@@ -177,7 +178,11 @@ _LHASA_EXPECTED: dict[str, dict[str, str]] = {
         "hello.txt": "0d74c782a0fd7503",
         "Apply-Ea.Cmd": "a4c66230678086f4",
     },
-    "lha_amiga_122_lh1.lzh": {"gpl-2": "UnsupportedFeatureError"},
+    "generated_lzs.lzs": {"GPL-2": "8177f97513213526"},
+    "larc333_initial.lzs": {"initial.bin": "9ca4f11d7f7f42b5"},
+    "larc333_lz5.lzs": {"GPL-2": "8177f97513213526"},
+    "lha_amiga_122_lh1.lzh": {"gpl-2": "8177f97513213526"},
+    "lharc113_lh1.lzh": {"GPL-2": "8177f97513213526"},
     "lha_amiga_122_lh4.lzh": {"gpl-2": "8177f97513213526"},
     "lha_amiga_122_subdir.lzh": {"subdir/subdir2/hello.txt": "a948904f2f0f479b"},
     "lha_os2_208_h3_lh5.lzh": {"GPL-2": "8177f97513213526"},
@@ -205,6 +210,9 @@ _LHASA_EXPECTED: dict[str, dict[str, str]] = {
 """Each fixture's members: a file's SHA-256 prefix (what lhasa extracts), a symlink's
 target, or the member type."""
 
+# Hand-made by lhasa's author, without the end byte.
+_NO_END_BYTE = frozenset({"generated_lzs.lzs", "larc333_initial.lzs"})
+
 
 @pytest.mark.parametrize("fixture", sorted(_LHASA_EXPECTED))
 def test_lhasa_fixtures(fixture: str) -> None:
@@ -224,7 +232,10 @@ def test_lhasa_fixtures(fixture: str) -> None:
                 got[member.name] = f"-> {member.link_target}"
             else:
                 got[member.name] = member.type.name.lower()
-        assert not reader.diagnostics.retained
+        codes = [d.code for d in reader.diagnostics.retained]
+    assert codes == (
+        [DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] if fixture in _NO_END_BYTE else []
+    )
     assert got == _LHASA_EXPECTED[fixture]
 
 
@@ -441,12 +452,18 @@ def test_data_after_the_end_byte_is_reported() -> None:
 # ── Refusals ────────────────────────────────────────────────────────────────────────
 
 
-def test_an_unknown_method_lists_but_does_not_read() -> None:
-    member = Member(b"f", b"x", method="-lh1-", stored=b"\0" * 4)
+@pytest.mark.parametrize(
+    ("method", "algo"),
+    [("-lh2-", CompressionAlgorithm.LZH), ("-pm1-", CompressionAlgorithm.UNKNOWN)],
+)
+def test_an_unknown_method_lists_but_does_not_read(
+    method: str, algo: CompressionAlgorithm
+) -> None:
+    member = Member(b"f", b"x", method=method, stored=b"\0" * 4)
     with _open(archive([member])) as reader:
         (got,) = reader.members()
-        assert got.compression[0].algo is CompressionAlgorithm.LZH
-        with pytest.raises(UnsupportedFeatureError, match="-lh1-"):
+        assert got.compression[0].algo is algo
+        with pytest.raises(UnsupportedFeatureError, match=method):
             reader.read(got)
 
 
@@ -677,3 +694,79 @@ def test_decoder_stops_at_the_size() -> None:
     # A match that runs past the member's size is cut; input after it is ignored.
     stored = compress(b"abc" * 100, "-lh5-")
     assert _decode(stored + b"\xff" * 10, 10) == b"abcabcabca"
+
+
+# ── -lh1-, -lzs- and -lz5- ─────────────────────────────────────────────────────────
+
+
+def _old(method: str, stored: bytes, size: int) -> bytes:
+    chunks = iter([stored])
+    return DECODERS[method](size, lambda: next(chunks, None)).read(size)
+
+
+def _stored(fixture: str) -> tuple[bytes, int]:
+    """The one member's stored bytes and size, from a level-0 header."""
+    with open_archive(LHASA / fixture) as reader:
+        (member,) = reader.members()
+    assert member.extra["lha.header_level"] == 0
+    raw = (LHASA / fixture).read_bytes()
+    start = raw[0] + 2
+    return raw[start : start + (member.compressed_size or 0)], member.size or 0
+
+
+@pytest.mark.parametrize(
+    ("fixture", "method"),
+    [
+        ("lharc113_lh1.lzh", "-lh1-"),
+        ("generated_lzs.lzs", "-lzs-"),
+        ("larc333_lz5.lzs", "-lz5-"),
+    ],
+)
+@pytest.mark.parametrize("cut", [1, 2, 3, "half"])
+def test_old_methods_cut_streams_are_truncated(
+    fixture: str, method: str, cut: int | str
+) -> None:
+    """A stream a few bytes short decodes into the zero padding before it runs out;
+    only the over-read check refuses it (a no-op ``_check_overread`` fails the short
+    cuts). A stream cut in half runs out of padding first."""
+    stored, size = _stored(fixture)
+    assert hashlib.sha256(_old(method, stored, size)).hexdigest()[:16] == (
+        "8177f97513213526"
+    )
+    keep = len(stored) // 2 if cut == "half" else len(stored) - int(cut)
+    with pytest.raises(TruncatedError):
+        _old(method, stored[:keep], size)
+
+
+@pytest.mark.parametrize("seed", range(20))
+@pytest.mark.parametrize(
+    "fixture", ["lharc113_lh1.lzh", "generated_lzs.lzs", "larc333_lz5.lzs"]
+)
+def test_damaged_old_methods_raise_an_archivey_error(fixture: str, seed: int) -> None:
+    rng = random.Random(seed)
+    raw = bytearray((LHASA / fixture).read_bytes())
+    for _ in range(1 + seed % 4):
+        raw[rng.randrange(60, len(raw) - 1)] ^= 1 << rng.randrange(8)
+    with open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.LHA) as reader:
+        try:
+            reader.read(reader.members()[0])
+        except ArchiveyError:
+            pass
+
+
+def test_lzs_copies_from_a_ring_of_spaces() -> None:
+    bits = BitWriter()
+    bits.write(1, 1)
+    bits.write(ord("x"), 8)
+    bits.write(0, 1)
+    bits.write(0, 11)  # ring position 0: still spaces
+    bits.write(1, 4)  # three bytes
+    bits.write(0, 7)
+    assert _old("-lzs-", bits.getvalue(), 4) == b"x   "
+
+
+def test_lz5_copies_from_its_starting_pattern() -> None:
+    # Position 13 * 65 holds thirteen "A" bytes in the starting ring.
+    pos = 13 * 65
+    stream = bytes([0b10, pos & 0xFF, (pos >> 4) & 0xF0 | 2, ord("!")])
+    assert _old("-lz5-", stream, 6) == b"AAAAA!"
