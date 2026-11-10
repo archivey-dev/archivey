@@ -104,6 +104,12 @@ class StreamConfig:
     accelerator under AUTO, which needs a source it can seek. A reader may fill it
     first with the same value, as the ZIP reader does to save a copy per member."""
 
+    source_is_file: bool = False
+    """Set by the bzip2 codec (``Bzip2Codec.prepare_config``) when the source is a path
+    or a byte range of a regular file (``file_region``), and only when its sequential
+    rule would otherwise take the read: the accelerator reads such a source itself, and
+    reads its input about twice."""
+
     decoder_limits: DecoderLimits = DecoderLimits()
     """The caller's :class:`~archivey.config.DecoderLimits`, carried down so a codec
     can refuse an archive-declared allocation before making it. It defaults to the

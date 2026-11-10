@@ -12,7 +12,7 @@ behaviour and links the row.
 | Codec page | Covers |
 | --- | --- |
 | [`gzip.md`](gzip.md) | gzip, zlib, and raw DEFLATE as the ZIP and 7z coder; the `rapidgzip` accelerator and its child process |
-| [`bzip2.md`](bzip2.md) | bzip2, and `rapidgzip`'s in-process bzip2 decoder |
+| [`bzip2.md`](bzip2.md) | bzip2, and the bzip2 decoder of `rapidgzip`, in a child process |
 | [`xz.md`](xz.md) | xz, lzip and LZMA Alone: the LZMA family, with archivey's own seekable xz and lzip decoders |
 | [`zstd-lz4.md`](zstd-lz4.md) | zstd and LZ4: frame formats read through their libraries; zstd seeks from frame starts and the seekable format's table |
 | [`brotli.md`](brotli.md) | Brotli: no magic, found by a content probe |
@@ -175,6 +175,16 @@ source. That peek is decided by the source's shape, not by `seekable_members`: t
 declaration is about seeking the member stream, and the peek hands nobody a stream. Tying
 it to the flag would make the same `.xz` report `size=None` on a plain open and its size
 with the flag. The peeks run with the accelerators off, since they decode nothing.
+
+On a remote source (an fsspec `OpenFile`, `ArchiveSource.remote_sources` non-empty) the
+peek reads only the last stream's footer and index, or the last member's trailer, and
+stops when that shows an earlier one (`SingleFileReader._remote_with_earlier_streams`):
+`size` is `None` and the lzip CRC is absent. This is the maintainer's ruling of
+2026-11-08, "lazy for multi-stream only": the walk costs a step per stream on every open,
+and a read from the start never needs it. A path keeps the whole walk. A seek in the
+member walks the index then. A `.xz` whose last 64 KiB are all zeros (stream padding,
+which has no length limit) is treated the same way: the scan back over the padding
+would read every byte of it.
 
 A source whose seek may decode what it skips (`seek_is_expensive`: another archive's
 member stream passed to `open_archive(member_stream)`, or a standard-library `GzipFile`,

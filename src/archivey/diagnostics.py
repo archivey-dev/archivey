@@ -37,9 +37,10 @@ from typing import ClassVar, Literal, TypeVar
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
 from archivey.internal.enum_args import coerce_enum_collection
+from archivey.internal.overrides import override
 from archivey.internal.resource_usage import ResourceUsage
 from archivey.terminal import escape_control_chars
-from archivey.types import ArchiveMember, ExtractionResult
+from archivey.types import ArchiveMember, ExtractionResult, ExtractionStatus
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")
@@ -1479,6 +1480,16 @@ class DiagnosticSummary:
     def __post_init__(self) -> None:
         object.__setattr__(self, "counts", _freeze_mapping(self.counts))
 
+    @override
+    def __reduce__(self) -> tuple[object, ...]:
+        # ``counts`` is a read-only mapping proxy, which pickle cannot store. A summary
+        # travels inside the report a FilterRejectionError carries, and every archivey
+        # exception survives pickle, so rebuild it from a plain dict.
+        return (
+            DiagnosticSummary,
+            (self.total_count, dict(self.counts), self.retained, self.dropped_count),
+        )
+
     @staticmethod
     def empty() -> DiagnosticSummary:
         return DiagnosticSummary(total_count=0, counts={}, retained=(), dropped_count=0)
@@ -1627,6 +1638,34 @@ class ExtractionReport:
 
     def __getitem__(self, index: int) -> ExtractionResult:
         return self.results[index]
+
+    @property
+    def ok(self) -> bool:
+        """``True`` when no member was refused (``BLOCKED``) or failed (``FAILED``).
+
+        A member skipped by ``overwrite="skip"``, superseded by a later one with the
+        same name, or a link whose target the archive never recorded does not make it
+        ``False``. Diagnostics do not count: the :class:`DiagnosticPolicy` decides
+        which of them are errors.
+        """
+        return not any(
+            r.status in (ExtractionStatus.BLOCKED, ExtractionStatus.FAILED)
+            for r in self.results
+        )
+
+    def raise_for_failure(self) -> None:
+        """Raise the error of the first ``BLOCKED`` or ``FAILED`` member, in order.
+
+        Does nothing when ``ok`` is ``True``. The error raised is the result's own
+        object, as ``concurrent.futures.Future.result()`` raises its exception, so
+        each call adds to its traceback.
+        """
+        for result in self.results:
+            if (
+                result.status in (ExtractionStatus.BLOCKED, ExtractionStatus.FAILED)
+                and result.error is not None
+            ):
+                raise result.error
 
 
 @dataclass(frozen=True)
