@@ -14,6 +14,7 @@ a million comparisons, and 1000 replaced files about 2 million hashes.
 from __future__ import annotations
 
 import io
+import os
 import pathlib
 import tarfile
 from pathlib import Path
@@ -101,3 +102,62 @@ def test_replacing_every_file_extracts_in_linear_time(
     # About 21 per member after the fix.
     assert calls < 100 * _LINKS
     assert len(list((tmp_path / "out").iterdir())) == _LINKS
+
+
+def _read_only_links_then_names_again(n: int, mode: int) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for i in range(n):
+            info = tarfile.TarInfo(f"f{i}")
+            info.size = 1
+            info.mode = mode
+            tar.addfile(info, io.BytesIO(b"x"))
+            link = tarfile.TarInfo(f"l{i}")
+            link.type = tarfile.LNKTYPE
+            link.linkname = f"f{i}"
+            tar.addfile(link)
+        for i in range(n):
+            info = tarfile.TarInfo(f"f{i}")
+            info.size = 1
+            info.mode = mode
+            tar.addfile(info, io.BytesIO(b"y"))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["seekable", "streaming"])
+def test_replacing_read_only_links_on_windows_stays_linear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    # On Windows a read-only file is made writable before it is replaced, and the
+    # attribute is put back on another name of the file. A replaced path is forgotten
+    # as a link source first, so the search for that other name looked at every
+    # source's paths: n(n+1)/2 extra lstat calls (20 100 for n = 200).
+    from archivey.internal import extraction
+
+    n = 200
+
+    def lstats(mode: int, out: str) -> int:
+        calls = 0
+        original = os.lstat
+
+        def counting(
+            path: str | os.PathLike[str], *, dir_fd: int | None = None
+        ) -> os.stat_result:
+            nonlocal calls
+            calls += 1
+            return original(path, dir_fd=dir_fd)
+
+        data = _read_only_links_then_names_again(n, mode)
+        with monkeypatch.context() as m:
+            m.setattr(extraction, "_WINDOWS", True)
+            m.setattr(os, "lstat", counting)
+            with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+                reader.extract_all(tmp_path / out, overwrite="replace")
+        return calls
+
+    extra = lstats(0o444, "ro") - lstats(0o644, "rw")
+    assert extra < 20 * n
+    # The links keep the first content and its read-only mode.
+    assert (tmp_path / "ro" / "l0").read_bytes() == b"x"
+    assert (tmp_path / "ro" / "l0").stat().st_mode & 0o777 == 0o444
+    assert (tmp_path / "ro" / "f0").read_bytes() == b"y"

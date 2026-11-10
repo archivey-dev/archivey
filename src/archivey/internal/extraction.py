@@ -544,6 +544,10 @@ class _RunState:
     # The reverse of ``source_paths``: path -> the one source whose content it holds,
     # so forgetting a path is one lookup however many sources the run has.
     source_of: dict[Path, int] = field(default_factory=dict)
+    # Path -> the source it held when it was forgotten, until it is recorded again. A
+    # replaced or parked path is forgotten before the Windows read-only clear looks for
+    # its other names, and those names are still on this source.
+    forgotten_source: dict[Path, int] = field(default_factory=dict)
     # The entries this run has written under ``dest``.
     written_paths: set[Path] = field(default_factory=set)
     # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> the claim
@@ -1635,7 +1639,7 @@ class ExtractionCoordinator:
         The earlier result becomes ``SUPERSEDED`` here, before the later copy is
         filtered: random access supersedes it whatever then happens to the later copy.
         Its file is parked (see ``_park_earlier_copies``). Its claim, its place in the
-        hardlink source lists and its bomb-limit counts are released now. A hardlink
+        hardlink source map and its bomb-limit counts are released now. A hardlink
         already made to it is its own directory entry and stays, and its bytes stay
         counted against the byte cap while it holds them. A directory is removed now if
         it is empty; one that other members were written into stays, as their parent,
@@ -3664,14 +3668,17 @@ class ExtractionCoordinator:
         if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
             # One other name is enough to put the attribute back, as it belongs to
             # the file. The run's other names of this file are links to the same
-            # source, so while ``path`` is still recorded only that source's paths
-            # are looked at, newest first; a path of another device's copy has
-            # another identity and is passed. A superseded copy is forgotten before
-            # it is removed, so for it every recorded path is a candidate.
+            # source, so only that source's paths are looked at, newest first; a path
+            # of another device's copy has another identity and is passed. A replaced
+            # path and a superseded copy are forgotten before they are cleared, so
+            # for them it is the source they held when forgotten. Only a path never
+            # recorded as a source looks at every recorded path.
             identity = (st.st_dev, st.st_ino)
             source_id = state.source_of.get(path)
+            if source_id is None:
+                source_id = state.forgotten_source.get(path)
             candidates: Iterator[Path] = (
-                reversed(state.source_paths[source_id])
+                reversed(state.source_paths.get(source_id, {}))
                 if source_id is not None
                 else (p for paths in state.source_paths.values() for p in paths)
             )
@@ -3708,6 +3715,7 @@ class ExtractionCoordinator:
         source_id = state.source_of.pop(path, None)
         if source_id is None:
             return False
+        state.forgotten_source[path] = source_id
         paths = state.source_paths[source_id]
         del paths[path]
         if paths:
@@ -4363,6 +4371,7 @@ class ExtractionCoordinator:
         paths.pop(path, None)
         paths[path] = None
         state.source_of[path] = source_id
+        state.forgotten_source.pop(path, None)
 
     def _already_exists(self, dest: Path, member: ArchiveMember) -> ExtractionError:
         """The error ``OverwritePolicy.ERROR`` raises for an entry at ``dest``, from the
