@@ -66,11 +66,12 @@ def test_an_archive_behind_noise_is_detected_the_same_without_a_known_size() -> 
 
 def test_a_source_past_the_completion_window_is_read_one_byte_past_it() -> None:
     # Detection does not read a long source of unknown size to its end: the measure
-    # stops one byte past the window (64 KiB under the default budget).
+    # stops one byte past the window (64 KiB under the default budget). The buffered
+    # wrapper may read one buffer further: io.DEFAULT_BUFFER_SIZE is 128 KiB from 3.14.
     data = _noise(22) + bytes(1 << 20)
     source = ShortReadBytesIO(data, max_chunk=1 << 16)
     _detected(source)
-    assert source.consumed <= 64 * 1024 + 1
+    assert source.consumed <= 64 * 1024 + 1 + io.DEFAULT_BUFFER_SIZE
 
 
 def test_past_the_completion_window_the_answers_still_differ() -> None:
