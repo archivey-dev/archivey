@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import gc
 import io
-import multiprocessing
 import os
 import pickle
 import subprocess
@@ -20,7 +19,6 @@ import warnings
 import weakref
 import zipfile
 from collections.abc import Iterator
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -614,26 +612,26 @@ def test_dask_bag_reads_members(tmp_path: Path) -> None:
     assert sorted(bag.compute(scheduler="threads")) == ["1\n", "2\n", "3\n"]
 
 
-@pytest.fixture(scope="module")
-def _resource_tracker() -> None:
-    """Start multiprocessing's resource tracker before the leak oracle's snapshot.
+_DASK_IN_PROCESSES = """
+import multiprocessing, sys
+from concurrent.futures import ProcessPoolExecutor
 
-    A ``spawn`` pool starts it on first use and it lives as long as this process, so the
-    oracle would report it as the test's child. Module scope sets it up first.
-    """
-    if sys.platform != "win32":
-        from multiprocessing import resource_tracker
+import dask.bag as db
+import dask.dataframe as dd
 
-        resource_tracker.ensure_running()
-
-
-def _spawn_pool() -> ProcessPoolExecutor:
-    """Two fresh worker processes, closed by the test that uses them.
-
-    ``spawn`` starts each worker from nothing, so a task reaches it only pickled, as on
-    a dask cluster. dask's default pool would outlive the test.
-    """
-    return ProcessPoolExecutor(2, mp_context=multiprocessing.get_context("spawn"))
+outer, flat = sys.argv[1:]
+# spawn starts each worker from nothing, so a task reaches it only pickled, as on a
+# dask cluster.
+with ProcessPoolExecutor(2, mp_context=multiprocessing.get_context("spawn")) as pool:
+    bag = db.read_text(f"archivey://*.txt::archivey://inner.zip::{outer}")
+    lines = sorted(bag.compute(scheduler="processes", pool=pool))
+    assert lines == ["1\\n", "2\\n", "3\\n"], lines
+    frame = dd.read_csv(f"archivey://p/*.csv::{flat}")
+    assert frame.npartitions == 2, frame.npartitions
+    total = frame["n"].sum().compute(scheduler="processes", pool=pool)
+    assert total == 6, total
+print("ok")
+"""
 
 
 def test_pandas_reads_through_a_nested_chain(memfs: Any) -> None:
@@ -644,29 +642,26 @@ def test_pandas_reads_through_a_nested_chain(memfs: Any) -> None:
     assert frame["x"].tolist() == [5, 6]
 
 
-@pytest.mark.usefixtures("_resource_tracker")
-def test_dask_worker_processes_read_through_a_nested_chain(tmp_path: Path) -> None:
-    """The process scheduler pickles each task's file system into another process.
+def test_dask_worker_processes_read_through_the_file_system(tmp_path: Path) -> None:
+    """dask's process scheduler pickles each task's file system into a worker.
 
-    ``memory://`` is per process, so the outer archive is a local file.
+    It runs in its own interpreter: the pool's resource tracker would otherwise stay a
+    child of the test process for the rest of the session. ``memory://`` is per
+    process, so the archives are local files.
     """
-    db = pytest.importorskip("dask.bag")
-    inner = _zip_bytes([("a.txt", b"1\n2\n"), ("b.txt", b"3\n")])
+    pytest.importorskip("dask.bag")
+    pytest.importorskip("dask.dataframe")
     outer = tmp_path / "outer.tar"
+    inner = _zip_bytes([("a.txt", b"1\n2\n"), ("b.txt", b"3\n")])
     outer.write_bytes(_tar_bytes({"inner.zip": inner}))
-    bag = db.read_text(f"archivey://*.txt::archivey://inner.zip::{outer.as_posix()}")
-    with _spawn_pool() as pool:
-        lines = bag.compute(scheduler="processes", pool=pool)
-    assert sorted(lines) == ["1\n", "2\n", "3\n"]
-
-
-@pytest.mark.usefixtures("_resource_tracker")
-def test_dask_dataframe_reads_members_in_worker_processes(tmp_path: Path) -> None:
-    dd = pytest.importorskip("dask.dataframe")
-    archive = tmp_path / "t.zip"
-    archive.write_bytes(_zip_bytes([("p/a.csv", b"n\n1\n2\n"), ("p/b.csv", b"n\n3\n")]))
-    frame = dd.read_csv(f"archivey://p/*.csv::{archive.as_posix()}")
-    assert frame.npartitions == 2
-    with _spawn_pool() as pool:
-        total = frame["n"].sum().compute(scheduler="processes", pool=pool)
-    assert total == 6
+    flat = tmp_path / "t.zip"
+    flat.write_bytes(_zip_bytes([("p/a.csv", b"n\n1\n2\n"), ("p/b.csv", b"n\n3\n")]))
+    done = subprocess.run(
+        [sys.executable, "-c", _DASK_IN_PROCESSES, outer.as_posix(), flat.as_posix()],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "ok"
