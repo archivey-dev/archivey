@@ -253,12 +253,16 @@ LOADERS: dict[str, Callable[[], Callable[..., Any]]] = {
 # changes it: pyppmd builds that value once, on its first read after ``eof``, and keeps
 # it, so read at an early ``eof`` it would go stale. The parent asks with ``GET``.
 _ASK_FOR_UNUSED = frozenset({"ppmd7", "ppmd8"})
+# What an ``OK`` reply's state reports, by kind: boolean attributes, input suffixes
+# (sent as their length; see the module docstring), and brotli's boolean methods.
 _FLAGS = ("eof", "needs_input")
 _SUFFIXES = ("unused_data", "unconsumed_tail")
 _PREDICATES = ("is_finished", "can_accept_more_data")
 
 
 def _state(codec: str, decoder: object, result: object) -> dict[str, object]:
+    """The state dict of an ``OK`` reply: what the parent's proxy needs to answer
+    ``eof`` and the rest without a round trip, plus a ``result`` that is not bytes."""
     state: dict[str, object] = {}
     for name in _FLAGS:
         value = getattr(decoder, name, None)
@@ -300,6 +304,8 @@ def _reply(out: IO[bytes], codec: str, decoder: object, result: object = None) -
 
 
 def _serve(stdin: IO[bytes], stdout: IO[bytes]) -> None:
+    """Answer the parent's requests until it closes stdin (protocol in the module
+    docstring). Every exception goes back to the parent as an ``ERR`` reply."""
     codec = ""
     decoder: object = None
     while True:

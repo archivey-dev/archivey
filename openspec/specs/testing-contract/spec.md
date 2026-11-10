@@ -414,13 +414,13 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 
 | Case | Expected |
 | --- | --- |
-| Merge-queue group changing a library, test, dependency or CI path | Short partitioned budgets over the full target set (MAY be sharded across parallel jobs); green if no crash/hang/raw exception, else the group does not merge |
-| Merge-queue group changing none of those paths (docs, review files, or a script the list does not name) | Short fuzz not required; the nightly guard still sees the commit on `main` |
-| Pull request push | Short fuzz not required (the merge queue runs it for a group that changes one of those paths) |
+| Merge-queue group | Fuzz not required; the nightly guard sees the commit once it is on `main` |
+| Pull request push | Fuzz not required |
+| Release gate | A dispatched full run is green on the release pull request |
 | Scheduled nightly, HEAD commit within ~3 days | Full partitioned target set runs |
 | Scheduled nightly, HEAD older than ~3 days | Expensive fuzz skipped (guard only) |
 | `workflow_dispatch` (optional longer env budget) | Full partition; extended exploration allowed |
-| Push to `main` alone | Full Atheris job not required (covered by merge-queue short + change-guarded nightly) |
+| Push to `main` alone | Full Atheris job not required (covered by the change-guarded nightly) |
 | RAR backend absent | RAR targets skipped; other targets still run |
 | RAR backend present + `unrar` installed (Atheris CI) | RAR open+list target runs (not skipped for missing binary) |
 | Fuzzer finds a crashing input | Job fails; repro bytes uploaded; re-run command printed |

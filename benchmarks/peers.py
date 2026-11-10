@@ -14,7 +14,8 @@ skipped.
 
 Two corpora. The harness corpus (64 members of 256 KiB, and the many-member listing
 archives) is mostly codec and listing work. The small-member corpus (4 000 files of
-20-600 random bytes in a three-level tree, as ZIP, TAR, tar.gz and 7z) is mostly the
+20-600 random bytes in a three-level tree, as ZIP, TAR, tar.gz, 7z, and CAB and RPM
+when ``gcab`` and ``rpmbuild`` are installed) is mostly the
 cost each member pays, which the harness corpus barely shows.
 
 Each row times archivey and one peer on the same file, alternating the order, and
@@ -32,6 +33,7 @@ import logging
 import random
 import shutil
 import statistics
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -275,10 +277,10 @@ def _median_pair(
 
 
 def _small_member_archives(root: Path, count: int) -> dict[str, Path | None]:
-    """ZIP (DEFLATE and stored), TAR, tar.gz and 7z of ``count`` files of 20-600
+    """ZIP (DEFLATE and stored), TAR, tar.gz, 7z, CAB and RPM of ``count`` files of 20-600
     random bytes, in 40 directories of 7 subdirectories each (fewer at ci scale).
-    Built once per ``root``. The 7z entry is ``None`` when py7zr, its writer, is
-    missing."""
+    Built once per ``root``. The 7z, CAB and RPM entries are ``None`` when their
+    writer (py7zr, ``gcab``, ``rpmbuild``) is missing."""
     base = root / f"small-{count}"
     tree = base / "tree"
     out: dict[str, Path | None] = {
@@ -320,7 +322,57 @@ def _small_member_archives(root: Path, count: int) -> dict[str, Path | None]:
 
             with py7zr.SevenZipFile(path, "w") as archive:
                 archive.writeall(tree, arcname="tree")
+    out["cab"] = _build_cab(base, tree)
+    out["rpm"] = _build_rpm(base, tree)
     return out
+
+
+def _build_cab(base: Path, tree: Path) -> Path | None:
+    """An MSZIP cabinet of ``tree`` written by ``gcab``, or None without it."""
+    path = base / "small.cab"
+    if not path.exists():
+        if shutil.which("gcab") is None:
+            return None
+        files = sorted(e.relative_to(base).as_posix() for e in tree.rglob("*.txt"))
+        subprocess.run(["gcab", "-c", "-z", str(path), *files], cwd=base, check=True)
+    return path
+
+
+def _build_rpm(base: Path, tree: Path) -> Path | None:
+    """A binary RPM installing ``tree`` under /opt, with a gzip payload, written by
+    ``rpmbuild``, or None without it."""
+    path = base / "small.rpm"
+    if not path.exists():
+        if shutil.which("rpmbuild") is None:
+            return None
+        top = base / "rpmbuild"
+        shutil.rmtree(top, ignore_errors=True)
+        (top / "SPECS").mkdir(parents=True)
+        spec = top / "SPECS" / "small.spec"
+        spec.write_text(
+            "Name: small\nVersion: 1\nRelease: 1\nSummary: bench\nLicense: MIT\n"
+            "BuildArch: noarch\n%description\nbench\n"
+            "%install\nmkdir -p %{buildroot}/opt\n"
+            f"cp -r {tree} %{{buildroot}}/opt/tree\n"
+            "%files\n/opt/tree\n"
+        )
+        subprocess.run(
+            [
+                "rpmbuild",
+                "-bb",
+                "--quiet",
+                f"--define=_topdir {top}",
+                "--define=_binary_payload w6.gzdio",
+                "--define=__os_install_post %{nil}",
+                str(spec),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        built = next((top / "RPMS").rglob("*.rpm"))
+        built.rename(path)
+        shutil.rmtree(top, ignore_errors=True)
+    return path
 
 
 def _cases(
@@ -347,13 +399,15 @@ def _cases(
         (f"TAR {tiny}", small["tar"], full, ["tarfile", "libarchive-c"]),
         (f"tar.gz {tiny}", small["tar.gz"], full, ["tarfile", "libarchive-c"]),
         (f"7z {tiny}", small["7z"], full, seven),
+        (f"CAB {tiny}", small["cab"], full, ["libarchive-c"]),
+        (f"RPM {tiny}", small["rpm"], full, ["libarchive-c"]),
     ]
 
 
-def run(scale: str, rounds: int) -> None:
+def run(scale: str, rounds: int, only: str | None = None) -> None:
     """Print one markdown table row per (archive, operation, peer) as it finishes.
 
-    Ratio is archivey / peer.
+    Ratio is archivey / peer. ``only`` keeps the archives whose label starts with it.
     """
     fx = materialize_fixtures(scale=scale)
     small = _small_member_archives(fx.root, fx.scale.small_members)
@@ -362,6 +416,8 @@ def run(scale: str, rounds: int) -> None:
     print("| --- | --- | --- | ---: | ---: | ---: |", flush=True)
     try:
         for label, path, ops, peers in _cases(fx, small):
+            if only is not None and not label.startswith(only):
+                continue
             for peer in peers:
                 for op in ops:
                     why = _peer_available(peer)
@@ -409,10 +465,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", choices=("ci", "realistic"), default="realistic")
     parser.add_argument("--rounds", type=int, default=9, help="timed calls per side")
+    parser.add_argument(
+        "--only", help="measure only the archives whose label starts with this"
+    )
     args = parser.parse_args(argv)
     # Diagnostic logs (ZIP name-encoding advisories) skew short samples; see harness.
     logging.disable(logging.CRITICAL)
-    run(args.scale, args.rounds)
+    run(args.scale, args.rounds, args.only)
     return 0
 
 
