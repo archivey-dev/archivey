@@ -590,8 +590,8 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
 
 ### Data a library decodes
 
-Some formats compress each member on its own, with a method only a library decodes (LHA,
-ARJ), or are read through a library that decodes as it walks (a libarchive wrapper).
+Some formats compress each member on its own, with a method only a library decodes (ARJ,
+ACE), or are read through a library that decodes as it walks (a libarchive wrapper).
 There are no stored bytes to describe with `data_length`. Hand archivey the decoded
 data instead, as a stream in `MemberSpan.data`, and leave `data_length` at 0:
 
@@ -837,7 +837,7 @@ with open_archive("a.zip", config=MY_ZIP) as reader:
 The replacement is an indexed plugin whose `format` is the built-in one, here
 `ArchiveFormat.ZIP`, and it declares no `extensions`, `magic` or `probe`: the file is
 found by the built-in detection, which does not change. `reader.format` is the built-in
-format and `format_info.from_plugin` is false. ZIP, 7z, RAR, ISO, SquashFS and XAR can be
+format and `format_info.from_plugin` is false. ZIP, 7z, RAR, ISO, SquashFS, XAR, CAB and LHA can be
 replaced.
 `FormatPolicy` checks the plugin when it is built, so a plugin that does not fit fails
 there, before any open.

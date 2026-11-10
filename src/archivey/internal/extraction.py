@@ -85,14 +85,13 @@ from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.dry_run import DryRun, scratch_for
 from archivey.internal.file_copy_pass import FileCopyPass
 from archivey.internal.filters import (
-    POLICY_TRANSFORMS,
     SYMLINK_ESCAPES,
     SYMLINK_LOOPS,
     apply_name_policy,
     check_universal,
     collision_key,
     disk_spelled,
-    reroot_absolute,
+    policy_transform,
     resolve_or_raise_on_loop,
 )
 from archivey.internal.link_watch import LinkWatch
@@ -761,6 +760,52 @@ class _MemberState:
     # HARDLINK landing that finds its name taken since derives the next one from it,
     # so the numbering goes on from ``name (1)`` rather than ``name (1) (1)``.
     rename_base: Path | None = None
+
+
+def hardlink_chain_end(
+    reader: BaseArchiveReader,
+    member: ArchiveMember,
+    ends: dict[int, ArchiveMember | None],
+) -> ArchiveMember | None:
+    """The first member that is not a HARDLINK on ``member``'s hard-link chain, or
+    ``None`` for a cycle or a dead end.
+
+    Memoized in ``ends`` by ``_member_id`` for every link on the walked path, as
+    ``BaseArchiveReader._resolve_link`` does, so a chain of N hard links costs O(N)
+    lookups in total rather than O(N²). A lookup depends only on the node it starts
+    at, so the links on one path share its end, and no answer changes during a run:
+    ``_hardlink_direct_target`` only looks backward. Extraction and the
+    ``archivey://`` file system's tree both use it, so they agree on what a hard
+    link is written as (DR-23a).
+    """
+    path: list[int] = []
+    on_path: set[int] = set()
+    end: ArchiveMember | None
+    current = member
+    while True:
+        if current.type is not MemberType.HARDLINK:
+            end = current
+            break
+        member_id = current._member_id
+        if member_id is None:
+            end = None
+            break
+        if member_id in ends:
+            end = ends[member_id]
+            break
+        if member_id in on_path:
+            end = None
+            break
+        path.append(member_id)
+        on_path.add(member_id)
+        target = reader._hardlink_direct_target(current)
+        if target is None:
+            end = None
+            break
+        current = target
+    for member_id in path:
+        ends[member_id] = end
+    return end
 
 
 class ExtractionCoordinator:
@@ -1493,7 +1538,7 @@ class ExtractionCoordinator:
         """The checks of ``_check_local_name`` on one name: raise its refusal, or
         return the error ``AbortOn.NAME_SANITIZED`` would stop on (``None`` when it
         would not), as ``_transform`` decides them without a filter."""
-        transformed, rerooted_from = self._policy_transform(member)
+        transformed, rerooted_from = policy_transform(member, self._policy)
         self._check_universal(transformed)
         portable = apply_name_policy(transformed, self._policy)
         if portable is not transformed:
@@ -1834,58 +1879,8 @@ class ExtractionCoordinator:
     def _hardlink_chain_end(
         self, reader: BaseArchiveReader, member: ArchiveMember
     ) -> ArchiveMember | None:
-        """The first member that is not a HARDLINK on ``member``'s hard-link chain, or
-        ``None`` for a cycle or a dead end.
-
-        Memoized by ``_member_id`` for every link on the walked path, as
-        ``BaseArchiveReader._resolve_link`` does, so a chain of N hard links costs O(N)
-        lookups in total rather than O(N²). A lookup depends only on the node it starts
-        at, so the links on one path share its end, and no answer changes during the
-        run: ``_hardlink_direct_target`` only looks backward.
-        """
-        ends = self._state.hardlink_ends
-        path: list[int] = []
-        on_path: set[int] = set()
-        end: ArchiveMember | None
-        current = member
-        while True:
-            if current.type is not MemberType.HARDLINK:
-                end = current
-                break
-            member_id = current._member_id
-            if member_id is None:
-                end = None
-                break
-            if member_id in ends:
-                end = ends[member_id]
-                break
-            if member_id in on_path:
-                end = None
-                break
-            path.append(member_id)
-            on_path.add(member_id)
-            target = reader._hardlink_direct_target(current)
-            if target is None:
-                end = None
-                break
-            current = target
-        for member_id in path:
-            ends[member_id] = end
-        return end
-
-    def _policy_transform(
-        self, member: ArchiveMember
-    ) -> tuple[ArchiveMember, str | None]:
-        """The policy's transform of ``member``, with an absolute name re-rooted under
-        the destination (not under STRICT, whose universal check refuses it), and the
-        name before the re-root when the re-root changed it, else ``None``."""
-        transformed = POLICY_TRANSFORMS[self._policy](member)
-        if self._policy is ExtractionPolicy.STRICT:
-            return transformed, None
-        rerooted = reroot_absolute(transformed)
-        if rerooted.name == transformed.name:
-            return rerooted, None
-        return rerooted, transformed.name
+        """:func:`hardlink_chain_end`, memoized for this run."""
+        return hardlink_chain_end(reader, member, self._state.hardlink_ends)
 
     def _transform(
         self, original: ArchiveMember
@@ -1904,7 +1899,7 @@ class ExtractionCoordinator:
         # need not strip roots itself under STANDARD or TRUSTED. Whether the re-root
         # counts as a rewrite is decided after the filter, like the portable one: a
         # member the filter drops or renames never reaches disk under the re-rooted name.
-        transformed, rerooted_from = self._policy_transform(original)
+        transformed, rerooted_from = policy_transform(original, self._policy)
         rerooted_name = transformed.name
         # The filter runs before the universal check, so it sees every member, the
         # unsafe ones included, and can rename one to something safe. Whatever it
@@ -2061,9 +2056,9 @@ class ExtractionCoordinator:
         through ``_check_universal``, so a dry run copies in what dest holds along
         the very name it checks, which a link's own target does not name when the
         link names another link."""
-        candidate = member
-        if self._policy is not ExtractionPolicy.STRICT:
-            candidate = reroot_absolute(candidate)
+        # The transform's permission rewrite does not change what is refused: only
+        # its name, re-rooted as every written name is, matters here.
+        candidate, _ = policy_transform(member, self._policy)
         try:
             self._check_universal(candidate)
             apply_name_policy(candidate, self._policy)

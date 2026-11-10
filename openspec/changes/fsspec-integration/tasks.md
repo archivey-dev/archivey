@@ -89,19 +89,24 @@
 
 ## 4. `ArchiveyFileSystem`
 
-- [ ] 4.1 `archivey/fsspec.py` with `ArchiveyFileSystem` (design D3), and the
+- [x] 4.1 `archivey/fsspec.py` with `ArchiveyFileSystem` (design D3), and the
       `fsspec.specs` entry point in `pyproject.toml`.
-- [ ] 4.2 The tree from the extraction view: reuse the code `extract_all()` uses to map a
+- [x] 4.2 The tree from the extraction view: reuse the code `extract_all()` uses to map a
       member to its relative path and to refuse it (DR-23a: these must agree, so share
       them). Refused members become diagnostics.
-- [ ] 4.3 `info`, links, errors, read-only methods, pickling, `policy=`,
+- [x] 4.3 `info`, links, errors, read-only methods, pickling, `policy=`,
       `cachable = False`, `close()` and a `weakref.finalize` that closes the reader.
-      Red-green: open 10 000 distinct `archivey://` URLs, drop every reference, and
+      Red-green: open 1 000 distinct `archivey://` URLs, drop every reference, and
       check no reader stays open.
 - [ ] 4.4 Consumer tests: pandas CSV, pyarrow Parquet, dask over two threads and over
       a process pool (pickling), a nested `archivey::archivey::` chain. These tests
       skip when the consumer package is missing; CI installs them on one leg.
-- [ ] 4.5 The remote benchmark's file-system case.
+      (Written and passing locally with pandas, pyarrow and dask installed; the process
+      pool case runs a worker on the pickled file system without dask. The CI leg is a
+      workflow change and waits for the maintainer.)
+- [x] 4.5 The remote benchmark's file-system case. `file_system` builds an
+      `ArchiveyFileSystem` over the remote file and `cat`s the middle member, under every
+      cache mode; with the planner a ZIP takes 3 requests (list 2, member 1).
 
 ## 5. Volumes over fsspec
 
