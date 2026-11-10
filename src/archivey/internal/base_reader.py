@@ -135,6 +135,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
+    ResourceUnavailableError,
     UnsupportedFeatureError,
     _UsageTypeError,
     _UsageValueError,
@@ -264,14 +265,20 @@ UNREADABLE_LINK_TARGET_ERRORS: tuple[type[ArchiveyError], ...] = (
     CorruptionError,
     UnsupportedFeatureError,
     PackageNotInstalledError,
+    ResourceUnavailableError,
 )
 """What a read of one link's data-stored target may raise without failing the listing.
 
 Damage (``CorruptionError``, and ``TruncatedError`` under it), a method or variant this
 reader does not decode (``UnsupportedFeatureError``), and an optional library the
 member's data needs that is not installed (``PackageNotInstalledError``: a codec, or
-``cryptography`` for WinZip AES) are each about that one member's data. Listing
-and a data pass leave the link targetless and report it
+``cryptography`` for WinZip AES) are each about that one member's data. A system that
+did not give a resource for the read (``ResourceUnavailableError``: no descriptor,
+memory or process slot to start ``unrar``) says nothing about the archive, so it does
+not fail the listing either. ``ReadError`` for a command line that is too long cannot
+happen here: a link is read through a placeholder, or through a plain name no longer
+than ``rar_unrar.unrar_plain_name_max``, which keeps the mask within argv limits.
+Listing and a data pass leave the link targetless and report it
 (``_report_unreadable_link_target``); opening or extracting the link reads it again and
 raises the error itself. ``EncryptionError`` is not here: the backends catch it where
 they read and report it with its own reason.
@@ -1986,13 +1993,13 @@ class BaseArchiveReader(ArchiveReader):
     ) -> None:
         """Resolve hardlink/symlink targets with one double-fault policy.
 
-        A ``CorruptionError`` / ``TruncatedError``, an ``UnsupportedFeatureError`` or a
-        ``PackageNotInstalledError`` reading one link's target leaves that link
-        targetless and reported (``_report_unreadable_link_target``), and the others
-        resolve. Past that, when ``error is not None`` (incomplete listing /
-        terminal pass damage), a secondary ``CorruptionError`` is swallowed so the
-        recovered prefix stays publishable. When ``error is None`` (clean EOF / complete
-        listing), it propagates.
+        An error in ``UNREADABLE_LINK_TARGET_ERRORS`` (damage, an undecodable method, a
+        missing optional library, a system resource shortage) reading one link's
+        target leaves that link targetless and reported
+        (``_report_unreadable_link_target``), and the others resolve. Past that, when
+        ``error is not None`` (incomplete listing / terminal pass damage), a secondary
+        ``CorruptionError`` is swallowed so the recovered prefix stays publishable.
+        When ``error is None`` (clean EOF / complete listing), it propagates.
 
         Eager materialization uses a child scope + internal-open exemption for
         link-data reads; a streaming pass's finalization does not open a child scope.
@@ -2074,7 +2081,9 @@ class BaseArchiveReader(ArchiveReader):
         member with it. So the link stays in the list with ``link_target`` unset and
         ``SYMLINK_TARGET_UNAVAILABLE`` says why: ``reason="target_data_damaged"`` for
         damage, ``"target_data_unsupported"`` for a method or variant this reader does
-        not decode, ``"package_not_installed"`` for a missing optional library. A strict
+        not decode, ``"package_not_installed"`` for a missing optional library,
+        ``"resource_unavailable"`` for a system that did not give the read a descriptor,
+        memory or process slot (nothing about the archive; a retry may succeed). A strict
         policy still refuses the archive, since the code is an integrity one. The memo
         stays unset, so opening or extracting the link reads the target again and
         raises the error itself. ``_link_target_unreadable`` marks it reported, so link
@@ -2085,6 +2094,8 @@ class BaseArchiveReader(ArchiveReader):
             reason = "target_data_damaged"
         elif isinstance(exc, PackageNotInstalledError):
             reason = "package_not_installed"
+        elif isinstance(exc, ResourceUnavailableError):
+            reason = "resource_unavailable"
         else:
             reason = "target_data_unsupported"
         self._emit_link_target_unavailable(

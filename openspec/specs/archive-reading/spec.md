@@ -1769,6 +1769,11 @@ cases, even an intact archive whose only fault is a missing library, as it alrea
 for `reason="password_required"`: strict means every member can be vouched for, and this
 install cannot vouch for that link.
 
+A read that raises `ResourceUnavailableError` (the system gave it no descriptor, memory
+or process slot, for example to start `unrar`) SHALL be handled the same way, with
+`reason="resource_unavailable"`: the shortage says nothing about the archive, so it costs
+that link its target and not the listing, and opening the link SHALL read it again.
+
 #### Scenario: undecodable link target matrix
 
 | Case | Expected |
@@ -1781,6 +1786,7 @@ install cannot vouch for that link.
 | ZIP Zstandard, ZIP WinZip AES or 7z PPMd symlink with the library it needs absent | Every member listed; `reason="package_not_installed"`; `open()` raises `PackageNotInstalledError` |
 | Same, `extract_all(on_error=CONTINUE)` | Link `FAILED` with `PackageNotInstalledError`; other members extract |
 | Same, `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError`, though the archive is intact |
+| Any symlink whose target read raises `ResourceUnavailableError` | Every member listed; `reason="resource_unavailable"`; `open()` reads again and raises `ResourceUnavailableError` while the shortage lasts |
 
 ### Requirement: Streams and passes come from archivey
 
