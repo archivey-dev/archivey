@@ -1194,7 +1194,12 @@ directory, so the probe and a read can run a program from there. On POSIX it doe
 same when `PATH` holds an empty entry (a leading, trailing or doubled `:`) or `.`: an
 `./unrar` in the current directory is found as `unrar` (`internal/external/cli.py`
 `find`). A pin (`unrar_path=`, `unar_path=`) removes both. A pinned file is still
+<<<<<<< ours
 trusted: archivey checks what it reports, not who wrote it. `unar`'s password is [visible to other users](#the-unar-password-is-on-its-command-line).
+=======
+trusted: archivey checks what it reports, not who wrote it. `unar`'s password is
+[visible to other users](#the-unar-password-is-on-its-command-line).
+>>>>>>> theirs
 
 ### Concurrent member streams are race-free where declared
 
