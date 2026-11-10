@@ -48,6 +48,7 @@ and RAR5 ConvertHashToMAC when checksums are tweaked.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import itertools
 import os
@@ -55,6 +56,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import unicodedata
 import zlib
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
@@ -149,6 +151,7 @@ from archivey.internal.backends.rar_unrar import (
     rarlab_unrar_missing,
     unrar_expands_wildcards,
     unrar_mask_carries_non_ascii,
+    unrar_matches_names_as_windows,
     unrar_may_cut_archive_path,
     unrar_plain_name_max,
 )
@@ -331,7 +334,20 @@ def _rar_member_copy_notes(
     return (f"{note} {refused}",)
 
 
-def _resolve_decompressor(choice: RarDecompressor) -> RarDecompressor:
+def _program_path(value: str | os.PathLike[str] | None) -> str | None:
+    """A config program path as the ``str`` the finders take (the config stores one).
+
+    The fields hold a ``str`` once constructed, but are annotated wider so that passing
+    a ``Path`` type-checks at construction; this narrows the annotation back.
+    """
+    return None if value is None else os.fspath(value)
+
+
+def _resolve_decompressor(
+    choice: RarDecompressor,
+    unrar_program: str | None = None,
+    unar_program: str | None = None,
+) -> RarDecompressor:
     """The program ``AUTO`` stands for: ``unrar`` when usable, else ``unar``.
 
     Neither found resolves to ``UNRAR``, so a data read raises the ``unrar``
@@ -344,13 +360,13 @@ def _resolve_decompressor(choice: RarDecompressor) -> RarDecompressor:
     if choice is not RarDecompressor.AUTO:
         return choice
     try:
-        find_rarlab_unrar()
+        find_rarlab_unrar(unrar_program)
     except PackageNotInstalledError:
         pass
     else:
         return RarDecompressor.UNRAR
     try:
-        find_unar(purpose=UNAR_PURPOSE)
+        find_unar(purpose=UNAR_PURPOSE, program=unar_program)
     except PackageNotInstalledError:
         return RarDecompressor.UNRAR
     return RarDecompressor.UNAR
@@ -1016,8 +1032,42 @@ def _fold(text: str) -> str:
     return text.upper().casefold()
 
 
+def _mask_key(text: str) -> str:
+    """``text`` as two names compare for a mask: NFC, then :func:`_fold`. Windows
+    ``unrar`` precomposes a Unix-host name before it compares it, so the NFC and NFD
+    forms of one name select each other's members there. Elsewhere the join is only
+    conservative: it can only take names out of the plain set, and such a member
+    gets a synthetic copy."""
+    return _fold(unicodedata.normalize("NFC", text))
+
+
+def _printable_ascii(text: str) -> bool:
+    return all(" " <= char <= "~" for char in text)
+
+
+def _windows_plain(text: str, *, loose_directories: bool) -> bool:
+    """Whether a mask of ``text`` selects its member alone in Windows ``unrar``.
+
+    A name that is not NFC is not: ``unrar`` compares its NFC form with the mask.
+    A name with a directory is not either when ``loose_directories``: some name in
+    the archive has a directory that is not printable ASCII. ``unrar`` compares the
+    directory part with ``CompareStringW``, which ignores some code points and
+    joins canonical equivalents, so such a directory can equal another one,
+    printable ASCII included, that differs here (``ab`` and ``a`` U+00AD ``b``)
+    (:func:`unrar_matches_names_as_windows`).
+    """
+    if unicodedata.normalize("NFC", text) != text:
+        return False
+    return not (loose_directories and "/" in text)
+
+
 def _plain_unrar_masks(
-    members: list[ArchiveMember], *, rar5: bool, non_ascii: bool, name_max: int
+    members: list[ArchiveMember],
+    *,
+    rar5: bool,
+    non_ascii: bool,
+    windows: bool,
+    name_max: int,
 ) -> dict[int, str]:
     """The members an ``-n`` mask on the original archive selects alone, by
     ``id(member)``, with the mask text for each.
@@ -1027,8 +1077,10 @@ def _plain_unrar_masks(
     to select one member. Otherwise a member is listed when its name has no ``*``
     or ``?`` and no component ending in ``.`` (so no wildcard and no dot rule), is
     ASCII unless ``non_ascii`` (:func:`unrar_mask_carries_non_ascii`), and no other
-    name equals it or starts with it plus ``/``, compared after :func:`_fold`
-    (Windows ``unrar`` folds case with ``towupper``). History
+    name equals it or starts with it plus ``/``, compared after :func:`_mask_key`
+    (Windows ``unrar`` precomposes and folds case with ``towupper``). With
+    ``windows`` (:func:`unrar_matches_names_as_windows`) a member is listed only
+    when :func:`_windows_plain` accepts its name too. History
     rows count against every row, as ``unrar -ver`` lists them all; a current row
     counts against the current rows, which ``unrar`` lists without ``-ver``.
     """
@@ -1046,7 +1098,7 @@ def _plain_unrar_masks(
         # Each name, and each directory prefix of one, as a mask would see it.
         found: dict[str, int] = {}
         for text in rows:
-            parts = _fold(text).split("/")
+            parts = _mask_key(text).split("/")
             for end in range(1, len(parts) + 1):
                 key = "/".join(parts[:end])
                 found[key] = found.get(key, 0) + 1
@@ -1055,6 +1107,9 @@ def _plain_unrar_masks(
     # Without ``-ver`` unrar lists the current rows; with it, every row.
     current = counts([t for _, raw, t in texts if not raw.is_file_version_history()])
     every = counts([t for _, _, t in texts])
+    loose_directories = windows and not all(
+        _printable_ascii(t.rpartition("/")[0]) for _, _, t in texts
+    )
     plain: dict[int, str] = {}
     for member, raw, text in texts:
         found = every if raw.is_file_version_history() else current
@@ -1063,7 +1118,10 @@ def _plain_unrar_masks(
             and "*" not in text
             and "?" not in text
             and not any(part.endswith(".") for part in text.split("/"))
-            and found[_fold(text)] == 1
+            and found[_mask_key(text)] == 1
+            and (
+                not windows or _windows_plain(text, loose_directories=loose_directories)
+            )
         ):
             plain[id(member)] = text
     return plain
@@ -1514,9 +1572,11 @@ class _ClosesSyntheticFile(DelegatingStream):
                 synthetic.close()
 
 
-def _open_unar_blob_pipe(path: Path) -> tuple[subprocess.Popen[bytes], BinaryIO]:
+def _open_unar_blob_pipe(
+    path: Path, program: str | None = None
+) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """``unar`` for the one-entry archive :func:`decompress_rar3_blob` builds."""
-    return open_unar_stdout(path, [0], purpose=UNAR_PURPOSE)
+    return open_unar_stdout(path, [0], purpose=UNAR_PURPOSE, program=program)
 
 
 # What a service header's payload would have answered, for the diagnostic that
@@ -1655,7 +1715,13 @@ class RarReader(BaseArchiveReader):
         self._stage_volume_paths = False
         self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
         # The data program, with ``AUTO`` resolved once for the life of this reader.
-        self._decompressor = _resolve_decompressor(self._config.rar_decompressor)
+        # ``ArchiveyConfig.unrar_path`` / ``unar_path``: the one binary each program
+        # may be, or ``None`` to search ``PATH``. Every spawn passes them on.
+        self._unrar_program = _program_path(self._config.unrar_path)
+        self._unar_program = _program_path(self._config.unar_path)
+        self._decompressor = _resolve_decompressor(
+            self._config.rar_decompressor, self._unrar_program, self._unar_program
+        )
 
         if not source.seekable():
             raise StreamNotSeekableError(
@@ -3335,7 +3401,13 @@ class RarReader(BaseArchiveReader):
         # correctly, though it returns nothing for that archive's first member.
         try:
             unpacked = decompress_rar3_blob(
-                open_pipe=None if self._unar_policy is None else _open_unar_blob_pipe,
+                open_pipe=(
+                    functools.partial(open_unrar_p, program=self._unrar_program)
+                    if self._unar_policy is None
+                    else functools.partial(
+                        _open_unar_blob_pipe, program=self._unar_program
+                    )
+                ),
                 extract_version=comment.extract_version,
                 compress_type=comment.compress_type,
                 packed=comment.packed,
@@ -3720,6 +3792,7 @@ class RarReader(BaseArchiveReader):
                 password=password,
                 version_control=version_control,
                 rar5=self._archive.version == 5,
+                program=self._unrar_program,
             )
             # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
             # and declared length via fused ArchiveStream verify), so the pipe-level
@@ -3891,6 +3964,7 @@ class RarReader(BaseArchiveReader):
                 password=None,
                 version_control=True,
                 rar5=version == 5,
+                program=self._unrar_program,
             )
         except BaseException:
             cleanup()
@@ -4108,6 +4182,7 @@ class RarReader(BaseArchiveReader):
                     password=password,
                     version_control=True,
                     rar5=version == 5,
+                    program=self._unrar_program,
                 )
             except BaseException:
                 cleanup()
@@ -5373,6 +5448,7 @@ class RarReader(BaseArchiveReader):
                     self._members,
                     rar5=self._archive.version == 5,
                     non_ascii=unrar_mask_carries_non_ascii(),
+                    windows=unrar_matches_names_as_windows(),
                     name_max=unrar_plain_name_max(),
                 )
             )
@@ -5418,6 +5494,7 @@ class RarReader(BaseArchiveReader):
                 member=name,
                 version_control=version_control,
                 rar5=self._archive.version == 5,
+                program=self._unrar_program,
             )
             owned = _UnrarOwnedStream(
                 stdout,
@@ -5709,6 +5786,7 @@ class RarReader(BaseArchiveReader):
                 member=synthetic.mask,
                 version_control=True,
                 rar5=self._archive.version == 5,
+                program=self._unrar_program,
             )
             owned = _UnrarOwnedStream(
                 stdout,
@@ -5915,7 +5993,11 @@ class RarReader(BaseArchiveReader):
             )
             path = self._unar_archive_path(member)
             proc, stdout = open_unar_stdout(
-                path, [index], purpose=UNAR_PURPOSE, password=data_password
+                path,
+                [index],
+                purpose=UNAR_PURPOSE,
+                password=data_password,
+                program=self._unar_program,
             )
             owned = UnarOutputStream(
                 stdout,
@@ -5957,6 +6039,7 @@ class RarReader(BaseArchiveReader):
                 policy.solid_pass_indexes,
                 purpose=UNAR_PURPOSE,
                 password=password,
+                program=self._unar_program,
             )
             # Every member read from this pipe is checked against its declared
             # size and its stored CRC32 or BLAKE2sp; a member without one is read
@@ -6101,11 +6184,11 @@ class RarReadBackend(ReadBackend):
 
     @classmethod
     @override
-    def missing_programs(cls) -> tuple[MissingComponent, ...]:
-        # Independent of ``rar_decompressor``: the query reads only the format policy
-        # from a config, so it answers for the default ``AUTO``, which uses unrar when
-        # one is usable.
-        return rarlab_unrar_missing()
+    def missing_programs(cls, config: ArchiveyConfig) -> tuple[MissingComponent, ...]:
+        # Independent of ``rar_decompressor``: the query answers for the default
+        # ``AUTO``, which uses unrar when one is usable. ``unrar_path`` decides which
+        # binary that is.
+        return rarlab_unrar_missing(_program_path(config.unrar_path))
 
     @override
     def open_read(

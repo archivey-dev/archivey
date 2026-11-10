@@ -7,6 +7,7 @@ site: everything under `docs/` is for users, and everything here is not.
 | --- | --- |
 | [Pair workflow](pair-workflow.md) | **Preferred everyday loop**: investigate → grill into handbook → thin brief → implement → review loop → decision packets |
 | [Review loop](review-loop.md) | How steps 4–6 of the pair workflow run: the `review` label that starts a round, how rounds are counted, and the five-round cap |
+| [Internals guide](guide/README.md) | A deep, plain-language tour of how archivey works inside: the layers and where they live, the life of an open, readers, plugins, streams, pipes versus files, security, errors, the big decisions, the bugs that taught us something and the choices that look odd. Start here if you are new to the code or lost in it |
 | [Code map](code-map.md) | Where to start for a given change: tree shape, the path through a read, task→files, and which doc answers which kind of question |
 | [Format / topic handbook](formats/README.md) | Living pages per format (`formats/`) and per cross-cutting topic (`topics/`): the list of pages, the page shapes, and when to create one |
 | [Usage scenarios](scenarios.md) | Who we imagine using archivey, what code they write and what would hurt them; the design rules are tested against these |

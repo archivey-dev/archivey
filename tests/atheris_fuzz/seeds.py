@@ -180,6 +180,21 @@ def rpm_seeds() -> list[bytes]:
     return tiny + [path.read_bytes() for path in paths]
 
 
+def makeself_seeds() -> list[bytes]:
+    """The magic, and a few of the makeself archives in tests/fixtures/makeself: the old
+    and new header forms, two payloads, base64 and an uncompressed payload."""
+    magic = b"#!/bin/sh\n# This script was generated using Makeself "
+    folder = _REPO_ROOT / "tests" / "fixtures" / "makeself"
+    names = (
+        "gzip-2.2.0.run",
+        "gzip-2.7.1.run",
+        "append-2.4.0.run",
+        "base64-2.7.1.run",
+        "nocomp-2.7.1.run",
+    )
+    return [b"", magic, magic + b"2.7.1\n"] + [(folder / n).read_bytes() for n in names]
+
+
 def squashfs_seeds() -> list[bytes]:
     """Tiny blobs and the images in tests/fixtures/squashfs, one per compressor and
     layout (no fragments, tail ends), each a few KiB."""
