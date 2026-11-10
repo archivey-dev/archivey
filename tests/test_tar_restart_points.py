@@ -70,18 +70,19 @@ def test_member_read_after_listing_resumes_near_the_member(
 def test_restart_points_only_in_random_access(
     monkeypatch: pytest.MonkeyPatch, streaming: bool
 ) -> None:
-    # Detection's probe of the inner format opens a codec stream first, under its own
-    # config; the reader's stream (``_open_outer_codec_stream``) is the last one.
+    # The reader's stream (``_open_outer_codec_stream``) is the one that reports
+    # trailing data; detection's probe of the inner format opens one too, under its
+    # own config.
     seen: list[bool] = []
     real = codecs.open_codec_stream
 
     def spy(*args: Any, config: StreamConfig, **kwargs: Any) -> Any:
-        seen.append(config.records_restart_points)
+        if config.report_trailing_data:
+            seen.append(config.records_restart_points)
         return real(*args, config=config, **kwargs)
 
     monkeypatch.setattr(codecs, "open_codec_stream", spy)
     with archivey.open_archive(io.BytesIO(_tar_gz()), streaming=streaming) as reader:
         for member, stream in reader.stream_members():
             del member, stream
-    assert len(seen) == 2
-    assert seen[-1] is not streaming
+    assert seen == [not streaming]

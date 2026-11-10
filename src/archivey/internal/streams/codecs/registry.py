@@ -421,20 +421,20 @@ def _decoder_config(
 ) -> StreamConfig:
     """``config`` as :func:`open_codec_stream`'s decoder sees it.
 
-    Carries ``collector``, drops seek demand and restart points that a stream source
-    cannot use, notes whether the source can seek, fills the known input size, then lets
-    the codec adjust it.
+    Carries ``collector``, drops seek demand that a stream source cannot meet, notes
+    whether the source can seek, fills the known input size, then lets the codec adjust
+    it.
     """
-    # One copy for all five adjustments, and none when nothing changes: a ZIP reader
+    # One copy for all four adjustments, and none when nothing changes: a ZIP reader
     # opens a codec per member, and each copy of this dataclass is a few microseconds.
     changes: dict[str, Any] = {}
     if collector is not None and config.collector is not collector:
         changes["collector"] = collector
     # ``ZipReader._member_config`` fills ``source_seekable`` and clears ``seekable`` by
-    # the first two rules before it gets here, so a ZIP member's config is copied once:
-    # a change to either rule belongs there too. A ZIP member's config never sets
-    # ``restart_points`` (only a sequential container's outer codec stream does), so
-    # the third rule has no copy there.
+    # these two rules before it gets here, so a ZIP member's config is copied once:
+    # a change to either rule belongs there too. ``restart_points`` needs no rule here:
+    # only a random-access reader's outer codec stream sets it, and random access
+    # refuses a source that cannot seek before any codec opens.
     source_seekable = isinstance(source, (str, os.PathLike)) or is_seekable(source)
     if config.seekable and not source_seekable:
         # Seek demand on a source that cannot seek cannot be met, and it would make
@@ -442,9 +442,6 @@ def _decoder_config(
         # source for ``tell``. A compressed TAR opened ``streaming=True`` with
         # ``seekable_members=True`` over a forward-only stream arrives here so.
         changes["seekable"] = False
-    if config.restart_points and not source_seekable:
-        # Nothing seeks back on such a source, so the points would only cost memory.
-        changes["restart_points"] = False
     if source_seekable != config.source_seekable:
         # Lets accelerator AUTO consider a sequential read (``_rapidgzip_wanted``).
         changes["source_seekable"] = source_seekable
