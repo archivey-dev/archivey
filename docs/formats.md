@@ -1459,6 +1459,9 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
     with or without `=` padding. Base64 has no signature, and plain text is often made of base64
     characters, so without such a name a file is taken as base64 only when its first lines are
     of one length and decode to the start of a format archivey knows (a pasted ZIP, gzip or tar).
+    Line breaks are skipped; any other character, a space included, is an error.
+  - Neither is found by a signature, so a source recognised from its contents alone is reported
+    as `PROBABLE`, not `CERTAIN`.
   - Neither has a checksum, so a damaged character changes the output with no error unless it is
     not a valid character. A missing `end` or `====` line raises `TruncatedError`.
 - **Listing:** one synthetic member, named from the source path, or `data` for a source with no

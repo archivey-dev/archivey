@@ -16,6 +16,7 @@ from archivey import (
     ArchiveFormat,
     ContainerFormat,
     CorruptionError,
+    DetectionConfidence,
     DiagnosticCode,
     FormatDetectionError,
     StreamFormat,
@@ -28,6 +29,8 @@ from archivey.internal.streams.codecs.text_codecs import (
     MAX_LEADING_TEXT,
     Base64Decompressor,
     UuDecompressor,
+    _b64_lines_check,
+    _decoded_has_magic,
 )
 
 _PAYLOAD = os.urandom(10_000)
@@ -100,7 +103,11 @@ def test_an_unnamed_uuencoded_file_is_detected_by_its_begin_line(
     path = tmp_path / "attachment"
     path.write_bytes(_uu(_PAYLOAD))
     info = detect_format(path)
-    assert (info.format, info.detected_by) == (ArchiveFormat.UU, "magic")
+    assert (info.format, info.confidence, info.detected_by) == (
+        ArchiveFormat.UU,
+        DetectionConfidence.PROBABLE,
+        "content_probe",
+    )
 
 
 def test_mail_text_before_begin_is_skipped_for_a_uu_name(tmp_path: Path) -> None:
@@ -126,11 +133,37 @@ def test_mail_text_before_begin_is_not_detected_without_the_name(
         detect_format(path)
 
 
-def test_a_begin_line_alone_is_not_enough(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(
+            b"begin 644 the story\nOnce upon a time, there was a file.\n", id="uu"
+        ),
+        pytest.param(b"begin-base64 644 notes\nThis\nis a note\n", id="base64-word"),
+    ],
+)
+def test_a_begin_line_alone_is_not_enough(text: bytes, tmp_path: Path) -> None:
     path = tmp_path / "prose"
-    path.write_bytes(b"begin 644 the story\nOnce upon a time, there was a file.\n")
+    path.write_bytes(text)
     with pytest.raises(FormatDetectionError):
         detect_format(path)
+
+
+def test_a_short_begin_base64_body_before_its_closing_line_is_detected(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "small"
+    path.write_bytes(b"begin-base64 644 abc\nQUJD\n====\n")
+    assert detect_format(path).format == ArchiveFormat.UU
+    assert _read_only(path) == b"ABC"
+
+
+def test_a_uuencoded_line_with_a_checksum_character_decodes(tmp_path: Path) -> None:
+    # Some old encoders add a checksum character after the declared groups.
+    line = binascii.b2a_uu(b"A" * 45).rstrip(b"\n") + b"X"
+    path = tmp_path / "old.uu"
+    path.write_bytes(b"begin 644 x\n" + line + b"\n`\nend\n")
+    assert _read_only(path) == b"A" * 45
 
 
 def test_a_tar_inside_uuencode_lists_the_tar(tmp_path: Path) -> None:
@@ -211,7 +244,11 @@ def test_unnamed_base64_of_an_archive_is_detected(tmp_path: Path) -> None:
     path = tmp_path / "pasted"
     path.write_bytes(base64.encodebytes(_zip_bytes()))
     info = detect_format(path)
-    assert (info.format, info.detected_by) == (ArchiveFormat.BASE64, "magic")
+    assert (info.format, info.confidence, info.detected_by) == (
+        ArchiveFormat.BASE64,
+        DetectionConfidence.PROBABLE,
+        "content_probe",
+    )
     assert _read_only(path) == _zip_bytes()
 
 
@@ -230,13 +267,24 @@ def test_text_that_only_looks_like_base64_is_not_detected(
     text: bytes, tmp_path: Path
 ) -> None:
     # Without a name, base64 must decode to a known format's magic. Base64 of random
-    # bytes starts with gzip's two-byte magic about once in 65 536 tries.
+    # bytes starts with gzip's or .Z's two-byte magic about once in 32 768 tries.
     path = tmp_path / "notes"
     path.write_bytes(text)
-    if text[:4] == b"H4sI":  # pragma: no cover - the rare random hit
-        pytest.skip("random bytes began with gzip's magic")
+    lines = text.split(b"\n")[:4]
+    if _b64_lines_check(lines) and _decoded_has_magic(  # pragma: no cover - rare
+        base64.b64decode(b"".join(lines))
+    ):
+        pytest.skip("random bytes began with a known magic")
     with pytest.raises(FormatDetectionError):
         detect_format(path)
+
+
+def test_prose_after_unpadded_base64_is_corruption(tmp_path: Path) -> None:
+    # A space is outside the alphabet; dropping it would decode the note as data.
+    path = tmp_path / "data.b64"
+    path.write_bytes(base64.b64encode(b"ABC") + b"\nnote here\n")
+    with pytest.raises(CorruptionError, match="not base64"):
+        _read_only(path)
 
 
 def test_garbage_in_base64_is_corruption(tmp_path: Path) -> None:

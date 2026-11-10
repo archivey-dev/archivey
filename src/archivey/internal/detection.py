@@ -79,7 +79,9 @@ evidence archivey has, and one asked to judge arbitrary bytes will sometimes say
   ``content_probe``, and it runs on every source, named or not: the check is arithmetic
   over the peeked window, and a scan of 200 333 local files found no block that passed
   it outside a real tar. The inner-TAR probe accepts it too, so a gzipped v7 tar is
-  ``TAR_GZ``.
+  ``TAR_GZ``. Stream codecs declare one too (``StreamCodec.header_check``: uuencode's
+  ``begin`` line, base64 lines that decode to a known magic); their hit is probed for
+  an inner TAR like any compressor's.
 """
 
 from __future__ import annotations
@@ -659,7 +661,12 @@ def _inner_candidates(
         return not _plugin_off(formats, ArchiveFormat(container, stream_format))
 
     inner_magic = registry.inner_magic_entries()
-    header_checks = registry.header_checks()
+    # A container's checks and probes only: a codec's names no container to find here.
+    header_checks = [
+        (f, c)
+        for f, c in registry.header_checks()
+        if f.container is not ContainerFormat.RAW_STREAM
+    ]
     # A container's probes only: a codec's probe names no container to find here.
     probes = [
         (f, p)
@@ -1816,7 +1823,8 @@ def _detect_format_body(
         if magic_fmt is not None:
             return _near_magic_hit(detection, magic_fmt)
 
-        # 5. Self-checking headers (a v7 TAR header, by its checksum).
+        # 5. Self-checking headers (a v7 TAR header, by its checksum; uuencode's
+        # ``begin`` line, base64 lines that decode to a known magic).
         info = _self_checking_header(detection)
         if info is not None:
             return info
@@ -2155,16 +2163,27 @@ def _self_checking_header(detection: _DetectionPass) -> FormatInfo | None:
             covered=budget.max_prefix_bytes >= HEADER_CHECK_BYTES,
         )
     for check_fmt, check in header_checks:
-        if check(detection.data):
-            return detection.conclude(
-                FormatInfo(
+        if not check(detection.data):
+            continue
+        info = FormatInfo(
+            check_fmt, DetectionConfidence.PROBABLE, "content_probe", corroborated=True
+        )
+        if check_fmt.container is ContainerFormat.RAW_STREAM:
+            # A stream codec's check (uuencode, base64): its payload may be a tarball.
+            info = replace(
+                _resolve_single_file_or_tar(
                     check_fmt,
                     DetectionConfidence.PROBABLE,
                     "content_probe",
-                    corroborated=True,
+                    detection.peek_more,
+                    ext_match=detection.ext_match,
+                    workspace=detection.workspace,
+                    always_probe=detection.always_probe,
+                    formats=detection.formats,
                 ),
-                _ConflictEvidence.CONTENT_PROBE,
+                corroborated=True,
             )
+        return detection.conclude(info, _ConflictEvidence.CONTENT_PROBE)
     return None
 
 

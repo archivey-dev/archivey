@@ -23,11 +23,12 @@ path.
 
 **base64** (``.b64``, ``.base64``). Base64 text with no frame at all: lines of one
 length (64 for PEM and ``openssl``, 76 for MIME and GNU ``base64``) or one long line.
-The decoder skips line breaks and spaces, ends at ``=`` padding or at the end of the
-input, and refuses any other byte.
+The decoder skips line breaks, ends at ``=`` padding or at the end of the input, and
+refuses any other byte, spaces included.
 
-**Detection.** Both are text, so neither has magic in the strict sense, and both
-checks run on the detector's first window only:
+**Detection.** Both are text, so neither has magic. Each check is a
+:meth:`~archivey.internal.streams.codecs.base.StreamCodec.header_check` on the
+detector's first window, reported as ``PROBABLE`` from a content test:
 
 - A ``begin`` line at offset 0 with a well-formed mode and name, followed by a line
   that is a valid encoded line (or the empty file's closing lines). With a name that
@@ -73,11 +74,15 @@ if TYPE_CHECKING:
 # How much text may come before a ``begin`` line: a mail or news post's headers and
 # body. Past this the source is refused rather than read to its end in search of one.
 MAX_LEADING_TEXT = 64 * 1024
-# The longest line a uuencode reader buffers. A uuencoded line is at most 62 bytes
-# (61 and a CR); base64 lines in ``begin-base64`` are 76 at most. This is generous.
+# The longest line a uuencode reader buffers. A uuencoded line is at most 62 bytes (a
+# length, 60 data characters and the checksum character some old encoders add); base64
+# lines in ``begin-base64`` are 76 at most. This is generous.
 _MAX_LINE = 4096
 _HEADER = re.compile(rb"\Abegin(-base64)? +([0-7]{3,6}) +(\S.*?)[ \t]*\r?\Z")
 _WHITESPACE = b" \t\r\n"
+# What the base64 decoder skips between groups: line breaks only. A space or a tab is
+# outside the alphabet, so prose after unpadded base64 fails instead of decoding.
+_LINE_ENDS = b"\r\n"
 _B64_ALPHABET = frozenset(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 )
@@ -134,11 +139,18 @@ def _uu_body_starts(data: bytes, header: _UuHeader) -> bool:
     if header.base64:
         if line == b"====":
             return True
-        return (
+        if not (
             len(line) % 4 == 0
             and len(line) >= 4
             and all(c in _B64_ALPHABET or c == 0x3D for c in line)
-        )
+        ):
+            return False
+        # A short word is base64 characters too: the line must be as long as the
+        # encoders write, end in padding, or be the whole body before ``====``.
+        if len(line) >= _MIN_B64_LINE or line.endswith(b"="):
+            return True
+        nl2 = data.find(b"\n", nl + 1)
+        return nl2 >= 0 and data[nl + 1 : nl2].rstrip(b"\r") == b"===="
     if line in (b"`", b" ", b"end"):
         return True  # an empty file
     return _uu_line_valid(line)
@@ -188,8 +200,9 @@ def _decodes(chars: bytes) -> bool:
 
 def _decoded_has_magic(decoded: bytes) -> bool:
     """Whether ``decoded`` holds a known format's exact magic where that format puts
-    it. gzip's is two bytes, so a chance hit on base64 of random bytes is about one in
-    ten thousand; such a file is still base64, which is all this format claims."""
+    it. gzip's and ``.Z``'s are two bytes each, so a chance hit on base64 of random
+    bytes is about one in 32 768; such a file is still base64, which is all this
+    format claims."""
     # Imported here: the registry imports the codecs.
     from archivey.internal.registry import get_registry
 
@@ -292,8 +305,11 @@ class UuDecompressor:
             return  # the zero-length line before 'end'
         if not _uu_line_valid(line):
             raise CorruptionError(f"bad uuencoded line {line[:64]!r}")
+        # Only the groups the length character declares: some old encoders write a
+        # checksum character after them, which a2b_uu would refuse.
+        n = (line[0] - 32) & 63
         try:
-            self._out.add(binascii.a2b_uu(line))
+            self._out.add(binascii.a2b_uu(line[: 1 + 4 * -(-n // 3)]))
         except binascii.Error as exc:
             raise CorruptionError(f"bad uuencoded line: {exc}") from None
 
@@ -332,7 +348,7 @@ class UuDecompressor:
 
 
 class Base64Decompressor:
-    """Bare base64 text: groups of four characters, line breaks and spaces skipped,
+    """Bare base64 text: groups of four characters, line breaks skipped,
     ending at ``=`` padding or at the end of the input."""
 
     def __init__(self) -> None:
@@ -352,14 +368,14 @@ class Base64Decompressor:
     def _feed(self, data: bytes) -> None:
         pad = data.find(b"=")
         if pad < 0:
-            chars = self._pending + data.translate(None, _WHITESPACE)
+            chars = self._pending + data.translate(None, _LINE_ENDS)
             whole = len(chars) - len(chars) % 4
             self._decode(chars[:whole])
             self._pending = chars[whole:]
             return
         # The group the first '=' is in is the last one. Count the characters before
         # it, then walk on through '=' and whitespace until the group is complete.
-        head = self._pending + data[:pad].translate(None, _WHITESPACE)
+        head = self._pending + data[:pad].translate(None, _LINE_ENDS)
         need = (len(head) // 4 + 1) * 4 - len(head)
         pos = pad
         tail = bytearray()
@@ -367,7 +383,7 @@ class Base64Decompressor:
             c = data[pos]
             if c == 0x3D:
                 tail.append(c)
-            elif c not in _WHITESPACE:
+            elif c not in _LINE_ENDS:
                 break
             pos += 1
         if len(tail) < need:
@@ -445,7 +461,7 @@ class UuCodec(StreamCodec):
         return UuDecompressor()
 
     @override
-    def magic_behind_prefix(self, prefix: bytes) -> bool:
+    def header_check(self, prefix: bytes) -> bool:
         """A ``begin`` line at offset 0, followed by a valid first body line."""
         header = _find_header(prefix, leading=False)
         return header is not None and _uu_body_starts(prefix, header)
@@ -496,7 +512,7 @@ class Base64Codec(StreamCodec):
         return Base64Decompressor()
 
     @override
-    def magic_behind_prefix(self, prefix: bytes) -> bool:
+    def header_check(self, prefix: bytes) -> bool:
         """Full base64 lines of one length whose decoded bytes start with a known
         format's magic."""
         lines = _lines(prefix)
