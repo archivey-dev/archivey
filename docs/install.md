@@ -78,7 +78,8 @@ $p = [Environment]::GetEnvironmentVariable('Path', 'User')
 You can do the same in the Start menu: search for "environment variables", open "Edit environment
 variables for your account", select **Path**, click **Edit**, then **New**, and enter the folder.
 Programs that are already running keep their old `PATH`, so open a new terminal, and restart your
-editor if you run archivey from it.
+editor if you run archivey from it. You can also skip the `PATH` search and pass the full path as
+`ArchiveyConfig(unrar_path=...)`.
 
 On macOS, Homebrew no longer ships `unrar`. You can install it from an unofficial Homebrew tap,
 which builds or downloads RARLAB's program:

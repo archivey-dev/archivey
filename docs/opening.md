@@ -11,8 +11,12 @@ open file objects, you can pass a list of them, in order. A ZIP split by 7-Zip i
 archive. A RAR set with a volume missing still opens, as `unrar` would, but `members()` raises
 `TruncatedError` naming the missing volume, and so does reading a member with data in it. A part
 archivey finds on its own that is a symbolic link is refused with `OpenError`; pass the parts as a
-list to read it. `ArchiveyConfig(discover_volumes=False)` turns the search off, so a path opens
-only the file it names ([Security](security.md#hardening) says when that is worth it).
+list to read it. If listing the folder fails with an `OSError`, such as no permission to list it,
+or a server refuses the listing for a remote file (an HTTP 4xx status), archivey finds no other
+volumes: the path opens alone, and a missing part is reported as above. Any other error from the
+listing is raised as is.
+`ArchiveyConfig(discover_volumes=False)` turns the search off, so a path opens only the file it
+names ([Security](security.md#hardening) says when that is worth it).
 
 A file object is read from its current position to its end, so an archive that starts partway
 through a larger file opens as is. Bytes after the archive don't stop it opening. Any that aren't
@@ -128,7 +132,7 @@ and U+DCFF.
 
 If you know the encoding, pass it as `encoding=`, and archivey uses it in place of that default for
 names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR is listed as `'caf\udce9.txt'` without it
-and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar, RPM, SquashFS, CAB and XAR read
+and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar, RPM, makeself, SquashFS, CAB and XAR read
 `encoding=`. The other formats decode names their own way, and a value passed to them is ignored and
 noted in the diagnostics.
 

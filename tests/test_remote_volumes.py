@@ -7,6 +7,7 @@ named file's directory, and each volume is read as its own ``OpenFile``.
 from __future__ import annotations
 
 import io
+import logging
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -19,7 +20,8 @@ fsspec = pytest.importorskip("fsspec")
 from fsspec.core import OpenFile  # noqa: E402
 from fsspec.implementations.memory import MemoryFileSystem  # noqa: E402
 
-from archivey import open_archive  # noqa: E402
+from archivey import SourceChangedError, TruncatedError, open_archive  # noqa: E402
+from archivey.exceptions import _UsageValueError  # noqa: E402
 from archivey.internal.volumes import (  # noqa: E402
     RemoteVolumePath,
     discover_volume_siblings,
@@ -189,19 +191,143 @@ def test_a_remote_set_with_a_gap_is_refused_as_a_local_one_is(
         )
 
 
-class BrokenListingFS(CountingMemoryFS):
+class ClientResponseError(Exception):
+    """Stands in for ``aiohttp.ClientResponseError``, which fsspec's HTTP file system
+    raises for an error status other than 404, so the test needs no ``aiohttp``. It is
+    not an ``OSError``; its ``status`` is an ``int``, as aiohttp's is."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"{status}, message='refused'")
+        self.status = status
+
+
+class BrokenFS(CountingMemoryFS):
+    """``ls`` fails, and ``cat_file`` fails for the paths in ``unreadable``, with
+    ``error`` (a refused HTTP request when not given)."""
+
+    def __init__(
+        self,
+        error: BaseException | None = None,
+        *,
+        listable: bool = False,
+        unreadable: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__()
+        self.error = error or ClientResponseError(403)
+        self.listable = listable
+        self.unreadable = unreadable
+
     def ls(self, path: str, detail: bool = True, **kwargs: Any) -> Any:
-        raise RuntimeError("expired credentials")
+        if not self.listable:
+            raise self.error
+        return super().ls(path, detail=detail, **kwargs)
+
+    def cat_file(self, path: str, *args: Any, **kwargs: Any) -> Any:
+        if self._strip_protocol(path) in self.unreadable:
+            raise self.error
+        return super().cat_file(path, *args, **kwargs)
 
 
-def test_a_listing_failure_that_is_not_a_refusal_propagates() -> None:
-    """Only a refusal (``OSError``) or no ``ls`` means "no siblings"; a timeout or an
-    auth failure is not blamed on the archive."""
-    fs = BrokenListingFS()
+def _single_rar() -> bytes:
+    return (FIXTURES / "basic_nonsolid__.rar").read_bytes()
+
+
+def test_a_listing_refused_over_http_opens_the_named_file_alone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An HTTP 403 for the listing is not an ``OSError``, but it is a refusal: the file
+    the caller named opens as with ``discover_volumes=False``."""
+    fs = BrokenFS()
+    fs.pipe("/d/a.rar", _single_rar())
+    with open_archive(FIXTURES / "basic_nonsolid__.rar") as local:
+        expected = [m.name for m in local.members()]
+    with (
+        caplog.at_level(logging.DEBUG, logger="archivey.detection"),
+        open_archive(OpenFile(fs, "/d/a.rar", mode="rb")) as reader,
+    ):
+        assert [m.name for m in reader.members()] == expected
+    assert "403, message='refused'" in caplog.text
+
+
+def test_a_signature_peek_that_is_refused_leaves_the_part_out() -> None:
+    """``a.r05`` past a gap is taken only when its first bytes read as RAR; a peek
+    that is refused reads as "not RAR", and ``a.rar`` opens alone."""
+    fs = BrokenFS(listable=True, unreadable=("/d/a.r05",))
+    fs.pipe("/d/a.rar", _single_rar())
+    fs.pipe("/d/a.r05", RAR_HEAD)
+    assert discover_volume_siblings(RemoteVolumePath(fs, "/d/a.rar", {})) is None
+    with open_archive(OpenFile(fs, "/d/a.rar", mode="rb")) as reader:
+        assert reader.members()
+
+
+@pytest.mark.parametrize(
+    "named",
+    ["tinyvol.part1.rar", "tinyvol_rnn.rar"],
+)
+def test_a_first_part_whose_listing_is_refused_is_refused_as_a_lone_part(
+    fs: CountingMemoryFS, named: str
+) -> None:
+    """The later parts are there but cannot be found: the error is the one for a
+    first part with no siblings beside it."""
+    broken = BrokenFS()
+    broken.pipe(f"/d/{named}", (FIXTURES / named).read_bytes())
+    fs.pipe(f"/d/{named}", (FIXTURES / named).read_bytes())
+
+    def failure(source: OpenFile) -> tuple[type[BaseException], str]:
+        with pytest.raises(Exception) as caught, open_archive(source) as reader:
+            for member in reader.members():
+                if member.is_file:
+                    reader.read(member)
+        return type(caught.value), str(caught.value)
+
+    alone = failure(OpenFile(fs, f"/d/{named}", mode="rb"))
+    assert issubclass(alone[0], TruncatedError)
+    assert failure(OpenFile(broken, f"/d/{named}", mode="rb")) == alone
+
+
+def test_a_numbered_first_part_whose_listing_is_refused_is_refused_alone() -> None:
+    fs = BrokenFS()
     parts, _ = _zip_parts(3)
-    fs.pipe("/d/x.zip.001", parts[0])
-    with pytest.raises(RuntimeError, match="expired credentials"):
+    for index, part in enumerate(parts, 1):
+        fs.pipe(f"/d/x.zip.{index:03d}", part)
+    with pytest.raises(TruncatedError, match="found part 1 only"):
         open_archive(OpenFile(fs, "/d/x.zip.001", mode="rb"))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("expired credentials"),
+        AttributeError("'NoneType' object has no attribute 'session'"),
+        ClientResponseError(503),
+        MemoryError(),
+        SourceChangedError("changed"),
+        _UsageValueError("bad call"),
+    ],
+    ids=[
+        "RuntimeError",
+        "AttributeError",
+        "HTTP503",
+        "MemoryError",
+        "SourceChangedError",
+        "ArchiveyUsageError",
+    ],
+)
+@pytest.mark.parametrize("step", ["ls", "cat_file"])
+def test_a_discovery_failure_that_is_not_a_refusal_propagates(
+    error: BaseException, step: str
+) -> None:
+    """Only a refusal (``OSError``, no ``ls``, an HTTP 4xx) means "no siblings". An
+    unknown error, a server error or out of memory propagates (DR-15a), so a complete
+    set is not reported as one with parts missing."""
+    if step == "ls":
+        fs = BrokenFS(error)
+    else:
+        fs = BrokenFS(error, listable=True, unreadable=("/d/a.r05",))
+        fs.pipe("/d/a.r05", RAR_HEAD)
+    fs.pipe("/d/a.rar", _single_rar())
+    with pytest.raises(type(error)):
+        discover_volume_siblings(RemoteVolumePath(fs, "/d/a.rar", {}))
 
 
 class _URLFS:

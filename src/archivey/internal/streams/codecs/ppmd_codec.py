@@ -1,4 +1,11 @@
-"""PPMd (7z PPMd7 and ZIP PPMd8)."""
+"""PPMd: 7z's PPMd7 (variant H) and ZIP method 98's PPMd8, decoded by pyppmd.
+
+The parameters come from the container: a 7z coder's properties blob, or ZIP's order,
+memory size and restore method. The declared model memory is checked against
+``DecoderLimits`` before a decoder is built. pyppmd can crash on damaged data, so the
+decoder runs in a child process unless ``process_isolation`` is ``NONE``
+(``ppmd_decoder``, ``ppmd_child``).
+"""
 
 from __future__ import annotations
 

@@ -7,6 +7,10 @@ object ``fsspec.open(url, **options)`` returns (``openspec`` change
 comes from ``fs.cat_file(path, start, end)`` on the ``OpenFile``'s file system, through
 :class:`RangeSource`, so fsspec's file caches are never in the path. The size comes
 from one ``fs.size(path)`` at open and is a fact.
+:func:`~archivey.internal.volumes.resolve_source` builds the :class:`RangeSource` (one per
+volume of a set, all drawing on one :class:`WindowPool`) and wraps it in an
+:class:`~archivey.internal.source.ArchiveSource`, so detection and the backends read it
+as any other seekable source.
 
 A change of the object that a fetch catches stays caught (design D7): the
 :class:`RangeSource` raises :class:`~archivey.SourceChangedError` on every later read,
@@ -310,6 +314,7 @@ class _Run:
     """One sequential run on one source, and its window (the bytes of its last fetch)."""
 
     __slots__ = (
+        "backward",
         "data",
         "fetches",
         "last_use",
@@ -325,6 +330,10 @@ class _Run:
         self.data = b""
         self.fetches = 0
         self.last_use = tick
+        # Whether the window was placed by where it ends rather than where it starts:
+        # at the end of the object (rule 5) or before the window it stepped back
+        # from (rule 6). Only such a window is stepped back from.
+        self.backward = False
         # The furthest offset a read has taken from the window.
         self.served_end = start
 
@@ -406,6 +415,26 @@ class WindowPool:
                 best = run
         return best, False
 
+    def _run_ahead(self, source: RangeSource, at: int, want: int) -> _Run | None:
+        """The nearest end-placed window of ``source`` (``_Run.backward``) that
+        starts after ``at``, with a gap from the read's end to it of at most its own
+        size and at most ``max_read_through``: a read just before it steps backward
+        from it (rule 6). A walk's steps are short, so a longer gap is a read of
+        something else (a header at the start), which gets a run of its own rather
+        than fetching the whole gap. A window a forward run placed is not stepped
+        back from: a read just before it is a reader starting a new member, which
+        reads forward."""
+        best: _Run | None = None
+        for run in self._runs:
+            if run.source is not source or not run.backward or run.start <= at:
+                continue
+            gap = run.start - (at + want)
+            if gap <= min(len(run.data), source.max_read_through) and (
+                best is None or run.start < best.start
+            ):
+                best = run
+        return best
+
     def read(self, source: RangeSource, pos: int, view: memoryview) -> int:
         """Fill ``view`` from ``source`` at ``pos``; the caller clamped it to the size."""
         with self._lock:
@@ -445,15 +474,26 @@ class WindowPool:
         hinted = hint is not None
         if hinted:
             assert hint is not None
-            if run is not None and hint[0] > run.end and not run.finished():
+            if (
+                run is not None
+                and hint[0] > run.end
+                and (not run.finished() or hint[0] - run.end > len(run.data))
+            ):
                 # The span starts past the window of a run that reads have not taken
                 # to its end, so another stream on the source may still be reading
                 # it: the span gets a run of its own rather than taking that window
-                # over. A window read to its end is continued through the gap (rule
-                # 2), so members that lie almost back to back (an ISO extent's
-                # padding, a span that leaves out a header) keep one growing run
-                # rather than a request each.
+                # over. A window read to its end is continued through a gap no
+                # larger than itself (rule 2), so members that lie almost back to
+                # back (an ISO extent's padding, a span that leaves out a header)
+                # keep one growing run rather than a request each. A span further
+                # off (a tail read, design D1) is a jump: continuing the run would
+                # fetch the whole gap and drop the head's window, which the reader
+                # reads next.
                 run = None
+        ahead = None
+        if run is None and not hinted and source.max_read_through != 0:
+            ahead = self._run_ahead(source, at, want)
+        backward_end: int | None = None
         if run is not None:
             # Continue the run from its end, reading through the gap (rule 2). A
             # hint that starts inside the window continues it the same way.
@@ -461,6 +501,23 @@ class WindowPool:
             fetches = run.fetches + 1
             runs = len(self._runs)
             old = len(run.data)
+            run.backward = False
+        elif ahead is not None and (
+            max(ahead.start, at + want) - at <= self._max_fetch(len(self._runs))
+        ):
+            # Rule 6: a read just before an end-placed window steps back from it.
+            # The new window ends where that one starts, doubling as a forward run does,
+            # so a walk toward the start (the xz index of each stream, the lzip
+            # trailer of each member) costs about as many requests as a forward
+            # read of the same bytes, and fetches each byte once. The window moves
+            # back: the walk does not return to the bytes it leaves.
+            backward_end = max(ahead.start, at + want)
+            fetches = ahead.fetches + 1
+            run = ahead
+            runs = len(self._runs)
+            old = len(run.data)
+            span = max(backward_end - at, self._fetch_size(fetches, runs))
+            start = max(0, backward_end - span)
         else:
             # Rule 3: a hinted span is fetched from its start, which may lie before
             # the read (a backend may read a span's end first: a ZIP end record).
@@ -486,6 +543,21 @@ class WindowPool:
             length = max(length, hint[1] - start)
             # The run continues from the span as if it had doubled to that size.
             fetches = max(fetches, 2 + (length // c.min_fetch).bit_length())
+        if backward_end is not None:
+            length = backward_end - start
+        if (
+            run is None
+            and source.max_read_through != 0
+            and start + length > source.size
+        ):
+            # A new run that the end would cut short starts earlier, so its window
+            # still holds the minimum fetch (design D2 rule 5). A tail read comes in
+            # pieces that step backward (the xz footer, then its index), and each
+            # piece would otherwise be a request of its own. A hinted span ends at
+            # or before the end, so the window still holds all of it.
+            start = max(0, source.size - length)
+            need = at - start + want
+            backward_end = source.size
         length = min(length, source.size - start)
         if need > cap:
             # A read longer than any window: fetch exactly it, keep nothing. The run
@@ -513,7 +585,7 @@ class WindowPool:
             self._trim_oversized(cap, keep=run)
             room = c.pool_bytes - (self._held - old)
         if at_limit or room < need:
-            # No window to be had: unbuffered (rule 3).
+            # No window to be had: unbuffered (rule 4).
             data = source.fetch(at, at + want)
             view[: len(data)] = data
             return len(data)
@@ -522,6 +594,7 @@ class WindowPool:
         if run is None:
             run = _Run(source, start, self._tick)
             self._runs.append(run)
+        run.backward = backward_end is not None
         self._held += len(data) - len(run.data)
         run.start = start
         run.data = data
@@ -676,10 +749,22 @@ class RangeSource(io.RawIOBase):
 
     @property
     def seek_is_expensive(self) -> bool:
-        """A seek may cost a request: detection and the tail probes stay off it, as
+        """A seek may cost a request, so detection's mid-file probes stay off it, as
         they do for a member stream (``archivey.internal.source.seek_is_expensive``).
+        A read of the tail costs one request and no decode
+        (:meth:`nearest_resume_offset`), so the tail reads run, as on a local file
+        (design D1).
         """
         return True
+
+    def nearest_resume_offset(self, target: int) -> int:
+        """``target``: a range request starts at any offset, so a seek decodes nothing.
+
+        This lets ``seeks_to_end_are_cheap`` answer ``True``. The detection trailer,
+        the single-file tail probes and the gzip ISIZE read then each cost one request,
+        and the same bytes give the same result as from a path (design D1).
+        """
+        return target
 
     def fetch(self, start: int, end: int) -> bytes:
         """One range request, ``[start, end)``, which lies inside the size read at open.
