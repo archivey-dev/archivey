@@ -424,6 +424,20 @@ def test_a_long_link_target_is_reported(toys: ArchiveFormat, tmp_path: Path) -> 
     assert counts[DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE] == 1
 
 
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_an_empty_link_target_in_the_data_is_reported_once(
+    toys: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    entries = [("empty", MemberType.SYMLINK, b""), *_ENTRIES[1:2]]
+    data = build_toys(entries)
+    source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
+    with open_archive(source, streaming=pipe) as reader:
+        listed = {m.name: m.link_target for m, _ in reader.stream_members()}
+        counts = reader.diagnostics.counts
+    assert listed == {"empty": None, "docs/a.txt": None}
+    assert counts[DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE] == 1
+
+
 def test_concurrent_reads(toys: ArchiveFormat, tmp_path: Path) -> None:
     path = _write(tmp_path, build_toys(_ENTRIES))
     results: dict[str, bytes] = {}

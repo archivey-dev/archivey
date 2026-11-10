@@ -165,7 +165,7 @@ def test_seeks_within_a_file() -> None:
 
 def test_extracts_files_links_and_directories(tmp_path: Path) -> None:
     with open_archive(DATA / "gzip.sqfs") as archive:
-        archive.extract_all(tmp_path)
+        archive.extract_all(tmp_path, on_blocked="skip")
     for name, data in CONTENT.items():
         assert (tmp_path / name).read_bytes() == data
     assert (tmp_path / "dir" / "link").readlink() == Path("../a.txt")
@@ -302,13 +302,13 @@ def test_a_duplicate_name_keeps_listing_order(
 
     monkeypatch.setattr(SquashfsReader, "_entries", renamed)
     with open_archive(DATA / "tar-order.sqfs") as archive:
-        archive.extract_all(tmp_path)
+        archive.extract_all(tmp_path, on_blocked="skip")
     assert (tmp_path / "f1").read_bytes() == _TAR_ORDER["f5"]
 
 
 def test_fragments_filled_out_of_listing_order_extract(tmp_path: Path) -> None:
     with open_archive(DATA / "tar-order.sqfs") as archive:
-        archive.extract_all(tmp_path)
+        archive.extract_all(tmp_path, on_blocked="skip")
     for name, data in _TAR_ORDER.items():
         assert (tmp_path / name).read_bytes() == data
     assert (tmp_path / "hard").stat().st_ino == (tmp_path / "f3").stat().st_ino

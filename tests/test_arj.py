@@ -113,7 +113,8 @@ def test_unix_links_and_special_files() -> None:
 
 def test_links_extract(tmp_path: Path) -> None:
     with open_archive(_FIXTURES / "links.arj") as reader:
-        reader.extract_all(tmp_path)
+        # The archive holds a FIFO, which extraction refuses; the rest is written.
+        reader.extract_all(tmp_path, on_blocked="skip")
     assert (tmp_path / "small.txt").read_bytes() == b"hello arj\n"
     assert (tmp_path / "hard.txt").read_bytes() == b"hello arj\n"
     assert (tmp_path / "link").is_symlink()

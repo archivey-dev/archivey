@@ -454,7 +454,7 @@ def test_unix_special_file_without_data_is_other(tmp_path: Path) -> None:
         codes = [d.code for d in archive.diagnostics.retained]
         assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
         assert archive.read(members[2]) == payloads["@atfile"]
-        archive.extract_all(tmp_path / "out")
+        archive.extract_all(tmp_path / "out", on_blocked="skip")
     assert not (tmp_path / "out" / "-inul").exists()
     assert (tmp_path / "out" / "@atfile").read_bytes() == payloads["@atfile"]
 
@@ -1001,7 +1001,7 @@ def test_auto_counts_for_the_program_it_picks(
     path = _declaring_dictionary(tmp_path, "hostile_argv__.rar", 0, _RAR5_DICT_4GIB)
     if not unrar_found:
 
-        def missing() -> str:
+        def missing(_program: str | None = None) -> str:
             raise PackageNotInstalledError("no RARLAB unrar in this test")
 
         monkeypatch.setattr(rar_reader, "find_rarlab_unrar", missing)
