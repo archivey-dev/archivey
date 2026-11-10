@@ -736,6 +736,48 @@ def test_lzx_a_tree_that_does_not_fill_its_code_space_is_damage(
         lzx_decoder._build_table(lengths, len(lengths), "main")
 
 
+def _zero_lengths(w: BitWriter, count: int, codes: dict[int, int]) -> None:
+    """``count`` lengths of 0 as pretree runs, through 2-bit ``codes``."""
+    while count >= 20:
+        run = min(count, 51)
+        w.bits(codes[18], 2)
+        w.bits(run - 20, 5)
+        count -= run
+    if count >= 4:
+        w.bits(codes[17], 2)
+        w.bits(count - 4, 4)
+        count = 0
+    for _ in range(count):
+        w.bits(codes[0], 2)
+
+
+def test_lzx_a_tree_with_an_unreachable_long_code_is_damage() -> None:
+    """A pretree whose four 2-bit codes fill the code space, plus an 8-bit code for
+    symbol 1. cabextract decodes on (lzxd.c stops at its 6-bit first table level and
+    never sees the 8-bit code), but no encoder writes such a tree: it comes from
+    damage, and the bytes after it are wrong. archivey refuses it, on purpose."""
+    pre = [0] * 20
+    pre[0] = pre[16] = pre[17] = pre[18] = 2
+    pre[1] = 8
+    codes = {0: 0b00, 16: 0b01, 17: 0b10, 18: 0b11}
+    size = 100
+    w = BitWriter()
+    w.bits(0, 1)
+    w.bits(1, 3)  # a verbatim block
+    w.bits(size >> 8, 16)
+    w.bits(size & 0xFF, 8)
+    for first, last, ones in ((0, 256, 2), (256, 496, 0), (0, 249, 0)):
+        for n in pre:
+            w.bits(n, 4)
+        for _ in range(ones):
+            w.bits(codes[16], 2)  # length (0 - 16) % 17 = 1
+        _zero_lengths(w, last - first - ones, codes)
+    for i in range(size):
+        w.bits(i & 1, 1)
+    with pytest.raises(CorruptionError, match="pretree tree overfills"):
+        _decoder(_end(w)).decode_frame(size)
+
+
 def test_lzx_long_codes_decode_through_sub_tables() -> None:
     # Codes of 1 to 16 bits: the root takes 10 bits, the rest go to sub-tables.
     lengths = [*range(1, 16), 16, 16]
