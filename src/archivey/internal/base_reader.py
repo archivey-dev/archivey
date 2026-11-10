@@ -452,10 +452,10 @@ def reject_start_offset(
     """Refuse a nonzero ``open_read(start_offset=…)``, or any ``end_offset``, for a
     format that cannot honour it.
 
-    Only the self-extracting formats (RAR / 7z / ZIP) are ever handed a nonzero offset,
-    because only they can carry an executable stub and only they are scanned for one by
-    ``detect_format``. Reaching here with an offset means a caller invented one, and
-    reading from byte 0 instead would answer with the wrong bytes rather than say so.
+    Only the self-extracting formats (RAR / 7z / ZIP / LHA) are ever handed a nonzero
+    offset, because only they can carry an executable stub and only they are scanned for
+    one by ``detect_format``. Reaching here with an offset means a caller invented one,
+    and reading from byte 0 instead would answer with the wrong bytes rather than say so.
     """
     if start_offset:
         raise UnsupportedFeatureError(
@@ -508,8 +508,9 @@ class ReadBackend(ABC):
     # through every single-file codec declares it.
     INNER_MAGIC: tuple[MagicSignature, ...] = ()
     # Magic to hunt for *behind an executable stub*, for the formats that ship as
-    # self-extracting archives (RAR / 7z / ZIP). The offset is 0 because these are
-    # magic at offset 0 of the *payload*, wherever in the file that starts; the
+    # self-extracting archives (RAR / 7z / ZIP / LHA). The offset is where the magic
+    # sits in the *payload* (0, or 2 for LHA's method id), wherever in the file the
+    # payload starts; the
     # detector searches for them within the shared SFX_MAX window when the leading
     # bytes look executable-shaped, and reports the match position as
     # ``FormatInfo.payload_offset``. Deliberately a separate, narrower table than
@@ -530,7 +531,7 @@ class ReadBackend(ABC):
     # are inert data and do not have this problem.
     SFX_HIT_VALIDATOR: ClassVar[HitValidator | None] = None
     # Whether this backend's parser finds a payload behind a stub with its own capped
-    # forward scan (``sfx.scan_for_magic``), as the RAR and 7z parsers do. The
+    # forward scan (``sfx.scan_for_magic``), as the RAR, 7z and LHA parsers do. The
     # detector applies the same rejection cap to these formats only, so detection
     # gives up exactly where forced ``format=`` does. A format whose reader locates
     # its directory another way (ZIP reads the end of central directory from the

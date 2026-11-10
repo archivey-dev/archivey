@@ -12,7 +12,7 @@ as a built-in, as CAB, XAR and ar are.
 | --- | --- |
 | Read | Yes. `internal/backends/lha_reader.py`, a `LhaHandler` (`IndexedFormatHandler`) and a `LhaReader` (`IndexedReader`), registered with `register_builtin_format` |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
-| Source | A file or a stream that can seek. Not a pipe, for now: the listing seeks past each member's data to the next header |
+| Source | A file or a stream that can seek, from its start or behind a self-extracting stub (§2.6). Not a pipe, for now: the listing seeks past each member's data to the next header |
 | Listing cost | Header by header, one read per header and a seek past the data |
 | Access cost | `DIRECT`: each member is its own stream |
 | Core dependencies | None. The LZH methods through `internal/streams/codecs/lzh_decoder.py` and `lharc_decoder.py`, archivey's own, in Python |
@@ -22,8 +22,7 @@ as a built-in, as CAB, XAR and ar are.
 | Refuses | Methods it does not decode, when read; a header level past 3; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-lha/spec.md` |
 
-Not here, though a reader might look for it: self-extracting archives (the archive after
-a DOS, Windows, Amiga or X68000 stub) are not searched for; MacLHA's MacBinary members
+Not here, though a reader might look for it: MacLHA's MacBinary members
 read with the MacBinary wrapper still around their data; PMarc's `-pm1-` and `-pm2-`
 methods are not decoded; multi-volume archives (a `0x39` record) are
 not joined; OS/2 extended attributes and MorphOS LhA's comment record (`0x71`) are not
@@ -151,6 +150,40 @@ early. They share `LzhDecoder`'s input and output (`LhaBitDecoder` in
 that needed them (`TruncatedError`). On lhasa's fixtures (the 18 092-byte GPL text,
 CPython 3.11), `-lzs-` and `-lz5-` decode about 4.7 MB/s and `-lh1-` about 1.8 MB/s,
 against 7 for `-lh5-` on the same text: `-lh1-` updates its tree after every symbol.
+
+### 2.6 Self-extracting archives
+
+An LHA self-extractor is a program with the archive after it: DOS `.COM` and `.EXE`
+stubs (LHarc, LHA, LArc, PMarc), Windows (LHMelt's WinSFX, ExpLzh's DECLHA), the Amiga
+(LhASFX), the Atari ST and the X68000. The archive is found by its first header, as
+lhasa finds it, but with the shared SFX scan (`internal/sfx.py`): the method at offset 2
+of a header is the needle (`SFX_MAGIC`, offset 2), and `_validate_header` reads the
+header there and checks its sum or CRC, so a stub that names the methods in its code is
+passed over. Detection runs it behind an executable cue, and as the leading-bytes scan
+when nothing else matched: a `.COM`, Amiga hunk or Atari TOS stub has no cue.
+`LhaReader` runs the same scan itself when byte 2 is not a method, so a forced
+`format=LHA` reads what detection finds (`SFX_PARSER_SCANS`).
+
+Where lhasa skips the first header after the names `LHA-SFX` and `LhASFX V1.2,`, the
+validator walks the members after the first instead: an archive that ends, with more
+than padding after its end byte, before the file does is `VALID_SHORT`, and the scan
+looks on. Amiga LhASFX keeps its usage text as such an archive inside the stub. The walk
+stops after `_WALK_MAX` (8) members and then grades the candidate `VALID`, so a decoy of
+nine or more members is taken: a window of valid headers makes each one a candidate,
+and an unbounded walk from each costs time quadratic in the window. A next header that
+does not read grades the candidate `DAMAGED`, so a stub header that passes its 8-bit sum
+by chance loses to the real archive; opening still falls back to it. ExpLzh's
+DECLHA stubs carry no decoy, and lhasa's skip passes over their real archive (it lists
+nothing); archivey reads it.
+
+The format API gives a reader no start offset, so `register_builtin_format` sets
+`SFX_MAGIC` for LHA and `IndexedReaderAdapter` reads detection's `[payload_offset,
+payload_end)` as the reader's whole source (`ReadBackend.open_read`'s promise). A plugin
+cannot declare `SFX_MAGIC`, and still refuses an offset.
+
+Measured once (2026-11-09) on lhasa's 15 self-extractors: the 12 lhasa extracts read the
+same, auto-detected and forced; PMarc's is listed and its `-pm2-` member refused; the two
+DECLHA ones read the GPL text lhasa does not reach.
 
 ## 3. Tests
 
