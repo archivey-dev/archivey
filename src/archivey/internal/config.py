@@ -50,86 +50,118 @@ __all__ = [
 class StreamConfig:
     """Options that influence how compressed streams are opened.
 
-    ``seekable`` is declared seek demand (``MemberStreams.SEEKABLE``): accelerator
-    ``AUTO`` resolution and index construction key off it. ``streaming`` remains the
-    archive access mode for backends that still need to know forward-only vs random.
-    ``compressed_input_size`` is the known compressed byte length of the source (path
-    size, slice length, …), used by ``use_rapidgzip`` AUTO's minimum-size gate; ``None``
-    means unknown (AUTO keeps pre-threshold behaviour when truncation is also
-    verifiable). ``expected_decompressed_size`` is a container-declared uncompressed
-    length (ZIP central-dir size, …) used both to gate rapidgzip AUTO and to wrap the
-    accelerator in a length-verifying stream. ``gzip_isize_backstop`` is set when a
-    seekable gzip source has a readable ISIZE trailer — enough for AUTO to select
-    rapidgzip with the ISIZE truncation check, but *not* a hard ``VerifyingStream``
-    bound (ISIZE is mod 2**32 and multi-member trailers only cover the last member).
-    ``gzip_isize`` is that trailer's value, which AUTO's ratio gate for a sequential
-    read uses as an estimate of the decoded size and nothing else. ``source_seekable``
-    is set by :func:`open_codec_stream` when the source is a path or a stream that can
-    seek: a sequential read (no declared seek demand) can still go through an
-    accelerator under AUTO, which needs a source it can seek. A reader may fill it
-    first with the same value, as the ZIP reader does to save a copy per member.
-    ``source_is_file`` is set by the bzip2 codec (``Bzip2Codec.prepare_config``) when
-    the source is a path or a byte range of a regular file (``file_region``), and only
-    when its sequential rule would otherwise take the read: the accelerator reads such a
-    source itself, and reads its input about twice.
-    ``decoder_limits`` is the caller's :class:`~archivey.config.DecoderLimits`,
-    carried down so a codec can refuse an archive-declared allocation before making
-    it; it defaults to the public default rather than to "unlimited", because a
-    :class:`StreamConfig` built directly (detection, tests) is still decoding a file
-    someone else wrote. ``collector`` is the reader's (or ``open_stream``'s)
-    diagnostic collector, so a codec stream that reports something itself — the xz,
-    lzip and unix-compress ``SEEK_INDEX_DEGRADED`` — reports it under the caller's
-    policy and into ``reader.diagnostics``; ``None`` falls back to
-    :func:`~archivey.internal.diagnostics_collector.resolve_collector`'s throwaway. It
-    is left out of equality: it says where reports go, not how the stream decodes.
-    ``report_trailing_data`` is set where the codec stream *is* the file — a bare
-    compressed file, a compressed TAR, ``open_stream`` — so bytes after the stream's
-    end are something the caller was given and not told about, and the stream codecs
-    report them as ``ARCHIVE_TRAILING_DATA``. ``refuse_input_after_end`` is set by the
-    ZIP and 7z readers instead: there the source is exactly one coder's compressed data,
-    whose size the archive declares, so a byte the codec leaves after its end (a zero
-    byte too) is input the member declares and does not use. It may hide a second
-    payload, and 7-Zip reports it as a data error, so the codec raises
-    ``DataAfterEndError`` (a ``CorruptionError``; DR-3). The 7z reader cuts a coder's
-    input at its declared size first, so a 7z AES stage's block padding is not in it.
-    Raw LZMA is container-only and refuses such bytes whatever the flag says.
-    ``probe_read_bound`` is set only by a detection probe: the most decompressed bytes
-    it reads from the stream. A codec whose decoder reserves a window the archive
-    declares builds it no larger than that read needs (:func:`probe_lzma_dictionary`
-    for the LZMA family; zstd, which cannot shrink a window, lowers
-    ``window_log_max``). Past the bound the stream may end or fail, so the probe reads
-    no further. ``process_isolation`` is the caller's
-    :class:`~archivey.config.ProcessIsolation`: a codec builds its native decoder
-    through :attr:`natives`, which that setting selects.
-    ``seek_index`` is an xz index scan the single-file reader already
-    made over this same source; the xz stream uses it in place of its own scan. Like
-    ``collector`` it is left out of equality. So is ``usage``, the reader's
-    :class:`~archivey.internal.resource_usage.ResourceUsageRecorder`: a codec passes it
-    to :func:`check_decoder_memory`, which notes each declaration there. A detection
-    probe builds its config without one, so a probe's sizes are never recorded.
-    ``excluded_libraries`` is the caller's ``FormatPolicy.exclude_libraries``: a codec
-    whose package it names opens as if the package were not installed.
+    Usually built from the caller's :class:`~archivey.config.ArchiveyConfig` by
+    :func:`stream_config_from_archivey`; detection and tests build one directly. It is
+    copied per member or per probe with
+    :func:`~archivey.internal.dataclass_copy.copy_with` or ``dataclasses.replace``.
+    ``copy_with`` passes the fields by position, and keeps that fast path only while
+    the constructor takes exactly the fields, in field order.
+
+    ``collector``, ``seek_index`` and ``usage`` are left out of equality: none of them
+    changes what the stream decodes. ``collector`` and ``usage`` say where reports and
+    records go, and ``seek_index`` is a scan already made of the same source.
     """
 
     streaming: bool = False
+    """The archive access mode, for backends that still need to know forward-only
+    from random access."""
+
     seekable: bool = False
+    """Declared seek demand (``MemberStreams.SEEKABLE``): accelerator ``AUTO``
+    resolution and index construction key off it."""
+
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
+    """The caller's ``ArchiveyConfig.use_rapidgzip``: whether a gzip stream may go
+    through rapidgzip (``AUTO`` applies the gates the size fields below feed)."""
+
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    """The caller's ``ArchiveyConfig.use_indexed_bzip2``: whether a bzip2 stream may go
+    through rapidgzip's bzip2 decoder."""
+
     compressed_input_size: int | None = None
+    """The known compressed byte length of the source (path size, slice length, …),
+    used by ``use_rapidgzip`` AUTO's minimum-size gate. ``None`` means unknown (AUTO
+    keeps pre-threshold behaviour when truncation is also verifiable)."""
+
     expected_decompressed_size: int | None = None
+    """A container-declared uncompressed length (ZIP central-dir size, …), used both to
+    gate rapidgzip AUTO and to wrap the accelerator in a length-verifying stream."""
+
     gzip_isize_backstop: bool = False
+    """Set when a seekable gzip source has a readable ISIZE trailer — enough for AUTO
+    to select rapidgzip with the ISIZE truncation check, but *not* a hard
+    ``VerifyingStream`` bound (ISIZE is mod 2**32 and multi-member trailers only cover
+    the last member)."""
+
     gzip_isize: int | None = None
+    """The gzip ISIZE trailer's value (see ``gzip_isize_backstop``), which AUTO's ratio
+    gate for a sequential read uses as an estimate of the decoded size and nothing
+    else."""
+
     source_seekable: bool = False
+    """Set by :func:`open_codec_stream` when the source is a path or a stream that can
+    seek: a sequential read (no declared seek demand) can still go through an
+    accelerator under AUTO, which needs a source it can seek. A reader may fill it
+    first with the same value, as the ZIP reader does to save a copy per member."""
+
     source_is_file: bool = False
+    """Set by the bzip2 codec (``Bzip2Codec.prepare_config``) when the source is a path
+    or a byte range of a regular file (``file_region``), and only when its sequential
+    rule would otherwise take the read: the accelerator reads such a source itself,
+    and reads its input about twice."""
+
     decoder_limits: DecoderLimits = DecoderLimits()
+    """The caller's :class:`~archivey.config.DecoderLimits`, carried down so a codec
+    can refuse an archive-declared allocation before making it. It defaults to the
+    public default rather than to "unlimited", because a :class:`StreamConfig` built
+    directly (detection, tests) is still decoding a file someone else wrote."""
+
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
+    """The caller's :class:`~archivey.config.ProcessIsolation`: a codec builds its
+    native decoder through :attr:`natives`, which that setting selects."""
+
     collector: DiagnosticCollector | None = field(default=None, compare=False)
+    """The reader's (or ``open_stream``'s) diagnostic collector, so a codec stream that
+    reports something itself — the xz, lzip and unix-compress ``SEEK_INDEX_DEGRADED``
+    — reports it under the caller's policy and into ``reader.diagnostics``. ``None``
+    falls back to
+    :func:`~archivey.internal.diagnostics_collector.resolve_collector`'s throwaway."""
+
     report_trailing_data: bool = False
+    """Set where the codec stream *is* the file — a bare compressed file, a compressed
+    TAR, ``open_stream`` — so bytes after the stream's end are something the caller was
+    given and not told about, and the stream codecs report them as
+    ``ARCHIVE_TRAILING_DATA``."""
+
     probe_read_bound: int | None = None
+    """Set only by a detection probe: the most decompressed bytes it reads from the
+    stream. A codec whose decoder reserves a window the archive declares builds it no
+    larger than that read needs (:func:`probe_lzma_dictionary` for the LZMA family;
+    zstd, which cannot shrink a window, lowers ``window_log_max``). Past the bound the
+    stream may end or fail, so the probe reads no further."""
+
     refuse_input_after_end: bool = False
+    """Set by the ZIP and 7z readers, where the source is exactly one coder's
+    compressed data, whose size the archive declares, so a byte the codec leaves after
+    its end (a zero byte too) is input the member declares and does not use. It may
+    hide a second payload, and 7-Zip reports it as a data error, so the codec raises
+    ``DataAfterEndError`` (a ``CorruptionError``; DR-3). The 7z reader cuts a coder's
+    input at its declared size first, so a 7z AES stage's block padding is not in it.
+    Raw LZMA is container-only and refuses such bytes whatever the flag says."""
+
     seek_index: PrebuiltIndex | None = field(default=None, compare=False)
+    """An xz index scan the single-file reader already made over this same source; the
+    xz stream uses it in place of its own scan."""
+
     usage: ResourceUsageRecorder | None = field(default=None, compare=False)
+    """The reader's :class:`~archivey.internal.resource_usage.ResourceUsageRecorder`:
+    a codec passes it to :func:`check_decoder_memory`, which notes each declaration
+    there. A detection probe builds its config without one, so a probe's sizes are
+    never recorded."""
+
     excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+    """The caller's ``FormatPolicy.exclude_libraries``: a codec whose package it names
+    opens as if the package were not installed."""
 
     @property
     def natives(self) -> Natives:

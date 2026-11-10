@@ -60,6 +60,8 @@ class Banner:
 
 @dataclass(frozen=True, slots=True)
 class _Probe:
+    """One binary's cached probe answer, valid while its stat identity holds."""
+
     banner: Banner
     identity: tuple[int, int, int, int]
     timed_out: bool
