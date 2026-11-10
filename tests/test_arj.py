@@ -32,7 +32,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "external" / "arj_310"
 
@@ -280,10 +280,16 @@ def test_a_second_main_header_is_corruption() -> None:
         _read_all(io.BytesIO(main + main + b"\x60\xea\0\0"))
 
 
-def test_an_archive_cut_inside_a_member_is_truncated() -> None:
-    data = _archive((b"a.txt", b"alpha" * 100))
+@pytest.mark.parametrize(
+    "wrap", [io.BytesIO, ShortReadBytesIO], ids=["sized", "size-unknown"]
+)
+def test_an_archive_cut_inside_a_member_is_truncated(wrap) -> None:
+    # ShortReadBytesIO is a stream archivey cannot size cheaply, so the reader has to
+    # ask the source whether the member's last byte is there. A compressed member
+    # shows it: without that check the decoder meets the cut first and calls it damage.
+    data = _archive((b"a.txt", b"alpha" * 100), method=1)
     with pytest.raises(TruncatedError):
-        _read_all(io.BytesIO(data[:-200]))
+        _read_all(wrap(data[:-200]))
 
 
 @pytest.mark.parametrize("flags", [0x04, 0x08], ids=["continues", "continued"])

@@ -283,8 +283,14 @@ class ArjReader(IndexedReader[_Location]):
         header.end = pos
         if header.file_type == _TYPE_MAIN:
             header.stored = 0
+        data_end = header.end + header.stored
         source_size = self._source.size
-        if source_size is not None and header.end + header.stored > source_size:
+        if source_size is not None:
+            cut = data_end > source_size
+        else:
+            # A source whose size is not known: is the member's last byte there?
+            cut = header.stored > 0 and not self._source.read_at(data_end - 1, 1)
+        if cut:
             raise TruncatedError(
                 f"the ARJ archive ends inside the data of the member at offset {offset}"
             )
