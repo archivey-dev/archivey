@@ -88,14 +88,36 @@ _MAX_CODE = huffman_table.MAX_CODE
 _ROOT_BITS = huffman_table.ROOT_BITS
 
 
+# lzxd.c's first-level table width per tree. Its table build stops once the codes
+# that fit this width fill the code space, and ignores any longer code.
+_PRETREE_TABLE_BITS = 6
+_MAIN_TABLE_BITS = 12
+_LENGTH_TABLE_BITS = 12
+_ALIGNED_TABLE_BITS = 7
+
+
 def _build_table(
-    lengths: list[int], count: int, what: str, *, may_be_empty: bool = False
+    lengths: list[int],
+    count: int,
+    what: str,
+    table_bits: int,
+    *,
+    may_be_empty: bool = False,
 ) -> Tree | None:
     """The decoding table for the canonical code of ``lengths[:count]``, from the
     shared :func:`huffman_table.build_table`. A length above 16 (a delta that wrapped
     below 0) gives its symbol no code, as in lzxd. With ``may_be_empty``, ``None`` for
     a tree whose lengths are all 0; any other empty tree, and a code that overfills or
-    underfills the code space, is damage."""
+    underfills the code space, is damage.
+
+    As in lzxd.c's ``make_decode_table``: when the codes of at most ``table_bits``
+    bits fill the code space exactly, the longer codes are dropped, not refused. No
+    bit pattern reaches them, so the tree decodes the same either way.
+    """
+    lengths = lengths[:count]
+    short = sum(1 << (_MAX_CODE - n) for n in lengths if 0 < n <= table_bits)
+    if short == 1 << _MAX_CODE and any(table_bits < n <= _MAX_CODE for n in lengths):
+        lengths = [n if n <= table_bits else 0 for n in lengths]
     return huffman_table.build_table(
         lengths, count, f"LZX {what}", may_be_empty=may_be_empty
     )
@@ -273,7 +295,7 @@ class LzxDecoder:
 
     def _read_lengths(self, lengths: list[int], first: int, last: int) -> None:
         pre = [self._read_bits(4) for _ in range(_PRETREE_SYMBOLS)]
-        table = _build_table(pre, _PRETREE_SYMBOLS, "pretree")
+        table = _build_table(pre, _PRETREE_SYMBOLS, "pretree", _PRETREE_TABLE_BITS)
         x = first
         while x < last:
             code = self._read_symbol(table, "pretree")
@@ -305,17 +327,23 @@ class LzxDecoder:
         self._block_length = self._block_remaining = length
         if block_type == _ALIGNED:
             aligned = [self._read_bits(3) for _ in range(_ALIGNED_SYMBOLS)]
-            self._aligned_table = _build_table(aligned, _ALIGNED_SYMBOLS, "aligned")
+            self._aligned_table = _build_table(
+                aligned, _ALIGNED_SYMBOLS, "aligned", _ALIGNED_TABLE_BITS
+            )
         if block_type in (_VERBATIM, _ALIGNED):
             main = self._main_lengths
             self._read_lengths(main, 0, _NUM_CHARS)
             self._read_lengths(main, _NUM_CHARS, self._main_symbols)
-            self._main_table = _build_table(main, _MAIN_MAX, "main")
+            self._main_table = _build_table(main, _MAIN_MAX, "main", _MAIN_TABLE_BITS)
             if main[0xE8]:
                 self._intel_started = True
             self._read_lengths(self._length_lengths, 0, _LENGTH_SYMBOLS)
             self._length_table = _build_table(
-                self._length_lengths, _LENGTH_MAX, "length", may_be_empty=True
+                self._length_lengths,
+                _LENGTH_MAX,
+                "length",
+                _LENGTH_TABLE_BITS,
+                may_be_empty=True,
             )
         elif block_type == _UNCOMPRESSED:
             self._intel_started = True
