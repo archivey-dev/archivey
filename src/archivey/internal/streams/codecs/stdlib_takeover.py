@@ -1,5 +1,15 @@
 """Hand a rapidgzip decode to the standard library when rapidgzip fails on data, so an
 accelerator changes speed and never the verdict.
+
+The accelerated open paths of gzip, zlib, raw DEFLATE (``deflate_family_codec``) and
+bzip2 (``bzip2_codec``) wrap rapidgzip's stream in :class:`_StdlibOnAcceleratorError`.
+On a data error it reopens the same source with the standard-library decoder, from a
+resume point when it has one (``deflate_resume``, ``bzip2_resume``), and carries on at
+the position already delivered. The rest of the module is what those wrappers and the
+per-codec end checks share: fresh views of the source that leave rapidgzip's position
+alone (:func:`_accelerator_backstop_source`), the end-of-output test for a seek
+(:func:`_seek_reached_end`), a bounded drain (:func:`_drain_into`) and a running
+checksum of the output (:class:`_OutputChecksum`).
 """
 
 from __future__ import annotations
@@ -123,8 +133,8 @@ _ResumePoints = Callable[[BinaryIO, int, Callable[[], BinaryIO]], list[SeekPoint
 class _StdlibOnAcceleratorError(DelegatingStream):
     """Finish a rapidgzip decode with the standard library when rapidgzip fails on data.
 
-    The DEFLATE family (rapidgzip in a child process) and bzip2 (rapidgzip's bzip2
-    decoder, in this process) both use it; the defaults below are the DEFLATE family's,
+    The DEFLATE family and bzip2 (rapidgzip's bzip2 decoder) both use it, each with
+    rapidgzip in a child process; the defaults below are the DEFLATE family's,
     and the bzip2 differences are at the end.
 
     rapidgzip decodes ahead in chunks and raises as soon as one fails, without handing
@@ -235,7 +245,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         self._open_stdlib = open_stdlib
         self._label = label
         self._limit = limit
-        self._data_error = takes_over
+        self._is_data_error = takes_over
         self._resume_points = resume_points
         self._translate = translate
         self._empty_to_stdlib = empty_to_stdlib
@@ -299,8 +309,8 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         """Whether the standard library takes over after ``exc`` from rapidgzip."""
         if self.switched or from_callers_source(exc):
             return False
-        if self._data_error is not None:
-            return self._data_error(exc)
+        if self._is_data_error is not None:
+            return self._is_data_error(exc)
         return (
             crashed_on_data(exc) or _translate_rapidgzip(exc, self._label) is not None
         )
@@ -343,6 +353,9 @@ class _StdlibOnAcceleratorError(DelegatingStream):
             self._switch()
 
     def _switch(self, *, resume: bool = False) -> None:
+        """Replace rapidgzip's stream with the standard-library decoder at the position
+        delivered so far. With ``resume``, it starts from the newest resume point at or
+        before that position, when rapidgzip knows one; otherwise from the start."""
         old = self._inner
         points: list[SeekPoint] = []
         if resume and self._resume_points is not None:

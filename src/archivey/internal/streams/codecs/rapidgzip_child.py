@@ -487,8 +487,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         # ``_buffer_at``. The child's own position is past the end of the buffer.
         self._buffer = b""
         self._buffer_at = 0
-        self._ahead = _MIN_AHEAD
+        # Read-ahead: whether the last call was a read (a seek clears it), and how much
+        # the next sequential READ asks the child for (doubles up to ``_CHUNK``).
         self._sequential = False
+        self._ahead = _MIN_AHEAD
         # An exception from the caller's source, raised when the current call ends.
         self._parked: Exception | None = None
         # The first exception from the caller's source. The child was told its input

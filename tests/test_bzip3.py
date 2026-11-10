@@ -273,6 +273,46 @@ def test_bytes_after_the_last_block(tail: bytes) -> None:
 
 
 @needs_bzip3
+@pytest.mark.parametrize("isolation", ISOLATIONS, ids=lambda i: i.name)
+@pytest.mark.parametrize("chunk", [4 << 10, 1 << 20], ids=["4KiB", "1MiB"])
+@pytest.mark.parametrize(
+    "tail", [b"\xff" * 16, "copy"], ids=["bad block header", "second file"]
+)
+def test_a_bad_block_header_comes_after_the_good_blocks_output(
+    isolation: ProcessIsolation, chunk: int, tail: bytes | str
+) -> None:
+    """A block header that fails its checks raises only once every byte of the good
+    blocks before it is read (spec ``compressed-streams``)."""
+    raw = (FIXTURES / "lines.txt.bz3").read_bytes()
+    raw += raw if tail == "copy" else tail
+    got = bytearray()
+    with open_archive(io.BytesIO(raw), config=_config(isolation)) as archive:
+        (member,) = archive.members()
+        with (
+            archive.open(member) as stream,
+            pytest.raises(CorruptionError, match="compressed bytes"),
+        ):
+            while piece := stream.read(chunk):
+                got += piece
+    assert bytes(got) == LINES
+
+
+@needs_bzip3
+def test_a_bad_block_in_one_call_keeps_the_output_before_it() -> None:
+    """One unbounded call that decodes a good block and then meets a bad block header
+    returns the good output, says it needs no input, and raises on the next call."""
+    from bz3.backends import BZ3Decompressor
+
+    raw = (FIXTURES / "lines.txt.bz3").read_bytes() + b"\xff" * 16
+    decoder = bzip3_codec.Bzip3Decompressor(lambda size: None, BZ3Decompressor)
+    assert decoder.decompress(raw) == LINES
+    assert not decoder.needs_input
+    assert not decoder.eof
+    with pytest.raises(CorruptionError, match="compressed bytes"):
+        decoder.decompress(b"")
+
+
+@needs_bzip3
 def test_a_second_file_after_the_first_is_refused() -> None:
     raw = _bz3(b"abc" * 100)
     with pytest.raises(CorruptionError, match="compressed bytes"):
@@ -449,3 +489,118 @@ def test_a_decoder_that_returns_the_wrong_size_is_refused(
     raw = (FIXTURES / "tiny.txt.bz3").read_bytes()
     with pytest.raises(CorruptionError, match="decoded to 1 bytes, not the 3"):
         _read(io.BytesIO(raw))
+
+
+def _crc32c(data: bytes) -> int:
+    """libbzip3's block CRC: CRC-32C, reflected, started at 1 and not inverted."""
+    crc = 1
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0x82F63B78 & -(crc & 1))
+    return crc
+
+
+def _literal_file(data: bytes) -> bytes:
+    """A ``.bz3`` file of one literal block: its CRC, an index of -1, the bytes."""
+    block = struct.pack("<Ii", _crc32c(data), -1) + data
+    header = bzip3_codec.BZIP3_MAGIC + struct.pack("<i", 1 << 20)
+    return header + struct.pack("<ii", len(block), len(data)) + block
+
+
+@needs_bzip3
+@pytest.mark.parametrize("size", [0, 1, 63, 64])
+def test_a_literal_block_of_up_to_64_bytes_is_read(size: int) -> None:
+    data = bytes(65 + i % 26 for i in range(size))
+    assert _read(io.BytesIO(_literal_file(data)), format=ArchiveFormat.BZIP3) == data
+
+
+@needs_bzip3
+@pytest.mark.parametrize(
+    ("model", "sizes"),
+    [(0, 0), (1, 0), (2, 1), (4, 1), (6, 2)],
+    ids=["no stages", "bit 0 only", "LZP", "RLE", "LZP and RLE"],
+)
+def test_a_block_exactly_as_long_as_its_own_header_reaches_the_decoder(
+    model: int, sizes: int
+) -> None:
+    """The model byte's bits 2 (LZP) and 4 (RLE) each add a 4-byte size; bit 0 adds
+    none. A block of exactly that header passes the length check, and libbzip3 then
+    refuses it."""
+    raw = _bz3(LINES)
+    pos, _, decoded = _blocks(raw)[0]
+    block = struct.pack("<Iib", 0, 0, model) + bytes(4 * sizes)
+    forged = raw[:pos] + struct.pack("<ii", len(block), decoded) + block
+    with pytest.raises(CorruptionError, match="does not decode: Failed"):
+        _read(io.BytesIO(forged), format=ArchiveFormat.BZIP3, config=_config())
+
+
+@needs_bzip3
+def test_a_block_of_exactly_the_bound_is_not_refused_by_its_size() -> None:
+    """The size check runs before libbzip3 sees the block, so its content does not
+    matter: zeros get past the check and libbzip3 refuses them."""
+    raw = _bz3(LINES)
+    pos, _, decoded = _blocks(raw)[0]
+    bound = bzip3_codec.bz3_bound(1 << 20)
+    block = bytes(bound)
+    forged = raw[:pos] + struct.pack("<ii", bound, decoded) + block
+    with pytest.raises(CorruptionError, match="does not decode"):
+        _read(io.BytesIO(forged), format=ArchiveFormat.BZIP3, config=_config())
+
+
+@needs_bzip3
+def test_the_smallest_block_size_is_read() -> None:
+    data = LINES * 2
+    raw = _bz3(data, bzip3_codec.MIN_BLOCK_SIZE)
+    assert struct.unpack_from("<i", raw, 5) == (65 << 10,)
+    assert _read(io.BytesIO(raw), format=ArchiveFormat.BZIP3) == data
+
+
+@needs_bzip3
+def test_the_largest_block_size_is_allowed_and_then_over_the_cap() -> None:
+    """511 MiB passes the format's own bound, so the default cap is what refuses it."""
+    raw = bzip3_codec.BZIP3_MAGIC + struct.pack("<i", bzip3_codec.MAX_BLOCK_SIZE)
+    with pytest.raises(ResourceLimitError, match="535822336-byte block size"):
+        _read(io.BytesIO(raw + bytes(8)), format=ArchiveFormat.BZIP3)
+
+
+def test_the_bound_is_libbzip3s() -> None:
+    """``bz3_bound`` in libbzip3: ``input_size + input_size / 50 + 32``."""
+    assert bzip3_codec.bz3_bound(0) == 32
+    assert bzip3_codec.bz3_bound(1 << 20) == 1_048_576 + 20_971 + 32
+    assert bzip3_codec.bz3_bound(16 << 20) == 16_777_216 + 335_544 + 32
+
+
+def test_the_decoder_memory_counts_each_buffer() -> None:
+    """The pieces the module docstring lists, for 16 MiB blocks."""
+    block = 16 << 20
+    bound = bzip3_codec.bz3_bound(block)
+    swap, suffix_array, lzp = bound, 4 * (bound + 128), 1 << 20
+    binding_buffer, held_block, decoded_copies = bound, bound, 3 * block
+    assert bzip3_codec.decoder_memory(block) == (
+        swap + suffix_array + lzp + binding_buffer + held_block + decoded_copies
+    )
+
+
+def _decompressor() -> bzip3_codec.Bzip3Decompressor:
+    from bz3.backends import BZ3Decompressor
+
+    return bzip3_codec.Bzip3Decompressor(lambda size: None, BZ3Decompressor)
+
+
+@needs_bzip3
+def test_the_decompressor_returns_at_most_max_length_across_blocks() -> None:
+    data = LINES * 3
+    raw = _bz3(data, bzip3_codec.MIN_BLOCK_SIZE)
+    assert len(_blocks(raw)) > 2
+    decompressor = _decompressor()
+    assert decompressor.needs_input
+    assert decompressor.decompress(raw, 0) == b""
+    # More than the first block holds: the second block makes up the rest.
+    first = decompressor.decompress(b"", bzip3_codec.MIN_BLOCK_SIZE + 100)
+    assert first == data[: bzip3_codec.MIN_BLOCK_SIZE + 100]
+    rest = decompressor.decompress(b"")
+    decompressor.end_input()
+    assert first + rest == data
+    assert decompressor.eof
+    assert decompressor.unused_data == b""
