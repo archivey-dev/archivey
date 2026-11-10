@@ -443,7 +443,7 @@ class ReadBackend(ABC):
     # are inert data and do not have this problem.
     SFX_HIT_VALIDATOR: ClassVar[HitValidator | None] = None
     # Whether this backend's parser finds a payload behind a stub with its own capped
-    # forward scan (``sfx.scan_for_magic``), as the RAR and 7z parsers do. The
+    # forward scan (``sfx.scan_for_magic``), as the RAR, 7z and LHA parsers do. The
     # detector applies the same rejection cap to these formats only, so detection
     # gives up exactly where forced ``format=`` does. A format whose reader locates
     # its directory another way (ZIP reads the end of central directory from the

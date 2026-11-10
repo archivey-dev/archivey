@@ -467,6 +467,42 @@ def test_an_archive_inside_the_stub_is_read_when_it_is_the_only_one() -> None:
     assert diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
 
 
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_a_header_whose_next_header_does_not_read_is_passed_over(forced: bool) -> None:
+    # A level-0 header in stub code can pass its 8-bit sum by chance; the header after
+    # it almost never reads. That grades the candidate damaged, so the scan looks on.
+    lone = archive([Member(b"a", b"x", method="-lh0-", level=0)], end=b"")
+    head = b"\x00\x00\x03\xf3" + lone + b"\x4e\x71" * 50
+    data = head + _sfx_archive()
+    if not forced:
+        assert detect_format(io.BytesIO(data)).payload_offset == len(head)
+    fmt = ArchiveFormat.LHA if forced else None
+    with open_archive(io.BytesIO(data), format=fmt) as reader:
+        assert [m.name for m in reader.members()] == list(FILES)
+
+
+def test_a_window_of_headers_costs_a_bounded_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every header in a chain is a candidate. Walking each to the chain's end costs
+    # time quadratic in the window; the validator stops after a few members.
+    chain = archive(
+        [Member(b"%d" % i, b"", method="-lh0-", level=0) for i in range(5000)]
+    )
+    data = b"X" * 16 + chain + b"text " * 100
+    calls = 0
+    read_header = lha_reader._Headers._read_header
+
+    def counted(self: lha_reader._Headers, offset: int) -> object:
+        nonlocal calls
+        calls += 1
+        return read_header(self, offset)
+
+    monkeypatch.setattr(lha_reader._Headers, "_read_header", counted)
+    assert detect_format(io.BytesIO(data)).payload_offset == 16
+    assert calls <= 2 * (lha_reader._WALK_MAX + 1)
+
+
 def test_a_stub_with_no_archive_is_refused() -> None:
     with pytest.raises(CorruptionError, match="Not an LHA archive"):
         _open(b"MZ" + b"\x90" * 5000)

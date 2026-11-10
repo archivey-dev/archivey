@@ -71,7 +71,7 @@ SFX_MAX = 2 * 1024 * 1024
 # not carry hundreds of format magics, and the native parsers that call this have no
 # detection budget. Each parser scans for one format, so the detector counts each
 # format's rejections apart (:class:`HitSelector`) and caps only the formats whose
-# parser scans (``ReadBackend.SFX_PARSER_SCANS``: RAR and 7z). Decoys of one format
+# parser scans (those that set ``ReadBackend.SFX_PARSER_SCANS``). Decoys of one format
 # do not spend another's allowance, and a ZIP is never capped: its seekable reader
 # finds the end of central directory from the tail and runs no scan, and the forward
 # walk's scan (``zip_local_walk``) is bounded by the window alone, its validator
@@ -134,7 +134,7 @@ class HitOutcome(Enum):
     ``VALID_SHORT`` — identity and structure hold, but the archive declares an end
     before the source ends, which a decoy can do and a payload appended last does
     not. A scan keeps the first one as a fallback and looks on for a ``VALID`` hit;
-    only a validator that knows where its format ends (7z) returns it, and only when
+    only a validator that knows where its format ends (7z, LHA) returns it, and only when
     ``remaining`` is known. Trailing bytes are legitimate (SFX configuration, a
     signature), so it is never a reject.
     ``DAMAGED`` — identity holds, structure does not (a 7z whose ``StartHeaderCRC``
@@ -965,7 +965,8 @@ def scan_for_magic(
     uses: a candidate-relative ``peek_more(n)`` plus known remaining from that origin.
     Candidates are chosen by :class:`HitSelector` with the damaged fallback kept and
     :data:`MAX_VALIDATED_CANDIDATES` as the rejection cap. Each caller passes the
-    needles of one format (the 7z and RAR parsers). With no validator the first
+    needles of one format (the parsers of the formats that set
+    ``SFX_PARSER_SCANS``). With no validator the first
     structural match wins and there is no cap.
 
     ``peek_more`` is served from the scan window and may pull extra bytes *forward*
@@ -1141,7 +1142,7 @@ def iter_magic_in_prefix(
         if step <= searched:
             continue
         # The detector never gets here today: it drops only capped formats' magics
-        # (RAR, 7z), and ZIP's is never capped, so it stays searched.
+        # (those that set ``SFX_PARSER_SCANS``), and ZIP's is never capped, so it stays searched.
         if magics <= dropped:
             return
         data = peek_more(min(step, limit))

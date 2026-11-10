@@ -787,17 +787,31 @@ class _ShortPeek(Exception):
 
 
 class _PeekSource:
-    """A candidate's bytes, as the self-extracting scan peeks them."""
+    """A candidate's bytes, as the self-extracting scan peeks them.
+
+    The peek grows by doubling and is kept, so walking a candidate's headers copies
+    its prefix a few times in all, not once per header read.
+    """
+
+    _FIRST_PEEK = 4096
 
     def __init__(self, peek_more: Callable[[int], bytes], remaining: int | None):
         self._peek_more = peek_more
         self.size = remaining
+        self._peeked = b""
+        self._ended = False  # the peek returned fewer bytes than asked: no more exist
 
     def read_at(self, offset: int, n: int) -> bytes:
         end = offset + n
         if end > VALIDATOR_PEEK_MAX:
             raise _ShortPeek
-        return self._peek_more(end)[offset:end]
+        if end > len(self._peeked) and not self._ended:
+            want = min(
+                max(end, 2 * len(self._peeked), self._FIRST_PEEK), VALIDATOR_PEEK_MAX
+            )
+            self._peeked = self._peek_more(want)
+            self._ended = len(self._peeked) < want
+        return self._peeked[offset:end]
 
     def read_exact(self, offset: int, n: int) -> bytes:
         data = self.read_at(offset, n)
@@ -806,6 +820,14 @@ class _PeekSource:
                 raise _ShortPeek
             raise TruncatedError("the candidate ends inside its header")
         return data
+
+
+# How many members past the first the validator walks looking for the end byte. The
+# decoy it looks for (the usage text Amiga LhASFX carries inside its stub) is one
+# member; a few more cover a small decoy of several. The bound keeps each candidate's
+# cost fixed: a window carpeted with valid headers offers each one as a candidate, and
+# a walk to the end of the window from each costs time quadratic in the window.
+_WALK_MAX = 8
 
 
 def _validate_header(
@@ -833,16 +855,26 @@ def _validate_header(
         return HitOutcome.NOT_THIS_FORMAT
     if remaining is None:
         return HitOutcome.VALID
-    # Walk the members the peek reaches, to the end byte.
+    # Walk a few members, to the end byte. Running past the peek or the walk bound
+    # says nothing either way, so the candidate stays VALID. A next header that does
+    # not read is DAMAGED, not VALID: a level-0/1 header in stub code can pass the
+    # 8-bit sum by chance (1 in 256), but its successor almost never reads, and a
+    # VALID grade would end the scan ahead of the real archive. Opening keeps a
+    # DAMAGED hit as a fallback, so a real archive with a damaged member still opens
+    # when named with format=; detection, as for a damaged 7z, does not claim it.
     end = header.end + header.stored
-    while True:
+    for _ in range(_WALK_MAX):
         try:
             header = headers._read_header(end)
-        except (_ShortPeek, ArchiveyError):
-            return HitOutcome.VALID  # past the peek, or damaged: not a short archive
+        except _ShortPeek:
+            return HitOutcome.VALID
+        except ArchiveyError:
+            return HitOutcome.DAMAGED
         if header is None:
             break
         end = header.end + header.stored
+    else:
+        return HitOutcome.VALID
     reach = min(remaining, VALIDATOR_PEEK_MAX)
     if end + 1 >= reach:
         return HitOutcome.VALID

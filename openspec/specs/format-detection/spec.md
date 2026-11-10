@@ -595,7 +595,7 @@ a non-seekable source. A header that does not fit that allowance SHALL be reject
 `sfx_scan` recorded as *budget exhausted*.
 
 The scan SHALL cap rejected candidates only for a format whose parser runs its own capped
-scan (RAR and 7z), and SHALL count them per format, as each of those parsers counts its own
+scan (RAR, 7z and LHA), and SHALL count them per format, as each of those parsers counts its own
 format's. Decoys of one format SHALL NOT spend another's allowance. A format whose reader
 runs no such scan SHALL NOT be capped: ZIP already locates the end of central directory
 from the tail, so a cap on ZIP candidates would refuse a file that forced `format=ZIP`
