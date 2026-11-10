@@ -201,6 +201,14 @@ class StreamFormat(StrEnum):
     """Firefox's ``mozLz40`` files (``.jsonlz4``, ``.mozlz4``, ``.baklz4``, and
     ``addonStartup.json.lz4``): one raw LZ4 block behind a magic and the decoded size.
     Needs ``lz4``, as LZ4 does."""
+    UU = "uu"
+    """uuencoded files (``.uu``, ``.uue``), including the ``begin-base64`` variant
+    ``uuencode -m`` writes. Text before the ``begin`` line (a mail or news post's
+    headers) is skipped."""
+    BASE64 = "b64"
+    """Bare base64 text (``.b64``, ``.base64``), in lines of one length or one long
+    line. Detected without such a name only when it decodes to a known format's
+    magic."""
 
 
 @dataclass(frozen=True)
@@ -278,6 +286,8 @@ class ArchiveFormat:
     LZOP: ClassVar[ArchiveFormat]
     MOZLZ4: ClassVar[ArchiveFormat]
     BZIP3: ClassVar[ArchiveFormat]
+    UU: ClassVar[ArchiveFormat]
+    BASE64: ClassVar[ArchiveFormat]
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
@@ -367,6 +377,8 @@ ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_CO
 ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)
 ArchiveFormat.MOZLZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.MOZLZ4)
 ArchiveFormat.BZIP3 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP3)
+ArchiveFormat.UU = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UU)
+ArchiveFormat.BASE64 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BASE64)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(
     ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED
 )
@@ -1000,6 +1012,9 @@ class MemberExtra(dict[str, object]):
       ``size`` stays ``None`` until a full read fills it in.
     * ``lzop.original_filename`` (``str``) — the name the lzop header stores, as
       ``gzip.original_filename`` is for gzip.
+    * ``uu.original_filename`` (``str``) — the name a uuencode ``begin`` line
+      stores, decoded as UTF-8 (other bytes kept as surrogates). The member keeps the
+      name it gets from the file's own name; ``raw_name`` holds the stored bytes.
     * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
       stripped from the name. Versions of one name share it; the highest is
       listed last and is the current one.
@@ -1069,6 +1084,8 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["gzip.isize"], /) -> int: ...
     @overload
     def __getitem__(self, key: Literal["lzop.original_filename"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["uu.original_filename"], /) -> str: ...
     @overload
     def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
     @overload

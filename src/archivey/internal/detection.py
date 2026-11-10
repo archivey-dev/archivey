@@ -79,7 +79,9 @@ evidence archivey has, and one asked to judge arbitrary bytes will sometimes say
   ``content_probe``, and it runs on every source, named or not: the check is arithmetic
   over the peeked window, and a scan of 200 333 local files found no block that passed
   it outside a real tar. The inner-TAR probe accepts it too, so a gzipped v7 tar is
-  ``TAR_GZ``.
+  ``TAR_GZ``. Stream codecs declare one too (``StreamCodec.header_check``: uuencode's
+  ``begin`` line, base64 lines that decode to a known magic); their hit is probed for
+  an inner TAR like any compressor's.
 """
 
 from __future__ import annotations
@@ -659,7 +661,12 @@ def _inner_candidates(
         return not _plugin_off(formats, ArchiveFormat(container, stream_format))
 
     inner_magic = registry.inner_magic_entries()
-    header_checks = registry.header_checks()
+    # A container's checks and probes only: a codec's names no container to find here.
+    header_checks = [
+        (f, c)
+        for f, c in registry.header_checks()
+        if f.container is not ContainerFormat.RAW_STREAM
+    ]
     # A container's probes only: a codec's probe names no container to find here.
     probes = [
         (f, p)
@@ -798,6 +805,33 @@ def _decode_allowance_covers(
     )
 
 
+def _measure_within_completion_window(
+    data: bytes, workspace: PrefixWorkspace
+) -> int | None:
+    """The length of a source that ends within the completion window, else ``None``.
+
+    Reads one byte past the window, so a source that goes on is told from one that ends
+    exactly there. The window is capped at what the decode allowance can still
+    complete: a longer source could not be completed, so its length is not worth
+    reading for. Reads nothing when the window is no larger than ``data``.
+    """
+    allowance = workspace.decode_input_left
+    window = min(
+        workspace.budget.completion_window_bytes,
+        workspace.read_ceiling - 1,
+        allowance,
+    )
+    if window <= len(data):
+        return None
+    head = workspace.peek_prefix(window + 1)
+    if len(head) <= window:
+        return len(head)
+    if window == allowance:
+        # Cut short by the allowance, as a known-size source over it is: say so.
+        _decode_allowance_covers(workspace, window + 1, "probe_completion")
+    return None
+
+
 def _probe_completes(
     probe: ContentProbe,
     data: bytes,
@@ -820,12 +854,24 @@ def _probe_completes(
     ``FAST`` does not complete, and records ``probe_completion`` as not enabled). A
     source the decode allowance can no longer cover is accepted on the window alone and
     ``probe_completion`` is recorded as cut short.
+
+    A source that can seek but has no cheap size (a socket wrapper, a user-written file
+    object) is measured here: when it ends within the completion window, it is
+    completed like the same bytes with a known size. Past the window, the probe itself
+    still sees no size, and can answer differently from a known-size source (see
+    ``dev-docs/known-issues.md``).
     """
+    budget = workspace.budget
+    if length is None and not workspace.forward_only:
+        if _record_tier_limit(
+            workspace, "probe_completion", enabled=budget.completion_window_bytes > 0
+        ):
+            return True
+        length = _measure_within_completion_window(data, workspace)
     if length is None or length <= len(data):
         # Unknown length: nothing to complete against. At or under the window: the
         # probe already had the whole source and ran its completeness check.
         return True
-    budget = workspace.budget
     # Off by policy (``FAST``): say so, since the hit stands on the window alone.
     if _record_tier_limit(
         workspace, "probe_completion", enabled=budget.completion_window_bytes > 0
@@ -1816,7 +1862,8 @@ def _detect_format_body(
         if magic_fmt is not None:
             return _near_magic_hit(detection, magic_fmt)
 
-        # 5. Self-checking headers (a v7 TAR header, by its checksum).
+        # 5. Self-checking headers (a v7 TAR header, by its checksum; uuencode's
+        # ``begin`` line, base64 lines that decode to a known magic).
         info = _self_checking_header(detection)
         if info is not None:
             return info
@@ -2155,16 +2202,27 @@ def _self_checking_header(detection: _DetectionPass) -> FormatInfo | None:
             covered=budget.max_prefix_bytes >= HEADER_CHECK_BYTES,
         )
     for check_fmt, check in header_checks:
-        if check(detection.data):
-            return detection.conclude(
-                FormatInfo(
+        if not check(detection.data):
+            continue
+        info = FormatInfo(
+            check_fmt, DetectionConfidence.PROBABLE, "content_probe", corroborated=True
+        )
+        if check_fmt.container is ContainerFormat.RAW_STREAM:
+            # A stream codec's check (uuencode, base64): its payload may be a tarball.
+            info = replace(
+                _resolve_single_file_or_tar(
                     check_fmt,
                     DetectionConfidence.PROBABLE,
                     "content_probe",
-                    corroborated=True,
+                    detection.peek_more,
+                    ext_match=detection.ext_match,
+                    workspace=detection.workspace,
+                    always_probe=detection.always_probe,
+                    formats=detection.formats,
                 ),
-                _ConflictEvidence.CONTENT_PROBE,
+                corroborated=True,
             )
+        return detection.conclude(info, _ConflictEvidence.CONTENT_PROBE)
     return None
 
 

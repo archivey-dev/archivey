@@ -489,8 +489,11 @@ class ForwardStream:
 
         The caller's ``FormatPolicy`` holds here as for a member: under
         ``plugins=False`` a ``PluginStream`` raises ``UnsupportedFeatureError``, and a
-        package ``exclude_libraries`` turns off reads as missing. ``only`` and
-        ``exclude`` do not apply, since they check only the file the call opens.
+        package ``exclude_libraries`` turns off reads as missing. ``only`` and the
+        format entries of ``exclude`` do not apply, since they check only the file the
+        call opens. A :class:`~archivey.CompressionAlgorithm` in ``exclude`` does: a
+        format whose method it lists (``StreamFormat.XZ`` under
+        ``exclude={CompressionAlgorithm.XZ}``) raises ``UnsupportedFeatureError``.
 
         Raises ``ValueError`` for a format that is not a compression stream
         (``UNCOMPRESSED``), and ``ArchiveyUsageError`` when this stream has already
@@ -751,8 +754,11 @@ class ReaderContext:
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
         format is read by its replacement, ``exclude_libraries`` holds, and under
-        ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``;
-        ``only`` and ``exclude`` check only the file the call opens. A format that needs a
+        ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``,
+        and so does a format whose compression decodes with a
+        :class:`~archivey.CompressionAlgorithm` ``exclude`` lists. ``only`` and the
+        format entries of ``exclude`` check only the file the call opens, and a method
+        entry holds for the inner reader's members too. A format that needs a
         seekable source (7z, RAR) raises ``UnsupportedFeatureError``, and so does an
         archive nested more than 8 deep (an inner reader calling ``open_nested`` in
         turn). What the inner reader attaches to a member while its data is read
@@ -893,9 +899,12 @@ class ReaderContext:
         The caller's ``FormatPolicy`` holds for each member: under ``plugins=False`` a
         ``PluginStream`` raises ``UnsupportedFeatureError`` before the codec runs, and
         a package ``exclude_libraries`` turns off raises ``PackageNotInstalledError``.
-        ``only`` and ``exclude`` do not apply: they check only the file the call opens,
-        so a member stored with ``StreamFormat.XZ`` decodes under
-        ``exclude={StreamFormat.XZ}``.
+        ``only`` and the format entries of ``exclude`` do not apply: they check only the
+        file the call opens, so a member stored with ``StreamFormat.XZ`` decodes under
+        ``exclude={StreamFormat.XZ}``. A :class:`~archivey.CompressionAlgorithm` in
+        ``exclude`` does apply: ``exclude={CompressionAlgorithm.XZ}`` refuses that
+        call, for ``CompressionAlgorithm.XZ`` or ``StreamFormat.XZ``, with
+        ``UnsupportedFeatureError`` before the codec runs.
 
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
         is one or more frames, decoded together, and ``XZ`` data is one or more xz
