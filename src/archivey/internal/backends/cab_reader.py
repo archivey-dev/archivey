@@ -33,7 +33,6 @@ import zlib
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, NamedTuple
 
-from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
@@ -60,7 +59,6 @@ from archivey.internal.streams.codecs.lzx_decoder import (
     MIN_WINDOW_BITS,
     LzxDecoder,
 )
-from archivey.internal.timestamps import dos_to_datetime
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -285,7 +283,6 @@ class CabReader(IndexedReader[_Location]):
                 name=name,
                 raw_name=raw,
                 size=size,
-                modified=dos_to_datetime(stamp),
                 windows_attrs=attribs & ~_CAB_ONLY_ATTRIBUTES,
                 compression=(
                     CompressionMethod(
@@ -295,18 +292,7 @@ class CabReader(IndexedReader[_Location]):
                     ),
                 ),
             )
-            if member.modified is None and stamp:
-                context.report(
-                    DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                    f"Invalid cabinet date for {quoted(member.name)}: 0x{stamp:08x}",
-                    MemberTimestampContext(
-                        member_name=member.name,
-                        field="modified",
-                        source="dos",
-                        value_repr=f"0x{stamp:08x}",
-                    ),
-                    member=member,
-                )
+            context.set_dos_time(member, "modified", stamp, source="dos")
             yield MemberRecord(member, _Location(folder, offset))
 
     # ── Data ─────────────────────────────────────────────────────────────────────────

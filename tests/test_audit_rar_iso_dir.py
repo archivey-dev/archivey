@@ -1001,7 +1001,7 @@ def test_auto_counts_for_the_program_it_picks(
     path = _declaring_dictionary(tmp_path, "hostile_argv__.rar", 0, _RAR5_DICT_4GIB)
     if not unrar_found:
 
-        def missing() -> str:
+        def missing(_program: str | None = None) -> str:
             raise PackageNotInstalledError("no RARLAB unrar in this test")
 
         monkeypatch.setattr(rar_reader, "find_rarlab_unrar", missing)

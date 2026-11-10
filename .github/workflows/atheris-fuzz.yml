@@ -107,6 +107,7 @@ jobs:
           export ARCHIVEY_FUZZ_BUDGET_AR=$((6 * scale))
           export ARCHIVEY_FUZZ_BUDGET_CPIO=$((8 * scale))
           export ARCHIVEY_FUZZ_BUDGET_RPM=$((8 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_MAKESELF=$((6 * scale))
           export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=$((30 * scale))
           export ARCHIVEY_FUZZ_BUDGET_RAR=$((15 * scale))
           export ARCHIVEY_FUZZ_BUDGET_OPEN_DETECTED=$((20 * scale))
@@ -126,6 +127,10 @@ jobs:
           export ARCHIVEY_FUZZ_BUDGET_ZLIB_ACCEL=$((10 * scale))
           export ARCHIVEY_FUZZ_BUDGET_DEFLATE_ACCEL=$((10 * scale))
           export ARCHIVEY_FUZZ_BUDGET_BZIP2_ACCEL=$((15 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_DIFF_MODES=$((20 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_SEEK_MEMBER=$((10 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_EXTRACT_DIFF=$((15 * scale))
+          export ARCHIVEY_FUZZ_BUDGET_TINY_LIMITS=$((8 * scale))
           echo "Full budgets (scale=$scale): sevenzip_header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER zip=$ARCHIVEY_FUZZ_BUDGET_ZIP rar=$ARCHIVEY_FUZZ_BUDGET_RAR unix_compress=$ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS"
           uv run --python 3.12 --no-sync python -m tests.atheris_fuzz
 
