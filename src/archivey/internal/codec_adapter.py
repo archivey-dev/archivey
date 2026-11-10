@@ -244,7 +244,7 @@ def _check_handler(handler: type[CodecHandler]) -> PluginStream:
 
 
 def _spelled(pair: ArchiveFormat) -> bool:
-    """Whether a codec's pair with ``pair.container`` takes a spelling (``lha.toy``,
+    """Whether a codec's pair with ``pair.container`` takes a spelling (``arj.toy``,
     ``ar.toy``): a plugin container's does, and a built-in's only when its pairs are
     spelled that way already (``PAIR_SPELLED_CONTAINERS``), which TAR's are not."""
     return (

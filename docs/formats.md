@@ -57,6 +57,9 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **CAB** (`.cab`, Microsoft cabinets): core, for stored, MSZIP and LZX folders. Listing:
   from its index. Members: solid when a folder is compressed, otherwise direct. Needs a source
   that can seek.
+- **LHA** (`.lzh`, `.lha`, `.lzs`): core, for stored members and the `-lh4-` to `-lh7-`,
+  `-lhx-` and `-lk7-` methods. Listing: header by header. Members: direct. Needs a source
+  that can seek.
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
   direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.cpio.gz`,
   …); there, as with a compressed TAR, listing needs decompression and members are solid.
@@ -200,6 +203,8 @@ A CRC-32 is four big-endian bytes, so a CRC you computed compares as
   combined from each member's CRC, equal to the CRC-32 of the whole payload.
 - **CPIO:** none. A crc archive stores a 32-bit sum of each file's data, which a full read
   checks, but it is not a digest `hashes` can hold.
+- **LHA:** none. Each member stores a CRC-16 of its data, which a full read checks, but it
+  is not a digest `hashes` can hold.
 - **Debian packages:** `md5`, for the files the package's `DEBIAN/md5sums` lists. It comes from
   the control tar, so it is known once listing has decompressed that, before the data tar.
 - **TAR, SquashFS, ar, directory, and every other single compressed file:** none.
@@ -239,11 +244,12 @@ far to trust each.
 
 ### Bytes after the end of an archive
 
-TAR, ZIP, 7z, RAR, ISO and CPIO archives, and single compressed files, all check for bytes after
-the archive's end. A non-zero byte there is reported as `ARCHIVE_TRAILING_DATA`, with the format in
+TAR, ZIP, 7z, RAR, ISO, CPIO and LHA archives, and single compressed files, all check for bytes
+after the archive's end. A non-zero byte there is reported as `ARCHIVE_TRAILING_DATA`, with the format in
 `format`: a warning under the default policy, raised under `DiagnosticPolicy.STRICT`. Zero bytes
 are padding and pass. ZIP, TAR, 7z, RAR, ISO and CPIO look at most 1 MiB past the end, so a byte
-further out goes unseen. Each format section says where its end is.
+further out goes unseen; LHA looks 64 KiB past its end byte, and takes the DOS end-of-file byte
+`0x1A` as padding too. Each format section says where its end is.
 
 Inside a ZIP or 7z member, bytes after the compressed stream are corruption, not trailing bytes
 ([ZIP](#zip)).
@@ -1246,6 +1252,37 @@ what `makecab` and `gcab` write.
 - Quantum-compressed members, an old method, are listed but raise
   `UnsupportedFeatureError` when read. A cabinet that is part of a set spanning several files
   (`file.cab`, `file2.cab`) raises `UnsupportedFeatureError` at open.
+
+## LHA
+
+LHA and LZH archives, from LHarc, LHA and their kin on DOS, the Amiga, OS/2, OS-9, the Atari
+ST and Japanese PCs, and from LHa for UNIX.
+
+- **Needs:** nothing. archivey decodes the methods itself, in Python, at about 4 to 8 MB a
+  second.
+- **Listing:** header by header: each member is a header and then its data, and the listing
+  reads each header and seeks past the data to the next one.
+- **Reading members:** each member is compressed on its own, so every member is direct.
+- **From a pipe:** no, for now: the listing seeks past each member's data.
+- Header levels 0 to 3 all read. Stored members (`-lh0-`, `-lz4-`, `-pm0-`) and the
+  `-lh4-` to `-lh7-` methods, UNLHA32's `-lhx-` and LHARK's `-lk7-` decode; other methods
+  (`-lh1-`, `-lh2-`, `-lh3-`, `-lzs-`, `-lz5-`, PMarc's `-pm1-` and `-pm2-`) are listed and raise
+  `UnsupportedFeatureError` when read. `member.compression` is `LZH` for every `-lh?-`
+  method, and `extra["lha.method"]` names the exact one.
+- Each member stores a CRC-16 of its data, which a read checks, so a member read to its
+  end is at `Verification.CHECKSUM`. A header's own checksum or CRC is checked when it is
+  read: a damaged header is `CorruptionError`.
+- `member.modified` is the Unix time a header stores, in UTC, or else its DOS time, with no
+  time zone. A Windows timestamps record adds `created` and `accessed`. Unix mode, owner and
+  group names come from LHa for UNIX's records; OS-9 permissions become a Unix mode as
+  lhasa reads them. A directory is a member of its own; a Unix symlink is listed with its
+  target. `create_system` comes from the header's OS id, and `extra["lha.os_id"]` keeps it.
+- Names are UTF-8 when valid, otherwise decoded with `encoding=` (an archive from a
+  Japanese PC is usually `encoding="cp932"`), as in every format. A name's `\` separators
+  become `/`. An Amiga file note stored after the name is `member.comment`.
+- An archive without the zero byte that ends it reports `ARCHIVE_EOF_MARKER_MISSING`, after
+  listing every member. Self-extracting LHA programs and MacLHA's MacBinary members are not
+  read yet.
 
 ## CPIO
 
