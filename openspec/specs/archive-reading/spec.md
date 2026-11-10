@@ -1813,9 +1813,16 @@ API.
 ### Requirement: verify_all checks every member and keeps going
 
 Every reader SHALL have `verify_all()`, which reads every listed member to the end,
-does not stop at a member's failure, and returns a tuple of `(member, error)` pairs,
-one for each member whose read raised an `ArchiveyError`. An empty tuple SHALL mean no
-member failed. A member whose password the password input did not supply SHALL be a
+does not stop at a member's failure, and returns a `VerifyReport`. Its `failures` SHALL
+be a tuple of `(member, error)` pairs, one for each member whose read raised an
+`ArchiveyError`; an empty tuple SHALL mean no member failed. Its `structure_error`
+SHALL be the damage that stopped the walk through the archive (the same error as
+`members_report().error`), or `None`. Its `diagnostics` SHALL be the diagnostics the
+call emitted on its own thread. Its `ok` SHALL be `True` exactly when `failures` is
+empty and `structure_error` is `None`; diagnostics SHALL NOT affect `ok`. Its
+`raise_for_failure()` SHALL raise `structure_error` when set, else the first failure's
+error, and do nothing when `ok`. The report SHALL NOT be a sequence, so a truth test
+of it cannot stand in for `ok`. A member whose password the password input did not supply SHALL be a
 failure, returned with its `EncryptionError`. A per-member limit (a decode ratio
 breach) SHALL be a member failure.
 
@@ -1825,7 +1832,8 @@ streaming-only reader, any call after a pass has started, its own included); the
 `ResourceLimitError` that `members_report()` raises when the listing exceeds
 `ListingLimits`; an error the caller's diagnostic policy escalates; and errors that
 are not `ArchiveyError` (`OSError`, `KeyboardInterrupt`). Damage that stops the listing
-SHALL NOT raise: `verify_all()` stops there, and `members_report().error` holds it.
+SHALL NOT raise: `verify_all()` stops there, and the report's `structure_error` holds
+it, as `members_report().error` does.
 A failed checksum over the archive's whole compressed stream (a `.tar.gz` trailer) that
 ends the listing or the pass SHALL make every listed file a failure, returned with that
 error, whether or not the listing ran before the call.
@@ -1838,21 +1846,25 @@ members whose `verifiable` is `NONE`; it MAY skip any other member. On a
 streaming-only reader, `members_report()` after `verify_all()` SHALL return the report
 of that same pass without reading again.
 
-Archive-level damage and findings are reported by `members_report()` and
-`reader.diagnostics`, never as a verification level.
+Archive-level damage and findings are reported by the report's `structure_error` and
+`diagnostics` (and by `members_report()` and `reader.diagnostics`), never as a
+verification level.
 
 #### Scenario: verify_all matrix
 
+"Returns" a member means the member is in the report's `failures`.
+
 | Case | Expected |
 | --- | --- |
-| Intact ZIP | returns `()`; every member `verified == verifiable` |
+| Intact ZIP | `failures` is `()`, `structure_error` is `None`, `ok` is `True`; every member `verified == verifiable` |
+| ZIP cut inside its central directory | `failures` is `()`; `structure_error` is a `TruncatedError`; `ok` is `False`; `raise_for_failure()` raises it |
 | ZIP with one member whose CRC fails | returns that member with `CorruptionError`; the other members at `CHECKSUM` |
 | Encrypted ZIP, no password given | returns each encrypted member with `EncryptionError` |
 | Second call after a password provider now supplies the password | re-reads only the members that failed; returns `()` |
 | `.tar.gz` with a matching trailer | returns `()`; every member at `CHECKSUM` |
 | `.tar.gz` whose trailer CRC fails, with or without `members()` first | returns every file with `CorruptionError`; so does a second call |
-| TAR cut inside the member listing | returns the failures before the cut; `members_report().error` is a `TruncatedError` |
-| TAR with no end-of-archive blocks | returns `()`; `reader.diagnostics` holds `ARCHIVE_EOF_MARKER_MISSING` (raises only when the policy escalates it) |
+| TAR cut inside the member listing | `failures` holds the failures before the cut; `structure_error` (and `members_report().error`) is a `TruncatedError` |
+| TAR with no end-of-archive blocks | `ok` is `True`; `reader.diagnostics` holds `ARCHIVE_EOF_MARKER_MISSING` (raises only when the policy escalates it) |
 | 7z AES folder with no CRC, truncated | returns the member with `TruncatedError`, on a first and a second call |
 | Streaming-only reader, second call | raises `ArchiveyUsageError` |
 | Streaming-only reader, call after `stream_members()` has started | raises `ArchiveyUsageError` |
