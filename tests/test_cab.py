@@ -803,6 +803,26 @@ def test_lzx_a_frame_with_nothing_read_ahead_may_end_in_the_zero_bytes() -> None
         assert [decoder.decode_frame(len(f)) for f in expected] == expected
 
 
+@pytest.mark.parametrize(
+    ("cut", "expected"), [(2, b"abcdef\0\0"), (3, None)], ids=["two", "three"]
+)
+def test_lzx_a_stored_block_may_read_the_two_zero_bytes(
+    cut: int, expected: bytes | None
+) -> None:
+    """lzxd.c reads stored bytes from its two zero bytes past the input too, and
+    refuses the stream only past them: cabextract reads a stored block cut by two
+    bytes, with zeros for them, and refuses one cut by three."""
+    w = BitWriter()
+    w.bits(0, 1)
+    _uncompressed_block(w, b"abcdefgh", (1, 1, 1))
+    stream = _end(w, pad=0)[:-cut]
+    if expected is None:
+        with pytest.raises(TruncatedError, match="inside an uncompressed block"):
+            _decoder(stream).decode_frame(8)
+    else:
+        assert _decoder(stream).decode_frame(8) == expected
+
+
 def test_format_is_listed() -> None:
     assert ArchiveFormat.CAB in archivey.list_supported_formats()
 

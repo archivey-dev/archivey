@@ -431,8 +431,9 @@ class LzxDecoder:
         bits, nbits = self._bits, self._nbits
         buf, bpos = self._buf, self._pos
         blen = len(buf)
-        # ``nbits`` where the last Huffman symbol began, for ``_since_symbol``.
-        top = nbits
+        # ``nbits`` where the last Huffman symbol began, for ``_since_symbol``; set so
+        # that a run with no symbols (an empty block) leaves it as it was.
+        top = nbits + self._since_symbol
         while pos < end:
             if nbits < 32:
                 if bpos + 4 <= blen:
