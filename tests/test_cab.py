@@ -733,26 +733,7 @@ def test_lzx_a_tree_that_does_not_fill_its_code_space_is_damage(
     lengths: list[int], message: str
 ) -> None:
     with pytest.raises(CorruptionError, match=f"LZX main tree {message}"):
-        lzx_decoder._build_table(lengths, len(lengths), "main", 12)
-
-
-def test_lzx_codes_past_a_full_first_level_are_dropped() -> None:
-    """lzxd.c builds a first-level table per tree (6 bits for the pretree, 12 for
-    the main and length trees, 7 for the aligned one), and stops when the codes
-    that fit it fill the code space: a longer code is never reached, so it is
-    ignored, not refused. When the short codes leave room, an overfull tree is
-    still damage."""
-    tree = lzx_decoder._build_table([1, 1, 8], 3, "pretree", 6)
-    assert tree is not None
-    assert tree == lzx_decoder._build_table([1, 1, 0], 3, "pretree", 6)
-    # 1 to 6 bits leave 1/64 of the space; five 8-bit codes take 5/256 of it.
-    lengths = [1, 2, 3, 4, 5, 6] + [8] * 5
-    with pytest.raises(CorruptionError, match="pretree tree overfills"):
-        lzx_decoder._build_table(lengths, len(lengths), "pretree", 6)
-    lengths = [*range(1, 13)] + [13] * 3
-    with pytest.raises(CorruptionError, match="main tree overfills"):
-        lzx_decoder._build_table(lengths, len(lengths), "main", 12)
-    assert lzx_decoder._build_table([1, 2, 3, 4, 5, 6, 6, 8], 8, "pretree", 6)
+        lzx_decoder._build_table(lengths, len(lengths), "main")
 
 
 def _zero_lengths(w: BitWriter, count: int, codes: dict[int, int]) -> None:
@@ -770,10 +751,11 @@ def _zero_lengths(w: BitWriter, count: int, codes: dict[int, int]) -> None:
         w.bits(codes[0], 2)
 
 
-def test_lzx_a_pretree_with_an_unreachable_long_code_decodes() -> None:
-    """A pretree whose four 2-bit codes fill the code space, plus an 8-bit code
-    for symbol 1: lzxd.c (cabextract) ignores the 8-bit code and decodes the
-    block. Two damaged cabinets in a differential against cabextract had this."""
+def test_lzx_a_tree_with_an_unreachable_long_code_is_damage() -> None:
+    """A pretree whose four 2-bit codes fill the code space, plus an 8-bit code for
+    symbol 1. cabextract decodes on (lzxd.c stops at its 6-bit first table level and
+    never sees the 8-bit code), but no encoder writes such a tree: it comes from
+    damage, and the bytes after it are wrong. archivey refuses it, on purpose."""
     pre = [0] * 20
     pre[0] = pre[16] = pre[17] = pre[18] = 2
     pre[1] = 8
@@ -791,14 +773,15 @@ def test_lzx_a_pretree_with_an_unreachable_long_code_decodes() -> None:
             w.bits(codes[16], 2)  # length (0 - 16) % 17 = 1
         _zero_lengths(w, last - first - ones, codes)
     for i in range(size):
-        w.bits(i & 1, 1)  # bytes 0 and 1, in turn
-    assert _decoder(_end(w)).decode_frame(size) == b"\0\1" * (size // 2)
+        w.bits(i & 1, 1)
+    with pytest.raises(CorruptionError, match="pretree tree overfills"):
+        _decoder(_end(w)).decode_frame(size)
 
 
 def test_lzx_long_codes_decode_through_sub_tables() -> None:
     # Codes of 1 to 16 bits: the root takes 10 bits, the rest go to sub-tables.
     lengths = [*range(1, 16), 16, 16]
-    tree = lzx_decoder._build_table(lengths, len(lengths), "main", 12)
+    tree = lzx_decoder._build_table(lengths, len(lengths), "main")
     assert tree is not None
     table, root = tree
     assert root == 10
@@ -822,9 +805,9 @@ def test_lzx_long_codes_decode_through_sub_tables() -> None:
 def test_lzx_only_the_length_tree_may_have_no_codes() -> None:
     # lzxd.c builds the length tree with BUILD_TABLE_MAYBE_EMPTY, every other tree
     # with BUILD_TABLE, which fails on a table that is not full.
-    assert lzx_decoder._build_table([0] * 8, 8, "length", 12, may_be_empty=True) is None
+    assert lzx_decoder._build_table([0] * 8, 8, "length", may_be_empty=True) is None
     with pytest.raises(CorruptionError, match="LZX aligned tree has no codes"):
-        lzx_decoder._build_table([0] * 8, 8, "aligned", 7)
+        lzx_decoder._build_table([0] * 8, 8, "aligned")
 
 
 def test_lzx_an_empty_aligned_tree_is_damage_even_when_unused() -> None:
@@ -844,10 +827,10 @@ def test_lzx_an_empty_main_tree_is_damage_in_an_empty_block() -> None:
 def test_lzx_a_length_out_of_range_gives_its_symbol_no_code() -> None:
     # As lzxd.c, which keeps code lengths in bytes: lengths above 16 take no code
     # space, and do make the tree not empty.
-    tree = lzx_decoder._build_table([1, 1, 255, 254], 4, "main", 12)
+    tree = lzx_decoder._build_table([1, 1, 255, 254], 4, "main")
     assert tree is not None
     with pytest.raises(CorruptionError, match="LZX length tree does not fill"):
-        lzx_decoder._build_table([0, 255], 2, "length", 12, may_be_empty=True)
+        lzx_decoder._build_table([0, 255], 2, "length", may_be_empty=True)
 
 
 def test_lzx_a_same_length_run_of_code_18_wraps_as_lzxd_does() -> None:
