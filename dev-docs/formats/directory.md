@@ -90,7 +90,7 @@ magic and no extension.
 An explicit `format=` other than `DIRECTORY` on a directory path raises
 `ArchiveyUsageError` rather than being silently overruled; `format=DIRECTORY` is accepted.
 The mirror case, a `DIRECTORY` container on a file or a stream, raises the same
-`ArchiveyUsageError` in `_open_resolved`, before the backend is reached. That branch
+`ArchiveyUsageError` in `_decide_format`, before the backend is reached. That branch
 first runs `os.stat` on a path, so a path the OS cannot stat (missing, under a file, a
 symlink loop) raises the OS's own error, the same class as under any other `format=`.
 `open_stream()` refuses a directory path with a message that points to `open_archive()`,

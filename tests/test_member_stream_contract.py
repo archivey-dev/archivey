@@ -951,6 +951,13 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "rpm",
         "no corpus builder (needs rpmbuild); tests/test_rpm.py seeks inside members",
     ),
+    (
+        "makeself",
+        (
+            "no corpus builder (needs makeself); its members are TAR members read "
+            "through ReaderContext.open_nested, which the TAR rows cover"
+        ),
+    ),
 )
 
 _UNTESTED_FORMATS = {
@@ -970,6 +977,7 @@ _UNTESTED_FORMATS = {
     ArchiveFormat.XAR: "xar",
     ArchiveFormat.CAB: "cab",
     **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},
+    **{ArchiveFormat(ContainerFormat.MAKESELF, s): "makeself" for s in StreamFormat},
 }
 
 
@@ -1135,6 +1143,7 @@ def test_each_member_read_builds_one_archive_stream(
         built.clear()
 
 
+@pytest.mark.usefixtures("zip_general_path")
 def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> None:
     """STORED ZIP: public ArchiveStream verifies directly over SlicingStream.
 

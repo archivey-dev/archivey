@@ -68,6 +68,7 @@ from tests.atheris_fuzz.seeds import (
     lz4_seeds,
     lzip_seeds,
     lzma_alone_seeds,
+    makeself_seeds,
     open_detected_seeds,
     rar_seeds,
     rpm_seeds,
@@ -321,6 +322,12 @@ def rpm_open_one(data: bytes) -> None:
     """Walk an RPM package: its headers, then its payload in whichever compressor the
     header names, and read the first members' data, held hard links included."""
     _sequential_open_one(data, ContainerFormat.RPM)
+
+
+def makeself_open_one(data: bytes) -> None:
+    """Parse a makeself header, then walk each payload's TAR through its compressor or
+    base64, and the payload digests."""
+    _sequential_open_one(data, ContainerFormat.MAKESELF)
 
 
 def _sequential_open_one(data: bytes, container: ContainerFormat) -> None:
@@ -962,6 +969,13 @@ def iter_target_specs() -> list[dict]:
             "per_input_timeout": stream_timeout,
         },
         {
+            "name": "makeself",
+            "fn": makeself_open_one,
+            "seeds": makeself_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
             "name": "rar_header",
             "fn": rar_header_one,
             "seeds": rar_seeds,
@@ -1057,4 +1071,18 @@ def iter_target_specs() -> list[dict]:
             }
         )
 
+    # Oracle targets: two reads of the same input must agree (oracles.py). Each
+    # input is opened two to four times, so it gets that many stream slices.
+    from tests.atheris_fuzz.oracles import ORACLE_TARGETS, oracle_seeds
+
+    for name, fn in ORACLE_TARGETS.items():
+        specs.append(
+            {
+                "name": name,
+                "fn": fn,
+                "seeds": oracle_seeds,
+                "fixup": None,
+                "per_input_timeout": 4 * stream_timeout,
+            }
+        )
     return specs

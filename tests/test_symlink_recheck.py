@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import os
 import tarfile
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -26,7 +27,7 @@ from archivey import (
     FilterRejectionError,
     ResourceLimitError,
 )
-from archivey.internal import link_watch
+from archivey.internal import extraction, filters, link_watch
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.bomb_tracker import BombTracker
 from archivey.internal.extraction import (
@@ -90,7 +91,7 @@ def _extract(
     dest = tmp_path / "out"
     kwargs.setdefault("on_error", "continue")
     with archivey.open_archive(archive, streaming=streaming) as reader:
-        report = reader.extract_all(dest, **kwargs)
+        report = reader.extract_all(dest, **{"on_blocked": "skip", **kwargs})
     by_name: dict[str, archivey.ExtractionResult] = {}
     for result in report.results:
         by_name[result.member.name.rstrip("/")] = result
@@ -542,6 +543,51 @@ def test_removing_a_link_rechecks_a_link_that_passed_through_it_earlier(
     assert not os.path.lexists(root / "m")
 
 
+def _refuse_unlinking(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """Make ``os.unlink`` of an entry called ``name`` fail, as a filesystem that
+    refuses the removal does."""
+    real_unlink = os.unlink
+
+    def unlink(path: object, *args: object, **kwargs: object) -> None:
+        if os.path.basename(os.fspath(path)) == name:  # type: ignore[arg-type]
+            raise PermissionError(13, "Permission denied", os.fspath(path))  # type: ignore[arg-type]
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "unlink", unlink)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_link_the_recheck_cannot_remove_ends_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    # The link stays on disk and leads out of the destination, so the run must not
+    # go on as if it were removed, whatever ``on_error`` says.
+    _refuse_unlinking(monkeypatch, "l")
+    with pytest.raises(PermissionError) as raised:
+        _extract(
+            tmp_path,
+            [("l", "sym", "a/../secret"), ("a", "sym", ".")],
+            streaming=streaming,
+        )
+    assert "Could not remove symlink 'l', which is still on disk" in "".join(
+        raised.value.__notes__
+    )
+
+
+def test_a_link_that_escapes_when_created_and_cannot_be_removed_ends_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No archive makes the creation-time resolution fail on POSIX after the
+    # universal check passed, so the check is stubbed to report an escape.
+    monkeypatch.setattr(
+        extraction, "_symlink_problem", lambda *_args: filters.SYMLINK_ESCAPES
+    )
+    _refuse_unlinking(monkeypatch, "l")
+    with pytest.raises(PermissionError):
+        _extract(tmp_path, [("l", "sym", "x")], streaming=False)
+    assert os.path.islink(tmp_path / "out" / "l")
+
+
 def test_an_anti_item_deleting_a_symlink_rechecks(tmp_path: Path) -> None:
     # Exercised at the coordinator level, as in test_extraction's anti-item tests: a
     # backend reaches this only with a 7z anti-item whose name differs from the link's
@@ -571,3 +617,147 @@ def test_an_anti_item_deleting_a_symlink_rechecks(tmp_path: Path) -> None:
     )
 
     assert [link.path.name for link in outcome.escaped] == ["l"]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "target",
+    ["m/../a/../secret", "./a/../secret", "m/./../a/../secret"],
+    ids=["after-a-missing-component", "after-a-dot", "after-a-dot-and-dotdot"],
+)
+def test_the_walk_records_the_components_after_a_missing_one(
+    tmp_path: Path, streaming: bool, target: str
+) -> None:
+    # ``m`` never exists, so ``m/..`` is taken lexically and the walk goes on to
+    # ``a``. When ``a -> .`` appears, ``l`` climbs out: ``a`` must have been recorded
+    # although a missing component and a ``..`` came before it.
+    dest, results = _extract(
+        tmp_path, [("l", "sym", target), ("a", "sym", ".")], streaming=streaming
+    )
+
+    _assert_blocked_as_escape(results["l"])
+    assert _escaping_links(dest) == []
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_target_that_climbs_past_the_filesystem_root_is_rechecked(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # ``..`` at ``/`` stays at ``/``, so a relative target with more ``..`` than the
+    # link is deep comes back into the destination by name.
+    dest_root = (tmp_path / "out").resolve()
+    climb = "../" * (len(dest_root.parts) + 2)
+    target = f"{climb}{dest_root.relative_to('/')}/a/../secret"
+    dest, results = _extract(
+        tmp_path, [("l", "sym", target), ("a", "sym", ".")], streaming=streaming
+    )
+
+    _assert_blocked_as_escape(results["l"])
+    assert _escaping_links(dest) == []
+
+
+def _recorder(escape: bool) -> tuple[list[str], Callable[[Path, str], bool]]:
+    """An ``escapes`` stub that answers ``escape`` and the names it was asked about."""
+    calls: list[str] = []
+
+    def escapes(path: Path, target: str) -> bool:
+        calls.append(path.name)
+        return escape
+
+    return calls, escapes
+
+
+def _watched(root: Path, *links: tuple[str, str]) -> link_watch.LinkWatch:
+    """A watch over ``links`` created under ``root``, with the first recheck done."""
+    watch = link_watch.LinkWatch(root, budget=None)
+    for index, (name, target) in enumerate(links):
+        (root / name).symlink_to(target)
+        watch.track(root / name, target, result_index=index)
+    watch.recheck(lambda path, target: False)
+    return watch
+
+
+def test_a_chain_of_64_links_is_followed_and_65_is_not(tmp_path: Path) -> None:
+    # The walk follows up to 64 links, more than any kernel resolves: a change past
+    # that point cannot move a resolution the OS would accept.
+    root = tmp_path.resolve()
+    for length, rechecked in ((64, True), (65, False)):
+        base = root / str(length)
+        base.mkdir()
+        chain = [(f"l{i}", f"l{i + 1}") for i in range(length)]
+        watch = _watched(base, *chain, (f"l{length}", "a/../x"))
+        calls, escapes = _recorder(False)
+        watch.note_change(base / "a")
+        watch.recheck(escapes)
+        assert ("l0" in calls) is rechecked, length
+
+
+def test_the_recheck_budget_counts_one_per_resolution(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    for budget in (0, 1, 2, 3):
+        base = root / str(budget)
+        base.mkdir()
+        watch = _watched(base, ("l1", "a/x"), ("l2", "a/x"), ("l3", "a/x"))
+        watch._budget = budget
+        calls, escapes = _recorder(False)
+        watch.note_change(base / "a")
+        outcome = watch.recheck(escapes)
+        assert calls == ["l1", "l2", "l3"][:budget]
+        # The links left when the budget runs out are removed, not left unchecked.
+        assert [link.path.name for link in outcome.unchecked] == ["l1", "l2", "l3"][
+            budget:
+        ]
+        assert sorted(p.name for p in base.iterdir()) == ["l1", "l2", "l3"][:budget]
+
+
+def test_an_entry_that_replaced_a_watched_link_is_left_alone(tmp_path: Path) -> None:
+    # A later member put a file where ``l1`` was: it is not the link that was
+    # checked, so the recheck neither resolves nor removes it, and goes on to ``l2``.
+    root = tmp_path.resolve()
+    watch = _watched(root, ("l1", "a/x"), ("l2", "a/x"))
+    (root / "l1").unlink()
+    (root / "l1").write_text("a file now")
+    calls, escapes = _recorder(True)
+    watch.note_change(root / "a")
+    outcome = watch.recheck(escapes)
+
+    assert calls == ["l2"]
+    assert [link.path.name for link in outcome.escaped] == ["l2"]
+    assert (root / "l1").read_text() == "a file now"
+    assert not os.path.lexists(root / "l2")
+
+
+@pytest.mark.parametrize(
+    ("replacement", "live"), [("a/x", True), ("other", False)], ids=["same", "other"]
+)
+def test_without_inode_numbers_a_link_is_told_apart_by_its_target(
+    tmp_path: Path, replacement: str, live: bool
+) -> None:
+    # FUSE and network mounts can report inode 0 for every file.
+    root = tmp_path.resolve()
+    watch = _watched(root, ("l", "a/x"))
+    (link,) = watch._by_path.values()
+    link.identity = (0, 0)
+    (root / "l").unlink()
+    (root / "l").symlink_to(replacement)
+    calls, escapes = _recorder(False)
+    watch.note_change(root / "a")
+    watch.recheck(escapes)
+
+    assert calls == (["l"] if live else [])
+
+
+def test_a_target_through_a_sibling_directory_is_not_indexed_under_the_root(
+    tmp_path: Path,
+) -> None:
+    # ``../other/a`` is at the destination's depth but not inside it: a change at the
+    # destination's own ``a`` cannot move it.
+    root = (tmp_path / "out").resolve()
+    root.mkdir()
+    (tmp_path / "other").mkdir()
+    watch = _watched(root, ("l", "../other/a/x"))
+    calls, escapes = _recorder(False)
+    watch.note_change(root / "a")
+    watch.recheck(escapes)
+
+    assert calls == []

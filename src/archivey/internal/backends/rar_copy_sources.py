@@ -1,10 +1,9 @@
 """Keep the bytes a solid RAR pass decodes for the file copies that follow them.
 
 A RAR5 file copy (``rar -oi``) has no data of its own; it reads as its source member.
-``unrar p`` and ``unar`` emit nothing for it, so a solid pass used to serve each copy
-from a named open of the source, and every such open decodes the solid stream again
-from its start up to the source. Fifty copies of a 1 KiB file behind 100 MiB of solid
-data decoded 5 GiB.
+``unrar p`` and ``unar`` emit nothing for it. Served from a named open of the source,
+each copy would decode the solid stream again from its start up to the source: fifty
+copies of a 1 KiB file behind 100 MiB of solid data decode 5 GiB.
 
 :class:`FileCopySources` sits between the pass's decompressor output and its
 :class:`~archivey.internal.streams.streamtools.solid.SolidBlockReader` and keeps the
@@ -167,6 +166,9 @@ class FileCopySources:
             self._close_file()
 
     def _release(self, kept: _Kept) -> None:
+        """Let go of a source: free its memory, or its share of the temporary file
+        (deleted at the next :meth:`advance` once no source holds any), and stop
+        waiting for bytes still due."""
         if kept in self._pending:
             # Its copies were all skipped before the pipe passed it.
             self._pending.remove(kept)
@@ -224,6 +226,12 @@ class FileCopySources:
         return False
 
     def _feed(self, at: int, data: bytes) -> None:
+        """Keep the part of ``data``, the pipe's bytes from offset ``at``, that falls
+        in each pending source's range.
+
+        Pending sources are in pipe order, so the loop stops at the first that
+        starts past ``data`` or is still short of its end.
+        """
         end = at + len(data)
         self._pipe_pos = end
         while self._pending:

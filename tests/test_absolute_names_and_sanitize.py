@@ -120,7 +120,7 @@ def test_absolute_names_extract_inside_dest(
     )
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        report = r.extract_all(dest, policy=policy)
+        report = r.extract_all(dest, policy=policy, on_blocked="skip")
     assert _files(dest) == {"etc/x", "win.txt", "ok"}
     by_name = {res.member.name: res for res in report.results}
     # The result keeps the stored name; the path shows where it went.
@@ -133,7 +133,7 @@ def test_strict_refuses_absolute_names(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     with open_archive(src) as r:
         report = r.extract_all(
-            dest, policy=ExtractionPolicy.STRICT, on_error="continue"
+            dest, policy=ExtractionPolicy.STRICT, on_error="continue", on_blocked="skip"
         )
     assert _files(dest) == {"ok"}
     blocked = [res for res in report.results if res.status is ExtractionStatus.BLOCKED]
@@ -150,7 +150,9 @@ def test_dotdot_is_still_refused_outside_strict(
     src = _tar(tmp_path / "a.tar", [("file", "../up", b"u"), ("file", "/a/../b", b"b")])
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        report = r.extract_all(dest, policy=policy, on_error="continue")
+        report = r.extract_all(
+            dest, policy=policy, on_error="continue", on_blocked="skip"
+        )
     assert _files(dest) == set()
     assert all(res.status is ExtractionStatus.BLOCKED for res in report.results)
     assert not (tmp_path / "up").exists()
@@ -165,7 +167,9 @@ def test_absolute_hardlink_links_to_the_rerooted_member(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     with open_archive(src) as r:
         assert r.get("/d/b").link_target_member is r.get("/d/a")
-        report = r.extract_all(dest, policy=ExtractionPolicy.STANDARD)
+        report = r.extract_all(
+            dest, policy=ExtractionPolicy.STANDARD, on_blocked="skip"
+        )
     assert all(res.status is ExtractionStatus.EXTRACTED for res in report.results)
     assert (dest / "d" / "b").read_bytes() == b"data"
     assert (dest / "c").read_bytes() == b"data"
@@ -189,7 +193,7 @@ def test_strict_refuses_a_hardlink_to_an_absolute_member(tmp_path: Path) -> None
     dest = tmp_path / "out"
     with open_archive(src) as r:
         report = r.extract_all(
-            dest, policy=ExtractionPolicy.STRICT, on_error="continue"
+            dest, policy=ExtractionPolicy.STRICT, on_error="continue", on_blocked="skip"
         )
     statuses = {res.member.name: res.status for res in report.results}
     assert statuses == {
@@ -207,6 +211,7 @@ def test_reroot_is_a_rewrite_for_abort_on_name_sanitized(tmp_path: Path) -> None
             tmp_path / "out",
             policy=ExtractionPolicy.STANDARD,
             abort_on={AbortOn.NAME_SANITIZED},
+            on_blocked="skip",
         )
 
 
@@ -215,7 +220,10 @@ def test_absolute_symlink_target_is_still_refused(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     with open_archive(src) as r:
         report = r.extract_all(
-            dest, policy=ExtractionPolicy.TRUSTED, on_error="continue"
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            on_error="continue",
+            on_blocked="skip",
         )
     assert report.results[0].status is ExtractionStatus.BLOCKED
     assert not os.path.lexists(dest / "l")
@@ -234,7 +242,9 @@ def test_filter_sees_and_can_rescue_an_unsafe_member(tmp_path: Path) -> None:
         return member.replace(name="rescued")
 
     with open_archive(src) as r:
-        report = r.extract_all(dest, policy=ExtractionPolicy.STRICT, filter=rename)
+        report = r.extract_all(
+            dest, policy=ExtractionPolicy.STRICT, filter=rename, on_blocked="skip"
+        )
     assert seen == ["../up"]
     assert report.results[0].status is ExtractionStatus.EXTRACTED
     assert (dest / "rescued").read_bytes() == b"u"
@@ -250,7 +260,12 @@ def test_filter_sees_the_rerooted_name(tmp_path: Path) -> None:
         return member
 
     with open_archive(src) as r:
-        r.extract_all(tmp_path / "out", policy=ExtractionPolicy.STANDARD, filter=record)
+        r.extract_all(
+            tmp_path / "out",
+            policy=ExtractionPolicy.STANDARD,
+            filter=record,
+            on_blocked="skip",
+        )
     assert seen == ["etc/x"]
 
 
@@ -264,6 +279,7 @@ def test_what_the_filter_returns_is_checked(tmp_path: Path, bad: str) -> None:
             policy=ExtractionPolicy.TRUSTED,
             filter=lambda m: m.replace(name=bad),
             on_error="continue",
+            on_blocked="skip",
         )
     assert report.results[0].status is ExtractionStatus.BLOCKED
     assert _files(tmp_path) == {"a.tar"}
@@ -294,6 +310,11 @@ def test_what_the_filter_returns_is_checked(tmp_path: Path, bad: str) -> None:
         ("a\\\\..\\b", "b"),  # an empty segment does not absorb the ..
         ("a\\.\\..\\b", "b"),  # nor does a "." segment
         ("a/./../b", "b"),
+        # A "." or empty segment after two others: only the one before it goes.
+        ("a/b/./../c", "a/c"),
+        ("a/b//../c", "a/c"),
+        # Collapsing leaves a leading separator, which goes too: never a rooted name.
+        ("a/..//b", "b"),
         ("in\u202evoice", "invoice"),
         ("a\x00b", "a_b"),
     ],
@@ -338,7 +359,9 @@ def test_sanitize_names_extracts_what_would_be_refused(
     )
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        report = r.extract_all(dest, policy=policy, filter=sanitize_names)
+        report = r.extract_all(
+            dest, policy=policy, filter=sanitize_names, on_blocked="skip"
+        )
     assert all(res.status is ExtractionStatus.EXTRACTED for res in report.results)
     assert _files(dest) == {"etc/x", "up", "inner", "CON_.txt"}
     assert not (tmp_path / "up").exists()
@@ -371,7 +394,9 @@ def test_drive_relative_name_is_not_rerooted_onto_a_real_member(
     src = _tar(tmp_path / "a.tar", [("file", "a:b", b"one"), ("file", "b", b"two")])
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        report = r.extract_all(dest, policy=policy, on_error="continue")
+        report = r.extract_all(
+            dest, policy=policy, on_error="continue", on_blocked="skip"
+        )
     statuses = {res.member.name: res.status for res in report.results}
     assert statuses == {
         "a:b": ExtractionStatus.BLOCKED,
@@ -393,6 +418,7 @@ def test_reroot_abort_ignores_a_member_the_filter_dropped_or_renamed(
             policy=ExtractionPolicy.STANDARD,
             abort_on={AbortOn.NAME_SANITIZED},
             filter=keep,
+            on_blocked="skip",
         )
 
 
@@ -404,7 +430,9 @@ def test_reroot_is_recorded_in_presented_name(tmp_path: Path) -> None:
         return member.replace(name="mine/y") if member.name == "etc/y" else member
 
     with open_archive(src) as r:
-        report = r.extract_all(dest, policy=ExtractionPolicy.STANDARD, filter=rename_y)
+        report = r.extract_all(
+            dest, policy=ExtractionPolicy.STANDARD, filter=rename_y, on_blocked="skip"
+        )
     presented = {res.member.name: res.presented_name for res in report.results}
     # A name the filter chose is not a rewrite; the re-rooted one is.
     assert presented == {"/etc/x": "/etc/x", "/etc/y": None}
