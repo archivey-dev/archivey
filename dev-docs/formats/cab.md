@@ -118,8 +118,14 @@ a stream of nothing but block headers, with the deepest pretrees the format allo
 decodes at about 2 µs an input byte (0.5 MB/s, CPython 3.11), against 12 µs with one
 65 536-entry table per tree. No byte comes out, so `ExtractionLimits` does not see it
 (threat model, §No CPU or wall-clock bound).
-Past the end of the input it reads zero bytes, as `lzxd.c` does for two bytes, and refuses
-a stream that uses more than two of them (`TruncatedError`). It runs at about 5-10 MB/s.
+Past the end of the input come two zero bytes, as in `lzxd.c`, and the decoder refuses a
+stream (`TruncatedError`) that `lzxd.c` would *read* further for. That counts its look-ahead,
+not just the bits the stream uses: 16 bits ahead of each Huffman symbol, and one more word
+to realign at the end of a frame. So a stream whose last frame ends inside the zero bytes
+can still be refused. Stored bytes may read the two zero bytes too: in a folder without
+block checksums, an uncompressed block up to 2 bytes short decodes with zeros for the
+missing bytes, as cabextract 1.11 does, and 3 bytes short is refused. It runs at about
+5-10 MB/s.
 
 ## 3. Tests
 

@@ -330,7 +330,7 @@ class _PluginAdapter(BaseArchiveReader):
 
     def _refuse_codec_off_by_policy(self, method: object) -> None:
         """Refuse a codec ``config.formats`` turns off, before its code runs."""
-        if not isinstance(method, (StreamFormat, PluginStream)):
+        if not isinstance(method, (StreamFormat, PluginStream, CompressionAlgorithm)):
             return
         refusal = self._config.formats._codec_refusal(method)
         if refusal is not None:
@@ -858,7 +858,7 @@ class _PluginAdapter(BaseArchiveReader):
         with self._translated_errors(), self._handle_guard():
             info = self._reader.archive_info()
         cost = self._cost(info)
-        # A plugin's keys are its own, namespaced by its format (``"lha.method"``), so
+        # A plugin's keys are its own, namespaced by its format (``"arj.method"``), so
         # they are not in the inventory of built-in keys and are copied in as data. A
         # built-in format-API reader's keys (``"cpio.variant"``) are in that inventory.
         extra = ArchiveInfoExtra()
@@ -914,12 +914,35 @@ class IndexedReaderAdapter(_PluginAdapter):
     """Serves an :class:`~archivey.formats.IndexedReader` through the internal reader
     contract."""
 
+    # The archive's region inside the source, ``[_origin, _region_end)``: set only for
+    # a built-in format that ships behind a self-extracting stub (``SFX_MAGIC``), from
+    # detection's ``payload_offset`` and ``payload_end`` (``ReadBackend.open_read``).
+    # The reader sees the region as its whole source.
+    def __init__(
+        self, *args: Any, region: tuple[int, int | None] = (0, None), **kwargs: Any
+    ) -> None:
+        self._origin, self._region_end = region
+        super().__init__(*args, **kwargs)
+
+    @override
+    def _will_read(self, start: int, end: int) -> None:
+        # The reader's offsets count from the region's start.
+        super()._will_read(self._origin + start, self._origin + end)
+
     @override
     def _open_reader(self, context: ReaderContext) -> IndexedReader[Any]:
         source = self._source
         assert source is not None
+        region: BinaryIO = source
+        if self._origin or self._region_end is not None:
+            end = self._region_end
+            region = SlicingStream(
+                source,
+                start=self._origin,
+                length=None if end is None else max(0, end - self._origin),
+            )
         self._shared = shared = SharedSource(
-            source, wrap_handle=self._seek_handle_wrapper()
+            region, wrap_handle=self._seek_handle_wrapper()
         )
         plugin_source = ReaderSource(
             self._marked_view, shared.size, source.path, shared.read_at
@@ -2730,13 +2753,7 @@ class _PluginBackend(ReadBackend):
         start_offset: int = 0,
         end_offset: int | None = None,
     ) -> _PluginAdapter:
-        reject_start_offset(start_offset, format, archive_name, end_offset)
-        adapter = (
-            SequentialReaderAdapter
-            if issubclass(self.PLUGIN, SequentialFormatHandler)
-            else IndexedReaderAdapter
-        )
-        reader = adapter(
+        common = (
             self.PLUGIN(),
             source,
             format,
@@ -2744,10 +2761,24 @@ class _PluginBackend(ReadBackend):
             encoding if self.USES_ENCODING else None,
             archive_name,
             config,
-            collector=collector,
-            member_streams=member_streams,
-            open_site=open_site,
         )
+        options: dict[str, Any] = {
+            "collector": collector,
+            "member_streams": member_streams,
+            "open_site": open_site,
+        }
+        reader: _PluginAdapter
+        if issubclass(self.PLUGIN, SequentialFormatHandler):
+            reject_start_offset(start_offset, format, archive_name, end_offset)
+            reader = SequentialReaderAdapter(*common, **options)
+        else:
+            # Only a built-in format that declares SFX magic is handed a region, which
+            # its reader reads as the whole source (``IndexedReaderAdapter``).
+            if not self.SFX_MAGIC:
+                reject_start_offset(start_offset, format, archive_name, end_offset)
+            reader = IndexedReaderAdapter(
+                *common, region=(start_offset, end_offset), **options
+            )
         # The packages the handler reads with: pycdlib for ISO, a plugin's ``requires``.
         for library in (self.OPTIONAL_DEPENDENCY, *self.REQUIRED_MODULES):
             if library is not None:
@@ -2941,6 +2972,7 @@ REPLACEABLE_CONTAINERS = frozenset(
         ContainerFormat.SQUASHFS,
         ContainerFormat.XAR,
         ContainerFormat.CAB,
+        ContainerFormat.LHA,
     }
 )
 

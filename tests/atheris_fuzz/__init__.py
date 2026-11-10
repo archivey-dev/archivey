@@ -23,6 +23,7 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "squashfs": 8,
     "xar": 8,
     "cab": 8,
+    "lha": 8,
     "ar": 6,
     "cpio": 8,
     "rpm": 8,

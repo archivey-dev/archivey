@@ -1346,6 +1346,11 @@ class SevenZipReader(BaseArchiveReader):
         is_reparse_point = _is_windows_reparse_point(raw.record.attributes)
         if self._link_data_refused_by_size(member, is_reparse_point=is_reparse_point):
             return None
+        try:
+            self._check_member_method(member)
+        except UnsupportedFeatureError as exc:
+            self._link_data[member_id] = exc
+            return None
         with ExitStack() as owned:
             stream = owned.enter_context(opener())
             try:

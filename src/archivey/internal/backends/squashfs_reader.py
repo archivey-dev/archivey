@@ -408,6 +408,13 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
             return through_archivey
         if compressor == "lz4":
+            # Decoded here, not through ``ReaderContext.decompress``, so the policy's
+            # method entry is asked here as that call would ask it.
+            refusal = self._context.config.formats._codec_refusal(
+                CompressionAlgorithm.LZ4
+            )
+            if refusal is not None:
+                raise UnsupportedFeatureError(f"{refusal}.")
             natives = self._lz4_natives()
             usage = self._context._usage
             if usage is not None:

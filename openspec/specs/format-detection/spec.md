@@ -595,7 +595,7 @@ a non-seekable source. A header that does not fit that allowance SHALL be reject
 `sfx_scan` recorded as *budget exhausted*.
 
 The scan SHALL cap rejected candidates only for a format whose parser runs its own capped
-scan (RAR and 7z), and SHALL count them per format, as each of those parsers counts its own
+scan (RAR, 7z and LHA), and SHALL count them per format, as each of those parsers counts its own
 format's. Decoys of one format SHALL NOT spend another's allowance. A format whose reader
 runs no such scan SHALL NOT be capped: ZIP already locates the end of central directory
 from the tail, so a cap on ZIP candidates would refuse a file that forced `format=ZIP`
@@ -627,7 +627,7 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | Whole valid 7z in the stub, then a real ZIP payload | `SEVEN_Z` at the stub's 7z: a `VALID` hit of another format does not displace a held short hit |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
-| Random bytes, zeros or text, then a ZIP, 7z or RAR inside the window | Found by the leading-bytes scan (step 8): that format, `payload_offset` at its start |
+| Random bytes, zeros or text, then a ZIP, 7z, RAR or LHA inside the window | Found by the leading-bytes scan (step 8): that format, `payload_offset` at its start |
 | JPEG + appended ZIP | `ZIP` at the ZIP's local header, from the leading-bytes scan |
 | Leading bytes + ZIP, named `.lzma` | The extension's guess: the scan does not run for a name with a known extension, and `sfx_scan` is recorded as not enabled by policy |
 | Leading bytes + ZIP on a non-seekable source, inside the bytes detection already holds | Found, as on a seekable source |
@@ -931,10 +931,15 @@ turn invalid only further in: with a 256-byte sample, 7 of the first 800 Perl mo
 When a probe accepts the window and the source is longer than the window but no longer
 than the budget's `completion_window_bytes` (64 KiB under `BALANCED`), detection SHALL
 peek the whole source and run the probe again on it, so the completeness check above
-applies to it too. A source larger than that window, a budget with no completion window
-(`FAST`), or a source of unknown length keeps the window's answer. The whole-source decode
-is charged to the detection decode allowance; when the allowance cannot cover it, the
-window's answer stands and `probe_completion` is recorded as *budget exhausted*.
+applies to it too. A source that can seek but has no cheap size SHALL be measured by
+peeking one byte past the completion window (capped at the decode allowance left), and
+completed the same way when it ends within it, so the same bytes within the window get
+the same answer with or without a known size. Past the window the probe sees no size, and
+can still answer differently (`dev-docs/known-issues.md`). A source larger than that
+window, a budget with no completion window (`FAST`), or a forward-only source of unknown
+length keeps the window's answer. The whole-source decode is charged to the detection
+decode allowance; when the allowance cannot cover it, the window's answer stands and
+`probe_completion` is recorded as *budget exhausted*.
 
 #### Scenario: completeness matrix
 
@@ -947,6 +952,7 @@ window's answer stands and `probe_completion` is recorded as *budget exhausted*.
 | Real Brotli file larger than the prefix, decode wants more input | Accepted — there genuinely is more input |
 | Real Brotli file exactly the size of the prefix, decodes to completion | Accepted |
 | Source length unknown (non-seekable stream longer than the peek) | Rule skipped; today's behaviour |
+| Seekable source with no cheap size, ending within the completion window | Completed as with a known size |
 | LZMA Alone: 51-byte low-entropy file, fully visible, does not terminate | **Rejected** — same rule, not a Brotli special case |
 | Source larger than the prefix, within the completion window, stream truncated past the window | **Rejected** — the whole source is peeked and the probe re-run on it |
 | Same source under `FAST` (no completion window) | Accepted on the window |

@@ -3392,6 +3392,10 @@ class RarReader(BaseArchiveReader):
         if self._decompressor is RarDecompressor.NONE:
             # Decoding it would run a program, which the caller ruled out.
             return None
+        if CompressionAlgorithm.RAR in self._config.formats.exclude:
+            # The caller turned RAR's own decoder off, so the comment stays unread,
+            # as without a program.
+            return None
         # The selected program decodes the comment, ``unar`` included, without the
         # member refusals of ``UnarRarPolicy``: the CRC16 check below catches any wrong
         # or missing output, and a comment that fails it is dropped either way.
@@ -3656,6 +3660,9 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
+        # The copy's data is the source's, so the source's method decides, even where
+        # the copy was checked before its source was known.
+        self._check_member_method(source)
         stream = kept(source) if kept is not None else None
         if stream is None:
             return self._open_member(source)

@@ -56,6 +56,7 @@ PUBLIC_MODULES = (
     "archivey.paths",
     "archivey.formats",
     "archivey.terminal",
+    "archivey.fsspec",
 )
 
 #: The enums a patch release may add values to: the diagnostic codes, and the enums
@@ -164,11 +165,32 @@ def _fmt_value(value: object) -> str:
     return f"<{type(value).__qualname__}>"
 
 
-def _fmt_signature(func: object) -> str:
+def _init_signature(cls: type) -> inspect.Signature | None:
+    """The constructor's signature, ``None`` when it has none to show.
+
+    A metaclass whose ``__call__`` takes ``(*args, **kwargs)`` (fsspec's, which
+    caches instances) hides ``__init__`` from ``signature(cls)``; ``__init__`` without
+    ``self`` is then what a caller passes.
+    """
     try:
-        sig = inspect.signature(func)  # type: ignore[arg-type]
+        sig = inspect.signature(cls)
+        kinds = [p.kind for p in sig.parameters.values()]
+        if kinds == [inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD]:
+            init = inspect.signature(cls.__init__)
+            sig = init.replace(parameters=list(init.parameters.values())[1:])
     except (TypeError, ValueError):
-        return "(...)"
+        return None
+    return sig
+
+
+def _fmt_signature(func: object) -> str:
+    if isinstance(func, inspect.Signature):
+        sig = func
+    else:
+        try:
+            sig = inspect.signature(func)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return "(...)"
     params = list(sig.parameters.values())
     last_positional_only = max(
         (i for i, p in enumerate(params) if p.kind is p.POSITIONAL_ONLY), default=-1
@@ -264,7 +286,8 @@ def _class_lines(qualname: str, cls: type) -> Iterator[str]:
         and qualname not in _SKIP_INIT
         and "__init__" in {n for c in own for n in vars(c)}
     ):
-        yield f"init {qualname}{_fmt_signature(cls)}"
+        init = _init_signature(cls)
+        yield f"init {qualname}{'(...)' if init is None else _fmt_signature(init)}"
     fields: dict[str, str] = {}
     for c in reversed(own):
         for name, annotation in inspect.get_annotations(c).items():
