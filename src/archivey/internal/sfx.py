@@ -71,7 +71,7 @@ SFX_MAX = 2 * 1024 * 1024
 # not carry hundreds of format magics, and the native parsers that call this have no
 # detection budget. Each parser scans for one format, so the detector counts each
 # format's rejections apart (:class:`HitSelector`) and caps only the formats whose
-# parser scans (``ReadBackend.SFX_PARSER_SCANS``: RAR and 7z). Decoys of one format
+# parser scans (those that set ``ReadBackend.SFX_PARSER_SCANS``). Decoys of one format
 # do not spend another's allowance, and a ZIP is never capped: its seekable reader
 # finds the end of central directory from the tail and runs no scan, and the forward
 # walk's scan (``zip_local_walk``) is bounded by the window alone, its validator
@@ -129,7 +129,7 @@ class HitOutcome(Enum):
     ``VALID_SHORT`` — identity and structure hold, but the archive declares an end
     before the source ends, which a decoy can do and a payload appended last does
     not. A scan keeps the first one as a fallback and looks on for a ``VALID`` hit;
-    only a validator that knows where its format ends (7z) returns it, and only when
+    only a validator that knows where its format ends (7z, LHA) returns it, and only when
     ``remaining`` is known. Trailing bytes are legitimate (SFX configuration, a
     signature), so it is never a reject.
     ``DAMAGED`` — identity holds, structure does not (a 7z whose ``StartHeaderCRC``
@@ -556,7 +556,7 @@ def overlay_start_of(source: BinaryIO) -> int | None:
     """The overlay start (:func:`executable_layout`) of the seekable ``source`` from
     its current position, or ``None``; the position is restored.
 
-    For the RAR and 7z parsers' scans, which judge the candidate there first, as
+    For the RAR, 7z and LHA parsers' scans, which judge the candidate there first, as
     detection does (``format-detection``, *Overlay start first*). One read of the
     bytes the scan reads anyway.
     """
@@ -956,12 +956,13 @@ class _ForwardWindow:
 
         return view
 
-    def keep_tail(self, overlap: int) -> None:
-        """Drop all but the last ``overlap`` bytes, so a magic that straddles the
-        next chunk boundary still matches."""
-        if len(self.data) > overlap:
-            self.start += len(self.data) - overlap
-            del self.data[: len(self.data) - overlap]
+    def keep_tail(self, keep: int) -> None:
+        """Drop all but the last ``keep`` bytes, so a magic that straddles the next
+        chunk boundary still matches, with the bytes before it that its needle's
+        offset puts in the candidate."""
+        if len(self.data) > keep:
+            self.start += len(self.data) - keep
+            del self.data[: len(self.data) - keep]
 
 
 def _judge_first_at(
@@ -980,13 +981,14 @@ def _judge_first_at(
     no second needle can match at the same offset.
     """
     for needle in needles:
-        if first_at + len(needle.magic) > limit:
+        at = needle.offset
+        if first_at + at + len(needle.magic) > limit:
             continue
-        if window.peek(len(needle.magic), origin=first_at) != needle.magic:
+        if window.peek(at + len(needle.magic), origin=first_at)[at:] != needle.magic:
             continue
         outcome = validator(window.view(first_at), remaining)
         if outcome in (HitOutcome.VALID, HitOutcome.VALID_SHORT):
-            return MagicScan(MagicHit(first_at, needle.magic, 0), None, 0)
+            return MagicScan(MagicHit(first_at, needle.magic, at), None, 0)
         break
     return None
 
@@ -1041,14 +1043,16 @@ def scan_for_magic(
     uses: a candidate-relative ``peek_more(n)`` plus known remaining from that origin.
     Candidates are chosen by :class:`HitSelector` with the damaged fallback kept and
     :data:`MAX_VALIDATED_CANDIDATES` as the rejection cap. Each caller passes the
-    needles of one format (the 7z and RAR parsers). With no validator the first
+    needles of one format (the parsers of the formats that set
+    ``SFX_PARSER_SCANS``). With no validator the first
     structural match wins and there is no cap.
 
     ``peek_more`` is served from the scan window and may pull extra bytes *forward*
     if the header extends past what has been read. It does not seek back. The source
-    does not have to be seekable. A non-zero :class:`ScanNeedle` offset together with
-    a validator is an error — the origin can sit behind the overlap trim, and a short
-    peek would silently mis-grade it. ``remaining`` is filled from a size probe taken
+    does not have to be seekable. The window keeps the largest :class:`ScanNeedle`
+    offset's bytes behind each match, so a validator judges a candidate whose magic
+    sits past its origin (LHA's method at offset 2) from that origin. ``remaining`` is
+    filled from a size probe taken
     once at scan start when both ``tell()`` and the total size are known, otherwise
     ``None``.
 
@@ -1060,13 +1064,10 @@ def scan_for_magic(
     normalized = _normalize_needles(needles)
     if not normalized:
         return MagicScan(None, ScanMiss.NO_MATCH, 0)
-    if validator is not None and any(needle.offset != 0 for needle in normalized):
-        raise ValueError(
-            "scan_for_magic(validator=...) requires offset-0 needles; "
-            "a non-zero ScanNeedle.offset leaves the origin behind the window"
-        )
-    # Bytes carried between chunks so a magic straddling a chunk boundary still matches.
+    # Bytes carried between chunks so a magic straddling a chunk boundary still
+    # matches, and its candidate's origin (``offset`` bytes before it) is still held.
     overlap = max(len(needle.magic) for needle in normalized) - 1
+    keep = overlap + max(needle.offset for needle in normalized)
 
     window = _ForwardWindow(source)
     search_from = 0
@@ -1151,7 +1152,7 @@ def scan_for_magic(
             search_from = index + 1
 
         search_from = 0
-        window.keep_tail(overlap)
+        window.keep_tail(keep)
         searched = len(window.data)
 
     return finish()
@@ -1187,7 +1188,7 @@ def iter_magic_in_prefix(
         if step <= searched:
             continue
         # The detector never gets here today: it drops only capped formats' magics
-        # (RAR, 7z), and ZIP's is never capped, so it stays searched.
+        # (those that set ``SFX_PARSER_SCANS``), and ZIP's is never capped, so it stays searched.
         if magics <= dropped:
             return
         data = peek_more(min(step, limit))

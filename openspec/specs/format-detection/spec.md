@@ -595,7 +595,7 @@ a non-seekable source. A header that does not fit that allowance SHALL be reject
 `sfx_scan` recorded as *budget exhausted*.
 
 The scan SHALL cap rejected candidates only for a format whose parser runs its own capped
-scan (RAR and 7z), and SHALL count them per format, as each of those parsers counts its own
+scan (RAR, 7z and LHA), and SHALL count them per format, as each of those parsers counts its own
 format's. Decoys of one format SHALL NOT spend another's allowance. A format whose reader
 runs no such scan SHALL NOT be capped: ZIP already locates the end of central directory
 from the tail, so a cap on ZIP candidates would refuse a file that forced `format=ZIP`
@@ -627,7 +627,7 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | Whole valid 7z in the stub, then a real ZIP payload | `SEVEN_Z` at the stub's 7z: a `VALID` hit of another format does not displace a held short hit |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
-| Random bytes, zeros or text, then a ZIP, 7z or RAR inside the window | Found by the leading-bytes scan (step 8): that format, `payload_offset` at its start |
+| Random bytes, zeros or text, then a ZIP, 7z, RAR or LHA inside the window | Found by the leading-bytes scan (step 8): that format, `payload_offset` at its start |
 | JPEG + appended ZIP | `ZIP` at the ZIP's local header, from the leading-bytes scan |
 | Leading bytes + ZIP, named `.lzma` | The extension's guess: the scan does not run for a name with a known extension, and `sfx_scan` is recorded as not enabled by policy |
 | Leading bytes + ZIP on a non-seekable source, inside the bytes detection already holds | Found, as on a seekable source |

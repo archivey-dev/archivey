@@ -57,8 +57,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **CAB** (`.cab`, Microsoft cabinets): core, for stored, MSZIP and LZX folders. Listing:
   from its index. Members: solid when a folder is compressed, otherwise direct. Needs a source
   that can seek.
-- **LHA** (`.lzh`, `.lha`, `.lzs`): core, for stored members and the `-lh4-` to `-lh7-`,
-  `-lhx-` and `-lk7-` methods. Listing: header by header. Members: direct. Needs a source
+- **LHA** (`.lzh`, `.lha`, `.lzs`): core, for stored members and the `-lh1-`, `-lh4-` to
+  `-lh7-`, `-lhx-`, `-lk7-`, `-lzs-` and `-lz5-` methods. Listing: header by header. Members: direct. Needs a source
   that can seek.
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
   direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.cpio.gz`,
@@ -1266,10 +1266,10 @@ ST and Japanese PCs, and from LHa for UNIX.
 - **Reading members:** each member is compressed on its own, so every member is direct.
 - **From a pipe:** no, for now: the listing seeks past each member's data.
 - Header levels 0 to 3 all read. Stored members (`-lh0-`, `-lz4-`, `-pm0-`) and the
-  `-lh4-` to `-lh7-` methods, UNLHA32's `-lhx-` and LHARK's `-lk7-` decode; other methods
-  (`-lh1-`, `-lh2-`, `-lh3-`, `-lzs-`, `-lz5-`, PMarc's `-pm1-` and `-pm2-`) are listed and raise
-  `UnsupportedFeatureError` when read. `member.compression` is `LZH` for every `-lh?-`
-  method, and `extra["lha.method"]` names the exact one.
+  `-lh1-` and `-lh4-` to `-lh7-` methods, UNLHA32's `-lhx-`, LHARK's `-lk7-` and LArc's
+  `-lzs-` and `-lz5-` decode; other methods (`-lh2-`, `-lh3-`, PMarc's `-pm1-` and `-pm2-`) are listed and
+  raise `UnsupportedFeatureError` when read. `member.compression` is `LZH` for every
+  `-lh?-` and `-lz?-` method, and `extra["lha.method"]` names the exact one.
 - Each member stores a CRC-16 of its data, which a read checks, so a member read to its
   end is at `Verification.CHECKSUM`. A header's own checksum or CRC is checked when it is
   read: a damaged header is `CorruptionError`.
@@ -1282,8 +1282,12 @@ ST and Japanese PCs, and from LHa for UNIX.
   Japanese PC is usually `encoding="cp932"`), as in every format. A name's `\` separators
   become `/`. An Amiga file note stored after the name is `member.comment`.
 - An archive without the zero byte that ends it reports `ARCHIVE_EOF_MARKER_MISSING`, after
-  listing every member. Self-extracting LHA programs and MacLHA's MacBinary members are not
-  read yet.
+  listing every member.
+- A self-extracting LHA program reads like an archive: the archive behind a DOS, Windows,
+  Amiga, Atari or X68000 stub is found by its first header, as for ZIP, 7z and RAR (see
+  [Detection](#detection)). An Amiga self-extractor's own usage text, a small archive inside
+  the stub, is passed over for the archive that ends the file. MacLHA's MacBinary members
+  are read with their MacBinary wrapper for now.
 
 ## CPIO
 
@@ -1736,11 +1740,11 @@ they open at once. Close the sending side when the file is done.
   (Windows `MZ`/PE, Linux ELF, or a macOS Mach-O header that parses) or a `#!` launcher line (a
   zipapp `.pyz`, a Spring Boot jar). The 2 MiB scan behind the stub reports where the archive starts
   as `payload_offset`, and sets `prefixed`. For a code-signed Windows program, `payload_end` is
-  where its signature starts: the ZIP, 7z and RAR readers stop there, so the signature is not
+  where its signature starts: the ZIP, 7z, RAR and LHA readers stop there, so the signature is not
   reported as data after the archive. A ZIP further into a Windows installer than the scan
   reaches is found from its end, when the program's header shows that something was
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
-  (ZIP, 7z, RAR) are searched for. Behind a Windows, Linux or macOS program whose header says
+  (ZIP, 7z, RAR, LHA) are searched for. Behind a Windows, Linux or macOS program whose header says
   where its own image ends, an archive that starts exactly there is taken first, ahead of
   anything else in the window. That holds under every detection budget: a smaller one, such as
   `FAST`, still looks there, with a seek. Read from a pipe, under a budget whose window ends before
@@ -1751,13 +1755,14 @@ they open at once. Close the sending side when the file is done.
   the file is preferred over an earlier one that ends short of it.
 - **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`
   and `unzip` find it: when no other step matched, the same 2 MiB scan runs without an executable
-  cue, for ZIP, 7z and RAR, each with its structural check. It is the last content step, so a file
+  cue, for ZIP, 7z, RAR and LHA, each with its structural check (LHA's is its header sum or
+  CRC; a DOS `.COM`, Amiga or Atari self-extractor has no executable header to cue on). It is the last content step, so a file
   archivey recognizes pays nothing for it; a file it does not recognize pays a read of up to 2 MiB.
   On a source that cannot seek and whose length is not known yet, such as a pipe, the scan covers
   only the bytes detection has already read, and `sfx_scan` is listed in `unavailable_tiers` as
   `CAPABILITY_UNAVAILABLE`.
-  A file whose name has a known extension skips it and gets the extension's guess; the ZIP, 7z and
-  RAR readers find an archive behind leading bytes themselves.
+  A file whose name has a known extension skips it and gets the extension's guess; the ZIP, 7z,
+  RAR and LHA readers find an archive behind leading bytes themselves.
 - **Ties go to the earlier step, then to registration order.** Detection stops at the first step
   that matches, and within a step the first backend registered wins. A file that is two formats at
   once (a polyglot) gets one fixed answer; pass `format=` to read it as the other.
