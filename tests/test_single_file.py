@@ -1115,13 +1115,27 @@ def _bzip3_compress(data: bytes) -> bytes:
     return compressor.compress(data) + compressor.flush()
 
 
+def _uu_encode(data: bytes) -> bytes:
+    import binascii
+
+    lines = [binascii.b2a_uu(data[i : i + 45]) for i in range(0, len(data), 45)]
+    return b"begin 644 data\n" + b"".join(lines) + b"`\nend\n"
+
+
+def _base64_encode(data: bytes) -> bytes:
+    import base64
+
+    return base64.encodebytes(data)
+
+
 def _lz4_compress(data: bytes) -> bytes:
     import lz4.frame
 
     return lz4.frame.compress(data)
 
 
-# suffix -> (compressor, skip marks). The thirteen single-file codecs.
+# suffix -> (compressor, skip marks). The single-file codecs, uuencode and base64
+# included.
 _SINGLE_FILE_CODECS = {
     ".gz": (gzip.compress, ()),
     ".bz2": (bz2.compress, ()),
@@ -1136,6 +1150,8 @@ _SINGLE_FILE_CODECS = {
     ".lzo": (make_lzop, ()),
     ".mozlz4": (_mozlz4_compress, (requires("lz4"),)),
     ".bz3": (_bzip3_compress, (requires("bz3"),)),
+    ".uu": (_uu_encode, ()),
+    ".b64": (_base64_encode, ()),
 }
 
 _NOT_A_STREAM = {"zeros": b"\x00" * 40_000, "zero-byte": b""}
@@ -1177,6 +1193,11 @@ def test_undecodable_source_raises_at_open(
     path.write_bytes(_NOT_A_STREAM[contents])
     if (suffix, contents) == (".lzma", "zeros"):
         _assert_zeros_read_as_empty_lzma(path, seekable_members=seekable_members)
+        return
+    if (suffix, contents) == (".b64", "zero-byte"):
+        # No characters is the base64 of an empty file, which `base64` writes as such.
+        with open_archive(path, seekable_members=seekable_members) as ar:
+            assert ar.read(ar.members()[0]) == b""
         return
     # The raise must come from open_archive itself, not from a read after it.
     with pytest.raises(CorruptionError):

@@ -918,6 +918,14 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         ),
     ),
     (
+        "uu",
+        "no corpus builder for uuencode; tests/test_text_codecs.py seeks in a file",
+    ),
+    (
+        "base64",
+        "no corpus builder for base64; tests/test_text_codecs.py seeks in a file",
+    ),
+    (
         "ar",
         (
             "no corpus builder: the corpus trees hold directories, which ar cannot; "
@@ -978,6 +986,10 @@ _UNTESTED_FORMATS = {
     ArchiveFormat.SQUASHFS: "squashfs",
     ArchiveFormat.BZIP3: "bzip3",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP3): "bzip3",
+    ArchiveFormat.UU: "uu",
+    ArchiveFormat(ContainerFormat.TAR, StreamFormat.UU): "uu",
+    ArchiveFormat.BASE64: "base64",
+    ArchiveFormat(ContainerFormat.TAR, StreamFormat.BASE64): "base64",
     ArchiveFormat.XAR: "xar",
     ArchiveFormat.CAB: "cab",
     ArchiveFormat.LHA: "lha",
