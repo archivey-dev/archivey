@@ -8,10 +8,9 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
 
 - **One interface for every format:** ZIP, TAR (plain or compressed with gzip, bzip2, xz,
   zstd, lz4 or Unix compress), 7z, RAR, ISO 9660, SquashFS, CPIO, ar (static libraries,
-  `.deb`), RPM packages, Microsoft cabinets, XAR (macOS `.pkg`), LHA (`.lzh`), ARJ, plain
-  directories, and single-file streams (gzip, bzip2, xz, lzip, LZMA, zstd, lz4, zlib,
-  Brotli, Unix compress). List members, read one, or stream them all in one pass, the same
-  way for each.
+  `.deb`), RPM packages, makeself `.run` installers, Microsoft cabinets, XAR (macOS `.pkg`), LHA (`.lzh`), ARJ, plain directories, and single-file streams (gzip, bzip2, xz, lzip, LZMA, zstd,
+  lz4, zlib, Brotli, Unix compress). List members, read one, or stream them all in one
+  pass, the same way for each.
 - **Automatic format detection** from the file's content, so a misnamed file still opens.
 - **Safe extraction by default:** path traversal, symlink and hardlink escapes, special
   files and archive bombs are blocked unless you opt out.
@@ -48,7 +47,8 @@ pip install "archivey[recommended]"  # every format and codec that installs ever
 import archivey
 
 # Extract safely: traversal, link escapes and bombs are blocked by default.
-# A refused member is skipped, not raised; abort_on makes the first one raise.
+# A refused member isn't written; once the rest are, FilterRejectionError is
+# raised with the full report. abort_on makes the first refusal raise at once.
 with archivey.open_archive("untrusted.zip") as reader:
     reader.extract_all("out/", abort_on=["blocked_member"])
 

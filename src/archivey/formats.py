@@ -47,15 +47,33 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    BinaryIO,
+    ClassVar,
+    Generic,
+    Literal,
+    NamedTuple,
+    Protocol,
+    TypeVar,
+    cast,
+)
 
 from archivey.config import ArchiveyConfig, DecoderLimits
-from archivey.diagnostics import DiagnosticCode, DiagnosticContext
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticContext,
+    MemberTimestampContext,
+)
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.overrides import override
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
+from archivey.internal.timestamps import dos_to_datetime, unix_to_datetime
+from archivey.internal.unix_mode import special_file_type
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
@@ -63,8 +81,12 @@ from archivey.types import (
     MemberType,
     PluginContainer,
     PluginStream,
+    SpecialFileType,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 __all__ = [
     "CodecCall",
@@ -92,7 +114,12 @@ __all__ = [
     "buffered_stream",
     "register_codec",
     "register_format",
+    "unix_member_type",
 ]
+
+TimeField = Literal["modified", "accessed", "created"]
+"""An ``ArchiveMember`` time field a reader sets with :meth:`ReaderContext.set_unix_time`
+or :meth:`ReaderContext.set_dos_time`."""
 
 
 class Magic(NamedTuple):
@@ -370,6 +397,9 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.read() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
+        if not n:
+            # Moves no bytes, so an open take() stays open.
+            return b""
         self._end_take()
         data = self._read_fn(n)
         self._offset += len(data)
@@ -399,6 +429,8 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.skip() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
+        if not n:
+            return
         self._end_take()
         self._skip_fn(self._offset, n)
         self._offset += n
@@ -411,7 +443,9 @@ class ForwardStream:
         is held in memory. It ends after ``n`` bytes, or raises ``TruncatedError`` where
         the archive ends first. The walk resumes after the ``n`` bytes: the next
         :meth:`read`, :meth:`skip`, :meth:`take` or :meth:`decompress` first skips what
-        the stream left unread, and the stream reads nothing after that.
+        the stream left unread, and the stream reads nothing after that. A
+        :meth:`read` or :meth:`skip` of 0 bytes moves nothing and leaves the stream
+        open.
         """
         if n < 0:
             raise ValueError(f"ForwardStream.take() takes a size of 0 or more, got {n}")
@@ -518,8 +552,23 @@ class _TakenBytes(io.RawIOBase):
         return got
 
 
+class _SpanningCheck(Protocol):
+    """A check over the data of several members, which a built-in reader runs itself
+    (a makeself payload's digests). The adapter's ``SpanningCheck`` implements it."""
+
+    def cover(self, member: ArchiveMember) -> None: ...
+
+    def passed(self) -> None: ...
+
+    def failed(self, message: str) -> ArchiveyError: ...
+
+
 class ReaderContext:
     """What an open archive needs from archivey. archivey builds it."""
+
+    # ``_spanning_check(key)`` returns the check for one spanning check of the
+    # archive. Internal, set by the adapter; not for plugins.
+    _spanning_check: Callable[[object], _SpanningCheck] | None = None
 
     def __init__(
         self,
@@ -544,8 +593,13 @@ class ReaderContext:
         charge_metadata: Callable[[int, str], None],
         open_nested: Callable[[BinaryIO, ArchiveFormat], Iterator[MemberSpan]]
         | None = None,
+        usage: ResourceUsageRecorder | None = None,
     ) -> None:
         self._encoding = encoding
+        # The open reader's resource-usage recorder, for a built-in reader that checks
+        # a declared allocation itself (``check_decoder_memory``). Not part of the
+        # plugin interface.
+        self._usage = usage
         self._archive_name = archive_name
         self._config = config
         self._decompress = decompress
@@ -592,13 +646,16 @@ class ReaderContext:
         A report on a member being listed is held until the member is yielded, and
         sent then: archivey sets the ``member_name`` of ``details`` to the name the
         member is listed by, normalized, so a reader reports with the name as the
-        archive stores it. The ``message`` is sent as written. The caller's
+        archive stores it. The ``message`` is sent as written, stored name and all:
+        callers match a report to a member by ``member_name``. The caller's
         ``DiagnosticPolicy`` applies when the report is sent, so a code it raises on
         raises then, from the listing. A report on a member that is never yielded is
-        sent when the walk ends, under the reader's name and with no member id; it
+        sent when the walk ends, under the reader's name and with no member id (or at
+        close, for a sequential walk's first step taken at open and never listed); it
         raises only from a walk that reached its end, and is recorded without raising
-        when the walk was stopped part-way or ended by an error. In a walk archivey
-        starts over to reach member data, a report names the member as listed.
+        when the walk was stopped part-way, ended by an error, or never listed. In a
+        walk archivey starts over to reach member data, a report names the member as
+        listed.
 
         For ``SYMLINK_TARGET_UNAVAILABLE`` use :meth:`link_target_unavailable`.
         """
@@ -693,8 +750,9 @@ class ReaderContext:
         closed when Python collects it, and at the latest when the archive is closed.
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
-        format is read by its replacement, and ``exclude_libraries`` holds; ``only``
-        and ``exclude`` check only the file the call opens. A format that needs a
+        format is read by its replacement, ``exclude_libraries`` holds, and under
+        ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``;
+        ``only`` and ``exclude`` check only the file the call opens. A format that needs a
         seekable source (7z, RAR) raises ``UnsupportedFeatureError``, and so does an
         archive nested more than 8 deep (an inner reader calling ``open_nested`` in
         turn). What the inner reader attaches to a member while its data is read
@@ -718,6 +776,71 @@ class ReaderContext:
         a member is listed by: a checksum list that names files, say.
         """
         return normalize_member_name(name, member_type, backslash_is_separator=False)
+
+    def set_unix_time(
+        self,
+        member: ArchiveMember,
+        field: TimeField,
+        seconds: int,
+        *,
+        nanoseconds: int = 0,
+        source: str,
+    ) -> None:
+        """Set ``member``'s ``field`` to the UTC time ``seconds`` after the Unix
+        epoch, before it or after it, plus ``nanoseconds`` (to the microsecond).
+
+        A time past what a ``datetime`` holds (the years 1 to 9999) leaves the field
+        unset, and is reported as ``MEMBER_TIMESTAMP_INVALID`` on the member, as a
+        built-in format reports it; ``source`` names the stored field's kind for that
+        report (``"cpio"``, ``"ar"``). ``nanoseconds`` outside 0 to 999 999 999 are
+        reported the same way. Call it while the member is being listed or opened.
+        """
+        if not 0 <= nanoseconds < 1_000_000_000:
+            self._report_bad_time(
+                member, field, source, f"{seconds} s + {nanoseconds} ns"
+            )
+            return
+        stamp = unix_to_datetime(seconds)
+        if stamp is None:
+            self._report_bad_time(member, field, source, str(seconds))
+            return
+        # Whole seconds, so the microseconds are 0 and adding them cannot overflow.
+        setattr(member, field, stamp.replace(microsecond=nanoseconds // 1000))
+
+    def set_dos_time(
+        self, member: ArchiveMember, field: TimeField, stamp: int, *, source: str
+    ) -> None:
+        """Set ``member``'s ``field`` from a DOS date and time word: the date in the
+        high 16 bits and the time in the low 16, as RAR stores it (a format that
+        stores the two apart joins them, ``date << 16 | time``). The result is the
+        local time the word records, without a time zone, as ZIP gives it.
+
+        Zero means no time and leaves the field unset. Any other word that names no
+        real time (month 13, 25 o'clock) leaves it unset too and is reported as
+        ``MEMBER_TIMESTAMP_INVALID``, as :meth:`set_unix_time` reports.
+        """
+        value = dos_to_datetime(stamp)
+        if value is None:
+            if stamp:
+                self._report_bad_time(member, field, source, f"0x{stamp:08x}")
+            return
+        setattr(member, field, value)
+
+    def _report_bad_time(
+        self, member: ArchiveMember, field: TimeField, source: str, value_repr: str
+    ) -> None:
+        self.report(
+            DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+            f"Invalid {source} time for {quoted(member.name)}: {value_repr}; "
+            f"{field} is left unset",
+            MemberTimestampContext(
+                member_name=member.name,
+                field=field,
+                source=source,
+                value_repr=value_repr,
+            ),
+            member=member,
+        )
 
     def decode_name(self, raw: bytes) -> str:
         """Decode a stored name the way built-in formats do.
@@ -1142,6 +1265,35 @@ def register_codec(handler: type[CodecHandler]) -> None:
 
     with _register_lock:
         register_plugin_codec(handler)
+
+
+_UNIX_TYPES = {
+    0o100000: MemberType.FILE,
+    0o040000: MemberType.DIRECTORY,
+    0o120000: MemberType.SYMLINK,
+}
+
+
+def unix_member_type(
+    mode: int, *, has_data: bool
+) -> tuple[MemberType, SpecialFileType | None]:
+    """The member type a Unix ``st_mode``'s file-type bits give, and the special file
+    they name, for ``ArchiveMember.extra["special_file_type"]``.
+
+    A regular file, a directory and a symlink map to their types, with no special
+    file. A device, a FIFO or a socket is ``OTHER``, as in every format archivey
+    reads, unless the archive stores data for it (``has_data``): then it is a
+    ``FILE`` whose bytes are the content, and the special file still says what the
+    mode named. Other type bits, none included, give ``"unknown"`` and the same
+    type. Store the special file in ``extra`` whenever it is not ``None``,
+    ``"unknown"`` included, as every built-in format does, and report
+    ``"unknown"`` as ``MEMBER_TYPE_UNKNOWN`` too.
+    """
+    member_type = _UNIX_TYPES.get(mode & 0o170000)
+    if member_type is not None:
+        return member_type, None
+    special = special_file_type(mode) or "unknown"
+    return (MemberType.FILE if has_data else MemberType.OTHER), special
 
 
 def block_stream(

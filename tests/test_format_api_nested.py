@@ -21,11 +21,14 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveMember,
+    ArchiveyConfig,
     ArchiveyUsageError,
     ContainerFormat,
     CorruptionError,
+    FormatPolicy,
     MemberType,
     PluginContainer,
+    PluginStream,
     StreamFormat,
     TruncatedError,
     UnsupportedFeatureError,
@@ -371,3 +374,114 @@ def test_reports_made_while_data_is_read_reach_the_listed_member() -> None:
     assert data.read() == b"x"
     data.close()
     assert outer._diagnostics == (earlier, later)
+
+
+def test_a_zero_byte_read_or_skip_leaves_an_open_take_alone() -> None:
+    data = io.BytesIO(b"0123456789")
+
+    def skip(offset: int, n: int) -> None:
+        data.read(n)
+
+    forward = ForwardStream(data.read, skip)
+    taken = forward.take(4)
+    assert forward.read(0) == b""
+    assert forward.read_exact(0) == b""
+    forward.skip(0)
+    assert forward.offset == 0
+    assert taken.read() == b"0123"
+    assert forward.read(1) == b"4"
+
+
+class LinksInDataBoxesReader(BoxesReader):
+    """BOXES, but a symlink's target is its data, as CPIO stores it."""
+
+    link_target_in_data = True
+
+
+class LinksInDataBoxesContainer(PluginContainer):
+    LINKS_IN_DATA_BOXES = "links-in-data-boxes"
+
+
+class LinksInDataBoxesHandler(BoxesHandler):
+    format = ArchiveFormat(
+        LinksInDataBoxesContainer.LINKS_IN_DATA_BOXES, StreamFormat.UNCOMPRESSED
+    )
+    magic = ()
+
+    def open_sequential(self, context: ReaderContext) -> BoxesReader:
+        return LinksInDataBoxesReader(context)
+
+
+def _tar_with_empty_symlink() -> bytes:
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w", format=tarfile.GNU_FORMAT) as tar:
+        link = tarfile.TarInfo("sym")
+        link.type = tarfile.SYMTYPE
+        tar.addfile(link)
+        after = tarfile.TarInfo("after.txt")
+        after.size = 5
+        tar.addfile(after, io.BytesIO(b"after"))
+    return out.getvalue()
+
+
+def test_an_inner_symlink_with_no_target_does_not_end_the_inner_walk() -> None:
+    """An outer format whose links keep their target in the data, and an inner TAR
+    symlink with an empty target: the span has no data to read the target from, and
+    the walk goes on to the inner archive's next member."""
+    data = _boxes((b"T", _tar_with_empty_symlink()), (b"T", _tar([("b", b"b")])))
+    with registration_scope():
+        register_format(LinksInDataBoxesHandler)
+        with open_archive(
+            io.BytesIO(data), format=LinksInDataBoxesHandler.format
+        ) as reader:
+            listed = {
+                member.name: (member.type, member.link_target, s.read() if s else None)
+                for member, s in reader.stream_members()
+            }
+            retained = reader.diagnostics.retained
+    assert listed == {
+        "0/sym": (MemberType.SYMLINK, None, None),
+        "0/after.txt": (MemberType.FILE, None, b"after"),
+        "1/b": (MemberType.FILE, None, b"b"),
+    }
+    empty = [d for d in retained if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE]
+    assert len(empty) == 1
+
+
+class NestedCodec(PluginStream):
+    NESTED = "nested-codec"
+
+
+@pytest.mark.usefixtures("boxes")
+@pytest.mark.parametrize(
+    ("inner", "what"),
+    [
+        (BoxesHandler.format, "plugin format"),
+        # Refused before the reader lookup, so the codec need not be registered.
+        (ArchiveFormat(ContainerFormat.TAR, NestedCodec.NESTED), "plugin codec"),
+    ],
+    ids=["container", "codec"],
+)
+def test_a_plugin_format_inside_is_refused_under_plugins_false(
+    monkeypatch: pytest.MonkeyPatch, inner: ArchiveFormat, what: str
+) -> None:
+    """plugins=False holds for nested archives. No built-in reader calls open_nested
+    yet, so the outer BOXES stands in for one: the open's own check passes it, and the
+    plugin format or codec inside it is refused."""
+    refusal = FormatPolicy._refusal
+
+    def outer_allowed(self: FormatPolicy, fmt: ArchiveFormat) -> str | None:
+        return None if fmt == BoxesHandler.format else refusal(self, fmt)
+
+    monkeypatch.setattr(FormatPolicy, "_refusal", outer_allowed)
+    monkeypatch.setitem(_KINDS, b"B", inner)
+    data = _boxes((b"B", _boxes((b"T", _tar([("a", b"a")])))))
+    if inner == BoxesHandler.format:
+        with open_archive(io.BytesIO(data), format=BoxesHandler.format) as reader:
+            assert [m.name for m in reader.members()] == ["0/0/a"]
+    config = ArchiveyConfig(formats=FormatPolicy(plugins=False))
+    with (
+        pytest.raises(UnsupportedFeatureError, match=f"turns off every {what}"),
+        open_archive(io.BytesIO(data), format=BoxesHandler.format, config=config) as r,
+    ):
+        r.members()

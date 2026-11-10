@@ -17,7 +17,7 @@ the status — this page states the behaviour and links the row.
 | Access cost | `DIRECT` — every file is one extent (or one run of extents) at an absolute sector |
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None can read it: ISO needs `pycdlib`, which is in `[recommended]` |
-| Refuses | Non-seekable sources, before `pycdlib` is consulted (`StreamNotSeekableError`, not `PackageNotInstalledError`) · raw CD sector images (`.bin`), by name, also before `pycdlib` is consulted · a multi-extent file whose extents overlap each other (`CorruptionError`) · reading a zisofs2 member · writing |
+| Refuses | Non-seekable sources, before `pycdlib` is consulted (`StreamNotSeekableError`, not `PackageNotInstalledError`) · raw CD sector images (`.bin`) other than Mode 1 / Mode 2 Form 1, by name, also before `pycdlib` is consulted (the two data layouts are read through `cd_sectors.cooked_source`) · a multi-extent file whose extents overlap each other (`CorruptionError`) · reading a zisofs2 member · writing |
 | Accepts and ignores | `password=` (`PASSWORD_ARGUMENT_UNUSED`) |
 | `encoding=` | Applied to a Rock Ridge or plain name, or a Rock Ridge link target, whose bytes are not valid UTF-8; without it, such a Rock Ridge name takes its Joliet name when the two line up (§2.2) |
 
@@ -96,11 +96,28 @@ bootable image opened a whole filesystem as one fabricated member. The peek is s
 a source known to be shorter than the span, and the far tier has its own byte budget. See
 the module docstring of `internal/detection.py`.
 
-The second magic is the 12-byte CD sync pattern at offset 0. It is claimed as ISO only so
-that `open_archive` can refuse a raw sector image by name — Mode 1, Mode 2 Form 1 or 2,
-2352- or 2448-byte sectors — with `UnsupportedFeatureError`, before the availability check,
+The second magic is the 12-byte CD sync pattern at offset 0: a raw sector image (`.bin`).
+A Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors, is read through
+`cd_sectors.cooked_source`, a `ReaderSource` that strips each sector to its 2048 bytes of
+user data (checking sync and mode per sector, not EDC/ECC) and maps read hints back to raw
+sectors; `IsoHandler.open` wraps the source, so pycdlib sees a plain image. Only the first
+track is read (no `.cue`), and the trailing-data scan stops at the first sector that is
+not a data sector, so a mixed-mode disc's audio is not reported. Other layouts are refused
+by name in `open_archive` with `UnsupportedFeatureError`, before the availability check,
 so a caller without `pycdlib` is not told to install it first
-(`refuse_raw_sector_image`). A non-seekable source is also refused ahead of that
+(`refuse_raw_sector_image`); a replacement reader is refused every raw image.
+
+A `.cue` sheet (claimed by extension; it has no magic) or a `.bin` with a same-stem
+`.cue` beside it that lists it is read through `cue_sheet.disc_source`: a `DiscSource`
+that places every data track's sectors at its absolute address (files back to back,
+plus `PREGAP`s and the 11 400 / 6 900-sector gaps between sessions), reads sectors 0 to
+the end of the volume descriptor set (plus the version descriptor after it) from the
+chosen track's start, and fails a read of a sector in no data track. The chosen track
+is the first data track of the last session with one, as a mount picks it. The session
+gap is checked against the root directory's `.` record (it names its own sector) and
+searched for in the track's first 4096 sectors when it disagrees. `FILE` names must be
+plain names beside the sheet. The trailing-data scan covers only the rest of the chosen
+track, and member hints are empty (the opened file is the sheet). A non-seekable source is also refused ahead of that
 check, with `StreamNotSeekableError`, because `pycdlib` could not read it either. The
 extension is `.iso`.
 
@@ -238,6 +255,20 @@ What is ISO-specific in turning a record into a member:
   whose area does not fit in its logical block, in the record's own area and in each
   continuation area, before `pycdlib` reads that area: `CorruptionError` for the image,
   under any `ListingLimits` (§4).
+- **Directory padding.** A zero length byte starts the padding that fills the rest of a
+  directory's logical block. `pycdlib` refuses the whole image when that padding holds a
+  non-zero byte (`Invalid padding on ISO`), in any tree, although every record it could
+  still read is intact; one damaged byte in a Joliet directory's padding refused an image
+  whose 40 files all read (measured for the salvage design). The Linux kernel skips the
+  padding unread (`do_isofs_readdir`). Inside archivey's own open, `pycdlib`'s
+  `_iter_directory_records` is replaced by the same walk that notes the offset and goes
+  on (`_install_pycdlib_padding_tolerance`), and each such block is reported as
+  `ARCHIVE_TRAILING_DATA` with `expected_marker="directory_padding"`: a record whose
+  length byte was damaged to zero would be lost there, so `STRICT` refuses (DR-3).
+  Padding the image cuts short still raises `Invalid padding on ISO`, a cut (below). The
+  walk is a copy of `pycdlib` 1.22.0's and replaces any upstream change to it inside
+  archivey's open; `test_iso` pins the original's source, so a `pycdlib` that changes
+  it fails until the two are compared.
 - **Versions.** In the plain namespace the `;N` suffix of a file and the `.` of an empty
   extension are removed (`FOO.;1` is `FOO`) and the number goes to `extra["iso.version"]`.
   When a directory holds several versions, the highest takes the bare name; older ones are
