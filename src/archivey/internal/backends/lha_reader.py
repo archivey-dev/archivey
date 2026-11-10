@@ -269,6 +269,9 @@ def _method(raw: bytes) -> str:
 class LhaReader(IndexedReader[_Location]):
     """One open LHA archive."""
 
+    # LHA has no index: listing reads each header and seeks past its member's data.
+    member_list_upfront = False
+
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
         self._context = context
@@ -591,6 +594,9 @@ class LhaReader(IndexedReader[_Location]):
         special = None
         if method == _DIRECTORY and file_type == stat.S_IFLNK:
             member_type = MemberType.SYMLINK
+            # The separator is the first bar of the directory and the name joined:
+            # some archives put it in the directory record (``etc|../../`` then
+            # ``etc``), and lhasa splits the joined path too.
             bars = name.count("|")
             name, bar, link_target = name.partition("|")
             if not bar:

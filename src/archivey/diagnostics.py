@@ -498,7 +498,7 @@ class ArchiveEofContext(_JsonSafeContext):
       ``observed_kind`` is ``"absent"``, ``expected_bytes`` is 1 and
       ``observed_bytes`` 0.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
-      archive's end within the first MiB past it, so the file carries something the
+      archive's end within the first MiB past it (64 KiB for LHA), so the file carries something the
       listing did not account for. ``format`` names where the end was: ``"tar"`` for
       the TAR trailer (complete, or its second block damaged and reported as
       ``"second_zero_block"`` first), ``"7z"`` for the later of a 7z archive's next

@@ -21,6 +21,7 @@ from archivey import (
     CorruptionError,
     CreateSystem,
     DiagnosticCode,
+    ListingCost,
     MemberType,
     TruncatedError,
     UnsupportedFeatureError,
@@ -337,6 +338,17 @@ def test_a_symlink_splits_at_its_bar() -> None:
     assert got.raw_name == b"dir/link"
 
 
+def test_a_symlink_bar_in_the_directory_record() -> None:
+    # lhasa's parse_symlink splits the joined path: the bar can sit in the directory.
+    member = Member(
+        b"etc", method="-lhd-", level=2, mode=0o120777, directory=b"etc|..\xff..\xff"
+    )
+    with _open(archive([member])) as reader:
+        (got,) = reader.members()
+    assert (got.name, got.link_target) == ("etc", "../../etc")
+    assert got.raw_name == b"etc"
+
+
 def test_a_cp932_symlink_keeps_its_stored_name() -> None:
     # The second byte of ポ is 0x7C, so the bytes cannot be cut where the name was.
     stored = "ポ|t".encode("cp932")
@@ -380,6 +392,14 @@ def test_a_name_decodes_with_encoding() -> None:
 def test_detection() -> None:
     raw = archive(_members("-lh5-", 1))
     assert detect_format(io.BytesIO(raw)).format == ArchiveFormat.LHA
+
+
+def test_listing_is_a_header_walk() -> None:
+    with _open(archive(_members("-lh0-", 1))) as reader:
+        assert reader.cost.listing_cost is ListingCost.REQUIRES_SCANNING
+        assert reader.members_report_if_available() is None
+        reader.members()
+        assert reader.members_report_if_available() is not None
 
 
 def test_format_is_listed() -> None:
