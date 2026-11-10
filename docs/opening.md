@@ -220,11 +220,13 @@ only if it checks `config.formats.exclude_libraries` itself.
 `only=` and `exclude=` check the file you open, not what's inside it. `S.XZ` there means a file
 compressed with xz as a whole, such as a `.xz` or `.tar.xz` file, not the xz codec: a ZIP member
 compressed with xz can still be read under `exclude={S.XZ}`, because the file is a ZIP.
-A [`CompressionAlgorithm`][archivey.CompressionAlgorithm] in `exclude=` is the exception: it
-checks every member instead. `exclude={CompressionAlgorithm.IMPLODE}` still lists an imploded ZIP
-member, but opening, reading or extracting it raises `UnsupportedFeatureError` before anything is
-decoded. So `CompressionAlgorithm.XZ` refuses xz-compressed members but not a `.xz` file, the
-reverse of `S.XZ`. `only=` takes no methods.
+A [`CompressionAlgorithm`][archivey.CompressionAlgorithm] in `exclude=` reaches further: it turns
+that decoder off, for a file compressed with it as a whole and for every member compressed with it.
+`exclude={CompressionAlgorithm.XZ}` refuses a `.xz` or `.tar.xz` file and still lists an
+xz-compressed ZIP member, but opening, reading or extracting that member raises
+`UnsupportedFeatureError` before anything is decoded. A compression a format keeps inside itself,
+such as a `.deb`'s `data.tar.xz`, isn't checked, so refuse that format instead. `only=` takes no
+methods.
 `plugins=False` and `exclude_libraries=` are different, since they turn off the code that
 decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format runs in the
 call, even for a member or an archive inside an archive: reading a member that needs one raises

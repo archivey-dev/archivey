@@ -50,6 +50,24 @@ _UNEXCLUDABLE_METHODS = frozenset(
 _CALL = "FormatPolicy()"
 
 
+# The method each whole-file compression decodes with, so a method in ``exclude``
+# refuses a file compressed with it as a whole too. ``.Z`` and bzip3 have no
+# CompressionAlgorithm member: only their StreamFormat refuses them.
+_STREAM_METHODS: dict[StreamFormat, CompressionAlgorithm] = {
+    StreamFormat.GZIP: CompressionAlgorithm.DEFLATE,
+    StreamFormat.ZLIB: CompressionAlgorithm.DEFLATE,
+    StreamFormat.BZIP2: CompressionAlgorithm.BZIP2,
+    StreamFormat.XZ: CompressionAlgorithm.XZ,
+    StreamFormat.LZMA_ALONE: CompressionAlgorithm.LZMA,
+    StreamFormat.LZIP: CompressionAlgorithm.LZMA,
+    StreamFormat.ZSTD: CompressionAlgorithm.ZSTD,
+    StreamFormat.LZ4: CompressionAlgorithm.LZ4,
+    StreamFormat.MOZLZ4: CompressionAlgorithm.LZ4,
+    StreamFormat.BROTLI: CompressionAlgorithm.BROTLI,
+    StreamFormat.LZOP: CompressionAlgorithm.LZO,
+}
+
+
 def _entry_name(entry: _ExcludeEntry) -> str:
     return f"{type(entry).__name__}.{entry.name}"
 
@@ -258,9 +276,9 @@ class FormatPolicy:
     format. ``plugins`` and ``exclude_libraries`` turn off the code that decodes,
     wherever it runs, so they hold for every member too: under ``plugins=False`` no
     plugin codec decodes anything in the call, and an excluded package decodes nothing.
-    A :class:`~archivey.CompressionAlgorithm` in ``exclude`` is the one entry about
-    members: it refuses every member compressed with that method, in every archive the
-    call opens.
+    A :class:`~archivey.CompressionAlgorithm` in ``exclude`` turns that decoder off:
+    it refuses every member compressed with that method, in every archive the call
+    opens, and a file compressed with it as a whole.
 
     :func:`~archivey.open_archive` and :func:`~archivey.open_stream` refuse a format
     the policy does not allow with :class:`~archivey.UnsupportedFeatureError`,
@@ -324,17 +342,22 @@ class FormatPolicy:
     call opens only. ``exclude={S.XZ}`` refuses a ``.xz`` or ``.tar.xz`` file, but an
     xz-compressed ZIP member, or a plugin's xz payload, still decodes.
 
-    A :class:`~archivey.CompressionAlgorithm` is checked against every member instead,
-    in every archive the call opens, whatever its format. A member whose
+    A :class:`~archivey.CompressionAlgorithm` turns that decoder off instead. It
+    refuses a file compressed with it as a whole: ``CompressionAlgorithm.XZ`` refuses
+    a ``.xz`` and a ``.tar.xz`` file, ``DEFLATE`` a ``.gz``, ``LZMA`` a ``.lzma`` and a
+    ``.lz``. And it is checked against every member, in every archive the call opens,
+    whatever its format. A member whose
     :attr:`~archivey.ArchiveMember.compression` lists one is still listed, with its
     metadata, but opening, reading or extracting it raises
     :class:`~archivey.UnsupportedFeatureError` that names the entry, before any of its
     data is decoded. A symbolic link whose target is stored as such data is listed
-    without a target and reported, as one whose target cannot be decoded is. So
-    ``exclude={CompressionAlgorithm.XZ}`` refuses an xz-compressed ZIP member but not a
-    ``.xz`` file, the reverse of ``S.XZ``. ``STORED`` and ``UNKNOWN`` cannot be listed:
-    the first decodes nothing, and the second names no method. ``only`` takes no
-    methods.
+    without a target and reported, as one whose target cannot be decoded is. A
+    compression a format applies inside itself without listing it on its members (a
+    ``.deb``'s ``data.tar.xz``, an RPM payload, SquashFS blocks) is not checked: refuse
+    that container instead. ``.Z`` and bzip3 have no method member, so only
+    ``S.UNIX_COMPRESS`` and ``S.BZIP3`` refuse them. ``STORED`` and ``UNKNOWN`` cannot be
+    listed: the first decodes nothing, and the second names no method. ``only`` takes
+    no methods.
 
     Use it to keep slow or rarely used decoders from running on files you did not
     make: ``{CompressionAlgorithm.SHRINK, CompressionAlgorithm.IMPLODE,
@@ -500,14 +523,31 @@ class FormatPolicy:
                 hits.append(method.algo)
         return tuple(hits)
 
-    def _codec_refusal(self, codec: StreamFormat | PluginStream) -> str | None:
+    def _codec_refusal(
+        self, codec: StreamFormat | PluginStream | CompressionAlgorithm
+    ) -> str | None:
         """The refusal text for ``codec`` decoding inside an open (a member's data, or
         the rest of an archive a reader hands on), or ``None``.
 
-        Only ``plugins`` and ``exclude_libraries`` reach that far; ``only`` and
-        ``exclude`` choose the file opened, so they are not asked. An excluded package
-        is refused by the codec layer, which reads it as missing.
+        Only ``plugins``, ``exclude_libraries`` and a method in ``exclude`` reach
+        that far; ``only`` and the format entries of ``exclude`` choose the file
+        opened, so they are not asked. An excluded package is refused by the codec
+        layer, which reads it as missing.
         """
+        if isinstance(codec, CompressionAlgorithm):
+            if codec in self.exclude:
+                return (
+                    f"ArchiveyConfig.formats does not allow {_entry_name(codec)}: "
+                    "exclude= lists it"
+                )
+            return None
+        method = _STREAM_METHODS.get(codec) if isinstance(codec, StreamFormat) else None
+        if method is not None and method in self.exclude:
+            return (
+                f"ArchiveyConfig.formats does not allow {_entry_name(codec)} inside "
+                f"an archive: exclude= lists {_entry_name(method)}, which it decodes "
+                "with"
+            )
         if isinstance(codec, PluginStream) and not self.plugins:
             return (
                 f"ArchiveyConfig.formats does not allow the plugin codec "
@@ -554,8 +594,18 @@ class FormatPolicy:
         if isinstance(stream, PluginStream) and not self.plugins:
             reasons.append("plugins=False turns off every plugin codec")
         elif stream is not StreamFormat.UNCOMPRESSED:
+            method = (
+                _STREAM_METHODS.get(stream)
+                if isinstance(stream, StreamFormat)
+                else None
+            )
             if stream in self.exclude:
                 reasons.append(f"exclude= lists {_entry_name(stream)}")
+            elif method is not None and method in self.exclude:
+                reasons.append(
+                    f"exclude= lists {_entry_name(method)}, which "
+                    f"{_entry_name(stream)} decodes with"
+                )
             elif self.only is not None and stream not in self.only:
                 unlisted.append(stream)
         if unlisted:

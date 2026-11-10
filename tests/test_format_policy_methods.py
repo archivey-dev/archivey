@@ -19,6 +19,7 @@ from archivey import (
     ArchiveyConfig,
     ArchiveyUsageError,
     CompressionAlgorithm,
+    CompressionMethod,
     ContainerFormat,
     DiagnosticCode,
     FormatPolicy,
@@ -115,10 +116,10 @@ def test_method_entry_refusals(
 
 
 def test_a_method_and_a_stream_format_of_the_same_name_are_different_entries() -> None:
-    policy = FormatPolicy(exclude={A.XZ})
-    assert StreamFormat.XZ not in policy.exclude
-    # A .xz file still opens: the method entry refuses xz members only.
-    assert policy.allows(ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ))
+    policy = FormatPolicy(exclude={StreamFormat.XZ})
+    assert A.XZ not in policy.exclude
+    # The stream format entry is about the file only: it does not reach members.
+    assert policy._excluded_methods((CompressionMethod(A.XZ),)) == ()
 
 
 # -- ZIP -----------------------------------------------------------------------------
@@ -290,9 +291,39 @@ def test_the_common_preset_refuses_legacy_zip_members() -> None:
         assert reader.read("stored.txt") == _DATA
 
 
-def test_a_method_entry_does_not_refuse_a_compressed_file() -> None:
-    """A bare ``.xz`` file is a compression stream, not a member compressed with xz."""
-    config = ArchiveyConfig(formats=FormatPolicy(exclude={A.XZ, A.LZMA2}))
-    with open_archive(io.BytesIO(lzma.compress(_DATA)), config=config) as reader:
-        (member,) = reader.members()
-        assert reader.read(member) == _DATA
+@pytest.mark.parametrize(
+    ("method", "fmt"),
+    [
+        (A.XZ, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ)),
+        (A.XZ, ArchiveFormat(ContainerFormat.TAR, StreamFormat.XZ)),
+        (A.DEFLATE, ArchiveFormat.TAR_GZ),
+        (A.DEFLATE, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB)),
+        (A.LZMA, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZIP)),
+        (A.LZ4, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.MOZLZ4)),
+        (A.LZO, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)),
+    ],
+    ids=lambda v: v.display_name if isinstance(v, ArchiveFormat) else v.name,
+)
+def test_a_method_entry_refuses_a_file_compressed_with_it(
+    method: CompressionAlgorithm, fmt: ArchiveFormat
+) -> None:
+    policy = FormatPolicy(exclude={method})
+    assert not policy.allows(fmt)
+    assert policy._refusal(fmt) == (
+        f"ArchiveyConfig.formats does not allow {fmt.display_name}: exclude= lists "
+        f"CompressionAlgorithm.{method.name}, which StreamFormat.{fmt.stream.name} "
+        "decodes with."
+    )
+
+
+def test_a_method_entry_leaves_other_compressions_open() -> None:
+    policy = FormatPolicy(exclude={A.XZ})
+    assert policy.allows(ArchiveFormat.TAR_GZ)
+    # LZMA2 inside 7z is its own method.
+    assert policy.allows(ArchiveFormat.SEVEN_Z)
+
+
+def test_opening_a_file_compressed_with_an_excluded_method_is_refused() -> None:
+    config = ArchiveyConfig(formats=FormatPolicy(exclude={A.XZ}))
+    with pytest.raises(UnsupportedFeatureError, match=r"CompressionAlgorithm\.XZ"):
+        open_archive(io.BytesIO(lzma.compress(_DATA)), config=config)

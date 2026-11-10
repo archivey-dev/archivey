@@ -499,7 +499,11 @@ installed*).
 
 `FormatPolicy.exclude` SHALL accept `CompressionAlgorithm` members, except `STORED` and
 `UNKNOWN`, which SHALL be refused as a usage error; `FormatPolicy.only` SHALL refuse
-them as a usage error. Such an entry SHALL NOT change which formats open. A member
+them as a usage error. Such an entry SHALL refuse a file whose whole-file compression
+decodes with that method (gzip and zlib with DEFLATE, bzip2 with BZIP2, xz with XZ,
+LZMA Alone and lzip with LZMA, zstd with ZSTD, LZ4 and mozLz4 with LZ4, Brotli with
+BROTLI, lzop with LZO), as the stream format's own entry does, and a
+`ReaderContext.decompress` call for such a stream format. A member
 whose `compression` chain lists an excluded method SHALL still be listed; opening,
 reading or extracting it SHALL raise `UnsupportedFeatureError` that names the method
 and `exclude=`, before the member's decoder is created, on every path that hands out
@@ -523,10 +527,10 @@ its entries is a user-visible change.
   decoder is created
 - **AND** the stored member reads
 
-#### Scenario: A method entry does not refuse a file format
+#### Scenario: A method entry refuses a file compressed with it
 
-- **WHEN** a caller opens a `.xz` file with `FormatPolicy(exclude={CompressionAlgorithm.XZ})`
-- **THEN** the file opens and reads
+- **WHEN** a caller opens a `.tar.xz` file with `FormatPolicy(exclude={CompressionAlgorithm.XZ})`
+- **THEN** the open raises `UnsupportedFeatureError` that names `CompressionAlgorithm.XZ`
 
 ### Requirement: A replacement plugin reads a built-in container
 
