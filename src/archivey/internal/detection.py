@@ -804,13 +804,25 @@ def _measure_within_completion_window(
     """The length of a source that ends within the completion window, else ``None``.
 
     Reads one byte past the window, so a source that goes on is told from one that ends
-    exactly there. Reads nothing when the window is off or no larger than ``data``.
+    exactly there. The window is capped at what the decode allowance can still
+    complete: a longer source could not be completed, so its length is not worth
+    reading for. Reads nothing when the window is no larger than ``data``.
     """
-    window = min(workspace.budget.completion_window_bytes, workspace.read_ceiling - 1)
+    allowance = workspace.decode_input_left
+    window = min(
+        workspace.budget.completion_window_bytes,
+        workspace.read_ceiling - 1,
+        allowance,
+    )
     if window <= len(data):
         return None
     head = workspace.peek_prefix(window + 1)
-    return len(head) if len(head) <= window else None
+    if len(head) <= window:
+        return len(head)
+    if window == allowance:
+        # Cut short by the allowance, as a known-size source over it is: say so.
+        _decode_allowance_covers(workspace, window + 1, "probe_completion")
+    return None
 
 
 def _probe_completes(
@@ -838,16 +850,21 @@ def _probe_completes(
 
     A source that can seek but has no cheap size (a socket wrapper, a user-written file
     object) is measured here: when it ends within the completion window, it is
-    completed like the same bytes with a known size. Otherwise a probe would accept it
-    on the window alone, and the same bytes would be detected differently from a file.
+    completed like the same bytes with a known size. Past the window, the probe itself
+    still sees no size, and can answer differently from a known-size source (see
+    ``dev-docs/known-issues.md``).
     """
+    budget = workspace.budget
     if length is None and not workspace.forward_only:
+        if _record_tier_limit(
+            workspace, "probe_completion", enabled=budget.completion_window_bytes > 0
+        ):
+            return True
         length = _measure_within_completion_window(data, workspace)
     if length is None or length <= len(data):
         # Unknown length: nothing to complete against. At or under the window: the
         # probe already had the whole source and ran its completeness check.
         return True
-    budget = workspace.budget
     # Off by policy (``FAST``): say so, since the hit stands on the window alone.
     if _record_tier_limit(
         workspace, "probe_completion", enabled=budget.completion_window_bytes > 0

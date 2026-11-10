@@ -9,6 +9,20 @@ mitigation imposes lives on the format handbook page ([`formats/`](formats/)), a
 behaviour lives in the handbook's sharp-edges tables and, when users hit it, in
 the user docs ([`docs/formats.md`](../docs/formats.md) for format behaviour).
 
+## Brotli probe past the completion window: a source of unknown size can detect differently (open)
+
+- **Symptom.** With `always_probe_content`, bytes over the completion window (64 KiB under
+  `BALANCED`) can detect as Brotli from a seekable stream with no cheap size (a socket
+  wrapper, a user-written file object), and as nothing from a file or `BytesIO`.
+- **Why.** With a known size, the Brotli probe checks that its first meta-block fits
+  the source, walks the block chain and decodes through it (`brotli_codec.py`). With
+  no size it skips those checks and accepts the 4 KiB window. Within the completion
+  window, detection measures the source first (`_measure_within_completion_window`),
+  so the two agree there.
+- **Remains.** Past the window the probe would need to treat a short `read_at` as
+  the source's end. `tests/test_detect_unknown_size.py` pins the current difference.
+- **Found by** the follow-up fuzz campaign (`diff_modes` oracle), 2026-11-09.
+
 ## MacPaw `unar` / XADMaster: RAR5 solid after an empty entry is silent-wrong (open)
 
 **Symptom.** On a RAR5 solid archive, `unar` fails on a member with data that comes after

@@ -1,4 +1,5 @@
-"""A content probe judges the same bytes the same with and without a known size.
+"""Within the completion window, a probe judges the same bytes the same with and
+without a known size.
 
 A content probe sees only the detection window, so detection runs it again over the
 whole source (``_probe_completes``) when the source fits the completion window. That
@@ -12,6 +13,8 @@ short-read source.
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import io
 import random
 import zipfile
@@ -19,6 +22,7 @@ import zipfile
 import pytest
 
 from archivey import ArchiveFormat, ArchiveyConfig, ArchiveyError, detect_format
+from archivey.detection_cost import FAST_BUDGET, THOROUGH_BUDGET
 from tests.streams_util import ShortReadBytesIO
 
 _CONFIG = ArchiveyConfig(always_probe_content=True)
@@ -56,10 +60,51 @@ def test_an_archive_behind_noise_is_detected_the_same_without_a_known_size() -> 
     assert _detected(ShortReadBytesIO(data, max_chunk=7)) == known
 
 
-def test_a_source_past_the_completion_window_is_not_read_to_its_end() -> None:
-    # Over the window, the probe's verdict stands on the window, as with a known size:
-    # detection does not read a long source of unknown size to its end.
+def test_a_source_past_the_completion_window_is_read_one_byte_past_it() -> None:
+    # Detection does not read a long source of unknown size to its end: the measure
+    # stops one byte past the window (64 KiB under the default budget).
     data = _noise(22) + bytes(1 << 20)
     source = ShortReadBytesIO(data, max_chunk=1 << 16)
     _detected(source)
-    assert source.tell() < len(data)
+    assert source.consumed <= 64 * 1024 + 1
+
+
+def test_past_the_completion_window_the_answers_still_differ() -> None:
+    # Known issue: past the window the Brotli probe gets no size, so it skips the
+    # checks a known size allows. This pins the difference; a fix changes it.
+    data = _noise(22) + bytes(100_000)
+    assert _detected(io.BytesIO(data)) == "FormatDetectionError"
+    assert _detected(ShortReadBytesIO(data, max_chunk=1 << 16)) == ArchiveFormat.BROTLI
+
+
+def test_the_measure_stops_at_the_decode_allowance() -> None:
+    # Under THOROUGH the completion window is 1 MiB, more than a small allowance can
+    # complete: the source is not read past what the allowance could use.
+    budget = dataclasses.replace(THOROUGH_BUDGET, max_decode_input=32 * 1024)
+    config = ArchiveyConfig(always_probe_content=True, detection_budget=budget)
+    data = _noise(22) + bytes((1 << 20) - 6000)
+    source = ShortReadBytesIO(data, max_chunk=1 << 16)
+    with contextlib.suppress(ArchiveyError):
+        detect_format(source, config=config)
+    assert source.consumed <= 64 * 1024
+
+
+def test_fast_records_the_completion_skip_without_a_known_size() -> None:
+    from archivey import DEFAULT_ARCHIVEY_CONFIG
+    from archivey.format_policy import FormatPolicy
+    from archivey.internal.detection import _detect_format_body
+    from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
+    from archivey.internal.diagnostics_collector import collector_from_config
+
+    data = _noise(22) + bytes(1 << 20)
+    for source in (io.BytesIO(data), ShortReadBytesIO(data, max_chunk=1 << 16)):
+        receipt = MutableDetectionCostReceipt()
+        _detect_format_body(
+            source,
+            collector_from_config(DEFAULT_ARCHIVEY_CONFIG),
+            FAST_BUDGET,
+            receipt,
+            always_probe=True,
+            formats=FormatPolicy(),
+        )
+        assert "probe_completion" in {skip.tier for skip in receipt.skips}

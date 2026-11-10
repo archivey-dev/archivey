@@ -932,8 +932,10 @@ When a probe accepts the window and the source is longer than the window but no 
 than the budget's `completion_window_bytes` (64 KiB under `BALANCED`), detection SHALL
 peek the whole source and run the probe again on it, so the completeness check above
 applies to it too. A source that can seek but has no cheap size SHALL be measured by
-peeking one byte past the completion window, and completed the same way when it ends
-within it, so the same bytes get the same answer with or without a known size. A source
+peeking one byte past the completion window (capped at the decode allowance left), and
+completed the same way when it ends within it, so the same bytes within the window get
+the same answer with or without a known size. Past the window the probe sees no size, and
+can still answer differently (`dev-docs/known-issues.md`). A source
 larger than that window, a budget with no completion window (`FAST`), or a forward-only
 source of unknown length keeps the window's answer. The whole-source decode
 is charged to the detection decode allowance; when the allowance cannot cover it, the
