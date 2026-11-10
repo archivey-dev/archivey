@@ -327,3 +327,73 @@ def test_opening_a_file_compressed_with_an_excluded_method_is_refused() -> None:
     config = ArchiveyConfig(formats=FormatPolicy(exclude={A.XZ}))
     with pytest.raises(UnsupportedFeatureError, match=r"CompressionAlgorithm\.XZ"):
         open_archive(io.BytesIO(lzma.compress(_DATA)), config=config)
+
+
+# -- review round 1: data decoded elsewhere than the member's own chain ----------------
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_rar_file_copy_is_refused_by_its_sources_method(streaming: bool) -> None:
+    """A RAR5 file copy lists STORED but decodes its source's data."""
+    config = ArchiveyConfig(formats=FormatPolicy(exclude={A.RAR}))
+    path = _FIXTURES / "rar" / "links_before_data_solid__.rar"
+    with open_archive(path, config=config, streaming=streaming) as reader:
+        for member, stream in reader.stream_members():
+            if member.name != "copy.txt":
+                continue
+            assert member.compression[0].algo is A.STORED
+            assert stream is not None
+            with pytest.raises(UnsupportedFeatureError, match=r"copies 'a\.txt'"):
+                stream.read()
+    with (
+        open_archive(path, config=config) as reader,
+        pytest.raises(UnsupportedFeatureError, match=r"CompressionAlgorithm\.RAR"),
+    ):
+        reader.read("copy.txt")
+
+
+def test_a_compressed_rar3_comment_is_not_decoded_when_rar_is_excluded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey.internal.backends import rar_reader
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the RAR decoder was started for the comment")
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", _fail)
+    monkeypatch.setattr(rar_reader, "_open_unar_blob_pipe", _fail)
+    config = ArchiveyConfig(formats=FormatPolicy(exclude={A.RAR}))
+    path = _FIXTURES / "rar" / "comment_compressed__rar4.rar"
+    with open_archive(path, config=config) as reader:
+        assert reader.info.comment is None
+
+
+@pytest.mark.parametrize(
+    ("fixture", "method"),
+    [
+        ("rpm/payload-gzip.rpm", A.DEFLATE),
+        ("rpm/payload-bzip2.rpm", A.BZIP2),
+        ("rpm/payload-lzma.rpm", A.LZMA),
+        ("rpm/payload-xz.rpm", A.XZ),
+        ("squashfs/gzip.sqfs", A.DEFLATE),
+        ("squashfs/lz4.sqfs", A.LZ4),
+        ("deb/hello-gzip.deb", A.DEFLATE),
+        ("deb/hello-xz.deb", A.XZ),
+        ("makeself/xz-2.7.1.run", A.XZ),
+    ],
+)
+def test_a_format_compressing_inside_itself_is_refused_at_open(
+    fixture: str, method: CompressionAlgorithm
+) -> None:
+    """Pinned per backend: a format that decodes its own payload or blocks with an
+    excluded method does not open, whichever way it reaches the decoder
+    (``ForwardStream.decompress``, ``ReaderContext.decompress``, ``open_nested`` or
+    its own block decoder)."""
+    config = ArchiveyConfig(formats=FormatPolicy(exclude={method}))
+    with (
+        pytest.raises(UnsupportedFeatureError, match=method.name),
+        open_archive(_FIXTURES / fixture, config=config) as reader,
+    ):
+        for member in reader.members():
+            if member.is_file:
+                reader.read(member)

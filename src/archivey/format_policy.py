@@ -352,9 +352,9 @@ class FormatPolicy:
     :class:`~archivey.UnsupportedFeatureError` that names the entry, before any of its
     data is decoded. A symbolic link whose target is stored as such data is listed
     without a target and reported, as one whose target cannot be decoded is. A
-    compression a format applies inside itself without listing it on its members (a
-    ``.deb``'s ``data.tar.xz``, an RPM payload, SquashFS blocks) is not checked: refuse
-    that container instead. ``.Z`` and bzip3 have no method member, so only
+    format that compresses data inside itself without listing the method on its
+    members (a ``.deb``'s ``data.tar.xz``, an RPM payload, SquashFS blocks, a makeself
+    payload) is refused when it opens, with ``UnsupportedFeatureError``. ``.Z`` and bzip3 have no method member, so only
     ``S.UNIX_COMPRESS`` and ``S.BZIP3`` refuse them. ``STORED`` and ``UNKNOWN`` cannot be
     listed: the first decodes nothing, and the second names no method. ``only`` takes
     no methods.
@@ -544,9 +544,9 @@ class FormatPolicy:
         method = _STREAM_METHODS.get(codec) if isinstance(codec, StreamFormat) else None
         if method is not None and method in self.exclude:
             return (
-                f"ArchiveyConfig.formats does not allow {_entry_name(codec)} inside "
-                f"an archive: exclude= lists {_entry_name(method)}, which it decodes "
-                "with"
+                f"ArchiveyConfig.formats does not allow {_entry_name(codec)} data in "
+                f"this archive: exclude= lists {_entry_name(method)}, which it "
+                "decodes with"
             )
         if isinstance(codec, PluginStream) and not self.plugins:
             return (
@@ -560,16 +560,24 @@ class FormatPolicy:
         """The refusal text for ``fmt`` read as an archive inside an open
         (``ReaderContext.open_nested``), or ``None``.
 
-        As for :meth:`_codec_refusal`, only ``plugins`` reaches that far here: a
-        plugin container or plugin codec does not run under ``plugins=False``.
-        ``exclude_libraries`` holds in the reader lookup.
+        As for :meth:`_codec_refusal`, only ``plugins`` and a method in ``exclude``
+        reach that far here: a plugin container or plugin codec does not run under
+        ``plugins=False``, and a stream format whose method ``exclude`` lists does not
+        run at all. ``exclude_libraries`` holds in the reader lookup.
         """
-        if self.plugins:
-            return None
         reasons: list[str] = []
-        if isinstance(fmt.container, PluginContainer):
+        stream = fmt.stream
+        method = (
+            _STREAM_METHODS.get(stream) if isinstance(stream, StreamFormat) else None
+        )
+        if method is not None and method in self.exclude:
+            reasons.append(
+                f"exclude= lists {_entry_name(method)}, which "
+                f"{_entry_name(stream)} decodes with"
+            )
+        if not self.plugins and isinstance(fmt.container, PluginContainer):
             reasons.append("plugins=False turns off every plugin format")
-        if isinstance(fmt.stream, PluginStream):
+        if not self.plugins and isinstance(fmt.stream, PluginStream):
             reasons.append("plugins=False turns off every plugin codec")
         if not reasons:
             return None

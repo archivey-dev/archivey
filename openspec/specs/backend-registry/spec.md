@@ -462,7 +462,7 @@ which built-in format detection reports (see `format-detection` for plugin forma
 - **THEN** the open raises `UnsupportedFeatureError` that names `StreamFormat.GZIP`
 - **AND** `detect_format` on the same file still reports `ArchiveFormat.TAR_GZ`
 
-### Requirement: The format policy reaches nested decodes only through plugins and libraries
+### Requirement: The format policy reaches nested decodes only through plugins, libraries and methods
 
 The container and stream format entries of `FormatPolicy.only` and
 `FormatPolicy.exclude` SHALL check only the format of the file the call opens (a
@@ -502,8 +502,13 @@ installed*).
 them as a usage error. Such an entry SHALL refuse a file whose whole-file compression
 decodes with that method (gzip and zlib with DEFLATE, bzip2 with BZIP2, xz with XZ,
 LZMA Alone and lzip with LZMA, zstd with ZSTD, LZ4 and mozLz4 with LZ4, Brotli with
-BROTLI, lzop with LZO), as the stream format's own entry does, and a
-`ReaderContext.decompress` call for such a stream format. A member
+BROTLI, lzop with LZO), as the stream format's own entry does. A
+`ReaderContext.decompress` or `ForwardStream.decompress` call for the method or for
+such a stream format, a `ReaderContext.open_nested` call for a format with such a
+stream format, and a built-in reader's own decode of its blocks with the method (the
+SquashFS LZ4 decoder) SHALL raise `UnsupportedFeatureError` before the codec runs, so a
+format that compresses data inside itself without listing the method on its members
+(`.deb`, RPM, SquashFS, makeself) is refused when it opens. A member
 whose `compression` chain lists an excluded method SHALL still be listed; opening,
 reading or extracting it SHALL raise `UnsupportedFeatureError` that names the method
 and `exclude=`, before the member's decoder is created, on every path that hands out

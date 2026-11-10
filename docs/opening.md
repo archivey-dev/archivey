@@ -228,9 +228,9 @@ A [`CompressionAlgorithm`][archivey.CompressionAlgorithm] in `exclude=` reaches 
 that decoder off, for a file compressed with it as a whole and for every member compressed with it.
 `exclude={CompressionAlgorithm.XZ}` refuses a `.xz` or `.tar.xz` file and still lists an
 xz-compressed ZIP member, but opening, reading or extracting that member raises
-`UnsupportedFeatureError` before anything is decoded. A compression a format keeps inside itself,
-such as a `.deb`'s `data.tar.xz`, isn't checked, so refuse that format instead. `only=` takes no
-methods.
+`UnsupportedFeatureError` before anything is decoded. A format that compresses data inside itself
+without naming the method on each member, such as a `.deb` with a `data.tar.xz`, an RPM package or
+a SquashFS image, doesn't open at all when you exclude that method. `only=` takes no methods.
 `plugins=False` and `exclude_libraries=` are different, since they turn off the code that
 decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format runs in the
 call, even for a member or an archive inside an archive: reading a member that needs one raises

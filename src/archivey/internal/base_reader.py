@@ -1367,15 +1367,30 @@ class BaseArchiveReader(ArchiveReader):
         member's decoder runs: :meth:`_open_member_handle`, :meth:`_lazy_member_stream`,
         a data pass (:meth:`_drive_pass_streams`) and a link target read
         (:meth:`_read_link_target_data`, and the 7z pass's own capture).
+
+        A file whose data is another member's (a RAR5 file copy, listed ``STORED``
+        with that member as its ``link_target_member``) is checked by the member
+        whose data is decoded.
         """
-        excluded = self._config.formats._excluded_methods(member.compression)
+        decoded = member
+        if member.type is MemberType.FILE and member.link_target_member is not None:
+            decoded = member.link_target_member
+        excluded = self._config.formats._excluded_methods(
+            member.compression + decoded.compression
+            if decoded is not member
+            else member.compression
+        )
         if not excluded:
             return
         names = ", ".join(f"CompressionAlgorithm.{m.name}" for m in excluded)
+        subject = (
+            f"{quoted(member.name)} is"
+            if decoded is member
+            else f"{quoted(member.name)} copies {quoted(decoded.name)}, which is"
+        )
         raise UnsupportedFeatureError(
-            f"{quoted(member.name)} is compressed with {names}, which "
-            "ArchiveyConfig.formats turns off: exclude= lists "
-            f"{'it' if len(excluded) == 1 else 'them'}.",
+            f"{subject} compressed with {names}, which ArchiveyConfig.formats turns "
+            f"off: exclude= lists {'it' if len(excluded) == 1 else 'them'}.",
             source_format=self._format,
             archive_name=self._archive_name,
             member_name=member.name,
