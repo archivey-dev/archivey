@@ -40,6 +40,7 @@ from tests.lha_util import (
     member_bytes,
     write_block,
 )
+from tests.streams_util import ShortReadBytesIO
 
 LHASA = Path(__file__).parent / "fixtures" / "external" / "lha_lhasa"
 _RNG = random.Random(11)
@@ -552,6 +553,32 @@ def test_a_cut_archive_is_truncated() -> None:
     raw = archive(_members("-lh5-", 2))
     with pytest.raises(TruncatedError), _open(raw[: len(raw) // 2]) as reader:
         reader.members()
+
+
+def _outcome(source: object) -> object:
+    try:
+        with open_archive(source, format=ArchiveFormat.LHA) as reader:  # type: ignore[arg-type]
+            return [m.name for m in reader.members()]
+    except archivey.ArchiveyError as exc:
+        return type(exc)
+
+
+def test_a_cut_archive_reads_the_same_when_its_size_is_unknown() -> None:
+    # A source archivey cannot size cheaply still finds the cut: a member whose data
+    # runs past the end is truncated, not listed as whole.
+    raw = archive(_members("-lh5-", 2))
+    for n in range(7, len(raw)):
+        cut = raw[:n]
+        assert _outcome(ShortReadBytesIO(cut)) == _outcome(io.BytesIO(cut)), n
+
+
+def test_the_fuzz_cut_with_an_unknown_size() -> None:
+    # A level-2 header that declares 0x1a00 stored bytes, with none after it.
+    raw = (
+        b"\x1a\x00-lh5-\x00\x00\x1a\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        b"\x00\x02\x00\x00\x00\x00\x00"
+    )
+    assert _outcome(ShortReadBytesIO(raw)) is TruncatedError
 
 
 def test_a_file_that_is_not_lha() -> None:
