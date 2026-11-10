@@ -24,7 +24,8 @@ name. A member's data is checked against its CRC-16.
 
 The reader follows lhasa (the tool Debian ships as ``lha``) where writers disagree:
 Amiga LHA's directories stored as an empty ``-lh0-`` member with no name, LHARK's own
-``-lh7-`` (read as ``-lk7-``), and OS-9/68k's level-2 size. The methods decoded are
+``-lh7-`` (read as ``-lk7-``), OS-9/68k's level-2 size, and MacLHA's MacBinary wrapper,
+stripped so a Mac file reads as its data fork. The methods decoded are
 ``-lh0-``, ``-lz4-`` and ``-pm0-`` (stored), ``-lh4-`` to ``-lh7-``, ``-lhx-`` and
 ``-lk7-`` (:mod:`~archivey.internal.streams.codecs.lzh_decoder`), and ``-lh1-``,
 ``-lzs-`` and ``-lz5-`` (:mod:`~archivey.internal.streams.codecs.lharc_decoder`).
@@ -34,6 +35,7 @@ PMarc's methods and any other are listed and refused when read. The handbook pag
 
 from __future__ import annotations
 
+import calendar
 import io
 import stat
 import struct
@@ -48,6 +50,7 @@ from archivey.diagnostics import (
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -62,6 +65,7 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
+from archivey.internal.bomb_tracker import ratio_limits
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.internal.sfx import (
@@ -102,6 +106,7 @@ if TYPE_CHECKING:
 
 _DIRECTORY = "-lhd-"
 _STORED = frozenset({"-lh0-", "-lz4-", "-pm0-"})
+_DECODED = _STORED | frozenset(_LZH_METHODS) | frozenset(_OLD_DECODERS)
 # Every method an LHA tool is known to write, decoded or not: detection finds an
 # archive by the method at offset 2.
 _KNOWN_METHODS = (
@@ -158,6 +163,7 @@ _OS_AMIGA = ord("A")
 _OS_OS9 = ord("9")
 _OS_OS9_68K = ord("K")
 _OS_LHARK = ord(" ")
+_OS_MACOS = ord("m")
 _OS_UNIX = ord("U")
 _CREATE_SYSTEMS = {
     ord("M"): CreateSystem.FAT,
@@ -208,6 +214,11 @@ class _Location(NamedTuple):
     stored: int
     method: str
     crc: int
+    size: int
+    """The decoded size the header stores, the MacBinary wrapper included."""
+    fork: int | None = None
+    """The fork a MacBinary wrapper holds, the bytes the member reads as; ``None``
+    when the member has no wrapper."""
 
 
 class _Header:
@@ -577,9 +588,12 @@ class LhaReader(_Headers, IndexedReader[_Location]):
         end = 0
         while header is not None:
             member = self._member(header)
-            yield MemberRecord(
-                member, _Location(header.end, header.stored, header.method, header.crc)
+            locator = _Location(
+                header.end, header.stored, header.method, header.crc, header.size
             )
+            if header.os_id == _OS_MACOS and member.type is MemberType.FILE:
+                locator = self._macbinary(member, header, locator)
+            yield MemberRecord(member, locator)
             end = header.end + header.stored
             header = self._read_header(end)
         self._check_end(end)
@@ -703,6 +717,37 @@ class LhaReader(_Headers, IndexedReader[_Location]):
             )
         return member
 
+    def _macbinary(
+        self, member: ArchiveMember, header: _Header, locator: _Location
+    ) -> _Location:
+        """``locator``, with the fork the member reads as when MacLHA wrapped its data
+        in MacBinary; the member's size and ``extra`` then describe that fork."""
+        if header.size < _MACBINARY_SIZE:
+            return locator
+        try:
+            stream = self._decode(locator)
+        except ArchiveyError:
+            return locator
+        with stream:
+            head = b""
+            try:
+                while len(head) < _MACBINARY_SIZE:
+                    data = stream.read(_MACBINARY_SIZE - len(head))
+                    if not data:
+                        break
+                    head += data
+            except ArchiveyError:
+                # A damaged member is not stripped; its read fails as it would.
+                return locator
+        wrapper = _macbinary_header(head, header)
+        if wrapper is None:
+            return locator
+        fork, mac_type, creator = wrapper
+        member.size = fork
+        member.extra["lha.mac_type"] = mac_type
+        member.extra["lha.mac_creator"] = creator
+        return locator._replace(fork=fork)
+
     def _set_times(self, member: ArchiveMember, header: _Header) -> None:
         if header.mtime is not None:
             member.modified = unix32_to_datetime(header.mtime)
@@ -737,19 +782,54 @@ class LhaReader(_Headers, IndexedReader[_Location]):
     @override
     def open_member(self, member: ArchiveMember, locator: _Location) -> MemberData:
         method = locator.method
-        digests = (MemberDigest("crc16", locator.crc.to_bytes(2, "big"), new=_Crc16),)
         span = ((locator.offset, locator.offset + locator.stored),)
-        if method in _STORED:
-            return MemberData(
-                self._payload.view(locator.offset, locator.stored), digests=digests
-            )
-        if method not in _LZH_METHODS and method not in _OLD_DECODERS:
+        if method not in _DECODED:
             raise UnsupportedFeatureError(
                 f"{quoted(member.name)} uses LHA method {method}, which archivey "
                 "does not read"
             )
-        stream = _LzhStream(self._payload, locator, member.size or 0)
+        stream = self._decode(locator)
+        if locator.fork is not None:
+            self._check_hidden_ratio(member, locator)
+            # The CRC covers the whole wrapper, so the stream checks it itself.
+            unwrapped = _MacBinaryStream(stream, locator)
+            return MemberData(unwrapped, checked=True, bounded=True, ranges=span)
+        digests = (MemberDigest("crc16", locator.crc.to_bytes(2, "big"), new=_Crc16),)
+        if method in _STORED:
+            return MemberData(stream, digests=digests)
         return MemberData(stream, digests=digests, bounded=True, ranges=span)
+
+    def _check_hidden_ratio(self, member: ArchiveMember, locator: _Location) -> None:
+        """Refuse a MacBinary member whose whole decode breaks the ratio limit.
+
+        The stream decodes the other fork and the padding to check the CRC, and the
+        member handle never sees those bytes, so its ratio guard cannot count them. The
+        decoders stop at the header's size, so that size bounds the decode; the check
+        is the one archivey makes from recorded sizes before an extraction."""
+        config = self._context.config
+        # The deprecated ExtractionLimits ratio fields still count, as for every guard.
+        limits = ratio_limits(config.decoder_limits, config.extraction_limits)
+        if limits.max_ratio is None or not locator.stored:
+            return
+        floor = max(
+            limits.ratio_activation_threshold, limits.max_ratio * locator.stored
+        )
+        if locator.size > floor:
+            raise ResourceLimitError(
+                f"Decompression ratio {locator.size / locator.stored:.0f}:1 exceeds "
+                f"limit max_ratio={limits.max_ratio:.0f}:1 (from recorded sizes: "
+                f"{locator.size} bytes from {locator.stored} compressed, MacBinary "
+                "wrapper included)",
+                member_name=member.name,
+            )
+
+    def _decode(self, locator: _Location) -> BinaryIO | _LzhStream:
+        """The member's decoded bytes, the MacBinary wrapper included."""
+        if locator.method in _STORED:
+            return self._payload.view(locator.offset, locator.stored)
+        if locator.method not in _DECODED:
+            raise UnsupportedFeatureError(f"LHA method {locator.method} is not decoded")
+        return _LzhStream(self._payload, locator, locator.size)
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:
@@ -792,6 +872,138 @@ class _LzhStream(io.RawIOBase):
     def close(self) -> None:
         if self._view is not None:
             self._view.close()
+        super().close()
+
+
+# ── MacBinary ──────────────────────────────────────────────────────────────────────
+#
+# MacLHA (OS id ``m``) stores a Mac file as a MacBinary file: a 128-byte header with
+# the Finder's type, creator and fork lengths, then the data fork and the resource
+# fork, the whole padded to 128 bytes (the size check rounds the total once, as
+# lhasa's does). The header has no magic, so as in lhasa's
+# ``macbinary.c`` it counts only when every field agrees with the LHA header: version
+# and reserved bytes zero, the member's own name, fork lengths that pad to the
+# member's size, and a modification time within 14 hours (a time zone) of the
+# member's. Then the member reads as the data fork, or as the resource fork when the
+# data fork is empty. An archived MacBinary file, which a user meant to keep whole,
+# rarely matches the name and the time, so it stays as it is.
+
+_MACBINARY_SIZE = 128
+_MACBINARY_NAME_MAX = 63
+_MAC_EPOCH = 2082844800  # 1904-01-01 to 1970-01-01, in seconds
+_MAC_TIME_SLACK = 14 * 60 * 60
+
+
+def _macbinary_header(head: bytes, header: _Header) -> tuple[int, bytes, bytes] | None:
+    """The fork length, type and creator ``head`` names when it is a MacBinary header
+    that matches ``header``, else ``None``."""
+    if len(head) < _MACBINARY_SIZE:
+        return None
+    if head[0] or head[0x4A] or head[0x52] or any(head[0x63:_MACBINARY_SIZE]):
+        return None
+    name_length = head[1]
+    name = header.name.split(b"\0", 1)[0].replace(b"\xff", b"/").rsplit(b"/", 1)[-1]
+    if name_length > _MACBINARY_NAME_MAX or head[2 : 2 + name_length] != name:
+        return None
+    if any(head[2 + name_length : 2 + _MACBINARY_NAME_MAX]):
+        return None
+    data_fork, resource_fork, _created, modified = struct.unpack_from(
+        ">IIII", head, 0x53
+    )
+    padded = -(-(data_fork + resource_fork + _MACBINARY_SIZE) // 128) * 128
+    if padded != header.size:
+        return None
+    when = _header_time(header)
+    if when is None or modified < _MAC_EPOCH:
+        return None
+    if abs(modified - _MAC_EPOCH - when) > _MAC_TIME_SLACK:
+        return None
+    mac_type, creator = head[0x41:0x45], head[0x45:0x49]
+    return (data_fork or resource_fork), mac_type, creator
+
+
+def _header_time(header: _Header) -> int | None:
+    """The header's modification time in Unix seconds, a DOS time read as UTC."""
+    if header.mtime is not None:
+        return header.mtime
+    if header.dos_time:
+        when = dos_to_datetime(header.dos_time)
+        if when is not None:
+            return calendar.timegm(when.timetuple())
+    return None
+
+
+class _MacBinaryStream(io.RawIOBase):
+    """One fork of a MacBinary member: the wrapper's header and the other fork are
+    decoded and dropped, and the CRC-16 is checked over every decoded byte."""
+
+    # close() reads it, even after a failed __init__
+    _inner: BinaryIO | _LzhStream | None = None
+
+    def __init__(self, inner: BinaryIO | _LzhStream, locator: _Location) -> None:
+        assert locator.fork is not None
+        self._inner = inner
+        self._crc = _Crc16()
+        self._expected = locator.crc
+        self._skip = _MACBINARY_SIZE
+        self._left = locator.fork
+        self._rest = locator.size - _MACBINARY_SIZE - locator.fork
+
+    def _take(self, n: int) -> bytes:
+        assert self._inner is not None
+        data = self._inner.read(n)
+        self._crc.update(data)
+        return data
+
+    def _drop(self, n: int) -> bool:
+        """Read and drop ``n`` bytes; ``False`` when the member ends first."""
+        while n:
+            data = self._take(min(n, _DATA_CHUNK))
+            if not data:
+                return False
+            n -= len(data)
+        return True
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, b: WriteableBuffer, /) -> int:
+        with memoryview(b) as outer, outer.cast("B") as view:
+            if self._skip:
+                if not self._drop(self._skip):
+                    raise TruncatedError(
+                        "the LHA member ends inside its MacBinary header"
+                    )
+                self._skip = 0
+                if not self._left:
+                    self._finish()
+            if not len(view) or not self._left:
+                return 0
+            data = self._take(min(len(view), self._left))
+            view[: len(data)] = data
+            self._left -= len(data)
+            if not self._left:
+                # The last byte of the fork: archivey reads no further, so the other
+                # fork is decoded and the CRC checked now.
+                self._finish()
+            return len(data)
+
+    def _finish(self) -> None:
+        if not self._drop(self._rest):
+            raise TruncatedError("the LHA member ends inside its MacBinary wrapper")
+        self._rest = 0
+        if int.from_bytes(self._crc.digest(), "big") != self._expected:
+            raise CorruptionError(
+                "Digest mismatch for 'crc16': stored value does not match the "
+                "decompressed content."
+            )
+
+    @override
+    def close(self) -> None:
+        if self._inner is not None:
+            self._inner.close()
         super().close()
 
 

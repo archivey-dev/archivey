@@ -1021,6 +1021,10 @@ class MemberExtra(dict[str, object]):
     * ``lha.header_level`` (``int``) — the LHA header level, 0 to 3.
     * ``lha.os_id`` (``str``) — the one-character OS id an LHA header names
       (``"U"`` for LHa for UNIX, ``"M"`` for DOS), when it has one.
+    * ``lha.mac_type`` (``bytes``) — the Mac file type code (``b"TEXT"``) of a MacLHA
+      member whose MacBinary wrapper archivey strips; the member then reads as its
+      data fork, or as its resource fork when the data fork is empty.
+    * ``lha.mac_creator`` (``bytes``) — that member's Mac creator code (``b"ttxt"``).
     """
 
     __slots__ = ()
@@ -1089,6 +1093,10 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["lha.header_level"], /) -> int: ...
     @overload
     def __getitem__(self, key: Literal["lha.os_id"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.mac_type"], /) -> bytes: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.mac_creator"], /) -> bytes: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
