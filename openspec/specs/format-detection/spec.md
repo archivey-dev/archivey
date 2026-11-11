@@ -587,6 +587,11 @@ requirement, which is graded by cue strength: a strong cue suppresses the conten
 probes, a weak one does not. "No silent fabricated member" is therefore guaranteed for
 a **strong** cue only — see that requirement for the measured reason.
 
+Leading bytes with **no** cue get the same scan, with every needle validated, as the last
+content step (the leading-bytes scan of *Magic-first detection*), so an archive behind an
+image, zeros or text is found as 7-Zip, `unrar` and `unzip` find it, and only a source that
+every earlier step declined pays for the window.
+
 Which magic the scan hunts for SHALL be **backend-declared data**, like every other
 detection signal, rather than a table maintained inside the detector. A backend declares
 only the magic that can legitimately begin an appended payload: ZIP declares its
@@ -623,8 +628,8 @@ found. A hit there that its validator returns as `VALID` or
 `VALID_SHORT` SHALL be the answer, ahead of any needle before or after it in the window:
 the exact-end preference below is a tie-break between needles of unknown standing, and
 the program's own layout outranks it. When nothing at the overlay start is accepted, the scan below runs
-unchanged. Every other scan bounded by `SFX_MAX` SHALL apply the same rule — the RAR and
-7z parsers' scans and the forward ZIP walk that reads a non-seekable source — so forced
+unchanged. Every other scan bounded by `SFX_MAX` SHALL apply the same rule — the RAR, 7z
+and LHA parsers' scans and the forward ZIP walk that reads a non-seekable source — so forced
 `format=`, seekable or not, opens the same payload. No scan SHALL accept a candidate that
 starts at or past a known payload end: the certificate table is not parsed, and a needle
 inside it would give a payload that starts where the archive's region has already ended.
@@ -650,7 +655,7 @@ a non-seekable source. A header that does not fit that allowance SHALL be reject
 `sfx_scan` recorded as *budget exhausted*.
 
 The scan SHALL cap rejected candidates only for a format whose parser runs its own capped
-scan (RAR and 7z), and SHALL count them per format, as each of those parsers counts its own
+scan (RAR, 7z and LHA), and SHALL count them per format, as each of those parsers counts its own
 format's. Decoys of one format SHALL NOT spend another's allowance. A format whose reader
 runs no such scan SHALL NOT be capped: ZIP already locates the end of central directory
 from the tail, so a cap on ZIP candidates would refuse a file that forced `format=ZIP`
@@ -682,6 +687,13 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | Whole valid 7z in the stub, then a real ZIP payload | `SEVEN_Z` at the stub's 7z: a `VALID` hit of another format does not displace a held short hit |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
+| Random bytes, zeros or text, then a ZIP, 7z, RAR or LHA inside the window | Found by the leading-bytes scan (step 8): that format, `payload_offset` at its start |
+| JPEG + appended ZIP | `ZIP` at the ZIP's local header, from the leading-bytes scan |
+| Leading bytes + ZIP, named `.lzma` | The extension's guess: the scan does not run for a name with a known extension, and `sfx_scan` is recorded as not enabled by policy |
+| Leading bytes + ZIP on a non-seekable source, inside the bytes detection already holds | Found, as on a seekable source |
+| Unrecognised text on a pipe whose writer keeps it open | `FormatDetectionError` at once; `sfx_scan` recorded as capability unavailable |
+| Leading bytes + ZIP past 256 KiB under `FAST` | Not found; `sfx_scan` recorded as budget exhausted |
+| Leading bytes + ZIP, named `.zip` | `ZIP` from the extension; the reader finds the archive from its end |
 | Strong cue, no archive in the stub, exactly one of `vol.exe.001` / `vol.7z.001` / `vol.zip.001` beside it | `detect_format` reports that volume's format; `open_archive` (including with `format=` matching that container) opens the set |
 | Same stub, but it *does* contain archive magic | The embedded archive; sibling volumes are ignored |
 | Two of those first-volume names beside the stub | `UnsupportedFeatureError` naming both |
