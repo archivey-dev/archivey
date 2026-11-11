@@ -181,6 +181,10 @@ _RAR3_FILE_PASSWORD = 0x0004
 _RAR3_FILE_COMMENT = 0x0008
 _RAR3_FILE_SOLID = 0x0010
 _RAR3_FILE_DIRECTORY = 0x00E0
+# The DOS directory attribute, which RAR 1.3-1.5 headers use in place of the
+# dictionary bits; the first UNP_VER whose dictionary bits mark a directory.
+_RAR3_DOS_DIRECTORY_ATTRIBUTE = 0x10
+_RAR3_UNP_VER_DIRECTORY_BITS = 20
 _RAR3_FILE_LARGE = 0x0100
 _RAR3_FILE_UNICODE = 0x0200
 
@@ -3164,6 +3168,17 @@ def _parse_rar3_file_header(
         and mode is not None
         and (mode & 0xF000) == 0xA000
     )
+    # RAR 1.5 writers marked a directory with the DOS directory attribute only, not
+    # the all-ones dictionary bits; unrar (arcread.cpp) reads it as one for any host.
+    # A Unix symlink's mode has the bit too (group write), so it stays a symlink.
+    if (
+        not is_service
+        and not is_symlink
+        and extract_version < _RAR3_UNP_VER_DIRECTORY_BITS
+        and mode is not None
+        and mode & _RAR3_DOS_DIRECTORY_ATTRIBUTE
+    ):
+        is_directory = True
     file_version: int | None = None
     if flags & _RAR3_FILE_VERSION:
         filename, file_version = _rar3_split_file_version(filename)
