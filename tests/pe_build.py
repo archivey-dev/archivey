@@ -33,8 +33,8 @@ def pe_headers(
 
     ``certificate`` is the ``(file_offset, size)`` the security data directory holds,
     ``resources`` the ``(rva, size)`` of the resource directory, and
-    ``virtual_addresses`` each section's RVA (zero when not given). The result is ``headers_size`` long, padded with zeros, unless the headers need
-    more room.
+    ``virtual_addresses`` each section's RVA (zero when not given). The result is
+    ``headers_size`` long, padded with zeros, unless the headers need more room.
     """
     dos = bytearray(e_lfanew)
     dos[0:2] = b"MZ"
