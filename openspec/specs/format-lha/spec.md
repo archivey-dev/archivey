@@ -61,6 +61,26 @@ refused with `StreamNotSeekableError`.
 | `0x00` or `0x1A` padding after the end byte | No diagnostic |
 | Other bytes within 64 KiB after the end byte | `ARCHIVE_TRAILING_DATA` |
 
+### Requirement: Strip MacLHA's MacBinary wrapper
+
+A file member with OS id `m` SHALL have its MacBinary wrapper stripped as lhasa's
+`macbinary.c` does: when its first 128 decoded bytes have zero version and reserved
+bytes, the member's own name, fork lengths that round up with the header to its size,
+and a modification time within 14 hours of its own, it SHALL read as its data fork (its
+resource fork when the data fork is empty), with that fork's `size` and the type and
+creator as `extra["lha.mac_type"]` and `extra["lha.mac_creator"]`. The CRC-16 SHALL
+still be checked over every decoded byte. Any other member SHALL read whole.
+
+#### Scenario: MacLHA members
+
+| Case | Expected |
+| --- | --- |
+| lhasa's MacLHA 2.24 archives, levels 1 and 2 | The data fork, the bytes lhasa extracts; `size` the fork's |
+| A MacLHA level-0 archive | The member whole, wrapper included, as lhasa reads it |
+| A MacBinary header whose name, time, version or sizes do not match the member | The member whole |
+| A MacBinary member whose dropped bytes are damaged | `CorruptionError` (the CRC-16) |
+| The same wrapper under another OS id | The member whole |
+
 ### Requirement: Read an LHA archive behind a self-extracting stub
 
 The LHA backend SHALL declare its method ids at offset 2 as SFX magic, with a validator

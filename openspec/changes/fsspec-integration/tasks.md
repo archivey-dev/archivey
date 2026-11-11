@@ -98,12 +98,13 @@
       `cachable = False`, `close()` and a `weakref.finalize` that closes the reader.
       Red-green: open 1 000 distinct `archivey://` URLs, drop every reference, and
       check no reader stays open.
-- [ ] 4.4 Consumer tests: pandas CSV, pyarrow Parquet, dask over two threads and over
+- [x] 4.4 Consumer tests: pandas CSV, pyarrow Parquet, dask over two threads and over
       a process pool (pickling), a nested `archivey::archivey::` chain. These tests
       skip when the consumer package is missing; CI installs them on one leg.
-      (Written and passing locally with pandas, pyarrow and dask installed; the process
-      pool case runs a worker on the pickled file system without dask. The CI leg is a
-      workflow change and waits for the maintainer.)
+      (`.github/workflows/fsspec-consumers.yml` installs the latest pandas, pyarrow and
+      dask and fails on a skip. pandas and dask also read through a nested chain, and
+      dask's process scheduler runs on a `spawn` pool, so each task reaches its worker
+      pickled.)
 - [x] 4.5 The remote benchmark's file-system case. `file_system` builds an
       `ArchiveyFileSystem` over the remote file and `cat`s the middle member, under every
       cache mode; with the planner a ZIP takes 3 requests (list 2, member 1).
@@ -127,7 +128,7 @@
 - [ ] 6.2 `dev-docs/threat-model.md`: a remote-source section with two lines: chained
       URLs reach the protocol they name, and a same-length replacement of an unpinned
       remote object is not detected (design D7).
-- [ ] 6.3 IDEAS.md: replace the fsspec entry with a pointer to this change, and add
+- [x] 6.3 IDEAS.md: replace the fsspec entry with a pointer to this change, and add
       a persisted member index (offsets saved so a later open lists with no walk) as a
       separate idea.
 

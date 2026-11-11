@@ -1500,8 +1500,10 @@ coverage-guided fuzzing, disclosure process) is met without it.
 
 ### Bounded recursion helper
 
-"Index my backups", the founding use case, recurses into nested archives. A recipe or
-helper for bounded recursive processing does not exist yet.
+"Index my backups", the founding use case, recurses into nested archives. A recipe exists
+([`docs/recipes.md`](../docs/recipes.md) §"Checking uploaded archives"): a depth limit and one byte
+budget shared across levels, kept by the caller. A library helper for bounded recursive
+processing does not exist yet.
 
 ### Metadata fidelity
 

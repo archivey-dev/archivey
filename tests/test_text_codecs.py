@@ -48,7 +48,10 @@ def _uu_b64(data: bytes, name: str = "stored.bin") -> bytes:
 def _zip_bytes() -> bytes:
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as zf:
-        zf.writestr("inside.txt", b"zipped\n" * 100)
+        # A fixed time: writestr() with a bare name stamps "now", so two calls
+        # straddling a two-second DOS-time boundary would build different bytes.
+        info = zipfile.ZipInfo("inside.txt", date_time=(2020, 1, 1, 0, 0, 0))
+        zf.writestr(info, b"zipped\n" * 100)
     return out.getvalue()
 
 
