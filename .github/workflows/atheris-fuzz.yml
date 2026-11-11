@@ -74,7 +74,9 @@ jobs:
       # stops providing the binary.
       - name: Install unrar and p7zip
         if: steps.guard.outputs.run == 'true'
-        run: sudo apt-get update && sudo apt-get install -y unrar p7zip-full
+        uses: ./.github/actions/apt-install
+        with:
+          packages: unrar p7zip-full
       - name: Verify 7z on PATH
         if: steps.guard.outputs.run == 'true'
         run: |

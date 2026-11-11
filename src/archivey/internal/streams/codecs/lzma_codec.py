@@ -365,9 +365,9 @@ class LzmaAloneCodec(_LzmaErrorCodec):
     """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW.
 
     The stream takes ``refuse_input_after_end`` from the config, as every codec that
-    decodes through the default ``open`` does. No caller sets it for Alone today, since
-    no container uses Alone as a coder; one that does gets the same refusal as every
-    other codec.
+    decodes through the default ``open`` does. A XAR member (``application/x-lzma``)
+    reads Alone with it set and with ``single_stream``, so a further Alone stream is
+    input after the end and refused, where a ``.lzma`` file reads it on.
     """
 
     codec = Codec.LZMA_ALONE
@@ -385,8 +385,10 @@ class LzmaAloneCodec(_LzmaErrorCodec):
 
     @override
     def stream_start(self, params: CodecParams) -> StreamStart:
+        # A container coder that is one stream (a XAR member) takes no further one.
+        if params.single_stream:
+            return never_starts
         # No magic: a further stream is one whose header liblzma would decode.
-        del params
         return _starts_alone_stream
 
     @override
