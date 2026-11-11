@@ -317,7 +317,13 @@ Every reader opened with that config, or with a copy of it, draws the bytes it d
 members it lists from the one budget, so the total is shared across readers, nested archives and
 threads. Bytes decoded only to get past a member count too: skipping members of a `.tar.gz` or a
 CAB folder to reach a later one is not free. A read that would go past the budget raises
-`ResourceLimitError`, and an extraction stops there. The per-reader limits still apply. Decoder
+`ResourceLimitError`, and an extraction stops there.
+
+A budget is the total for one job, and it is meant for processing each archive once. It counts
+the work archivey does, so a byte counts again each time it is decoded again: reading a member
+twice, listing a `.tar.gz` again, opening the same archive again, or seeking back in a compressed
+member and reading on all use more of it. It never refills, so make a new `Budget` for each
+upload or request rather than keeping one on a long-lived config. The per-reader limits still apply. Decoder
 memory stays a per-decoder limit, and time and memory use are bounded by running the job in a
 process you can stop. See the [archives inside the upload](recipes.md#archives-inside-the-upload)
 recipe.

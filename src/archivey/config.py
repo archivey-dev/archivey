@@ -802,7 +802,16 @@ class Budget:
     one count for all of them. Pass the same ``Budget`` as
     :attr:`ArchiveyConfig.budget` to every reader that should share it (the readers
     opened from one upload's nested archives, or the threads serving one request), and
-    each draws from it as it works:
+    each draws from it as it works.
+
+    A budget is the total for one job, meant for processing each archive once. It
+    counts the work archivey does, not the data the job ends up with: a byte counts
+    each time it is decoded, so the budget runs out sooner if the job reads a member
+    again, lists a compressed TAR again (the walk decodes it again), opens the same
+    archive again (the new reader counts its members and decodes again), or seeks
+    back in a compressed member and reads on (the decode restarts). Make a new
+    ``Budget`` for each job or request; one kept on a long-lived config runs out and
+    stays spent. What counts:
 
     - member data counts against ``max_decoded_bytes`` as it is decoded: the reads of
       ``open()``, ``stream_members()``, ``read()``, ``extract_all`` and
@@ -829,7 +838,7 @@ class Budget:
     The read, seek or listing step that would take the total past a limit raises
     :exc:`~archivey.exceptions.ResourceLimitError`, from every reader sharing the
     budget, and extraction stops there rather than going on to the next member. The
-    budget does not refill: build a new one for the next upload. The step that crosses
+    budget does not refill. The step that crosses
     a byte limit decodes at most one byte past it; readers on several threads each size
     their reads against the same room, so together they can overshoot by about one
     read each.
@@ -1201,7 +1210,8 @@ class ArchiveyConfig:
     """A pool of decoded bytes and members shared with every other reader given the
     same :class:`Budget` (``None``: none). Set it to hold an upload's nested archives,
     or the readers of one request, to one total; the per-reader limits still apply
-    to each reader as well.
+    to each reader as well. A budget is one job's total and never refills: give each
+    job a new one, since a config kept for many jobs would share one that runs out.
     """
 
     def __post_init__(self) -> None:
