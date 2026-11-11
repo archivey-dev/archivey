@@ -231,7 +231,8 @@ def test_absolute_symlink_target_is_not_re_rooted(
         )
     if policy is ExtractionPolicy.TRUSTED:
         assert report.results[0].status is ExtractionStatus.EXTRACTED
-        assert os.readlink(dest / "l") == "/etc/passwd"
+        # Written with the platform's separators, as every link target is.
+        assert os.readlink(dest / "l") == os.path.join(os.sep, "etc", "passwd")
     else:
         assert report.results[0].status is ExtractionStatus.BLOCKED
         assert not os.path.lexists(dest / "l")
