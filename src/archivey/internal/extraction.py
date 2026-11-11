@@ -133,13 +133,14 @@ if TYPE_CHECKING:
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 
 # Prefix of the temp files atomic FILE writes stage in the destination directory
-# (``_new_temp_file`` appends the run's token and a count), and of the staging directory of a pass that stages
-# its members (``_write_staged``: a ZIP from a pipe). Python-level failures remove
-# them; a removal the filesystem refuses (logged) or a hard kill (SIGKILL, power loss)
-# can leave one: leftover ``.archivey-tmp-*`` files and directories in an extraction
-# destination are archivey's and are safe to delete once no extraction is running
-# there (a staging directory holds a running pipe extraction's only copy of its
-# data). Documented in docs/extracting.md; keep the value and that doc in sync.
+# (``_new_temp_file`` appends the run's token and a count), and of the staging directory
+# of a pass that stages its members (``_write_staged``: a ZIP from a pipe). Python-level
+# failures remove them; a removal the filesystem refuses (logged) or a hard kill
+# (SIGKILL, power loss) can leave one: leftover ``.archivey-tmp-*`` files and
+# directories in an extraction destination are archivey's and are safe to delete once no
+# extraction is running there (a staging directory holds a running pipe extraction's
+# only copy of its data). Documented in docs/extracting.md; keep the value and that doc
+# in sync.
 _TMP_PREFIX = ".archivey-tmp-"
 # Names ``_new_temp_file`` tries before it gives up. A bound, not a count it is expected
 # to reach: the names carry this run's own random token, so a taken one is rare.

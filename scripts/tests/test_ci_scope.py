@@ -331,7 +331,8 @@ def test_a_script_only_pull_request_skips_the_library_legs_only_there() -> None:
 
 def test_the_daily_only_legs_run_on_the_daily_run_and_a_dispatch_only() -> None:
     """`test-daily` (the Pythons between min and max, macOS and Windows on the min) never
-    runs on a pull request or in the merge queue, and the release gates still see it because they dispatch ci.yml.
+    runs on a pull request or in the merge queue, and the release gates still see it
+    because they dispatch ci.yml.
     The gate does not wait on it: it would be skipped in every merge group anyway."""
     yaml = pytest.importorskip("yaml")
     jobs = yaml.safe_load(CI.read_text())["jobs"]

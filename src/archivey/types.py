@@ -1431,13 +1431,15 @@ class ArchiveMember:
     walk ends). Cleared once the listing's links are resolved, when the walk stops
     keeping members, when the reader closes, and on a :meth:`replace` copy; not when
     the walk ends, since a peek ends it before any link is resolved. Read it through
-    the public :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
+    the public :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the
+    public contract."""
     _link_target_unread: bool = field(default=False, repr=False, compare=False)
     """Set while this symlink's target is stored as member data nobody has read yet.
 
     Reading it can set ``link_target`` and, for a Windows reparse point whose data is
     not a link buffer, change ``type``. Cleared once the backend has looked, found or
-    not. Read it through :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
+    not. Read it through :attr:`~archivey.ArchiveMember.member_state_final`. Not part
+    of the public contract."""
     _size_unread: bool = field(default=False, repr=False, compare=False)
     """Set while ``size`` is ``None`` and a full read of the member would fill it in.
 
@@ -1608,8 +1610,9 @@ class ArchiveMember:
         :meth:`~archivey.ForwardArchiveReader.verify_all`, or a read of a whole 7z
         folder whose checksum covers this member. A stream opened from a
         ``replace()`` copy raises the reader's own member, not the copy. It never goes
-        down. Not part of equality, and not covered by :attr:`~archivey.ArchiveMember.member_state_final`: it
-        can still rise after that is ``True``.
+        down. Not part of equality, and not covered by
+        :attr:`~archivey.ArchiveMember.member_state_final`: it can still rise after that
+        is ``True``.
 
         Experimental: any release, a patch included, may change or remove this property,
         its levels or what they mean.
@@ -1620,7 +1623,8 @@ class ArchiveMember:
 
     @property
     def verifiable(self) -> Verification:
-        """The most :attr:`~archivey.ArchiveMember.verified` can reach if the archive is not damaged.
+        """The most :attr:`~archivey.ArchiveMember.verified` can reach if the archive is
+        not damaged.
 
         ``CHECKSUM`` when a checksum archivey can compute covers the member's data,
         ``LENGTH`` when none does, and ``NONE`` for an encrypted member whose password
@@ -1783,7 +1787,8 @@ class ArchiveInfo:
     """Archive-level comment, if the format records one."""
 
     is_encrypted: bool
-    """Header-level encryption (7z, RAR5) — not per-member encryption (see ``ArchiveMember.is_encrypted``)."""
+    """Header-level encryption (7z, RAR5) — not per-member encryption (see
+    ``ArchiveMember.is_encrypted``)."""
 
     is_multivolume: bool
     """Whether the archive spans multiple volumes."""

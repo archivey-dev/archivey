@@ -335,8 +335,9 @@ def test_a_cut_member_with_no_digest_raises_at_the_cut(
     toys: ArchiveFormat, tmp_path: Path, pipe: bool
 ) -> None:
     """With no digest there is no verifier to compare the bytes read with the size:
-    the member's data window (``_SpanWindow``) raises at the cut itself. A sized read returns the bytes
-    before the cut and the next read raises (ADR 0014); a read with no size raises.
+    the member's data window (``_SpanWindow``) raises at the cut itself. A sized read
+    returns the bytes before the cut and the next read raises (ADR 0014); a read with no
+    size raises.
 
     Fails when the window returns a short read as a clean end."""
     fmt = _variant(_NoDigestReader, ToysContainer.NO_DIGEST)
