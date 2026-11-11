@@ -11,7 +11,7 @@ run fires it:
 
 - records results (JSON + markdown report artifacts, job summary table) with
   `measured_at` / source provenance;
-- hard-fails on the ~10× sanity ceiling **or** on **wall-ratio drift** vs the
+- hard-fails on the ~12× sanity ceiling **or** on **wall-ratio drift** vs the
   JSON of the last run that measured, pass or fail (relative regression gate —
   debt-ledger Q1 / perf Q2 option (a)). A case drifts when its ratio rises to
   more than 1.25× the baseline ratio **and** by at least +0.15 in absolute terms

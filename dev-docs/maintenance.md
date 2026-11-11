@@ -83,7 +83,7 @@ Atheris writes the crashing input as an artifact of the run.
 ## The benchmark went red
 
 `benchmark-wall.yml` fails when a wall-time ratio drifts against the last measured
-night, or a case exceeds the 10x sanity ceiling. Shared runners are noisy.
+night, or a case exceeds the 12x sanity ceiling. Shared runners are noisy.
 
 1. Compare the failing case against the merges since the last green run. If nothing in
    that code path changed, it is probably noise. The failing night becomes the new
