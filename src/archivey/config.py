@@ -829,8 +829,9 @@ class Budget:
     read each.
 
     Each decode stage draws what it produces: a compressed payload inside a
-    compressed archive counts at both stages. A nested archive's bytes count twice, once as the outer member read and again as what the inner
-    reader decodes from them. Decoder memory stays a per-decoder limit
+    compressed archive counts at both stages. A nested archive's bytes count twice,
+    once as the outer member read and again as what the inner reader decodes from
+    them. Decoder memory stays a per-decoder limit
     (:attr:`DecoderLimits.max_decoder_memory`), and time and memory as a whole belong
     to a child process the caller runs archivey in (``docs/security.md``).
 
