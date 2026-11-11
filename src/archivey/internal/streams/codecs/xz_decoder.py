@@ -30,7 +30,7 @@ import lzma
 import os
 import struct
 import zlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -736,6 +736,8 @@ class _WalkedStream:
     # Stream-relative, like the blocks: where the last block ends and the index starts.
     blocks_end: int
     check: int
+    # More blocks than the seek-table cap: ``blocks`` is a spaced subset.
+    thinned: bool = False
 
 
 class _XzBlockWalker:
@@ -890,7 +892,13 @@ class _XzBlockWalker:
         """The walk, if it read the index and the index matched every block."""
         if not self.done:
             return None
-        return _WalkedStream(padding, self.blocks.items, self.blocks_end, self.check)
+        return _WalkedStream(
+            padding,
+            self.blocks.items,
+            self.blocks_end,
+            self.check,
+            thinned=self.blocks.thinned,
+        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -1233,6 +1241,30 @@ class _XzBlockResume:
         return self._finished or self._dec.needs_input
 
 
+def _add_block_points(
+    blocks: Iterable[_XzBlockBounds], stream_decomp_start: int, points: list[SeekPoint]
+) -> bool:
+    """Add a point for each of a stream's blocks worth seeking to, from its index or a
+    forward walk alike; return whether one is the stream's start.
+
+    A block of zero decoded size is skipped: it shares its offset with the next block.
+    The stream's first block is a point only past offset 0 (point 0 always exists), and
+    then it carries resume state, so no ``state=None`` placeholder is needed there and
+    it cannot collide with a ``build_index`` point at the same offset. A thinned stream
+    still keeps its first block.
+    """
+    at_start = False
+    for b in blocks:
+        if b.uncompressed_size == 0 or b.decompressed_start < stream_decomp_start:
+            continue
+        if b.decompressed_start == stream_decomp_start:
+            if stream_decomp_start == 0:
+                continue
+            at_start = True
+        points.append(SeekPoint(b.decompressed_start, b.compressed_start, state=b))
+    return at_start
+
+
 class XzDecoder(BaseDecoder):
     """XZ decoder: sequential ``_XzState``, or a block resume via ``recreate``.
 
@@ -1459,29 +1491,9 @@ class XzDecoder(BaseDecoder):
                         emit_index_thinned(
                             self._collector, "xz", "per_stream", units="blocks"
                         )
-                    # Prefer block-bounds (with resume state) for the stream start
-                    # over a state=None placeholder — avoids colliding with a prior
-                    # build_index point at the same decompressed offset. A thinned
-                    # stream still keeps its first block.
-                    for b in blocks:
-                        if b.uncompressed_size == 0:
-                            continue  # zero-length span is never a useful seek target
-                        if b.decompressed_start < stream_decomp_start:
-                            continue
-                        if b.decompressed_start == stream_decomp_start:
-                            if stream_decomp_start > 0:
-                                points.append(
-                                    SeekPoint(
-                                        b.decompressed_start,
-                                        b.compressed_start,
-                                        state=b,
-                                    )
-                                )
-                                emitted_stream_start = True
-                            continue
-                        points.append(
-                            SeekPoint(b.decompressed_start, b.compressed_start, state=b)
-                        )
+                    emitted_stream_start = _add_block_points(
+                        blocks, stream_decomp_start, points
+                    )
                 except CorruptionError as e:
                     message = (
                         "XZ per-stream backward scan failed; block-level seek points for "
@@ -1524,32 +1536,23 @@ class XzDecoder(BaseDecoder):
         """Add a point per block the walk found; whether one is the stream's start."""
         walked = unit.walked
         assert walked is not None
+        if walked.thinned:
+            emit_index_thinned(self._collector, "xz", "forward_walk", units="blocks")
         header = stream_comp_start + walked.padding
-        blocks_end = header + walked.blocks_end
-        stream_decomp_end = stream_decomp_start + unit.decompressed_size
-        stream_comp_end = stream_comp_start + unit.compressed_size
-        at_start = False
-        for block in walked.blocks:
-            if block.uncompressed_size == 0:
-                continue  # zero-length span is never a useful seek target
-            decompressed_start = stream_decomp_start + block.decompressed_start
-            if decompressed_start == 0:
-                continue  # the stream's own start point covers it
-            bounds = _XzBlockBounds(
+        blocks = [
+            _XzBlockBounds(
                 compressed_start=header + block.compressed_start,
-                decompressed_start=decompressed_start,
+                decompressed_start=stream_decomp_start + block.decompressed_start,
                 unpadded_size=block.unpadded_size,
                 uncompressed_size=block.uncompressed_size,
                 check=walked.check,
-                blocks_end=blocks_end,
-                stream_decompressed_end=stream_decomp_end,
-                stream_compressed_end=stream_comp_end,
+                blocks_end=header + walked.blocks_end,
+                stream_decompressed_end=stream_decomp_start + unit.decompressed_size,
+                stream_compressed_end=stream_comp_start + unit.compressed_size,
             )
-            points.append(
-                SeekPoint(decompressed_start, bounds.compressed_start, state=bounds)
-            )
-            at_start = at_start or decompressed_start == stream_decomp_start
-        return at_start
+            for block in walked.blocks
+        ]
+        return _add_block_points(blocks, stream_decomp_start, points)
 
     @override
     def build_index(

@@ -588,6 +588,7 @@ decoded point is kept (an empty lzip member makes such a pair in an honest file)
 | Backward scan finds more units than the cap (lzip members, xz streams or blocks) | Kept units thinned by spacing, last one kept; `SEEK_INDEX_DEGRADED`; seeks read the right bytes |
 | A thinned xz index leaves out streams after block points a forward read recorded | A seek from those points reads every stream after them |
 | A forward read's per-stream xz scan finds more blocks than the cap | That stream's blocks thinned by spacing; `SEEK_INDEX_DEGRADED`; seeks read the right bytes |
+| A forward xz block walk (restart points, no seek demand) finds more blocks than the cap | That stream's blocks thinned by spacing; `SEEK_INDEX_DEGRADED` (scan `forward_walk`); seeks read the right bytes |
 | Forward read records more points than the cap | Table thinned by spacing; `SEEK_INDEX_DEGRADED`; later seeks read the right bytes |
 | XZ blocks after a resume point decode to a size other than the stream index declares | `CorruptionError` |
 | A forward read finds a frame or member start at another output offset than the zstd seek table or BGZF walk gave it | `SEEK_INDEX_DEGRADED` (scan `decode_check`, `SeekIndexContradicted`); index points and size dropped; later seeks and the size match a read from the start |

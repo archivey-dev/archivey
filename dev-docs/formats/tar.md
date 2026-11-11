@@ -577,11 +577,11 @@ index, lzip trailers, a zstd seek table, a BGZF, mgzip or bzip3 walk) is read on
 declared seek demand only (maintainer ruling 2026-11-10, after a crafted xz index made
 a default read return another member's bytes). xz finds its blocks from the block and
 LZMA2 chunk headers as it decodes, and keeps them once liblzma has decoded the stream
-to its end and the stream's index lists the same blocks (`_XzBlockWalker`). That costs
-about 40 KiB of memory per MiB of gzip output, capped at `MAX_SNAPSHOT_BYTES` (32 MiB), and lets a member read after the listing resume near the
-member instead of decoding the archive again from its first byte. Accelerator `AUTO`
-still resolves as for a stream read once, since only `seekable_members=True` declares
-seek demand. Plain bzip2 has no restart point but the start, unless the `rapidgzip`
+to its end and the stream's index lists the same blocks (`_XzBlockWalker`). The gzip
+snapshots cost about 40 KiB of memory per MiB of output, capped at `MAX_SNAPSHOT_BYTES`
+(32 MiB). In return a member read after the listing resumes near the member instead of
+decoding the archive again from its first byte. Accelerator `AUTO` still resolves as for
+a stream read once, since only `seekable_members=True` declares seek demand. Plain bzip2 has no restart point but the start, unless the `rapidgzip`
 accelerator is engaged and brings its own index. A streaming reader keeps none: its walk
 never seeks back. Each
 backward seek that discards 1 MiB or more reports `STREAM_REWIND_REDECOMPRESSES` with
