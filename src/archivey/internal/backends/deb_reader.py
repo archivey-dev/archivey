@@ -79,12 +79,30 @@ _FIELDS = (b"package", b"version", b"architecture")
 _HEX = frozenset(b"0123456789abcdefABCDEF")
 # The digits of an unsupported major version an error message shows.
 _VERSION_SHOWN = 20
-# What one md5sums entry holds beyond the bytes of its name, as 64-bit CPython measures
-# it: the name's str header (40 to 56 bytes), the 16-byte digest object (49) and the
+# What one md5sums entry holds beyond its name's characters (_str_bytes), as 64-bit
+# CPython measures it: the name's str header (40 to 56 bytes), the 16-byte digest object (49) and the
 # entry's share of the dict, a 24-byte slot, its index and the spare room a dict keeps
 # (31 bytes an entry over 500 000 entries, up to 60 just after the dict grows). A
 # constant, not sys.getsizeof(), which PyPy does not implement.
 _MD5_ENTRY = 56 + 49 + 48
+
+
+def _str_bytes(text: str) -> int:
+    """The bytes CPython stores for ``text``'s characters: 1, 2 or 4 a character, as
+    its widest character needs. One emoji makes a long name 4 bytes a character, and
+    one undecodable byte (a lone surrogate) 2."""
+    if text.isascii():
+        return len(text)
+    try:
+        text.encode("latin-1")
+    except UnicodeEncodeError:
+        pass
+    else:
+        return len(text)
+    # In UTF-16 a character above U+FFFF takes 4 bytes, and every other one 2.
+    if len(text.encode("utf-16-le", "surrogatepass")) > 2 * len(text):
+        return 4 * len(text)
+    return 2 * len(text)
 
 
 def _tar_format(
@@ -247,8 +265,9 @@ class DebReader(SequentialReader):
     def _count(self, size: int, what: str) -> None:
         """Charge ``size`` more held bytes to the listing, refusing before they are
         read. ``debian-binary``, ``control`` and ``md5sums`` are held whole, and
-        their sizes come from the package; so is each entry of the digest map. A walk
-        started over to reach member data charges nothing: the listing walk did."""
+        their sizes come from the package. Each entry of the digest map is charged
+        too, as it is added, at an estimate of what it holds. A walk started over to
+        reach member data charges nothing: the listing walk did."""
         self._context.charge_metadata(size, what=f"the Debian package {what}")
 
     def _read_control(self, data: bytes) -> None:
@@ -267,7 +286,7 @@ class DebReader(SequentialReader):
         The lines are read one at a time, not split into a list, and each entry the
         map keeps is charged to ``max_metadata_bytes`` before it is added: the file's
         own bytes were charged when it was held, and the map holds about three times
-        as much again."""
+        as much again for short ASCII names, more for names stored wider."""
         context = self._context
         md5 = self._md5
         for line in io.BytesIO(data):
@@ -278,8 +297,7 @@ class DebReader(SequentialReader):
                 continue
             path = context.normalize_name(context.decode_name(name), MemberType.FILE)
             if path not in md5:
-                # The name's UTF-8 bytes are at least the bytes its str holds.
-                self._count(len(name) + _MD5_ENTRY, "md5sums entries")
+                self._count(_str_bytes(path) + _MD5_ENTRY, "md5sums entries")
             md5[path] = bytes.fromhex(digest.decode("ascii"))
 
 

@@ -349,7 +349,8 @@ def test_held_control_files_count_against_max_metadata_bytes() -> None:
 
 
 def test_the_md5sums_map_is_charged_for_each_entry() -> None:
-    """The digest map holds about three times the bytes of md5sums itself: a name
+    """For short ASCII names the digest map holds about three times the bytes of
+    md5sums itself: a name
     and a digest object per line, and the dict's slot. Each entry is charged, so a
     limit twice the file's size refuses a file of short lines."""
     count = 20_000
@@ -368,6 +369,27 @@ def test_the_md5sums_map_is_charged_for_each_entry() -> None:
         assert reader.read("usr/a") == b"alpha"
 
 
+@pytest.mark.parametrize(
+    "tail", ["\U0001f600".encode(), b"\xff"], ids=["astral", "undecodable"]
+)
+def test_md5sums_names_are_charged_at_their_str_width(tail: bytes) -> None:
+    """CPython stores a str at 1, 2 or 4 bytes a character, as its widest character
+    needs. An emoji makes a long name 4 bytes a character, and an undecodable byte
+    (a lone surrogate after decoding) 2: about 4 or 2 times the name's UTF-8 bytes.
+    The charge follows the width, so 2.5 times the file's size is refused."""
+    sums = b"".join(
+        b"%032x  usr/%s%d%s\n" % (i, b"a" * 1000, i, tail) for i in range(2000)
+    )
+    raw = _deb(control=[("./control", CONTROL), ("./md5sums", sums)])
+    limits = archivey.ListingLimits(max_metadata_bytes=int(2.5 * len(sums)))
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    with (
+        pytest.raises(ResourceLimitError, match="md5sums entries"),
+        open_archive(io.BytesIO(raw), config=config) as reader,
+    ):
+        reader.members()
+
+
 def test_reads_out_of_order_charge_the_control_files_once() -> None:
     """Each out-of-order read walks the package again; the control files it holds
     again were charged by the listing. Before, every walk added them to a total of
@@ -380,7 +402,7 @@ def test_reads_out_of_order_charge_the_control_files_once() -> None:
     # The digest map's entries, charged as the walk adds them.
     from archivey.internal.backends.deb_reader import _MD5_ENTRY
 
-    entries = sum(len(name) + _MD5_ENTRY for name in FILES)
+    entries = sum(len(name) + _MD5_ENTRY for name in FILES)  # ASCII names
     held = 4 + len(CONTROL) + len(_md5sums(FILES)) + entries
     limits = archivey.ListingLimits(max_metadata_bytes=listed + held)
     config = archivey.ArchiveyConfig(listing_limits=limits)

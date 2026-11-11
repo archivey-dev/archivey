@@ -65,8 +65,9 @@ members, and hands each tar to `open_nested` through `stream.take(size)`:
   and the charge comes off when the listing ends), and the span is yielded with those
   bytes as its data. `control`'s first paragraph gives `extra["deb.package"]`,
   `["deb.version"]` and `["deb.architecture"]`; `md5sums` gives a name-to-digest map,
-  read a line at a time, each entry charged as it is added (its name, its digest and
-  its share of the dict: about three times the line).
+  read a line at a time, each entry charged as it is added: its name at the width
+  CPython stores it (1, 2 or 4 bytes a character, so one emoji makes a long name four
+  times its UTF-8 bytes), its digest and its share of the dict.
   Open takes only the first walk step (the control tar's `./`), so the `deb.*` keys are
   missing on every source until the listing or iteration reaches `control`.
 - **Data tar.** Members keep their names (the tar's `./` root lists as `.`, as reading the
