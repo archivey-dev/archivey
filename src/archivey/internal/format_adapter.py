@@ -299,6 +299,7 @@ class _PluginAdapter(BaseArchiveReader):
             usage=self._usage,
         )
         context._spanning_check = self._new_spanning_check
+        context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)
         self._reader_open = True
 
@@ -330,14 +331,27 @@ class _PluginAdapter(BaseArchiveReader):
                 refusal, source_format=self._format, archive_name=self._archive_name
             )
 
+    def _decompress_coder(
+        self, data: BinaryIO, stream_format: StreamFormat, size: int | None
+    ) -> BinaryIO:
+        """``ReaderContext._decompress_coder``: ``stream_format`` data that is a
+        container coder's whole data, refusing a byte after the end of what the
+        format defines (further bzip2, LZMA Alone or xz streams still read)."""
+        return self._decompress(data, stream_format, size, None, whole_file=False)
+
     def _decompress(
         self,
         data: BinaryIO,
         method: CompressionAlgorithm | AnyStreamFormat,
         size: int | None,
         properties: bytes | None,
+        *,
+        whole_file: bool = True,
     ) -> BinaryIO:
-        """``ReaderContext.decompress``: ``data`` through archivey's codec layer."""
+        """``ReaderContext.decompress``: ``data`` through archivey's codec layer.
+
+        ``whole_file=False`` (``_decompress_coder``) keeps the member decoder
+        config's ``refuse_input_after_end`` for a stream format too."""
         self._refuse_codec_off_by_policy(method)
         is_stream = isinstance(method, (StreamFormat, PluginStream))
         codec: CodecId | None
@@ -361,7 +375,7 @@ class _PluginAdapter(BaseArchiveReader):
         # output size, and the input size while ``data`` is at its start. The
         # accelerators choose by them, and rapidgzip's length check needs the first.
         changes: dict[str, Any] = {"expected_decompressed_size": size}
-        if is_stream:
+        if is_stream and whole_file:
             # A whole stream reads as a file of its format does: bytes after its end
             # are reported (``ARCHIVE_TRAILING_DATA``), not refused. Most stream
             # codecs have no refusal; the report is what they all share.
