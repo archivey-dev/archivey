@@ -765,10 +765,10 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
                 raise  # ``_charge`` refused: making the members would hold more
             failure, complete = exc, False
         limit = limits.max_members
-        if failure is None and limit is not None and len(entries) > limit:
-            # The walk found more entries than ``max_members`` (it stops one past):
-            # refuse before any member, as without ``streaming=True``, rather than
-            # yield the first ones.
+        if limit is not None and len(entries) > limit:
+            # The walk found more entries than ``max_members`` (it stops one past, or
+            # failed on damage after it): refuse before any member, as without
+            # ``streaming=True``, rather than yield the first ones.
             raise ResourceLimitError(
                 f"Listing limit reached: max_members={limit} (the SquashFS tree "
                 f"holds more than {limit} entries)"
