@@ -385,8 +385,10 @@ class LzmaAloneCodec(_LzmaErrorCodec):
 
     @override
     def stream_start(self, params: CodecParams) -> StreamStart:
+        # A container coder that is one stream (a XAR member) takes no further one.
+        if params.single_stream:
+            return never_starts
         # No magic: a further stream is one whose header liblzma would decode.
-        del params
         return _starts_alone_stream
 
     @override
