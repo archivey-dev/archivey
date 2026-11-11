@@ -1167,7 +1167,7 @@ class _PassData:
             n = min(n, declared + 1 - self._size)
         # A codec member's decoded bytes are drawn here, not by the caller's stream
         # (``_open_member``), so a drain past a member nobody read draws them too.
-        budget = self._reader._config.budget if self._method() != 0 else None
+        budget = self._reader._stage_draws if self._method() != 0 else None
         if budget is not None:
             n = budget._read_cap(n)
         try:

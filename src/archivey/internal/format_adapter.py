@@ -1940,7 +1940,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 collector=self._diagnostics_collector,
             )
             self._layer_streams.append(decoded)
-            decoded = self._guarded_layer(self._budget_drawn(decoded))
+            decoded = self._guarded_layer(self._budget_drawn(decoded, stage=True))
             assert self._source is not None
             buffered = ReadAheadStream(
                 decoded, _WALK_BUFFER, fill_arrived=not self._source.seekable()
@@ -1969,7 +1969,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 )
                 self._layer_streams.append(decoded)
                 shared = self._layer_sources[key] = SharedSource(
-                    self._guarded_layer(self._budget_drawn(decoded))
+                    self._guarded_layer(self._budget_drawn(decoded, stage=True))
                 )
             layer = self._random_access_layer(walk, shared, compressed=True)
         walk.layer = layer

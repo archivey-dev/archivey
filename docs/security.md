@@ -272,6 +272,11 @@ in the repository measures what each limit costs in time and memory on your mach
   and link targets. A ZIP read from a pipe also keeps up to this much of its small members' data, in
   case they are links, on top of the text. It costs about 1.7 MiB of memory per MiB counted, 110 MiB
   at the default, and up to 64 MiB more for a ZIP read from a pipe.
+- **`listing_limits.max_decoded_bytes`**, default 4 GiB, caps what one listing decodes before you
+  read anything: listing a `.tar.gz` decodes all of it, and a streaming ZIP decodes members to find
+  where they end. Member data you read doesn't count. It costs the decoding itself: measured with
+  the standard library's decoders on 4 cores, gzip about 110-145 MiB/s, xz 55-65 MiB/s and bzip2
+  23-26 MiB/s, so about 30 s, 70 s and 3 minutes at the default.
 - **`decoder_limits.max_decoder_memory`**, default 2 GiB, caps the memory an archive can ask a
   decoder for, and the memory of rapidgzip's process for gzip, zlib and DEFLATE. It costs the memory
   itself. Detection's trial decodes are held to the same cap. A stream whose decoder is over it is

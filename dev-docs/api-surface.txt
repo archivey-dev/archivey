@@ -501,7 +501,8 @@ value archivey.ListingCost.INDEXED = 'indexed'
 value archivey.ListingCost.REQUIRES_SCANNING = 'requires_scanning'
 value archivey.ListingCost.REQUIRES_DECOMPRESSION = 'requires_decompression'
 class archivey.ListingLimits()
-init archivey.ListingLimits(max_members: int | None = 262144, max_metadata_bytes: int | None = 67108864) -> None
+init archivey.ListingLimits(max_members: int | None = 262144, max_metadata_bytes: int | None = 67108864, max_decoded_bytes: int | None = 4294967296) -> None
+field archivey.ListingLimits.max_decoded_bytes: int | None = 4294967296
 field archivey.ListingLimits.max_members: int | None = 262144
 field archivey.ListingLimits.max_metadata_bytes: int | None = 67108864
 attribute archivey.ListingLimits.UNLIMITED = ListingLimits(...)

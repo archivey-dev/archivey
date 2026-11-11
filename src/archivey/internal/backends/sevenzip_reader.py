@@ -104,7 +104,11 @@ from archivey.internal.config import (
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
-from archivey.internal.listing_limits import check_metadata_bytes, text_bytes
+from archivey.internal.listing_limits import (
+    StageDraws,
+    check_metadata_bytes,
+    text_bytes,
+)
 from archivey.internal.logs import (
     backends as backends_logger,
     integrity as integrity_logger,
@@ -359,7 +363,7 @@ def load_sevenzip_archive(
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
     will_read: Callable[[int, int], None] | None = None,
-    budget: Budget | None = None,
+    budget: Budget | StageDraws | None = None,
 ) -> SevenZipArchive:
     """Two-phase header load: parse → decode encoded → re-parse → materialize.
 
@@ -435,7 +439,7 @@ def _decode_encoded_header_block(
     stream_config: StreamConfig | None,
     collector: DiagnosticCollector | None,
     max_members: int | None,
-    budget: Budget | None = None,
+    budget: Budget | StageDraws | None = None,
 ) -> PlainHeader:
     """Decode an encoded header and parse the plain header it holds.
 
@@ -1072,6 +1076,17 @@ class SevenZipReader(BaseArchiveReader):
         return self._shared.view(start, length)
 
     def _load_archive(self) -> SevenZipArchive:
+        # The header is the listing: decoding it at open counts toward
+        # ``ListingLimits.max_decoded_bytes``, as a walk step's decoding does.
+        listing_decode = self._listing_decode
+        entered = listing_decode.enter() if listing_decode is not None else None
+        try:
+            return self._load_archive_counted()
+        finally:
+            if listing_decode is not None:
+                listing_decode.leave(entered)
+
+    def _load_archive_counted(self) -> SevenZipArchive:
         return load_sevenzip_archive(
             self._view(0),
             passwords=self._passwords,
@@ -1083,7 +1098,7 @@ class SevenZipReader(BaseArchiveReader):
             will_read=lambda start, end: self._will_read(
                 self._origin + start, self._origin + end
             ),
-            budget=self._config.budget,
+            budget=self._stage_draws,
         )
 
     def _report_trailing_data(self) -> None:

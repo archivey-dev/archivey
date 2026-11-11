@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.config import Budget
+    from archivey.internal.listing_limits import StageDraws
     from archivey.internal.measurement import ByteCounter, SeekCounter
     from archivey.internal.streams.streamtools.readahead import _ReadsAhead
 
@@ -165,7 +166,7 @@ class BudgetDrawStream(DelegatingStream):
     # inner's, as for ``OutputCountingStream``.
     forwards_verification = True
 
-    def __init__(self, inner: BinaryIO, budget: Budget) -> None:
+    def __init__(self, inner: BinaryIO, budget: Budget | StageDraws) -> None:
         super().__init__(inner)
         self._budget = budget
         self._pos = 0
