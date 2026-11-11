@@ -22,8 +22,10 @@ Two modes, each reading one JSON object on stdin and writing one on stdout.
 
 ``tier`` is the pull request's review tier (``python3 scripts/review/review_prep.py tier``),
 empty when it could not be worked out. ``opus_pass`` says the round to run is the
-pull request's Opus review (`OPUS_PASS_TIERS`). ``opus_model`` says the round runs on
-Opus: every round of a pull request whose tier is in `OPUS_PASS_TIERS`.
+Opus pass, the pull request's first Opus look: it drives the ``pass=opus`` marker, the
+prompt paragraph and the Cursor request, not the model. ``opus_model`` is what
+``--model`` reads: true for every round of a pull request whose tier is in
+`OPUS_PASS_TIERS`, the Opus pass and the fix rounds after it.
 ``markers`` are the first lines of the workflow's own earlier comments on the pull
 request (`ROUND_MARKER` and `ATTEMPT_MARKER`). They are the only state: which rounds ran,
 what each one's verdict was, and which commits a review already failed on.
@@ -291,7 +293,9 @@ class Decision:
     comment: str = ""
     #: The cap, so the workflow's prompt has one source for it.
     max_rounds: int = MAX_ROUNDS
-    #: This round is the pull request's Opus review (`OPUS_PASS_TIERS`).
+    #: This round is the Opus pass, the first Opus look (`OPUS_PASS_TIERS`). It drives
+    #: the ``pass=opus`` marker, the prompt paragraph and the Cursor request. It does
+    #: not choose the model: ``--model`` reads `opus_model`.
     opus_pass: bool = False
     #: This round runs on Opus: every round of a standard or deep pull request, the
     #: Opus pass and the fix rounds after it (`OPUS_PASS_TIERS`).
