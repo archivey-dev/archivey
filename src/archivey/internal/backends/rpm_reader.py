@@ -855,7 +855,9 @@ class _Payload:
             found, size = self._pending
             expected = reader._expected_size(found)
             # Only a regular file's entry holds a member's data. A ghost's never does,
-            # whatever its entry gives.
+            # whatever its entry gives, and neither does an earlier file of a
+            # hard-link set, whose entry is empty (``_expected_size`` is 0 where the
+            # header gives its size).
             carries = (
                 found.mode & _S_IFMT == _S_IFREG
                 and not found.flags & RPMFILE_GHOST

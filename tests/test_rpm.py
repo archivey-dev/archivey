@@ -645,6 +645,18 @@ def test_a_payload_name_the_header_does_not_list() -> None:
     data = data.replace(b"./opt/t/a.txt", b"./opt/t/x.txt")
     with pytest.raises(CorruptionError, match="does not list"):
         _read_a(data)
+    # Structural damage: every file read after it in the same pass fails too, rather
+    # than the cursor parsing on from inside the broken entry.
+    errors: dict[str, str] = {}
+    with open_archive(NonSeekableBytesIO(data), format=RPM, streaming=True) as r:
+        for member, stream in r.stream_members():
+            if stream is not None:
+                with pytest.raises(CorruptionError) as caught:
+                    stream.read()
+                errors[member.name] = str(caught.value)
+    assert "does not list" in errors.pop("opt/t/a.txt")
+    assert sorted(errors) == ["opt/t/big.bin", "opt/t/h2"]
+    assert all("cannot be read to" in message for message in errors.values())
 
 
 def test_a_newc_size_that_disagrees_with_the_header() -> None:

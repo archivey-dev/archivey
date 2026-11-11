@@ -71,7 +71,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   Members: solid. Readable from a pipe.
 - **RPM** (`.rpm`, binary and source packages): core; the payload needs what its compressor
   needs (gzip, bzip2, xz and LZMA in core, Zstandard as for a `.zst` file). Listing: from
-  the package header, with nothing decompressed. Members: solid. Readable from a pipe.
+  the package header, with nothing decompressed. Members: solid (direct for an
+  uncompressed payload, which is rare). Readable from a pipe.
 - **makeself** (`.run` installers): core; each payload needs what its compressor needs, as for
   the same compressed TAR. Listing: needs decompression. Members: solid. Readable from a pipe.
 - **Directory:** core. Listing: walks the tree. Members: direct.
