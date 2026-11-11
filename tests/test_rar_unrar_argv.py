@@ -416,8 +416,9 @@ def test_a_long_staged_path_is_refused_on_windows(
     directory: refused before any process starts."""
     monkeypatch.setattr(sys, "platform", "win32")
     path = "C:\\" + "d" * 2000 + "\\archive.rar"
-    with pytest.raises(ResourceUnavailableError, match="shorter directory"):
+    with pytest.raises(ReadError, match="shorter directory") as info:
         rar_unrar._unrar_archive_argument(path)
+    assert not isinstance(info.value, ResourceUnavailableError)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX paths")

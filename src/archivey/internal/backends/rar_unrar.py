@@ -34,7 +34,6 @@ from typing import BinaryIO
 from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
-    ResourceUnavailableError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_parser import (
@@ -765,10 +764,13 @@ def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
             "holds a wildcard character"
         )
     if sys.platform == "win32":
-        raise ResourceUnavailableError(
+        # ReadError, like a command line the system refuses (_start_error): a
+        # configuration fact, not a shortage a retry could clear.
+        limit = _UNRAR_ARCHIVE_PATH_MAX
+        raise ReadError(
             f"unrar cannot read {display_path(path)}: the temporary directory's path "
-            f"is longer than {_UNRAR_ARCHIVE_PATH_MAX} characters. Set TMP or TEMP to "
-            "a shorter directory."
+            f"is longer than {limit} characters. Set TMP or TEMP to a shorter "
+            "directory."
         )
     return name, directory
 
@@ -954,6 +956,9 @@ def open_unrar_p(
     # the archive, and only later file-name arguments as listfiles.
     cmd.append("--")
     archive_arg, cwd = _unrar_archive_argument(archive_path)
+    # With a cwd, a relative program would resolve against the temp directory.
+    # find_rarlab_unrar returns an absolute path; keep it that way.
+    assert cwd is None or os.path.isabs(unrar), unrar
     cmd.append(archive_arg)
     feed_password = pass_arg == "-p"
     # Encode before spawning: _password_stdin_bytes refuses a password unrar would

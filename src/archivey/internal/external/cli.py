@@ -376,8 +376,10 @@ def spawn_for_stdout(
     caller owns the process until a :class:`ProcessOutputStream` takes it: nothing
     reaps it if the caller raises before that constructor's ``try`` is reached.
     ``env`` replaces the child's environment; ``None`` inherits this process's.
-    ``cwd`` is the child's working directory; ``None`` inherits this process's. An
-    argument may be ``bytes`` on POSIX, where argv is bytes.
+    ``cwd`` is the child's working directory; ``None`` inherits this process's. On
+    POSIX a relative ``cmd[0]`` resolves against ``cwd``, so a caller that passes
+    ``cwd`` passes an absolute program. An argument may be ``bytes`` on POSIX,
+    where argv is bytes.
     """
     try:
         proc = spawn(

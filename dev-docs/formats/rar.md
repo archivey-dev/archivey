@@ -975,7 +975,8 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   it. `unrar p` writes only to stdout, so the working directory moves no output.
   Windows names cannot hold a wildcard, and a directory long enough to be cut is past
   what `CreateProcess` takes as a working directory, so there such a path is refused
-  with `ResourceUnavailableError` before any process starts. A directory the child
+  with `ReadError` before any process starts (a configuration fact, like a command
+  line the system refuses, not a shortage a retry clears). A directory the child
   cannot enter is `ReadError`, not the "install unrar" error.
 
 - **The member is never positional.** It is the value of the `-n` include mask, prefixed
