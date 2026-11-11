@@ -24,7 +24,6 @@ from archivey import (
     OnError,
     OverwritePolicy,
 )
-from archivey.fsspec import ArchiveyFileSystem
 from tests.conftest import requires_binary
 from tests.extract_util import open_and_extract
 
@@ -224,6 +223,9 @@ def test_dry_run_reports_what_trusted_writes(tmp_path: Path) -> None:
 
 
 def test_the_archivey_file_system_lists_them_under_trusted(tmp_path: Path) -> None:
+    pytest.importorskip("fsspec")
+    from archivey.fsspec import ArchiveyFileSystem
+
     archive = tmp_path / "rootfs.tar"
     archive.write_bytes(_tar([*_ROOTFS, ("file", "etc/mtab/inside", b"x")]))
     with ArchiveyFileSystem(str(archive), policy=ExtractionPolicy.TRUSTED) as fs:
