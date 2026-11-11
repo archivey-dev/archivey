@@ -9,7 +9,7 @@ name: Benchmark wall-time
 # drift compare. `workflow_dispatch` forces a run (optional skip-drift to re-seed).
 #
 # Hard fails (when the expensive run fires):
-#   1. ~10× wall-ratio sanity ceiling
+#   1. ~12× wall-ratio sanity ceiling
 #   2. wall-ratio *drift* vs the JSON artifact of the last run that measured, pass
 #      or fail (debt-ledger Q1 / perf Q2 option (a) — relative regression, not
 #      absolute ≤1.3×). A drift must also cost ≥1 ms of wall time, so sub-millisecond
@@ -18,7 +18,7 @@ name: Benchmark wall-time
 # Why "pass or fail": with a successful-only baseline, one failed night froze the
 # baseline from 2026-09-06 to 2026-10-09, and every later change added up against it
 # until someone re-seeded by hand. Now a real regression fails the first night that
-# measures it and then becomes the baseline; the 10× ceiling still fails every night.
+# measures it and then becomes the baseline; the 12× ceiling still fails every night.
 # Absolute VISION / Q1 listing bands remain informational prints.
 #
 # The PR-blocking structural gate (seek baselines + solid decode-once) lives in

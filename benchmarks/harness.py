@@ -21,7 +21,7 @@ Modes:
 - ``full``: also report wall-time ratios vs stdlib peers, and the per-member cost and
   throughput fitted by ``benchmarks/cost_model.py``. Absolute ratios are noisy
   on shared runners, so full mode is **not** a PR gate. The change-guarded nightly
-  (``benchmark-wall.yml``) hard-fails on (1) the ~10× sanity ceiling and (2)
+  (``benchmark-wall.yml``) hard-fails on (1) the ~12× sanity ceiling and (2)
   **wall-ratio drift** vs the JSON artifact of the last run that measured, pass or
   fail (perf-review Q2 / debt-ledger Q1 option (a)). Quiet days re-publish that
   artifact (preserving ``measured_at``); a full re-measure is forced at least
@@ -134,7 +134,7 @@ WALL_RATIO_DRIFT_MIN_ABS = 0.15
 # its ratio by 2× on scheduler noise alone: rar_open_list went 2.60 → 5.71 (1.0 ms vs
 # a 0.2 ms peer) between the 2026-09-06 run and nightly run 34122511826 on 2026-09-07,
 # with no change to RAR listing cost that large. That one night froze the nightly
-# baseline for a month. Gross slowdowns of tiny cases still fail on the 10× ceiling.
+# baseline for a month. Gross slowdowns of tiny cases still fail on the 12× ceiling.
 WALL_RATIO_DRIFT_MIN_EXTRA_S = 0.001
 # Q1 listing bands (informational in full-mode reports; not PR-gated):
 # ZIP (stdlib) and TAR (native walker) → 2–3×/member vs zipfile/tarfile; native
