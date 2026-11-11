@@ -105,4 +105,20 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
 (one per compression) and archives `tests/xar_util.py` writes for every encoding, file
 checksum and TOC checksum, hard links in either order, base64 names, and each refusal.
 The fuzz target `xar` (`tests/atheris_fuzz/targets.py`) opens mutated bsdtar archives.
-7-Zip cannot list bsdtar's archives, so there is no second reader to compare against.
+7-Zip cannot list bsdtar's archives, so the test suite has no second reader to compare
+against.
+
+Apple's `xar` and bsdtar are compared by hand:
+`scripts/investigations/xar_multistream_oracle.py` writes one-file archives whose member
+holds one stream, two streams, or a stream followed by junk or zeros, for each encoding,
+and extracts them with all three readers. The manual
+`xar-oracle` workflow runs it on macOS, which ships both tools. On 2026-11-11 (Apple `xar`
+1.8dev, bsdtar 3.7.4):
+
+- Apple `xar` decodes only the first gzip or bzip2 stream and ignores the rest without an
+  error, even when the declared checksum covers both streams. It cannot read xz (it writes
+  the raw bytes) or LZMA ("not compiled in").
+- bsdtar reads every xz stream and the stream padding, as archivey does, and ignores junk
+  after an xz stream. It hangs on any byte after a gzip stream and fails on any byte after
+  a bzip2 or LZMA stream.
+- archivey refuses every byte after a gzip, bzip2 or LZMA stream (§2), and junk after xz.
