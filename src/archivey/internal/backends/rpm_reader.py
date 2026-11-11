@@ -926,8 +926,10 @@ class _PayloadData(io.RawIOBase):
 
     @override
     def close(self) -> None:
-        if self._cursor.current is self:
-            self._cursor.current = None
+        # ``getattr``: a close on an instance whose ``__init__`` did not run.
+        cursor = getattr(self, "_cursor", None)
+        if cursor is not None and cursor.current is self:
+            cursor.current = None
         super().close()
 
 
