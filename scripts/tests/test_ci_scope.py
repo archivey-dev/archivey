@@ -23,7 +23,7 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 QUEUE_ONLY = ("test-queue", "unar-distro-packages", "pypy")
 #: The pull request set's library legs: a pull request push skips them when `scope`
 #: says ``full=false``; the merge queue always runs them.
-PR_LIBRARY = ("test", "free-threaded-concurrency", "benchmark", "lzo-oracle")
+PR_LIBRARY = ("test", "free-threaded-concurrency", "benchmark")
 
 _spec = importlib.util.spec_from_file_location("ci_scope", SCRIPT)
 assert _spec and _spec.loader
