@@ -104,9 +104,27 @@ HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
 def git(*args: str) -> str:
+    # quotePath off: a path with non-ASCII bytes stays as it is in the diff headers,
+    # instead of a quoted "b/na\303\257ve.md" that would not match "b/".
     return subprocess.run(
-        ["git", *args], cwd=ROOT, check=True, capture_output=True, text=True
+        ["git", "-c", "core.quotePath=false", *args],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout
+
+
+def _unquote(name: str) -> str:
+    """Undo git's C-style quoting of a path holding a ``"``, a tab or a backslash."""
+    if not (name.startswith('"') and name.endswith('"')):
+        return name
+    try:
+        raw = ast.literal_eval(name)
+    except (ValueError, SyntaxError):
+        return name
+    # Octal escapes are bytes of the UTF-8 name.
+    return raw.encode("latin-1", "backslashreplace").decode("utf-8", "replace")
 
 
 def parse_added(diff: str) -> dict[str, set[int]]:
@@ -115,7 +133,7 @@ def parse_added(diff: str) -> dict[str, set[int]]:
     path: str | None = None
     for line in split_lines(diff):
         if line.startswith("+++ "):
-            name = line[4:]
+            name = _unquote(line[4:])
             path = name[2:] if name.startswith("b/") else None
             continue
         match = HUNK.match(line)
@@ -146,9 +164,8 @@ def added_lines(base: str | None, staged: bool) -> dict[str, set[int]]:
 FENCE = re.compile(r"^\s*(```+|~~~+)")
 QUOTE = re.compile(r"^(?:[ \t]*>[ \t]?)+")
 LIST_ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(?=\S)")
-FIELD = re.compile(
-    r"^([ \t]*):[\w ]+:\s"
-)  # an rST field (:param x:), a list item in docs
+#: An rST field (``:param x:``), which a docstring treats as a list item.
+FIELD = re.compile(r"^([ \t]*):[\w ]+:\s")
 HEADING = re.compile(r"^\s*#{1,6}(\s|$)")
 RULE = re.compile(r"^\s*([-*_=])(\s*\1){2,}\s*$")
 #: A ruled section title in a comment: "# --- Check -----", "# ==== Setup".
@@ -290,6 +307,7 @@ def segment(lines: list[str], *, docstring: bool) -> Layout:
         starts_new = (
             current is None
             or list_match is not None
+            or (docstring and stripped.endswith(":") and len(stripped.split()) <= 3)
             or current.cont_prefix != quote + indent
             and not _first_continuation(current, index, quote + indent)
         )
@@ -312,10 +330,27 @@ def segment(lines: list[str], *, docstring: bool) -> Layout:
                 current.cont_prefix = quote + indent  # a hanging indent
             current.end = index + 1
         previous_blank = False
-        if docstring and stripped.endswith(":"):
+        if docstring and _opens_section(stripped, lines, index):
             close()
     close()
     return Layout(paragraphs, prose)
+
+
+def _opens_section(stripped: str, lines: list[str], index: int) -> bool:
+    """True when a docstring or comment line ending in ``:`` opens a section or block.
+
+    ``Args:``, ``Example::`` and a line followed by a blank or a deeper-indented line
+    do. A wrapped sentence that happens to break after a colon (``prints ``warning:``)
+    does not: the next line goes on at the same indent.
+    """
+    if not stripped.endswith(":"):
+        return False
+    if stripped.endswith("::") or len(stripped.split()) <= 3:
+        return True
+    following = lines[index + 1] if index + 1 < len(lines) else ""
+    if not following.strip():
+        return True
+    return len(_indent(following)) > len(_indent(lines[index]))
 
 
 def _first_continuation(paragraph: Paragraph, index: int, prefix: str) -> bool:
@@ -326,18 +361,17 @@ def _first_continuation(paragraph: Paragraph, index: int, prefix: str) -> bool:
         and paragraph.first_prefix == paragraph.cont_prefix
         and len(prefix) > len(paragraph.cont_prefix)
         and prefix.startswith(paragraph.cont_prefix)
-        and not prefix[
-            len(paragraph.cont_prefix) :
-        ].strip()  # deeper by whitespace only
+        # deeper by whitespace only, not by a quote marker
+        and not prefix[len(paragraph.cont_prefix) :].strip()
     )
 
 
 # --- Rewrapping ------------------------------------------------------------------------
 
 CODE_SPAN = re.compile(r"(`+)(?!`).*?(?<!`)\1(?!`)")
-# A token that Markdown would read as a block start at the beginning of a line.
 #: How full a line must stay when the fixer ends it early on an old line break.
 RESUME_FILL = 0.75
+#: A token that Markdown would read as a block start at the beginning of a line.
 UNSAFE_START = re.compile(r"^([#>|<]|[-*+=_]+$|\d{1,9}[.)]$|!!!|\?\?\?)")
 
 
@@ -396,17 +430,29 @@ def fill(
             break
         # Never start the next line with a token Markdown reads as a block start: give
         # it the previous word too, or keep it on this line when this line has only one.
-        while end < len(words) and UNSAFE_START.match(words[end]):
-            if end - position > 1:
-                end -= 1
-            else:
-                end += 1
+        if end < len(words) and UNSAFE_START.match(words[end]):
+            end = _safe_break(words, position, end)
         lines.append((end - 1, prefix + " ".join(words[position:end])))
         position = end
         prefix = cont_prefix
         if end - 1 in stops:
             break
     return lines
+
+
+def _safe_break(words: list[str], position: int, end: int) -> int:
+    """Move a line break off a word Markdown would read as a block start.
+
+    Prefer an earlier break, so the line gets shorter; when every word after the line's
+    first is unsafe, keep them on the line until a safe word or the end. One direction
+    each, so it always ends.
+    """
+    for candidate in range(end - 1, position, -1):
+        if not UNSAFE_START.match(words[candidate]):
+            return candidate
+    while end < len(words) and UNSAFE_START.match(words[end]):
+        end += 1
+    return end
 
 
 def needs_reflow(old: list[str], first: int, last: int, width: int) -> bool:
@@ -704,8 +750,7 @@ def main(argv: list[str] | None = None) -> int:
     if not found:
         print(f"ok: no added Markdown prose line is over {LIMIT} columns")
         return 0
-    print("Added lines over their width (Markdown 100 under docs/, 88 elsewhere;")
-    print("Python comments and docstrings 88):")
+    print(f"Added Markdown prose lines over {LIMIT} columns:")
     for problem in found:
         print(f"  {problem}")
     if not args.fix:

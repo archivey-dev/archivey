@@ -259,3 +259,54 @@ def test_check_and_fix_against_a_base(
     lines = doc.read_text().splitlines()
     assert lines[-1] == LONG  # untouched
     assert all(len(line) <= 88 for line in lines[:-1])
+
+
+def test_two_block_markers_after_a_long_first_word_do_not_hang() -> None:
+    # The break once stepped back and forth between two unsafe words forever.
+    words = ["`" + "x" * 80 + "`", "#12", "#13", "end"]
+    lines = lw.fill(words, "", "", 88, set())
+    assert [text for _, text in lines] == ["`" + "x" * 80 + "` #12 #13", "end"]
+    link = "[the thread](https://github.com/archivey-dev/archivey/pull/1508#discussion_r12345678)"
+    text = f"Short line.\n{link} #1508 #1510 then the rest of the sentence goes on for a while.\n"
+    out = _md_reflow(text, {1})
+    assert out.split() == text.split()
+
+
+def test_a_sentence_broken_after_a_colon_stays_one_docstring_paragraph() -> None:
+    source = (
+        "def f():\n"
+        '    """Summary.\n'
+        "\n"
+        "    The record is internal, so the script checks it is there and prints ``warning:\n"
+        "    resource usage not recorded`` rather than leaving the columns silently empty. "
+        "``decoder_memory`` is the largest allocation\n"
+        "    an archive declared.\n"
+        '    """\n'
+    )
+    out = _py_reflow(source, {4})
+    assert "``warning: resource usage not recorded``" in " ".join(out.split())
+    body = out.splitlines()[3:-1]
+    assert all(len(line) <= 88 for line in body)
+    assert all(len(line) > 44 for line in body[:-1])  # no ragged line
+
+
+def test_a_section_opener_still_ends_its_paragraph() -> None:
+    source = (
+        "def f(x):\n"
+        '    """Summary.\n'
+        "\n"
+        "    Some text that runs on long enough to need wrapping when the fixer rewraps it, "
+        "as this line is far past the width.\n"
+        "    Args:\n"
+        "        x: the argument.\n"
+        '    """\n'
+    )
+    out = _py_reflow(source, {3})
+    assert "    Args:" in out.splitlines()
+
+
+def test_a_quoted_path_in_the_diff_is_read() -> None:
+    diff = '--- a/x\n+++ "b/tab\\there.md"\n@@ -0,0 +1 @@\n+x\n'
+    assert lw.parse_added(diff) == {"tab\there.md": {1}}
+    diff = '--- a/x\n+++ "b/na\\303\\257ve.md"\n@@ -0,0 +1 @@\n+x\n'
+    assert lw.parse_added(diff) == {"na\u00efve.md": {1}}
