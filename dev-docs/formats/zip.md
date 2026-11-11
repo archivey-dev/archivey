@@ -1024,9 +1024,9 @@ is not negative, so **the base is never after any member**.
 exactly that member when the detection step saw it.** It is not only a label:
 `open_archive` hands it to the reader, which cuts the source there, so a value after the
 first member would cut members off. The forward scan meets the earliest local header and
-reports it; an empty archive has no local header, so there it reports the base. A planned
-step that finds the ZIP from its end record (the tail probe of the `pe-aware-sfx-location`
-change) sees only the base, and will report that with no read to refine it.
+reports it; an empty archive has no local header, so there it reports the base. The step
+that finds the ZIP from its end record (the PE tail probe, `pe-aware-sfx-location`) sees
+only the base, and reports that with no read to refine it.
 
 **A base of 0 is a real answer, not a missing one.** For a ZIP written in place, the
 stored offsets count from byte 0 of the file, stub included, so by the ZIP's own numbers

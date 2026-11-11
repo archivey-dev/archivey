@@ -302,9 +302,10 @@ the full stub matrix is task 4.3 of `prefixed-archive-detection`.
 - Specs: [`format-detection`](../../openspec/specs/format-detection/spec.md) ·
   [`detection-cost`](../../openspec/specs/detection-cost/spec.md)
 - Archived undone: `openspec/changes/archive/2026-11-05-prefixed-archive-detection/` (the four implementation blocks;
-  Block 1 ships today; Block 2 and `prefix_kind` were struck on 2026-09-25) · in flight:
-  `openspec/changes/pe-aware-sfx-location/` (a PE's layout: `prefixed`, `payload_end`, then a
-  PE-gated ZIP tail probe and the overlay start first) · decided against:
+  Block 1 ships today; Block 2 and `prefix_kind` were struck on 2026-09-25) · shipped:
+  `openspec/changes/archive/2026-11-11-pe-aware-sfx-location/` (a PE's layout: `prefixed`,
+  `payload_end`, a PE-gated ZIP tail probe, and the overlay start first, for ELF and
+  Mach-O too) · decided against:
   `openspec/changes/archive/2026-09-25-detection-evidence-ledger/`
 - Archived: `openspec/changes/archive/2026-08-21-sfx-format-detection/` ·
   `2026-08-31-detection-prefix-workspace/` · `2026-08-30-detection-format-gaps/`
