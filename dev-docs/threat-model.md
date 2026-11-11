@@ -362,7 +362,8 @@ archive declares; for a ZIP read from a pipe, the listing budget and the bound o
 data its pass keeps for link targets beside it.
 
 **Mechanism.**
-- `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
+- `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB; its third cap,
+  `max_decoded_bytes`, bounds decode work and has its own bullet below) is enforced by
   `internal/listing_limits.py` `ListingLimitTracker` as members are registered into the
   reader's member walk (and as a plugin reader holds one back to yield later, through
   `ReaderContext.hold()`: CPIO's newc hard links waiting for their data), by every call that lists: `members()`, `members_report()`,

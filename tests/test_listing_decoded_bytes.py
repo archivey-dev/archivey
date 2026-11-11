@@ -170,6 +170,21 @@ def test_the_first_header_read_at_open_counts(streaming: bool) -> None:
         assert reader._listing_decode.drawn >= 8192  # type: ignore[attr-defined]
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_compressed_cpio_open_fill_counts(streaming: bool) -> None:
+    """A format adapter's first walk step at open fills a 64 KiB buffer, which can
+    hold the whole archive: that fill counts."""
+    cpio = Path(__file__).parent / "fixtures" / "cpio" / "gnu-newc.cpio"
+    data = gzip.compress(cpio.read_bytes())
+    with (
+        pytest.raises(ResourceLimitError, match="has decoded 11 bytes"),
+        archivey.open_archive(
+            io.BytesIO(data), config=_config(10), streaming=streaming
+        ) as reader,
+    ):
+        reader.members()
+
+
 def test_a_random_access_zip_lists_without_decoding() -> None:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
