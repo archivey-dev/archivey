@@ -3158,6 +3158,10 @@ def _parse_rar3_file_header(
     )
     filename = filename.replace("\\", "/").rstrip("/")
     is_directory = (flags & _RAR3_FILE_DIRECTORY) == _RAR3_FILE_DIRECTORY
+    # RAR 1.5 writers marked a directory with the DOS directory attribute only, not
+    # the all-ones dictionary bits; unrar (arcread.cpp) reads it as one for any host.
+    if not is_service and extract_version < 20 and mode & 0x10:
+        is_directory = True
     is_symlink = (
         not is_service
         and host_os == _RAR3_OS_UNIX

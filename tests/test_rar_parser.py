@@ -778,6 +778,47 @@ def test_rar15_rule_needs_a_solid_archive_and_an_old_member(
     assert not any(solid for _, solid in _solid_flags(data, volumes=False))
 
 
+def _with_dos_directory_attribute(data: bytes, name: bytes) -> bytes:
+    """``data`` with the FILE header named ``name`` marked a directory the RAR 1.5 way.
+
+    Its dictionary bits no longer say directory; its host is MS-DOS and its
+    attribute is ``0x10`` (the DOS directory bit). The header's CRC16 is fixed.
+    """
+    out = bytearray(data)
+    pos = 7
+    while pos + 7 <= len(out):
+        block_type = out[pos + 2]
+        flags, size = struct.unpack_from("<HH", out, pos + 3)
+        add_size = struct.unpack_from("<I", out, pos + 7)[0] if flags & 0x8000 else 0
+        name_size = struct.unpack_from("<H", out, pos + 26)[0]
+        if block_type == 0x74 and bytes(out[pos + 32 : pos + 32 + name_size]) == name:
+            struct.pack_into("<H", out, pos + 3, flags & ~0x00E0)
+            out[pos + 15] = 0  # MS-DOS
+            struct.pack_into("<I", out, pos + 28, 0x10)
+            crc = zlib.crc32(bytes(out[pos + 2 : pos + size])) & 0xFFFF
+            struct.pack_into("<H", out, pos, crc)
+            return bytes(out)
+        pos += size + add_size
+    raise AssertionError(f"no FILE header named {name!r}")
+
+
+@pytest.mark.parametrize(("unp_ver", "is_dir"), [(15, True), (20, False)])
+def test_rar15_directory_from_the_dos_attribute(unp_ver: int, is_dir: bool) -> None:
+    # unrar (arcread.cpp): "RAR15 did not use the special dictionary size to mark
+    # dirs", so UNP_VER < 20 with attribute bit 0x10 is a directory. From RAR 2.0 the
+    # dictionary bits decide.
+    data = _as_rar15(
+        _fixture("basic_solid__rar4.rar").read_bytes(),
+        main_solid=False,
+        unp_ver=unp_ver,
+    )
+    data = _with_dos_directory_attribute(data, b"empty_subdir")
+    archive = parse_rar_archive(io.BytesIO(data), use_qo=False)
+    member = next(m for m in archive.members if "empty_subdir" in m.filename)
+    assert member.is_directory is is_dir
+    assert member.filename == ("empty_subdir/" if is_dir else "empty_subdir")
+
+
 def test_volume_set_packed_data_past_end_names_the_volume() -> None:
     """The walk's offsets are within one volume, so in a set the reason names it:
     byte 832 of a set whose volume 1 is 917 bytes would point into volume 1."""
