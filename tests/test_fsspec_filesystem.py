@@ -622,25 +622,29 @@ def test_a_held_walk_is_dropped_when_its_missing_name_is_made(
 
 
 def test_a_link_that_many_paths_go_through_is_walked_once() -> None:
-    """A link's walk is kept once it met no missing component: 300 names under a
-    link to a directory 2000 deep, and 300 links through it, took 14 s to list when
-    each walked the target again."""
-    deep = "d/" * 2000
+    """A link's walk is kept once it met no missing component: 2000 names under a
+    link to a directory 400 deep, and 2000 links through it, took 5 s to list when
+    each walked the target again.
+
+    400 deep, not deeper: the strict check resolves the link's target as a path,
+    and on macOS (``PATH_MAX`` 1024) a longer one cannot be looked up, so
+    extraction there refuses the link."""
+    deep = "d/" * 400
     entries: list[tuple[str, str, bytes | str]] = [
         ("dir", deep, ""),
         ("sym", "l", deep),
     ]
-    entries += [("file", f"l/{n}", b"%d" % n) for n in range(300)]
-    entries += [("sym", f"x{n}", "l") for n in range(300)]
+    entries += [("file", f"l/{n}", b"%d" % n) for n in range(2000)]
+    entries += [("sym", f"x{n}", "l") for n in range(2000)]
     data = _tar_entries(entries)
     with ArchiveyFileSystem(io.BytesIO(data)) as fs:
         fs.reader.members()
         start = time.perf_counter()
-        assert fs.info("x299")["type"] == "directory"
+        assert fs.info("x1999")["type"] == "directory"
         elapsed = time.perf_counter() - start
         assert fs.cat("x7/7") == b"7"
-        assert fs.cat(deep + "299") == b"299"
-    # Measured: under 0.05 s.
+        assert fs.cat(deep + "1999") == b"1999"
+    # Measured: under 0.15 s.
     assert elapsed < 2.0
 
 
