@@ -1355,11 +1355,6 @@ REMOTE_VOLUMES_AS_LIST = (
 )
 
 
-def is_lone_remote(source: ArchiveSource) -> bool:
-    """Whether ``source`` reads one ``fsspec`` ``OpenFile`` by range, not a list."""
-    return len(source.remote_sources) == 1 and source.joined is None
-
-
 def incomplete_lone_numbered_volume_error(
     archive_name: str | None, *, remote: bool = False
 ) -> TruncatedError | None:
@@ -1403,7 +1398,8 @@ def incomplete_lone_numbered_volume_error(
         f"found part {part} only; missing {missing_text}"
     )
     if remote:
-        message += f". {REMOTE_VOLUMES_AS_LIST}"
+        # After ``missing_text``, which ends in an ellipsis: a semicolon, not a stop.
+        message += f"; {REMOTE_VOLUMES_AS_LIST[0].lower()}{REMOTE_VOLUMES_AS_LIST[1:]}"
     return TruncatedError(message)
 
 
@@ -1596,8 +1592,9 @@ def _resolve_single(
     """Resolve one source, which may still turn out to be part of a volume set.
 
     An ``OpenFile`` is read by range, or through fsspec's decompression when it
-    has a ``compression``; it is never part of a set found beside it. A path is a directory, a part of a set found beside it,
-    or one file. Anything else must be a binary stream, which is wrapped as it is.
+    has a ``compression``, and is never searched for other volumes. A path is a
+    directory, a part of a set found beside it, or one file. Anything else must be a
+    binary stream, which is wrapped as it is.
     """
     if is_open_file(source):
         if open_file_compression(source) is not None:

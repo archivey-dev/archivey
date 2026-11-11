@@ -235,7 +235,6 @@ from archivey.internal.volumes import (
     ConcatenatedFile,
     JoinedViews,
     discover_volume_siblings,
-    is_lone_remote,
     next_rar_volume_name,
     rar_volume_name,
     rar_volume_number,
@@ -2336,7 +2335,7 @@ class RarReader(BaseArchiveReader):
         """
         remedy = (
             REMOTE_VOLUMES_AS_LIST
-            if self._source is not None and is_lone_remote(self._source)
+            if self._source is not None and self._source.is_lone_remote
             else None
         )
         try:

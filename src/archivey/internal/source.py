@@ -593,11 +593,16 @@ class ArchiveSource(ReadOnlyIOStream):
         source's own. A volume list is not hinted: its offsets span several range
         sources.
         """
-        remote = self._remote
-        if len(remote) == 1 and self._joined is None:
-            remote[0].will_read(start, end)
+        if self.is_lone_remote:
+            self._remote[0].will_read(start, end)
 
     # --- cheap facts ---------------------------------------------------------------------
+
+    @property
+    def is_lone_remote(self) -> bool:
+        """Whether this source reads one ``fsspec`` ``OpenFile`` by range, not a
+        volume list."""
+        return len(self._remote) == 1 and self._joined is None
 
     @property
     def remote_sources(self) -> tuple[RangeSource, ...]:

@@ -133,7 +133,9 @@ def test_a_remote_numbered_first_part_is_refused_by_name_naming_the_list(
         fs.pipe(f"/d/x.{ext}.{index:03d}", b"part")
     with pytest.raises(TruncatedError, match="found part 1 only") as caught:
         open_archive(OpenFile(fs, f"/d/x.{ext}.001", mode="rb"))
-    assert REMOTE_VOLUMES_AS_LIST in str(caught.value)
+    assert f"x.{ext}.002, …; pass the volume parts as a list of OpenFile" in str(
+        caught.value
+    )
     fs.assert_no_search(f"/d/x.{ext}.001")
 
 
