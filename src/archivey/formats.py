@@ -576,9 +576,10 @@ class ReaderContext:
     # ``_decompress_coder(data, stream_format, size)`` decodes ``data``, a container
     # coder's whole data in ``stream_format``, as ``decompress`` does, except that a
     # byte after the end raises ``CorruptionError`` (as for a ZIP member) instead of
-    # being reported as trailing data. What the format defines as continuing (further
-    # bzip2, LZMA Alone or xz streams, xz stream padding) still reads. Internal, set
-    # by the adapter; not for plugins.
+    # being reported as trailing data, and bzip2 and LZMA Alone end at their first
+    # stream, as a ZIP or 7z member's bzip2 does. Continuations the codec's data
+    # defines for a member (further xz streams and their padding, zstd and LZ4
+    # frames) still read. Internal, set by the adapter; not for plugins.
     _decompress_coder: (
         Callable[[BinaryIO, StreamFormat, int | None], BinaryIO] | None
     ) = None

@@ -80,8 +80,9 @@ silent and `STRICT` refuses (DR-3). Bytes inside the declared comment are the co
 whatever they look like. A signed PE self-extractor's certificate table is not reported
 ([`7z.md`](7z.md) §6): with a payload end, from detection or, under a forced `format=ZIP`,
 read by `open_archive` from the same headers, the search and the scan stop before the
-table. A tail longer than the search window hides the end record from
-the search; the reader then walks the local headers from the start (the pipe's walk,
+table. Nor is anything after the end of a PE program resource that holds the archive
+([`topics/prefixed-archives.md`](../topics/prefixed-archives.md) §7). A tail longer
+than the search window hides the end record from the search; the reader then walks the local headers from the start (the pipe's walk,
 seeking over sized members and scanning bit-3 ones for their descriptor, decoding
 nothing) and steps over the directory and the records after it to the end record
 (`step_over_directory`). That open costs up to one read of the file, and each

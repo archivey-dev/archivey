@@ -22,6 +22,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import NamedTuple
@@ -46,6 +47,7 @@ from archivey.internal.logs import backends as logger
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts
@@ -138,6 +140,50 @@ def _file_attributes(path: str) -> int:
     return getattr(os.lstat(path), "st_file_attributes", 0)
 
 
+# The filesystems whose regular files report a ``st_size`` that is not their content's
+# (procfs 0, sysfs 4096), as ``/proc/self/mountinfo`` names them. Their files list with
+# ``size=None`` and read to the end (``DirectoryReader._make_member``).
+_PSEUDO_FILESYSTEMS = frozenset({"proc", "sysfs"})
+
+
+def _pseudo_filesystem_devices(mountinfo: str) -> frozenset[tuple[int, int]]:
+    """The ``(major, minor)`` device of each procfs and sysfs mount in ``mountinfo``.
+
+    A line is ``id parent major:minor root mountpoint options [optional...] - fstype
+    source super-options`` (proc(5)); the filesystem type is the first field after
+    the lone ``-``.
+    """
+    devices = set()
+    for line in mountinfo.splitlines():
+        head, sep, tail = line.partition(" - ")
+        fields = head.split()
+        fstype = tail.split()[:1]
+        if not sep or len(fields) < 3 or not fstype:
+            continue
+        if fstype[0] in _PSEUDO_FILESYSTEMS:
+            major, _, minor = fields[2].partition(":")
+            if major.isdigit() and minor.isdigit():
+                devices.add((int(major), int(minor)))
+    return frozenset(devices)
+
+
+def _read_pseudo_filesystem_devices() -> frozenset[tuple[int, int]]:
+    """The procfs and sysfs mounts of this process (Linux only), read once per walk.
+
+    From ``/proc/self/mountinfo``: Python has no ``statfs`` with the filesystem magic.
+    Where that file cannot be read (another OS, a container without ``/proc``) the set
+    is empty, and every file lists its ``st_size``: a size that grows is then refused
+    at open, the safe side.
+    """
+    if not sys.platform.startswith("linux"):
+        return frozenset()
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8", errors="replace") as f:
+            return _pseudo_filesystem_devices(f.read())
+    except OSError:
+        return frozenset()
+
+
 def _changed_since_listing(name: str, what: str, action: str = "reading") -> OSError:
     """The refusal for a member whose path no longer holds the file the walk listed.
 
@@ -185,6 +231,8 @@ class DirectoryReader(BaseArchiveReader):
         # pwd/grp lookups hit the system database (nss) on every call, so we memoize.
         self._uname_cache: dict[int, str | None] = {}
         self._gname_cache: dict[int, str | None] = {}
+        # procfs and sysfs devices, read on the first file (_on_pseudo_filesystem).
+        self._pseudo_devices: frozenset[tuple[int, int]] | None = None
 
     @override
     def _check_extraction_dest(self, dest: Path) -> None:
@@ -530,6 +578,10 @@ class DirectoryReader(BaseArchiveReader):
         gid = st.st_gid
 
         size = st.st_size if member_type == MemberType.FILE else None
+        if size is not None and self._on_pseudo_filesystem(st.st_dev):
+            # procfs reports 0 and sysfs 4096 for files whose content is neither: the
+            # size is unknown, and the read goes to the end.
+            size = None
 
         return ArchiveMember(
             type=member_type,
@@ -550,6 +602,14 @@ class DirectoryReader(BaseArchiveReader):
             extra=_link_extra(member_type, is_junction),
             _raw=identity,
         )
+
+    def _on_pseudo_filesystem(self, st_dev: int) -> bool:
+        if self._pseudo_devices is None:
+            self._pseudo_devices = _read_pseudo_filesystem_devices()
+        if not self._pseudo_devices:
+            # Off Linux the set is empty, and Windows has no ``os.major``.
+            return False
+        return (os.major(st_dev), os.minor(st_dev)) in self._pseudo_devices
 
     def _lookup_uname(self, uid: int) -> str | None:
         if uid not in self._uname_cache:
@@ -598,9 +658,10 @@ class DirectoryReader(BaseArchiveReader):
         must not block the open). The handle must then be a regular file, and the same
         ``(st_dev, st_ino)`` the listing recorded when it had one. A symlink in the path
         fails with ``ELOOP`` from the kernel; anything else that changed fails with
-        ``ESTALE``, as does a file whose size is no longer the listed one (a listed size
-        of 0 is exempt: procfs and sysfs list 0 for files that have content). A member
-        listed with no identity (``st_ino`` 0) is checked on type and size alone.
+        ``ESTALE``, as does a file whose size is no longer the listed one, 0 included.
+        A file on procfs or sysfs is listed with no size (``_make_member``), so it has
+        none to check and reads to the end. A member listed with no identity
+        (``st_ino`` 0) is checked on type and size alone.
         Windows has no ``O_NOFOLLOW``, so there the identity check carries it, with a
         reparse-point check on the path when the listing had no identity.
         """
@@ -622,7 +683,7 @@ class DirectoryReader(BaseArchiveReader):
             # The listed size is part of what was listed, not advisory: a caller treating
             # the listing as a manifest must not read bytes it never described. A
             # diagnostic would let those bytes through, so this refuses (directory.md §6).
-            if listed_size and st.st_size != listed_size:
+            if listed_size is not None and st.st_size != listed_size:
                 raise _changed_since_listing(
                     name, f"changed size ({listed_size} to {st.st_size} bytes)"
                 )
@@ -710,8 +771,11 @@ class DirectoryReadBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> DirectoryReader:
-        reject_start_offset(start_offset, format, archive_name, end_offset)
+        reject_start_offset(
+            start_offset, format, archive_name, end_offset, program_resources
+        )
         # `format` is always DIRECTORY here (single-format backend); accepted for the
         # uniform ReadBackend signature. Password rejection is central (SUPPORTS_PASSWORD).
         if not source.is_directory or source.path is None:
