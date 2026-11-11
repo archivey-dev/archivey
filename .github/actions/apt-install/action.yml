@@ -74,16 +74,17 @@ runs:
         "${apt[@]}" update -q -o Acquire::Retries=3
         "${apt[@]}" install "${flags[@]}" --download-only \
           -o Dir::Cache::archives="$DEBS" $PACKAGES
+        saved=skip  # The system may already have every package: nothing to cache.
         if compgen -G "$DEBS/*.deb" > /dev/null; then
           "${local_install[@]}" "$DEBS"/*.deb
-          echo "saved=yes" >> "$GITHUB_OUTPUT"
-        else
-          # The system already has every package: nothing to cache.
-          echo "saved=skip" >> "$GITHUB_OUTPUT"
+          saved=yes
         fi
         # apt's lock and partial/ are root's; the cache saves only the .deb files.
+        # The output comes last, so a failed cleanup cannot leave saved=yes behind.
         sudo rm -rf "$DEBS/partial" "$DEBS/lock"
         sudo chown -R "$(id -u)" "$DEBS"
+        chmod 755 "$DEBS"
+        echo "saved=$saved" >> "$GITHUB_OUTPUT"
     - if: steps.install.outputs.saved == 'yes'
       uses: actions/cache/save@v4
       with:
