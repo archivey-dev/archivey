@@ -686,6 +686,13 @@ def unrar_expands_wildcards(path: str | Path) -> bool:
 # absolute or derives a next volume name from.
 _UNRAR_ARCHIVE_PATH_MAX = 1024
 
+# The longest absolute archive path, in UTF-16 units, that Windows hands to ``unrar``
+# with no working directory: 6.x keeps NM - 1 = 2047 units of ``ArcName`` (above),
+# less room for a next volume name. A staged name is ``archive.part1.rar`` or
+# ``archive.rar``, and the longest it grows to is ``archive.part999999.rar`` (the
+# reader caps volumes at 999 999): 16 units cover that.
+_UNRAR_WINDOWS_ARCHIVE_PATH_KEPT = 2047 - 16
+
 
 # The longest member name, in UTF-16 code units, that ``unrar`` keeps whole when it
 # compares it with a ``-n`` mask. ``unrar`` cuts a stored name to a fixed buffer, but
@@ -750,8 +757,12 @@ def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
     writes only to stdout, so the working directory changes no output location.
 
     Windows names cannot hold ``*`` or ``?``, so there only the length applies, and
-    a working directory that long is past what ``CreateProcess`` takes: that is
-    refused, never handed to ``unrar`` to cut.
+    a working directory that long is past what ``CreateProcess`` takes. There the
+    absolute path is handed over whole while ``unrar`` keeps it whole
+    (``_UNRAR_WINDOWS_ARCHIVE_PATH_KEPT``: the margin under
+    ``_UNRAR_ARCHIVE_PATH_MAX`` is for a relative path or an unknown next volume
+    name, and a staged path is absolute with a fixed name), and refused past that,
+    never handed to ``unrar`` to cut.
     """
     path = str(archive_path)
     if not (unrar_expands_wildcards(path) or unrar_may_cut_archive_path(path)):
@@ -764,13 +775,16 @@ def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
             "holds a wildcard character"
         )
     if sys.platform == "win32":
+        whole = os.path.abspath(path)
+        limit = _UNRAR_WINDOWS_ARCHIVE_PATH_KEPT
+        if len(whole.encode("utf-16-le", "surrogatepass")) // 2 <= limit:
+            return whole, None
         # ReadError, like a command line the system refuses (_start_error): a
         # configuration fact, not a shortage a retry could clear.
-        limit = _UNRAR_ARCHIVE_PATH_MAX
         raise ReadError(
-            f"unrar cannot read {display_path(path)}: the temporary directory's path "
-            f"is longer than {limit} characters. Set TMP or TEMP to a shorter "
-            "directory."
+            f"unrar cannot read {display_path(path)}: the path is longer than "
+            f"{limit} characters, more than unrar keeps. Set TMP or TEMP to a "
+            "shorter directory."
         )
     return name, directory
 
