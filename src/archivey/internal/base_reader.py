@@ -90,6 +90,7 @@ from typing import (
 )
 
 from archivey.internal.overrides import override
+from archivey.internal.pe_resources import ProgramResources
 
 if TYPE_CHECKING:
     from archivey.internal.bomb_tracker import ReadRatioTally
@@ -457,9 +458,10 @@ def reject_start_offset(
     fmt: ArchiveFormat,
     archive_name: str | None,
     end_offset: int | None = None,
+    program_resources: ProgramResources | None = None,
 ) -> None:
-    """Refuse a nonzero ``open_read(start_offset=…)``, or any ``end_offset``, for a
-    format that cannot honour it.
+    """Refuse a nonzero ``open_read(start_offset=…)``, or any ``end_offset`` or
+    ``program_resources``, for a format that cannot honour it.
 
     Only the self-extracting formats (RAR / 7z / ZIP / LHA) are ever handed a nonzero
     offset, because only they can carry an executable stub and only they are scanned for
@@ -477,6 +479,13 @@ def reject_start_offset(
         raise UnsupportedFeatureError(
             f"{fmt.display_name} cannot be opened with an end offset "
             f"({end_offset}): the format carries no self-extracting stub.",
+            source_format=fmt,
+            archive_name=archive_name,
+        )
+    if program_resources is not None:
+        raise UnsupportedFeatureError(
+            f"{fmt.display_name} cannot be opened with a program's resources: the "
+            "format carries no self-extracting stub.",
             source_format=fmt,
             archive_name=archive_name,
         )
@@ -625,6 +634,7 @@ class ReadBackend(ABC):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> BaseArchiveReader:
         """Open ``source`` as ``format`` (the resolved format the registry selected this
         backend for — either detected by ``open_archive`` or supplied by the caller).
@@ -655,6 +665,16 @@ class ReadBackend(ABC):
         read, and it is not reported as data after the archive. A backend never looks
         for an end itself. Backends whose formats never carry a stub (no
         ``SFX_MAGIC``) are never passed one, and reject it.
+
+        ``program_resources`` is where the resources of a PE program at the start of
+        ``source`` sit, read lazily (:class:`~archivey.internal.pe_resources.\
+ProgramResources`). ``open_archive`` passes one to every backend with ``SFX_MAGIC``
+        on a seekable source of known size, detected or forced alike. A backend may
+        consult it only to decide that a non-zero byte after its archive belongs to
+        the program: the archive is stored as a resource, and the byte follows that
+        resource. It never changes what the archive holds, and it is the one place a
+        backend learns about bytes before ``start_offset``. Backends without
+        ``SFX_MAGIC`` are never passed one, and reject it.
         """
         ...
 
@@ -3020,7 +3040,7 @@ class BaseArchiveReader(ArchiveReader):
         stream: BinaryIO,
         member: ArchiveMember,
         *,
-        size: int,
+        size: int | None,
         check: Literal[
             "weak_open_check", "confirm_budget_exhausted", "no_password_check"
         ]

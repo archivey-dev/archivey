@@ -19,6 +19,9 @@ Each idea carries a status:
 - *In progress* — a pull request or an OpenSpec change named with it carries the work.
 - *Needs design* — we want it, but the shape is not settled. Start with a proposal.
 - *Open idea* — worth doing if someone needs it. Not planned.
+- *Parked* — built or started, then set aside.
+- *Measured, not pursued* — tried and measured; the evidence is linked and the idea
+  stays closed unless that evidence changes.
 
 **Good first contribution** marks an idea that is small and self-contained.
 
@@ -54,8 +57,11 @@ Each idea carries a status:
   its own refusals and entry mapping, as `rar_unar.py` does for RAR.
 - **libarchive backend.** *Parked.* A separate plugin package that reads LHA through the
   system libarchive, in a child process, was built and parked: LHA is its only real use,
-  and a native LHA reader is preferred. What is still open is libarchive as an
-  accelerator for streams archivey decodes in Python, which is being measured first.
+  and a native LHA reader is preferred.
+- **libarchive as an accelerator for the Python decoders.** *Measured, not pursued
+  (2026-11-09).* As fast as a native port, but it accepts damaged `.Z` and LZX streams
+  that archivey refuses and needs a child process;
+  [`investigations/libarchive-accelerator.md`](investigations/libarchive-accelerator.md).
 - **Decode RAR without `unrar`.** *Open idea (research).* Feed a minimal one-file RAR
   stream to libarchive's RAR decoder, as `rarfile` does. archivey already builds such a
   stream for `unrar` (`backends/rar_synthetic.py`), so the open part is the decoder. It could

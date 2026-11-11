@@ -203,6 +203,17 @@ _LHASA_EXPECTED: dict[str, dict[str, str]] = {
         "subdir/subdir2/hello.txt": "a948904f2f0f479b",
     },
     "lha_unix114i_h2_symlink2.lzh": {"symlink": "-> path/to/target"},
+    # MacLHA 2.24: the MacBinary wrapper stripped, except at level 0, which has no
+    # OS id (lhasa keeps it there too).
+    "maclha_224_l0_lh5.lzh": {"gpl-2": "08b05120143644fa"},
+    "maclha_224_l1_lh0.lzh": {"gpl-2.gz": "5c423e9bdf915d23"},
+    "maclha_224_l1_lh1.lzh": {"gpl-2": "8177f97513213526"},
+    "maclha_224_l1_nm_lh5.lzh": {"gpl-2": "8177f97513213526"},
+    "maclha_224_l1_subdir.lzh": {"subdir/subdir2/hello.txt": "b94d27b9934d3e08"},
+    "maclha_224_l2_full_subdir.lzh": {
+        "/Untitled/subdir/subdir2/hello.txt": "b94d27b9934d3e08"
+    },
+    "maclha_224_l2_lh5.lzh": {"gpl-2": "8177f97513213526"},
     "lhark04d_lh7.lzh": {"GPL-2": "8177f97513213526"},
     "morphos_lha_2717_h2_metadata.lzh": {"metadata.txt": "23b17d47b897a5d8"},
     "pmarc2_pm0.pma": {"GPL-2.GZ": "0cb1a4b3dbb909a8"},
@@ -270,6 +281,190 @@ def test_lhark_reads_as_its_own_method() -> None:
     with open_archive(LHASA / "lhark04d_lh7.lzh") as reader:
         (member,) = reader.members()
     assert member.extra["lha.method"] == "-lk7-"
+
+
+# ── MacBinary ─────────────────────────────────────────────────────────────────────
+
+_MAC_EPOCH = 2082844800
+_HELLO = b"Hello, Mac!\n" * 30
+
+
+def _macbinary(
+    name: bytes = b"hello.txt",
+    data: bytes = _HELLO,
+    resource: bytes = b"",
+    modified: int = 1_600_000_000,
+) -> bytes:
+    """A MacBinary file as MacLHA stores it: the header, then the forks, the whole
+    padded to 128 bytes."""
+    head = bytearray(128)
+    head[1] = len(name)
+    head[2 : 2 + len(name)] = name
+    head[0x41:0x49] = b"TEXTttxt"
+    struct.pack_into(
+        ">IIII",
+        head,
+        0x53,
+        len(data),
+        len(resource),
+        modified + _MAC_EPOCH,
+        modified + _MAC_EPOCH,
+    )
+    body = bytes(head) + data + resource
+    return body + bytes(-len(body) % 128)
+
+
+def _mac_member(wrapped: bytes, **fields: object) -> Member:
+    fields.setdefault("os_id", b"m")
+    return Member(b"hello.txt", wrapped, **fields)  # type: ignore[arg-type]
+
+
+def test_a_maclha_member_reads_as_its_data_fork() -> None:
+    with open_archive(LHASA / "maclha_224_l1_subdir.lzh") as reader:
+        (member,) = reader.members()
+        assert member.size == 11
+        assert member.compressed_size == 256
+        assert reader.read(member) == b"hello world"
+        assert member.verified is Verification.CHECKSUM
+    assert member.create_system is CreateSystem.MACINTOSH
+    assert (member.extra["lha.mac_type"], member.extra["lha.mac_creator"]) == (
+        b"TEXT",
+        b"ttxt",
+    )
+
+
+def test_a_level_0_maclha_member_keeps_its_wrapper() -> None:
+    # Level 0 has no OS id, so nothing marks the member as MacLHA's; lhasa keeps
+    # the wrapper too.
+    with open_archive(LHASA / "maclha_224_l0_lh5.lzh") as reader:
+        (member,) = reader.members()
+        assert member.size == 18304
+        assert reader.read(member)[2:7] == b"gpl-2"
+    assert "lha.mac_type" not in member.extra
+
+
+@pytest.mark.parametrize("method", ["-lh0-", "-lh5-"])
+@pytest.mark.parametrize("level", [1, 2])
+def test_the_macbinary_wrapper_is_stripped(method: str, level: int) -> None:
+    raw = archive([_mac_member(_macbinary(), method=method, level=level)])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert member.size == len(_HELLO)
+        assert reader.read(member) == _HELLO
+        assert member.verified is Verification.CHECKSUM
+        # Small reads cross the end of the fork the same way.
+        with reader.open(member) as stream:
+            assert b"".join(iter(lambda: stream.read(7), b"")) == _HELLO
+
+
+def test_an_empty_data_fork_reads_the_resource_fork() -> None:
+    raw = archive([_mac_member(_macbinary(data=b"", resource=b"rsrc" * 50))])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == b"rsrc" * 50
+
+
+def test_a_macbinary_time_a_time_zone_away_still_matches() -> None:
+    raw = archive([_mac_member(_macbinary(modified=1_600_000_000 + 14 * 3600))])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == _HELLO
+
+
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        pytest.param(_macbinary(name=b"other.txt"), id="another-name"),
+        pytest.param(_macbinary(modified=1_600_000_000 + 15 * 3600), id="time"),
+        pytest.param(b"\1" + _macbinary()[1:], id="version"),
+        pytest.param(_macbinary() + bytes(128), id="size"),
+        pytest.param(_macbinary()[:127], id="short"),
+    ],
+)
+def test_a_wrapper_that_does_not_match_is_kept(wrapped: bytes) -> None:
+    # An archived MacBinary file, or bytes that only look like one, read whole.
+    raw = archive([_mac_member(wrapped)])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert member.size == len(wrapped)
+        assert reader.read(member) == wrapped
+    assert "lha.mac_type" not in member.extra
+
+
+def test_a_wrapper_from_another_os_is_kept() -> None:
+    raw = archive([_mac_member(_macbinary(), os_id=b"U")])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == _macbinary()
+
+
+@pytest.mark.parametrize("method", ["-lh0-", "-lh5-"])
+def test_the_crc_covers_the_whole_wrapper(method: str) -> None:
+    wrapped = _macbinary()
+    # A damaged byte in the padding after the fork, which the read drops.
+    damaged = wrapped[:-1] + b"\1"
+    raw = archive([_mac_member(damaged, method=method, crc=crc16(wrapped))])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert member.size == len(_HELLO)
+        with pytest.raises(CorruptionError, match="crc16"):
+            reader.read(member)
+
+
+def _cut_stream(cut: int) -> io.RawIOBase:
+    wrapped = _macbinary()
+    locator = lha_reader._Location(
+        0, len(wrapped), "-lh0-", crc16(wrapped), len(wrapped), len(_HELLO)
+    )
+    return lha_reader._MacBinaryStream(io.BytesIO(wrapped[:cut]), locator)
+
+
+@pytest.mark.parametrize(
+    ("cut", "message"),
+    [
+        (100, "inside its MacBinary header"),
+        (128 + len(_HELLO) + 4, "inside its MacBinary wrapper"),
+    ],
+)
+def test_a_wrapper_cut_outside_the_fork_raises(cut: int, message: str) -> None:
+    # The listing refuses a cut archive first, so the stream is cut by hand.
+    stream = _cut_stream(cut)
+    with pytest.raises(TruncatedError, match=message):
+        while stream.read(len(_HELLO)):
+            pass
+
+
+def test_a_wrapper_cut_inside_the_fork_ends_short() -> None:
+    # The member handle turns the short fork into TruncatedError.
+    stream = _cut_stream(128 + len(_HELLO) - 1)
+    assert stream.read(len(_HELLO)) == _HELLO[:-1]
+    assert stream.read(len(_HELLO)) == b""
+
+
+@pytest.mark.parametrize("os_id", [b"U", b"m"])
+def test_the_dropped_fork_counts_against_the_ratio_limit(os_id: bytes) -> None:
+    # A one-byte data fork and 20 MB of zeros in the resource fork: the dropped bytes
+    # are decoded too, so the member is refused as the same bytes unwrapped are.
+    zeros = bytes(20_000_000)
+    wrapped = _macbinary(data=b"x", resource=zeros)
+    raw = archive([_mac_member(wrapped, os_id=os_id, method="-lh5-")])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        with pytest.raises(archivey.ResourceLimitError, match="max_ratio"):
+            reader.read(member)
+
+
+@pytest.mark.parametrize("os_id", [b"U", b"m"])
+def test_the_dropped_fork_honours_the_deprecated_ratio_fields(os_id: bytes) -> None:
+    wrapped = _macbinary(data=b"x", resource=bytes(2_000_000))
+    raw = archive([_mac_member(wrapped, os_id=os_id, method="-lh5-")])
+    with pytest.warns(DeprecationWarning):
+        limits = archivey.ExtractionLimits(max_ratio=10, ratio_activation_threshold=0)
+    config = archivey.ArchiveyConfig(extraction_limits=limits)
+    with open_archive(io.BytesIO(raw), config=config) as reader:
+        (member,) = reader.members()
+        with pytest.raises(archivey.ResourceLimitError, match="max_ratio"):
+            reader.read(member)
 
 
 def test_an_amiga_directory_is_an_empty_nameless_member() -> None:

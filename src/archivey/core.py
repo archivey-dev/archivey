@@ -94,6 +94,7 @@ from archivey.internal.format_args import (
 from archivey.internal.format_provenance import FormatProvenance, stamp_error_context
 from archivey.internal.open_site import OpenSite, capture_open_site
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import (
     format_availability,
     get_registry,
@@ -186,6 +187,24 @@ def _forced_payload_end(
     return read_payload_end(archive_source, archive_source.size)
 
 
+def _program_resources(
+    archive_source: ArchiveSource, backend_cls: type[ReadBackend]
+) -> ProgramResources | None:
+    """The resources of a PE program at the start of the source, for a backend that
+    can carry a stub (``SFX_MAGIC``) on a seekable source of known size.
+
+    Built for detected and forced opens alike, so an archive stored as a program
+    resource gets the same trailing-data answer either way. Reads nothing here: the
+    backend's trailing-data check reads the headers when it found a non-zero byte.
+    """
+    if not backend_cls.SFX_MAGIC or not archive_source.seekable():
+        return None
+    size = archive_source.size
+    if size is None:
+        return None
+    return ProgramResources(archive_source, size)
+
+
 def _name_makeself(
     exc: ArchiveyError, archive_source: ArchiveSource, format: ArchiveFormat
 ) -> None:
@@ -270,7 +289,7 @@ def _refuse_unjoined_volume_names(
     """
     if resolved.volume_count != 1:
         return
-    # Numbered parts are joined for ZIP and 7z. An explicit other format= (P8)
+    # Numbered parts are joined for ZIP and 7z. An explicit other format=
     # must be honoured or refused as a format conflict, not rewritten as a
     # missing-volume error. With discovery off nothing looked for the other parts,
     # so the part is read as the one file it is, and its reader says what it finds.
@@ -759,7 +778,7 @@ def _decide_format(
     # would raise FormatDetectionError or CorruptionError. Refuse by name first.
     # A joined set has ``volume_count > 1`` and is skipped. An explicit
     # ``format=TAR_GZ`` (etc.) is honoured or refused as a format conflict, never
-    # rewritten as a volume error (P8).
+    # rewritten as a volume error.
     #
     # A lone numbered part names the missing siblings (``TruncatedError``). Info-ZIP
     # ``.zNN`` stays the ZIP rejoin-first ``UnsupportedFeatureError`` — those are
@@ -1139,6 +1158,7 @@ def _open_resolved(
                 open_site=open_site,
                 start_offset=payload_offset,
                 end_offset=payload_end,
+                program_resources=_program_resources(archive_source, backend_cls),
             )
             reader._format_provenance = provenance
             reader._format_info = decision.format_info

@@ -100,6 +100,7 @@ from archivey.internal.naming import emit_member_name_normalized, normalize_memb
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.resource_usage import handler_name
@@ -307,6 +308,7 @@ class _PluginAdapter(BaseArchiveReader):
         )
         context._usage = self._usage
         context._spanning_check = self._new_spanning_check
+        context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)
         self._reader_open = True
 
@@ -338,14 +340,27 @@ class _PluginAdapter(BaseArchiveReader):
                 refusal, source_format=self._format, archive_name=self._archive_name
             )
 
+    def _decompress_coder(
+        self, data: BinaryIO, stream_format: StreamFormat, size: int | None
+    ) -> BinaryIO:
+        """``ReaderContext._decompress_coder``: ``stream_format`` data that is a
+        container coder's whole data, refusing a byte after the end of what the
+        format defines (further bzip2, LZMA Alone or xz streams still read)."""
+        return self._decompress(data, stream_format, size, None, whole_file=False)
+
     def _decompress(
         self,
         data: BinaryIO,
         method: CompressionAlgorithm | AnyStreamFormat,
         size: int | None,
         properties: bytes | None,
+        *,
+        whole_file: bool = True,
     ) -> BinaryIO:
-        """``ReaderContext.decompress``: ``data`` through archivey's codec layer."""
+        """``ReaderContext.decompress``: ``data`` through archivey's codec layer.
+
+        ``whole_file=False`` (``_decompress_coder``) keeps the member decoder
+        config's ``refuse_input_after_end`` for a stream format too."""
         self._refuse_codec_off_by_policy(method)
         is_stream = isinstance(method, (StreamFormat, PluginStream))
         codec: CodecId | None
@@ -369,7 +384,7 @@ class _PluginAdapter(BaseArchiveReader):
         # output size, and the input size while ``data`` is at its start. The
         # accelerators choose by them, and rapidgzip's length check needs the first.
         changes: dict[str, Any] = {"expected_decompressed_size": size}
-        if is_stream:
+        if is_stream and whole_file:
             # A whole stream reads as a file of its format does: bytes after its end
             # are reported (``ARCHIVE_TRAILING_DATA``), not refused. Most stream
             # codecs have no refusal; the report is what they all share.
@@ -2752,6 +2767,7 @@ class _PluginBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> _PluginAdapter:
         common = (
             self.PLUGIN(),
@@ -2769,13 +2785,17 @@ class _PluginBackend(ReadBackend):
         }
         reader: _PluginAdapter
         if issubclass(self.PLUGIN, SequentialFormatHandler):
-            reject_start_offset(start_offset, format, archive_name, end_offset)
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
             reader = SequentialReaderAdapter(*common, **options)
         else:
             # Only a built-in format that declares SFX magic is handed a region, which
             # its reader reads as the whole source (``IndexedReaderAdapter``).
             if not self.SFX_MAGIC:
-                reject_start_offset(start_offset, format, archive_name, end_offset)
+                reject_start_offset(
+                    start_offset, format, archive_name, end_offset, program_resources
+                )
             reader = IndexedReaderAdapter(
                 *common, region=(start_offset, end_offset), **options
             )

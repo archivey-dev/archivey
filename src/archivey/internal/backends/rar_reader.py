@@ -199,6 +199,7 @@ from archivey.internal.password_confirm import (
     plan_password_confirm,
     run_password_confirm_plan,
 )
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.source import ArchiveSource
@@ -765,20 +766,106 @@ def _unrar_dictionary_costs(archive: RarArchive) -> list[_DictionaryCost]:
 
 
 def _member_stream_size(member: ArchiveMember) -> int:
-    """Unpacked size for a RAR payload member.
+    """Unpacked size for a RAR payload member whose size is known.
 
-    RAR headers always store ``file_size`` as ``int``, and every payload member
-    (``RarMemberInfo.is_payload_file()``) lists it as ``size``. A non-payload member
-    may not: an unknown RAR5 redirect is ``OTHER`` with no ``size``, so callers filter
-    on ``is_payload_file()`` before summing. ``ArchiveMember.size`` is optional because
-    other formats have streaming entries; folding ``None`` into ``0`` here would treat
-    "unknown length" as "empty". A payload member without a declared size is a
-    programming error.
+    RAR headers always store ``file_size`` as ``int``, and a payload member
+    (``RarMemberInfo.is_payload_file()``) lists it as ``size``, with one exception: a
+    RAR5 member whose header leaves the size unknown on every part
+    (``RarMemberInfo.size_unknown``) lists ``None``, and a verified read fills it in
+    (:func:`_size_left_unknown`). A non-payload member may have no ``size`` either:
+    an unknown RAR5 redirect is ``OTHER`` with none. Callers that can meet such a
+    member test ``member.size`` first, or use :func:`_known_size_floor`; folding
+    ``None`` into ``0`` here would treat "unknown length" as "empty". Reaching here
+    with no size is a programming error.
     """
     size = member.size
     if size is None:
-        raise AssertionError("RAR payload members always declare an unpacked size")
+        raise AssertionError("a RAR member of unknown size reached a sized-only path")
     return size
+
+
+def _probe_unknown_size(stream: BinaryIO, crc: int | None) -> PasswordConfirmVerdict:
+    """Judge a candidate on a member of unknown size (:func:`_size_left_unknown`).
+
+    ``plan_password_confirm`` needs the length, and reads a short output as a wrong
+    key. Here the output may end anywhere, so the probe reads at most
+    :data:`PASSWORD_CONFIRM_PREFIX_BYTES` and one byte more. When the output ends
+    first, the probe has the whole member and its CRC32 (when stored untweaked)
+    judges it; the program's exit status was already checked at that end. Otherwise
+    the prefix is evidence only, as for a plan with no anchor in reach.
+    """
+    value = 0
+    read = 0
+    while read <= PASSWORD_CONFIRM_PREFIX_BYTES:
+        chunk = stream.read(
+            min(PASSWORD_CONFIRM_CHUNK_BYTES, PASSWORD_CONFIRM_PREFIX_BYTES + 1 - read)
+        )
+        if not chunk:
+            if crc is None:
+                return PasswordConfirmVerdict.INCONCLUSIVE
+            if value != crc & 0xFFFFFFFF:
+                return PasswordConfirmVerdict.REJECTED
+            return (
+                PasswordConfirmVerdict.CONFIRMED
+                if read >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES
+                else PasswordConfirmVerdict.INCONCLUSIVE
+            )
+        value = zlib.crc32(chunk, value)
+        read += len(chunk)
+    return PasswordConfirmVerdict.INCONCLUSIVE
+
+
+def _share_unknown_copy_size(copy: ArchiveMember, source: ArchiveMember | None) -> None:
+    """List a RAR5 file copy with its source's size when either size is unknown.
+
+    A copy holds no data: its bytes are its source's. When the source's size is
+    unknown (:func:`_size_left_unknown`), the copy lists no size either, whatever its
+    own header says; when only the copy's header leaves its size unknown, it lists
+    the source's. A read of the copy reads and fills the source, not the copy, so
+    a copy that lists no size keeps none.
+    """
+    if source is None:
+        return
+    raw = copy._raw
+    assert isinstance(raw, RarMemberInfo)
+    if source.size is None or raw.size_unknown:
+        copy.size = source.size
+
+
+def _known_size_floor(member: ArchiveMember) -> int:
+    """``member.size``, or ``0`` while it is unknown: for floors and estimates only.
+
+    A re-decode floor (:meth:`RarReader._solid_prefix`) or a solid-run position for the
+    re-decode record stays a floor when an unknown size counts as nothing. Never a
+    pipe offset: that needs the real size (:meth:`RarReader._drive_solid_pass`).
+    """
+    return 0 if member.size is None else member.size
+
+
+def _size_left_unknown(info: RarMemberInfo) -> bool:
+    """Whether ``info`` lists ``size=None``: a payload file no header part sizes.
+
+    A RAR5 hard link or file copy whose header leaves its size unknown counts too:
+    it packs no bytes, so nothing sizes it. A file copy whose source is known then
+    lists the source's size (:func:`_share_unknown_copy_size`). A hard link does
+    not borrow its target's: the shared listing code resolves hard-link targets
+    for every format after this reader has typed the members, so ``None`` stays.
+
+    RAR5 marks such a part with the "unpacked size unknown" flag, and the parse
+    settles the flag when a later part, or a plaintext stored member's packed size,
+    gives the size (``rar_parser._settle_unknown_stored_size``). What is left is a
+    compressed or encrypted member whose every part kept the flag. No known writer
+    leaves one (``rar a -v -si`` sizes the last part), so it is a crafted archive's.
+    Its header value (``0x7FFFFFFF7FFFFFFF`` from ``rar -si``) is a placeholder, not a
+    size. As ZIP and the single-file formats do, the member lists no size and a
+    verified read fills it in. ``unrar`` and ``unar`` decode such a member to the end
+    of its data, so a read needs no size.
+
+    The header value stays on ``RarMemberInfo.file_size``. The dictionary-memory
+    estimates (:func:`_unrar_dictionary_costs`) still use it: it is larger than any
+    dictionary, so the estimate becomes the declared dictionary, the upper bound.
+    """
+    return info.size_unknown and (info.is_payload_file() or info.is_hardlink_or_copy)
 
 
 def _presented_filename(info: RarMemberInfo) -> str:
@@ -1621,6 +1708,7 @@ class RarReader(BaseArchiveReader):
         volume_count: int = 1,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> None:
         """Open the source, parse every header, and build the member table.
 
@@ -1762,6 +1850,11 @@ class RarReader(BaseArchiveReader):
         self._end: int | None = end_offset if self._volume_set_size() <= 1 else None
         self._cost_notes = self._source_copy_notes(source)
         self._archive, self._unrar_password = self._parse_archive()
+        # A lone archive stored as a resource of the PE program it sits in: bytes
+        # after that resource are the rest of the program, not data after the
+        # archive (``_emit_trailing_data``). Decided here, while nothing else reads
+        # the source, and only when the walk found such bytes.
+        self._program_tail = self._trailing_in_program(program_resources)
         self._choose_unrar_volume_paths()
         # unrar only consults the password when something is actually encrypted, so
         # a spawn for a plain archive is not given one: nothing is decrypted with it,
@@ -1786,6 +1879,9 @@ class RarReader(BaseArchiveReader):
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
         # Each compressed member's solid run under unar (``_unar_solid_runs``).
         self._unar_runs: dict[int, SolidRun] | None = None
+        # ``_member_for`` and ``_measured_size``: a pass over members of unknown size.
+        self._members_by_raw: dict[int, ArchiveMember] | None = None
+        self._unmeasurable: set[int] = set()
         # Built once from the parse, and only when the caller chose unar: it holds the
         # refusals and the pipe layout, and none of it applies to unrar.
         self._unar_policy: UnarRarPolicy | None = (
@@ -2673,7 +2769,10 @@ class RarReader(BaseArchiveReader):
             and member._raw.is_encrypted
             and member._raw.is_payload_file()
             and member.is_file
-            and _member_stream_size(member) > 0
+            # A member of unknown size gets only a prefix probe and no full check
+            # (``_probe_unknown_size``), so a sized member judges candidates better.
+            and member.size is not None
+            and member.size > 0
             # A member whose data is cut or in a missing volume fails to decode
             # with every candidate, so it cannot judge them.
             and self._cut_data_error(member, member._raw) is None
@@ -2772,7 +2871,7 @@ class RarReader(BaseArchiveReader):
                 _no_cleanup,
             )
 
-        size = _member_stream_size(member)
+        size = member.size
         crc = raw.crc32 if not _crc_is_tweaked(raw) else None
         # Unlike the read path, a tweaked digest does not count here: it can only be
         # verified once a password is chosen, so for such a member unrar's exit code is
@@ -2792,11 +2891,15 @@ class RarReader(BaseArchiveReader):
                 return unrar_spawn(password, has_hash)
 
         def decode_check(
-            password: bytes, plan: PasswordConfirmPlan
+            password: bytes, plan: PasswordConfirmPlan | None
         ) -> tuple[bytes, PasswordConfirmVerdict]:
             stream = spawn(_password_as_str(password))
             try:
-                verdict = run_password_confirm_plan(stream, plan)
+                verdict = (
+                    _probe_unknown_size(stream, crc)
+                    if plan is None
+                    else run_password_confirm_plan(stream, plan)
+                )
             except (
                 UnsupportedFeatureError,
                 PackageNotInstalledError,
@@ -2822,6 +2925,10 @@ class RarReader(BaseArchiveReader):
                 raise _undecodable_with_candidate()
             return password, verdict
 
+        if size is None:
+            # No length to plan a prefix against: a short read would reject the
+            # right key. The probe stays bounded and has no full check.
+            return (lambda password: decode_check(password, None), None, cleanup)
         bounded = plan_password_confirm(
             [(size, crc)],
             None,
@@ -2863,14 +2970,18 @@ class RarReader(BaseArchiveReader):
         password and the member's 8-byte salt give; RAR5 with AES-256-CBC under a key
         from the password and the member's salt, and the IV in its encryption record.
         Either way the ciphertext is the plaintext padded to whole 16-byte blocks, so
-        the two sizes must agree with that. Only a member in one part qualifies: each
-        part of a split member has its own encryption record. Whether ``cryptography``
-        is installed is not part of this answer (:meth:`_decrypts_natively`).
+        the two sizes must agree with that. A member whose header leaves the size
+        unknown does not qualify (:func:`_size_left_unknown`): the padding hides
+        where its plaintext ends, and ``unrar`` reads it. Only a member in one part
+        qualifies: each part of a split member has its own encryption record.
+        Whether ``cryptography`` is installed is not part of this answer
+        (:meth:`_decrypts_natively`).
         """
         if not (
             raw.is_encrypted
             and raw.is_stored
             and not raw.encryption_unknown
+            and not raw.size_unknown
             and not raw.data_parts
             and _data_is_in_one_place(raw)
             and raw.compress_size % AES_BLOCK_SIZE == 0
@@ -3285,6 +3396,17 @@ class RarReader(BaseArchiveReader):
                 logger=logger,
             )
 
+    def _trailing_in_program(self, resources: ProgramResources | None) -> bool:
+        """Whether a lone archive's trailing bytes follow the PE program resource the
+        archive is stored in (``ProgramResources.explains``). The walk's offsets are
+        the file's own for a lone archive, as the resources' are."""
+        trailing = self._archive.trailing_data_volumes.get(0)
+        if resources is None or trailing is None or self._volume_set_size() > 1:
+            return False
+        return resources.explains(
+            trailing.archive_end, trailing.archive_end + trailing.offset
+        )
+
     def _emit_trailing_data(self) -> None:
         """Report each volume with a non-zero byte after its end-of-archive block.
 
@@ -3294,9 +3416,14 @@ class RarReader(BaseArchiveReader):
         since ``rar`` pads volumes with zeros. ``unrar`` says nothing about these
         bytes; 7-Zip warns "There are data after the end of archive" for any tail,
         zeros included. ``observed_bytes`` counts from the end of that volume's end
-        block.
+        block. Not reported for a lone archive stored as a PE program resource when
+        the byte follows that resource (``_program_tail``): it is the rest of the
+        program.
         """
-        for index, offset in sorted(self._archive.trailing_data_volumes.items()):
+        for index, trailing in sorted(self._archive.trailing_data_volumes.items()):
+            if self._program_tail:
+                continue
+            offset = trailing.offset
             where = f"volume {index + 1} of the set" if self._in_set else "RAR archive"
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
@@ -3506,7 +3633,13 @@ class RarReader(BaseArchiveReader):
             # An unknown redirect's size field is its target's length. A symlink keeps
             # that as its size, as every format lists a link; an unknown redirect is
             # not a link and holds no data, so it has no size (DR-25's OTHER).
-            size=None if info.has_unknown_redirect() else info.file_size,
+            # A payload file no header part sizes lists no size until a verified
+            # read fills it in (``_size_left_unknown``).
+            size=(
+                None
+                if info.has_unknown_redirect() or _size_left_unknown(info)
+                else info.file_size
+            ),
             compressed_size=info.compress_size,
             modified=info.mtime,
             accessed=info.atime,
@@ -3534,6 +3667,10 @@ class RarReader(BaseArchiveReader):
             extra=extra,
             _raw=info,
         )
+        if _size_left_unknown(info) and info.is_payload_file():
+            # A verified full read fills ``size`` in (``fill_size``): not final yet.
+            # Nothing fills a hard link's or a file copy's, which hold no data.
+            member._size_unread = True
         self._emit_member_diagnostics(info, member, presented, index)
         return member
 
@@ -3640,6 +3777,7 @@ class RarReader(BaseArchiveReader):
                         if source_raw.is_file_copy()
                         else source
                     )
+                    _share_unknown_copy_size(member, member.link_target_member)
             latest[member.name] = member
 
     def _open_file_copy(
@@ -3670,7 +3808,9 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 link_target=member.link_target,
             )
-        if source.size != member.size:
+        # Equal when either is unknown: ``_share_unknown_copy_size`` lists the one
+        # size, and a read of the source fills only the source.
+        if None not in (source.size, member.size) and source.size != member.size:
             raise CorruptionError(
                 f"This RAR file copy declares {member.size} bytes but its source "
                 f"{quoted(source.name)} declares {source.size}.",
@@ -3696,6 +3836,8 @@ class RarReader(BaseArchiveReader):
             expected_size=vsize,
             digest_transforms=transforms,
             verify_member=verify_member,
+            # Fills the source, whose bytes these are (``_share_unknown_copy_size``).
+            fill_size=vsize is None,
         )
 
     def _file_copy_sources(self, copies: FileCopyPass) -> FileCopySources | None:
@@ -3829,10 +3971,12 @@ class RarReader(BaseArchiveReader):
                 encrypted=self._archive_has_encryption,
             )
 
-        pipe_offset = 0
+        pipe_offset: int | None = 0
+        # Members of unknown size whose bytes sit in the pipe ahead of the cursor.
+        unplaced: list[ArchiveMember] = []
 
         def _plan(
-            member: ArchiveMember, raw: RarMemberInfo, size: int, _: bool
+            member: ArchiveMember, raw: RarMemberInfo, size: int | None, _: bool
         ) -> int | Callable[[], BinaryIO] | None:
             unknown_version = raw.unknown_compression_version()
             if unknown_version is not None:
@@ -3849,6 +3993,25 @@ class RarReader(BaseArchiveReader):
                 return None
             # ``unrar p`` writes every other payload member, in listing order.
             nonlocal pipe_offset
+            if size is None:
+                # The output is split by size, so a member of unknown size
+                # (``_size_left_unknown``) has no place in it. It is served as
+                # ``open()`` serves it, by its own run, which decodes its solid
+                # stream again. The cursor waits for its size.
+                unplaced.append(member)
+                return None
+            if pipe_offset is not None:
+                for earlier in unplaced:
+                    measured = self._measured_size(earlier)
+                    if measured is None:
+                        # Its own read failed: nothing after it can be placed, and
+                        # each later member gets its own run.
+                        pipe_offset = None
+                        break
+                    pipe_offset += measured
+                unplaced.clear()
+            if pipe_offset is None:
+                return None
             member_offset = pipe_offset
             pipe_offset += size
             return member_offset
@@ -3919,6 +4082,9 @@ class RarReader(BaseArchiveReader):
                 and not info.is_encrypted
                 and not info.encryption_unknown
                 and info.crc32 is not None
+                # The batch's output is split by size: a member of unknown size
+                # keeps its own read, which runs to the end of its data.
+                and member.size is not None
                 and info.unknown_compression_version() is None
                 and not self._can_direct_read(info)
                 and _data_is_reachable(info)
@@ -4228,7 +4394,7 @@ class RarReader(BaseArchiveReader):
         copies: FileCopyPass,
         spawn: Callable[[], BinaryIO],
         plan: Callable[
-            [ArchiveMember, RarMemberInfo, int, bool],
+            [ArchiveMember, RarMemberInfo, int | None, bool],
             int | Callable[[], BinaryIO] | None,
         ],
         *,
@@ -4318,13 +4484,16 @@ class RarReader(BaseArchiveReader):
                 )
             if not raw.is_payload_file() or not member.is_file:
                 return None
-            size = _member_stream_size(member)
+            size = member.size
             hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
             slot = self._solid_pass_slot(member, raw, plan, size, bool(hashes))
             if slot is None:
                 return self._lazy_member_stream(member, register=False)
             open_fn: Callable[[], BinaryIO]
             if isinstance(slot, int):
+                # A ``plan`` places no member of unknown size: the output is split
+                # by size.
+                assert size is not None
                 offset = slot
                 if sources is not None and sources.is_source(id(member)):
                     sources.register(id(member), offset, size)
@@ -4354,6 +4523,7 @@ class RarReader(BaseArchiveReader):
                 expected_size=vsize,
                 digest_transforms=transforms,
                 verify_member=verify_member,
+                fill_size=vsize is None,
             )
 
         def _cleanup() -> None:
@@ -4376,10 +4546,10 @@ class RarReader(BaseArchiveReader):
         member: ArchiveMember,
         raw: RarMemberInfo,
         plan: Callable[
-            [ArchiveMember, RarMemberInfo, int, bool],
+            [ArchiveMember, RarMemberInfo, int | None, bool],
             int | Callable[[], BinaryIO] | None,
         ],
-        size: int,
+        size: int | None,
         has_hash: bool,
     ) -> int | Callable[[], BinaryIO] | None:
         """Where a payload member of a solid pass is served from.
@@ -4687,7 +4857,7 @@ class RarReader(BaseArchiveReader):
             tweaked = self._tweaked_verify_spec(raw)
             if tweaked is not None:
                 expected, transforms = tweaked
-        if member.size is None and not expected:
+        if member.size is None and not expected and not member._size_unread:
             return None, None, None, None
         return expected, member.size, transforms, member
 
@@ -4709,6 +4879,9 @@ class RarReader(BaseArchiveReader):
             expected_size=size,
             digest_transforms=transforms,
             verify_member=verify_member,
+            # A member of unknown size (``_size_left_unknown``) takes its size from
+            # this read once it is verified.
+            fill_size=size is None,
             rewind_warning=rewind_warning,
         )
 
@@ -4997,6 +5170,37 @@ class RarReader(BaseArchiveReader):
             target_in_archive=in_archive,
         )
 
+    def _member_for(self, info: RarMemberInfo) -> ArchiveMember:
+        """The listed member whose parse record is ``info``."""
+        by_raw = self._members_by_raw
+        if by_raw is None:
+            by_raw = self._members_by_raw = {id(m._raw): m for m in self._members}
+        return by_raw[id(info)]
+
+    def _measured_size(self, member: ArchiveMember) -> int | None:
+        """``member.size``, read once on its own to fill it in when it is unknown.
+
+        A pass splits one program's output by size (:meth:`_iter_with_data`), and
+        a member of unknown size (:func:`_size_left_unknown`) has no length to skip
+        its bytes by. Its own run, the one ``open()`` uses, decodes it, and the
+        verified read fills ``size`` (``fill_size``). That costs one more decode of
+        its solid stream per such member, not one per member after it. When the
+        caller read the member already, its size is filled and nothing runs.
+        ``None`` when the read fails or does not fill the size; that is remembered,
+        so a failed member is not read again.
+        """
+        if member.size is None and id(member) not in self._unmeasurable:
+            try:
+                with self._lazy_member_stream(member, register=False) as stream:
+                    while stream.read(PASSWORD_CONFIRM_CHUNK_BYTES):
+                        pass
+            except ArchiveyError:
+                # The caller meets the same error when it reads the member.
+                pass
+            if member.size is None:
+                self._unmeasurable.add(id(member))
+        return member.size
+
     @override
     def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
         # Each open() of a solid member runs a fresh process. unrar decodes the
@@ -5014,9 +5218,7 @@ class RarReader(BaseArchiveReader):
         ):
             return None
         if self._unar_policy is None:
-            return SolidRun(
-                None, self._solid_prefix(member), _member_stream_size(member)
-            )
+            return SolidRun(None, self._solid_prefix(member), _known_size_floor(member))
         if uses_no_dictionary(raw):
             return None
         return self._unar_solid_runs().get(id(member))
@@ -5042,7 +5244,9 @@ class RarReader(BaseArchiveReader):
                 continue
             if not raw.file_solid or start < 0:
                 start, offset = index, 0
-            size = raw.file_size
+            # A floor where a size is unknown (``_known_size_floor``): this feeds
+            # the re-decode record only, never a pipe offset.
+            size = 0 if _size_left_unknown(raw) else raw.file_size
             if raw.is_payload_file():
                 runs[id(member)] = SolidRun(start, offset, size)
             offset += size
@@ -5074,7 +5278,8 @@ class RarReader(BaseArchiveReader):
                 continue
             if member is target:
                 return prefix
-            prefix += _member_stream_size(member)
+            # A floor: an earlier member of unknown size counts as nothing.
+            prefix += _known_size_floor(member)
         # Same payload-only walk as glob skip; _open_member is payload-only.
         raise AssertionError(
             "solid prefix target missing from the payload walk; uses member identity"
@@ -5854,7 +6059,9 @@ class RarReader(BaseArchiveReader):
                 inner = RespawnStream(
                     spawn,
                     inner,
-                    size=_member_stream_size(member),
+                    # ``None`` for a member of unknown size: the stream learns it at
+                    # the end of the program's output.
+                    size=member.size,
                     what="unrar output",
                 )
                 rewind = RewindWarning(
@@ -5906,7 +6113,7 @@ class RarReader(BaseArchiveReader):
         return self._watch_unverified_read(
             stream,
             member,
-            size=_member_stream_size(member),
+            size=member.size,
             check="no_password_check",
             format_label="RAR",
             digest="checksum",
@@ -6006,8 +6213,10 @@ class RarReader(BaseArchiveReader):
             member, self._dictionary_costs[id(member)], program="unar"
         )
         # ``unar`` answers a wrong password with no output and exit 0.
+        # Not for a member of unknown size, which may be empty: its digest judges
+        # the empty output instead.
         empty_means_wrong_password = (
-            raw.is_encrypted and _member_stream_size(member) > 0
+            raw.is_encrypted and member.size is not None and member.size > 0
         )
         index = policy.entry_index(raw)
 
@@ -6092,8 +6301,26 @@ class RarReader(BaseArchiveReader):
         def _refuse(member: ArchiveMember, reason: str) -> BinaryIO:
             raise self._unar_refused(member, reason)
 
+        # Running byte totals of the run's members of unknown size, measured in run
+        # order as later members need them: ``totals[i]`` covers the first ``i``.
+        totals = [0]
+
+        def unknown_bytes(count: int) -> int | None:
+            unknown = policy.solid_pass_unknown
+            while len(totals) <= count:
+                member = self._member_for(unknown[len(totals) - 1])
+                measured = self._measured_size(member)
+                if measured is None:
+                    # Its own read failed: nothing after it can be placed.
+                    return None
+                totals.append(totals[-1] + measured)
+            return totals[count]
+
         def _plan(
-            member: ArchiveMember, raw: RarMemberInfo, size: int, has_digest: bool
+            member: ArchiveMember,
+            raw: RarMemberInfo,
+            size: int | None,
+            has_digest: bool,
         ) -> int | Callable[[], BinaryIO] | None:
             block = self._solid_after_unknown.get(id(raw))
             if block is not None and block.same_stream:
@@ -6104,12 +6331,19 @@ class RarReader(BaseArchiveReader):
             refusal = policy.solid_pass_refusal(raw)
             if refusal is not None:
                 return lambda: _refuse(member, refusal)
-            if not has_digest:
-                # No digest would catch misplaced bytes from the shared run (above).
+            offset = policy.solid_pass_offset(raw)
+            if offset is not None:
+                # The run's bytes of each earlier member of unknown size come first.
+                skipped = unknown_bytes(policy.solid_pass_unknown_before(raw))
+                offset = None if skipped is None else offset + skipped
+            if not has_digest or offset is None:
+                # No digest would catch misplaced bytes from the shared run (above),
+                # or the run has no place for the member: one of unknown size, or
+                # one after a member whose own read failed (``_measured_size``).
                 return lambda: self._watch_unverified(
                     self._unar_member_spawner(member, raw, policy)(), member
                 )
-            return policy.solid_pass_offset(raw)
+            return offset
 
         yield from self._drive_solid_pass(copies, _spawn, _plan)
 
@@ -6234,6 +6468,7 @@ class RarReadBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> RarReader:
         del format
         return RarReader(
@@ -6248,6 +6483,7 @@ class RarReadBackend(ReadBackend):
             open_site=open_site,
             start_offset=start_offset,
             end_offset=end_offset,
+            program_resources=program_resources,
         )
 
 

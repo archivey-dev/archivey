@@ -376,6 +376,10 @@ data its pass keeps for link targets beside it.
   `max_metadata_bytes` both the decoded table's size (from the header, before
   decoding) and every full path it builds there, since nested directories make the
   paths grow with the square of the depth before any member exists (`xar_reader.py`).
+  Before parsing, it refuses a table of contents that holds a NUL byte (so not UTF-8,
+  such as UTF-16, which expat would read in a way the scan cannot see) and a tag of
+  more than 65 536 pieces (characters outside quotes, or whole quoted values), since
+  expat builds a tag's attributes before any handler can weigh them.
   makeself weighs its shell header against `max_metadata_bytes` as it reads it, parses
   it in one pass and keeps only the variables it uses; the header is parsed, never run
   (`makeself_reader.py`).
@@ -1021,7 +1025,8 @@ is the one exception to "other local processes are trusted" (§1).
   parent's descriptor and the file with `O_NOFOLLOW | O_NONBLOCK`, so a symlink on the
   path fails with `ELOOP` and a FIFO does not block. It then `fstat`s the handle and
   raises `OSError(ESTALE)` (`_changed_since_listing`) for anything that is not a regular
-  file with the listed identity and size. A listed size of 0 is exempt (procfs, sysfs).
+  file with the listed identity and size, 0 included. A procfs or sysfs file lists with no
+  size, so it reads to the end, bounded by `max_extracted_bytes` when extracted.
 - A member with no identity (`st_ino` 0: some FUSE and network mounts, or a Windows
   path the identity stat could not reach) is checked on type and size, plus, on Windows,
   a reparse-point check on its final component.
@@ -1481,9 +1486,11 @@ folder end; any ZIP, 7z or RAR3/4 unit where more than one candidate survives th
 probe, which then walks to the end anchor once per survivor; and a stored RAR3/4 member,
 decrypted in full once per candidate. Each costs time proportional to the unit, once per
 candidate, and only when the caller passes a list. For 7z, an O(1) check on the AES
-padding at the end of the packed stream settles it for a folder with 4 or more zero
-padding bytes, about three folders in four from 7-Zip or py7zr
-([7z handbook](formats/7z.md)). The rest still walk once per candidate.
+padding at the end of the packed stream settles a single static password for a folder
+with 4 or more zero padding bytes, about three folders in four from 7-Zip or py7zr
+([7z handbook](formats/7z.md)). With several candidates it only breaks a tie the anchor
+leaves: the writer chooses the last block, so a crafted archive can make a wrong
+candidate pass it. Those still walk once per candidate.
 
 ### Detection decoding scan candidates
 
