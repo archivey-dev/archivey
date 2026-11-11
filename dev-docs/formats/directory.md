@@ -181,8 +181,9 @@ still the listed one before any byte is read:
   file replaced by another (a rename over it, a delete and re-create) fails with `ESTALE`
   and a message naming the member as replaced since the directory was listed.
 - **The size must be the listed size.** A file that grew or shrank since the walk fails
-  the same way, naming both sizes. A listed size of 0 is exempt, because procfs and sysfs
-  list 0 for files that have content (§3).
+  the same way, naming both sizes, a listed size of 0 included. A file on procfs or sysfs
+  is listed with `size=None`, since those report a size that is not their content's (§3),
+  so it has no size to check (maintainer ruling, 2026-11-11).
 
 What the check does not catch: a file rewritten in place at the same size reads its new
 bytes, and a file that changes after the open reads whatever the descriptor returns. A
@@ -222,9 +223,9 @@ they would over a tar. The format-shaped outcomes are these.
   escapes.
 - **Limits** apply with `compressed_size` equal to the listed size, so the per-member
   ratio is 1:1. A file resized since the walk never reaches them: the open refuses it
-  (§2.3). The exception is a member listed at size 0, which the size check exempts: its
-  bytes do reach the limits, where the per-member ratio does not apply (`compressed_size`
-  is 0) and `max_extracted_bytes` is the bound that holds.
+  (§2.3). The exception is a procfs or sysfs file, listed with no size: its bytes do reach
+  the limits, where the per-member ratio does not apply (`compressed_size` is `None`) and
+  `max_extracted_bytes` is the bound that holds.
 - **A destination inside the root** is refused with `ExtractionError` before anything is
   written, since the walk would read the extraction's own output back as members. `cp -r`
   refuses the same request.
@@ -250,8 +251,11 @@ There are no producers; there are filesystems, and each reports `lstat` differen
   the identity `lstat`, and those files list as `FILE`.
 - **Some FUSE and network mounts** report `st_ino` 0, so their hardlinks list as separate
   files. They can also report timestamps outside `datetime`'s range, which list as `None`.
-- **procfs and sysfs** list regular files with `st_size` 0 whose read returns content
-  (`/proc/sys/kernel/random/uuid` lists 0 and reads 37 bytes). The walk does not check
+- **procfs and sysfs** report a `st_size` that is not the content's: procfs 0
+  (`/proc/sys/kernel/random/uuid` reads 37 bytes) and sysfs 4096. The walk lists their
+  regular files with `size=None`, and a read goes to the end. It finds them by device in
+  `/proc/self/mountinfo`, read once per walk, because Python has no `statfs` with the
+  filesystem magic. Where that file cannot be read, every file lists its `st_size`. The walk does not check
   `st_dev` against the root's, so a root above a mount point descends into it.
 - **A tree an archive was extracted into** is the common input. It carries whatever that
   archive carried: symlinks pointing outside the root, deep nesting, names that are not

@@ -1475,6 +1475,8 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   fails, as for a streamed tar.
 - Names come from the filesystem, so `encoding=` has no effect, and passing it reports
   `ENCODING_ARGUMENT_UNUSED`.
+- Files on Linux's `/proc` and `/sys` filesystems report a size that isn't their content's
+  (0 or 4096), so they are listed with `size` `None` and read to the end.
 
 ## Single-file compressors
 
