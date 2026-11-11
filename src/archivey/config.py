@@ -823,9 +823,10 @@ class Budget:
       check it. A byte read again after a seek back counts again: it was decoded
       again;
     - so do the bytes decoded on the way to another member: the members a solid
-      stream decodes past (a compressed TAR, cpio or RPM payload, a CAB folder, a
-      streaming ZIP's members whose end only decoding finds) and the headers between
-      them, which a compressed TAR's listing decodes too; the earlier members ``unrar``
+      stream decodes past (a compressed TAR, cpio or RPM payload, a CAB folder) and
+      the headers between them, which a compressed TAR's listing decodes too; the
+      start of each compressed member a streaming ZIP passes over (up to about 4 KiB,
+      kept in case the directory makes it a link); the earlier members ``unrar``
       or ``unar`` decodes, and does not emit, to open a solid RAR member; and a 7z
       header stored compressed, decoded at open. A member that is read is drawn once,
       where it is decoded, not again as its stream delivers it. Holes of a sparse TAR
