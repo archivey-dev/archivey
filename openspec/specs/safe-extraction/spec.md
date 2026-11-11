@@ -139,7 +139,7 @@ string checks SHALL raise `FilterRejectionError`, never a raw
 | Null byte | `FilterRejectionError` | `member.name` contains `\x00` |
 | Unrepresentable name | `FilterRejectionError` | `member.name` cannot be encoded by the platform filesystem encoding |
 | Link-target NUL / unrepresentable | `FilterRejectionError` | SYMLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
-| Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest` |
+| Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest`. Under `TRUSTED` only, a target that starts with `/` is exempt (see "Symlink Escape Re-Validated at Extraction Time") |
 | Link-target Windows root | `FilterRejectionError` | SYMLINK whose `link_target` starts with a drive letter (`C:`, `C:/x`, `C:x`) or a UNC root (two separators, `//server/share`), on every OS. Named exception: a target rooted by a single `\` (`\foo`) |
 | Refused hardlink source | `FilterRejectionError` | HARDLINK whose source (`link_target_member`, the end of its chain) was refused (see "Hardlink Two-Pass Extraction") |
 | Special file | `FilterRejectionError` | `MemberType.OTHER` device/FIFO/socket/etc. |
@@ -460,11 +460,26 @@ NOT be refused. Rechecks count against `max_entries`; once it is spent, the link
 waiting are removed unresolved and the run stops with `ResourceLimitError`. Tests:
 `tests/test_symlink_recheck.py`; rationale: `dev-docs/threat-model.md` O22.
 
+Under `TRUSTED` only, a SYMLINK whose stored target starts with `/` SHALL be written as
+stored, wherever it resolves, and is neither refused at creation nor rechecked, as GNU
+tar, cpio and unsquashfs write it: a root filesystem or initramfs image holds hundreds
+(`usr/bin/pwsh -> /opt/microsoft/powershell/7/pwsh`). `STRICT` and `STANDARD` SHALL keep
+refusing one that escapes. A drive or UNC target stays refused under every policy, and a
+target that starts with a single `\` is not one of these. No member SHALL be written
+through such a link under any policy: a later member whose parent resolves through it is
+refused by the parent check, a link whose own resolution runs through it is refused as
+an escape, a hard link to a file under it is refused with its source, and a member that
+lands on the link's own name replaces the link or is refused by `overwrite`, never
+written through it. The `archivey://` tree under `TRUSTED` lists such a link and
+resolves nothing through it. Tests: `tests/test_rooted_symlinks.py`.
+
 #### Scenario: symlink revalidation matrix
 
 | Case | Expected |
 | --- | --- |
 | Created symlink resolves outside `dest` | Link is unlinked; `FilterRejectionError`; no later data written through it |
+| `TRUSTED`; SYMLINK `etc -> /etc` (or any target from `/`), then `etc/passwd`, `etc/x/`, HARDLINK `h -> etc/passwd`, SYMLINK `r -> etc/passwd` | `etc` `EXTRACTED`, pointing at `/etc`; the four others `BLOCKED`; nothing outside `dest` changes |
+| `STRICT` or `STANDARD`; SYMLINK `etc -> /etc` | `BLOCKED`, as any escape |
 | Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `FilterRejectionError` |
 | Cyclic links (`d -> d`; `a -> b`, `b -> a`; longer loops) | The link that closes the loop is unlinked; `FilterRejectionError` with the message "Symlink target is part of a symlink loop", not the escape message; no uncaught OS/runtime error; same on every Python version |
 
@@ -606,6 +621,7 @@ non-bypassable safety checks.
 | Behavior | `STRICT` default | `STANDARD` | `TRUSTED` |
 | --- | --- | --- | --- |
 | Path, absolute-path, link-escape, special-file rejection | Always | Always | Always |
+| SYMLINK whose target starts with `/` and leads out of `dest` | Refused | Refused | Written as stored; nothing written through it |
 | Missing file/dir mode | File `0o644`, dir `0o755` | File `0o644`, dir `0o755` | Apply as stored |
 | Permission normalization | Files masked with `0o755` (execute kept when the owner has it; without owner execute, group/other execute are cleared too; group/other write stripped); dirs `0o755` | Preserve ordinary execute bits | Apply as stored |
 | setuid/setgid/sticky | Strip all | Strip all | Preserve |

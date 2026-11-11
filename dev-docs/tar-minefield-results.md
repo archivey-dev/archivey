@@ -20,7 +20,7 @@ Each case below gives a reason per run that owes one: Safest wherever it fails t
 
 | Run | Passes | GNU tar's result |
 | --- | --- | --- |
-| TRUSTED | 40 of 81 | 78 of 81 |
+| TRUSTED | 40 of 81 | 79 of 81 |
 | Defaults (STRICT) | 46 of 81 | 70 of 81 |
 | Safest (STRICT + DiagnosticPolicy.STRICT) | 71 of 81 | 45 of 81 |
 | Corpus bar (Safest + three advisory codes) | 81 of 81 | 36 of 81 |
@@ -241,9 +241,9 @@ Which field names a member, and how a path is normalized. A name another OS or r
 
 #### N07-symlink-absolute
 
-[N07](https://stoppels.ch/tar/N07.html), tolerate: GNU tar ✅ expected, tar-codec ✅ rejected, TRUSTED ✅ rejected, Defaults (STRICT) ✅ rejected, Safest ✅ rejected, Corpus bar ✅ rejected.
+[N07](https://stoppels.ch/tar/N07.html), tolerate: GNU tar ✅ expected, tar-codec ✅ rejected, TRUSTED ✅ expected, Defaults (STRICT) ✅ rejected, Safest ✅ rejected, Corpus bar ✅ rejected.
 
-- **TRUSTED**: Refused under every policy: an absolute symlink target leads outside the destination, which no ExtractionPolicy writes (GNU tar writes the link as stored). The corpus tolerates a refusal
+- **Defaults (STRICT)**: STRICT refuses a symlink whose target starts at / and leads outside the destination; TRUSTED writes it as stored, as GNU tar does. The corpus tolerates a refusal
 
 #### N08-extended-pax-path-and-gnu-long-name
 
@@ -415,7 +415,7 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [N04](https://stoppels.ch/tar/N04.html) `ustar-prefix` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [N05](https://stoppels.ch/tar/N05.html) `name-dot` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [N06](https://stoppels.ch/tar/N06.html) `name-leading-dot-slash` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
-| [N07](https://stoppels.ch/tar/N07.html) `symlink-absolute` | tolerate | ✅ expected | ✅ rejected | ✅ rejected ≠GNU | ✅ rejected ≠GNU | ✅ rejected | ✅ rejected | nothing | [why](#n07-symlink-absolute) |
+| [N07](https://stoppels.ch/tar/N07.html) `symlink-absolute` | tolerate | ✅ expected | ✅ rejected | ✅ expected | ✅ rejected ≠GNU | ✅ rejected | ✅ rejected | nothing | [why](#n07-symlink-absolute) |
 | [N08](https://stoppels.ch/tar/N08.html) `extended-pax-path-and-gnu-long-name` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | ✅ rejected | `member_header_ambiguous` | [why](#n08-extended-pax-path-and-gnu-long-name) |
 | [N09](https://stoppels.ch/tar/N09.html) `extended-two-pax-headers` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | ✅ rejected | `member_header_ambiguous` | [why](#n09-extended-two-pax-headers) |
 | [N10](https://stoppels.ch/tar/N10.html) `format-star` | reject | ❌ other | ❌ other | ❌ other | ❌ other ≠GNU | ❌ other | ✅ rejected | `member_readers_disagree` | [why](#n10-format-star) |

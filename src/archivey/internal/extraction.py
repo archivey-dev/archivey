@@ -91,6 +91,7 @@ from archivey.internal.filters import (
     check_universal,
     collision_key,
     disk_spelled,
+    is_rooted_link_target,
     policy_transform,
     resolve_or_raise_on_loop,
 )
@@ -950,6 +951,14 @@ class ExtractionCoordinator:
     def _on_disk(self) -> Callable[[str], str] | None:
         """``check_universal``'s ``link_target_on_disk``: set on a dry run only."""
         return self._dry.target_on_disk if self._dry is not None else None
+
+    def _keeps_rooted_target(self, target: str) -> bool:
+        """Whether a symlink to ``target`` (as stored) is written wherever it points:
+        a target from the filesystem root, under ``TRUSTED`` only
+        (``is_rooted_link_target``)."""
+        return self._policy is ExtractionPolicy.TRUSTED and is_rooted_link_target(
+            target
+        )
 
     def _link_target_on_disk(self, target: str) -> str:
         """The target a link is created with (see ``DryRun.target_on_disk``).
@@ -2094,6 +2103,7 @@ class ExtractionCoordinator:
                 show_os_error=self._rebase_resolved_os_error,
                 # The run resolved it once, at its start (``_RunState.dest_root``).
                 dest_resolved=True,
+                rooted_link_targets=self._policy is ExtractionPolicy.TRUSTED,
             )
         except ExtractionError as exc:
             if on_disk is not member:
@@ -2264,7 +2274,11 @@ class ExtractionCoordinator:
                 and transformed.link_target is not None
             ):
                 on_disk = self._link_target_on_disk(transformed.link_target)
-                self._state.links.track(result.path, on_disk, result_index)
+                # A link kept as stored may lead out already, so no later change can
+                # make it escape: it has nothing to recheck. Links that resolve
+                # through it are still watched, by their own walks.
+                if not self._keeps_rooted_target(transformed.link_target):
+                    self._state.links.track(result.path, on_disk, result_index)
                 if on_disk != transformed.link_target:
                     # An error names the target as stored, not with the separators
                     # or dry-run path written to disk.
@@ -3190,7 +3204,13 @@ class ExtractionCoordinator:
         # spec's "Symlink Escape Re-Validated at Extraction Time".
         # A later member can still change what this link resolves to; the caller
         # records the link in ``links`` for that.
-        problem = _symlink_problem(dest_path, on_disk, self._state.dest_root)
+        # Under TRUSTED a target from the filesystem root is written as stored and
+        # may lead out (``is_rooted_link_target``); nothing is written through it.
+        problem = (
+            None
+            if self._keeps_rooted_target(target)
+            else _symlink_problem(dest_path, on_disk, self._state.dest_root)
+        )
         if problem is not None:
             refusal = FilterRejectionError(
                 problem,

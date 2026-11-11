@@ -215,18 +215,26 @@ def test_reroot_is_a_rewrite_for_abort_on_name_sanitized(tmp_path: Path) -> None
         )
 
 
-def test_absolute_symlink_target_is_still_refused(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "policy", [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED], ids=str
+)
+def test_absolute_symlink_target_is_not_re_rooted(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """The name is re-rooted, the target never is. STANDARD refuses the link, which
+    leads out; TRUSTED writes it as stored, as GNU tar does."""
     src = _tar(tmp_path / "a.tar", [("sym", "/l", "/etc/passwd")])
     dest = tmp_path / "out"
     with open_archive(src) as r:
         report = r.extract_all(
-            dest,
-            policy=ExtractionPolicy.TRUSTED,
-            on_error="continue",
-            on_blocked="skip",
+            dest, policy=policy, on_error="continue", on_blocked="skip"
         )
-    assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert not os.path.lexists(dest / "l")
+    if policy is ExtractionPolicy.TRUSTED:
+        assert report.results[0].status is ExtractionStatus.EXTRACTED
+        assert os.readlink(dest / "l") == "/etc/passwd"
+    else:
+        assert report.results[0].status is ExtractionStatus.BLOCKED
+        assert not os.path.lexists(dest / "l")
 
 
 # --- the filter runs before the safety checks ------------------------------------------

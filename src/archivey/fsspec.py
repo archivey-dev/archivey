@@ -37,6 +37,7 @@ from archivey.internal.filters import (
     check_universal,
     collision_key,
     extraction_view,
+    is_rooted_link_target,
     resolve_or_raise_on_loop,
 )
 from archivey.internal.overrides import override
@@ -64,6 +65,7 @@ class _Refusal:
 
 
 _LOOP = _Refusal("it resolves through a symlink loop")
+_OUT = _Refusal("it resolves outside the destination")
 
 
 class _Node:
@@ -214,7 +216,12 @@ class _Tree:
                 "a symlink's target can be"
             )
         node = self._add(parent, last, kind)
-        if kind == "link":
+        if kind == "link" and is_rooted_link_target(target):
+            # Kept as stored under TRUSTED (``check_universal`` refused it under the
+            # other policies): it leads out of the destination, and no walk goes
+            # through it. Its ``target`` stays ``None``.
+            self.links.append(node)
+        elif kind == "link":
             node.target = [part for part in target.split("/") if part not in ("", ".")]
             # A link that leads out through a link made before it is refused before
             # anything is written. One that loops is found only once it is made, so
@@ -311,10 +318,12 @@ class _Tree:
     def link_destination(self, link: _Node) -> _Spot | None:
         """Where ``link`` leads once every member is written, as the destination
         resolves its target text, or ``None`` for a loop or a way out."""
+        if link.target is None:
+            return None  # a target from the filesystem root, kept as stored
         parent = cast("_Node", link.parent)
         walked = self._walk(
             parent,
-            cast("list[str]", link.target),
+            link.target,
             final=True,
             from_link=True,
             hops=0,
@@ -363,7 +372,7 @@ class _Tree:
                 if missing:
                     missing.pop()
                 elif node.parent is None:
-                    return _Refusal("it resolves outside the destination")
+                    return _OUT
                 else:
                     node = node.parent
                 continue
@@ -385,9 +394,12 @@ class _Tree:
                 missing.append(part)
                 continue
             if child.kind == "link":
+                if child.target is None:
+                    # A target from the filesystem root, kept as stored under TRUSTED.
+                    return _OUT
                 # The target is relative to the link's parent, which ``node`` is.
-                # ``check_universal`` refuses an absolute target under every policy,
-                # so no target starts at the root.
+                # ``check_universal`` refuses an absolute target under every policy
+                # but TRUSTED, and the tree never walks one (above).
                 followed = self._follow(child, node, final=final, hops=hops, deps=deps)
                 if isinstance(followed, _Refusal):
                     return followed
@@ -516,7 +528,9 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     ``reader.extract_all(dest, policy=policy)`` gives the member, into an empty
     ``dest``, and the tree leaves out what that extraction would not write: a member
     the policy refuses (a ``..`` segment, an absolute name under ``STRICT``, a name the
-    policy will not write, a symlink whose target leaves the destination), a hard link
+    policy will not write, a symlink whose target leaves the destination, except one
+    whose target starts at ``/`` under ``TRUSTED``, which is listed and resolves to
+    nothing), a hard link
     to a refused member, a member whose name collides with one before it (the
     policy's collision key: ``README`` and ``readme`` collide under ``STRICT`` and
     ``STANDARD``), a path under a file, a symlink that loops or leads out through
@@ -881,7 +895,12 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         if view.type is MemberType.SYMLINK:
             # Where its target points: a target that leaves the destination is refused
             # whatever the destination is.
-            check_universal(view, root, dest_resolved=True)
+            check_universal(
+                view,
+                root,
+                dest_resolved=True,
+                rooted_link_targets=self.policy is ExtractionPolicy.TRUSTED,
+            )
         elif view.type is MemberType.HARDLINK:
             # Extraction links to the file an earlier member was written to: with no
             # such member (none of that name, or only a later one, as hard links point

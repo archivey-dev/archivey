@@ -384,7 +384,8 @@ def test_ghsa_hjqx_j4rw_g7xv_absolute_link_into_the_destination(
     # The crate checked symlink targets lexically and never again: ``b`` pointing
     # outside, then ``a`` pointing at ``<dest>/b/sub`` (inside, by its spelling), then
     # ``a/pwned.txt`` written through both. ``b`` is refused here, and nothing is
-    # written through a link this run created.
+    # written through a link this run created. TRUSTED writes both links as stored,
+    # as GNU tar does, and still refuses the file written through them.
     dest, outside = _outside_layout(tmp_path)
     entries = [
         ("sym", "b", str(outside)),
@@ -400,8 +401,13 @@ def test_ghsa_hjqx_j4rw_g7xv_absolute_link_into_the_destination(
         overwrite=OverwritePolicy.REPLACE,
     )
     outcomes = {r.member.name: r for r in report}
-    assert outcomes["b"].status is ExtractionStatus.BLOCKED
-    assert isinstance(outcomes["b"].error, FilterRejectionError)
+    if policy is ExtractionPolicy.TRUSTED:
+        assert outcomes["b"].status is ExtractionStatus.EXTRACTED
+        assert os.readlink(dest / "b") == str(outside)
+        assert outcomes["a/pwned.txt"].status is ExtractionStatus.BLOCKED
+    else:
+        assert outcomes["b"].status is ExtractionStatus.BLOCKED
+        assert isinstance(outcomes["b"].error, FilterRejectionError)
     assert outcomes["a/pwned.txt"].status is not ExtractionStatus.EXTRACTED
     assert sorted(p.name for p in tmp_path.iterdir()) == ["dest", "outside"]
     assert [p.name for p in outside.iterdir()] == ["victim"]

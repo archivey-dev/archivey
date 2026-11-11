@@ -64,7 +64,12 @@ Paths are under `src/archivey/` unless they start with `tests/`.
 ### Extraction stays in the destination
 
 **Property.** No member writes, links or replaces anything outside the destination, and
-no member replaces the destination itself.
+no member replaces the destination itself. One link may point out: under `TRUSTED` only,
+a symlink whose stored target starts at `/` is written as stored (maintainer ruling,
+2026-11-11), as GNU tar, cpio and unsquashfs write it, so a root filesystem or an
+initramfs image extracts. The link itself changes nothing outside, and nothing is
+written through it under any policy: the parent check below refuses a member under it,
+and the escape check refuses a link that resolves through it.
 
 **Mechanism.**
 - `internal/filters.py` `check_universal` runs on every member under every policy,
@@ -89,6 +94,12 @@ no member replaces the destination itself.
   `os.path.realpath` and non-strict `Path.resolve()` keep such a component as a name
   and go on, so a link chain whose expansion passes `PATH_MAX` (`ENAMETOOLONG`) looked
   inside to them while the kernel followed it outside (CVE-2025-4517 in `tarfile`).
+- Under `TRUSTED`, `check_universal(rooted_link_targets=True)` and
+  `_write_symlink` skip the escape check for a target that starts with `/`
+  (`filters.is_rooted_link_target`), and the link is not tracked for recheck: it may
+  point out already, so no later change can make it escape. A drive or UNC target is
+  still refused, and a single `\` target is a relative name on POSIX. The
+  `archivey://` tree lists such a link and walks nothing through it.
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical

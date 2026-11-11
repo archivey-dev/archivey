@@ -277,6 +277,18 @@ SYMLINK_ESCAPES = "Symlink target escapes destination"
 SYMLINK_LOOPS = "Symlink target is part of a symlink loop"
 
 
+def is_rooted_link_target(target: str) -> bool:
+    """Whether a SYMLINK's stored ``target`` starts at the filesystem root (``/``).
+
+    Under ``TRUSTED`` such a link is written as stored, wherever it points, as GNU
+    tar, cpio and unsquashfs write it: a root filesystem or an initramfs image holds
+    hundreds (``usr/bin/pwsh -> /opt/microsoft/powershell/7/pwsh``). A drive or UNC
+    target never gets here (refused on every OS), and neither does a single-``\\``
+    target, which is a relative name on POSIX.
+    """
+    return target.startswith("/")
+
+
 def link_resolution_problem(path: Path, root: Path) -> str | None:
     """Why ``path`` does not resolve to a place inside ``root``, or ``None`` when it
     does: ``SYMLINK_LOOPS`` for a loop on the way, else ``SYMLINK_ESCAPES``. A path
@@ -453,6 +465,7 @@ def check_universal(
     link_target_on_disk: Callable[[str], str] | None = None,
     show_os_error: Callable[[OSError], None] | None = None,
     dest_resolved: bool = False,
+    rooted_link_targets: bool = False,
 ) -> None:
     """Enforce the non-bypassable universal path-safety constraints on ``member``.
 
@@ -476,6 +489,13 @@ def check_universal(
     ``dest_resolved`` says that ``dest`` is already resolved
     (:func:`resolve_or_raise_on_loop`), so it is not resolved again. The coordinator
     resolves its destination once per run and passes it so.
+
+    ``rooted_link_targets`` lets a SYMLINK whose target starts with ``/`` point where
+    its target says, inside the destination or not (:func:`is_rooted_link_target`).
+    The coordinator passes it under ``TRUSTED`` only. The target's string checks
+    still apply, and the member's own path is still checked: the link may lead out,
+    but no member is written through it, because a later member's parent must
+    resolve inside the destination.
 
     Everything here meets one of two criteria. Either the *write itself* is dangerous
     or impossible — escaping the destination, a NUL the OS truncates on, a device
@@ -558,6 +578,8 @@ def check_universal(
         # valid on POSIX, and ADR 0013 rules that extracting beats refusing. Only
         # TRUSTED keeps that `\` literal: STRICT and STANDARD write a TAR `\` as `/`,
         # so `link_target_on_disk` below turns `\foo` into `/foo`, an escape.
+        if rooted_link_targets and is_rooted_link_target(target):
+            return
         if link_target_on_disk is not None:
             target = link_target_on_disk(target)
         problem = link_resolution_problem((dest_root / name).parent / target, dest_root)
