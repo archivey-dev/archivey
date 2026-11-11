@@ -435,12 +435,12 @@ def test_probes_find_the_byte_one_byte_calls_find(
     config = replace(_CONFIG, process_isolation=ProcessIsolation.NONE)
     packed = compress(PAYLOAD[:400_000])
     rng = random.Random(name)
-    one_byte = decompressor_stream._redecode_probe
+    real_probe = decompressor_stream._redecode_probe
     for _ in range(4):
         at = rng.randrange(len(packed) // 10, len(packed) - 100)
         damaged = packed[:at] + rng.randbytes(16) + packed[at + 16 :]
         for size in (4096, 65536):
-            monkeypatch.setattr(decompressor_stream, "_redecode_probe", one_byte)
+            monkeypatch.setattr(decompressor_stream, "_redecode_probe", real_probe)
             probed = _probed_prefix(damaged, codec, size, config)
             assert probed[1] is not None, "the damage must surface as an error"
             monkeypatch.setattr(decompressor_stream, "_redecode_probe", lambda *_: 1)

@@ -1713,8 +1713,12 @@ class DecompressorStream(ReadOnlyIOStream):
         for the failing byte with probes (:func:`_redecode_probe`): a probe that gives
         all its bytes moves the search past them on the same decoder, and one that
         raises bounds where the error is and costs a restart from the seek point.
-        It hands back what came before the error, the bytes a decode that asked for
-        one output byte per call would give. The new decoder replaces the one that
+        It hands back what came before the error: the bytes a decode that asked for
+        one output byte per call would give, given that a decoder call raises if and
+        only if it asks past the failing byte, whatever sizes the calls before it asked
+        for (``test_probes_find_the_byte_one_byte_calls_find`` checks that for each
+        codec family). A decoder whose failing byte moved with the call sizes would
+        break it. The new decoder replaces the one that
         raised; the stream is spent either way, and a seek restarts it.
 
         Only on a source that can seek back, and not in a probe's stream
@@ -1749,9 +1753,12 @@ class DecompressorStream(ReadOnlyIOStream):
                             last_ask = want - len(got)
                             out = self._redecode_step(decoder, last_ask)
                             if out is None:
-                                # The input ended: the error, if any, is the end's.
+                                # The input ended. A ``flush`` that raises reaches the
+                                # handler below as a one-byte probe at ``len(got)``, so
+                                # the bytes so far come back; a clean end hands back
+                                # nothing, as the second decode did not meet the error.
                                 last_ask = 1
-                                got += decoder.flush().data
+                                decoder.flush()
                                 return b""
                             idle = 0 if out else idle + 1
                             got += out

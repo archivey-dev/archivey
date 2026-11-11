@@ -89,10 +89,11 @@ what has arrived. A short one can still wait at open, and a read past its last b
 sender to close the pipe ([Single-file compressors](formats.md#single-file-compressors) says
 where).
 
-Damaged compressed data can raise sooner from a pipe than from a file. From a file, a read that
-meets the damage first gives you every byte before it: archivey goes back and decompresses that
-part again. A pipe can't be read twice, so the read that meets the damage raises, and up to 64 KiB
-before the damage can be lost (none for gzip). On a compressed tar the decompressor reads ahead of the members, so
+Damaged compressed data can raise sooner from a pipe than from a file. From a file, a read with a
+size that meets the damage first gives you every byte before it: archivey goes back and
+decompresses that part again. (`read()` with no size raises and gives you nothing.) A pipe can't be
+read twice, so the read that meets the damage raises, and up to 64 KiB before the damage can be
+lost (none for gzip and other deflate data). On a compressed tar the decompressor reads ahead of the members, so
 damage near the start of a `.tar.xz` from a pipe can make the open fail with no members listed,
 where the same bytes in a file list the members before the damage first.
 
