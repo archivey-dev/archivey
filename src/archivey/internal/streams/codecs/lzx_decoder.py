@@ -10,7 +10,7 @@ translation was applied, which the decoder undoes frame by frame.
 The decoder follows libmspack's ``lzxd.c`` (the decoder ``cabextract`` uses), with the
 CAB parameters: no reset interval and no LZX DELTA. Where the format leaves a
 behaviour to the decoder, it does what ``lzxd.c`` does, so the two agree on every
-stream:
+stream but one kind (below the list):
 
 - a run of code lengths may write past the end of the range being read (by up to 50
   entries), into lengths the next range or the tree build sees;
@@ -28,6 +28,13 @@ stream:
   further for is refused. It reads 16 bits ahead of each Huffman symbol, and one more
   word to realign at the end of a frame, so how far it reads decides, not how many
   bits the stream uses.
+
+The one deliberate difference: a tree whose codes no longer than ``lzxd.c``'s first
+table level (6 bits for the pretree, 7 for the aligned tree, 12 for the others) already
+fill the code space, and that also has a code longer than that level, is refused as
+overfull. ``lzxd.c`` stops building once the first level is full, so it never sees the
+longer code and decodes on. No encoder writes such a tree; it comes from damage, and the
+bytes after it are wrong, so archivey refuses the stream rather than return them.
 
 Every Huffman code is at most 16 bits. Each tree decodes through a two-level table:
 a root indexed by the next ``min(longest code, 10)`` bits, and, under each root entry

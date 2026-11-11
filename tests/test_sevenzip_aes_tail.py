@@ -186,10 +186,36 @@ def test_wrong_candidates_do_not_confirm_on_the_tail(
     spies = _Spies(monkeypatch)
     passwords = ["wrong-1", "wrong-2", _PASSWORD]
     assert _read_all(archive, password=passwords) == payload
-    # The two wrong candidates found no zero tail and fell through to the anchor,
-    # which rejected them; the right one confirmed on the tail alone.
-    assert spies.tail == [False, False, True]
+    # Several candidates: the anchor goes first and settles every one (two
+    # rejections and a CRC match), so the tail is never asked.
+    assert spies.tail == []
+    assert spies.anchor == 3
+
+
+@pytest.mark.parametrize("size", [9, 23, 17], ids=["pad7", "pad9", "pad15"])
+def test_a_false_tail_confirm_does_not_stop_the_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, size: int
+) -> None:
+    # A crafted archive can choose its last block so that a wrong key decrypts it to
+    # zero padding, at any padding length. Stand in for that by making every tail
+    # check pass: with several candidates the anchor goes first, rejects the wrong
+    # one, and the right one is still tried.
+    archive, payload = _copy_aes(tmp_path, size)
+    spies = _Spies(monkeypatch)
+    monkeypatch.setattr(reader_mod, "aes_tail_confirms", lambda *_a, **_k: True)
+    assert _read_all(archive, password=["wrong-1", _PASSWORD]) == payload
     assert spies.anchor == 2
+
+
+def test_the_tail_still_confirms_a_lone_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With one candidate there is nothing a false confirm could hide.
+    archive, payload = _copy_aes(tmp_path, 9)
+    spies = _Spies(monkeypatch)
+    assert _read_all(archive, password=_PASSWORD) == payload
+    assert spies.tail == [True]
+    assert spies.anchor == 0
 
 
 def test_the_tail_picks_the_right_password_when_no_anchor_can(
@@ -211,8 +237,9 @@ def test_the_tail_picks_the_right_password_when_no_anchor_can(
     )
     passwords = ["wrong-1", _PASSWORD]
     assert _read_all(archive, password=passwords) == payload
+    # The anchor goes first for each candidate and says nothing; the tail breaks it.
     assert spies.tail == [False, True]
-    assert calls == [1]
+    assert calls == [1, 1]
 
 
 def test_the_tail_check_decodes_no_folder_bytes(
@@ -331,3 +358,39 @@ def test_a_folder_with_no_crc_confirmed_on_its_tail_is_unlocked(pad: bytes) -> N
         counts = reader.diagnostics.counts  # type: ignore[attr-defined]
         assert counts.get(DiagnosticCode.DIGEST_UNVERIFIABLE, 0) == 1
         assert counts.get(DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED, 0) == 0
+
+
+@pytest.mark.parametrize(
+    "size", [9, 12, 28, 23], ids=["pad7", "pad4", "pad4-2", "pad9"]
+)
+def test_a_folder_with_no_crc_picks_the_right_password_on_the_tail(
+    size: int,
+) -> None:
+    # With no CRC anywhere the anchor leaves every candidate INCONCLUSIVE, so the
+    # tail is the only evidence: the right password must win over a wrong one
+    # listed first.
+    import io
+
+    from tests.test_audit_sevenzip import (
+        _AES,
+        _COPY,
+        _aes_encrypt,
+        _archive,
+        _coder,
+        _header,
+        _linear,
+    )
+
+    payload = bytes((i * 7 + 3) % 251 for i in range(size))
+    packed = _aes_encrypt(payload, "pw", pad=b"\0")
+    folder = _linear([_coder(_AES, props=b"\x00"), _coder(_COPY)])
+    header = _header(
+        folders=[folder],
+        coder_unpack_sizes=[[len(payload), len(payload)]],
+        pack_sizes=[len(packed)],
+        names=["x"],
+    )
+    data = _archive(packed, header)
+    with open_archive(io.BytesIO(data), password=["wrong-1", "pw"]) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == payload

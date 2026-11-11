@@ -267,7 +267,7 @@ class MemberSpan(NamedTuple):
 
     data: BinaryIO | io.RawIOBase | None = None
     """The member's decoded bytes, for a format whose library decodes each member
-    (ARJ, ACE, a libarchive wrapper), which has no stored bytes to describe with
+    (ACE, Zoo, a libarchive wrapper), which has no stored bytes to describe with
     ``data_length``; that stays 0. The stream need only be good until the walk moves
     on: archivey reads what the caller leaves of it, up to ``member.size``, before it
     asks the walk for the next member, so the library is past it, and then closes it.
@@ -298,7 +298,7 @@ class ReaderArchiveInfo(NamedTuple):
     comment: str | None = None
     extra: Mapping[str, object] = {}
     """Format-specific values, under keys that start with the format's name
-    (``"arj.method"``)."""
+    (``"zoo.method"``)."""
 
 
 class ReaderSource:
@@ -573,6 +573,16 @@ class ReaderContext:
     # ``_spanning_check(key)`` returns the check for one spanning check of the
     # archive. Internal, set by the adapter; not for plugins.
     _spanning_check: Callable[[object], _SpanningCheck] | None = None
+    # ``_decompress_coder(data, stream_format, size)`` decodes ``data``, a container
+    # coder's whole data in ``stream_format``, as ``decompress`` does, except that a
+    # byte after the end raises ``CorruptionError`` (as for a ZIP member) instead of
+    # being reported as trailing data, and bzip2 and LZMA Alone end at their first
+    # stream, as a ZIP or 7z member's bzip2 does. Continuations the codec's data
+    # defines for a member (further xz streams and their padding, zstd and LZ4
+    # frames) still read. Internal, set by the adapter; not for plugins.
+    _decompress_coder: (
+        Callable[[BinaryIO, StreamFormat, int | None], BinaryIO] | None
+    ) = None
 
     def __init__(
         self,
@@ -1018,7 +1028,7 @@ class FormatHandler(ABC):
     ``ArchiveFormat.ZIP``, and is not registered."""
 
     extensions: ClassVar[tuple[str, ...]] = ()
-    """File extensions with the dot (``".arj"``). An extension a built-in format uses
+    """File extensions with the dot (``".zoo"``). An extension a built-in format uses
     (``".cpio"``) is refused at registration. A replacement plugin declares none: the
     built-in detection finds its files."""
 
@@ -1081,7 +1091,7 @@ class SequentialFormatHandler(FormatHandler):
     :attr:`~FormatHandler.magic` in the first 512 decoded bytes, so each magic must end
     within them. A format with no reliable magic is found there by its
     :attr:`~FormatHandler.probe` on those same 512 bytes, where the extension names it
-    inside the compressor (``.arj.gz``) or ``always_probe_content`` is set, as on an
+    inside the compressor (``.zoo.gz``) or ``always_probe_content`` is set, as on an
     uncompressed source."""
 
     @abstractmethod

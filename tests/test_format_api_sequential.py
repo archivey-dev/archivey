@@ -1735,7 +1735,7 @@ def test_decompress_misuse_is_not_offered_to_the_plugin_translator(
         open_archive(path, format=_variant(Reuses, ToysContainer.SUM16))
 
 
-# A format whose library decodes each member itself (as ARJ's or a libarchive
+# A format whose library decodes each member itself (as ACE's or a libarchive
 # wrapper's does): the reader hands each member's data over as MemberSpan.data, a
 # stream that reads the walk's own stream, good until the walk moves on.
 _ZHEADER = struct.Struct(
