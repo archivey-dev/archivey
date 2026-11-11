@@ -30,36 +30,33 @@ from archivey.types import MemberType
 _MODES = pytest.mark.parametrize("streaming", [False, True], ids=["random", "stream"])
 
 
-def _gnu_tar() -> str | None:
-    tar = shutil.which("tar")
-    if tar is None:
-        return None
+def _has_gnu_tar() -> bool:
+    if shutil.which("tar") is None:
+        return False
     try:
         version = subprocess.run(
-            [tar, "--version"], capture_output=True, check=True, text=True
+            ["tar", "--version"], capture_output=True, check=True, text=True
         ).stdout
     except (OSError, subprocess.CalledProcessError):
-        return None
-    return tar if "GNU tar" in version else None
+        return False
+    return "GNU tar" in version
 
 
-_GNU_TAR = _gnu_tar()
 needs_gnu_tar = pytest.mark.skipif(
-    _GNU_TAR is None or not hasattr(os, "link"), reason="needs GNU tar and os.link"
+    not _has_gnu_tar() or not hasattr(os, "link"), reason="needs GNU tar and os.link"
 )
 
 
 def _gnu_tar_of(tmp_path: Path, files: dict[str, bytes], *args: str) -> Path:
     """GNU tar's archive of a tree where ``b`` is a hard link to ``a``, written with
     ``tar -cf out.tar -C tree <args>``."""
-    assert _GNU_TAR is not None
     tree = tmp_path / "tree"
     (tree / "d").mkdir(parents=True)
     for name, data in files.items():
         (tree / name).write_bytes(data)
     os.link(tree / "d" / "a", tree / "d" / "b")
     out = tmp_path / "out.tar"
-    subprocess.run([_GNU_TAR, "-cf", str(out), "-C", str(tree), *args], check=True)
+    subprocess.run(["tar", "-cf", str(out), "-C", str(tree), *args], check=True)
     return out
 
 
@@ -249,12 +246,11 @@ def test_a_gnu_tar_link_keeps_the_source_before_it_when_the_source_is_appended(
 ) -> None:
     """``tar -rf`` appends a new ``./d/a`` after the link to the old one. The link
     lists its target as ``d/a`` and takes the bytes of the ``d/a`` before it."""
-    assert _GNU_TAR is not None
     tar = _gnu_tar_of(tmp_path, {"d/a": b"old"}, "./d/a", "./d/b")
     newer = tmp_path / "newer"
     (newer / "d").mkdir(parents=True)
     (newer / "d" / "a").write_bytes(b"newer")
-    subprocess.run([_GNU_TAR, "-rf", str(tar), "-C", str(newer), "./d/a"], check=True)
+    subprocess.run(["tar", "-rf", str(tar), "-C", str(newer), "./d/a"], check=True)
     with open_archive(tar) as reader:
         members = reader.members()
         assert [(m.name, m.link_target) for m in members] == [
