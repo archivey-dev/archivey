@@ -1,11 +1,12 @@
 """Fail on an added Markdown line over 100 columns, and rewrap only what a change touched.
 
 Prose here is hard-wrapped: Markdown at 100 columns under `docs/` and at 88 elsewhere,
-Python comments and docstrings at 88. Nothing checked Markdown, and `ruff format` wraps
-Python code but never a comment or a docstring, so an edited paragraph kept its new
-104-column line, or its short ragged one, until a reviewer spent a round on it. Python
-lines are now ruff's job (E501 at 100, `pyproject.toml`). This covers Markdown, and gives
-both a fixer.
+Python comments and docstrings at 88. Only `scripts/review/review_prep.py width` checked
+this, by hand and with a looser rule, and `ruff format` wraps Python code but never a
+comment or a docstring, so an edited paragraph kept its new 104-column line, or its
+short ragged one, until a reviewer spent a round on it. `review_prep.py width` now calls
+this check. Python lines are now ruff's job (E501 at 100, `pyproject.toml`). This covers
+Markdown, and gives both a fixer.
 
     python3 scripts/checks/check_line_width.py               # check, against origin/main
     python3 scripts/checks/check_line_width.py --fix         # rewrap what the change touched
@@ -13,14 +14,14 @@ both a fixer.
     python3 scripts/checks/check_line_width.py --base <ref>  # what CI passes
 
 **The check** looks only at the lines the change adds, compared with the merge base. It
-fails on one that is longer than `LIMIT` (100, the same in every folder) when the line is
-prose (a paragraph, list item or quote) and can be broken: it has a space after its
-indent, at or before the limit. Table rows, headings, code blocks, HTML, link definitions
-and lines that are one long URL are never reported. Lines that were already over are not
-either, so nobody has to clean up a file to touch it: about 740 Markdown lines over 100
-predate this check. A whole-file formatter (mdformat, Prettier) was not used for that
-reason: it rewraps every paragraph of every file it is run on, which buries the change
-under a reflow diff.
+fails on one that is longer than `LIMIT` (100, the same in every folder) when the line
+is prose (a paragraph, list item or quote) and the fixer can break it: it holds a space
+outside a `` `code span` ``, after its marker, that a wrap at the limit would use. Table
+rows, headings, code blocks, HTML, link definitions and lines that are one long URL are
+never reported. Lines that were already over are not either, so nobody has to clean up a
+file to touch it: about 740 Markdown lines over 100 predate this check. A whole-file
+formatter (mdformat, Prettier) was not used for that reason: it rewraps every paragraph
+of every file it is run on, which buries the change under a reflow diff.
 
 **The fixer** (`--fix`) rewraps each paragraph that holds an added line, in Markdown and
 in Python comment blocks and docstrings, to the file's own width (88, or 100 under
@@ -100,7 +101,7 @@ def split_lines(text: str) -> list[str]:
 
 # --- Which lines the change adds -------------------------------------------------------
 
-HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.ASCII)
 
 
 def git(*args: str) -> str:
@@ -161,17 +162,17 @@ def added_lines(base: str | None, staged: bool) -> dict[str, set[int]]:
 
 # --- Splitting text into paragraphs ----------------------------------------------------
 
-FENCE = re.compile(r"^\s*(```+|~~~+)")
+FENCE = re.compile(r"^\s*(```+|~~~+)", re.ASCII)
 QUOTE = re.compile(r"^(?:[ \t]*>[ \t]?)+")
-LIST_ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(?=\S)")
+LIST_ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(?=\S)", re.ASCII)
 #: An rST field (``:param x:``), which a docstring treats as a list item.
-FIELD = re.compile(r"^([ \t]*):[\w ]+:\s")
-HEADING = re.compile(r"^\s*#{1,6}(\s|$)")
-RULE = re.compile(r"^\s*([-*_=])(\s*\1){2,}\s*$")
+FIELD = re.compile(r"^([ \t]*):[\w ]+:\s", re.ASCII)
+HEADING = re.compile(r"^\s*#{1,6}(\s|$)", re.ASCII)
+RULE = re.compile(r"^\s*([-*_=])(\s*\1){2,}\s*$", re.ASCII)
 #: A ruled section title in a comment: "# --- Check -----", "# ==== Setup".
-SECTION_RULE = re.compile(r"^\s*([-=*#~])\1{2,}|([-=*#~])\2{3,}\s*$")
-LINK_DEF = re.compile(r"^\s*\[[^\]]+\]:\s")
-ADMONITION = re.compile(r"^\s*(!!!|\?\?\?\+?)\s")
+SECTION_RULE = re.compile(r"^\s*([-=*#~])\1{2,}|([-=*#~])\2{3,}\s*$", re.ASCII)
+LINK_DEF = re.compile(r"^\s*\[[^\]]+\]:\s", re.ASCII)
+ADMONITION = re.compile(r"^\s*(!!!|\?\?\?\+?)\s", re.ASCII)
 PRAGMA = re.compile(r"^(noqa|type:|pyright:|pyrefly:|ty:|fmt:|isort:|-\*-|!)")
 
 
@@ -372,7 +373,7 @@ CODE_SPAN = re.compile(r"(`+)(?!`).*?(?<!`)\1(?!`)")
 #: How full a line must stay when the fixer ends it early on an old line break.
 RESUME_FILL = 0.75
 #: A token that Markdown would read as a block start at the beginning of a line.
-UNSAFE_START = re.compile(r"^([#>|<]|[-*+=_]+$|\d{1,9}[.)]$|!!!|\?\?\?)")
+UNSAFE_START = re.compile(r"^([#>|<]|[-*+=_]+$|\d{1,9}[.)]$|!!!|\?\?\?)", re.ASCII)
 
 
 def tokens(text: str) -> list[tuple[str, int]]:
@@ -652,10 +653,21 @@ def reflow_python(
 
 
 def breakable(line: str, limit: int) -> bool:
-    """True when a break at a space after the indent leaves a first line within limit."""
-    start = len(line) - len(line.lstrip(" \t>-*+"))
-    space = line.find(" ", start)
-    return space != -1 and space <= limit
+    """True when `fill` would break ``line`` at ``limit``, so ``--fix`` can shorten it.
+
+    Uses the fixer's own tokens: a `` `code span` `` with spaces inside is one token, so
+    a line that is only an overlong span or URL after its marker is not reported, the
+    same as a bare URL, and a line the fixer cannot change never stays red after
+    ``--fix``.
+    """
+    stripped = line.lstrip(" \t>")
+    prefix = line[: len(line) - len(stripped)]
+    marker = LIST_ITEM.match(stripped)
+    if marker:
+        prefix += stripped[: marker.end()]
+        stripped = stripped[marker.end() :]
+    words = [word for word, _ in tokens(stripped)]
+    return len(fill(words, prefix, prefix, limit, set())) > 1
 
 
 def problems(path: str, text: str, added: set[int]) -> list[str]:

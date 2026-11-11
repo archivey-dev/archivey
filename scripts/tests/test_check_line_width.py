@@ -310,3 +310,17 @@ def test_a_quoted_path_in_the_diff_is_read() -> None:
     assert lw.parse_added(diff) == {"tab\there.md": {1}}
     diff = '--- a/x\n+++ "b/na\\303\\257ve.md"\n@@ -0,0 +1 @@\n+x\n'
     assert lw.parse_added(diff) == {"na\u00efve.md": {1}}
+
+
+def test_a_line_the_fixer_cannot_shorten_is_not_reported() -> None:
+    span = "`" + "uv sync --frozen --group dev --extra all " * 3 + "`"
+    assert lw.breakable(f"- Run {span} before the tests.", 100)
+    # After --fix the span sits alone on its line: one token, so the check passes.
+    assert not lw.breakable(f"  {span}", 100)
+    link = (
+        "[`cpio_reader.py`](https://github.com/archivey-dev/archivey/blob/main/"
+        + "x" * 60
+        + ")"
+    )
+    assert not lw.breakable(link, 100)
+    assert lw.breakable("word " * 30, 100)
