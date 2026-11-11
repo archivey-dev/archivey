@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import threading
+import time
 import warnings
 import weakref
 import zipfile
@@ -35,6 +36,7 @@ from archivey import (  # noqa: E402
 )
 from archivey.fsspec import ArchiveyFileSystem  # noqa: E402
 from tests.conftest import case_sensitive  # noqa: E402
+from tests.memory_util import traced_peak  # noqa: E402
 
 
 @pytest.fixture
@@ -293,6 +295,19 @@ def _listed(fs: ArchiveyFileSystem) -> dict[str, tuple[Any, ...]]:
     return out
 
 
+def _tree_paths(fs: ArchiveyFileSystem) -> set[str]:
+    """Every path in the file system's tree, each one ``info`` answers by its exact
+    name: a node's path is its parents' components."""
+    out: set[str] = set()
+    stack = [("", fs._get_tree().root)]
+    while stack:
+        prefix, node = stack.pop()
+        for part, child in (node.children or {}).items():
+            out.add(prefix + part)
+            stack.append((f"{prefix}{part}/", child))
+    return out
+
+
 def test_a_hard_link_to_a_symlink_reads_its_target_from_its_own_directory(
     memfs: Any, tmp_path: Path
 ) -> None:
@@ -461,8 +476,7 @@ def test_tree_matches_extraction_on_links_and_collisions(
     with ArchiveyFileSystem("memory://d/lc.tar", policy=policy) as fs:
         written = _written(dest)
         listed = _listed(fs)
-        assert fs.dir_cache is not None
-        cached = set(fs.dir_cache)
+        cached = _tree_paths(fs)
         folded: list[str] = []
         if not case_sensitive(tmp_path):
             # A disk that folds case (Windows, macOS) cannot hold these beside the
@@ -506,9 +520,93 @@ def test_a_name_nested_far_past_the_recursion_limit_is_listed(memfs: Any) -> Non
         assert fs.du("") == 4
 
 
+def test_the_tree_grows_with_the_names_not_with_their_depth() -> None:
+    """The tree holds one node per component, never a path string per directory, so
+    a name 8000 components deep in a 20 KB TAR costs memory in proportion to its
+    length: 132 MB with a full path for every ancestor (S48-K4)."""
+    data = _tar_entries([("file", "a/" * 8000 + "f", b"deep")])
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        fs.reader.members()  # the reader's own listing is not the tree's
+        peak = traced_peak(lambda: fs.ls(""))
+        start = time.perf_counter()
+        assert fs.find("") == ["a/" * 8000 + "f"]
+        elapsed = time.perf_counter() - start
+    # Measured: under 6 MB, and under 0.05 s for the walk, which lists each
+    # directory from its node, not from its path.
+    assert peak < 32 * 2**20
+    assert elapsed < 2.0
+
+
+def test_a_long_symlink_target_resolves_in_linear_time() -> None:
+    """Each component of a target is taken from the end of a stack: from the front
+    of a list, a target of 60 000 components took 8 s to list (S48-K5)."""
+    data = _tar_entries([("dir", "d", ""), ("sym", "s", "./" * 60_000 + "d")])
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        fs.reader.members()
+        start = time.perf_counter()
+        assert fs.info("s")["type"] == "directory"
+        elapsed = time.perf_counter() - start
+    # Measured: under 0.05 s. The bound is loose for slow CI runners.
+    assert elapsed < 2.0
+
+
+def test_a_link_that_many_paths_go_through_is_walked_once() -> None:
+    """A link's walk is kept once it met no missing component: 300 names under a
+    link to a directory 2000 deep, and 300 links through it, took 14 s to list when
+    each walked the target again."""
+    deep = "d/" * 2000
+    entries: list[tuple[str, str, bytes | str]] = [
+        ("dir", deep, ""),
+        ("sym", "l", deep),
+    ]
+    entries += [("file", f"l/{n}", b"%d" % n) for n in range(300)]
+    entries += [("sym", f"x{n}", "l") for n in range(300)]
+    data = _tar_entries(entries)
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        fs.reader.members()
+        start = time.perf_counter()
+        assert fs.info("x299")["type"] == "directory"
+        elapsed = time.perf_counter() - start
+        assert fs.cat("x7/7") == b"7"
+        assert fs.cat(deep + "299") == b"299"
+    # Measured: under 0.05 s.
+    assert elapsed < 2.0
+
+
+def test_a_walk_kept_for_a_refused_link_is_dropped() -> None:
+    """``p/n`` is refused (``d/L`` leads it out), and the directory ``p`` made for it
+    is removed. Its target went through ``K -> p``, which then reached that ``p``:
+    a walk kept from there would make ``M -> K/z`` miss the ``p`` made later."""
+    data = _tar_entries(
+        [
+            ("dir", "d", ""),
+            ("sym", "d/L", ".."),
+            ("sym", "K", "p"),
+            ("sym", "p/n", "../K/../d/L/.."),
+            ("file", "p/z", b"Z"),
+            ("sym", "M", "K/z"),
+        ]
+    )
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        assert fs.find("", withdirs=True) == ["K", "M", "d", "d/L", "p", "p/z"]
+        assert fs.cat("M") == b"Z"
+
+
+def test_a_closed_file_system_lists_nothing(hostile: str) -> None:
+    """``close`` drops the tree, so a listing made before it is not served after it
+    (S48-K6): ``ls`` and ``info`` raise as they do when nothing listed first."""
+    fs = ArchiveyFileSystem(hostile)
+    assert fs.ls("", detail=False)
+    fs.close()
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+    with pytest.raises(ArchiveyUsageError):
+        fs.info("c.txt")
+    assert fs._tree is None
+
+
 def test_walk_matches_fsspecs_own(memfs: Any) -> None:
     """The stack-based ``walk`` yields what fsspec's recursive one does."""
-    from fsspec.archive import AbstractArchiveFileSystem
     from fsspec.spec import AbstractFileSystem
 
     names = {"a/b/c.txt": b"1", "a/d.txt": b"2", "e/f/g/h.txt": b"3", "i.txt": b"4"}
@@ -526,12 +624,16 @@ def test_walk_matches_fsspecs_own(memfs: Any) -> None:
             theirs = list(AbstractFileSystem.walk(fs, "", **kwargs))
             assert ours == theirs, kwargs
         assert list(fs.walk("a")) == list(AbstractFileSystem.walk(fs, "a"))
-        # ``ls`` from the index matches fsspec's scan of the whole cache.
-        for path in ("", "a", "a/", "a/b", "e/f"):
-            for detail in (True, False):
-                assert fs.ls(path, detail=detail) == AbstractArchiveFileSystem.ls(
-                    fs, path, detail=detail
-                )
+        # ``ls`` lists one directory's entries, sorted, each as ``info`` gives it.
+        for path, expected in (
+            ("", ["a", "e", "i.txt"]),
+            ("a", ["a/b", "a/d.txt"]),
+            ("a/", ["a/b", "a/d.txt"]),
+            ("a/b", ["a/b/c.txt"]),
+            ("e/f", ["e/f/g"]),
+        ):
+            assert fs.ls(path, detail=False) == expected
+            assert fs.ls(path, detail=True) == [fs.info(name) for name in expected]
         # A file lists as itself, as current fsspec's ``ls`` does; the oldest
         # fsspec CI installs lists nothing, so this is not compared with it.
         for path in ("a/b/c.txt", "i.txt"):

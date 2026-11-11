@@ -143,7 +143,8 @@ archive SHALL be opened once per instance, with `seekable_members=True` and
 
 The class SHALL set `cachable = False`, and the instance SHALL own its reader: `close()`,
 and leaving `with ArchiveyFileSystem(...)`, SHALL close it, and collecting an instance
-with no open member streams SHALL close it too.
+with no open member streams SHALL close it too. After `close()`, listing and opening
+SHALL raise `ArchiveyUsageError`, also when the tree was listed before the close.
 
 The tree SHALL be the name view of `extract_all(dest, policy=policy)`: each path SHALL be
 the relative path that policy's name transform gives the member, a duplicate name SHALL
@@ -190,3 +191,6 @@ pickle. A file-object `fo` SHALL raise `TypeError` on pickling, naming the reaso
 | 1 000 distinct `archivey://m::memory://a{n}.zip` URLs opened and every reference dropped | No reader stays open |
 | `pickle.loads(pickle.dumps(fs))` with a URL `fo` | A working file system over the same archive |
 | Two threads read two members at once | Both read their members' bytes |
+| A TAR with one name 8000 components deep, listed | The tree's memory grows with the name's length, not with its square: under 32 MB |
+| A symlink whose target has 60 000 components, or 300 names under a link to a directory 2000 deep | Listing time grows with the target's length plus the number of names, not with the square of the length or with the length times the names |
+| `fs.ls("")`, then `fs.close()`, then `fs.ls("")` | `ArchiveyUsageError` |
