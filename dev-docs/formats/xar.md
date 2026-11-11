@@ -55,7 +55,11 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
 
 - **Open.** The header's TOC sizes, stored and decoded, are checked against `max_metadata_bytes` before any byte
   is decoded; the TOC is decoded with a cap of that size plus one and must end exactly
-  there. Before expat sees it, one regex pass (`_LONG_TAG`) refuses with `CorruptionError` any
+  there. Before expat sees it, a TOC holding a NUL byte is refused with `CorruptionError`:
+  expat switches to UTF-16 by itself at a BOM, a UTF-16 character can hold the bytes of
+  `<`, `>` or a quote, and the scan below reads bytes, so a UTF-16 TOC could hide a long
+  tag from it. Every UTF-16 document holds a NUL and no UTF-8 one does; Apple's xar and
+  the other writers emit UTF-8. Then one regex pass (`_LONG_TAG`) refuses with `CorruptionError` any
   tag of more than 65 536 pieces, a piece being one character outside quotes or one whole
   quoted value: expat builds a tag's whole attribute dict before any handler runs, so a 13 MB
   TOC of one element with millions of attributes took 1.67 GB, beyond the TOC byte cap

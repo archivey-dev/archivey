@@ -662,6 +662,25 @@ def test_the_tag_scan_counts_attributes_not_value_bytes() -> None:
         _open(pack_xar(xml, b"", algorithm=0), format=ArchiveFormat.XAR)
 
 
+def test_a_utf16_toc_is_refused_so_the_tag_scan_sees_what_expat_parses() -> None:
+    # In UTF-16-LE, U+4E3E is the bytes 3E 4E: a byte scan would see a ">" after
+    # each attribute name and count many short tags, while expat parses one tag
+    # and builds all its attributes. A NUL byte marks every UTF-16 TOC.
+    attrs = "".join(f' \u4e3e{i}="{i}"' for i in range(200_000))
+    xml = (
+        '<xar><toc><file id="1"' + attrs + "><name>a</name></file></toc></xar>"
+    ).encode("utf-16")
+    raw = pack_xar(xml, b"", algorithm=0)
+
+    def open_it() -> None:
+        with pytest.raises(CorruptionError, match="NUL byte"):
+            _open(raw, format=ArchiveFormat.XAR)
+
+    open_it()
+    peak = traced_peak(open_it)
+    assert peak < 4 * len(xml), peak
+
+
 def test_the_toc_size_must_match_its_header() -> None:
     xml = b"<xar><toc></toc></xar>"
     with pytest.raises(CorruptionError, match="not the 23"):

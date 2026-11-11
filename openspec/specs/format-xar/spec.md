@@ -56,7 +56,8 @@ The backend SHALL refuse with `ResourceLimitError`, before decoding it, a table 
 contents whose stored or decoded size, as the header gives them, is over
 `ListingLimits.max_metadata_bytes`, and one that lists
 more than `max_members` files, while it is parsed. It SHALL raise `CorruptionError` for a
-table of contents that does not decode to the size its header gives, is not XML, declares
+table of contents that does not decode to the size its header gives, holds a NUL byte (so
+is not UTF-8; checked before the XML is parsed), is not XML, declares
 a document type (so no entity is ever expanded), has a tag of more than 65 536 pieces (a
 character outside quotes, or one quoted value; checked before the XML is parsed), nests
 more than 2048 elements, or fails
