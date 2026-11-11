@@ -175,6 +175,7 @@ from archivey.internal.naming import (
     emit_member_name_controls,
     link_target_name_keys,
     name_controls_possible,
+    normalize_hardlink_target,
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
@@ -2626,6 +2627,11 @@ class BaseArchiveReader(ArchiveReader):
         """
         member._member_id = idx
         member._archive_id = self._archive_id
+        if member.type is MemberType.HARDLINK and member.link_target:
+            # A hard link names another member, so its target lists in that member's
+            # name form, whichever reader built it (``normalize_hardlink_target``).
+            # Done before the presentation checks below, which look the target up.
+            member.link_target = normalize_hardlink_target(member.link_target)
         # A nested reader's members are checked again, by name, as the outer
         # listing lists them (``ReaderContext.open_nested``): only once, there.
         if idx >= self._walk_presented and not self._nested_depth:

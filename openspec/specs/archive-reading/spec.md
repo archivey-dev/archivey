@@ -907,7 +907,12 @@ inherent to a single pass.
 **Target-name resolution:** hardlink targets are archive-root relative and in
 the member-name namespace: `.` and empty segments are dropped and `..` is
 **retained**, exactly as `normalize_member_name` treats a name, so `a/../b` names
-the member stored as `a/../b` and never the member `b`. Symlink targets are
+the member stored as `a/../b` and never the member `b`. Every format, built-in or
+plugin, SHALL list a hardlink's `link_target` in that normalized form, so it equals
+the `name` of the member it links to (`./b` lists as `b`, in TAR as in CPIO). A
+hardlink target that ends in `/` SHALL keep the `/`: it names a directory and SHALL
+NOT resolve to a non-directory member of the same name. Symlink targets SHALL stay
+as stored. Symlink targets are
 filesystem paths: they join to the link's directory first and `..` is collapsed.
 A hardlink target's leading `/` is kept, as in a member name, so `/a` names the member
 stored as `/a` (`tar -P` writes both), and so is a `..` that climbs out of the root:

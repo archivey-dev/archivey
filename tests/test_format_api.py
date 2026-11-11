@@ -2476,6 +2476,32 @@ def test_a_hard_link_target_is_normalized_as_names_are(
         assert reader.read("link") == b"b"
 
 
+def test_a_hard_link_target_ending_in_slash_keeps_naming_a_directory(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A plugin's ``./a/b.txt/`` target lists as ``a/b.txt/`` and does not resolve to
+    the file ``a/b.txt``, as in a built-in format."""
+
+    class Linking(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                member = record.member
+                if member.name == "link":
+                    member.type = MemberType.HARDLINK
+                    member.link_target = "./a/b.txt/"
+                    member.size = None
+                yield record
+
+    _plugin_with("hardlinks", reader=Linking)
+    data = build_toya(
+        [("a/b.txt", MemberType.FILE, b"b"), ("link", MemberType.FILE, b"")]
+    )
+    with open_archive(_write(tmp_path, data, "t.hardlinks")) as reader:
+        link = reader.get("link")
+        assert link.link_target == "a/b.txt/"
+        assert link.link_target_member is None
+
+
 def test_a_directory_with_data_is_reported(
     clean_registry: None, tmp_path: Path
 ) -> None:

@@ -87,7 +87,7 @@ in every format; the record name appears only in the message.
 | PAX `ctime` present | `ctime` is timezone-aware UTC; it never fills `created` |
 | PAX `LIBARCHIVE.creationtime` present (bsdtar, where the OS has a birth time) | `created` is timezone-aware UTC |
 | Neither PAX record | `created is None` and `ctime is None` |
-| `LNKTYPE` entry | `member.type=MemberType.HARDLINK`; `member.link_target=linkname` |
+| `LNKTYPE` entry | `member.type=MemberType.HARDLINK`; `member.link_target` is `linkname` normalized as a member name (`./b` lists as `b`; a final `/` kept) |
 | `AREGTYPE`, `REGTYPE` or `CONTTYPE` entry `d/` with 15 bytes of data, then a file | `d/` is a `DIRECTORY` with `size` 15, `MEMBER_DIRECTORY_DATA_IGNORED` is reported, `read()` returns the 15 bytes and so does the stream `stream_members()` yields for it, extraction creates the directory alone; the file after it lists and reads, in both access modes. The same holds when the slash comes from a PAX `path` or a GNU long name |
 | `AREGTYPE`, `REGTYPE` or `CONTTYPE` entry `d/` with size 0, then a file or the file `d/f` | `d/` is a `DIRECTORY` with no `size` and nothing is reported; extraction writes `d/f` inside it, in both access modes, as GNU tar 1.35 does |
 | Typeflag `9`, `z` or `N` entry `f` with 5 bytes of data, then a file; the same with size 0; typeflag `V` or `M` with 5 bytes | `f` is a `FILE` of `size` 5 that reads and extracts; with size 0, `OTHER` with no `size`, skipped by extraction; both report `MEMBER_TYPE_UNKNOWN`. `V` and `M` are `OTHER` with no `size` and no report. The file after it lists and reads, in both access modes |

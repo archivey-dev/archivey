@@ -192,8 +192,8 @@ your format stores: at least `type`, `name` and, for a file, `size`. The name is
 but not cleaned up. archivey normalizes it (`./a//b` becomes `a/b`) and reports
 `MEMBER_NAME_NORMALIZED` when that changes it, as for a built-in format. A leading `./`
 alone, or a directory's added `/`, is not reported. A hard link's `link_target` names
-another member, so archivey normalizes it the same way: give it as the archive stores
-it too.
+another member, so archivey normalizes it the same way, as in every format: give it as
+the archive stores it too.
 `ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
 UTF-8 wins, then the caller's `encoding=`, then UTF-8 with no byte lost.
 

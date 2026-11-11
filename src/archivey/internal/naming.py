@@ -384,6 +384,21 @@ def normalize_member_name(
     return name
 
 
+def normalize_hardlink_target(target: str) -> str:
+    """A hard link's stored target in the form of the member name it refers to.
+
+    A hard-link target is the earlier member's stored path (the TAR model), so it is
+    cleaned as :func:`normalize_member_name` cleans a name: ``./b`` lists as ``b``,
+    the target of a link to the member listed as ``b``. A target that ends in ``/``
+    names a directory and keeps the ``/``, as a directory's name does, so a lookup
+    does not take it for a file of the same name. A backslash stays a literal
+    character: a reader that treats it as a separator has converted it already, as
+    it does in the name.
+    """
+    member_type = MemberType.DIRECTORY if target.endswith("/") else MemberType.FILE
+    return normalize_member_name(target, member_type, backslash_is_separator=False)
+
+
 def _without_dot_prefix(presented_name: str) -> str:
     """``presented_name`` without its leading run of ``./``.
 
@@ -486,9 +501,10 @@ def resolve_link_target_name(
 
     - A **hardlink** target is archive-relative from the root (the TAR model: the
       linkname is the earlier member's own stored path), so it is in the member-name
-      namespace and cleaned the way :func:`normalize_member_name` cleans a name: ``.``
-      and empty segments dropped, ``..`` **retained**. ``a/../b`` names the member
-      stored as ``a/../b``, never the unrelated member ``b``.
+      namespace and cleaned the way :func:`normalize_hardlink_target` cleans it: ``.``
+      and empty segments dropped, ``..`` **retained**, and a final ``/`` kept, since
+      it names a directory. ``a/../b`` names the member stored as ``a/../b``, never
+      the unrelated member ``b``.
     - A **symlink** target is a filesystem path relative to the link's *own directory*
       (``dir/link -> file`` means ``dir/file``), so it is joined to that directory and
       ``..`` is collapsed, as the filesystem would resolve it.
@@ -528,7 +544,11 @@ def resolve_link_target_name(
         joined = target.lstrip("/")
         if not within_root:
             segments = [seg for seg in joined.split("/") if seg not in ("", ".")]
-            return root + "/".join(segments) if segments else None
+            if not segments:
+                return None
+            # A final "/" says the target is a directory (link_target_name_keys).
+            slash = "/" if joined.endswith("/") else ""
+            return root + "/".join(segments) + slash
     resolved = posixpath.normpath(joined)
     if resolved in (".", "/") or resolved.startswith(("../", "/")) or resolved == "..":
         return None  # escapes the archive root (or names the root itself)
