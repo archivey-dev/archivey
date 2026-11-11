@@ -338,6 +338,15 @@ requirement applies when `ArchiveyConfig.rar_decompressor` is `unrar`, or `auto`
 default) with a usable RARLAB binary found; `unar` is covered by `Read RAR member
 data with unar`.
 
+`ArchiveyConfig.unrar_path`, when set, SHALL be the only RARLAB binary tried, in place of
+the `PATH` and WinRAR-folder search, by every read and by `format_availability(config=)`;
+`unar_path` SHALL do the same for `unar`. The pinned binary SHALL pass the same
+identification (banner, version floor, and for `unar` the RAR5 check), and a missing or
+refused one SHALL raise `PackageNotInstalledError` that names the setting and SHALL NOT
+fall back to `PATH`. `AUTO` SHALL resolve with the pinned paths. Each SHALL be an absolute
+`str` or `os.PathLike[str]`, stored as `str`; a relative or empty path, a NUL, or a
+non-path SHALL be refused at construction.
+
 #### Scenario: unrar dependency matrix
 
 | Case | Expected |
@@ -356,6 +365,9 @@ data with unar`.
 | RARLAB `unrar` older than 6.0 and no usable `rar`, or a RARLAB banner with no parseable version | `PackageNotInstalledError` names the floor and the version found; refused at identification |
 | RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed member data and encrypted data archivey does not decrypt; spawn is `rar p` |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
+| `unrar_path` names a RARLAB 6.0+ binary, another on `PATH` | The pinned one is used |
+| `unrar_path` names a missing file, a usable `unrar` on `PATH` | `PackageNotInstalledError` naming `ArchiveyConfig.unrar_path`; `PATH` is not searched |
+| `unrar_path="unrar"` | `ArchiveyUsageError` (a `ValueError`) at construction |
 | Windows, nothing usable on `PATH`, WinRAR 6.0+ in Program Files | WinRAR's `UnRAR.exe` is used |
 | Listing only, both missing | No data dependency is checked |
 | Listing only, both missing, archive has a compressed RAR 1.5-4 comment | The comment is `None`; nothing else depends on a data program |
@@ -396,7 +408,10 @@ even when native headers advertise a non-zero size. Demultiplexing SHALL use
 `SolidBlockReader` (or equivalent forward-only slicing). The system SHALL
 validate each payload member's CRC32 or Blake2sp hash incrementally via the
 shared verification stage. This path MUST process the archive once, not spawn
-one subprocess per member.
+one subprocess per member. The one exception is a RAR5 member whose size no header
+part gives (below): the pipe has no length to skip its bytes by, so the pass reads
+that member with its own subprocess, once, and places the later members with the
+size that read fills in.
 
 #### Scenario: solid streaming matrix
 
@@ -743,7 +758,11 @@ from stdin but the last) SHALL NOT give the member's `size` when another source 
 the size comes from a later part that knows it, and a plaintext stored member that no
 part sizes SHALL take its whole packed size in place of the declared value, as `unrar`
 reads such a member to the end of its packed data. A member no part sizes that is
-compressed or encrypted (no known writer leaves one) keeps the declared value.
+compressed or encrypted (no known writer leaves one) SHALL list `size=None` with
+`member_state_final` false, and a verified full read SHALL fill the size in. Such a
+member SHALL be read by `unrar` or `unar` to the end of its data, a stored encrypted
+one included: its AES padding hides where the plaintext ends, and `unrar` 7.00 then
+prints the padding and fails the CRC, as the read does.
 
 #### Scenario: volume matrix
 
@@ -758,6 +777,8 @@ compressed or encrypted (no known writer leaves one) keeps the declared value.
 | Out-of-order volume | Error instead of partial or garbled output |
 | Missing volume (first, middle or last) | Members of the volumes present listed, then `TruncatedError` |
 | `rar a -v -si` set, stored or compressed | One member whose `size` is the last part's; reads, streams and extracts whole |
+| Compressed member with the size-unknown flag on every part | Lists `size=None`, `member_state_final` false; a full read returns the data and fills `size` |
+| Same, in a solid archive read by `stream_members()` | Every member reads whole; one extra `unrar` run for that member, none for the members after it |
 
 ### Requirement: A set with volumes missing SHALL list what it has, then raise
 
@@ -1259,7 +1280,8 @@ system SHALL refuse with `UnsupportedFeatureError`, before spawning `unar`:
 - every member of a multi-volume RAR5 set with encrypted headers (XADMaster 1.10.8
   returns no data for it, and exits 0);
 - in a RAR5 solid archive, a member with data that follows an empty file, a
-  directory or a link;
+  directory or a junction (a symlink, hard link or file copy before it does not
+  count: XADMaster 1.10.8 decodes it);
 - a compressed member whose extract version is below 20 (RAR 1.5 algorithm);
 - any member of a multi-volume set that has a prefix before the RAR.
 
@@ -1455,7 +1477,10 @@ record has no check value.
 ### Requirement: Report bytes after a RAR end-of-archive block
 
 After an intact end-of-archive block and any data area it declares, the walk SHALL
-look at most 1 MiB further in that volume, and a non-zero byte there SHALL emit one
+look at most 1 MiB further in that volume, and no further than the payload end
+(`archive-reading`, *Honour detection payload_offset at open*): a code-signed
+self-extractor's certificate table is identified, not data after the archive, and SHALL
+raise no diagnostic. A non-zero byte in the part it looks at SHALL emit one
 `ARCHIVE_TRAILING_DATA` per volume after the members (`format="rar"`,
 `expected_marker="zeros_to_eof"`, `observed_kind="nonzero"`, `observed_bytes` the
 offset of that byte past the end block). It is a warning by default and raises under
@@ -1477,6 +1502,8 @@ an all-zero tail silent, because `rar` pads volumes with zeros.
 | `b"JUNK"` after the end block, or after zeros within 1 MiB | `ARCHIVE_TRAILING_DATA`, `observed_bytes` = zeros skipped | `DiagnosticRaisedError` |
 | `b"JUNK"` after volume 1 of a set | Full listing; one `ARCHIVE_TRAILING_DATA` naming volume 1 | `DiagnosticRaisedError` |
 | Non-zero byte at 1 MiB or more past the end block | Nothing | Opens |
+| Signed PE SFX (WinRAR's installer): end block, certificate (`payload_end` known) | Nothing | Opens |
+| Signed PE SFX: end block, `b"JUNK"`, certificate | `ARCHIVE_TRAILING_DATA` for `JUNK`; nothing for the certificate | `DiagnosticRaisedError` |
 
 ### Requirement: A damaged header after the main header SHALL list the members before it
 

@@ -108,12 +108,41 @@ All during the gzip/zlib truncation-recovery work in 2026-07:
   `test_ppmd_raw_streams` and `test_rapidgzip_deflate_zlib` in collection order. This one
   motivated the accelerator and PPMd-stream process split.
 
+## Soak after rapidgzip moved to a child (2026-11-10)
+
+`.github/workflows/heap-corruption-soak.yml` runs recipe (1) on `ubuntu-latest`: the whole
+suite in one pytest process, serial, pytest-cov on, `PYTHONFAULTHANDLER=1`, one job per
+pass. It differs from the recipe in three ways. It sets `timeout_method=signal`, because
+the repo's `thread` method ends the whole process when one test passes 60 s, and
+`test_cut_archive_unknown_size.py::...[xar]` does that serially under coverage on a runner
+(an xz re-decode to the error point, one byte per step). It skips the unar and 7-Zip source
+builds, whose tests then skip. A job fails only when the process dies (exit 128 or more, or
+a `Fatal Python error`), so an ordinary test failure is listed but does not count.
+
+| Where | Python / install | Passes | Process deaths |
+|-------|------------------|--------|----------------|
+| `ubuntu-latest`, run 42834255485 (7a0bfab) | 3.11 `[all]` | 3 | 0 |
+| | 3.12 `[all]` | 3 | 0 |
+| | 3.13 `[all]` | 3 | 0 |
+| | 3.14 `[all]` | 3 | 0 |
+| | 3.11 `[all-lowest]` | 3 | 0 |
+| Linux container (1648599) | 3.11 `[all]` | 2 | 0 |
+
+Each CI pass ran about 21,860 tests in 25 to 47 minutes; the only test failure was the XAR
+timeout above, in every pass. `[all-lowest]` runs on 3.11 only, as in `ci.yml`: its
+floors (pyyaml 6.0 among them) do not build on 3.12 and later.
+
+Zero deaths in 17 passes bounds the per-pass rate below about 18% at 95% confidence. The
+2026-07 runs below crashed on two of the Linux legs of one run more than once, so the rate
+then was well above that. The crash is not reproduced; it is not shown fixed, because
+its cause was never found.
+
 ## Next steps
 
-Get a soak rate under recipe (1), then A/B without rapidgzip (3). If
-rapidgzip is implicated, shrink to a subprocess loop that uses it the way the suite does
-(path or `BytesIO`, truncated members, close or GC), starting from
-`scripts/investigations/dual_accelerator_repro.py` and `tests/test_accelerator_shutdown.py`. If only the
-long mixed suite flakes, treat it as CI hygiene (more process isolation, or a coverage or
-accelerator policy on Linux). Do not fold this into the PPMd stress workflow without a
-rapidgzip and long-suite axis; that job would stay green while this stays open.
+Run `heap-corruption-soak.yml` on demand after a native dependency upgrade or a change
+that brings a native decoder back into the parent process. If a pass dies, A/B without
+rapidgzip (3), then without pyppmd (4). If rapidgzip is implicated, shrink to a subprocess
+loop that uses it the way the suite does (path or `BytesIO`, truncated members, close or
+GC), starting from `scripts/investigations/dual_accelerator_repro.py` and
+`tests/test_accelerator_shutdown.py`. Do not fold this into the PPMd stress workflow; that
+job would stay green while this stays open.

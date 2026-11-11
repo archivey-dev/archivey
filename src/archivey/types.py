@@ -1,4 +1,14 @@
-"""Core data types for the Archivey public API."""
+"""Core data types for the Archivey public API.
+
+The values a caller gets back from a reader or passes to one: formats
+(:class:`ArchiveFormat` and the enums it is built from), members
+(:class:`ArchiveMember` and its ``extra``), archive-level :class:`ArchiveInfo`,
+format availability, and the extraction policies, progress and results. Readers build
+these values; nothing here reads an archive. :mod:`archivey` re-exports the names a
+caller uses, and callers should import them from there. The few it leaves out
+(:class:`MemberStreams`, :class:`MagicSignature` and :class:`TrailerSignature`) are
+used by archivey's own readers and detector, not by callers.
+"""
 
 from __future__ import annotations
 
@@ -94,6 +104,11 @@ class ContainerFormat(StrEnum):
     RPM = "rpm"
     """An RPM package, binary or source: its files, from the CPIO payload that follows
     its headers. Read in one forward pass, so from a pipe too."""
+    MAKESELF = "makeself"
+    """A makeself self-extracting archive (a ``.run`` installer): a shell script that
+    states where its payloads start, followed by one or more compressed TARs. Its
+    files are the TARs' files, payload after payload. Read in one forward pass, so
+    from a pipe too."""
     SQUASHFS = "squashfs"
     """A SquashFS 4.0 filesystem image: a snap package or a live system's root, for
     example. Needs a source that can seek."""
@@ -104,6 +119,11 @@ class ContainerFormat(StrEnum):
     CAB = "cab"
     """A Microsoft cabinet (``.cab``): Windows updates, drivers and installer
     payloads. Stored, MSZIP and LZX folders are read; needs a source that can seek."""
+    LHA = "lha"
+    """An LHA archive (``.lzh``, ``.lha``), from DOS, the Amiga and Japanese PCs.
+    Header levels 0 to 3 are read, with stored members (``-lh0-``, ``-lz4-``,
+    ``-pm0-``) and the ``-lh1-``, ``-lh4-`` to ``-lh7-``, ``-lhx-``, ``-lk7-``,
+    ``-lzs-`` and ``-lz5-`` methods; needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -124,10 +144,10 @@ class PluginContainer(StrEnum):
     A plugin subclasses it with one member per container it adds, and builds its
     :class:`~archivey.ArchiveFormat` from that member::
 
-        class LhaContainer(PluginContainer):
-            LHA = "lha"
+        class ArjContainer(PluginContainer):
+            ARJ = "arj"
 
-        LHA = ArchiveFormat(LhaContainer.LHA, StreamFormat.UNCOMPRESSED)
+        ARJ = ArchiveFormat(ArjContainer.ARJ, StreamFormat.UNCOMPRESSED)
 
     Experimental, with the rest of ``archivey.formats``: any release may change it.
     Code that matches on ``ArchiveFormat.container`` needs a default case once a plugin
@@ -187,6 +207,14 @@ class StreamFormat(StrEnum):
     """Firefox's ``mozLz40`` files (``.jsonlz4``, ``.mozlz4``, ``.baklz4``, and
     ``addonStartup.json.lz4``): one raw LZ4 block behind a magic and the decoded size.
     Needs ``lz4``, as LZ4 does."""
+    UU = "uu"
+    """uuencoded files (``.uu``, ``.uue``), including the ``begin-base64`` variant
+    ``uuencode -m`` writes. Text before the ``begin`` line (a mail or news post's
+    headers) is skipped."""
+    BASE64 = "b64"
+    """Bare base64 text (``.b64``, ``.base64``), in lines of one length or one long
+    line. Detected without such a name only when it decodes to a known format's
+    magic."""
 
 
 @dataclass(frozen=True)
@@ -264,6 +292,8 @@ class ArchiveFormat:
     LZOP: ClassVar[ArchiveFormat]
     MOZLZ4: ClassVar[ArchiveFormat]
     BZIP3: ClassVar[ArchiveFormat]
+    UU: ClassVar[ArchiveFormat]
+    BASE64: ClassVar[ArchiveFormat]
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
@@ -271,9 +301,11 @@ class ArchiveFormat:
     DEB: ClassVar[ArchiveFormat]
     CPIO: ClassVar[ArchiveFormat]
     RPM: ClassVar[ArchiveFormat]
+    MAKESELF: ClassVar[ArchiveFormat]
     SQUASHFS: ClassVar[ArchiveFormat]
     XAR: ClassVar[ArchiveFormat]
     CAB: ClassVar[ArchiveFormat]
+    LHA: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -350,6 +382,8 @@ ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_CO
 ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)
 ArchiveFormat.MOZLZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.MOZLZ4)
 ArchiveFormat.BZIP3 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP3)
+ArchiveFormat.UU = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UU)
+ArchiveFormat.BASE64 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BASE64)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(
     ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED
 )
@@ -359,11 +393,15 @@ ArchiveFormat.AR = ArchiveFormat(ContainerFormat.AR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DEB = ArchiveFormat(ContainerFormat.DEB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CPIO = ArchiveFormat(ContainerFormat.CPIO, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.RPM = ArchiveFormat(ContainerFormat.RPM, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.MAKESELF = ArchiveFormat(
+    ContainerFormat.MAKESELF, StreamFormat.UNCOMPRESSED
+)
 ArchiveFormat.SQUASHFS = ArchiveFormat(
     ContainerFormat.SQUASHFS, StreamFormat.UNCOMPRESSED
 )
 ArchiveFormat.XAR = ArchiveFormat(ContainerFormat.XAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CAB = ArchiveFormat(ContainerFormat.CAB, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.LHA = ArchiveFormat(ContainerFormat.LHA, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -701,6 +739,10 @@ class CompressionAlgorithm(Enum):
     LZX = "lzx"
     """Microsoft's LZX, as cabinets store it: LZ77 with Huffman codes over a window
     of 32 KiB to 2 MiB."""
+    LZH = "lzh"
+    """LHA's LZ77 methods: with Huffman codes, ``-lh1-`` to ``-lh7-`` and their kin,
+    and without, LArc's ``-lzs-`` and ``-lz5-``. ``ArchiveMember.extra["lha.method"]``
+    names the exact method."""
     QUANTUM = "quantum"
     """Quantum, an older cabinet method. archivey lists its members but cannot read
     them."""
@@ -968,9 +1010,21 @@ class MemberExtra(dict[str, object]):
       ``size`` stays ``None`` until a full read fills it in.
     * ``lzop.original_filename`` (``str``) — the name the lzop header stores, as
       ``gzip.original_filename`` is for gzip.
+    * ``uu.original_filename`` (``str``) — the name a uuencode ``begin`` line
+      stores, decoded as UTF-8 (other bytes kept as surrogates). The member keeps the
+      name it gets from the file's own name; ``raw_name`` holds the stored bytes.
     * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
       stripped from the name. Versions of one name share it; the highest is
       listed last and is the current one.
+    * ``lha.method`` (``str``) — the LHA method id as stored (``"-lh5-"``), or
+      ``"-lk7-"`` for LHARK's own ``-lh7-``.
+    * ``lha.header_level`` (``int``) — the LHA header level, 0 to 3.
+    * ``lha.os_id`` (``str``) — the one-character OS id an LHA header names
+      (``"U"`` for LHa for UNIX, ``"M"`` for DOS), when it has one.
+    * ``lha.mac_type`` (``bytes``) — the Mac file type code (``b"TEXT"``) of a MacLHA
+      member whose MacBinary wrapper archivey strips; the member then reads as its
+      data fork, or as its resource fork when the data fork is empty.
+    * ``lha.mac_creator`` (``bytes``) — that member's Mac creator code (``b"ttxt"``).
     """
 
     __slots__ = ()
@@ -1030,7 +1084,19 @@ class MemberExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["lzop.original_filename"], /) -> str: ...
     @overload
+    def __getitem__(self, key: Literal["uu.original_filename"], /) -> str: ...
+    @overload
     def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.method"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.header_level"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.os_id"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.mac_type"], /) -> bytes: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.mac_creator"], /) -> bytes: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
@@ -1068,6 +1134,13 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``rpm.source`` (``bool``)
     * ``rpm.signed`` (``bool``)
     * ``rpm.payload_compressor`` (``str``)
+    * ``makeself.label`` (``str``)
+    * ``makeself.script`` (``str``)
+    * ``makeself.target_dir`` (``str``)
+    * ``makeself.compression`` (``str``)
+    * ``makeself.encryption`` (``str``)
+    * ``makeself.payloads`` (``int``)
+    * ``makeself.signed`` (``bool``)
     """
 
     __slots__ = ()
@@ -1112,6 +1185,20 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["rpm.signed"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["rpm.payload_compressor"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.label"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.script"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.target_dir"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.compression"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.encryption"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.payloads"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["makeself.signed"], /) -> bool: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
@@ -1175,7 +1262,12 @@ class ArchiveMember:
     - A 7z member stored with no name is named after the archive source, and
       ``raw_name`` is ``b""``.
     - A RAR5 file-version-history member gets a ``;n`` suffix in ``name`` (as
-      WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it."""
+      WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it.
+    - LHA: ``raw_name`` is the directory record and the name joined with ``/``, with
+      ``0xFF`` separators turned into ``/``, without an Amiga file note (the bytes
+      after a NUL, which go to ``comment``) and, for a symlink, without the
+      ``|target`` after the name (kept when a ``0x7C`` byte in the name is the
+      second byte of a cp932 character, as the cut cannot be placed in the bytes)."""
 
     size: int | None = None
     """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry).

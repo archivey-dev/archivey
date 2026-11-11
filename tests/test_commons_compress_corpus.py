@@ -23,9 +23,9 @@ reads it.
 
 Triage (2026-10-28, CC master ``0c20ded``, 1.29.0-SNAPSHOT), in the report's groups:
 
-* **MISSING FORMAT** CC reads LHA, dump, ARJ and Snappy, which Archivey does not
+* **MISSING FORMAT** CC reads dump, ARJ and Snappy, which Archivey does not
   implement. ZIP Implode and Shrink, once on this list, now read and match CC on all
-  five of CC's archives (140 members).
+  five of CC's archives (140 members), and LHA on all fifteen of CC's LHA archives.
 * **POLICY** Archivey refuses, as the format's own tool does: a TAR header with a wrong
   checksum, bytes after a member's Deflate stream (DR-3), and two 7z headers 7-Zip
   calls Headers Error.
@@ -74,26 +74,6 @@ SLOW = frozenset({"8.posix.tar.gz", "8.star.tar.gz"})
 # Every file where Archivey's result from a path differs from CC's. A file both refuse
 # without listing a member is agreement and needs no entry (see ``agrees_with_cc``).
 _TRIAGE: dict[str, str] = {
-    **dict.fromkeys(
-        (
-            "bla.lha",
-            "test-amiga-l0-lh4.lha",
-            "test-amiga-l2.lha",
-            "test-macos-l0-lh5-rle.lha",
-            "test-macos-l0-lh5.lha",
-            "test-macos-l0-lh6.lha",
-            "test-macos-l0-lh7.lha",
-            "test-macos-l0.lha",
-            "test-macos-l1.lha",
-            "test-macos-l2.lha",
-            "test-msdos-l0-lz4.lzs",
-            "test-msdos-l0.lha",
-            "test-msdos-l1.lha",
-            "test-msdos-l2-attrib.lha",
-            "test-msdos-l2.lha",
-        ),
-        "MISSING FORMAT: LHA",
-    ),
     **dict.fromkeys(
         (
             "archive_with_trailer.dump",
@@ -203,7 +183,6 @@ _PIPE_TRIAGE: dict[str, str] = {
         (
             "org/apache/commons/compress/COMPRESS-649/some-900kb-text.txt",
             "COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip_zip64.z02",
-            "test-macos-l0-lh6.lha",
         ),
         "BROTLI PROBE: accepted from a pipe, which has no length for the probe's completion check, then fails on read",
     ),

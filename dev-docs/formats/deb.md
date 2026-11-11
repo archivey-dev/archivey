@@ -53,8 +53,9 @@ matches wins and ar's `!<arch>\n` matches a package too. The extensions are `.de
 
 `DebReader.walk` checks the ar magic, reads `debian-binary` (its size counted against
 `max_metadata_bytes` before the read, since `dpkg-deb` allocates whatever the header
-gives; the major version must be 2: `dpkg-deb` reads 2.x and refuses others), skips `_` members, and hands each tar to
-`open_nested` through `stream.take(size)`:
+gives; the major version must be 2: `dpkg-deb` reads 2.x and refuses others, and the
+digits are compared as bytes, since `int()` refuses more than 4300 of them), skips `_`
+members, and hands each tar to `open_nested` through `stream.take(size)`:
 
 - **Control tar.** Each member is renamed under `DEBIAN/`; the tar's `./` root becomes
   `DEBIAN/` itself. `control` and `md5sums` are read whole as they pass (their size first
@@ -63,7 +64,10 @@ gives; the major version must be 2: `dpkg-deb` reads 2.x and refuses others), sk
   listing walk; a walk started over to reach a member read out of order charges nothing,
   and the charge comes off when the listing ends), and the span is yielded with those
   bytes as its data. `control`'s first paragraph gives `extra["deb.package"]`,
-  `["deb.version"]` and `["deb.architecture"]`; `md5sums` gives a name-to-digest map.
+  `["deb.version"]` and `["deb.architecture"]`; `md5sums` gives a name-to-digest map,
+  read a line at a time, each entry charged as it is added: its name at the width
+  CPython stores it (1, 2 or 4 bytes a character, so one emoji makes a long name four
+  times its UTF-8 bytes), its digest and its share of the dict.
   Open takes only the first walk step (the control tar's `./`), so the `deb.*` keys are
   missing on every source until the listing or iteration reaches `control`.
 - **Data tar.** Members keep their names (the tar's `./` root lists as `.`, as reading the

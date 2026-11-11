@@ -100,6 +100,7 @@ from archivey.internal.naming import emit_member_name_normalized, normalize_memb
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.source import ArchiveSource
@@ -134,8 +135,13 @@ from archivey.internal.streams.streamtools import (
     read_arrived,
     source_byte_size,
 )
-from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.streamtools.binaryio import (
+    ReadableStream,
+    read_blocking,
+    read_within_reach,
+)
 from archivey.internal.streams.verification import (
+    SpanningCheckError,
     ask_verification_proofs,
     drop_spanning_ceiling,
     mark_spanning_checksum,
@@ -293,12 +299,19 @@ class _PluginAdapter(BaseArchiveReader):
             open_nested=self._open_nested,
             usage=self._usage,
         )
+        context._spanning_check = self._new_spanning_check
+        context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)
         self._reader_open = True
 
     def _open_reader(self, context: ReaderContext) -> FormatReader:
         """Call the plugin's ``open``, and check what it returned."""
         raise NotImplementedError
+
+    def _new_spanning_check(self, key: object) -> SpanningCheck:
+        """``ReaderContext._spanning_check()``: a check over several members' data
+        that the reader runs itself, named ``key``."""
+        return SpanningCheck(self, key)
 
     def _wrong_reader(self, reader: object, method: str, noun: str) -> NoReturn:
         # Every interface check raises through ``_plugin_bug()``, wherever it runs.
@@ -311,7 +324,7 @@ class _PluginAdapter(BaseArchiveReader):
 
     def _refuse_codec_off_by_policy(self, method: object) -> None:
         """Refuse a codec ``config.formats`` turns off, before its code runs."""
-        if not isinstance(method, (StreamFormat, PluginStream)):
+        if not isinstance(method, (StreamFormat, PluginStream, CompressionAlgorithm)):
             return
         refusal = self._config.formats._codec_refusal(method)
         if refusal is not None:
@@ -319,14 +332,27 @@ class _PluginAdapter(BaseArchiveReader):
                 refusal, source_format=self._format, archive_name=self._archive_name
             )
 
+    def _decompress_coder(
+        self, data: BinaryIO, stream_format: StreamFormat, size: int | None
+    ) -> BinaryIO:
+        """``ReaderContext._decompress_coder``: ``stream_format`` data that is a
+        container coder's whole data, decoded as a member's method is: bzip2 and LZMA
+        Alone end at their first stream, and a byte after the end is refused."""
+        return self._decompress(data, stream_format, size, None, whole_file=False)
+
     def _decompress(
         self,
         data: BinaryIO,
         method: CompressionAlgorithm | AnyStreamFormat,
         size: int | None,
         properties: bytes | None,
+        *,
+        whole_file: bool = True,
     ) -> BinaryIO:
-        """``ReaderContext.decompress``: ``data`` through archivey's codec layer."""
+        """``ReaderContext.decompress``: ``data`` through archivey's codec layer.
+
+        ``whole_file=False`` (``_decompress_coder``) keeps the member decoder
+        config's ``refuse_input_after_end`` for a stream format too."""
         self._refuse_codec_off_by_policy(method)
         is_stream = isinstance(method, (StreamFormat, PluginStream))
         codec: CodecId | None
@@ -344,13 +370,13 @@ class _PluginAdapter(BaseArchiveReader):
                 archive_name=self._archive_name,
             )
         params = self._codec_params(
-            codec, method, size, properties, is_stream=is_stream
+            codec, method, size, properties, is_stream=is_stream and whole_file
         )
         # Per call, as ZIP fills them per member (``_member_decoder_config``): the
         # output size, and the input size while ``data`` is at its start. The
         # accelerators choose by them, and rapidgzip's length check needs the first.
         changes: dict[str, Any] = {"expected_decompressed_size": size}
-        if is_stream:
+        if is_stream and whole_file:
             # A whole stream reads as a file of its format does: bytes after its end
             # are reported (``ARCHIVE_TRAILING_DATA``), not refused. Most stream
             # codecs have no refusal; the report is what they all share.
@@ -384,14 +410,19 @@ class _PluginAdapter(BaseArchiveReader):
     ) -> CodecParams:
         """The codec parameters for one ``decompress`` call: what ``codec`` needs
         beyond the bytes, read from the call's ``size`` and ``properties``.
-        ``is_stream`` says ``method`` is a whole stream format, not a member's
-        compression method."""
-        # Only a bzip2 member is one stream, as in ZIP and 7z: a further stream after
-        # its end is refused. Zstd and LZ4 data may be several frames, read together
-        # (RFC 8878, the LZ4 frame format), and the other codecs read no flag. A
-        # stream format is read as a file of that format is, so a ``.bz2`` stream may
-        # hold several, as bzip2 itself decodes them.
-        params = CodecParams(single_stream=codec is Codec.BZIP2 and not is_stream)
+        ``is_stream`` says ``method`` is a stream format read as a whole file
+        (``decompress``), not a member's method or a container coder's data
+        (``_decompress_coder``)."""
+        # A bzip2 member is one stream, as in ZIP and 7z: a further stream after its
+        # end is refused. So is LZMA Alone, which has no further streams of its own,
+        # in a container coder (``_decompress_coder``, a XAR member). Zstd and LZ4 data
+        # may be several frames, read together (RFC 8878, the LZ4 frame format), and xz
+        # several streams with their padding, as a ZIP xz member may. A stream format
+        # read as a file (``decompress``) is read as a file of that format is, so a
+        # ``.bz2`` stream may hold several, as bzip2 itself decodes them.
+        params = CodecParams(
+            single_stream=not is_stream and codec in (Codec.BZIP2, Codec.LZMA_ALONE)
+        )
         if isinstance(method, PluginStream):
             # A registered codec parses its own properties (``CodecCall``).
             params = CodecParams(unpack_size=size, properties=properties)
@@ -555,6 +586,10 @@ class _PluginAdapter(BaseArchiveReader):
             # it stays the ceiling of the members it covers, which verify_all()
             # returns. An xz or bzip2 check failure reads as damage, handled below.
             self._spanning_check_ran("codec")
+            raise
+        except SpanningCheckError:
+            # A check the reader ran failed (``SpanningCheck.failed``), which records
+            # the members it covers itself.
             raise
         except ArchiveyError as e:
             # Damage ended the walk before the outer codec's end, so its checksum
@@ -832,7 +867,7 @@ class _PluginAdapter(BaseArchiveReader):
         with self._translated_errors(), self._handle_guard():
             info = self._reader.archive_info()
         cost = self._cost(info)
-        # A plugin's keys are its own, namespaced by its format (``"lha.method"``), so
+        # A plugin's keys are its own, namespaced by its format (``"arj.method"``), so
         # they are not in the inventory of built-in keys and are copied in as data. A
         # built-in format-API reader's keys (``"cpio.variant"``) are in that inventory.
         extra = ArchiveInfoExtra()
@@ -888,12 +923,35 @@ class IndexedReaderAdapter(_PluginAdapter):
     """Serves an :class:`~archivey.formats.IndexedReader` through the internal reader
     contract."""
 
+    # The archive's region inside the source, ``[_origin, _region_end)``: set only for
+    # a built-in format that ships behind a self-extracting stub (``SFX_MAGIC``), from
+    # detection's ``payload_offset`` and ``payload_end`` (``ReadBackend.open_read``).
+    # The reader sees the region as its whole source.
+    def __init__(
+        self, *args: Any, region: tuple[int, int | None] = (0, None), **kwargs: Any
+    ) -> None:
+        self._origin, self._region_end = region
+        super().__init__(*args, **kwargs)
+
+    @override
+    def _will_read(self, start: int, end: int) -> None:
+        # The reader's offsets count from the region's start.
+        super()._will_read(self._origin + start, self._origin + end)
+
     @override
     def _open_reader(self, context: ReaderContext) -> IndexedReader[Any]:
         source = self._source
         assert source is not None
+        region: BinaryIO = source
+        if self._origin or self._region_end is not None:
+            end = self._region_end
+            region = SlicingStream(
+                source,
+                start=self._origin,
+                length=None if end is None else max(0, end - self._origin),
+            )
         self._shared = shared = SharedSource(
-            source, wrap_handle=self._seek_handle_wrapper()
+            region, wrap_handle=self._seek_handle_wrapper()
         )
         plugin_source = ReaderSource(
             self._marked_view, shared.size, source.path, shared.read_at
@@ -1113,6 +1171,48 @@ def _outer_copy(member: ArchiveMember) -> ArchiveMember:
     # listing does not look for it in the data, nor report it again.
     copy._link_target_resolved = member._link_target_resolved
     return copy
+
+
+class SpanningCheck:
+    """A check over the data of several members that a built-in reader runs itself,
+    such as a makeself payload's MD5, which covers every file of the TAR in it.
+
+    The reader calls :meth:`cover` on each member the check covers before yielding
+    it, and :meth:`passed` or :meth:`failed` once the check ran. Until it passes, a
+    covered file's ``verifiable`` is ``CHECKSUM``, as for a ``.tar.gz`` trailer; a
+    pass raises every covered file to ``CHECKSUM``, read or not, and a failure makes
+    each one a failure of ``verify_all()``. A walk that stops before the check runs
+    leaves the covered files as failures too (``_note_spanning_unreachable``).
+    """
+
+    __slots__ = ("_adapter", "_covers", "_key")
+
+    def __init__(self, adapter: _PluginAdapter, key: object) -> None:
+        self._adapter = adapter
+        self._key = key
+        self._covers: list[ArchiveMember] = []
+
+    def cover(self, member: ArchiveMember) -> None:
+        """Count ``member`` as covered, if it is a file: other members have no data."""
+        if member.is_file:
+            mark_spanning_checksum(member)
+            self._covers.append(member)
+
+    def passed(self) -> None:
+        """The check matched: every covered file is checked."""
+        self._adapter._spanning_check_ran(self._key)
+        for member in self._covers:
+            raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+
+    def failed(self, message: str) -> SpanningCheckError:
+        """The check did not match. Returns the error for the reader to raise; every
+        later ``verify_all()`` returns each covered file with it."""
+        error = SpanningCheckError(message, covers=tuple(self._covers))
+        error.archive_name = self._adapter._archive_name
+        # Kept until a later walk passes the check: a read of a covered member that
+        # stops before the payload's end does not run it again.
+        self._adapter._spanning_unreachable[self._key] = error
+        return error
 
 
 class _NestedData(io.RawIOBase):
@@ -1357,6 +1457,23 @@ class _Decoded:
 _SKIP_BY_READING = 64 * 1024
 # The walk's read buffer: headers are small reads.
 _WALK_BUFFER = 64 * 1024
+
+
+class _BlockingReads:
+    """A ``read`` that refuses a non-blocking stream's ``None`` (``read_blocking``),
+    as the inner of ``read_within_reach``."""
+
+    __slots__ = ("read",)
+
+    def __init__(self, read: Callable[[int], bytes]) -> None:
+        self.read = read
+
+
+# What one read of header bytes may ask the walk's stream for at a time. A header read
+# larger than this is served in steps of it, so a size field that lies costs at most
+# one step more than the bytes the stream really has (``tar_parser.READ_STEP`` is the
+# same size).
+_HEADER_READ_STEP = 64 * 1024
 
 
 class _ForwardInput(ReadOnlyIOStream):
@@ -1739,8 +1856,26 @@ class SequentialReaderAdapter(_PluginAdapter):
                     )
                 left -= len(chunk)
 
+        # Each step refuses a ``None`` read, as ``skip`` does: ``read_within_reach`` takes
+        # its inner's results as bytes.
+        refusing = cast(
+            "ReadableStream", _BlockingReads(functools.partial(read_blocking, stream))
+        )
+
+        def read(n: int) -> bytes:
+            # A walk reads header bytes a size field of the archive asked for, so the
+            # read must not allocate what the field says before the stream shows it
+            # has the bytes (threat model, "Allocations sized by a header field").
+            # A plain file of known size clamps the read to what is left, as ``skip``
+            # trusts that size: no step copies, so a large honest table (an ar ``//``
+            # member) costs one buffer, not the steps and their join.
+            remaining = size - stream.tell() if seekable and size is not None else None
+            return read_within_reach(
+                refusing, n, remaining=remaining, step=_HEADER_READ_STEP
+            )
+
         layer.forward = ForwardStream(
-            functools.partial(read_blocking, stream),
+            read,
             skip,
             functools.partial(self._decompress_layer, walk, layer),
         )
@@ -2626,14 +2761,9 @@ class _PluginBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> _PluginAdapter:
-        reject_start_offset(start_offset, format, archive_name, end_offset)
-        adapter = (
-            SequentialReaderAdapter
-            if issubclass(self.PLUGIN, SequentialFormatHandler)
-            else IndexedReaderAdapter
-        )
-        return adapter(
+        common = (
             self.PLUGIN(),
             source,
             format,
@@ -2641,9 +2771,25 @@ class _PluginBackend(ReadBackend):
             encoding if self.USES_ENCODING else None,
             archive_name,
             config,
-            collector=collector,
-            member_streams=member_streams,
-            open_site=open_site,
+        )
+        options: dict[str, Any] = {
+            "collector": collector,
+            "member_streams": member_streams,
+            "open_site": open_site,
+        }
+        if issubclass(self.PLUGIN, SequentialFormatHandler):
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
+            return SequentialReaderAdapter(*common, **options)
+        # Only a built-in format that declares SFX magic is handed a region, which its
+        # reader reads as the whole source (``IndexedReaderAdapter``).
+        if not self.SFX_MAGIC:
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
+        return IndexedReaderAdapter(
+            *common, region=(start_offset, end_offset), **options
         )
 
 
@@ -2833,6 +2979,7 @@ REPLACEABLE_CONTAINERS = frozenset(
         ContainerFormat.SQUASHFS,
         ContainerFormat.XAR,
         ContainerFormat.CAB,
+        ContainerFormat.LHA,
     }
 )
 

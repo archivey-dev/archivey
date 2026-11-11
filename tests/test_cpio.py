@@ -784,7 +784,22 @@ def test_an_afio_time_past_the_datetime_range(mtime: int) -> None:
     OverflowError or ValueError."""
     data = _afio_large_member(b"f", b"x", ino=1, uid=0, mtime=mtime) + _odc_trailer()
     with open_archive(io.BytesIO(data)) as reader:
-        assert [m.modified for m in reader.members()] == [None]
+        (member,) = reader.members()
+    assert member.modified is None
+    codes = [d.code for d in member.diagnostics]
+    assert codes == [DiagnosticCode.MEMBER_TIMESTAMP_INVALID]
+
+
+def test_an_unknown_file_type_is_listed_as_other_and_reported(tmp_path: Path) -> None:
+    """File-type bits no Unix type uses: OTHER, the type recorded as ``"unknown"``,
+    as every format records it, and reported."""
+    data = _newc((b"odd", 0o030644, 1, 1, b""))
+    with open_archive(_archive(tmp_path, data)) as reader:
+        (member,) = reader.members()
+    assert member.type is MemberType.OTHER
+    assert member.extra["special_file_type"] == "unknown"
+    codes = [d.code for d in member.diagnostics]
+    assert codes == [DiagnosticCode.MEMBER_TYPE_UNKNOWN]
 
 
 def test_afio_large_header_damage(tmp_path: Path) -> None:
@@ -863,7 +878,7 @@ def test_a_compressed_cpio_with_no_check_drops_the_ceiling(streaming: bool) -> N
     # so the format adapter drops the ceiling to LENGTH.
     data = lzma.compress(_SPANNED, check=lzma.CHECK_NONE)
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         files = [m for m in reader.members_report().members if m.is_file]
     assert {(m.verified, m.verifiable) for m in files} == {(_V.LENGTH, _V.LENGTH)}
 
@@ -876,7 +891,7 @@ def test_a_compressed_cpio_cut_in_its_footer_keeps_the_ceiling(
     # and verify_all() returns them as failures.
     data = gzip.compress(_SPANNED)[:-6]
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         files = [m for m in reader.members_report().members if m.is_file]
     assert sorted(m.name for m, _e in failures) == ["a", "b"]
     assert {(m.verified, m.verifiable) for m in files} == {(_V.LENGTH, _V.CHECKSUM)}
@@ -889,5 +904,5 @@ def test_a_compressed_cpio_cut_in_its_footer_fails_after_listing_and_again() -> 
     with open_archive(io.BytesIO(data)) as reader:
         reader.members_report()
         for _ in range(2):
-            failures = reader.verify_all()
+            failures = reader.verify_all().failures
             assert sorted(m.name for m, _e in failures) == ["a", "b"]

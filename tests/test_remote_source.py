@@ -500,6 +500,29 @@ def test_a_compressed_open_file_records_that_no_change_is_checked(memfs):
     assert info.diagnostics.counts.get(DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE) == 1
 
 
+def test_a_compressed_open_file_s_diagnostic_hides_the_url_s_credentials(
+    memfs, monkeypatch
+):
+    """The decompressed branch names the URL as :func:`display_url` shows it, like
+    the range-read branch: a caller may log the diagnostic as it is."""
+    memfs.pipe("/t/x.zip.gz", gzip.compress(_zip_bytes(MEMBERS)))
+    monkeypatch.setattr(
+        MemoryFileSystem,
+        "unstrip_protocol",
+        lambda self, path: "https://u:SECRETPW@h/x.zip.gz?sig=SECRETSIG",
+    )
+    of = OpenFile(memfs, "/t/x.zip.gz", compression="gzip")
+    with open_archive(of) as reader:
+        diags = list(reader.diagnostics.retained)
+    diags += list(detect_format(of).diagnostics.retained)
+    found = [d for d in diags if d.code is DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE]
+    assert len(found) == 2
+    for diag in found:
+        assert "h/x.zip.gz" in diag.message
+        assert "SECRET" not in diag.message
+        assert "SECRET" not in repr(diag)
+
+
 def test_a_compressed_open_file_holding_no_archive_names_fsspec_decoding(memfs):
     import gzip
 

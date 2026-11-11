@@ -932,7 +932,7 @@ def test_an_unknown_file_type_is_listed_and_reported() -> None:
         codes = [d.code for d in reader.diagnostics.retained]
     odd = members["opt/odd"]
     assert odd.type is MemberType.OTHER
-    assert "special_file_type" not in odd.extra
+    assert odd.extra["special_file_type"] == "unknown"
     assert codes == [DiagnosticCode.MEMBER_TYPE_UNKNOWN]
     assert [d.code for d in odd.diagnostics] == [DiagnosticCode.MEMBER_TYPE_UNKNOWN]
 
@@ -948,6 +948,33 @@ def test_payload_bytes_for_a_type_rpm_reads_none_for_are_damage(mode: int) -> No
     )
     with pytest.raises(CorruptionError, match="the header gives 0"):
         _open(data).members()
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["bytesio", "pipe"])
+def test_streaming_header_store_size_does_not_drive_the_allocation(
+    pipe: bool,
+) -> None:
+    """A streaming open reads the signature header's data store in steps, so a 1 KB
+    package that declares a 60 MiB store is not given 60 MiB of memory before it is
+    found cut. Before the fix the walk asked its stream for the declared size in one
+    read, which peaked at 60 MiB from a ``BytesIO`` and 120 MiB from a pipe."""
+    lead = b"\xed\xab\xee\xdb\x03" + b"\0" * 91
+    signature = (
+        b"\x8e\xad\xe8\x01\0\0\0\0" + struct.pack(">II", 1, 60 * 2**20) + b"\0" * 16
+    )
+    data = lead + signature + b"x" * 1000
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+
+    def walk() -> None:
+        with (
+            pytest.raises(TruncatedError),
+            open_archive(source, format=RPM, streaming=True) as reader,
+        ):
+            for _member, _stream in reader.stream_members():
+                pass
+
+    peak = traced_peak(walk)
+    assert peak < 8 * 2**20, f"peak {peak} bytes for a {len(data)}-byte package"
 
 
 def _retype(data: bytes, tag: int, kind: int) -> bytes:

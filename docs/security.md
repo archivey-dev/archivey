@@ -98,14 +98,25 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   temporary files archivey makes for RAR archives, listed in the table below. When the archive
   records a member's size in `member.size`, archivey never decodes more than that, and a member
   holding more raises `CorruptionError`.
+- **A self-extracting archive's program is not checked.** A self-extracting archive, such as a 7z
+  or RAR `.exe` or a makeself `.run` installer, is a program with an archive inside. Archivey reads
+  the archive and never runs the program, so it lists what the archive holds, not what running the
+  file would do. A malicious program can install other files, or anything else, whatever the
+  archive lists. Treat a self-extracting file you would not run as you would any program you would
+  not run.
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
-  files it wrote before then on disk. 7z, RAR and ISO archives check the limits before they give you
-  any member, with or without `streaming=True`. A ZIP read from a file checks the member count its
-  end record declares before any member, and the rest as it reads its index, so an index holding
-  more members than its end record says gives you members up to the limit before the error, as a TAR
-  does. A ZIP read from a pipe is checked like a TAR as its members arrive, and again on its index
-  at the end.
+  files it wrote before then on disk. 7z, RAR, ISO and XAR archives check the limits before they
+  give you any member, with or without `streaming=True`. A SquashFS image checks the member count
+  and its paths before any member, and weighs the rest of each member's text as it lists it, so with
+  `streaming=True`, text that crosses `max_metadata_bytes` gives you members up to that point before
+  the error. ar and CPIO archives check the limits as they go, like a TAR. An RPM checks the member
+  count and the size its headers declare before any member, and weighs the names as it lists them,
+  so names that cross `max_metadata_bytes` give you members up to that point before the error. A ZIP
+  read from a file checks the member count its end record declares before any member, and the rest
+  as it reads its index, so an index holding more members than its end record says gives you members
+  up to the limit before the error, as a TAR does. A ZIP read from a pipe is checked like a TAR as
+  its members arrive, and again on its index at the end.
 - **A ZIP extracted from a pipe is checked on what it stages before its index arrives.** The pass
   writes each member's data into a private `.archivey-tmp-` folder in the destination, and only the
   index at the end says which members the extraction keeps. The extraction limits count what's
@@ -219,11 +230,13 @@ the time-limit recipe [above](#where-the-guarantees-stop).
 ## Hardening
 
 RAR data is decompressed by an external program found on your `PATH`: `unrar` or `rar`, or `unar`
-when neither is installed. On Windows, archivey also looks in WinRAR's folder under Program Files. Like the optional packages, it's [trusted not to be
-malicious](#what-archivey-relies-on), and archivey checks only that it runs and that archivey works
-with its version, which can be several years old. Older versions can have security bugs that later
-ones fixed, so an up-to-date version is safer. `unar` receives the password on its command line,
-where other users on the same machine can see it while it runs. If you set
+when neither is installed. On Windows, archivey also looks in WinRAR's folder under Program Files.
+To run a binary you chose instead, set `unrar_path=` (or `unar_path=`) in `ArchiveyConfig` to its
+absolute path: archivey then runs that file and searches nowhere else. Like the optional packages,
+it's [trusted not to be malicious](#what-archivey-relies-on), and archivey checks only that it runs
+and that archivey works with its version, which can be several years old. Older versions can have
+security bugs that later ones fixed, so an up-to-date version is safer. `unar` receives the password
+on its command line, where other users on the same machine can see it while it runs. If you set
 `rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig`, archivey never runs `unar`. With
 `RarDecompressor.NONE` it runs no external program at all, so stored RAR members can still be read
 (archivey decrypts an encrypted one itself if `cryptography` is installed, and raises
@@ -296,6 +309,13 @@ The costs were measured on one 2.8 GHz core.
     member already goes over it. Each password you try costs the same work again.
 
 Going over a limit raises `ResourceLimitError`.
+
+For files you didn't make, `ArchiveyConfig(formats=FormatPolicy.COMMON)` opens only the formats
+people send today (ZIP, TAR, RAR, 7z, and gzip, bzip2, xz and zstd) and refuses ZIP members in the
+methods only PKZIP 1.x and earlier wrote, so the readers and pure-Python decoders for everything
+else never run on them ([Configuration](opening.md#configuration)). It narrows which code runs,
+not how long it runs: a 7z member's BCJ2 filter and ZipCrypto still decode in Python, so a time
+bound still needs a worker you can stop.
 
 If you know which formats you accept, a [`FormatPolicy`](opening.md#configuration) with an
 `only=` list refuses the rest before any reader runs on them, including formats a later archivey

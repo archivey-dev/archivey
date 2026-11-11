@@ -84,7 +84,9 @@ jobs:
       # keep the suite's shape close to CI's. The unar and 7-Zip source builds are
       # left out: their tests skip, and no recorded crash stacks in them.
       - name: Install unrar, xorriso and bgzip
-        run: sudo apt-get update && sudo apt-get install -y unrar xorriso tabix
+        uses: ./.github/actions/apt-install
+        with:
+          packages: unrar xorriso tabix
 
       - name: Record versions
         run: >

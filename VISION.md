@@ -152,9 +152,9 @@ No "bug-free" promises. Instead, machinery that catches bugs before release:
   `zipfile`/`tarfile`/`shutil.unpack_archive`/`patool`; an fsspec filesystem adapter as
   an integration channel; recipes for the data-pipeline crowd (who currently hand-roll
   unsafe `extractall` on downloaded datasets).
-- A **public backend API** (the registry ABC, stabilized) turns "maximum format
-  compatibility" from a solo treadmill into an ecosystem: rare formats (CAB, CPIO,
-  SquashFS, WIM…) can live as third-party plugins. Pre-1.0 decision.
+- A **public plugin interface** turns "maximum format compatibility" from a solo
+  treadmill into an ecosystem: rare formats can live as third-party plugins. It exists,
+  experimental, as `archivey.formats`; which of it becomes stable is a pre-1.0 decision.
 
 ## Non-goals
 
