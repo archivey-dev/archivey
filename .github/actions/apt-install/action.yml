@@ -1,9 +1,9 @@
 name: Install apt packages (cached)
 description: >
-  Installs Ubuntu packages from .deb files kept in the Actions cache, and only
-  contacts the Ubuntu mirror when the cache has no entry for this runner image and
-  package list. A cache hit installs offline, so a mirror outage cannot fail the job,
-  and the job does not download the package indexes again.
+  Installs Ubuntu packages from .deb files kept in the Actions cache. A cache hit
+  does not contact the Ubuntu mirror or download the package indexes. The first run
+  on a new runner image (about weekly), and the fallback after a cached install
+  fails, still use the mirror, so a mirror outage can still fail those runs.
 inputs:
   packages:
     description: Space-separated package names, as given to apt-get install.
@@ -15,7 +15,9 @@ runs:
   using: composite
   steps:
     # The key names the runner image: its preinstalled packages decide which
-    # dependencies apt downloads, so a new image starts a new cache entry.
+    # dependencies apt downloads, so a new image starts a new cache entry. It also
+    # names this file, because a cache entry cannot be overwritten: a change to how
+    # entries are filled must not restore the old ones.
     - id: key
       shell: bash
       env:
@@ -24,7 +26,8 @@ runs:
       run: |
         set -euo pipefail
         list=$(printf '%s\n' $PACKAGES | sort -u | tr '\n' ' ')
-        hash=$(printf '%s|%s' "$list" "$RECOMMENDS" | sha256sum | cut -c1-16)
+        self=$(sha256sum "$GITHUB_ACTION_PATH/action.yml" | cut -c1-64)
+        hash=$(printf '%s|%s|%s' "$list" "$RECOMMENDS" "$self" | sha256sum | cut -c1-16)
         echo "key=apt-${ImageOS:-unknown}-${ImageVersion:-unknown}-${RUNNER_ARCH}-${hash}" >> "$GITHUB_OUTPUT"
         echo "dir=${RUNNER_TEMP}/apt-debs-${hash}" >> "$GITHUB_OUTPUT"
     - id: cache
@@ -45,8 +48,12 @@ runs:
         [ "$RECOMMENDS" = false ] && flags+=(--no-install-recommends)
         export DEBIAN_FRONTEND=noninteractive
         if [ "$HIT" = true ] && compgen -G "$DEBS/*.deb" > /dev/null; then
-          # Offline: every package and dependency the image lacks is in $DEBS.
-          if sudo apt-get install "${flags[@]}" --no-download "$DEBS"/*.deb; then
+          # $DEBS holds what this step needed on top of the system as it was when
+          # the entry was saved. With only local files named, apt fetches nothing
+          # unless a dependency is missing; then it uses the mirror, and if that
+          # fails, the miss path below runs. (apt 2.8 refuses --no-download with
+          # .deb paths.)
+          if sudo apt-get install "${flags[@]}" "$DEBS"/*.deb; then
             echo "saved=skip" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -60,7 +67,7 @@ runs:
         sudo rm -rf "$DEBS/partial" "$DEBS/lock"
         sudo chown -R "$(id -u)" "$DEBS"
         if compgen -G "$DEBS/*.deb" > /dev/null; then
-          sudo apt-get install "${flags[@]}" --no-download "$DEBS"/*.deb
+          sudo apt-get install "${flags[@]}" "$DEBS"/*.deb
           echo "saved=yes" >> "$GITHUB_OUTPUT"
         else
           # The image already has every package: nothing to cache.
