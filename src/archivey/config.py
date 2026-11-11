@@ -807,9 +807,11 @@ class Budget:
     A budget is the total for one job, meant for processing each archive once. It
     counts the work archivey does, not the data the job ends up with: a byte counts
     each time it is decoded, so the budget runs out sooner if the job reads a member
-    again, lists a compressed TAR again (the walk decodes it again), opens the same
-    archive again (the new reader counts its members and decodes again), or seeks
-    back in a compressed member and reads on (the decode restarts). Make a new
+    again, opens the same archive again (the new reader counts its members and
+    decodes again), or seeks back in a compressed member and reads on (the decode
+    restarts). An archive whose listing has to decode it (a ``.tar.gz``, a
+    ``.cpio.gz``) counts once for the listing and again for each member read after
+    it. Listing again does not count: the reader keeps its member list. Make a new
     ``Budget`` for each job or request; one kept on a long-lived config runs out and
     stays spent. What counts:
 
