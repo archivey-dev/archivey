@@ -518,7 +518,7 @@ class ListingLimits:
 ```
 
 `None` on a field disables that guard. `ListingLimits.UNLIMITED` disables all three.
-Crossing either guard SHALL raise `ResourceLimitError` naming the knob and
+Crossing any guard SHALL raise `ResourceLimitError` naming the knob and
 limit. Format-local parser bounds (e.g. 7z header-size checks) MAY still raise
 at parse/open for nonsensical or hostile headers and are complementary, not a
 substitute. ZIP, 7z, RAR and ISO apply `listing_limits.max_members` at parse
@@ -553,9 +553,11 @@ entries it reads after the last member (`format-zip`).
 
 `max_decoded_bytes` SHALL cap the bytes one listing pass decodes on its own: a
 compressed TAR's (or cpio's, or an RPM payload's, or another `decompress()` layer's)
-stream as the walk reads headers and skips member data, the members a streaming ZIP
-pass decodes to find their end, and a 7z header stored compressed, decoded at open.
-Each listing pass SHALL count from zero. Bytes a caller reads from a member SHALL NOT
+stream as the walk reads headers and skips member data, the start of each compressed
+member a streaming ZIP pass decodes as it passes over it (up to the link-target cap
+and a reparse prefix), and a 7z header stored compressed, decoded at open. Each
+reader's listing SHALL count from zero, and so SHALL a walk started over after a
+failure. Bytes a caller reads from a member SHALL NOT
 count, whether between walk steps or on another thread. The step that crosses the cap
 SHALL decode at most one byte past it and raise `ResourceLimitError` naming
 `max_decoded_bytes`; a 7z header that does not fit SHALL be refused before it is

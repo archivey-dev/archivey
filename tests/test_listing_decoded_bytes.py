@@ -142,3 +142,104 @@ def test_a_random_access_zip_lists_without_decoding() -> None:
 def test_replace_keeps_the_field() -> None:
     limits = dataclasses.replace(ListingLimits(), max_decoded_bytes=5)
     assert limits.max_decoded_bytes == 5
+
+
+def test_the_crossing_step_decodes_one_byte_past_the_cap() -> None:
+    data = gzip.compress(_tar(), mtime=0)
+    with (
+        archivey.open_archive(
+            io.BytesIO(data), config=_config(_MEMBER), streaming=True
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="has decoded 100001 bytes"),
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
+
+
+def test_a_walk_started_over_counts_from_zero() -> None:
+    """A random-access reader keeps a listing once a walk completes, so only a walk
+    discarded after a failure starts over; the count does too. The first walk keeps
+    what opening the archive decoded."""
+    from archivey.internal.listing_limits import ListingDecodeCount
+
+    count = ListingDecodeCount(1000)
+    previous = count.enter()
+    try:
+        count.draw(10)  # at open, before the first walk
+        count.start_pass()
+        assert count.drawn == 10
+        count.draw(500)
+        count.start_pass()
+        assert count.drawn == 0
+        count.draw(1000)
+        with pytest.raises(ResourceLimitError, match="max_decoded_bytes=1000"):
+            count.draw(1)
+    finally:
+        count.leave(previous)
+    # Not entered on this thread: nothing counts.
+    count.start_pass()
+    count.draw(5000)
+    assert count.drawn == 0
+
+
+class _Unseekable(io.RawIOBase):
+    def __init__(self) -> None:
+        self.data = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, b) -> int:  # type: ignore[override]
+        self.data += b
+        return len(b)
+
+
+def test_a_streaming_zip_counts_the_start_of_each_member_it_passes() -> None:
+    """A bit-3 member nobody reads is decoded only as far as a link target could be
+    (``MAX_LINK_TARGET_BYTES`` and the byte past it); the scan finds its end."""
+    from tests.streams_util import NonSeekableBytesIO
+
+    sink = _Unseekable()
+    with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i in range(3):
+            with zf.open(f"m{i}", "w") as out:
+                out.write(bytes([i]) * _MEMBER)
+    data = bytes(sink.data)
+
+    def stream(cap: int | None) -> archivey.ArchiveReader:
+        return archivey.open_archive(
+            NonSeekableBytesIO(data), config=_config(cap), streaming=True
+        )
+
+    with stream(None) as reader:
+        assert len(list(reader.stream_members())) == 3
+    with stream(1 << 20) as reader:
+        for _member, _stream in reader.stream_members():
+            pass
+        assert reader._listing_decode.drawn == 3 * 4097  # type: ignore[attr-defined]
+    with (
+        stream(5000) as reader,
+        pytest.raises(ResourceLimitError, match="has decoded 5001 bytes"),
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
+    # Read by the caller, the members count nothing.
+    with stream(1) as reader:
+        for _member, member_stream in reader.stream_members():
+            assert member_stream is not None
+            assert len(member_stream.read()) == _MEMBER
+
+
+def test_a_decompress_layer_counts() -> None:
+    """An RPM's payload is a format adapter ``decompress()`` layer."""
+    from tests.test_rpm import _F, _build, _Package
+
+    files = [_F(f"/opt/f{i}".encode(), data=bytes([i]) * _MEMBER) for i in range(3)]
+    data = _build(_Package(files))
+    with archivey.open_archive(io.BytesIO(data), config=_config(None)) as reader:
+        assert len(reader.members()) == 3
+    with (
+        archivey.open_archive(io.BytesIO(data), config=_config(_MEMBER)) as reader,
+        pytest.raises(ResourceLimitError, match="max_decoded_bytes=100000"),
+    ):
+        reader.members()

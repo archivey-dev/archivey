@@ -460,13 +460,14 @@ class ListingLimits:
     Some archives can only be listed by decoding them: a ``.tar.gz`` (or any
     compressed TAR, cpio or RPM payload) is one compressed stream, and its member
     headers sit between the members' data, so listing it decodes all of it. A
-    streaming ZIP whose members end only where decoding finds it decodes them to move
-    on. That work happens on ``open_archive`` and the first listing call, before the
-    caller has read anything, so this caps it. Each listing pass counts from zero:
-    ``members()`` once, or one ``stream_members()`` or ``extract_all`` pass over a
-    streaming reader. The bytes a caller reads from a member do not count, only those
-    the walk decodes on its own to reach the next header. A 7z header stored
-    compressed counts too, at open.
+    streaming ZIP decodes the start of each compressed member it passes over (up to
+    about 4 KiB, in case the directory makes it a link), so it counts about 4 KiB a
+    member. That work happens on ``open_archive`` and the first listing call, before
+    the caller has read anything, so this caps it. Each reader's listing counts from
+    zero, and so does a walk started over after a failure; a reader keeps its listing,
+    so listing again decodes nothing. The bytes a caller reads from a member do not
+    count, only those the walk decodes on its own to reach the next header. A 7z
+    header stored compressed counts too, at open.
 
     :attr:`DecoderLimits.max_ratio` already holds a listing's decode to a multiple of
     the archive's size; this is the absolute cap, for a large archive that compresses

@@ -15,6 +15,7 @@ from collections.abc import Mapping
 
 from archivey.config import Budget, ListingLimits
 from archivey.exceptions import ResourceLimitError
+from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
 from archivey.types import ArchiveMember
 
 
@@ -387,11 +388,13 @@ class ListingDecodeCount:
     def refuse(self, n: int, what: str) -> None:
         raise self._error(n, what)
 
-    def _error(self, n: int, what: str = "") -> ResourceLimitError:
+    def _error(self, n: int, what: str = "") -> AlwaysStopResourceLimitError:
         detail = f"listing this archive has decoded {self._drawn} bytes" + (
             f"; {what} would decode {n} more" if what else ""
         )
-        return ResourceLimitError(
+        # Archive-wide like the Budget's: nothing that skips one member's failure
+        # (``OnError.CONTINUE``, the forward ZIP's drain) may go on decoding past it.
+        return AlwaysStopResourceLimitError(
             f"Listing limit reached: max_decoded_bytes={self._cap} ({detail})"
         )
 
