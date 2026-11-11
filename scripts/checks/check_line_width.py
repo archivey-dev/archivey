@@ -702,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         found.extend(problems(path, text, added[path]))
     if not found:
-        print("ok: every added prose line is within its width")
+        print(f"ok: no added Markdown prose line is over {LIMIT} columns")
         return 0
     print("Added lines over their width (Markdown 100 under docs/, 88 elsewhere;")
     print("Python comments and docstrings 88):")

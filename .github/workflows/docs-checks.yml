@@ -108,3 +108,21 @@ jobs:
       # Stdlib-only script, so no uv sync — the runner's python3 is enough.
       - name: Assert no tracked file holds an internal-tracker URL
         run: python3 scripts/checks/check_tracker_urls.py
+
+  # Markdown lines a pull request adds stay within 100 columns (Python lines are ruff's
+  # E501, in ci.yml). Only added lines count, so the base commit is needed: the full
+  # history, for the merge base. Here for the same reason as `tracker-urls`.
+  line-width:
+    name: Line width
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Stdlib-only script, so no uv sync — the runner's python3 is enough. A push or a
+      # manual run compares with the previous commit.
+      - name: Assert no added Markdown prose line is over 100 columns
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'HEAD~1' }}
+        run: python3 scripts/checks/check_line_width.py --base "$BASE"
