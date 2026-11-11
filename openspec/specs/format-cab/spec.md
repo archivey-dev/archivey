@@ -29,7 +29,9 @@ as a naive `modified`, its attributes as `windows_attrs` (without the cabinet-on
 `compression`. It SHALL read stored, MSZIP and LZX folders (LZX windows 2^15 to 2^21),
 check each data block's checksum when it is not 0, and report a member whose blocks from
 the folder start through its end all carry one as `Verification.CHECKSUM` once read to the
-end. `ArchiveInfo.format_version` SHALL be `major.minor` from the header, and
+end. The listing SHALL estimate `verifiable` as `CHECKSUM` for a non-empty member of a
+stored, MSZIP or LZX folder, settled at `LENGTH` on the first open when one of its blocks
+has no checksum. `ArchiveInfo.format_version` SHALL be `major.minor` from the header, and
 `ArchiveInfo.is_solid` SHALL be true when any folder is compressed. A pipe SHALL be refused
 with `StreamNotSeekableError`.
 
@@ -44,6 +46,8 @@ with `StreamNotSeekableError`.
 | A member in the middle of a stored folder | The blocks before it not read |
 | Header, folder and data reserve areas | Skipped |
 | A block whose checksum is 0 | The member read, `LENGTH` |
+| A checksummed folder, listed | Each non-empty member `verifiable == CHECKSUM` before any read |
+| File records listed out of offset order, laid back to back | Listed in table order; every member reads |
 | An invalid DOS date | `modified is None`; `MEMBER_TIMESTAMP_INVALID` |
 | Attributes `0xE1` | `windows_attrs == 0x21` |
 
@@ -57,7 +61,11 @@ libmspack's `cabd_read_string`), an LZX window outside 2^15 to 2^21, a block ove
 stored or 32 768 decoded bytes, a block of 0 decoded bytes (libmspack's mark for a block
 split across cabinets), a block checksum that does not match, an MSZIP block that
 does not start with `CK` or does not decode to its size, LZX that does not decode, and a
-file past its folder's output. A cut cabinet SHALL raise `TruncatedError` for what it cuts
+file past its folder's output. No checksum covers a `CFFILE` record, so the backend SHALL
+also raise `CorruptionError` at open when the non-empty files of a folder, sorted by
+offset, do not each start where the one before ends, from byte 0 (a gap or an overlap),
+and on read when the last file of a folder ends before the folder's decoded output does.
+The layout check SHALL be a step of its own, which a salvage read can skip. A cut cabinet SHALL raise `TruncatedError` for what it cuts
 off, and still read the files before the cut. The block tables the backend keeps, one per
 folder read, SHALL be weighed against `max_metadata_bytes` as they are read, 256 bytes a
 block, and crossing it SHALL raise `ResourceLimitError`. An LZX window over
@@ -71,6 +79,9 @@ folder is read. A member of size 0 SHALL read as empty without decoding its fold
 | Header flag 1 or 2 | `UnsupportedFeatureError` at open |
 | A Quantum folder | Listed; `UnsupportedFeatureError` on read |
 | A flipped bit in a block with a checksum | `CorruptionError` on read |
+| A file's offset moved back or forward, or the first file's offset not 0 | `CorruptionError` at open |
+| The last file's size made smaller | Listed; `CorruptionError` when a member of that folder is read |
+| An empty file at any offset | Accepted |
 | Random bit flips in an LZX folder with no checksums | An `ArchiveyError`, never another exception |
 | A cabinet cut inside its last folder | The earlier files read; `TruncatedError` for the cut one |
 | An LZX match reaching before the stream start, or past the frame | `CorruptionError` |

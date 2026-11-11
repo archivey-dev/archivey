@@ -103,6 +103,7 @@ _METHODS = {
     _QUANTUM: CompressionAlgorithm.QUANTUM,
     _LZX: CompressionAlgorithm.LZX,
 }
+_READABLE = frozenset({_STORED, _MSZIP, _LZX})
 _METHOD_NAMES = {_STORED: "stored", _MSZIP: "MSZIP", _QUANTUM: "Quantum", _LZX: "LZX"}
 
 # Read the file table this many bytes at a time.
@@ -235,6 +236,10 @@ class CabReader(IndexedReader[_Location]):
         self._max_meta = context.config.listing_limits.max_metadata_bytes
         # The folder decoder a member stream left behind, to go on from.
         self._parked: _FolderStream | None = None
+        # Where each folder's files end, when the whole file table was read
+        # (``_check_file_layout``).
+        self._extents: dict[int, int] | None = None
+        self._check_file_layout()
 
     # ── Header ───────────────────────────────────────────────────────────────────────
 
@@ -254,6 +259,55 @@ class CabReader(IndexedReader[_Location]):
             start, blocks, kind = _FOLDER.unpack_from(raw, index * record)
             folders.append(_Folder(start, blocks, kind & 0x0F, (kind >> 8) & 0x1F))
         return tuple(folders)
+
+    def _check_file_layout(self) -> None:
+        """Refuse a file table whose files do not tile their folders.
+
+        No checksum covers a ``CFFILE`` record: the ``CFDATA`` checksums cover the
+        folder's bytes, not where each file says it starts. A damaged offset or size
+        makes a file read other, correctly checksummed bytes of its folder, and the
+        read would pass. Every writer lays a folder's files back to back from its
+        first byte, in some order, so the files of a folder, sorted by offset, must
+        each start where the one before ended, from 0. A gap or an overlap is damage,
+        and since it cannot tell which record is wrong, the whole cabinet is refused
+        with ``CorruptionError``. Empty files read no bytes and are not checked. The
+        end of the last file is compared with the folder's decoded size when the
+        folder's block table is read (:meth:`open_member`).
+
+        A separate step on purpose: a salvage read would skip it, read the members
+        anyway and mark them damaged. A table that ends early or holds a bad record
+        is left to the listing, which reports it at that record; the check then has
+        too little to go on and is skipped.
+        """
+        table = _Cursor(self, self._files_at)
+        ranges: dict[int, list[tuple[int, int]]] = {}
+        try:
+            for _ in range(self._file_count):
+                size, offset, folder, *_rest = _FILE.unpack(
+                    table.read(_FILE.size, "a file record")
+                )
+                table.read_name()
+                if folder >= len(self._folders):
+                    return  # the listing refuses it at this record
+                if size:
+                    ranges.setdefault(folder, []).append((offset, size))
+        except (TruncatedError, CorruptionError):
+            return
+        extents: dict[int, int] = {}
+        for folder, spans in ranges.items():
+            spans.sort()
+            end = 0
+            for offset, size in spans:
+                if offset != end:
+                    where = "overlaps" if offset < end else "leaves a gap after"
+                    raise CorruptionError(
+                        f"a file in folder {folder} starts at byte {offset}, which "
+                        f"{where} the files before it (they end at byte {end}); the "
+                        "file table is damaged"
+                    )
+                end = offset + size
+            extents[folder] = end
+        self._extents = extents
 
     # ── Listing ──────────────────────────────────────────────────────────────────────
 
@@ -292,6 +346,11 @@ class CabReader(IndexedReader[_Location]):
                     ),
                 ),
             )
+            if size and self._folders[folder].method in _READABLE:
+                # The blocks of nearly every cabinet carry checksums, and a read
+                # checks them; the first open settles it at LENGTH when a block of
+                # this file has none.
+                member._listing_checksum = True
             context.set_dos_time(member, "modified", stamp, source="dos")
             yield MemberRecord(member, _Location(folder, offset))
 
@@ -408,6 +467,15 @@ class CabReader(IndexedReader[_Location]):
             raise CorruptionError(
                 f"{quoted(member.name)} ends at byte {end} of folder "
                 f"{locator.folder}, which decodes to {table.output[-1]}"
+            )
+        extent = None if self._extents is None else self._extents.get(locator.folder)
+        if table.complete and extent is not None and extent != table.output[-1]:
+            # The files tile the folder from 0 (``_check_file_layout``); bytes past
+            # the last one mean a size or offset in the file table is damaged.
+            raise CorruptionError(
+                f"the files of folder {locator.folder} end at byte {extent}, but "
+                f"the folder decodes to {table.output[-1]}; the file table is "
+                "damaged"
             )
         # The member is checked when every block up to its end carries a checksum.
         last = _block_at(table, max(end - 1, 0))

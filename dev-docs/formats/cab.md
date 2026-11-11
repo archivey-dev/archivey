@@ -103,7 +103,22 @@ the folder opens. A member of size 0 reads as empty and decodes nothing.
 
 A member is `checked` (`Verification.CHECKSUM` once read to the end) when every block
 from the folder's start through its last byte has a checksum. LZX history means an
-earlier block's damage reaches the member, so the earlier blocks count too.
+earlier block's damage reaches the member, so the earlier blocks count too. The listing
+estimates `CHECKSUM` for every non-empty member of a stored, MSZIP or LZX folder, and the
+first open settles it at `LENGTH` when one of those blocks has none.
+
+The block checksums cover the folder's bytes, not the file table: nothing checks a
+`CFFILE` record's offset or size. A damaged offset would make a file read other bytes of
+its folder, which pass every block checksum. So at open the reader checks the layout
+(`_check_file_layout`): every writer lays a folder's files back to back from byte 0, in
+some order, so the non-empty files of a folder, sorted by offset, must each start where
+the one before ended. A gap or an overlap is `CorruptionError` for the whole cabinet,
+because the damage does not show which record is wrong (maintainer ruling, 2026-11-11).
+When a folder's block table is read, the end of its last file must also be the folder's
+decoded size, which catches a last file's size made smaller. cabextract checks neither.
+The check is its own step so that a salvage read can skip it later and return the members
+marked damaged. A file table that ends early or holds a bad record is left to the listing,
+which reports it at that record, and the layout is not checked.
 
 ### 2.4 The LZX decoder
 
