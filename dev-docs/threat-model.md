@@ -1481,10 +1481,11 @@ folder end; any ZIP, 7z or RAR3/4 unit where more than one candidate survives th
 probe, which then walks to the end anchor once per survivor; and a stored RAR3/4 member,
 decrypted in full once per candidate. Each costs time proportional to the unit, once per
 candidate, and only when the caller passes a list. For 7z, an O(1) check on the AES
-padding at the end of the packed stream settles it for a folder with 8 or more zero
-padding bytes, about one folder in two from 7-Zip or py7zr
-([7z handbook](formats/7z.md)); 4 to 7 bytes settle only a single static password, and
-otherwise break a tie the anchor leaves. The rest still walk once per candidate.
+padding at the end of the packed stream settles a single static password for a folder
+with 4 or more zero padding bytes, about three folders in four from 7-Zip or py7zr
+([7z handbook](formats/7z.md)). With several candidates it only breaks a tie the anchor
+leaves: the writer chooses the last block, so a crafted archive can make a wrong
+candidate pass it. Those still walk once per candidate.
 
 ### Detection decoding scan candidates
 

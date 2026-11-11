@@ -740,9 +740,9 @@ On a compressed tar, the stream's own checksum adds three cases:
   and `py7zr` pad the encrypted data with zeros, and when the padding is 4 bytes or more (about three
   blocks in four), zero padding confirms the password without decoding anything. It proves the
   password, not the data: a block with no CRC still reports `DIGEST_UNVERIFIABLE`. With several
-  candidate passwords, or a password callback, padding under 8 bytes does not settle one first
-  (a wrong password passes 4 zero bytes about once in 4 billion tries): the decode below runs
-  first, and the padding decides only when that decode cannot. Padding that is
+  candidate passwords, or a password callback, the padding does not settle one first (a crafted
+  archive can make a wrong password find zero padding): the decode below runs first, and the
+  padding decides only when that decode cannot. Padding that is
   shorter or not zero proves nothing and rejects no password. Then archivey decodes only until it can
   decide: the first member CRC covering at least 4 bytes, or 64 KiB of output for a compressed block,
   whose codec rejects a wrong key within a few bytes. Peak memory is one 64 KiB chunk. Time grows

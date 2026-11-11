@@ -80,7 +80,6 @@ from archivey.internal.backends.sevenzip_parser import (
     read_signature_and_next_header,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
-    AES_TAIL_STRONG_PADDING,
     aes_tail_confirms,
     check_aes_tail_sizes,
     decode_encoded_header,
@@ -1928,20 +1927,17 @@ class SevenZipReader(BaseArchiveReader):
         # The callbacks below run once per candidate password, inside
         # ``attempt_with_confirm``: each judges the candidate against the folder,
         # raising the wrong-password error to move on.
-        # Padding under AES_TAIL_STRONG_PADDING settles a password first only when no
-        # other candidate could be right (one static password: a callback counts as
-        # several). With several, a wrong key that passes it (1 in 2^32 at four bytes,
-        # or by design in a crafted archive) would stop the search before the right
-        # one, so the anchor goes first and the tail only breaks an INCONCLUSIVE: in a
-        # folder with no CRC it is still the only evidence there is.
-        weak_tail = (
-            tail is not None
-            and tail_pack_size - tail.unpack_size < AES_TAIL_STRONG_PADDING
-        )
+        # The tail settles a password first only when no other candidate could be
+        # right (one static password: a callback counts as several). Its last block is
+        # the archive writer's to choose, so a crafted archive can make a wrong
+        # candidate decrypt to zero padding while the right one still reads clean
+        # (the member CRC is computed over what the right key gives). With several
+        # candidates the anchor goes first, and the tail only breaks an INCONCLUSIVE:
+        # in a folder with no CRC it is still the only evidence there is.
 
         def probe(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
             kdf_password = _password_to_kdf_bytes(candidate)
-            if weak_tail and self._passwords.is_ambiguous():
+            if tail is not None and self._passwords.is_ambiguous():
                 verdict = self._confirm_folder_password(
                     folder_index, kdf_password, plan
                 )
