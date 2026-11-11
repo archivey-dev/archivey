@@ -941,6 +941,16 @@ class Budget:
                 f"this ArchiveyConfig.budget have decoded {total} bytes)"
             )
 
+    def _refuse_bytes(self, n: int) -> None:
+        """Raise for ``n`` bytes that do not fit, drawing none: a seek refused before
+        its decoder moves decoded nothing, so the room stays for other reads."""
+        cap = self._max_decoded_bytes
+        raise _budget_error(
+            f"Budget exhausted: max_decoded_bytes={cap} (the readers sharing this "
+            f"ArchiveyConfig.budget have decoded {self._decoded_bytes} bytes; a seek "
+            f"would decode {n} more)"
+        )
+
     def _draw_members(self, n: int) -> None:
         """Count ``n`` listed members; raise, counting none, if that passes the limit."""
         with self._lock:

@@ -152,11 +152,13 @@ class BudgetDrawStream(DelegatingStream):
 
     A read that could cross the limit asks the decoder for at most one byte past
     what is left, so the read that crosses it decodes one byte more than the budget
-    allows, not the rest of the member. That holds per read: readers on other threads
-    size their reads against the same room, so each can overshoot by one read. A forward seek past the furthest offset the
+    allows, not the rest of the member; ``read_ahead`` is capped the same way. That
+    holds per read: readers on other threads size their reads against the same room,
+    so each can overshoot by one read. A forward seek past the furthest offset the
     stream has reached draws the gap: a decoder serves it by decoding the bytes it
-    skips. A seek the budget cannot cover is refused before the decoder moves; a
-    seek to an end the stream cannot size reads to it, drawn as a read is.
+    skips. A seek the budget cannot cover is refused before the decoder moves, and
+    draws nothing; a seek to an end the stream cannot size reads to it, drawn as a
+    read is.
     """
 
     # Changes no bytes and no positions: verification and resume offsets are the
@@ -228,9 +230,9 @@ class BudgetDrawStream(DelegatingStream):
                 while self.read(_BUDGET_STEP):
                     pass
         if target is not None and room is not None and target - self._reach > room:
-            # Refused before the decoder decodes the gap. One byte past the room, so
-            # the error names the total the seek would have reached.
-            budget._draw_bytes(room + 1)
+            # Refused before the decoder decodes the gap. Nothing was decoded, so
+            # nothing is drawn: the room stays for other reads.
+            budget._refuse_bytes(target - self._reach)
         self._pos = self._inner.seek(offset, whence)
         if self._pos > self._reach:
             gap = self._pos - self._reach
@@ -239,9 +241,11 @@ class BudgetDrawStream(DelegatingStream):
         return self._pos
 
     def read_ahead(self, need: int, n: int, /) -> bytes:
-        """The decoder's ``read_ahead``, drawn like a read."""
-        self._budget._check_bytes_left()
-        data = cast("_ReadsAhead", self._inner).read_ahead(need, n)
+        """The decoder's ``read_ahead``, drawn and capped like a read: at most one
+        byte past the room, even when ``need`` is more, so that byte's draw raises
+        rather than the decoder filling the whole ``need``."""
+        cap = self._budget._read_cap(n)
+        data = cast("_ReadsAhead", self._inner).read_ahead(min(need, cap), cap)
         self._advance(len(data))
         self._budget._draw_bytes(len(data))
         return data

@@ -7,6 +7,7 @@ import dataclasses
 import gzip
 import io
 import pickle
+import random
 import tarfile
 import threading
 import zipfile
@@ -256,7 +257,24 @@ def test_a_seek_to_the_end_is_held_to_the_budget() -> None:
         pytest.raises(ResourceLimitError, match="Budget exhausted"),
     ):
         stream.seek(0, io.SEEK_END)
+    # The deflate stream cannot size its end, so the seek decodes toward it in drawn
+    # steps and stops one byte past the budget.
     assert budget.decoded_bytes <= 1001
+
+
+def test_a_refused_seek_to_a_known_target_draws_nothing() -> None:
+    from archivey.internal.streams.counting import BudgetDrawStream
+
+    budget = Budget(max_decoded_bytes=1000)
+    stream = BudgetDrawStream(io.BytesIO(b"x" * 5000), budget)
+    with pytest.raises(ResourceLimitError, match="a seek would decode 4000 more"):
+        stream.seek(4000)
+    # Refused before the inner stream moved: nothing decoded, nothing drawn, and the
+    # room stays for another reader.
+    assert budget.decoded_bytes == 0
+    with _open(_zip(1, size=1000), budget) as other:
+        assert len(other.read("m0.bin")) == 1000
+    assert budget.decoded_bytes == 1000
 
 
 def test_a_seek_to_an_unsized_end_reads_there_and_draws() -> None:
@@ -490,3 +508,30 @@ def test_an_outer_compressed_cpio_draws_the_members_it_decodes_past() -> None:
             assert stream is not None
             stream.read()
     assert 3 * _MEMBER <= budget.decoded_bytes <= len(raw)
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["seekable", "pipe"])
+def test_a_tar_gz_on_a_pipe_stops_one_byte_past_the_budget(pipe: bool) -> None:
+    """A buffer over a codec on a source that cannot seek fills by ``read_ahead``,
+    in 1 MiB steps for member data: capped like a read, it stops one byte past."""
+    from tests.streams_util import NonSeekableBytesIO
+
+    member = random.Random(3).randbytes(3_000_000)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo("big.bin")
+        info.size = len(member)
+        tf.addfile(info, io.BytesIO(member))
+    data = gzip.compress(buf.getvalue(), mtime=0)
+    budget = Budget(max_decoded_bytes=20_000)
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+    with (
+        archivey.open_archive(
+            source, config=ArchiveyConfig(budget=budget), streaming=True
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="Budget exhausted"),
+    ):
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            stream.read()
+    assert budget.decoded_bytes == 20_001
