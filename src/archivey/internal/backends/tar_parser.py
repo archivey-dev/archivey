@@ -458,27 +458,29 @@ def parse_header_block(
         # never joins them; tarfile joins the prefix for any magic but its GNU types,
         # and names the member after the time (N11).
         prefix_shape = "gnu_prefix_bytes"
+    # Positional, in field order: a keyword call of twenty fields costs about half a
+    # microsecond more per header. test_hot_path_constructors pins the order.
     return HeaderBlock(
-        offset=offset,
-        format=header_format,
-        name=name,
-        typeflag=typeflag,
-        linkname=_cut_nul(block[157:257]),
-        uname=uname,
-        gname=gname,
-        devmajor=devmajor,
-        devminor=devminor,
-        device_number_fault=device_number_fault,
-        sparse_slots=sparse_slots,
-        sparse_extended=sparse_extended,
-        sparse_realsize=sparse_realsize,
-        signed_checksum=checksum == "signed",
-        prefix_shape=prefix_shape,
-        mode=mode,
-        uid=uid,
-        gid=gid,
-        size=size,
-        mtime=mtime,
+        offset,  # offset
+        header_format,  # format
+        name,  # name
+        mode,  # mode
+        uid,  # uid
+        gid,  # gid
+        size,  # size
+        mtime,  # mtime
+        typeflag,  # typeflag
+        _cut_nul(block[157:257]),  # linkname
+        uname,  # uname
+        gname,  # gname
+        devmajor,  # devmajor
+        devminor,  # devminor
+        sparse_slots,  # sparse_slots
+        sparse_extended,  # sparse_extended
+        sparse_realsize,  # sparse_realsize
+        device_number_fault,  # device_number_fault
+        checksum == "signed",  # signed_checksum
+        prefix_shape,  # prefix_shape
     )
 
 
