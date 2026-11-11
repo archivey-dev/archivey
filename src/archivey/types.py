@@ -102,8 +102,9 @@ class ContainerFormat(StrEnum):
     an RPM payload, for example. Read in one forward pass, so from a pipe and inside a
     compression stream too."""
     RPM = "rpm"
-    """An RPM package, binary or source: its files, from the CPIO payload that follows
-    its headers. Read in one forward pass, so from a pipe too."""
+    """An RPM package, binary or source: its files, listed from its header, with their
+    data from the CPIO payload that follows. Read in one forward pass, so from a pipe
+    too."""
     MAKESELF = "makeself"
     """A makeself self-extracting archive (a ``.run`` installer): a shell script that
     states where its payloads start, followed by one or more compressed TARs. Its
