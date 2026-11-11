@@ -46,8 +46,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     env:
       UV_PYTHON: "3.11"
-      # A PR run is a short check that the script and the lockfile's rapidgzip work;
-      # the scheduled and manual runs search longer.
+      # A post-merge run (push to main) is a short check that the script and the
+      # lockfile's rapidgzip work; the scheduled and manual runs search longer.
       SECONDS_PER_CODEC: ${{ github.event_name == 'push' && '60' || inputs.seconds || '300' }}
     steps:
       - uses: actions/checkout@v4

@@ -71,7 +71,8 @@ jobs:
         env:
           ARCHIVEY_FUZZ_ARTIFACT_DIR: artifacts/atheris
           TARGET: ${{ matrix.target }}
-          # A PR that edits this file only checks that the job still runs.
+          # A post-merge run (push to main, after an edit of this file) only checks that
+          # the job still runs; the scheduled run and a dispatch soak for longer.
           SECONDS_PER_TARGET: ${{ github.event_name == 'push' && '60' || github.event.inputs.seconds || '1200' }}
         # A skipped target (accelerator not importable, budget 0) exits 0 from the harness,
         # so the step fails on the harness's skip line: a green soak must have fuzzed.
