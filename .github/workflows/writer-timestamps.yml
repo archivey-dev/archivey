@@ -32,9 +32,9 @@ jobs:
         run: python -m pip install .
       - name: Install writers (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q 7zip p7zip-full libarchive-tools zip
+        uses: ./.github/actions/apt-install
+        with:
+          packages: 7zip p7zip-full libarchive-tools zip
       - name: Install writers (macOS)
         if: runner.os == 'macOS'
         run: brew install sevenzip p7zip || brew install sevenzip
