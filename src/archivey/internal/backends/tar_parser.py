@@ -188,7 +188,8 @@ class SparseFormat(Enum):
 
 
 # Not frozen, as no caller writes to it: a frozen init costs a microsecond per header
-# on the listing's hot path.
+# on the listing's hot path. Built positionally by parse_header_block, for the same
+# cost; test_hot_path_constructors pins this field order.
 @dataclass(slots=True)
 class HeaderBlock:
     """One decoded 512-byte header block. Strings are the stored bytes, cut at the

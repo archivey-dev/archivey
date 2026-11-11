@@ -1114,7 +1114,9 @@ class _ZipLocator:
 
     Not the ``CentralEntry``: its extra field and comment would stay alive for every
     member, for data that is read only while listing. Read-only by convention, not
-    ``frozen``, for the construction cost (as ``CentralEntry``).
+    ``frozen``, for the construction cost (as ``CentralEntry``). Built positionally by
+    ``ZipReader._to_member``, for the same cost; test_hot_path_constructors pins this
+    field order.
     """
 
     #: Position in the central directory; tells same-offset entries apart.
