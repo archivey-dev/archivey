@@ -33,6 +33,8 @@ from typing import BinaryIO
 
 from archivey.exceptions import (
     PackageNotInstalledError,
+    ReadError,
+    ResourceUnavailableError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_parser import (
@@ -736,6 +738,41 @@ def unrar_may_cut_archive_path(path: str | Path) -> bool:
     return size > _UNRAR_ARCHIVE_PATH_MAX
 
 
+def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
+    """The archive argument for ``unrar``, and the directory to start it in.
+
+    A path that ``unrar`` would expand (:func:`unrar_expands_wildcards`) or cut
+    (:func:`unrar_may_cut_archive_path`) reaches here only as a file archivey made:
+    the reader stages a caller's path of either kind under a fixed name. Its
+    directory, the system temp directory or one made in it, is what holds the
+    ``*``, ``?`` or the length, so ``unrar`` is started in that directory and given
+    the file's name alone. No part of the directory then reaches ``unrar``'s argv,
+    and ``unrar`` finds the next volume of a staged set beside that name. ``unrar p``
+    writes only to stdout, so the working directory changes no output location.
+
+    Windows names cannot hold ``*`` or ``?``, so there only the length applies, and
+    a working directory that long is past what ``CreateProcess`` takes: that is
+    refused, never handed to ``unrar`` to cut.
+    """
+    path = str(archive_path)
+    if not (unrar_expands_wildcards(path) or unrar_may_cut_archive_path(path)):
+        return path, None
+    directory, name = os.path.split(os.path.abspath(path))
+    if not name or unrar_expands_wildcards(name):
+        # The reader stages every such name; reaching here is a bug upstream.
+        raise ReadError(
+            f"the archive {display_path(path)} cannot be handed to unrar: its name "
+            "holds a wildcard character"
+        )
+    if sys.platform == "win32":
+        raise ResourceUnavailableError(
+            f"unrar cannot read {display_path(path)}: the temporary directory's path "
+            f"is longer than {_UNRAR_ARCHIVE_PATH_MAX} characters. Set TMP or TEMP to "
+            "a shorter directory."
+        )
+    return name, directory
+
+
 def unrar_member_refusal(member: str) -> str | None:
     """Why ``member`` is not a mask the reader sends, or ``None`` when it is one.
 
@@ -916,7 +953,8 @@ def open_unrar_p(
     # ``@`` prefix needs no guard: unrar reads the first non-switch argument as
     # the archive, and only later file-name arguments as listfiles.
     cmd.append("--")
-    cmd.append(str(archive_path))
+    archive_arg, cwd = _unrar_archive_argument(archive_path)
+    cmd.append(archive_arg)
     feed_password = pass_arg == "-p"
     # Encode before spawning: _password_stdin_bytes refuses a password unrar would
     # silently cut, and raising after Popen would leave the child and its pipes behind.
@@ -930,6 +968,7 @@ def open_unrar_p(
         not_started=_NOT_INSTALLED_MSG,
         stdin=subprocess.PIPE if feed_password else subprocess.DEVNULL,
         env=_unrar_env(),
+        cwd=cwd,
     )
     if stdin_bytes is not None:
         assert proc.stdin is not None

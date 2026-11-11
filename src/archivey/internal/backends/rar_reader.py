@@ -2080,7 +2080,9 @@ class RarReader(BaseArchiveReader):
         also open a planted ``rep-a.rar``, or block on a FIFO of that name. The
         staged names are fixed and hold none. So is a path longer than unrar 6.x
         keeps (:func:`unrar_may_cut_archive_path`): it would open the file that the
-        cut path names. The private directory's path is short.
+        cut path names. The private directory sits in the system temp directory,
+        which can itself hold a wildcard or be long; ``open_unrar_p`` then starts
+        ``unrar`` in it and passes the fixed name alone.
         """
         if self._archive_path is None or self._stage_volume_paths:
             return

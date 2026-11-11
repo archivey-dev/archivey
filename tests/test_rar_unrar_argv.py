@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -337,6 +338,123 @@ def test_stream_volumes_named_with_a_wildcard_reach_unrar_under_fixed_names(
     assert got == expected
     assert seen
     assert not any(rar_unrar.unrar_expands_wildcards(name) for name in seen)
+
+
+@requires_binary("unrar")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="* and ? cannot be in a Windows name"
+)
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs mkfifo")
+@pytest.mark.parametrize("wildcard", ["*", "?"])
+def test_a_temp_directory_with_a_wildcard_does_not_reach_unrar(
+    wildcard: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The files archivey stages for ``unrar`` sit in the system temp directory,
+    which can hold ``*`` or ``?``, and ``unrar`` expands those in a directory of the
+    archive path too. It is started in that directory and given the file's name
+    alone, so a planted file that the directory's mask also matches is never
+    opened. The staged names are made predictable here so the plants match; each
+    is a FIFO, which an open blocks on, so the test fails instead of reading it
+    (see the FIFO test above for the unblocking loop).
+    """
+    source = _fixture("basic_solid__.rar")
+    expected = _read_all(source)
+    temp = tmp_path / f"t{wildcard}p"
+    temp.mkdir()
+    planted = tmp_path / "t!p"
+    planted.mkdir()
+    names = [f"n{i}" for i in range(4)]
+    fifos = []
+    for name in names:
+        for prefix in ("tmp", "archivey-rar-"):
+            fifo = planted / f"{prefix}{name}.rar"
+            os.mkfifo(fifo)
+            fifos.append(fifo)
+    monkeypatch.setattr(tempfile, "tempdir", str(temp))
+    monkeypatch.setattr(tempfile, "_get_candidate_names", lambda: iter(names))
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    seen = _record_unrar_archive_paths(monkeypatch)
+    data = source.read_bytes()
+    result: list[object] = []
+
+    def read() -> None:
+        try:
+            with open_archive(io.BytesIO(data)) as archive:
+                result.append(
+                    {
+                        member.name: archive.read(member)
+                        for member in archive.members()
+                        if member.is_file
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 - reported by the assert below
+            result.append(exc)
+
+    worker = threading.Thread(target=read, daemon=True)
+    worker.start()
+    worker.join(15)
+    hung = worker.is_alive()
+    for _ in range(100):
+        if not worker.is_alive():
+            break
+        for fifo in fifos:
+            try:
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            except OSError:  # ENXIO: nothing has the FIFO open for reading now
+                pass
+        worker.join(0.2)
+    assert not hung, "unrar opened a file that the temp directory's mask matched"
+    assert result == [expected]
+    assert any(str(temp) in path for path in seen)
+
+
+def test_a_long_staged_path_is_refused_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows names hold no wildcard, so only a temp directory too long for unrar
+    to keep is left, and that is past what ``CreateProcess`` takes as a working
+    directory: refused before any process starts."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    path = "C:\\" + "d" * 2000 + "\\archive.rar"
+    with pytest.raises(ResourceUnavailableError, match="shorter directory"):
+        rar_unrar._unrar_archive_argument(path)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX paths")
+def test_the_archive_argument_is_the_name_alone_for_a_path_unrar_would_misread(
+    tmp_path: Path,
+) -> None:
+    plain = tmp_path / "archive.rar"
+    assert rar_unrar._unrar_archive_argument(plain) == (str(plain), None)
+    starred = tmp_path / "t*p" / "archive.part1.rar"
+    assert rar_unrar._unrar_archive_argument(starred) == (
+        "archive.part1.rar",
+        str(tmp_path / "t*p"),
+    )
+    deep = tmp_path / ("d" * 1100) / "archive.rar"
+    assert rar_unrar._unrar_archive_argument(deep) == (
+        "archive.rar",
+        str(tmp_path / ("d" * 1100)),
+    )
+    with pytest.raises(ReadError, match="wildcard"):
+        rar_unrar._unrar_archive_argument(tmp_path / "rep*.rar")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="archivey passes unrar a working directory only on POSIX",
+)
+def test_a_working_directory_the_child_cannot_enter_is_not_a_missing_program(
+    tmp_path: Path,
+) -> None:
+    missing = str(tmp_path / "gone")
+    with pytest.raises(ReadError, match="could not be started in the directory"):
+        spawn_for_stdout(
+            [sys.executable, "-c", "pass"],
+            name="python",
+            not_started="not installed",
+            cwd=missing,
+        )
 
 
 # --- the identification probe cache -------------------------------------------
