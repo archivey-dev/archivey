@@ -18,11 +18,12 @@ Two modes, each reading one JSON object on stdin and writing one on stdout.
                        "app": "claude"}],
      "repository": "archivey-dev/archivey", "tier": "standard"}
     -> {"run": true, "round": 2, "final": false, "person": false, "reason": "...",
-        "comment": "", "max_rounds": 5, "opus_pass": false, "opus_model": false}
+        "comment": "", "max_rounds": 5, "opus_pass": false, "opus_model": true}
 
 ``tier`` is the pull request's review tier (``python3 scripts/review/review_prep.py tier``),
 empty when it could not be worked out. ``opus_pass`` says the round to run is the
-pull request's Opus review (`OPUS_PASS_TIERS`).
+pull request's Opus review (`OPUS_PASS_TIERS`). ``opus_model`` says the round runs on
+Opus: every round of a pull request whose tier is in `OPUS_PASS_TIERS`.
 ``markers`` are the first lines of the workflow's own earlier comments on the pull
 request (`ROUND_MARKER` and `ATTEMPT_MARKER`). They are the only state: which rounds ran,
 what each one's verdict was, and which commits a review already failed on.
