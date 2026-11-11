@@ -468,11 +468,11 @@ refusing one that escapes. A drive or UNC target stays refused under every polic
 target that starts with a single `\` is not one of these. No member SHALL be written
 through such a link under any policy: a later member whose parent resolves through it is
 refused by the parent check, a link whose own resolution runs through it is refused as
-an escape (one made after it when it is made, one made before it by the recheck that
-the rooted link's creation starts), a hard link to a file under it is refused with its source, and a member that
-lands on the link's own name replaces the link or is refused by `overwrite`, never
-written through it. The `archivey://` tree under `TRUSTED` lists such a link and
-resolves nothing through it. Tests: `tests/test_rooted_symlinks.py`.
+an escape (one made after it when it is made, one made before it by the recheck that the
+rooted link's creation starts), a hard link to a file under it is refused with its
+source, and a member that lands on the link's own name replaces the link or is refused
+by `overwrite`, never written through it. The `archivey://` tree under `TRUSTED` lists
+such a link and resolves nothing through it. Tests: `tests/test_rooted_symlinks.py`.
 
 #### Scenario: symlink revalidation matrix
 

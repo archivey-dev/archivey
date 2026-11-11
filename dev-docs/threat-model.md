@@ -94,14 +94,14 @@ and the escape check refuses a link that resolves through it.
   `os.path.realpath` and non-strict `Path.resolve()` keep such a component as a name
   and go on, so a link chain whose expansion passes `PATH_MAX` (`ENAMETOOLONG`) looked
   inside to them while the kernel followed it outside (CVE-2025-4517 in `tarfile`).
-- Under `TRUSTED`, `check_universal(rooted_link_targets=True)` and
-  `_write_symlink` skip the escape check for a target that starts with `/`
-  (`filters.is_rooted_link_target`), and the link is not tracked for recheck: it may
-  point out already, so no later change can make it escape. Its creation is still
-  reported as a change (`LinkWatch.note_change`), so a link made before it whose walk
-  runs through its path is rechecked and removed. A drive or UNC target is
-  still refused, and a single `\` target is a relative name on POSIX. The
-  `archivey://` tree lists such a link and walks nothing through it.
+- Under `TRUSTED`, `check_universal(rooted_link_targets=True)` and `_write_symlink` skip
+  the escape check for a target that starts with `/` (`filters.is_rooted_link_target`),
+  and the link is not tracked for recheck: it may point out already, so no later change
+  can make it escape. Its creation is still reported as a change
+  (`LinkWatch.note_change`), so a link made before it whose walk runs through its path
+  is rechecked, and removed if it now leads out. A drive or UNC target is still refused,
+  and a single `\` target is a relative name on POSIX. The `archivey://` tree lists such
+  a link and walks nothing through it.
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical
