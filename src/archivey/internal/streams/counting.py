@@ -232,7 +232,7 @@ class BudgetDrawStream(DelegatingStream):
         if target is not None and room is not None and target - self._reach > room:
             # Refused before the decoder decodes the gap. Nothing was decoded, so
             # nothing is drawn: the room stays for other reads.
-            budget._refuse_bytes(target - self._reach)
+            budget._refuse_bytes(target - self._reach, "a seek")
         self._pos = self._inner.seek(offset, whence)
         if self._pos > self._reach:
             gap = self._pos - self._reach

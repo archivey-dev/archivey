@@ -16,6 +16,7 @@ import pytest
 
 import archivey
 from archivey import ArchiveyConfig, ArchiveyUsageError, Budget, ResourceLimitError
+from tests.conftest import requires_binary
 
 _MEMBER = 100_000
 
@@ -535,3 +536,64 @@ def test_a_tar_gz_on_a_pipe_stops_one_byte_past_the_budget(pipe: bool) -> None:
             assert stream is not None
             stream.read()
     assert budget.decoded_bytes == 20_001
+
+
+def test_members_held_before_they_are_listed_draw_as_they_are_held() -> None:
+    """A newc archive holds each hard-link placeholder until the trailer: the budget
+    refuses the one past its cap when it is held, not after all are."""
+    from tests.test_cpio import _newc
+
+    raw = _newc(*((f"f{i}".encode(), 0o100644, i + 1, 2, b"") for i in range(40)))
+    budget = Budget(max_members=5)
+    with (
+        pytest.raises(ResourceLimitError, match="would list 6 members"),
+        _open(raw, budget) as reader,
+    ):
+        reader.members()
+    assert budget.members == 5
+    # Held, then listed: each member is drawn once.
+    budget = Budget()
+    with _open(raw, budget) as reader:
+        assert len(reader.members()) == 40
+    assert budget.members == 40
+
+
+@requires_binary("unrar")
+def test_a_solid_rar_open_draws_the_prefix_unrar_decodes_first() -> None:
+    """``unrar`` decodes a solid member's earlier members and emits only the member:
+    the prefix is drawn before the process starts, and refused there when it does
+    not fit."""
+    from pathlib import Path
+
+    path = Path(__file__).parent / "fixtures" / "rar" / "basic_solid__.rar"
+    budget = Budget()
+    with archivey.open_archive(path, config=ArchiveyConfig(budget=budget)) as reader:
+        assert reader.read("subdir/file2.txt") == b"Hello, universe!"
+    # file1.txt (13 bytes) comes first in the solid stream.
+    assert budget.decoded_bytes == 13 + 16
+    budget = Budget(max_decoded_bytes=20)
+    with (
+        archivey.open_archive(path, config=ArchiveyConfig(budget=budget)) as reader,
+        pytest.raises(ResourceLimitError, match="solid prefix"),
+    ):
+        reader.read("implicit_subdir/file3.txt")
+    assert budget.decoded_bytes == 0
+
+
+def test_an_encoded_7z_header_is_drawn_before_it_decodes() -> None:
+    """A 7z header stored compressed is decoded whole into memory at open: drawn
+    then, or refused, drawing nothing, when it does not fit."""
+    from pathlib import Path
+
+    path = Path(__file__).parent / "fixtures" / "sevenzip" / "solid_three_members.7z"
+    budget = Budget()
+    with archivey.open_archive(path, config=ArchiveyConfig(budget=budget)):
+        header = budget.decoded_bytes
+    assert header > 0
+    budget = Budget(max_decoded_bytes=header - 1)
+    with (
+        pytest.raises(ResourceLimitError, match="encoded 7z header"),
+        archivey.open_archive(path, config=ArchiveyConfig(budget=budget)),
+    ):
+        pass
+    assert budget.decoded_bytes == 0

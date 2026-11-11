@@ -1015,13 +1015,18 @@ pickled.
 - **Skipped bytes.** Bytes a decoder produces to get past a member nobody reads SHALL
   be drawn too, in every format: a compressed TAR's, cpio's or RPM payload's skipped
   members and headers (a compressed TAR's listing included), a CAB folder's output
-  before the member read, and the part of a streaming ZIP member the pass decodes. They
-  SHALL be drawn where they are decoded, so a member that is read SHALL be drawn once,
-  not again as its stream delivers it. A sparse TAR member's holes SHALL be drawn as
-  they are read.
-- **Members.** Each member a reader lists SHALL be drawn once per reader. The listing
-  that would pass `max_members` SHALL raise `ResourceLimitError`, and the refused
-  member SHALL NOT be counted.
+  before the member read, the part of a streaming ZIP member the pass decodes, the
+  solid prefix `unrar` or `unar` decodes and does not emit for a solid RAR member,
+  and a 7z header stored compressed. They SHALL be drawn where they are decoded, so a
+  member that is read SHALL be drawn once, not again as its stream delivers it. A step
+  that decodes all at once (a RAR prefix, a 7z header) SHALL be drawn before it runs,
+  and refused, drawing nothing, when it does not fit. A sparse TAR member's holes
+  SHALL be drawn as they are read. Other metadata a format decodes into memory
+  (SquashFS metadata blocks, XAR's table of contents) is held by the listing limits.
+- **Members.** Each member a reader lists SHALL be drawn once per reader. A member a
+  reader holds back before listing it (a cpio or RPM hard-link set) SHALL be drawn
+  when it is held. The listing that would pass `max_members` SHALL raise
+  `ResourceLimitError`, and the refused member SHALL NOT be counted.
 - The per-reader limits SHALL still apply. Decoder memory stays per decoder.
 
 #### Scenario: Two readers share one budget

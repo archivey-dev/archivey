@@ -804,21 +804,27 @@ class Budget:
     opened from one upload's nested archives, or the threads serving one request), and
     each draws from it as it works:
 
-    - every byte a decoder delivers counts against ``max_decoded_bytes``: the member
-      reads of ``open()``, ``stream_members()``, ``read()``, ``extract_all`` and
-      ``verify_all``, the folder or block a solid 7z or RAR member is decoded from, and
-      the bytes a forward seek in a member skips over (to the end, for a seek to an
-      end the stream cannot size), and the one byte opening a compressed single file
-      decodes to check it. A byte read again after a seek back counts again: it was
-      decoded again;
-    - so does every byte decoded on the way to another: the members a solid stream
-      decodes past (a compressed TAR, cpio or RPM payload, a CAB folder, a streaming
-      ZIP's members whose end only decoding finds), and the headers between them, which
-      a compressed TAR's listing decodes too. A member that is read is drawn once, where
-      it is decoded, not again as its stream delivers it. Holes of a sparse TAR member
-      count as they are read;
-    - every member a listing registers counts against ``max_members``, once per reader
-      however often it is listed.
+    - member data counts against ``max_decoded_bytes`` as it is decoded: the reads of
+      ``open()``, ``stream_members()``, ``read()``, ``extract_all`` and
+      ``verify_all``, the folder or block a solid 7z or RAR member is decoded from, the
+      bytes a forward seek in a member skips over (to the end, for a seek to an end the
+      stream cannot size), and the one byte opening a compressed single file decodes to
+      check it. A byte read again after a seek back counts again: it was decoded
+      again;
+    - so do the bytes decoded on the way to another member: the members a solid
+      stream decodes past (a compressed TAR, cpio or RPM payload, a CAB folder, a
+      streaming ZIP's members whose end only decoding finds) and the headers between
+      them, which a compressed TAR's listing decodes too; the earlier members ``unrar``
+      or ``unar`` decodes, and does not emit, to open a solid RAR member; and a 7z
+      header stored compressed, decoded at open. A member that is read is drawn once,
+      where it is decoded, not again as its stream delivers it. Holes of a sparse TAR
+      member count as they are read;
+    - every member a listing registers, or holds back before it registers it (a cpio
+      or RPM hard-link set), counts against ``max_members``, once per reader however
+      often it is listed.
+
+    Other metadata a format decodes into memory, such as SquashFS's metadata blocks
+    and XAR's table of contents, is held by :class:`ListingLimits`, not drawn.
 
     The read, seek or listing step that would take the total past a limit raises
     :exc:`~archivey.exceptions.ResourceLimitError`, from every reader sharing the
@@ -941,15 +947,26 @@ class Budget:
                 f"this ArchiveyConfig.budget have decoded {total} bytes)"
             )
 
-    def _refuse_bytes(self, n: int) -> None:
-        """Raise for ``n`` bytes that do not fit, drawing none: a seek refused before
-        its decoder moves decoded nothing, so the room stays for other reads."""
+    def _refuse_bytes(self, n: int, what: str) -> None:
+        """Raise for ``n`` bytes ``what`` would decode that do not fit, drawing none:
+        a step refused before its decoder moves decoded nothing, so the room stays
+        for other reads."""
         cap = self._max_decoded_bytes
         raise _budget_error(
             f"Budget exhausted: max_decoded_bytes={cap} (the readers sharing this "
-            f"ArchiveyConfig.budget have decoded {self._decoded_bytes} bytes; a seek "
+            f"ArchiveyConfig.budget have decoded {self._decoded_bytes} bytes; {what} "
             f"would decode {n} more)"
         )
+
+    def _draw_whole(self, n: int, what: str) -> None:
+        """Draw ``n`` bytes ``what`` decodes in one step that cannot stop part way (a
+        process's prefix, a header decoded into memory), before it runs: refused,
+        drawing nothing, when they do not fit."""
+        self._check_bytes_left()
+        room = self._bytes_room()
+        if room is not None and n > room:
+            self._refuse_bytes(n, what)
+        self._draw_bytes(n)
 
     def _draw_members(self, n: int) -> None:
         """Count ``n`` listed members; raise, counting none, if that passes the limit."""
@@ -1164,13 +1181,6 @@ class ArchiveyConfig:
     30 ms at 50 MB/s). ``0`` fetches only the bytes a read needs.
     """
 
-    budget: Budget | None = None
-    """A pool of decoded bytes and members shared with every other reader given the
-    same :class:`Budget` (``None``: none). Set it to hold an upload's nested archives,
-    or the readers of one request, to one total; the per-reader limits still apply
-    to each reader as well.
-    """
-
     unrar_path: str | os.PathLike[str] | None = None
     """The RARLAB ``unrar`` or ``rar`` program to run, as an absolute path, or ``None``
     to look for ``unrar`` and then ``rar`` on ``PATH``.
@@ -1186,6 +1196,13 @@ class ArchiveyConfig:
     """The ``unar`` program to run, as an absolute path, or ``None`` to look for
     ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
     ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
+
+    budget: Budget | None = None
+    """A pool of decoded bytes and members shared with every other reader given the
+    same :class:`Budget` (``None``: none). Set it to hold an upload's nested archives,
+    or the readers of one request, to one total; the per-reader limits still apply
+    to each reader as well.
+    """
 
     def __post_init__(self) -> None:
         """Check the fields at construction, and convert the ones that hold enums or
