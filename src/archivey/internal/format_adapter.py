@@ -409,8 +409,9 @@ class _PluginAdapter(BaseArchiveReader):
     ) -> CodecParams:
         """The codec parameters for one ``decompress`` call: what ``codec`` needs
         beyond the bytes, read from the call's ``size`` and ``properties``.
-        ``is_stream`` says ``method`` is a whole stream format, not a member's
-        compression method."""
+        ``is_stream`` says ``method`` is a stream format read as a whole file
+        (``decompress``), not a member's method or a container coder's data
+        (``_decompress_coder``)."""
         # A bzip2 member is one stream, as in ZIP and 7z: a further stream after its
         # end is refused. So is LZMA Alone, which has no further streams of its own,
         # in a container coder (``_decompress_coder``, a XAR member). Zstd and LZ4 data

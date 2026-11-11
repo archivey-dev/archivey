@@ -83,9 +83,10 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
   Alone member is one stream too, as Apple's `xar` writes it and libarchive reads it (it
   ends its decoder at the first stream's end), so a further stream is refused, where a
   `.bz2` or `.lzma` file reads it on. xz keeps its further streams and stream padding, as
-  in a ZIP xz member: the xz format defines its data as one or more streams. The extracted checksum is `member.hashes`, and
-  the verifying stream checks it (`hashlib.new(..., usedforsecurity=False)`, so a FIPS
-  OpenSSL still computes MD5 and SHA-1).
+  in a ZIP xz member: the xz format defines its data as one or more streams. The
+  extracted checksum is `member.hashes`, and the verifying stream checks it
+  (`hashlib.new(..., usedforsecurity=False)`, so a FIPS OpenSSL still computes MD5 and
+  SHA-1).
 - **Unknown types.** A type the format does not define is a readable `FILE` when it has
   data and `OTHER` otherwise, with `MEMBER_TYPE_UNKNOWN` (DR-25).
 
