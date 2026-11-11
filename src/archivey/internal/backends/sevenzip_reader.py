@@ -1936,7 +1936,6 @@ class SevenZipReader(BaseArchiveReader):
         # (the member CRC is computed over what the right key gives). With several
         # candidates the anchor goes first, and the tail only breaks an INCONCLUSIVE:
         # in a folder with no CRC it is still the only evidence there is.
-
         def probe(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
             kdf_password = _password_to_kdf_bytes(candidate)
             if tail is not None and self._passwords.is_ambiguous():
