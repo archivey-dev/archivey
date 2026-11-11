@@ -1258,7 +1258,10 @@ what `makecab` and `gcab` write.
   `makecab` is usually `encoding="cp932"`), as in every format.
 - Each data block stores a checksum of its bytes, which a read checks, so a member read to
   its end is at `Verification.CHECKSUM` when its blocks carry one (some writers store 0, which
-  means none).
+  means none). The checksums cover the folder's bytes, not the file table that says where
+  each file starts, so archivey checks at open that the files of each folder sit back to
+  back with no gap or overlap, as every writer lays them out. A cabinet whose file table
+  fails that check raises `CorruptionError`.
 - Quantum-compressed members, an old method, are listed but raise
   `UnsupportedFeatureError` when read. A cabinet that is part of a set spanning several files
   (`file.cab`, `file2.cab`) raises `UnsupportedFeatureError` at open.
