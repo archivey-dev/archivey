@@ -819,6 +819,24 @@ def test_rar15_directory_from_the_dos_attribute(unp_ver: int, is_dir: bool) -> N
     assert member.filename == ("empty_subdir/" if is_dir else "empty_subdir")
 
 
+def test_rar15_unix_symlink_is_not_a_directory() -> None:
+    # A symlink's mode (0o120777) has bit 0x10 (group write). It stays a symlink with
+    # no trailing slash and its dictionary, as at UNP_VER 29.
+    data = _as_rar15(
+        _fixture("symlinks_solid__rar4.rar").read_bytes(), main_solid=False
+    )
+    links = [
+        m
+        for m in parse_rar_archive(io.BytesIO(data), use_qo=False).members
+        if m.is_symlink
+    ]
+    assert links
+    for m in links:
+        assert not m.is_directory
+        assert not m.filename.endswith("/")
+        assert m.dictionary_size > 0
+
+
 def test_volume_set_packed_data_past_end_names_the_volume() -> None:
     """The walk's offsets are within one volume, so in a set the reason names it:
     byte 832 of a set whose volume 1 is 917 bytes would point into volume 1."""
