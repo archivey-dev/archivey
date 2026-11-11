@@ -14,10 +14,10 @@ offset ``<toc><checksum>`` gives.
 The reader reads the whole TOC at open, bounded by ``max_metadata_bytes`` before it is
 decoded and by ``max_members`` while it is parsed, and checks its checksum. The XML is
 parsed with expat, refusing a document type declaration, so no entity is ever
-expanded. A member's data is decoded through archivey's codecs, as one stream with nothing
-after its end, and checked against its extracted checksum. A ``.pkg``'s payloads are listed as the files they are
-(``Payload``, a gzip-compressed CPIO), not opened. Handbook page:
-``dev-docs/formats/xar.md``.
+expanded. A member's data is decoded through archivey's codecs, refusing any byte
+after the end of its stream, and checked against its extracted checksum. A ``.pkg``'s
+payloads are listed as the files they are (``Payload``, a gzip-compressed CPIO), not
+opened. Handbook page: ``dev-docs/formats/xar.md``.
 """
 
 from __future__ import annotations

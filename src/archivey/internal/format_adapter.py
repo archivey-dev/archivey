@@ -334,8 +334,9 @@ class _PluginAdapter(BaseArchiveReader):
     def _decompress_coder(
         self, data: BinaryIO, stream_format: StreamFormat, size: int | None
     ) -> BinaryIO:
-        """``ReaderContext._decompress_coder``: one ``stream_format`` stream that is a
-        container coder's whole data, with nothing allowed after its end."""
+        """``ReaderContext._decompress_coder``: ``stream_format`` data that is a
+        container coder's whole data, refusing a byte after the end of what the
+        format defines (further bzip2, LZMA Alone or xz streams still read)."""
         return self._decompress(data, stream_format, size, None, whole_file=False)
 
     def _decompress(
