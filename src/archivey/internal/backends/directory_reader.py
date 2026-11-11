@@ -156,9 +156,10 @@ def _pseudo_filesystem_devices(mountinfo: str) -> frozenset[tuple[int, int]]:
     for line in mountinfo.splitlines():
         head, sep, tail = line.partition(" - ")
         fields = head.split()
-        if not sep or len(fields) < 3 or not tail:
+        fstype = tail.split()[:1]
+        if not sep or len(fields) < 3 or not fstype:
             continue
-        if tail.split()[0] in _PSEUDO_FILESYSTEMS:
+        if fstype[0] in _PSEUDO_FILESYSTEMS:
             major, _, minor = fields[2].partition(":")
             if major.isdigit() and minor.isdigit():
                 devices.add((int(major), int(minor)))
@@ -604,6 +605,9 @@ class DirectoryReader(BaseArchiveReader):
     def _on_pseudo_filesystem(self, st_dev: int) -> bool:
         if self._pseudo_devices is None:
             self._pseudo_devices = _read_pseudo_filesystem_devices()
+        if not self._pseudo_devices:
+            # Off Linux the set is empty, and Windows has no ``os.major``.
+            return False
         return (os.major(st_dev), os.minor(st_dev)) in self._pseudo_devices
 
     def _lookup_uname(self, uid: int) -> str | None:

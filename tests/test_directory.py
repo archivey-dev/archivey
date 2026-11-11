@@ -992,9 +992,24 @@ def test_mountinfo_names_the_procfs_and_sysfs_devices() -> None:
     # Optional fields (shared:7) sit before the "-"; the type is the field after it.
     devices = directory_reader._pseudo_filesystem_devices(_MOUNTINFO)
     assert devices == {(0, 21), (0, 22)}
-    assert directory_reader._pseudo_filesystem_devices("garbage\n- \n") == set()
+    garbage = "garbage\n- \n1 2 0:3 / / rw -  \n"
+    assert directory_reader._pseudo_filesystem_devices(garbage) == set()
 
 
+def test_no_pseudo_filesystem_needs_no_device_numbers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows has no os.major: with no procfs or sysfs mount, nothing decodes st_dev.
+    (tmp_path / "f").write_bytes(b"x")
+    monkeypatch.setattr(
+        directory_reader, "_read_pseudo_filesystem_devices", lambda: frozenset()
+    )
+    monkeypatch.delattr(os, "major", raising=False)
+    with open_archive(tmp_path) as reader:
+        assert reader.get("f").size == 1
+
+
+@pytest.mark.skipif(not hasattr(os, "major"), reason="no device numbers (Windows)")
 def test_a_file_on_a_pseudo_filesystem_lists_with_no_size(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
