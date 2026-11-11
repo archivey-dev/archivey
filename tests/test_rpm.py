@@ -30,7 +30,6 @@ from archivey import (
     open_archive,
 )
 from archivey.diagnostics import (
-    ArchiveEofContext,
     DiagnosticCode,
     UnknownMemberTypeContext,
 )
@@ -119,11 +118,8 @@ def test_list_and_read(compressor: str) -> None:
         # Uncompressed, the payload reads as a CPIO archive does.
         compressed = compressor != "none"
         assert info.is_solid is compressed
-        assert info.cost.listing_cost is (
-            ListingCost.REQUIRES_DECOMPRESSION
-            if compressed
-            else ListingCost.REQUIRES_SCANNING
-        )
+        # The file list is the header's: listing decodes none of the payload.
+        assert info.cost.listing_cost is ListingCost.INDEXED
         assert info.cost.access_cost is (
             AccessCost.SOLID if compressed else AccessCost.DIRECT
         )
@@ -444,6 +440,36 @@ def _listing(data: bytes) -> dict[str, tuple[MemberType, bytes | None]]:
     return out
 
 
+def _read_a(data: bytes) -> bytes:
+    """Read ``opt/t/a.txt``: the payload is read only when a member's data is."""
+    with _open(data) as reader:
+        assert len(reader.members()) == len(_EXPECTED)
+        return reader.read("opt/t/a.txt")
+
+
+def _reads(data: bytes) -> dict[str, bytes | str]:
+    """Each file's data, or the message of the error reading it raised."""
+    out: dict[str, bytes | str] = {}
+    with _open(data) as reader:
+        for member in reader.members():
+            if member.type is MemberType.FILE:
+                try:
+                    out[member.name] = reader.read(member)
+                except CorruptionError as error:
+                    out[member.name] = str(error)
+    return out
+
+
+# The order rpm writes the payload in: hard-link sets after the other files.
+_ORDER = [
+    "opt/t/",
+    "opt/t/a.txt",
+    "opt/t/big.bin",
+    "opt/t/link",
+    "opt/t/h2",
+    "opt/t/h1",
+]
+
 _EXPECTED = {
     "opt/t/": (MemberType.DIRECTORY, None),
     "opt/t/a.txt": (MemberType.FILE, b"alpha\n"),
@@ -465,7 +491,7 @@ def test_a_stripped_payload_reads_from_a_pipe() -> None:
     data = _build(_Package(_tree(), stripped=True))
     with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
         names = [m.name for m, _ in reader.stream_members()]
-    assert names == list(_EXPECTED)
+    assert names == _ORDER
 
 
 @pytest.mark.parametrize(
@@ -576,28 +602,49 @@ def test_a_ghost_stored_anyway_is_skipped() -> None:
     assert _listing(data) == _EXPECTED
 
 
-@pytest.mark.parametrize(
-    ("order", "match"),
-    [
-        ([0, 1, 2, 4, 5], "ends without 1 of the header's files"),
-        ([0, 1, 1, 2, 4, 5, 6], "twice"),
-    ],
-    ids=["missing", "twice"],
-)
 @pytest.mark.parametrize("stripped", [False, True], ids=["newc", "stripped"])
-def test_a_payload_that_does_not_match_the_header(
-    order: list[int], match: str, stripped: bool
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_file_missing_from_the_payload_fails_alone(
+    stripped: bool, pipe: bool
 ) -> None:
-    data = _build(_Package(_tree(), order=order, stripped=stripped))
-    with pytest.raises(CorruptionError, match=match), _open(data) as reader:
-        reader.members()
+    """The listing is the header's; the file whose entry is missing fails when its
+    data is read, and the files after it read."""
+    data = _build(_Package(_tree(), order=[0, 2, 4, 5, 6], stripped=stripped))
+    with _open(data) as reader:
+        assert [m.name for m in reader.members()] == _ORDER
+    if not pipe:
+        reads = _reads(data)
+    else:
+        reads = {}
+        source = NonSeekableBytesIO(data)
+        with open_archive(source, format=RPM, streaming=True) as reader:
+            for member, stream in reader.stream_members():
+                if stream is not None:
+                    try:
+                        reads[member.name] = stream.read()
+                    except CorruptionError as error:
+                        reads[member.name] = str(error)
+    message = reads.pop("opt/t/a.txt")
+    assert isinstance(message, str)
+    assert "holds no data for '/opt/t/a.txt'" in message
+    assert reads == {
+        name: content
+        for name, (kind, content) in _EXPECTED.items()
+        if kind is MemberType.FILE and name != "opt/t/a.txt"
+    }
+
+
+@pytest.mark.parametrize("stripped", [False, True], ids=["newc", "stripped"])
+def test_a_second_entry_for_a_file_is_skipped(stripped: bool) -> None:
+    data = _build(_Package(_tree(), order=[0, 1, 1, 2, 4, 5, 6], stripped=stripped))
+    assert _listing(data) == _EXPECTED
 
 
 def test_a_payload_name_the_header_does_not_list() -> None:
     data = _build(_Package(_tree(), compressor=None))
     data = data.replace(b"./opt/t/a.txt", b"./opt/t/x.txt")
-    with pytest.raises(CorruptionError, match="does not list"), _open(data) as reader:
-        reader.members()
+    with pytest.raises(CorruptionError, match="does not list"):
+        _read_a(data)
 
 
 def test_a_newc_size_that_disagrees_with_the_header() -> None:
@@ -608,35 +655,34 @@ def test_a_newc_size_that_disagrees_with_the_header() -> None:
     at = data.index(entry) - 104 + 48
     assert data[at : at + 8] == b"%08x" % 6
     data = data[:at] + b"%08x" % 7 + data[at + 8 :]
-    with pytest.raises(CorruptionError, match="the header gives 6"), _open(data) as r:
-        r.members()
+    with pytest.raises(CorruptionError, match="the header gives 6"):
+        _read_a(data)
 
 
 def test_a_stripped_index_past_the_file_list() -> None:
     data = _build(_Package(_tree(), stripped=True, compressor=None))
     data = data.replace(b"07070X00000001", b"07070X00000064")
-    with pytest.raises(CorruptionError, match="names file 100 of 7"), _open(data) as r:
-        r.members()
+    with pytest.raises(CorruptionError, match="names file 100 of 7"):
+        _read_a(data)
 
 
-def test_data_after_the_trailer_is_reported() -> None:
+def test_data_after_the_trailer_is_not_read() -> None:
+    """No member's data is there: like rpm, archivey reads no further than the data
+    it needs."""
     data = _build(_Package(_tree(), after_trailer=b"\0\0junk"))
+    assert _listing(data) == _EXPECTED
     with _open(data) as reader:
-        reader.members()
-        codes = [d.code for d in reader.diagnostics.retained]
-    assert DiagnosticCode.ARCHIVE_TRAILING_DATA in codes
-
-
-def test_zero_padding_after_the_trailer_is_not_reported() -> None:
-    data = _build(_Package(_tree(), after_trailer=b"\0" * 1000))
-    with _open(data) as reader:
-        reader.members()
+        for member in reader.members():
+            if member.type is MemberType.FILE:
+                reader.read(member)
         assert not reader.diagnostics.retained
 
 
 def test_a_cut_package_raises_truncated() -> None:
     data = _build(_Package(_tree(), compressor=None))
-    for cut in (50, 200, len(data) - 300, len(data) - 10):
+    # Cut in the headers, and in a file's data. A cut past the last file's data is
+    # not read, as no member's data is there.
+    for cut in (50, 200, len(data) - 300):
         with pytest.raises(TruncatedError), _open(data[:cut]) as reader:
             for _member, stream in reader.stream_members():
                 if stream is not None:
@@ -868,9 +914,12 @@ def test_a_shared_directory_is_not_joined_into_every_name_up_front() -> None:
     # Joined, the names alone would be 16 MB.
     tracemalloc.start()
     try:
+        config = ArchiveyConfig(
+            listing_limits=ListingLimits(max_metadata_bytes=2 * 2**20)
+        )
         with (
-            pytest.raises(CorruptionError, match="ends without 4000"),
-            _open(data) as r,
+            pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+            _open(data, config=config) as r,
         ):
             r.members()
         _, peak = tracemalloc.get_traced_memory()
@@ -946,8 +995,17 @@ def test_payload_bytes_for_a_type_rpm_reads_none_for_are_damage(mode: int) -> No
     data = _build(
         _Package([_F(b"/opt/x", mode=mode, data=b"0123456789")], compressor=None)
     )
-    with pytest.raises(CorruptionError, match="the header gives 0"):
-        _open(data).members()
+    data = _build(
+        _Package(
+            [_F(b"/opt/x", mode=mode, data=b"0123456789"), _F(b"/opt/z", data=b"z")],
+            compressor=None,
+        )
+    )
+    with (
+        pytest.raises(CorruptionError, match="the header gives 0"),
+        _open(data) as reader,
+    ):
+        reader.read("opt/z")
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["bytesio", "pipe"])
@@ -1439,8 +1497,8 @@ def test_an_uncompressed_payload_pads_from_its_own_start() -> None:
 def test_a_stripped_index_equal_to_the_file_count_is_refused() -> None:
     data = _build(_Package(_tree(), stripped=True, compressor=None))
     data = data.replace(b"07070X00000001", b"07070X00000007")
-    with pytest.raises(CorruptionError, match="names file 7 of 7"), _open(data) as r:
-        r.members()
+    with pytest.raises(CorruptionError, match="names file 7 of 7"):
+        _read_a(data)
 
 
 @pytest.mark.parametrize(
@@ -1454,8 +1512,8 @@ def test_a_payload_name_size_out_of_bounds_is_refused(
     entry = b"./opt/t/a.txt\0"
     at = data.index(entry) - 104 + 88
     data = data[:at] + b"%08x" % name_size + data[at + 8 :]
-    with pytest.raises(CorruptionError, match=match), _open(data) as r:
-        r.members()
+    with pytest.raises(CorruptionError, match=match):
+        _read_a(data)
 
 
 def test_a_payload_name_of_rpms_longest_size_is_read() -> None:
@@ -1473,40 +1531,7 @@ def test_a_payload_field_that_is_not_hexadecimal_names_it() -> None:
     with pytest.raises(
         CorruptionError, match=r"the filesize field '0000 006' is not a number"
     ):
-        _open(data).members()
-
-
-@pytest.mark.parametrize(
-    ("after", "at"),
-    [
-        (b"junk" + b"\0" * 10, 0),
-        (b"\0" * 3 + b"junk", 3),
-        (b"\0" * 70_000 + b"j", 70_000),
-    ],
-    ids=["junk-then-zeros", "zeros-then-junk", "past-a-read-chunk"],
-)
-def test_trailing_data_is_reported_where_it_starts(after: bytes, at: int) -> None:
-    data = _build(_Package(_tree(), compressor=None, after_trailer=after))
-    with _open(data) as reader:
-        reader.members()
-        (diagnostic,) = reader.diagnostics.retained
-    assert diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
-    context = diagnostic.context
-    assert isinstance(context, ArchiveEofContext)
-    assert (context.format, context.observed_kind) == ("rpm", "nonzero")
-    # The offset counts from the end of the trailer's own padding to 4, which is
-    # where ``after`` starts: in "zeros-then-junk" the three zeros are past it.
-    assert context.observed_bytes == at
-    assert f"data {at} bytes after its trailer" in diagnostic.message
-
-
-def test_trailing_data_past_the_scan_window_is_not_read() -> None:
-    """The check bounds what it reads: bytes past the first MiB are not looked at."""
-    after = b"\0" * rpm_reader.TRAILING_SCAN + b"junk"
-    data = _build(_Package(_tree(), after_trailer=after))
-    with _open(data) as reader:
-        reader.members()
-        assert not reader.diagnostics.retained
+        _read_a(data)
 
 
 def test_an_unknown_file_type_diagnostic_names_the_member_and_type() -> None:
@@ -1567,4 +1592,42 @@ def test_a_payload_name_of_one_byte_is_an_empty_name() -> None:
     raw[at - 104 + 88 : at - 104 + 96] = b"%08x" % 1
     raw[at] = 0
     with pytest.raises(CorruptionError, match="stores '', which the header does not"):
-        _open(bytes(raw)).members()
+        _read_a(bytes(raw))
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_listing_reads_none_of_the_payload(pipe: bool) -> None:
+    """The member list is the header's: a payload that does not decode lists, and
+    fails only when a member's data is read."""
+    good = _build(_Package(_tree()))
+    payload_at = good.index(b"\x1f\x8b")
+    data = good[:payload_at] + b"\x1f\x8b\x08\x00" + b"\0" * 6 + b"\xff" * 64
+    if pipe:
+        with open_archive(NonSeekableBytesIO(data), format=RPM, streaming=True) as r:
+            listed = []
+            for member, stream in r.stream_members():
+                listed.append(member.name)
+                if member.name == "opt/t/a.txt":
+                    assert stream is not None
+                    with pytest.raises(CorruptionError):
+                        stream.read()
+        assert listed == _ORDER
+        return
+    with _open(data) as reader:
+        assert [m.name for m in reader.members()] == _ORDER
+        assert reader.info.cost.listing_cost is ListingCost.INDEXED
+        with pytest.raises(CorruptionError):
+            reader.read("opt/t/a.txt")
+
+
+def test_the_fixtures_list_in_the_order_rpm_wrote_them() -> None:
+    """rpm writes hard-link sets after the other files: the listing follows, so a pass
+    reads the payload forward once."""
+    with open_archive(DATA / "payload-xz.rpm") as reader:
+        names = [m.name for m in reader.members()]
+    assert names[-4:] == [
+        "usr/share/at/dir/hard.txt",
+        "usr/share/at/a.txt",
+        "usr/share/at/zero.txt",
+        "usr/share/at/dir/zero-hard.txt",
+    ]

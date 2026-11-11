@@ -1,5 +1,5 @@
-"""The RPM reader: a package's file list from its header, and its files' data from
-the CPIO payload, read in one forward pass.
+"""The RPM reader: a package's file list from its header, and each file's data from
+the CPIO payload when that data is read.
 
 On-disk layout (``rpm.org`` *V4 Package format* and *V6 Package format*)::
 
@@ -13,8 +13,16 @@ the main header names (``PAYLOADCOMPRESSOR``), and runs to the end of the file.
 
 The main header holds the file list: names (``DIRNAMES``/``BASENAMES``/``DIRINDEXES``,
 or ``OLDFILENAMES`` in old packages), modes, sizes, times, owners, link targets and
-digests. The payload holds one CPIO entry per file that is not a ``%ghost``, and the
-reader maps each entry to its file the way ``rpm`` does (``lib/rpmfi.c``):
+digests. The walk lists every member from it and reads no payload byte: the reader
+sets ``data_on_demand``, and each file's data stream finds the file's payload entry
+when it is first read (:class:`_Payload`). Every member's metadata comes from the
+header, as ``rpm`` installs it. Members are named as the payload stores them,
+``./usr/bin/x``, so ``usr/bin/x`` once normalized: what ``rpm2cpio | cpio -i``
+extracts, relative to the directory it is given. They come in the order rpm writes the
+payload (:func:`_write_order`), so a pass reads it forward once.
+
+The payload holds one CPIO entry per file that is not a ``%ghost``, mapped to its file
+the way ``rpm`` does (``lib/rpmfi.c``):
 
 - a **newc** (``070701``) or **crc** (``070702``) entry by its name, ``./usr/bin/x``
   for the header's ``/usr/bin/x``;
@@ -22,18 +30,12 @@ reader maps each entry to its file the way ``rpm`` does (``lib/rpmfi.c``):
   nothing else) by that index. RPM 6 packages always use it, and RPM 4 packages that
   hold a file of 4 GiB or more (``LONGFILESIZES``).
 
-Every member's metadata comes from the header, as ``rpm`` installs it; a newc entry's
-own size is only checked against it. Members are named as the payload stores them,
-``./usr/bin/x``, so ``usr/bin/x`` once normalized: what ``rpm2cpio | cpio -i``
-extracts, relative to the directory it is given. A regular file's data follows its
-entry, except in a hard-link set (regular files that share ``FILEDEVICES`` and
-``FILEINODES``): there only the set's last file in header order carries the data, the
-earlier entries coming first, empty. As for CPIO, this reader holds those back, yields
-the last as the ``FILE`` and the others as ``HARDLINK`` members to it. A symlink's
-target is its entry's data; the reader takes it from ``FILELINKTOS`` and skips those
-bytes. A ``%ghost`` file is listed in the header but never stored, and ``rpm2cpio``
-does not give it either: it is not a member. The payload ends with a newc
-``TRAILER!!!`` entry, and every file that is not a ghost must have been found by then.
+A regular file's data follows its entry, except in a hard-link set (regular files that
+share ``FILEDEVICES`` and ``FILEINODES``): there only the set's last file in header
+order carries the data. The walk yields that file as the ``FILE`` and the others after
+it as ``HARDLINK`` members to it. A symlink's target is its entry's data; the reader
+takes it from ``FILELINKTOS``. A ``%ghost`` file is listed in the header but never
+stored, and ``rpm2cpio`` does not give it either: it is not a member.
 
 The signature header stores digests of the main header, from its magic to the end
 of its data store: ``RPMSIGTAG_SHA256`` and the older ``RPMSIGTAG_SHA1``. The walk
@@ -52,12 +54,13 @@ internal name it uses (``tests/test_rpm.py`` checks). Handbook page:
 from __future__ import annotations
 
 import hashlib
+import io
 import struct
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from typing import Any
 
 from archivey.diagnostics import (
-    ArchiveEofContext,
     DiagnosticCode,
     UnknownMemberTypeContext,
 )
@@ -98,9 +101,6 @@ MAX_HEADER_DATA = 0x0FFFFFFF
 # The longest CPIO name rpm reads (lib/cpio.c).
 MAX_PAYLOAD_NAME = 4096
 TRAILER = b"TRAILER!!!"
-# How far past the trailer the check for trailing bytes reads: rpm reads nothing
-# there, so this only bounds a report, and padding a writer adds is far shorter.
-TRAILING_SCAN = 1024 * 1024
 
 # Header data types (rpm.org "Package Header format").
 _CHAR, _INT8, _INT16, _INT32, _INT64 = 1, 2, 3, 4, 5
@@ -366,8 +366,8 @@ class _File:
     size: int
     flags: int
     links: tuple[int, ...] = ()
-    member: ArchiveMember | None = None
-    found: bool = False
+    # Its place in the order rpm writes the payload in (``_write_order``).
+    rank: int = 0
 
     @property
     def raw_name(self) -> bytes:
@@ -390,15 +390,17 @@ class _Package:
     users: list[bytes] | None
     groups: list[bytes] | None
     targets: list[bytes] | None
-    # Earlier links of a hard-link set, waiting for the set's last file (by its index),
-    # which carries the data.
-    held: dict[int, list[_File]] = field(default_factory=dict)
     # The payload offset of the first CPIO entry: CPIO pads to 4 bytes from there.
     base: int = 0
+    # The files that are not ghosts, by index, in the order rpm writes their entries.
+    order: list[int] = field(default_factory=list)
 
 
 class RpmReader(SequentialReader):
-    """Walks an RPM package: its headers, then its CPIO payload."""
+    """Walks an RPM package: lists its files from the header, and reads each file's
+    data from the CPIO payload when that data is read."""
+
+    data_on_demand = True
 
     def __init__(self, context: ReaderContext) -> None:
         self._context = context
@@ -423,32 +425,35 @@ class RpmReader(SequentialReader):
         self._solid = package.compressor is not None
         payload = stream
         if package.compressor is not None:
+            # Nothing is decoded until a member's data is read.
             payload = stream.decompress(package.compressor)
         # CPIO pads to 4 bytes from the payload's start, which an uncompressed payload
         # does not share with the file's.
         package.base = payload.offset
+        cursor = _Payload(self, payload, package)
+        # Every member from the header, before any payload byte is read, in the order
+        # rpm writes the payload in, so a pass reads it forward. An earlier link of a
+        # hard-link set waits for the set's last file, which carries the data: a link
+        # names an earlier member.
+        held: dict[int, list[ArchiveMember]] = {}
         files = package.files
-        while True:
-            file, size = self._next_entry(payload, package)
-            if file is None:
-                break
-            if file.flags & RPMFILE_GHOST:
-                # rpm < 4.11 sometimes stored one; rpm skips it, and so does the walk.
-                payload.skip(size)
+        for index in package.order:
+            file = files[index]
+            member = self._member(package, file)
+            if member.type is not MemberType.FILE:
+                yield MemberSpan(member)
                 continue
-            if file.found:
-                raise CorruptionError(
-                    f"RPM payload stores {_shown(file.raw_name)} twice"
-                )
-            file.found = True
-            yield from self._entry(payload, package, file)
-        missing = [f for f in files if not f.found and not f.flags & RPMFILE_GHOST]
-        if missing:
-            raise CorruptionError(
-                f"RPM payload ends without {len(missing)} of the header's files, "
-                f"the first {_shown(missing[0].raw_name)}"
+            if file.links and file.links[-1] != file.index:
+                self._context.hold(member, reason=_HELD)
+                held.setdefault(file.links[-1], []).append(member)
+                continue
+            yield MemberSpan(
+                member,
+                digests=self._digests(package, file),
+                data=_PayloadData(cursor, file),
             )
-        self._check_end(payload)
+            for link in held.pop(file.index, []):
+                yield self._link(link, member)
 
     def _read_package(self, stream: ForwardStream) -> _Package:
         """Read the lead and both headers, leaving the stream at the payload."""
@@ -490,7 +495,9 @@ class RpmReader(SequentialReader):
         digest = _DIGESTS.get(1 if algorithm is None else algorithm)
         digests = self._strings_column(header, TAG_FILEDIGESTS, len(files))
         by_name = {(file.directory, file.base): file.index for file in files}
-        return _Package(files, by_name, compressor, digest, digests, *columns)
+        package = _Package(files, by_name, compressor, digest, digests, *columns)
+        package.order = _write_order(files)
+        return package
 
     def _describe(
         self,
@@ -675,7 +682,6 @@ class RpmReader(SequentialReader):
                 ),
                 member=member,
             )
-        file.member = member
         return member
 
     @staticmethod
@@ -693,7 +699,8 @@ class RpmReader(SequentialReader):
         self, payload: ForwardStream, package: _Package
     ) -> tuple[_File | None, int]:
         """The file the next payload entry stores, and the size its entry gives (the
-        header's for a stripped entry); ``(None, 0)`` at the trailer."""
+        header's for a stripped entry), which the caller checks against the header's;
+        ``(None, 0)`` at the trailer."""
         payload.skip(-(payload.offset - package.base) % 4)
         offset = payload.offset
         magic = payload.read_exact(6)
@@ -743,16 +750,7 @@ class RpmReader(SequentialReader):
                 f"RPM payload entry at offset {offset} stores {_shown(name)}, which the "
                 "header does not list"
             )
-        file = package.files[index]
-        if file.flags & RPMFILE_GHOST:
-            return file, size
-        expected = self._expected_size(file)
-        if size != expected:
-            raise CorruptionError(
-                f"RPM payload entry at offset {offset} gives {_shown(name)} {size} bytes; "
-                f"the header gives {expected}"
-            )
-        return file, size
+        return package.files[index], size
 
     @staticmethod
     def _expected_size(file: _File) -> int:
@@ -763,38 +761,6 @@ class RpmReader(SequentialReader):
         if kind == _S_IFREG and (not file.links or file.links[-1] == file.index):
             return file.size
         return 0
-
-    def _entry(
-        self, payload: ForwardStream, package: _Package, file: _File
-    ) -> Iterator[MemberSpan]:
-        """The members one payload entry gives: its own, unless it is an earlier link
-        of a hard-link set, which is held until the set's last file comes, or yielded
-        at once as a link to that file if it already came; then the held links of the
-        set it ends."""
-        member = self._member(package, file)
-        if member.type is MemberType.SYMLINK:
-            # The target, which the header already gave.
-            yield MemberSpan(member, 0)
-            payload.skip(file.size)
-            return
-        if member.type is not MemberType.FILE:
-            yield MemberSpan(member, 0)
-            return
-        if file.links and file.links[-1] != file.index:
-            # An earlier link of a set: empty, its data comes with the set's last.
-            data = package.files[file.links[-1]]
-            if data.member is not None:
-                # The payload stored the set's last file first, which rpm installs
-                # all the same: a link to it, now.
-                yield self._link(member, data.member)
-                return
-            self._context.hold(member, reason=_HELD)
-            package.held.setdefault(file.links[-1], []).append(file)
-            return
-        yield MemberSpan(member, file.size, self._digests(package, file))
-        for link in package.held.pop(file.index, []):
-            assert link.member is not None
-            yield self._link(link.member, member)
 
     @staticmethod
     def _link(member: ArchiveMember, data: ArchiveMember) -> MemberSpan:
@@ -820,29 +786,167 @@ class RpmReader(SequentialReader):
         name, new = package.digest_algorithm
         return (MemberDigest(name, expected, new),)
 
-    def _check_end(self, payload: ForwardStream) -> None:
-        """After the trailer: zero padding only. rpm writes none, and reads no
-        further."""
-        scanned = 0
-        while scanned < TRAILING_SCAN:
-            chunk = payload.read(min(64 * 1024, TRAILING_SCAN - scanned))
-            if not chunk:
-                return
-            stripped = chunk.lstrip(b"\0")
-            if stripped:
-                at = scanned + len(chunk) - len(stripped)
-                self._context.report(
-                    DiagnosticCode.ARCHIVE_TRAILING_DATA,
-                    f"RPM payload has data {at} bytes after its trailer",
-                    ArchiveEofContext(
-                        format="rpm",
-                        expected_marker="zeros_to_eof",
-                        observed_bytes=at,
-                        observed_kind="nonzero",
-                    ),
+
+class _Payload:
+    """One walk's place in the payload, shared by the data streams of the members it
+    yields (``SequentialReader.data_on_demand``). It moves forward only, and reads
+    nothing until a member's data is read.
+
+    rpm writes the entries in the order the walk yields the members in
+    (:func:`_write_order`), so they find theirs in that order: entries passed on the way
+    (directories, symlinks, earlier hard links, files nobody read, ghosts rpm < 4.11
+    stored) are skipped, and so is a second entry for a file. A file whose entry is
+    not there fails alone: the search for it stops at the next entry that carries
+    data for a later file, and leaves that entry for that file's read. Damage to the
+    payload's structure (an entry that does not parse, names no file of the header,
+    or gives a size other than the header's, which rpm reads by) fails the read that
+    finds it, and every later read of the walk.
+    """
+
+    def __init__(
+        self, reader: RpmReader, payload: ForwardStream, package: _Package
+    ) -> None:
+        self._reader = reader
+        self._payload = payload
+        self._package = package
+        # The entry read but not yet used: its file and the size its entry gives.
+        self._pending: tuple[_File, int] | None = None
+        # Where the data being read ends, past which the next search starts.
+        self._data_end = payload.offset
+        # The data stream reading now; one that is not it may no longer read.
+        self.current: _PayloadData | None = None
+        self._ended = False
+        self._broken: CorruptionError | None = None
+
+    def find(self, data: _PayloadData) -> None:
+        """Move to the data of ``data``'s file and make ``data`` the stream reading."""
+        if self._broken is not None:
+            raise CorruptionError(
+                f"RPM payload cannot be read to {_shown(data.file.raw_name)}: "
+                f"{self._broken}"
+            ) from self._broken
+        try:
+            size = self._find(data.file)
+        except CorruptionError as error:
+            if not isinstance(error, _MemberDamage):
+                self._broken = error
+            raise
+        self.current = data
+        self._data_end = self._payload.offset + size
+
+    def _find(self, file: _File) -> int:
+        payload = self._payload
+        reader = self._reader
+        # What the last data read left of its data. A search that stopped short read
+        # the next entry's header, which waits in ``_pending``, so the stream may be
+        # past the data's end.
+        if self._data_end > payload.offset:
+            payload.skip(self._data_end - payload.offset)
+        self._data_end = payload.offset
+        while True:
+            if self._pending is None:
+                if self._ended:
+                    raise self._missing(file)
+                found, size = reader._next_entry(payload, self._package)
+                if found is None:
+                    self._ended = True
+                    raise self._missing(file)
+                self._pending = found, size
+            found, size = self._pending
+            expected = reader._expected_size(found)
+            # Only a regular file's entry holds a member's data. A ghost's never does,
+            # whatever its entry gives.
+            carries = (
+                found.mode & _S_IFMT == _S_IFREG
+                and not found.flags & RPMFILE_GHOST
+                and expected == found.size
+            )
+            if carries and found.rank > file.rank:
+                # rpm writes the data in this order, so the file's would have come.
+                raise self._missing(file)
+            if not found.flags & RPMFILE_GHOST and size != expected:
+                # rpm reads the header's size (iterReadArchiveNext), so for rpm every
+                # entry after this one is out of place: the payload is damaged here.
+                raise CorruptionError(
+                    f"RPM payload entry for {_shown(found.raw_name)} gives {size} "
+                    f"bytes; the header gives {expected}"
                 )
-                return
-            scanned += len(chunk)
+            self._pending = None
+            if found is file:
+                return size
+            self._skip(size)
+
+    def _skip(self, size: int) -> None:
+        self._pending = None
+        self._payload.skip(size)
+        self._data_end = self._payload.offset
+
+    def read(self, data: _PayloadData, n: int) -> bytes:
+        if self.current is not data:
+            raise CorruptionError(
+                f"RPM payload is past the data of {_shown(data.file.raw_name)}"
+            )
+        n = min(n, self._data_end - self._payload.offset)
+        return self._payload.read(n) if n > 0 else b""
+
+    @staticmethod
+    def _missing(file: _File) -> _MemberDamage:
+        return _MemberDamage(
+            f"RPM payload holds no data for {_shown(file.raw_name)} where rpm's order "
+            "puts it"
+        )
+
+
+class _MemberDamage(CorruptionError):
+    """Damage that fails one member's read and leaves the payload readable."""
+
+
+class _PayloadData(io.RawIOBase):
+    """A file's data, found in the payload when first read (:class:`_Payload`)."""
+
+    def __init__(self, cursor: _Payload, file: _File) -> None:
+        self._cursor = cursor
+        self.file = file
+        self._started = False
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, buffer: Any) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file")
+        if not self._started:
+            self._started = True
+            self._cursor.find(self)
+        data = self._cursor.read(self, len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
+    @override
+    def close(self) -> None:
+        if self._cursor.current is self:
+            self._cursor.current = None
+        super().close()
+
+
+def _write_order(files: list[_File]) -> list[int]:
+    """The files that are not ghosts, by index, in the order rpm writes their payload
+    entries, each file's ``rank`` set to its place in it.
+
+    rpm 4.12 and later (``lib/rpmfi.c``, ``iterWriteArchiveNextFile``) and rpm 4.11
+    (``lib/fsm.c``, ``writeLinks``) both write every file that is not in a hard-link
+    set in header order, then each set, ordered by its first file, with its files in
+    header order and the data with the last.
+    """
+    order = [f.index for f in files if not f.links and not f.flags & RPMFILE_GHOST]
+    for file in files:
+        if file.links and file.links[0] == file.index:
+            order.extend(file.links)
+    for rank, index in enumerate(order):
+        files[index].rank = rank
+    return order
 
 
 def _header_digests(signature: Header) -> list[tuple[str, bytes, Hasher]]:

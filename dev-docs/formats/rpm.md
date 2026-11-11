@@ -1,8 +1,9 @@
 # RPM
 
 Current maintainer truth for RPM packages, binary and source. A package is two headers
-and then a CPIO payload inside a compressor, with no index of where each file's data
-starts, so archivey reads it in one forward pass, from a pipe too. The reader is written
+and then a CPIO payload inside a compressor. The main header lists every file, so
+archivey lists the package from the headers alone and decodes the payload only when a
+member's data is read, in one forward pass, from a pipe too. The reader is written
 against `archivey.formats`, the API a format added from outside uses, and is registered
 as a built-in the way ar and CPIO are.
 
@@ -10,11 +11,11 @@ as a built-in the way ar and CPIO are.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/rpm_reader.py`, an `RpmHandler` (`SequentialFormatHandler`) and an `RpmReader` (`SequentialReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/rpm_reader.py`, an `RpmHandler` (`SequentialFormatHandler`) and an `RpmReader` (`SequentialReader` with `data_on_demand`), registered with `register_builtin_format` |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file, a stream that can seek, or a pipe (`streaming=True`) |
-| Listing cost | `REQUIRES_DECOMPRESSION`: the file list is in the header, but the payload is walked to find each file's data |
-| Access cost | `SOLID`: one compression stream holds every file |
+| Listing cost | `INDEXED`: the file list is the header's, and listing decodes none of the payload |
+| Access cost | `SOLID`: one compression stream holds every file (`DIRECT` for an uncompressed payload) |
 | Core dependencies | None. The payload is decoded by archivey's codecs (gzip, bzip2, xz, LZMA Alone, Zstandard) |
 | Encryption | None |
 | Checksums | The main header's SHA-256 and SHA-1 digests from the signature header, each one stored checked as the header is read; each regular file's digest from `FILEDIGESTS` (SHA-256 in current packages, MD5 in old ones), checked as it is read |
@@ -25,8 +26,8 @@ as a built-in the way ar and CPIO are.
 Not here, though a reader might look for it: signatures are not checked (only reported),
 the payload digests (`PAYLOADSHA256` and friends) and the MD5 over header and payload
 (signature tag 1004) are not checked, a symlink's target in the payload is not compared
-with `FILELINKTOS`, `%ghost` files are not listed, and scriptlets, dependencies and the
-changelog are not exposed.
+with `FILELINKTOS`, bytes after the payload's trailer are not read, `%ghost` files are
+not listed, and scriptlets, dependencies and the changelog are not exposed.
 
 ## 1. Shape
 
@@ -50,6 +51,10 @@ changelog are not exposed.
 - **Hard links:** regular, non-ghost files that share `FILEDEVICES` and `FILEINODES`.
   rpm writes their entries together, and only the set's last file in header order
   carries the data.
+- **Entry order.** rpm writes every file that is not in a hard-link set in header order,
+  then each set, ordered by its first file, with its files in header order: rpm 4.12 and
+  later in `lib/rpmfi.c` (`iterWriteArchiveNextFile`), rpm 4.11 in `lib/fsm.c`
+  (`writeLinks`). rpm reads the entries in any order.
 - **A symlink's target is its entry's data**, and also in `FILELINKTOS`.
 
 ## 2. The pipeline here
@@ -69,11 +74,13 @@ since both read the header the same way. The digest covers what only the header 
 package with neither tag is read unchecked.
 
 The walk then hands the rest of the file to `ForwardStream.decompress()` with the codec
-`PAYLOADCOMPRESSOR` names. With no such tag
-the payload is read uncompressed: rpm's `ufdio` writes none. Each payload entry is mapped
-to its file as `rpm` does (`lib/rpmfi.c`): a newc entry by its name, a stripped one by
-its index. The member's metadata comes from the header, as `rpm` installs it; a newc
-entry's own size is only checked against it.
+`PAYLOADCOMPRESSOR` names, which decodes nothing yet. With no such tag the payload is
+read uncompressed: rpm's `ufdio` writes none. It then yields every member from the
+header, in the order rpm writes the entries (§1), before any payload byte is read: the
+reader sets `SequentialReader.data_on_demand`, and each `FILE` member's
+`MemberSpan.data` finds the file's entry in the payload only when it is read (§2.3).
+Listing an RPM is reading its two headers. The member's metadata comes from the header,
+as `rpm` installs it.
 
 Members are named as the payload stores them, `./usr/bin/x`, so `usr/bin/x` once
 normalized: what `rpm2cpio | cpio -i` extracts, relative to the directory given. The
@@ -88,12 +95,10 @@ the bytes would be read as the next entry's header and the package fails in rpm.
 size that disagrees with that 0 is `CorruptionError`, as any size that disagrees with the
 header.
 
-Hard links are handled as in newc CPIO: the earlier, empty entries are held
-(`ReaderContext.hold()`, counted toward the listing's limits), and the set's last file,
-which carries the data, is yielded as the `FILE` with the held ones as `HARDLINK`
-members to it after it. An earlier link the payload stores after that file, which rpm
-installs all the same, is yielded as a `HARDLINK` when its entry arrives. A symlink's
-payload bytes are skipped; the target is the header's.
+Hard links: the set's earlier files are held (`ReaderContext.hold()`, counted toward
+the listing's limits), and the set's last file, which carries the data, is yielded as
+the `FILE` with the held ones as `HARDLINK` members to it after it. A symlink's target is
+the header's; its payload bytes are skipped when a read passes them.
 
 `ArchiveInfo`:
 
@@ -111,6 +116,30 @@ payload bytes are skipped; the target is the header's.
   does.
 
 ### 2.3 Member data
+
+Each walk has one cursor in the payload (`_Payload`), shared by the data streams of the
+members it yields, which moves forward only. A file's data stream, read for the first
+time, moves the cursor to the file's entry: it skips the entries on the way (directories,
+symlinks, the empty entries of earlier hard links, files nobody read, ghosts rpm < 4.11
+stored, a second entry for a file already passed), maps each entry to its file as `rpm`
+does (`lib/rpmfi.c`: a newc entry by its name, a stripped one by its index), and checks
+each entry's size against the header's. archivey reads a pass's members in the walk's
+order, which is the payload's, so `stream_members()` and `extract_all` decode the payload
+once. `open()` of one member walks again from the start of the archive with a cursor of
+its own, as for any solid archive.
+
+- **A file the payload lacks fails alone.** The search for it stops at the next entry
+  that carries a later file's data (by rpm's order, §1), leaves that entry for that
+  file, and raises `CorruptionError` for this one. The same holds for a payload whose
+  data entries are in another order than rpm's: the file found out of place fails.
+- **Damage to the payload's structure** (an entry that does not parse, a name the header
+  does not list, a stripped index past the file list, an entry size other than the
+  header's, which rpm reads by, a cut or a codec error) raises for the read that finds it
+  and for every later read of that cursor: rpm would not get past it either.
+- **Nothing past the last file read is read.** Listing never reads the payload, and a
+  pass stops after the last file's data, so the trailer, what follows it and the
+  codec's own end check are not reached, and damage in the entries after the last file
+  read is not reported.
 
 A regular file's digest from `FILEDIGESTS`, in the algorithm `FILEDIGESTALGO` names (MD5
 when absent), is a `MemberDigest`, checked as the data is read; a mismatch is
@@ -157,17 +186,17 @@ surface is memory a header can ask for:
   index must name a file.
 - A header listing more files, or more directory names, than
   `ListingLimits.max_members` is refused before any per-file list is built. Below that a
-  file costs about 400 bytes until the payload reaches it (about 100 MiB at the default
+  file costs about 400 bytes while the walk lists (about 100 MiB at the default
   262 144).
-- Names stay split as the header stores them (directory, base) and members are made as
-  the payload reaches each file, since `DIRINDEXES` lets every file share one long
-  directory name: joined up front, the names grow with files times directory length.
-  Each member's name is then weighed by the listing's limits as it is listed.
+- Names stay split as the header stores them (directory, base) and each member is made
+  as the walk yields it, since `DIRINDEXES` lets every file share one long directory
+  name: joined up front, the names grow with files times directory length. Each
+  member's name is weighed by the listing's limits as it is listed, so
+  `max_metadata_bytes` stops a listing whose names grow that way.
 - A string array cannot declare more strings than its bytes can hold.
 - A tag read for one value (NAME, VERSION, EPOCH, the payload tags and the like) reads
   only its first value, whatever count its entry declares.
 - Held hard links are charged to the listing's limits as they are held.
-- The check for bytes after the trailer reads at most 1 MiB.
 - The payload is decoded by archivey's codecs, under the caller's decoder limits and the
   decompression-ratio guard.
 
@@ -198,8 +227,14 @@ surface is memory a header can ask for:
   damage, not tampering: whoever changes the header can change them too. The
   member list comes from the header, so without this check a changed link target, mode
   or owner passed `archivey test`.
-- **Every file must be found before the trailer,** as rpm requires
-  (`RPMERR_MISSING_FILE`): a payload that ends early is `CorruptionError`.
+- **The listing is the header's; the payload is read only for data.** The header is
+  what rpm installs and what the header digests cover, so listing needs nothing else,
+  and `list` costs two headers. What this gives up, accepted by the maintainer: a file
+  the payload lacks (rpm's `RPMERR_MISSING_FILE`) or a damaged payload is found only when
+  data is read, and fails that read (§2.3), not the listing.
+- **Members come in the order rpm writes the payload** (§1), so a pass reads it forward
+  once. Header order would put a hard-link set's data before the files rpm writes ahead
+  of it.
 - **No content probe:** the lead's magic is four bytes at offset 0.
 
 ## 7. Open questions
@@ -208,10 +243,11 @@ surface is memory a header can ask for:
   the compressed and the uncompressed payload as a whole, including bytes no member
   reads. Checking them needs a hook in `archivey.formats` for a check that spans the
   payload; tracked internally.
-- **The payload's copy of a symlink's target.** The walk skips it and takes the
-  target from `FILELINKTOS`, as rpm installs it; `rpm2cpio | cpio -i` writes the
-  payload's. A package where the two differ is read without a report. Reporting it
-  needs a diagnostic code or shape of its own, which is not decided yet.
+- **The payload's copy of a symlink's target.** The target is `FILELINKTOS`, as rpm
+  installs it; `rpm2cpio | cpio -i` writes the payload's. A package where the two differ
+  is read without a report. Extraction never reads a symlink's entry, so the copy can
+  only be compared when a read of a later file passes it, after the link is listed or
+  made; how to report it then is not decided yet.
 - **A payload with no compressor tag that is gzip.** rpm opens such a payload with
   `gzdio`, which reads plain bytes too; only packages from rpm 3 and older have it. The
   walk cannot look at the payload's first bytes and then hand them to a codec, so it reads

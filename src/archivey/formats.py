@@ -486,7 +486,8 @@ class ForwardStream:
         archivey cannot know the archive is solid before the walk gets here, so a
         format that decompresses part-way says so from :meth:`FormatReader.archive_info`
         with ``ReaderArchiveInfo(is_solid=True)``, and the cost receipt (solid access,
-        listing that needs decompression) is right from the open.
+        listing that needs decompression, or an indexed listing for a reader with
+        :attr:`SequentialReader.data_on_demand`) is right from the open.
 
         The caller's ``FormatPolicy`` holds here as for a member: under
         ``plugins=False`` a ``PluginStream`` raises ``UnsupportedFeatureError``, and a
@@ -997,6 +998,21 @@ class SequentialReader(FormatReader):
     """``True`` when a symlink's target is its data (CPIO). archivey reads it while
     walking, up to 4096 bytes, and decodes it as UTF-8, with
     ``surrogateescape`` for other bytes. A longer one is reported and left unset."""
+
+    data_on_demand: ClassVar[bool] = False
+    """``True`` when the walk lists every member from a header at the start of the
+    archive, and each span's :attr:`MemberSpan.data` reads the rest of the archive
+    only when it is read (RPM: the file list is in the header, the data in a
+    compressed payload after it). archivey then closes a span's ``data`` unread when
+    the walk moves on, instead of reading what is left of it, so listing decodes
+    nothing past the header, and the cost receipt says the listing is indexed.
+
+    The data streams of one walk share that walk's position in the archive, which
+    only moves forward: reading one member's data may skip past the data of members
+    yielded before it, and a stream whose data the walk is already past raises
+    ``CorruptionError`` when read. archivey reads a pass's members in the order the
+    walk yields them, and opens a member out of that order with a walk of its own,
+    started over from the start of the archive, as for any ``data``."""
 
     @abstractmethod
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:

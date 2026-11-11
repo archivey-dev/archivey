@@ -1187,6 +1187,7 @@ attribute archivey.formats.SequentialFormatHandler.uses_encoding = False
 class archivey.formats.SequentialReader(FormatReader)
 method archivey.formats.SequentialReader.archive_info(self) -> ReaderArchiveInfo
 method archivey.formats.SequentialReader.close(self) -> None
+attribute archivey.formats.SequentialReader.data_on_demand = False
 attribute archivey.formats.SequentialReader.link_target_in_data = False
 method archivey.formats.SequentialReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
 method archivey.formats.SequentialReader.walk(self, stream: ForwardStream) -> Iterator[MemberSpan]
