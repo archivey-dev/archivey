@@ -758,11 +758,11 @@ def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
 
     Windows names cannot hold ``*`` or ``?``, so there only the length applies, and
     a working directory that long is past what ``CreateProcess`` takes. There the
-    absolute path is handed over whole while ``unrar`` keeps it whole
-    (``_UNRAR_WINDOWS_ARCHIVE_PATH_KEPT``: the margin under
-    ``_UNRAR_ARCHIVE_PATH_MAX`` is for a relative path or an unknown next volume
-    name, and a staged path is absolute with a fixed name), and refused past that,
-    never handed to ``unrar`` to cut.
+    absolute path is handed over whole while ``unrar`` keeps it whole, and refused
+    past that, never handed to ``unrar`` to cut. ``_UNRAR_ARCHIVE_PATH_MAX`` (1024)
+    is itself a margin under the 2047-unit cut, kept for a relative path or an
+    unknown next volume name; a staged path is absolute with a fixed name, so on
+    Windows it is measured against ``_UNRAR_WINDOWS_ARCHIVE_PATH_KEPT`` instead.
     """
     path = str(archive_path)
     if not (unrar_expands_wildcards(path) or unrar_may_cut_archive_path(path)):

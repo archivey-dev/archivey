@@ -425,6 +425,46 @@ def test_a_long_staged_path_on_windows_is_passed_whole_until_unrar_would_cut_it(
     assert not isinstance(info.value, ResourceUnavailableError)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX paths")
+def test_the_archive_argument_is_the_name_alone_for_a_path_unrar_would_misread(
+    tmp_path: Path,
+) -> None:
+    plain = tmp_path / "archive.rar"
+    assert rar_unrar._unrar_archive_argument(plain) == (str(plain), None)
+    starred = tmp_path / "t*p" / "archive.part1.rar"
+    assert rar_unrar._unrar_archive_argument(starred) == (
+        "archive.part1.rar",
+        str(tmp_path / "t*p"),
+    )
+    deep = tmp_path / ("d" * 1100) / "archive.rar"
+    assert rar_unrar._unrar_archive_argument(deep) == (
+        "archive.rar",
+        str(tmp_path / ("d" * 1100)),
+    )
+    with pytest.raises(ReadError, match="wildcard"):
+        rar_unrar._unrar_archive_argument(tmp_path / "rep*.rar")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="archivey passes unrar a working directory only on POSIX",
+)
+def test_a_working_directory_the_child_cannot_enter_is_not_a_missing_program(
+    tmp_path: Path,
+) -> None:
+    missing = str(tmp_path / "gone")
+    with pytest.raises(ReadError, match="could not be started in the directory"):
+        spawn_for_stdout(
+            [sys.executable, "-c", "pass"],
+            name="python",
+            not_started="not installed",
+            cwd=missing,
+        )
+
+
+# --- the identification probe cache -------------------------------------------
+
+
 def _executable(path: Path) -> Path:
     path.write_bytes(b"x")
     path.chmod(0o755)
