@@ -317,9 +317,10 @@ Every reader opened with that config, or with a copy of it, draws the bytes it d
 members it lists from the one budget, so the total is shared across readers, nested archives and
 threads. Bytes decoded only to get past a member count too: skipping members of a `.tar.gz` or a
 CAB folder to reach a later one is not free. A read that would go past the budget raises
-`ResourceLimitError`, and an extraction stops there. The per-reader limits still apply. Decoder memory stays a per-decoder limit, and time and memory
-use are bounded by running the job in a process you can stop. See the
-[archives inside the upload](recipes.md#archives-inside-the-upload) recipe.
+`ResourceLimitError`, and an extraction stops there. The per-reader limits still apply. Decoder
+memory stays a per-decoder limit, and time and memory use are bounded by running the job in a
+process you can stop. See the [archives inside the upload](recipes.md#archives-inside-the-upload)
+recipe.
 
 For files you didn't make, `ArchiveyConfig(formats=FormatPolicy.COMMON)` opens only the formats
 people send today (ZIP, TAR, RAR, 7z, and gzip, bzip2, xz and zstd) and refuses ZIP members in the
