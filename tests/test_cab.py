@@ -22,6 +22,7 @@ from archivey import (
     CorruptionError,
     DecoderLimits,
     DiagnosticCode,
+    DiagnosticPolicy,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -29,6 +30,8 @@ from archivey import (
     detect_format,
     open_archive,
 )
+from archivey.diagnostics import UnexpectedNameDuplicateContext
+from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.backends import cab_reader
 from archivey.internal.streams.codecs import lzx_decoder
 from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
@@ -1081,10 +1084,18 @@ def test_a_table_that_decodes_each_block_once_keeps_its_order(
             assert stream.read() == data[member.name]
 
 
+def _name_twice() -> tuple[list[CabFile], bytes]:
+    """Four files of one LZX folder, then ``f0-0`` again, in reverse table order: an
+    order that would decode a block twice, so the sort is on but for the name."""
+    files = [*_spans(1, 4), CabFile("f0-0", b"second")]
+    return files, _with_table_order(
+        write_cab(files, [CabFolder("lzx")]), [4, 3, 2, 1, 0]
+    )
+
+
 def test_a_name_listed_twice_keeps_table_order() -> None:
     # The entry listed last is the current one, so the order that says which stays.
-    files = [*_spans(1, 4), CabFile("f0-0", b"second")]
-    raw = _with_table_order(write_cab(files, [CabFolder("lzx")]), [4, 3, 2, 1, 0])
+    files, raw = _name_twice()
     with open_archive(io.BytesIO(raw)) as reader:
         assert [m.name for m in reader.members()] == [
             "f0-0",
@@ -1094,6 +1105,66 @@ def test_a_name_listed_twice_keeps_table_order() -> None:
             "f0-0",
         ]
         assert reader.read("f0-0") == files[0].data
+
+
+def test_a_name_listed_twice_is_reported_as_unexpected() -> None:
+    # A cabinet has no way to repeat a name, so the later entry reports the
+    # CAB-specific code, as well as the generic one every format reports.
+    _, raw = _name_twice()
+    with open_archive(io.BytesIO(raw)) as reader:
+        members = reader.members()
+    codes = [sorted(d.code for d in m.diagnostics) for m in members]
+    assert codes == [
+        [],
+        [],
+        [],
+        [],
+        [
+            DiagnosticCode.MEMBER_NAME_DUPLICATE,
+            DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED,
+        ],
+    ]
+    (report,) = (
+        d
+        for d in members[4].diagnostics
+        if d.code is DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
+    )
+    assert report.context == UnexpectedNameDuplicateContext(
+        member_name="f0-0", member_id=4, format="cab"
+    )
+
+
+def test_a_name_listed_twice_after_normalization_is_reported() -> None:
+    # Names are compared as the listing presents them: "a\\b" and "a/b" are one.
+    raw = write_cab(
+        [CabFile("a\\b", b"one"), CabFile("a/b", b"two")], [CabFolder("none")]
+    )
+    with open_archive(io.BytesIO(raw)) as reader:
+        (_, later) = reader.members()
+    assert DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED in [
+        d.code for d in later.diagnostics
+    ]
+
+
+def test_strict_refuses_a_cabinet_that_lists_a_name_twice() -> None:
+    _, raw = _name_twice()
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with (
+        open_archive(io.BytesIO(raw), config=strict) as reader,
+        pytest.raises(DiagnosticRaisedError) as raised,
+    ):
+        reader.members()
+    assert raised.value.diagnostic.code is (
+        DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
+    )
+
+
+def test_strict_reads_a_cabinet_with_distinct_names() -> None:
+    files = _spans(1, 4)
+    raw = write_cab(files, [CabFolder("lzx")])
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with open_archive(io.BytesIO(raw), config=strict) as reader:
+        assert [m.name for m in reader.members()] == [f.name for f in files]
 
 
 def test_a_damaged_table_out_of_data_order_sorts_up_to_the_damage(

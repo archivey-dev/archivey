@@ -30,7 +30,9 @@ time as a naive `modified`, its attributes as `windows_attrs` (without the cabin
 `compression`. It SHALL read stored, MSZIP and LZX folders (LZX windows 2^15 to 2^21),
 check each data block's checksum when it is not 0, and report a member whose blocks from
 the folder start through its end all carry one as `Verification.CHECKSUM` once read to the
-end. `ArchiveInfo.format_version` SHALL be `major.minor` from the header, and
+end. A file whose name, normalized, an earlier file has SHALL report
+`MEMBER_NAME_DUPLICATE_UNEXPECTED`, since a cabinet has no way to repeat a name.
+`ArchiveInfo.format_version` SHALL be `major.minor` from the header, and
 `ArchiveInfo.is_solid` SHALL be true when any folder is compressed. A pipe SHALL be refused
 with `StreamNotSeekableError`.
 
@@ -46,6 +48,7 @@ with `StreamNotSeekableError`.
 | Header, folder and data reserve areas | Skipped |
 | A block whose checksum is 0 | The member read, `LENGTH` |
 | An invalid DOS date | `modified is None`; `MEMBER_TIMESTAMP_INVALID` |
+| A name listed twice, compared after normalization | Table order kept; the later entry reports `MEMBER_NAME_DUPLICATE_UNEXPECTED` and `MEMBER_NAME_DUPLICATE`; `STRICT` refuses the cabinet |
 | Attributes `0xE1` | `windows_attrs == 0x21` |
 
 ### Requirement: Refuse damaged and unsupported cabinets

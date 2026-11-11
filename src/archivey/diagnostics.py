@@ -206,6 +206,13 @@ class DiagnosticCode(StrEnum):
     unzip write them, but another reader may keep the first, write through an earlier
     symlink, or refuse the archive. Real archives have it (``tar -r`` appends, cabal
     sdists), so it is advisory."""
+    MEMBER_NAME_DUPLICATE_UNEXPECTED = "member_name_duplicate_unexpected"
+    """A member has the name of an earlier one in a format that has no way to repeat
+    a name: no append, no update, no file versions. A writer never produces it, so
+    archivey reads it as damage or as crafted input. The member is listed and read
+    like any other, and the later member supersedes the earlier one, as for
+    ``MEMBER_NAME_DUPLICATE``, which the same member also reports. Reported by the
+    CAB reader; another format with no append, such as XAR, may report it too."""
     SOURCE_CHANGE_UNDETECTABLE = "source_change_undetectable"
     """The archive is read by range requests from an ``fsspec`` file system that
     archivey cannot pin to one version of the object, so a replacement of the same
@@ -308,6 +315,8 @@ DiagnosticCodeStr = Literal[
     "member-type-unknown",
     "member_name_duplicate",
     "member-name-duplicate",
+    "member_name_duplicate_unexpected",
+    "member-name-duplicate-unexpected",
     "member_readers_disagree",
     "member-readers-disagree",
     "source_change_undetectable",
@@ -1081,6 +1090,25 @@ class NameDuplicateContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class UnexpectedNameDuplicateContext(_JsonSafeContext):
+    """A member has the name of an earlier member in a format whose layout gives no
+    way to repeat a name, so no writer produced it (``MEMBER_NAME_DUPLICATE_UNEXPECTED``).
+
+    ``format`` names the format whose rule it breaks (``"cab"``). Names are compared
+    after normalization, as the listing presents them. The member also reports
+    ``MEMBER_NAME_DUPLICATE`` with :class:`NameDuplicateContext`, which names the
+    earlier member; this code adds that the format allows no repeat, and
+    ``DiagnosticPolicy.STRICT`` raises on it.
+    """
+
+    kind: Literal["name_duplicate_unexpected"] = "name_duplicate_unexpected"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    format: str = ""
+
+
+@dataclass(frozen=True)
 class ReaderDisagreementContext(_JsonSafeContext):
     """A member takes a shape that real writers produce and readers read differently.
     archivey reads it as the format's own tool does.
@@ -1170,6 +1198,7 @@ DiagnosticContext = (
     | SourceChangeContext
     | PathRefusedContext
     | NameDuplicateContext
+    | UnexpectedNameDuplicateContext
     | ReaderDisagreementContext
 )
 
@@ -1212,6 +1241,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_SIZE_WRAPPED: "size_wrap",
         DiagnosticCode.MEMBER_TYPE_UNKNOWN: "unknown_member_type",
         DiagnosticCode.MEMBER_NAME_DUPLICATE: "name_duplicate",
+        DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED: "name_duplicate_unexpected",
         DiagnosticCode.MEMBER_READERS_DISAGREE: "reader_disagreement",
         DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE: "source_change",
         DiagnosticCode.MEMBER_PATH_REFUSED: "path_refused",
@@ -1241,6 +1271,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.SEEK_INDEX_DEGRADED,
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
         DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
+        DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED,
     }
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
@@ -1317,6 +1348,9 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nineteen codes are delibera
   archives that tool extracts. They are for a caller who checks an archive that
   another tool will extract: ``DiagnosticPolicy(raise_on=...)`` with them, or
   ``DiagnosticPolicy.PEDANTIC``, refuses what other readers may read otherwise.
+  Their sibling ``MEMBER_NAME_DUPLICATE_UNEXPECTED`` is **in** the set: it reports a
+  repeated name only in a format with no way to repeat one (CAB), where no writer
+  makes the shape (maintainer, 2026-11-11).
 """
 
 
@@ -1847,6 +1881,7 @@ __all__ = [
     "StreamRewindContext",
     "SymlinkTargetContext",
     "UnconfirmedFormatContext",
+    "UnexpectedNameDuplicateContext",
     "UnknownMemberTypeContext",
     "UnlistedDataContext",
     "UnusedArgumentContext",

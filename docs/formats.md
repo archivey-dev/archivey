@@ -1246,6 +1246,10 @@ what `makecab` and `gcab` write.
   listed by folder and by position in the folder instead, so each folder is decoded once,
   unless a name is listed twice: then the table's order is kept, because the entry listed
   last is the one that counts, and reading can be much slower.
+- **A name listed twice** is reported with `MEMBER_NAME_DUPLICATE_UNEXPECTED` as well as
+  `MEMBER_NAME_DUPLICATE`: a cabinet has no way to add or update a file, so no writer repeats a
+  name. `STRICT` refuses such a cabinet; the default policy lists it, and the entry listed last
+  is the one that counts.
 - **From a pipe:** no; the file table points at folders anywhere in the file, so the cabinet
   needs a source that can seek.
 - `ArchiveInfo.format_version` is the cabinet's version, `"1.3"` for every current writer.

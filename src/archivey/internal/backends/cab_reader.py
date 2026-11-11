@@ -35,6 +35,7 @@ import zlib
 from collections.abc import Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
+from archivey.diagnostics import DiagnosticCode, UnexpectedNameDuplicateContext
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -292,7 +293,9 @@ class CabReader(IndexedReader[_Location]):
         folder again in any order.
 
         A cabinet that lists one name twice keeps table order, which says which entry
-        is current. A damaged table yields the members before the damage, then the
+        is current, and each later entry of the name reports
+        ``MEMBER_NAME_DUPLICATE_UNEXPECTED``: a cabinet has no way to update a file,
+        so no writer repeats a name. A damaged table yields the members before the damage, then the
         error, as when each record is read as it is reached; those members are sorted
         by the same rule, since a crafted table could otherwise add one bad record at
         its end to turn the sort off.
@@ -310,11 +313,12 @@ class CabReader(IndexedReader[_Location]):
             self._read_records(records)
         except ArchiveyError as exc:
             failure = exc
+        repeated = self._repeated_names(records)
         order: Sequence[int] = range(len(records))
-        if _decodes_twice(self._folders, records, order):
-            order = self._in_data_order(records) or order
+        if not repeated and _decodes_twice(self._folders, records, order):
+            order = sorted(order, key=lambda i: (records[i].folder, records[i].offset))
         for index in order:
-            yield self._record(records[index])
+            yield self._record(records[index], repeated=index in repeated)
         if failure is not None:
             raise failure
 
@@ -341,24 +345,22 @@ class CabReader(IndexedReader[_Location]):
                 _Record(size, offset, folder, date << 16 | time, attribs, raw)
             )
 
-    def _in_data_order(self, records: list[_Record]) -> list[int] | None:
-        """The records sorted by folder and offset, or ``None`` when a name is listed
-        twice: the entry listed last is the current one, so the table order stays."""
+    def _repeated_names(self, records: list[_Record]) -> set[int]:
+        """The positions of the records whose name, normalized as the listing
+        presents it, an earlier record has."""
         context = self._context
-        names = {
-            context.normalize_name(
+        seen: set[str] = set()
+        repeated: set[int] = set()
+        for index, record in enumerate(records):
+            name = context.normalize_name(
                 context.decode_name(record.raw).replace("\\", "/"), MemberType.FILE
             )
-            for record in records
-        }
-        if len(names) < len(records):
-            return None
-        return sorted(
-            range(len(records)),
-            key=lambda i: (records[i].folder, records[i].offset, i),
-        )
+            if name in seen:
+                repeated.add(index)
+            seen.add(name)
+        return repeated
 
-    def _record(self, record: _Record) -> MemberRecord[_Location]:
+    def _record(self, record: _Record, *, repeated: bool) -> MemberRecord[_Location]:
         member = ArchiveMember(
             type=MemberType.FILE,
             name=self._context.decode_name(record.raw).replace("\\", "/"),
@@ -375,6 +377,15 @@ class CabReader(IndexedReader[_Location]):
             ),
         )
         self._context.set_dos_time(member, "modified", record.stamp, source="dos")
+        if repeated:
+            self._context.report(
+                DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED,
+                f"File {quoted(member.name)} has the name of an earlier file. A "
+                "cabinet has no way to update or append a file, so no writer makes "
+                "this: the later file supersedes the earlier one.",
+                UnexpectedNameDuplicateContext(format="cab"),
+                member=member,
+            )
         return MemberRecord(member, _Location(record.folder, record.offset))
 
     # ── Data ─────────────────────────────────────────────────────────────────────────

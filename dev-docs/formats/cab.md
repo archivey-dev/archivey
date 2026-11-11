@@ -84,7 +84,8 @@ decide, `iter_members` reads the whole table before the first member comes (at m
 65 535 records, each read once from the table: about 6 MiB more at the peak for 65 535
 files) and replays the kept decoder over it (`_decodes_twice`). A cabinet that lists one
 name twice keeps table order, since the entry listed last is the current one, and then
-pays a folder decode per member if that order needs it (§6). A damaged
+pays a folder decode per member if that order needs it; each later entry of the name
+reports `MEMBER_NAME_DUPLICATE_UNEXPECTED`, which `STRICT` refuses (§6). A damaged
 table yields the members before the damage, sorted by the same rule, then the error: one
 bad record at the end of a crafted table does not turn the sort off.
 
@@ -190,3 +191,19 @@ are added.)
   folder, reversed: 58 s against under 1 s), as the threat model's "No CPU or
   wall-clock bound" records. Rejected: sorting anyway (another entry becomes current).
   Reopen if a real writer is found that repeats names in a cabinet.
+
+- **A name listed twice is reported as unexpected, and `STRICT` refuses it.** The
+  maintainer's call (davi, 2026-11-11). A cabinet has no append, update or file
+  versions, so no writer lists a name twice, unlike TAR (`tar -r`) or cabal sdists,
+  where the generic `MEMBER_NAME_DUPLICATE` stays advisory and out of `STRICT`. The
+  reader compares each name, normalized as the listing presents it, with the earlier
+  ones (`CabReader._repeated_names`) and reports `MEMBER_NAME_DUPLICATE_UNEXPECTED` on
+  each later entry. That code is in `ARCHIVE_INTEGRITY_CODES`, so `STRICT` refuses the
+  cabinet at listing, before the slow table-order read of the decision above starts;
+  the default policy lists it in table order. The same member also reports
+  `MEMBER_NAME_DUPLICATE`, from the check every format runs: accepted, since that code
+  carries the earlier member's id and a caller who already raises on it keeps working.
+  The code is not CAB's own: another format with no way to repeat a name, such as XAR,
+  can report it. Rejected: dropping the generic report for CAB (its spec says every
+  format reports it), and putting `MEMBER_NAME_DUPLICATE` itself in `STRICT` (that
+  refuses appended tarballs).
