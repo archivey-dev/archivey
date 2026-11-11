@@ -31,6 +31,11 @@ on:
         required: false
         default: "1200"
 
+# A push and a schedule land in different groups, so a post-merge run never cancels the
+# Tuesday soak; a newer post-merge run cancels an older one.
+concurrency:
+  group: accel-fuzz-soak-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
 
 jobs:
   soak:
