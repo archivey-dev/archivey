@@ -447,6 +447,8 @@ _SIZE_OF_HEADERS = 60
 _DATA_DIRECTORIES = {_PE32_MAGIC: (92, 96), _PE32_PLUS_MAGIC: (108, 112)}
 _SECURITY_DIRECTORY = 4
 _SECTION_HEADER_SIZE = 40
+# The PE format defines 16 data directories; a larger declared count adds none.
+_MAX_DATA_DIRECTORIES = 16
 
 
 class ExecutableLayout(NamedTuple):
@@ -466,18 +468,51 @@ class ExecutableLayout(NamedTuple):
     payload_end: int | None
 
 
-def pe_layout(prefix: bytes, total_size: int | None) -> ExecutableLayout | None:
-    """The :class:`ExecutableLayout` of a PE whose headers sit in ``prefix``, or ``None``.
+class PeSection(NamedTuple):
+    """One entry of a PE's section table: where the section sits in memory (a size
+    and an RVA) and where its bytes sit in the file (a size and an offset)."""
 
-    Reads only ``prefix[:LAYOUT_PREFIX]``, so every caller holding at least that
-    many leading bytes gets the same answer. ``None`` when ``prefix`` is not a PE, a
-    header or the section table does not fit, a field is out of range, or a section
-    ends past ``total_size``: a layout that does not parse means "scan as before",
-    never an error. The certificate entry (data directory 4) holds a file offset,
-    not an RVA; it counts only when it starts at or past the overlay start and ends
-    at ``total_size``. So the end is never before the overlay start, as the same
-    headers declare it; nothing checks that a table starts there, so headers that
-    name one inside the archive cut it, and the archive then fails to open.
+    virtual_size: int
+    virtual_address: int
+    raw_size: int
+    raw_pointer: int
+
+    def file_offset(self, rva: int, length: int) -> int | None:
+        """The file offset of ``[rva, rva + length)`` when the span lies inside this
+        section's bytes in the file, else ``None``."""
+        start = rva - self.virtual_address
+        if start < 0 or start + length > self.raw_size:
+            return None
+        return self.raw_pointer + start
+
+
+class PeHeaders(NamedTuple):
+    """The parts of a PE's headers the self-extractor code reads.
+
+    ``data_directories`` holds the ``(address, size)`` pairs the optional header has
+    room for and declares, in order: an RVA for every entry but the certificate
+    table (index 4), which holds a file offset.
+    """
+
+    headers_size: int
+    sections: tuple[PeSection, ...]
+    data_directories: tuple[tuple[int, int], ...]
+
+    def file_offset(self, rva: int, length: int) -> int | None:
+        """The file offset of the RVA span ``[rva, rva + length)``, when one section's
+        bytes in the file hold all of it."""
+        for section in self.sections:
+            offset = section.file_offset(rva, length)
+            if offset is not None:
+                return offset
+        return None
+
+
+def pe_headers(prefix: bytes) -> PeHeaders | None:
+    """The :class:`PeHeaders` of a PE whose headers sit in ``prefix``, or ``None``.
+
+    Reads only ``prefix[:LAYOUT_PREFIX]``. ``None`` when ``prefix`` is not a PE, or
+    the optional header or the section table does not fit.
     """
     head = bytes(prefix[:LAYOUT_PREFIX])
     if not head.startswith(_MZ) or not _is_pe(head):
@@ -495,27 +530,56 @@ def pe_layout(prefix: bytes, total_size: int | None) -> ExecutableLayout | None:
     count_at, first_at = directories
     if _SIZE_OF_HEADERS + 4 > optional_size or count_at + 4 > optional_size:
         return None
-    sections = optional + optional_size
-    sections_end = sections + section_count * _SECTION_HEADER_SIZE
-    if sections_end > len(head):
+    sections_at = optional + optional_size
+    if sections_at + section_count * _SECTION_HEADER_SIZE > len(head):
         return None
     (headers_size,) = struct.unpack_from("<I", head, optional + _SIZE_OF_HEADERS)
-    overlay_start = headers_size
-    for index in range(section_count):
-        raw_size, raw_pointer = struct.unpack_from(
-            "<II", head, sections + index * _SECTION_HEADER_SIZE + 16
+    sections = tuple(
+        PeSection(
+            *struct.unpack_from(
+                "<IIII", head, sections_at + index * _SECTION_HEADER_SIZE + 8
+            )
         )
-        if raw_size:
-            overlay_start = max(overlay_start, raw_pointer + raw_size)
+        for index in range(section_count)
+    )
+    # From byte 8 of each entry: VirtualSize, VirtualAddress, SizeOfRawData,
+    # PointerToRawData, the order of PeSection's fields.
+    (directory_count,) = struct.unpack_from("<I", head, optional + count_at)
+    room = max(0, (optional_size - first_at) // 8)
+    data_directories = tuple(
+        struct.unpack_from("<II", head, optional + first_at + index * 8)
+        for index in range(min(directory_count, room, _MAX_DATA_DIRECTORIES))
+    )
+    return PeHeaders(headers_size, sections, data_directories)
+
+
+def pe_layout(prefix: bytes, total_size: int | None) -> ExecutableLayout | None:
+    """The :class:`ExecutableLayout` of a PE whose headers sit in ``prefix``, or ``None``.
+
+    Reads only ``prefix[:LAYOUT_PREFIX]``, so every caller holding at least that
+    many leading bytes gets the same answer. ``None`` when ``prefix`` is not a PE, a
+    header or the section table does not fit, a field is out of range, or a section
+    ends past ``total_size``: a layout that does not parse means "scan as before",
+    never an error. The certificate entry (data directory 4) holds a file offset,
+    not an RVA; it counts only when it starts at or past the overlay start and ends
+    at ``total_size``. So the end is never before the overlay start, as the same
+    headers declare it; nothing checks that a table starts there, so headers that
+    name one inside the archive cut it, and the archive then fails to open.
+    """
+    headers = pe_headers(prefix)
+    if headers is None:
+        return None
+    overlay_start = headers.headers_size
+    for section in headers.sections:
+        if section.raw_size:
+            overlay_start = max(overlay_start, section.raw_pointer + section.raw_size)
     if total_size is None:
         return ExecutableLayout(overlay_start, None)
     if overlay_start > total_size:
         return None
-    (directory_count,) = struct.unpack_from("<I", head, optional + count_at)
-    entry = first_at + _SECURITY_DIRECTORY * 8
-    if directory_count <= _SECURITY_DIRECTORY or entry + 8 > optional_size:
+    if len(headers.data_directories) <= _SECURITY_DIRECTORY:
         return ExecutableLayout(overlay_start, None)
-    cert_start, cert_size = struct.unpack_from("<II", head, optional + entry)
+    cert_start, cert_size = headers.data_directories[_SECURITY_DIRECTORY]
     if (
         cert_size
         and overlay_start <= cert_start

@@ -253,7 +253,9 @@ after the archive's end. A non-zero byte there is reported as `ARCHIVE_TRAILING_
 `format`: a warning under the default policy, raised under `DiagnosticPolicy.STRICT`. Zero bytes
 are padding and pass. ZIP, TAR, 7z, RAR, ISO and CPIO look at most 1 MiB past the end, so a byte
 further out goes unseen; LHA looks 64 KiB past its end byte, and takes the DOS end-of-file byte
-`0x1A` as padding too. Each format section says where its end is.
+`0x1A` as padding too. Each format section says where its end is. Two exceptions, both for an
+archive inside a Windows program: its signature, and the rest of the program after an archive
+stored as one of its resources (see self-extracting stubs under [Detection](#detection)).
 
 Inside a ZIP or 7z member, bytes after the compressed stream are corruption, not trailing bytes
 ([ZIP](#zip)).
@@ -779,7 +781,8 @@ On a compressed tar, the stream's own checksum adds three cases:
   are data after the end of archive" for zeros too. A code-signed self-extracting `.exe` carries
   its signature after the archive. archivey reads the signature's position from the program's
   header and does not report it, so `STRICT` opens a signed self-extractor. Other bytes between
-  the archive and the signature are still reported.
+  the archive and the signature are still reported, except when the archive is stored as a
+  resource of the program ([SFX stubs](#detection)).
 - A device, FIFO or socket that 7-Zip or p7zip stored on Unix follows
   [the shared rule](#device-files-fifos-and-sockets). The mode is trusted for this only when the
   attribute's `0x8000` Unix-extension bit is set.
@@ -1754,7 +1757,11 @@ they open at once. Close the sending side when the file is done.
   zipapp `.pyz`, a Spring Boot jar). The 2 MiB scan behind the stub reports where the archive starts
   as `payload_offset`, and sets `prefixed`. For a code-signed Windows program, `payload_end` is
   where its signature starts: the ZIP, 7z, RAR and LHA readers stop there, so the signature is not
-  reported as data after the archive. A ZIP further into a Windows installer than the scan
+  reported as data after the archive. Some installers (Squirrel's, used by GitHub Desktop, Slack
+  and Discord) store the archive as a resource inside the program instead of after it. When the
+  archive ends inside a resource, the ZIP, 7z and RAR readers stop the trailing-data check at the
+  resource's end: other resources, sections and the signature follow it and are not reported.
+  Bytes inside the resource after the archive still are. A ZIP further into a Windows installer than the scan
   reaches is found from its end, when the program's header shows that something was
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
   (ZIP, 7z, RAR, LHA) are searched for. Behind a Windows, Linux or macOS program whose header says
