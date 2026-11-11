@@ -298,9 +298,7 @@ jobs:
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         uses: ./.github/actions/apt-install
         with:
-          packages: >-
-            gnustep-make libgnustep-base-dev gobjc
-            libbz2-dev zlib1g-dev libicu-dev libwavpack-dev
+          packages: gnustep-make libgnustep-base-dev gobjc libbz2-dev zlib1g-dev libicu-dev libwavpack-dev
       - name: Build unar 1.10.8 and put it first on PATH (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: |

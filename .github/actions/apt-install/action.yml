@@ -18,6 +18,9 @@ runs:
     # dependencies apt downloads, so a new image starts a new cache entry. It also
     # names this file, because a cache entry cannot be overwritten: a change to how
     # entries are filled must not restore the old ones.
+    # A hit installs the package versions from the run that first saved the key, so
+    # an Ubuntu update to a cached package reaches CI only when GitHub rolls out a
+    # new runner image (ImageVersion, about weekly).
     - id: key
       shell: bash
       env:
@@ -30,7 +33,9 @@ runs:
         hash=$(printf '%s|%s|%s' "$list" "$RECOMMENDS" "$self" | sha256sum | cut -c1-16)
         echo "key=apt-${ImageOS:-unknown}-${ImageVersion:-unknown}-${RUNNER_ARCH}-${hash}" >> "$GITHUB_OUTPUT"
         echo "dir=${RUNNER_TEMP}/apt-debs-${hash}" >> "$GITHUB_OUTPUT"
+    # A cache-service error must not fail the job: it only means a miss.
     - id: cache
+      continue-on-error: true
       uses: actions/cache/restore@v4
       with:
         path: ${{ steps.key.outputs.dir }}
@@ -49,9 +54,10 @@ runs:
         # apt takes a named .deb from its archive directory only when that directory
         # is $DEBS; otherwise it fetches the same version from the mirror, and
         # --no-download then refuses. With both set, an install never goes online.
-        local_install=(sudo apt-get install "${flags[@]}" --no-download
+        # sudo resets the environment, so DEBIAN_FRONTEND goes through env.
+        apt=(sudo env DEBIAN_FRONTEND=noninteractive apt-get)
+        local_install=("${apt[@]}" install "${flags[@]}" --no-download
           -o Dir::Cache::archives="$DEBS")
-        export DEBIAN_FRONTEND=noninteractive
         if [ "$HIT" = true ] && compgen -G "$DEBS/*.deb" > /dev/null; then
           # $DEBS holds what this step needed on top of the system as it was when
           # the entry was saved. If that is not enough, the install fails offline
@@ -63,9 +69,10 @@ runs:
           echo "::warning::Cached .deb files did not install; fetching from the mirror."
         fi
         # Miss: download into $DEBS (only what the system lacks), then install from it.
-        sudo rm -rf "$DEBS" && mkdir -p "$DEBS/partial"
-        sudo apt-get update -q -o Acquire::Retries=3
-        sudo apt-get install "${flags[@]}" --download-only \
+        # apt downloads as _apt, which must be able to write there.
+        sudo rm -rf "$DEBS" && mkdir -p "$DEBS/partial" && chmod a+rwx "$DEBS" "$DEBS/partial"
+        "${apt[@]}" update -q -o Acquire::Retries=3
+        "${apt[@]}" install "${flags[@]}" --download-only \
           -o Dir::Cache::archives="$DEBS" $PACKAGES
         if compgen -G "$DEBS/*.deb" > /dev/null; then
           "${local_install[@]}" "$DEBS"/*.deb
