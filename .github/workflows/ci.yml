@@ -269,11 +269,12 @@ jobs:
       # fail the check. The apt package stays installed for that step and for the
       # shared libraries the source build links against.
       # xorriso builds the hybrid ISOs tests/test_iso_trailing_data.py checks.
+      # libarchive-tools pulls in libarchive, which packages/archivey-libarchive loads.
       # tabix ships bgzip, the reference BGZF writer tests/test_bgzf_seek.py checks
       # the block walk against.
       - name: Install unrar, unar, xorriso and bgzip (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y unrar unar xorriso tabix
+        run: sudo apt-get update && sudo apt-get install -y unrar unar xorriso tabix libarchive-tools
       # The built binary links against the image's libgnustep-base and libicu, whose
       # sonames change between Ubuntu releases, so the key names the image as well as
       # the pinned sources (the script's hash).
@@ -421,6 +422,16 @@ jobs:
           uv run --python ${{ matrix.python-version }} --no-sync
           pytest tests/test_unar_probe.py::test_distro_unar_matches_the_ci_expectation
           -q --no-cov -rs
+
+      # archivey-libarchive (packages/archivey-libarchive) registers its formats for the
+      # whole process, so its tests run in a pytest of their own, never beside tests/.
+      # Linux only: libarchive comes from the libarchive-tools install above; the macOS
+      # and Windows legs have none the package can load.
+      - name: Test archivey-libarchive (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          pytest packages/archivey-libarchive/tests -q --no-cov
 
       - name: Assert synced venv Python matches matrix
         # Catch regressions where `.python-version` silently overrides the matrix again.

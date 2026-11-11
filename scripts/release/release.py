@@ -9,8 +9,9 @@ else is here. A release is four commands, run from a clean, up-to-date ``main``:
    public API at the tag with ``HEAD`` (``scripts/checks/api_surface.py``) and lists the
    merged pull requests labelled ``needs-minor``. Write the entry under
    ``## [Unreleased]`` in a normal PR, or as the first commit of step 2.
-2. ``start X.Y.Z`` sets the version in both pyproject files (and the ``archivey-cli``
-   pin), refreshes ``uv.lock``, moves the ``[Unreleased]`` text under a dated
+2. ``start X.Y.Z`` sets the version in the three pyproject files (archivey,
+   ``archivey-cli`` and ``archivey-libarchive``, with the two packages' ``archivey``
+   pins), refreshes ``uv.lock``, moves the ``[Unreleased]`` text under a dated
    ``[X.Y.Z]`` heading with its compare links, commits on ``release/vX.Y.Z``, pushes,
    opens the release pull request and starts the TestPyPI dry run and the
    ``RELEASE_GATE_WORKFLOWS`` on that branch.
@@ -44,6 +45,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ROOT_PYPROJECT = ROOT / "pyproject.toml"
 CLI_PYPROJECT = ROOT / "packages" / "archivey-cli" / "pyproject.toml"
+LIBARCHIVE_PYPROJECT = ROOT / "packages" / "archivey-libarchive" / "pyproject.toml"
 CHANGELOG = ROOT / "CHANGELOG.md"
 REPO_URL = "https://github.com/archivey-dev/archivey"
 
@@ -56,7 +58,7 @@ VERSION_RE = re.compile(r"^\d+\.\d+\.\d+((a|b|rc)\d+)?(\.dev\d+)?$")
 _FINAL_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _PRE_TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)(?:a|b|rc)\d+$")
 _PROJECT_VERSION_RE = re.compile(r'^(version = ")([^"]+)(")$', re.MULTILINE)
-_PIN_RE = re.compile(r'("archivey\[recommended\]==)([^"]+)(")')
+_PIN_RE = re.compile(r'("archivey(?:\[recommended\])?==)([^"]+)(")')
 _UNRELEASED_RE = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
 _HEADING_RE = re.compile(r"^## \[", re.MULTILINE)
 _TRAILER_RE = re.compile(r"^(<!--|\[[^\]]+\]: )", re.MULTILINE)
@@ -102,7 +104,7 @@ def check_version(version: str) -> str:
 
 
 def project_version(pyproject_text: str) -> str:
-    """The first ``version = "..."`` line, which is ``[project].version`` in both files."""
+    """The first ``version = "..."`` line, which is ``[project].version`` in each file."""
     match = _PROJECT_VERSION_RE.search(pyproject_text)
     if match is None:
         raise ReleaseError("no version line in pyproject.toml")
@@ -110,7 +112,8 @@ def project_version(pyproject_text: str) -> str:
 
 
 def set_project_version(pyproject_text: str, version: str) -> str:
-    """Replace ``[project].version``, and the ``archivey[recommended]==`` pin if present."""
+    """Replace ``[project].version``, and the ``archivey==`` or
+    ``archivey[recommended]==`` pin if present."""
     text, count = _PROJECT_VERSION_RE.subn(
         rf"\g<1>{version}\g<3>", pyproject_text, count=1
     )
@@ -354,11 +357,16 @@ def _require_clean_main() -> None:
         raise ReleaseError("main is not at origin/main; run `git pull --ff-only` first")
 
 
+def versioned_pyprojects() -> tuple[Path, ...]:
+    """Every pyproject.toml whose version moves with archivey's."""
+    return (ROOT_PYPROJECT, CLI_PYPROJECT, LIBARCHIVE_PYPROJECT)
+
+
 def _versioned_pyprojects(version: str) -> dict[Path, str]:
-    """Both pyproject.toml files with ``version`` set, computed before anything is written."""
+    """Each pyproject.toml with ``version`` set, computed before anything is written."""
     return {
         path: set_project_version(path.read_text(encoding="utf-8"), version)
-        for path in (ROOT_PYPROJECT, CLI_PYPROJECT)
+        for path in versioned_pyprojects()
     }
 
 
@@ -584,7 +592,7 @@ def cmd_tag(args: argparse.Namespace) -> None:
     runner = Runner(args.dry_run)
     if not args.dry_run:
         _require_clean_main()
-    for path in (ROOT_PYPROJECT, CLI_PYPROJECT):
+    for path in versioned_pyprojects():
         current = project_version(path.read_text(encoding="utf-8"))
         if current != version:
             raise ReleaseError(

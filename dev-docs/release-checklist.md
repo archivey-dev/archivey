@@ -12,7 +12,9 @@ Package version is the static `[project].version` in `pyproject.toml` (not deriv
 from the git tag), repeated in `packages/archivey-cli/pyproject.toml` (the `archivey-cli`
 companion, published from the same tag) in both `version` and its `archivey[recommended]==`
 pin. `tests/test_cli_companion_package.py` fails if the two disagree, and `publish.yml`
-fails if the tag and either packaged version disagree.
+fails if the tag and either packaged version disagree. `packages/archivey-libarchive/pyproject.toml`
+carries the same version and an `archivey==` pin, which `release.py` moves with the
+others; it is not built or uploaded yet (`dev-docs/formats/libarchive.md` §Not shipped).
 
 ---
 
@@ -228,8 +230,8 @@ four commands.
 1. `uv run python scripts/release/release.py notes` lists the merged pull requests since the last
    tag. Write the entry under `## [Unreleased]` from it (§1). This can be its own small
    PR, or an agent can write it.
-2. `uv run python scripts/release/release.py start X.Y.Z` sets `X.Y.Z` in both pyproject files
-   (and the `archivey[recommended]==` pin), refreshes `uv.lock`, moves the `[Unreleased]`
+2. `uv run python scripts/release/release.py start X.Y.Z` sets `X.Y.Z` in the three pyproject
+   files (and the `archivey-cli` and `archivey-libarchive` pins on archivey), refreshes `uv.lock`, moves the `[Unreleased]`
    text under a dated `## [X.Y.Z]` heading with its compare links, opens the release PR
    from `release/vX.Y.Z`, and starts the TestPyPI dry run on that branch (Actions →
    Publish). It also starts each release gate workflow on that branch. These jobs do
@@ -282,4 +284,4 @@ four commands.
 | Docs | `uv run --group docs mkdocs build --strict` |
 | Build only | `uv build` and `uv build packages/archivey-cli --out-dir dist` (both publish), then inspect `dist/` |
 | Release steps | `uv run python scripts/release/release.py --help` |
-| Version source | `pyproject.toml` → `[project].version` (copied in `packages/archivey-cli/pyproject.toml`) |
+| Version source | `pyproject.toml` → `[project].version` (copied in `packages/archivey-cli/pyproject.toml` and `packages/archivey-libarchive/pyproject.toml`) |
