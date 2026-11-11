@@ -1459,6 +1459,34 @@ def test_passes_read_members_of_unknown_size(fixture: str, only: int | None) -> 
 
 
 @requires_binary("unrar")
+def test_password_list_on_a_member_of_unknown_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no usable PswCheck, a candidate list is judged by decoding the member.
+    Its size is unknown, so the probe is ``_probe_unknown_size``: the wrong
+    candidate is refused, the right one reads the member and fills its size."""
+    monkeypatch.setattr(rar_reader, "_psw_check_usable", lambda enc: False)
+    verdicts: list[PasswordConfirmVerdict] = []
+    probe = rar_reader._probe_unknown_size
+
+    def watched(stream: io.BufferedIOBase, crc: int | None) -> PasswordConfirmVerdict:
+        verdicts.append(probe(stream, crc))  # type: ignore[arg-type]
+        return verdicts[-1]
+
+    monkeypatch.setattr(rar_reader, "_probe_unknown_size", watched)
+    data = flag_size_unknown(_fixture("encryption__.rar").read_bytes())
+    want, sizes = _contents_and_sizes(
+        _fixture("encryption__.rar").read_bytes(), password="password"
+    )
+    with open_archive(io.BytesIO(data), password=["wrong", "password"]) as archive:
+        for member in archive.members():
+            assert member.size is None
+            assert archive.read(member) == want[member.name]
+            assert member.size == sizes[member.name]
+    assert verdicts and PasswordConfirmVerdict.REJECTED not in verdicts
+
+
+@requires_binary("unrar")
 def test_hard_link_of_unknown_size_lists_none() -> None:
     """A hard link packs no bytes, so its packed size (0) does not size it: with the
     flag it lists no size, and nothing fills one in. It still reads its target."""
@@ -1472,21 +1500,58 @@ def test_hard_link_of_unknown_size_lists_none() -> None:
         assert link.member_state_final
 
 
-def test_unar_pass_places_nothing_from_a_member_of_unknown_size() -> None:
-    """An all-entries ``unar`` run is split by sizes too: its offsets stop at the
-    first member of unknown size, which the pass then reads on its own."""
+@requires_binary("unrar")
+@pytest.mark.parametrize("read_unknown", [True, False], ids=["read", "skipped"])
+def test_solid_pass_stays_linear_after_a_member_of_unknown_size(
+    monkeypatch: pytest.MonkeyPatch, read_unknown: bool
+) -> None:
+    """The pass reads a member of unknown size on its own once, and places every
+    later member in its one ``unrar`` output: two runs, not one per later member,
+    whether or not the caller reads the unknown member."""
+    spawns: list[object] = []
+    real = rar_reader.open_unrar_p
+
+    def counted(*args: object, **kwargs: object) -> object:
+        spawns.append(args)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    data = _fixture("basic_solid__.rar").read_bytes()
+    want, _ = _contents_and_sizes(data)
+    monkeypatch.setattr(rar_reader, "open_unrar_p", counted)
+    flagged = flag_size_unknown(data, only=1)
+    got: dict[str, bytes] = {}
+    with open_archive(io.BytesIO(flagged)) as archive:
+        for member, stream in archive.stream_members():
+            if stream is None or (member._raw.size_unknown and not read_unknown):
+                continue
+            got[member.name] = stream.read()
+    assert got == {
+        name: content
+        for name, content in want.items()
+        if read_unknown or name != "file1.txt"
+    }
+    assert len(spawns) == 2
+
+
+def test_unar_pass_places_members_after_one_of_unknown_size() -> None:
+    """An all-entries ``unar`` run is split by sizes too: a member of unknown size
+    gets no offset, and the members after it are placed once its size is read."""
     from archivey.internal.backends.rar_unar import UnarRarPolicy, unar_pipe_offsets
 
-    archive = parse_rar_archive(
-        io.BytesIO(
-            flag_size_unknown(_fixture("basic_solid__.rar").read_bytes(), only=1)
-        )
-    )
-    payload = [info for info in archive.members if info.is_payload_file()]
+    data = _fixture("solid_groups__.rar").read_bytes()
+    archive = parse_rar_archive(io.BytesIO(flag_size_unknown(data, only=0)))
+    unknown, *later = [info for info in archive.members if info.is_payload_file()]
     offsets = unar_pipe_offsets(archive)
-    assert [id(info) in offsets for info in payload] == [True, False, False, False]
     policy = UnarRarPolicy(archive)
-    assert [policy.solid_pass_offset(info) for info in payload] == [0, None, None, None]
+    assert id(unknown) not in offsets
+    assert policy.solid_pass_offset(unknown) is None
+    # The later members' offsets leave out the unknown member's bytes, which the
+    # pass adds once it has read that member on its own.
+    position = 0
+    for info in later:
+        assert offsets[id(info)] == policy.solid_pass_offset(info) == position
+        assert policy.solid_pass_unknown_before(info) == (unknown,)
+        position += info.file_size
 
 
 @pytest.mark.parametrize(

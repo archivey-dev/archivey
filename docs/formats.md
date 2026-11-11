@@ -165,7 +165,10 @@ The fields that change, by format:
   after its data, until the pass gets past its data. Also from a pipe, until the pass reads the
   index, every field only the index holds: `type`, `name` (where a DOS host makes `\` a separator),
   `mode`, `create_system`, `comment`, and the times and owner ids from its extra fields.
-- **TAR, 7z, RAR, ISO, SquashFS, CPIO:** `is_current` and `link_target_member`.
+- **TAR, 7z, ISO, SquashFS, CPIO:** `is_current` and `link_target_member`.
+- **RAR:** `is_current` and `link_target_member`. Also the `size` of a RAR5 file whose headers
+  never give it (no known archiver writes one), listed as `None` until a checked full read fills
+  it in.
 - **Directory:** `link_target_member`. Names never repeat, so `is_current` never changes.
 - **Single compressed files:** `size`, when the format records none. A full read fills it in, and
   the flag stays `False` until then ([Single-file compressors](#single-file-compressors)).
@@ -178,8 +181,8 @@ A symlink whose target archivey has not read yet (`read_link_targets=False`) can
   Rock Ridge, the inode, the member's data or the filesystem gives the target with the entry.
 
 `members()`, `members_report()` and `get()` return members that read `True`, except unread
-symlinks, and single-file or large macOS ZIP members whose `size` a full read has not filled in
-yet. Members report `False` until a call like those, or the end of a pass, has resolved the
+symlinks, and single-file, large macOS ZIP or unsized RAR5 members whose `size` a full read has
+not filled in yet. Members report `False` until a call like those, or the end of a pass, has resolved the
 listing's links. A `streaming=True` pass yields every member before that, in every format. A
 `members_report_if_available()` peek resolves no links, so its members report `False` until a later
 call or pass does. A random-access pass with no listing call before it may or may not yield before

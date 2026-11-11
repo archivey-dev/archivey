@@ -408,7 +408,10 @@ even when native headers advertise a non-zero size. Demultiplexing SHALL use
 `SolidBlockReader` (or equivalent forward-only slicing). The system SHALL
 validate each payload member's CRC32 or Blake2sp hash incrementally via the
 shared verification stage. This path MUST process the archive once, not spawn
-one subprocess per member.
+one subprocess per member. The one exception is a RAR5 member whose size no header
+part gives (below): the pipe has no length to skip its bytes by, so the pass reads
+that member with its own subprocess, once, and places the later members with the
+size that read fills in.
 
 #### Scenario: solid streaming matrix
 
@@ -755,7 +758,11 @@ from stdin but the last) SHALL NOT give the member's `size` when another source 
 the size comes from a later part that knows it, and a plaintext stored member that no
 part sizes SHALL take its whole packed size in place of the declared value, as `unrar`
 reads such a member to the end of its packed data. A member no part sizes that is
-compressed or encrypted (no known writer leaves one) keeps the declared value.
+compressed or encrypted (no known writer leaves one) SHALL list `size=None` with
+`member_state_final` false, and a verified full read SHALL fill the size in. Such a
+member SHALL be read by `unrar` or `unar` to the end of its data, a stored encrypted
+one included: its AES padding hides where the plaintext ends, and `unrar` 7.00 then
+prints the padding and fails the CRC, as the read does.
 
 #### Scenario: volume matrix
 
@@ -770,6 +777,8 @@ compressed or encrypted (no known writer leaves one) keeps the declared value.
 | Out-of-order volume | Error instead of partial or garbled output |
 | Missing volume (first, middle or last) | Members of the volumes present listed, then `TruncatedError` |
 | `rar a -v -si` set, stored or compressed | One member whose `size` is the last part's; reads, streams and extracts whole |
+| Compressed member with the size-unknown flag on every part | Lists `size=None`, `member_state_final` false; a full read returns the data and fills `size` |
+| Same, in a solid archive read by `stream_members()` | Every member reads whole; one extra `unrar` run for that member, none for the members after it |
 
 ### Requirement: A set with volumes missing SHALL list what it has, then raise
 
