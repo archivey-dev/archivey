@@ -226,6 +226,22 @@ def test_a_second_zlib_stream_in_a_member_is_refused(
             pass
 
 
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+def test_an_empty_second_zlib_stream_in_a_member_is_refused(
+    mode: AcceleratorMode,
+) -> None:
+    # rapidgzip's output is A, and the last trailer is the empty stream's Adler-32
+    # (1), so the check's second decode reaches the first stream's end exactly at
+    # the output's end, with input left (round 1 K1).
+    raw = _member_stored_as(zlib.compress(_FIRST) + zlib.compress(b""), _FIRST)
+    config = archivey.ArchiveyConfig(use_rapidgzip=mode)
+    with (
+        _open(raw, config=config) as reader,
+        pytest.raises(CorruptionError, match="after its end"),
+    ):
+        reader.read("a")
+
+
 @pytest.mark.parametrize("encoding", ["gzip", "bzip2", "lzma", "xz"])
 @pytest.mark.parametrize("tail", [b"junk", b"\0\0\0\0"], ids=["junk", "zeros"])
 def test_bytes_after_a_member_stream_are_refused(encoding: str, tail: bytes) -> None:

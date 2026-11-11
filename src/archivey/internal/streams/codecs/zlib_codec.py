@@ -176,8 +176,10 @@ class _ZlibAdlerCheckStream(DelegatingStream):
     second decode finds the first stream ending before the output rapidgzip
     delivered, the read or seek that reached the end raises
     :class:`DataAfterEndError`, as the standard library does at that end, whatever
-    the caller has read. Only a last trailer that matches every stream, forged, gets
-    past, since the second decode runs only on a mismatch.
+    the caller has read, and so does any input left after a first stream that ends
+    exactly there (an empty second stream, whose trailer is the Adler-32 of nothing).
+    Only a last trailer that matches every stream, forged, gets past, since the second
+    decode runs only on a mismatch.
 
     A third cause is a cut stream: rapidgzip reads a zlib stream cut inside its body
     as a shorter whole one, with no error, and can stop before output the standard
@@ -358,6 +360,12 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                 while produced <= self._sum.frontier:
                     if decoder.eof:
                         if produced == self._sum.frontier:
+                            if self._refuse_after_end and (
+                                decoder.unused_data or f.read(1)
+                            ):
+                                # Input after the stream that rapidgzip read on
+                                # into without output: an empty zlib stream.
+                                raise input_after_end_error("zlib", produced)
                             break
                         if self._refuse_after_end:
                             # A container coder's data is one zlib stream; the
