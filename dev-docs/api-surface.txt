@@ -316,6 +316,7 @@ value archivey.DiagnosticCode.FORMAT_EXTENSION_CONFLICT = 'format_extension_conf
 value archivey.DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY = 'explicit_format_listed_empty'
 value archivey.DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED = 'extension_format_unconfirmed'
 value archivey.DiagnosticCode.PROBE_FORMAT_UNCONFIRMED = 'probe_format_unconfirmed'
+value archivey.DiagnosticCode.DETECTION_DECODER_LIMITED = 'detection_decoder_limited'
 value archivey.DiagnosticCode.EMPTY_ARCHIVE = 'empty_archive'
 value archivey.DiagnosticCode.ENCODING_ARGUMENT_UNUSED = 'encoding_argument_unused'
 value archivey.DiagnosticCode.PASSWORD_ARGUMENT_UNUSED = 'password_argument_unused'
@@ -347,7 +348,7 @@ value archivey.DiagnosticCode.MEMBER_NAME_DUPLICATE = 'member_name_duplicate'
 value archivey.DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE = 'source_change_undetectable'
 value archivey.DiagnosticCode.MEMBER_PATH_REFUSED = 'member_path_refused'
 value archivey.DiagnosticCode.MEMBER_READERS_DISAGREE = 'member_readers_disagree'
-alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | ReaderDisagreementContext
+alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | ReaderDisagreementContext
 class archivey.DiagnosticPolicy()
 init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
 field archivey.DiagnosticPolicy.ignore: frozenset[DiagnosticCode]
@@ -689,6 +690,15 @@ field archivey.diagnostics.ArchiveEofContext.kind: Literal['archive_eof'] = 'arc
 field archivey.diagnostics.ArchiveEofContext.observed_bytes: int = 0
 field archivey.diagnostics.ArchiveEofContext.observed_kind: Literal['absent', 'short', 'nonzero'] = 'absent'
 method archivey.diagnostics.ArchiveEofContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.DetectionDecoderLimitContext(_JsonSafeContext)
+init archivey.diagnostics.DetectionDecoderLimitContext(kind: Literal['detection_decoder_limit'] = 'detection_decoder_limit', archive_name: str | None = None, tier: Literal['inner_tar', 'content_probe', 'probe_completion'] = 'inner_tar', stream_format: str = '', max_decoder_memory: int = 0, needed: int | None = None) -> None
+field archivey.diagnostics.DetectionDecoderLimitContext.archive_name: str | None = None
+field archivey.diagnostics.DetectionDecoderLimitContext.kind: Literal['detection_decoder_limit'] = 'detection_decoder_limit'
+field archivey.diagnostics.DetectionDecoderLimitContext.max_decoder_memory: int = 0
+field archivey.diagnostics.DetectionDecoderLimitContext.needed: int | None = None
+field archivey.diagnostics.DetectionDecoderLimitContext.stream_format: str = ''
+field archivey.diagnostics.DetectionDecoderLimitContext.tier: Literal['inner_tar', 'content_probe', 'probe_completion'] = 'inner_tar'
+method archivey.diagnostics.DetectionDecoderLimitContext.to_dict(self) -> dict[str, object]
 reexport archivey.diagnostics.Diagnostic = archivey.Diagnostic
 reexport archivey.diagnostics.DiagnosticCode = archivey.DiagnosticCode
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_normalized'
@@ -769,6 +779,8 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'member_readers_disagree'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-readers-disagree'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'source_change_undetectable'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'source-change-undetectable'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'detection_decoder_limited'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'detection-decoder-limited'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_path_refused'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-path-refused'
 reexport archivey.diagnostics.DiagnosticContext = archivey.DiagnosticContext

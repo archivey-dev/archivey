@@ -219,7 +219,7 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
 - **Detection keeps the cap and lowers the window.** The inner-TAR probe decodes under
   the caller's `DecoderLimits`, with `window_log_max` at the smaller of the cap's and
   libzstd's default 27 (128 MiB), what `zstd -d` decodes without `--long`. A frame over
-  the cap is "can't tell" with an INFO log naming `max_decoder_memory`; the read of the
+  the cap is "can't tell", reported as `DETECTION_DECODER_LIMITED`; the read of the
   bare `.zst` that follows refuses the same window. libzstd reserves the declared window of a
   frame without a content size when it reads the header (measured: a 2 GiB window under
   a 256 MiB `RLIMIT_AS` fails with "Allocation error"), and a window cannot be shrunk to

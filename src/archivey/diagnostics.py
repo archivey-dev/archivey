@@ -103,6 +103,13 @@ class DiagnosticCode(StrEnum):
     PROBE_FORMAT_UNCONFIRMED = "probe_format_unconfirmed"
     """A format found only by decoding a sample of the content failed to read, so the
     file may not be in that format."""
+    DETECTION_DECODER_LIMITED = "detection_decoder_limited"
+    """Detection did not run a decode because the decoder it needed is over
+    ``DecoderLimits.max_decoder_memory``, so it could not tell what that decode would
+    have shown. Looking inside a compressed stream for an archive is the usual case: a
+    ``.tar.zst`` whose window is over the cap is reported as a bare ``.zst``. Advisory:
+    it reports the caller's cap, not the archive's bytes, and a read of the stream
+    refuses the same decoder."""
     EMPTY_ARCHIVE = "empty_archive"
     """The listing finished without error and found no members."""
     ENCODING_ARGUMENT_UNUSED = "encoding_argument_unused"
@@ -312,6 +319,8 @@ DiagnosticCodeStr = Literal[
     "member-readers-disagree",
     "source_change_undetectable",
     "source-change-undetectable",
+    "detection_decoder_limited",
+    "detection-decoder-limited",
     "member_path_refused",
     "member-path-refused",
 ]
@@ -439,6 +448,28 @@ class UnconfirmedFormatContext(_JsonSafeContext):
     format: str = ""
     chosen_by: Literal["argument", "extension", "content_probe"] = "argument"
     detected_format: str | None = None
+
+
+@dataclass(frozen=True)
+class DetectionDecoderLimitContext(_JsonSafeContext):
+    """A detection step the caller's decoder memory cap stopped.
+
+    ``tier`` is the step, as the detection receipt names it: ``"inner_tar"`` (looking
+    inside a compressed stream for an archive), ``"content_probe"`` (decoding a sample
+    to recognize a format with no magic) or ``"probe_completion"`` (decoding the whole
+    source to confirm a probe's hit; the hit stands without it). ``stream_format`` is
+    the codec's :class:`~archivey.StreamFormat` name (``"ZSTD"``).
+    ``max_decoder_memory`` is the cap, and ``needed`` what the decoder would have
+    reserved, or ``None`` when the decoder only says it is over the cap (a zstd
+    window).
+    """
+
+    kind: Literal["detection_decoder_limit"] = "detection_decoder_limit"
+    archive_name: str | None = None
+    tier: Literal["inner_tar", "content_probe", "probe_completion"] = "inner_tar"
+    stream_format: str = ""
+    max_decoder_memory: int = 0
+    needed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1147,6 +1178,7 @@ DiagnosticContext = (
     | EmptyArchiveContext
     | UnconfirmedFormatContext
     | FormatConflictContext
+    | DetectionDecoderLimitContext
     | ScanRaceContext
     | ArchiveEofContext
     | UnlistedDataContext
@@ -1184,6 +1216,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY: "unconfirmed_format",
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED: "unconfirmed_format",
         DiagnosticCode.PROBE_FORMAT_UNCONFIRMED: "unconfirmed_format",
+        DiagnosticCode.DETECTION_DECODER_LIMITED: "detection_decoder_limit",
         DiagnosticCode.EMPTY_ARCHIVE: "empty_archive",
         DiagnosticCode.ENCODING_ARGUMENT_UNUSED: "unused_argument",
         DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: "unused_argument",
@@ -1245,7 +1278,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nineteen codes are deliberately
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-one codes are deliberately
 **out**, and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -1270,6 +1303,9 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nineteen codes are delibera
   it to RAISE still gets that typed error, through ``escalate_as``. Its sibling
   ``EXTENSION_FORMAT_UNCONFIRMED`` is **in** the set: it also fires on an
   extension-only empty listing, a successful open that no byte confirmed.
+- ``DETECTION_DECODER_LIMITED`` — reports the caller's ``max_decoder_memory``, not
+  the archive: the decode detection skipped is the one a read would refuse under the
+  same cap. A caller who wants detection to fail rather than settle can raise it.
 - ``MEMBER_SELECTOR_UNMATCHED`` — reports the caller's ``members=`` argument, not the
   archive. A job that passes one fixed list of names to many archives would otherwise
   raise on every archive that lacks one of them.
@@ -1811,6 +1847,7 @@ def format_path_name(path: str | Path | None) -> str | None:
 __all__ = [
     "ARCHIVE_INTEGRITY_CODES",
     "ArchiveEofContext",
+    "DetectionDecoderLimitContext",
     "Diagnostic",
     "DiagnosticCode",
     "DiagnosticCodeStr",

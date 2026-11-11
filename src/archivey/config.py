@@ -539,8 +539,9 @@ class DecoderLimits:
     is still found as one and then refused on open. A zstd window cannot be
     shrunk, so a frame whose window is over the cap (or over libzstd's default
     128 MiB, whatever the cap) is not looked inside: a ``.tar.zst`` is then
-    reported as a bare ``.zst``, which the read refuses for the same window. An
-    INFO log on ``archivey.detection`` names the limit when this happens.
+    reported as a bare ``.zst``, which the read refuses for the same window. When
+    the cap is the reason, detection records the diagnostic
+    ``DETECTION_DECODER_LIMITED``, which names it.
 
     Under a memory cap (a container limit, ``RLIMIT_AS``, a small machine) a
     refused native allocation does not always surface as ``MemoryError`` —

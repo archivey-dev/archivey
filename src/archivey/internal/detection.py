@@ -91,7 +91,7 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, cast
+from typing import TYPE_CHECKING, BinaryIO, Literal, cast
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -101,6 +101,7 @@ from archivey.config import (
 from archivey.detection import DetectedBy, DetectionConfidence, FormatInfo
 from archivey.detection_cost import DetectionBudget, TierSkipReason
 from archivey.diagnostics import (
+    DetectionDecoderLimitContext,
     DiagnosticCode,
     FormatConflictContext,
 )
@@ -483,8 +484,8 @@ def _probe_inner_container(
     same bytes, and the cap is checked against that dictionary. A zstd frame whose
     window is over the cap, or over libzstd's default 128 MiB, is "can't tell", and so
     is any other decoder the cap refuses. The open that follows then reads the source
-    as the bare compressed stream, and an INFO log on ``archivey.detection`` names the
-    limit. A ``MemoryError`` from a decoder no bound shrinks is "can't tell" too.
+    as the bare compressed stream, and ``DETECTION_DECODER_LIMITED`` names the limit
+    (``_report_probe_refused``). A ``MemoryError`` from a decoder no bound shrinks is "can't tell" too.
 
     With a workspace, the compressed input is bounded by what is left of the budget's
     ``max_decode_input`` (and the workspace's read ceiling) as well as by
@@ -742,11 +743,14 @@ def _decode_inner_head(
             head = stream.read(INNER_CONTAINER_PROBE_BYTES)
     except ResourceLimitError as exc:
         # The decoder is over the caller's ``max_decoder_memory`` (or a probe ceiling),
-        # or its child could not run: "can't tell". Said in a log, since the open that
+        # or its child could not run: "can't tell". Reported, since the open that
         # follows reads the source as the bare compressed stream, and a caller who
         # lowered the cap learns why.
         unavailable = True
-        _log_probe_refused(
+        _report_probe_refused(
+            workspace,
+            "inner_tar",
+            stream_format.name,
             f"look inside the {stream_format.name} stream for an archive (it is read "
             "as the bare compressed stream; pass format= to name the container)",
             exc,
@@ -781,18 +785,54 @@ def _decode_inner_head(
     return head, unavailable
 
 
-def _log_probe_refused(what: str, exc: ResourceLimitError) -> None:
-    """Log at INFO that a probe could not build its decoder, so detection could not tell.
+def _stream_name(fmt: ArchiveFormat) -> str:
+    """The stream format's name for a probe's diagnostic context (``"LZMA_ALONE"``)."""
+    return fmt.stream.name
 
-    ``exc`` says why: ``DecoderLimits.max_decoder_memory`` with its value when the
-    caller's cap refused it, a probe's own ceiling (an lzop or mozlz4 block), or, as a
-    ``ResourceUnavailableError``, a decoder child that could not run. The receipt
-    records the tier as ``CAPABILITY_UNAVAILABLE``.
+
+def _report_probe_refused(
+    workspace: PrefixWorkspace | None,
+    tier: Literal["inner_tar", "content_probe", "probe_completion"],
+    stream_format: str,
+    what: str,
+    exc: ResourceLimitError,
+) -> None:
+    """Say that a probe could not build its decoder, so detection could not tell.
+
+    The caller records the tier as ``CAPABILITY_UNAVAILABLE`` in the receipt. When the
+    caller's ``DecoderLimits.max_decoder_memory`` refused the decoder
+    (``decoder_cap_error``), it is the diagnostic
+    ``DETECTION_DECODER_LIMITED``, once per step and stream format in a pass. Any other
+    refusal is an INFO log: a probe's own ceiling (an lzop or mozlz4 block), or, as a
+    ``ResourceUnavailableError``, a decoder child that could not run. Neither is
+    something the caller set.
     """
-    logger.info(
-        "Detection could not %s: it could not build the decoder it needs. %s",
-        what,
-        exc,
+    from archivey.internal.config import decoder_cap_refusal
+
+    refusal = decoder_cap_refusal(exc)
+    if refusal is None or workspace is None or workspace.collector is None:
+        logger.info(
+            "Detection could not %s: it could not build the decoder it needs. %s",
+            what,
+            exc,
+        )
+        return
+    key = (tier, stream_format)
+    if key in workspace.cap_refusals_reported:
+        return
+    workspace.cap_refusals_reported.add(key)
+    cap, needed = refusal
+    workspace.collector.emit(
+        code=DiagnosticCode.DETECTION_DECODER_LIMITED,
+        message=(f"Detection could not {what}. {exc.raw_message}"),
+        context=DetectionDecoderLimitContext(
+            archive_name=workspace.name,
+            tier=tier,
+            stream_format=stream_format,
+            max_decoder_memory=cap,
+            needed=needed,
+        ),
+        logger=logger,
     )
 
 
@@ -870,6 +910,8 @@ def _probe_completes(
     read_at: Callable[[int, int], bytes | None],
     charge_decode: Callable[[int], bool],
     workspace: PrefixWorkspace,
+    *,
+    stream_format: str,
 ) -> bool:
     """Whether a probe that accepted the prefix still accepts the whole source.
 
@@ -930,7 +972,13 @@ def _probe_completes(
         # refuses only this decode. The hit stands on the window alone, as when the
         # allowance cannot cover the source.
         workspace.record_skip("probe_completion", TierSkipReason.CAPABILITY_UNAVAILABLE)
-        _log_probe_refused("decode the whole source to confirm its format", exc)
+        _report_probe_refused(
+            workspace,
+            "probe_completion",
+            stream_format,
+            "decode the whole source to confirm its format",
+            exc,
+        )
         return True
 
 
@@ -1830,6 +1878,8 @@ def _detect_format_body(
         isolation=isolation,
         excluded_libraries=formats.exclude_libraries,
         decoder_limits=decoder_limits,
+        collector=collector,
+        name=name,
     ) as workspace:
         for tier in candidates.off_tiers:
             workspace.record_skip(tier, TierSkipReason.NOT_ENABLED_BY_POLICY)
@@ -2343,10 +2393,22 @@ def _content_probes(
             workspace.record_skip(
                 "content_probe", TierSkipReason.CAPABILITY_UNAVAILABLE
             )
-            _log_probe_refused(f"try the {probe_fmt} content probe", exc)
+            _report_probe_refused(
+                workspace,
+                "content_probe",
+                _stream_name(probe_fmt),
+                f"try the {probe_fmt} content probe",
+                exc,
+            )
             hit = False
         if hit and _probe_completes(
-            probe, data, length, read_at, charge_decode, workspace
+            probe,
+            data,
+            length,
+            read_at,
+            charge_decode,
+            workspace,
+            stream_format=_stream_name(probe_fmt),
         ):
             confidence = DetectionConfidence.PROBABLE
             if probe_fmt.stream is StreamFormat.BROTLI:

@@ -692,7 +692,8 @@ Detection decodes under the same cap. Its probes reserve only what their bounded
 needs where the codec allows it (an LZMA dictionary of 4 to 64 KiB), and the cap is
 checked against that reservation; a decoder that cannot shrink (a zstd window, a bzip3
 block) and is over the cap is "can't tell", recorded as `CAPABILITY_UNAVAILABLE` and
-logged at INFO with the limit (`internal/detection.py` `_log_probe_refused`). A
+reported as `DETECTION_DECODER_LIMITED` with the limit (`internal/detection.py`
+`_report_probe_refused`; a probe's own ceiling is an INFO log instead). A
 `.tar.zst` is then reported as a bare `.zst`, and the read refuses the same window. Two
 probes also carry a fixed ceiling of their own under the cap: zstd's window at 128 MiB,
 and a `.tar.bz3`'s block size at 16 MiB, about 163 MiB of libbzip3 state

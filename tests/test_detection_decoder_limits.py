@@ -5,8 +5,9 @@ ruled out, and the read that follows would refuse it anyway. Where the codec can
 its decoder to the probe's read (the LZMA family), the cap is checked against that
 size, so the format is still found and the open refuses it. Where it cannot (a zstd
 window, an lzop block), a probe over the cap is "can't tell": the tier is recorded as
-``CAPABILITY_UNAVAILABLE``, an INFO log names the limit, and the source is read as the
-bare compressed stream.
+``CAPABILITY_UNAVAILABLE``, the diagnostic ``DETECTION_DECODER_LIMITED`` names the
+cap, and the source is read as the bare compressed stream. A refusal that is not the
+caller's cap (a probe's own ceiling) is an INFO log only.
 """
 
 from __future__ import annotations
@@ -23,11 +24,19 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     DecoderLimits,
+    DiagnosticPolicy,
     detect_format,
     open_archive,
 )
 from archivey.detection_cost import TierSkip, TierSkipReason
-from archivey.exceptions import ResourceLimitError
+from archivey.diagnostics import (
+    ARCHIVE_INTEGRITY_CODES,
+    DetectionDecoderLimitContext,
+    Diagnostic,
+    DiagnosticCode,
+    DiagnosticSummary,
+)
+from archivey.exceptions import DiagnosticRaisedError, ResourceLimitError
 from archivey.internal.detection import probe_config
 from archivey.types import ContainerFormat, StreamFormat
 from tests.conftest import requires_zstd, zstd_backend
@@ -37,8 +46,24 @@ _MIB = 2**20
 _FIXTURES = Path(__file__).parent / "fixtures" / "external"
 
 
-def _capped(cap: int | None) -> ArchiveyConfig:
-    return ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=cap))
+def _capped(cap: int | None, **kwargs: object) -> ArchiveyConfig:
+    return ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_decoder_memory=cap),
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def _limited(summary: DiagnosticSummary) -> list[Diagnostic]:
+    return [
+        d
+        for d in summary.retained
+        if d.code is DiagnosticCode.DETECTION_DECODER_LIMITED
+    ]
+
+
+def _context(diagnostic: Diagnostic) -> DetectionDecoderLimitContext:
+    assert isinstance(diagnostic.context, DetectionDecoderLimitContext)
+    return diagnostic.context
 
 
 def _tarball() -> bytes:
@@ -67,10 +92,19 @@ def _tar_zst(window_log: int) -> bytes:
 
 
 def _refusal_logs(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """The INFO records for a refusal that is not the caller's cap."""
     return [
         r.getMessage()
         for r in caplog.records
         if r.name == "archivey.detection" and r.levelno == logging.INFO
+    ]
+
+
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "archivey.detection" and r.levelno == logging.WARNING
     ]
 
 
@@ -86,24 +120,56 @@ def test_a_zstd_window_over_the_cap_is_cant_tell(
     assert detect_format(path).format == tar_zst
     assert detect_format(path, config=_capped(8 * _MIB)).format == tar_zst
 
-    config = _capped(4 * _MIB)
+    seen: list[Diagnostic] = []
+    config = _capped(4 * _MIB, on_diagnostic=seen.append)
     with caplog.at_level(logging.INFO, logger="archivey.detection"):
         info = detect_format(path, config=config)
     assert info.format == ArchiveFormat.ZST
     assert TierSkip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE) in (
         info.unavailable_tiers
     )
-    (message,) = _refusal_logs(caplog)
-    assert "ZSTD" in message
-    assert f"max_decoder_memory={4 * _MIB}" in message
+    (diagnostic,) = _limited(info.diagnostics)
+    assert seen == [diagnostic]
+    assert _context(diagnostic) == DetectionDecoderLimitContext(
+        archive_name=str(path),
+        tier="inner_tar",
+        stream_format="ZSTD",
+        max_decoder_memory=4 * _MIB,
+        needed=None,
+    )
+    assert "ZSTD" in diagnostic.message
+    assert f"max_decoder_memory={4 * _MIB}" in diagnostic.message
+    # Logged at WARNING by the default policy, and not twice as an INFO record.
+    assert _warnings(caplog) == [diagnostic.message]
+    assert _refusal_logs(caplog) == []
 
-    # The read of the bare stream refuses the same window, naming the same cap.
+    # The open of the bare stream refuses the same window, naming the same cap, and
+    # the caller's callback has heard why the stream is read bare.
+    seen.clear()
     with (
         pytest.raises(ResourceLimitError, match=f"max_decoder_memory={4 * _MIB}"),
         open_archive(path, config=config) as reader,
     ):
         (member,) = reader.members()
         reader.read(member)
+    (opened,) = seen
+    assert opened.code is DiagnosticCode.DETECTION_DECODER_LIMITED
+    assert _context(opened) == _context(diagnostic)
+
+
+@requires_zstd()
+def test_raise_on_turns_the_cap_refusal_into_an_error() -> None:
+    """Advisory by default, out of ``STRICT``; a caller can still ask to raise."""
+    assert DiagnosticCode.DETECTION_DECODER_LIMITED not in ARCHIVE_INTEGRITY_CODES
+    data = _tar_zst(23)
+    strict = _capped(4 * _MIB, diagnostic_policy=DiagnosticPolicy.STRICT)
+    assert detect_format(io.BytesIO(data), config=strict).format == ArchiveFormat.ZST
+    raising = _capped(
+        4 * _MIB,
+        diagnostic_policy=DiagnosticPolicy(raise_on=["detection_decoder_limited"]),
+    )
+    with pytest.raises(DiagnosticRaisedError):
+        detect_format(io.BytesIO(data), config=raising)
 
 
 @requires_zstd()
@@ -119,6 +185,7 @@ def test_a_zstd_window_over_libzstd_s_default_says_no_cap(
         info.unavailable_tiers
     )
     assert _refusal_logs(caplog) == []
+    assert _limited(info.diagnostics) == []
 
 
 def test_an_xz_dictionary_over_the_cap_is_still_found(tmp_path: Path) -> None:
@@ -135,6 +202,7 @@ def test_an_xz_dictionary_over_the_cap_is_still_found(tmp_path: Path) -> None:
     info = detect_format(path, config=config)
     assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.XZ)
     assert info.unavailable_tiers == ()
+    assert _limited(info.diagnostics) == []
     with (
         pytest.raises(ResourceLimitError, match=f"max_decoder_memory={32 * _MIB}"),
         open_archive(path, config=config) as reader,
@@ -159,7 +227,13 @@ def test_a_probe_dictionary_over_the_cap_is_cant_tell(
     assert TierSkip("content_probe", TierSkipReason.CAPABILITY_UNAVAILABLE) in (
         info.unavailable_tiers
     )
-    assert any("max_decoder_memory=1024" in m for m in _refusal_logs(caplog))
+    (diagnostic,) = _limited(info.diagnostics)
+    context = _context(diagnostic)
+    assert (context.tier, context.stream_format) == ("content_probe", "LZMA_ALONE")
+    assert context.max_decoder_memory == 1024
+    assert context.needed is not None
+    assert context.needed > 1024
+    assert "max_decoder_memory=1024" in diagnostic.message
 
     found = detect_format(path)
     assert found.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE)
@@ -182,14 +256,20 @@ def test_a_cap_between_the_window_and_the_whole_source_skips_completion(
     assert TierSkip("probe_completion", TierSkipReason.CAPABILITY_UNAVAILABLE) not in (
         detect_format(path).unavailable_tiers
     )
-    with caplog.at_level(logging.INFO, logger="archivey.detection"):
-        info = detect_format(path, config=_capped(32 * 1024))
+    info = detect_format(path, config=_capped(32 * 1024))
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.detected_by == "content_probe"
     assert TierSkip("probe_completion", TierSkipReason.CAPABILITY_UNAVAILABLE) in (
         info.unavailable_tiers
     )
-    (message,) = _refusal_logs(caplog)
+    # The hit stands, so the diagnostic is the only trace of the skipped re-check.
+    (diagnostic,) = _limited(info.diagnostics)
+    context = _context(diagnostic)
+    assert (context.tier, context.stream_format) == ("probe_completion", "LZMA_ALONE")
+    assert context.max_decoder_memory == 32 * 1024
+    assert context.needed is not None
+    assert 32 * 1024 < context.needed <= _MIB
+    message = diagnostic.message
     assert "max_decoder_memory=32768" in message
     # The number refused is the probe's, and the message says where it comes from.
     assert f"counted from the {_MIB}-byte dictionary the header declares" in message
@@ -202,6 +282,25 @@ def test_a_gzip_probe_is_not_capped() -> None:
     data = gzip.compress(_TARBALL)
     info = detect_format(io.BytesIO(data), config=_capped(1024))
     assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.GZIP)
+    assert _limited(info.diagnostics) == []
+
+
+def test_a_cap_refusal_keeps_its_numbers_through_a_pickle() -> None:
+    """A decoder child's refusal is pickled back to the parent: the type stays the
+    public ``ResourceLimitError`` and the numbers detection reports survive."""
+    import pickle
+
+    from archivey.internal.config import check_decoder_memory, decoder_cap_refusal
+
+    with pytest.raises(ResourceLimitError) as caught:
+        check_decoder_memory(
+            2 * _MIB, limits=DecoderLimits(max_decoder_memory=_MIB), what="a test"
+        )
+    assert type(caught.value) is ResourceLimitError
+    restored = pickle.loads(pickle.dumps(caught.value))
+    assert type(restored) is ResourceLimitError
+    assert decoder_cap_refusal(restored) == (_MIB, 2 * _MIB)
+    assert decoder_cap_refusal(ResourceLimitError("a probe ceiling")) is None
 
 
 def test_probe_config_keeps_the_caller_s_decoder_limits() -> None:
@@ -225,7 +324,12 @@ def test_an_lzop_block_over_the_cap_is_cant_tell(
     assert TierSkip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE) in (
         info.unavailable_tiers
     )
-    assert any("max_decoder_memory=1024" in m for m in _refusal_logs(caplog))
+    (diagnostic,) = _limited(info.diagnostics)
+    assert (_context(diagnostic).tier, _context(diagnostic).stream_format) == (
+        "inner_tar",
+        "LZOP",
+    )
+    assert "max_decoder_memory=1024" in diagnostic.message
 
 
 def test_a_bzip3_block_over_the_cap_is_cant_tell(
@@ -252,4 +356,6 @@ def test_a_bzip3_block_over_the_cap_is_cant_tell(
     assert TierSkip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE) in (
         info.unavailable_tiers
     )
-    assert any(f"max_decoder_memory={cap}" in m for m in _refusal_logs(caplog))
+    (diagnostic,) = _limited(info.diagnostics)
+    assert _context(diagnostic).needed == decoder_memory(block_size)
+    assert f"max_decoder_memory={cap}" in diagnostic.message

@@ -118,8 +118,8 @@ header declares: a probe sets `StreamConfig.probe_read_bound`, the decoder is si
 that read (§4), and the cap is checked against that size, so a stream whose declared
 dictionary is over the cap is still recognised and then refused on open. A probe the cap
 refuses raises `ResourceLimitError`, which detection reads as "can't tell", not "not this
-format": it records `content_probe` as `CAPABILITY_UNAVAILABLE` and logs the limit at
-INFO. The shared machinery around the probes (the sample size, the
+format": it records `content_probe` as `CAPABILITY_UNAVAILABLE` and reports
+`DETECTION_DECODER_LIMITED`. The shared machinery around the probes (the sample size, the
 whole-source re-check, the decode allowance, and the `format_unconfirmed` stamp on a
 probe-only result) is on [`topics/detection.md`](../topics/detection.md) §2.4 and §4.1.
 
