@@ -71,8 +71,11 @@ runs:
         # Miss: download into $DEBS (only what the system lacks), then install from it.
         # apt downloads as _apt, which must be able to write there.
         sudo rm -rf "$DEBS" && mkdir -p "$DEBS/partial" && chmod a+rwx "$DEBS" "$DEBS/partial"
-        "${apt[@]}" update -q -o Acquire::Retries=3
-        "${apt[@]}" install "${flags[@]}" --download-only \
+        # A dead mirror makes apt retry every mirror and file for many minutes (17 on
+        # 11-11, until the job timed out), so each network call gets 2 minutes. A
+        # working mirror takes seconds.
+        timeout 120 "${apt[@]}" update -q -o Acquire::Retries=3
+        timeout 120 "${apt[@]}" install "${flags[@]}" --download-only \
           -o Dir::Cache::archives="$DEBS" $PACKAGES
         saved=skip  # The system may already have every package: nothing to cache.
         if compgen -G "$DEBS/*.deb" > /dev/null; then
