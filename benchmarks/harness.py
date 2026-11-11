@@ -21,7 +21,7 @@ Modes:
 - ``full``: also report wall-time ratios vs stdlib peers, and the per-member cost and
   throughput fitted by ``benchmarks/cost_model.py``. Absolute ratios are noisy
   on shared runners, so full mode is **not** a PR gate. The change-guarded nightly
-  (``benchmark-wall.yml``) hard-fails on (1) the ~12× sanity ceiling and (2)
+  (``benchmark-wall.yml``) hard-fails on (1) the ~13× sanity ceiling and (2)
   **wall-ratio drift** vs the JSON artifact of the last run that measured, pass or
   fail (perf-review Q2 / debt-ledger Q1 option (a)). Quiet days re-publish that
   artifact (preserving ``measured_at``); a full re-measure is forced at least
@@ -119,9 +119,13 @@ SEEK_BASELINE_SLACK = 8
 # Wall-time sanity ceiling for --mode full. Absolute VISION ≤1.3× / ~2× bands stay
 # informational (shared-runner noise); nightly enforces *drift* vs the last measured
 # run's JSON instead (debt-ledger Q1 / perf Q2 option (a)).
-WALL_RATIO_BUDGET = 12.0
+WALL_RATIO_BUDGET = 13.0
 # Each timed sample of an open-and-list case repeats until this long has passed (see
-# _interleaved_pair_times): those listings take a few milliseconds each.
+# _interleaved_pair_times): those listings take a millisecond or two on the archivey
+# side and a millisecond or less on the peer's. The mean of repeated calls favours the
+# peer (about +13% on the ZIP listing ratio in one measurement), so these ratios do not
+# compare with the single-shot numbers recorded before 2026-11-11; the ceiling is set
+# from repeated-call numbers (zip_open_list ~10.7x, rar_open_list ~11.1x).
 LISTING_MIN_SAMPLE_S = 0.05
 WALL_RATIO_VISION = 1.3
 WALL_RATIO_VISION_SAFETY = 2.0
@@ -134,7 +138,7 @@ WALL_RATIO_DRIFT_MIN_ABS = 0.15
 # its ratio by 2× on scheduler noise alone: rar_open_list went 2.60 → 5.71 (1.0 ms vs
 # a 0.2 ms peer) between the 2026-09-06 run and nightly run 34122511826 on 2026-09-07,
 # with no change to RAR listing cost that large. That one night froze the nightly
-# baseline for a month. Gross slowdowns of tiny cases still fail on the 12× ceiling.
+# baseline for a month. Gross slowdowns of tiny cases still fail on the 13× ceiling.
 WALL_RATIO_DRIFT_MIN_EXTRA_S = 0.001
 # Q1 listing bands (informational in full-mode reports; not PR-gated):
 # ZIP (stdlib) and TAR (native walker) → 2–3×/member vs zipfile/tarfile; native
@@ -312,10 +316,13 @@ def _interleaved_pair_times(
     """Alternate archivey/stdlib timing; return (median_ay_s, ay_result, median_std_s).
 
     ``min_sample_s`` makes each sample call its function repeatedly until that much
-    time has passed and record the mean per call: a listing of a few milliseconds is
+    time has passed and record the mean per call: a listing of a millisecond or less is
     otherwise one timer reading per sample, and the ratio of two such readings swings
-    by more than the budget's margin on a shared runner. Use it only for functions
-    that can run again and again unchanged (listings, not extractions).
+    by more than the budget's margin on a shared runner. It also changes what is
+    measured: a warm loop speeds the peer up more than archivey, so a ratio taken this
+    way reads higher than a single-shot one (about +13% on the ZIP listing). Use it
+    only for functions that can run again and again unchanged (listings, not
+    extractions).
 
     One shared warmup of each side first. Alternating order removes the
     "whoever ran last left the page cache hot" bias. Diagnostic log spam is
