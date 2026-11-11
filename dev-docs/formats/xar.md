@@ -84,8 +84,9 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
   size, so archivey's decoder limits and length checks apply. A member's data is one
   stream: any byte after its end, a second zlib stream, junk or zeros, raises
   `CorruptionError`, as in a ZIP member, where a `.zz` file only reports it as trailing
-  data. libarchive fails on the same input ("XAR decompressor made no progress"), and
-  Apple's `xar` loops on it until an allocation fails. Under `rapidgzip`, which decodes
+  data. The official readers disagree (§3): on macOS, Apple's `xar` writes the first
+  stream and ignores the rest, and bsdtar hangs. On Linux, libarchive failed on a 24 MiB
+  member ("XAR decompressor made no progress"). Under `rapidgzip`, which decodes
   every zlib stream as one, the Adler-32 at the end covers only the last stream, and the
   second decode that mismatch starts finds the first stream's end and raises; only a
   forged last trailer that matches every stream gets past (`gzip.md` §5). A bzip2 or LZMA
