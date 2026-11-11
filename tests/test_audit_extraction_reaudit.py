@@ -285,6 +285,46 @@ def test_hoist_moves_a_tree_whose_links_stay_inside_it(
 
 
 @posix_links
+def test_hoist_moves_a_tree_whose_links_start_at_the_filesystem_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A rootfs in a wrapper directory, written under TRUSTED: a target from `/` names
+    # the same path after the move, so it does not keep the tree in the wrapper.
+    _build_tar(
+        tmp_path / "pkg.tar",
+        [
+            ("top", "dir", None),
+            ("top/usr/bin/env", "file", b"env"),
+            ("top/usr/bin/pwsh", "sym", "/opt/microsoft/powershell/7/pwsh"),
+        ],
+    )
+    monkeypatch.chdir(tmp_path)
+
+    main(["x", "--policy", "trusted", "pkg.tar"])
+
+    assert os.readlink(tmp_path / "top/usr/bin/pwsh") == (
+        "/opt/microsoft/powershell/7/pwsh"
+    )
+    assert not (tmp_path / "pkg").exists()
+
+
+@pytest.mark.parametrize(
+    ("links", "inside"),
+    [
+        ((("top/x", "/opt"),), True),
+        ((("top/x", "/opt"), ("top/a/r", "../x/y")), False),
+    ],
+    ids=["rooted-link", "relative-link-through-it"],
+)
+def test_hoist_walk_counts_only_a_link_s_own_rooted_target_as_inside(
+    links: tuple[tuple[str, str], ...], inside: bool
+) -> None:
+    from archivey.cli.extract_cmd import _recorded_links_stay_inside
+
+    assert _recorded_links_stay_inside("top", links) is inside
+
+
+@posix_links
 def test_hoist_still_moves_a_tree_whose_links_only_go_down(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

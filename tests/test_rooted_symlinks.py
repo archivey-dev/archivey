@@ -237,3 +237,38 @@ def test_the_archivey_file_system_lists_them_under_trusted(tmp_path: Path) -> No
         assert fs.cat("bin/env") == b"#!env\n"
     with ArchiveyFileSystem(str(archive), policy=ExtractionPolicy.STANDARD) as fs:
         assert not fs.exists("usr/bin/pwsh")
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [("sym", "r", "x/victim"), ("sym", "x", "{outside}")],
+        [("sym", "r", "a/b/victim"), ("dir", "a/", ""), ("sym", "a/b", "{outside}")],
+    ],
+    ids=["at-top", "under-a-directory"],
+)
+@_MODES
+def test_an_earlier_link_through_a_later_rooted_link_is_removed(
+    tmp_path: Path, streaming: bool, entries: list[tuple[str, str, str | bytes]]
+) -> None:
+    """A relative link made before the rooted link it resolves through is rechecked
+    once the rooted link appears, and removed: only a stored target from ``/`` may
+    lead out."""
+    dest, outside = _outside_layout(tmp_path)
+    filled = [
+        (kind, name, value.format(outside=outside) if isinstance(value, str) else value)
+        for kind, name, value in entries
+    ]
+    report = open_and_extract(
+        io.BytesIO(_tar(filled)),
+        dest,
+        streaming=streaming,
+        policy=ExtractionPolicy.TRUSTED,
+        on_error=OnError.CONTINUE,
+    )
+    statuses = {r.member.name: r.status for r in report}
+    assert statuses["r"] is ExtractionStatus.BLOCKED
+    assert not os.path.lexists(dest / "r")
+    rooted = filled[-1][1]
+    assert statuses[rooted] is ExtractionStatus.EXTRACTED
+    assert os.readlink(dest / rooted) == str(outside)

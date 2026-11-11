@@ -2274,11 +2274,15 @@ class ExtractionCoordinator:
                 and transformed.link_target is not None
             ):
                 on_disk = self._link_target_on_disk(transformed.link_target)
-                # A link kept as stored may lead out already, so no later change can
-                # make it escape: it has nothing to recheck. Links that resolve
-                # through it are still watched, by their own walks.
                 if not self._keeps_rooted_target(transformed.link_target):
                     self._state.links.track(result.path, on_disk, result_index)
+                else:
+                    # A link kept as stored may lead out already, so no later change
+                    # can make it escape: it has nothing to recheck. Its creation is
+                    # still a change, so a link made before it whose walk passes
+                    # through its path is rechecked, and removed if it now leads out.
+                    # A link made after it is checked through it when it is made.
+                    self._state.links.note_change(result.path)
                 if on_disk != transformed.link_target:
                     # An error names the target as stored, not with the separators
                     # or dry-run path written to disk.

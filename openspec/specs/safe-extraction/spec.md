@@ -468,7 +468,8 @@ refusing one that escapes. A drive or UNC target stays refused under every polic
 target that starts with a single `\` is not one of these. No member SHALL be written
 through such a link under any policy: a later member whose parent resolves through it is
 refused by the parent check, a link whose own resolution runs through it is refused as
-an escape, a hard link to a file under it is refused with its source, and a member that
+an escape (one made after it when it is made, one made before it by the recheck that
+the rooted link's creation starts), a hard link to a file under it is refused with its source, and a member that
 lands on the link's own name replaces the link or is refused by `overwrite`, never
 written through it. The `archivey://` tree under `TRUSTED` lists such a link and
 resolves nothing through it. Tests: `tests/test_rooted_symlinks.py`.
@@ -479,6 +480,7 @@ resolves nothing through it. Tests: `tests/test_rooted_symlinks.py`.
 | --- | --- |
 | Created symlink resolves outside `dest` | Link is unlinked; `FilterRejectionError`; no later data written through it |
 | `TRUSTED`; SYMLINK `etc -> /etc` (or any target from `/`), then `etc/passwd`, `etc/x/`, HARDLINK `h -> etc/passwd`, SYMLINK `r -> etc/passwd` | `etc` `EXTRACTED`, pointing at `/etc`; the four others `BLOCKED`; nothing outside `dest` changes |
+| `TRUSTED`; SYMLINK `r -> x/passwd`, then SYMLINK `x -> /etc` | `x` `EXTRACTED`; `r` `BLOCKED` by the recheck and removed |
 | `STRICT` or `STANDARD`; SYMLINK `etc -> /etc` | `BLOCKED`, as any escape |
 | Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `FilterRejectionError` |
 | Cyclic links (`d -> d`; `a -> b`, `b -> a`; longer loops) | The link that closes the loop is unlinked; `FilterRejectionError` with the message "Symlink target is part of a symlink loop", not the escape message; no uncaught OS/runtime error; same on every Python version |
