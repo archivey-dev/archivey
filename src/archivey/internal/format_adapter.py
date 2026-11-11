@@ -867,7 +867,7 @@ class _PluginAdapter(BaseArchiveReader):
         with self._translated_errors(), self._handle_guard():
             info = self._reader.archive_info()
         cost = self._cost(info)
-        # A plugin's keys are its own, namespaced by its format (``"arj.method"``), so
+        # A plugin's keys are its own, namespaced by its format (``"zoo.method"``), so
         # they are not in the inventory of built-in keys and are copied in as data. A
         # built-in format-API reader's keys (``"cpio.variant"``) are in that inventory.
         extra = ArchiveInfoExtra()
@@ -2980,6 +2980,7 @@ REPLACEABLE_CONTAINERS = frozenset(
         ContainerFormat.XAR,
         ContainerFormat.CAB,
         ContainerFormat.LHA,
+        ContainerFormat.ARJ,
     }
 )
 

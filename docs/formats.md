@@ -60,6 +60,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **LHA** (`.lzh`, `.lha`, `.lzs`): core, for stored members and the `-lh1-`, `-lh4-` to
   `-lh7-`, `-lhx-`, `-lk7-`, `-lzs-` and `-lz5-` methods. Listing: header by header. Members: direct. Needs a source
   that can seek.
+- **ARJ** (`.arj`): core, for methods 0 to 4. Listing: header by header. Members: direct.
+  Needs a source that can seek.
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
   direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.cpio.gz`,
   …); there, as with a compressed TAR, listing needs decompression and members are solid.
@@ -209,6 +211,7 @@ A CRC-32 is four big-endian bytes, so a CRC you computed compares as
   checks, but it is not a digest `hashes` can hold.
 - **LHA:** none. Each member stores a CRC-16 of its data, which a full read checks, but it
   is not a digest `hashes` can hold.
+- **ARJ:** `crc32`, for files, from the member's header. A full read checks it.
 - **Debian packages:** `md5`, for the files the package's `DEBIAN/md5sums` lists. It comes from
   the control tar, so it is known once listing has decompressed that, before the data tar.
 - **TAR, SquashFS, ar, directory, and every other single compressed file:** none.
@@ -248,12 +251,12 @@ far to trust each.
 
 ### Bytes after the end of an archive
 
-TAR, ZIP, 7z, RAR, ISO, CPIO and LHA archives, and single compressed files, all check for bytes
+TAR, ZIP, 7z, RAR, ISO, CPIO, LHA and ARJ archives, and single compressed files, all check for bytes
 after the archive's end. A non-zero byte there is reported as `ARCHIVE_TRAILING_DATA`, with the format in
 `format`: a warning under the default policy, raised under `DiagnosticPolicy.STRICT`. Zero bytes
 are padding and pass. ZIP, TAR, 7z, RAR, ISO and CPIO look at most 1 MiB past the end, so a byte
-further out goes unseen; LHA looks 64 KiB past its end byte, and takes the DOS end-of-file byte
-`0x1A` as padding too. Each format section says where its end is. Two exceptions, both for an
+further out goes unseen; LHA and ARJ look 64 KiB past their end, and take the DOS end-of-file
+byte `0x1A` as padding too. Each format section says where its end is. Two exceptions, both for an
 archive inside a Windows program: its signature, and the rest of the program after an archive
 stored as one of its resources (see self-extracting stubs under [Detection](#detection)).
 
@@ -1311,6 +1314,35 @@ ST and Japanese PCs, and from LHa for UNIX.
   creator codes. The listing decodes the first 128 bytes of each such member to check.
   A level-0 member has no OS id to say it came from a Mac, so it reads with its wrapper,
   as in lhasa.
+
+## ARJ
+
+ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Linux).
+
+- **Needs:** nothing. archivey decodes the methods itself, in Python, at about 10 to 30 MB a
+  second.
+- **Listing:** header by header: each member is a header and then its data, and the listing
+  reads each header and seeks past the data to the next one.
+- **Reading members:** each member is compressed on its own, so every member is direct.
+- **From a pipe:** no, for now: the listing seeks past each member's data.
+- Methods 0 (stored) to 4 all decode. `member.compression` is `LZH` for methods 1 to 3,
+  which are the same as LHA's `-lh5-` to `-lh7-` with another dictionary size, and
+  `ARJ_FAST` for method 4. `extra["arj.method"]` names the exact one.
+- Each header has a CRC-32, checked when it is read: a damaged header is
+  `CorruptionError`. Each member stores a CRC-32 of its data, which a read checks, so a
+  member read to its end is at `Verification.CHECKSUM`.
+- `member.modified` is a DOS time with no time zone, except from ARJ for Unix, which
+  stores a Unix time, read in UTC. ARJ 2.62 and later also store `accessed` and `created`.
+  From ARJ for Unix, `mode` is the Unix mode; from DOS and Windows, `windows_attrs` holds
+  the attributes. A directory is a member of its own; ARJ for Unix's symlinks and hard
+  links are listed with their targets, and FIFOs and devices as `OTHER`.
+- Names are UTF-8 when valid, otherwise decoded with `encoding=` (DOS archives are usually
+  `encoding="cp437"`, or `"cp866"` from Russian systems), as in every format. A DOS or
+  Windows name's `\` separators become `/`.
+- Garbled (password-protected) members are listed with `is_encrypted` and raise
+  `UnsupportedFeatureError` when read, as do members split across the volumes of a
+  multi-volume set. Self-extracting ARJ programs are not read yet. An archive without the
+  end header reports `ARCHIVE_EOF_MARKER_MISSING`, after listing every member.
 
 ## CPIO
 
