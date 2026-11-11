@@ -18,7 +18,7 @@ Two modes, each reading one JSON object on stdin and writing one on stdout.
                        "app": "claude"}],
      "repository": "archivey-dev/archivey", "tier": "standard"}
     -> {"run": true, "round": 2, "final": false, "person": false, "reason": "...",
-        "comment": "", "max_rounds": 5, "opus_pass": false}
+        "comment": "", "max_rounds": 5, "opus_pass": false, "opus_model": false}
 
 ``tier`` is the pull request's review tier (``python3 scripts/review/review_prep.py tier``),
 empty when it could not be worked out. ``opus_pass`` says the round to run is the
@@ -138,16 +138,20 @@ VERDICT_STOPS = {
     "decision": False,
 }
 
-#: The tiers whose pull requests Opus reads once: the first round that reaches a
-#: verdict on a standard or deep pull request is Opus's, and every round after it, which
-#: re-reads the fixes, is Sonnet's. A light pull request is Sonnet's throughout.
+#: The tiers whose pull requests Opus reviews: the first round that reaches a verdict on
+#: a standard or deep pull request is the Opus pass (a full first look, recorded in its
+#: marker), and every round after it, which re-reads the fixes, also runs on Opus. A
+#: light pull request is Sonnet's throughout.
+#:
+#: Fix rounds on Opus too (davitf, 2026-11-11). A Sonnet fix round approved #1348's K1
+#: fix, which recorded a failed solid open as decoded; a later Fable read found it
+#: (#1393). Fix rounds read small diffs, so Opus costs less there than on a first look.
 #:
 #: Opus first (davitf, 2026-10-30). For a day Sonnet reviewed first and Opus read the
 #: pull request once Sonnet approved. On the ten pull requests that ran that way,
 #: Sonnet's first rounds raised 1 blocking and 7 important findings in about two
 #: minutes each, and the Opus pass after them 4 blocking and about 30 important,
-#: so Sonnet in front only delayed Opus by a round. Sonnet re-reading fixes did catch a
-#: regression one fix introduced, cheaply, which is why it keeps those rounds.
+#: so Sonnet in front only delayed Opus by a round.
 OPUS_PASS_TIERS = frozenset({"standard", "deep"})
 
 #: The field the Opus round's marker carries, so later runs know it happened.
@@ -288,6 +292,9 @@ class Decision:
     max_rounds: int = MAX_ROUNDS
     #: This round is the pull request's Opus review (`OPUS_PASS_TIERS`).
     opus_pass: bool = False
+    #: This round runs on Opus: every round of a standard or deep pull request, the
+    #: Opus pass and the fix rounds after it (`OPUS_PASS_TIERS`).
+    opus_model: bool = False
 
 
 def decide(event: dict) -> Decision:
@@ -362,6 +369,7 @@ def decide(event: dict) -> Decision:
         final=nxt >= MAX_ROUNDS,
         person=person,
         opus_pass=event.get("tier") in OPUS_PASS_TIERS and not history.opus_pass_done,
+        opus_model=event.get("tier") in OPUS_PASS_TIERS,
     )
 
 
