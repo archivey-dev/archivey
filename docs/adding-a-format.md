@@ -510,8 +510,8 @@ bytes, from a file or a pipe.
 - **Cost.** One compression stream holds every member, so the archive is solid:
   `archive.info.is_solid` is `True`, the listing needs decompression, and with random
   access, reading a member before the last one read decodes again from the nearest
-  restart point before it: about every MiB for gzip, a frame or block boundary for zstd,
-  xz, lzip and bzip3, and the start for bzip2.
+  restart point before it: about every MiB for gzip, a frame, member or block boundary
+  the listing passed for zstd, lzip and bzip3, and the start for bzip2 and xz.
   On a reader that has not listed the archive yet, `stream_members()` and
   `extract_all()` read each member's data as the walk reaches it, so they decode the
   archive once, as for a `.tar.gz`. Once the archive is listed (`members()` first), a

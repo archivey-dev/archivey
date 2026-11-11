@@ -570,8 +570,13 @@ Backward goes to the nearest resume point before the target and decodes forward 
 there. A random-access reader asks its codec stream for restart points whether or not
 `seekable_members=True` was passed (`StreamConfig.restart_points`, maintainer ruling
 2026-11-10, fsspec-integration task 3.6): a zlib snapshot about every MiB for gzip and
-zlib, a frame, block or member boundary for zstd, bzip3, xz and lzip, a CLEAR code for
-`compress`. That costs about 40 KiB of memory per MiB of gzip output, capped at
+zlib, and every gzip member, zstd frame, bzip3 block and lzip member start and every
+`compress` CLEAR code a decode passes. The listing decodes the whole stream, so it
+passes them all. These are only points a decode found: the file's own index (the xz
+index, lzip trailers, a zstd seek table, a BGZF, mgzip or bzip3 walk) is read on
+declared seek demand only (maintainer ruling 2026-11-10, after a crafted xz index made
+a default read return another member's bytes), so a multi-block xz decodes again from
+its start. That costs about 40 KiB of memory per MiB of gzip output, capped at
 `MAX_SNAPSHOT_BYTES` (32 MiB), and lets a member read after the listing resume near the
 member instead of decoding the archive again from its first byte. Accelerator `AUTO`
 still resolves as for a stream read once, since only `seekable_members=True` declares
@@ -749,7 +754,7 @@ ours.
 | --- | --- | --- |
 | `member_count` is `None`, even after listing | **format** | No index (§1). `len(reader.members())` after the walk is the count |
 | Listing a `.tar.gz` takes as long as extracting it | **format** | Headers are spread through the compressed stream, so finding them decodes everything (§1). The decode is held to `decoder_limits.max_ratio` (`DecodeRatioGuard`, ruling in [DR-9](../design-rules.md)), so a tiny bomb is refused within a few MiB instead of listing for minutes |
-| Reading members of a `.tar.gz` by name is slow, and reports `STREAM_REWIND_REDECOMPRESSES` | **format** / **archivey** | Each backward seek decodes from the nearest resume point (§2.3): with random access, about 1 MiB before the member for gzip (more past about 800 MiB of output, where the snapshots are thinned to fit `MAX_SNAPSHOT_BYTES`; rapidgzip's own index when `AUTO` engages it), the start for plain bzip2. `stream_members()` decodes once. `[seekable]` adds resume points for bzip2 |
+| Reading members of a `.tar.gz` by name is slow, and reports `STREAM_REWIND_REDECOMPRESSES` | **format** / **archivey** | Each backward seek decodes from the nearest resume point (§2.3): with random access, about 1 MiB before the member for gzip (more past about 800 MiB of output, where the snapshots are thinned to fit `MAX_SNAPSHOT_BYTES`; rapidgzip's own index when `AUTO` engages it), the start for plain bzip2 and single-stream xz (a multi-block xz's blocks come only from its index, read on `seekable_members=True` alone). `stream_members()` decodes once. `[seekable]` adds resume points for bzip2 |
 | A tar with no trailer warns `ARCHIVE_EOF_MARKER_MISSING` and still lists | **format** | Complete-without-trailer and truncated-at-a-boundary are the same bytes. Set the code to `RAISE` when completeness matters |
 | Two tars joined with `cat` list as one archive's members plus `ARCHIVE_TRAILING_DATA` | **format** / **archivey** | The first trailer ends the walk. archivey does not read past it the way `tar -i` does (§6) |
 | A byte more than 1 MiB past the trailer goes unreported | **archivey** | The trailing-data scan is an effort bound, not a guarantee (§2.2). On a compressed tar that also leaves the stream checksum unchecked, reported as `DIGEST_UNVERIFIABLE` |

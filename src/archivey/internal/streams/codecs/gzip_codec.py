@@ -154,6 +154,8 @@ def _stdlib_gzip(source: CodecSource, config: StreamConfig) -> BinaryIO:
         report_trailing_data=config.report_trailing_data,
         natives=config.natives,
         index=config.records_restart_points,
+        # A BGZF or mgzip walk reads the file's own sizes: declared seek demand only.
+        file_index=config.seekable,
     )
 
 

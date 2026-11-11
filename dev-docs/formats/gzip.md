@@ -136,7 +136,8 @@ a member that did not reach its trailer arms a `TruncatedError` at the end of in
 opened for random access, [`tar.md`](tar.md) §2.3), `GzipDecoder` records every member after the first as a
 seek point once the member has output, so a backward seek after a forward read resumes at
 the member before the target. An empty member (BGZF's end marker) shares its offset with
-what follows and adds none. A forward seek past the known points or `SEEK_END` walks a
+what follows and adds none. On declared seek demand only (restart points alone never
+read the file's own sizes), a forward seek past the known points or `SEEK_END` walks a
 BGZF file (`codecs/bgzf_index.py`): each member's `BC` extra subfield names
 its size, and its ISIZE, exact since a member holds at most 64 KiB, its output. The walk
 reads the first header (one read buffer's worth) and stops there when the file is not
@@ -612,8 +613,8 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `gzip` | Reads; `FNAME` and `MTIME` reported |
 | `gzip -n` | Reads; no name, `modified=None` |
 | `pigz`, `pigz -i` | Reads. `-i` resets the window at each block, which archivey does not use for seeking |
-| `bgzip` (BGZF, the genomics format) | Reads, as a run of 64 KiB members; no `FNAME`. On declared seek demand or restart points the block size in `FEXTRA` gives a seek point per member (§2.3) |
-| `mgzip` (multi-threaded Python writer) | Reads, as a run of large members (100 MB of input by default), each with the base name in `FNAME`. On declared seek demand or restart points the `MZ` subfield (the member's DEFLATE size) gives a seek point per member (§2.3) |
+| `bgzip` (BGZF, the genomics format) | Reads, as a run of 64 KiB members; no `FNAME`. On declared seek demand the block size in `FEXTRA` gives a seek point per member (§2.3) |
+| `mgzip` (multi-threaded Python writer) | Reads, as a run of large members (100 MB of input by default), each with the base name in `FNAME`. On declared seek demand the `MZ` subfield (the member's DEFLATE size) gives a seek point per member (§2.3) |
 | Two `gzip` files concatenated | Reads both payloads |
 | A member followed by NUL padding | Reads; the padding is skipped. GNU `gzip -dc` does the same, silently |
 | A member, 4 NUL bytes, a member (crafted: no known writer emits this) | Reads the first payload, then `ARCHIVE_TRAILING_DATA` at the second member's first byte, with or without `rapidgzip`; `DiagnosticPolicy.STRICT` raises. GNU `gzip -dc` writes the first payload, warns "decompression OK, trailing garbage ignored" and exits 0. 7-Zip and `bsdcat` stop after the first member; `rapidgzip` raises "Invalid gzip/zlib wrapper". Python's `gzip` reads both members (§6) |
@@ -707,7 +708,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `AUTO` uses `rapidgzip` for declared-seekable streams (the concurrent-member-streams change, PR #59), and for a sequential read from 16 MiB at 3:1 or less, on Linux and macOS (maintainer ruling, 2026-10-26) | Seek machinery is built on declared demand, for every codec; the parallel decode pays on a full read only for data that is not very compressible, and on Windows the child costs more than it saves. A short read of a large stream now costs about 60 to 80 ms more: the child's start and open, and its decode ahead (§2.3) | `AUTO` keyed on the `streaming` access mode; sequential `AUTO` at any ratio, which is up to 2.4 times slower on very compressible data; sequential `AUTO` on Windows, or on any platform but Windows, which ships it where nobody measured |
 | `AUTO` falls back to the standard library with one log warning where no child can start | The accelerator is an enhancement; a frozen application must still read `.gz` | Raising, which `ON` does |
 | Report `FNAME` decoded as Latin-1, keep the bytes in `raw_name` | RFC 1952 says so, and the bytes are there for a caller who knows better | Guessing UTF-8 |
-| Member starts as seek points, and a BGZF walk by `BC` subfields, on declared seek demand or restart points | A member start is an exact restart point; BGZF names every member's size, so seeking needs no `rapidgzip` for the most common blocked gzip | A `BgzfDecompressorStream` of its own, as first proposed; reading `.gzi` files, which a stream cannot locate |
+| Member starts as seek points (on declared seek demand or restart points), and a BGZF walk by `BC` subfields (on declared seek demand only) | A member start is an exact restart point; BGZF names every member's size, so seeking needs no `rapidgzip` for the most common blocked gzip | A `BgzfDecompressorStream` of its own, as first proposed; reading `.gzi` files, which a stream cannot locate |
 
 ## 7. Open questions
 

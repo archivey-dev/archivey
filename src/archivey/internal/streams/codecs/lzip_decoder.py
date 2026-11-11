@@ -674,6 +674,7 @@ def LzipDecompressorStream(
     probe_read_bound: int | None = None,
     natives: Natives = IN_PROCESS,
     usage: ResourceUsageRecorder | None = None,
+    file_index: bool = True,
 ) -> DecompressorStream:
     """Seekable lzip decompressor backed by stdlib ``lzma``.
 
@@ -709,4 +710,5 @@ def LzipDecompressorStream(
         codec_name="lzip",
         seekable=seekable,
         report_trailing_data=report_trailing_data,
+        file_index=file_index,
     )

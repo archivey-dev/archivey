@@ -145,7 +145,9 @@ default path pays for nothing it does not use (ADR [0003](../decisions/0003-memb
 One exception: the codec stream around a compressed TAR (or a sequential format such as
 `.cpio.xz`) opened for random access records restart points anyway
 (`StreamConfig.restart_points`), because every member read after the listing seeks back
-in it. It still declares no seek demand, so accelerator `AUTO` is unchanged.
+in it. Those are only points a decode finds: the format's own index is still read on
+declared seek demand alone (`DecompressorStream(file_index=...)`), and accelerator
+`AUTO` is unchanged.
 
 ## The public stream: `ArchiveStreamImpl`
 

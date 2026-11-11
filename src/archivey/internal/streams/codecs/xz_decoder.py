@@ -1291,6 +1291,7 @@ def XzDecompressorStream(
     refuse_input_after_end: bool = False,
     initial_index: PrebuiltIndex | None = None,
     natives: Natives = IN_PROCESS,
+    file_index: bool = True,
 ) -> DecompressorStream:
     """Seekable XZ decompressor backed by stdlib ``lzma``.
 
@@ -1317,7 +1318,8 @@ def XzDecompressorStream(
         return XzDecoder.from_point(
             point,
             inner,
-            index_enabled=seekable,
+            # The per-stream backward scan reads the file's index too.
+            index_enabled=seekable and file_index,
             collector=collector,
             index_built=index_built,
             limits=decoder_limits,
@@ -1334,6 +1336,7 @@ def XzDecompressorStream(
         report_trailing_data=report_trailing_data,
         refuse_input_after_end=refuse_input_after_end,
         initial_index=initial_index,
+        file_index=file_index,
     )
     stream_cell[0] = stream
     return stream

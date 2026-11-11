@@ -939,6 +939,8 @@ class DecompressorStream(ReadOnlyIOStream):
       decoded.
 
     ``seekable=False`` skips index/seek-point work (forward-only cheap path).
+    ``file_index=False`` keeps the seek points a decode finds but never reads the file's
+    own index (restart points without declared seek demand).
     ``readable``/``writable``/``write``/``readinto`` come from :class:`ReadOnlyIOStream`.
 
     A stream ``path`` is borrowed by default (``owns_inner=False``): the archive
@@ -978,9 +980,15 @@ class DecompressorStream(ReadOnlyIOStream):
         report_trailing_data: bool = False,
         refuse_input_after_end: bool = False,
         initial_index: PrebuiltIndex | None = None,
+        file_index: bool = True,
     ) -> None:
         super().__init__()
         self._owned_inner: BinaryIO | None = None
+        # Whether the file's own index may be read (``_ensure_index_built``): on declared
+        # seek demand only. Restart points alone (``StreamConfig.restart_points``) keep
+        # only the points a decode finds, so a crafted index cannot change what a
+        # default read returns (threat-model O17).
+        self._file_index = seekable and file_index
         # A probe's stream raises where it meets an error (probe_streams).
         self._probe = _PROBE_STREAM.get()
         # Used once, in place of the decoder's index scan (see _ensure_index_built).
@@ -2110,7 +2118,7 @@ class DecompressorStream(ReadOnlyIOStream):
         caller passed one. Its points are marked ``from_index``, and a size it gives
         is kept as the stream's size until a decode contradicts it.
         """
-        if not self._index_enabled or self._index_built or self._index_build_attempted:
+        if not self._file_index or self._index_built or self._index_build_attempted:
             return
         initial = self._initial_index
         if initial is None:
@@ -2161,7 +2169,7 @@ class DecompressorStream(ReadOnlyIOStream):
         :class:`PrebuiltIndex`; the diagnostics the scan emits go to this stream's
         collector.
         """
-        if not self._index_enabled or not self._inner.seekable():
+        if not self._file_index or not self._inner.seekable():
             return None
         return self._scan_index()
 
@@ -2176,7 +2184,7 @@ class DecompressorStream(ReadOnlyIOStream):
         """
         if self._size is not None:
             return self._size
-        if not self._index_enabled or not self._inner.seekable():
+        if not self._file_index or not self._inner.seekable():
             return None
         if self._decoder.index_reads_whole_source:
             return None

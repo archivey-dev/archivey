@@ -53,8 +53,11 @@ same semantics otherwise.
 container (a compressed TAR, or a sequential format inside a compressor such as
 `.cpio.xz`) opened for random access keeps restart points by default
 (`StreamConfig.restart_points`): the reader itself seeks back in that stream for every
-member read after the listing, so the table is never unused there. It costs about
-40 KiB per MiB of gzip output, capped at 32 MiB. It declares no seek demand, so
+member read after the listing, so the table is never unused there. It keeps only the
+points a decode finds; the file's own index (xz, lzip, zstd seek table, BGZF, mgzip,
+bzip3) stays behind `seekable_members`, so a crafted index cannot change a default
+read (threat-model O17 is unchanged). It costs about 40 KiB per MiB of gzip output,
+capped at 32 MiB. It declares no seek demand, so
 accelerator `AUTO` resolves as before, and member streams stay as `seekable_members`
 says. A streaming open keeps none.
 

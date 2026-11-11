@@ -15,7 +15,7 @@ codecs, the one-member reader, the seek table and the truncation contract, is on
 | Backends | The `bzip3` package (imported as `bz3`, libbzip3 bundled), from `[bzip3]` only: not in `[recommended]` or `[all]` |
 | Process | libbzip3 runs in a child process unless `process_isolation` is `NONE` |
 | Seeking | With seek demand or restart points, a seek resumes at its block's start and decodes one block (§2.1) |
-| Size | With seek demand or restart points on a source that can seek, from a walk of the block headers (§2.1); else `None` until a full read |
+| Size | With seek demand on a source that can seek, from a walk of the block headers (§2.1); else `None` until a full read |
 | Digests | None listed. Each block's CRC-32 is checked as it decodes |
 | Metadata | None beyond the shared fields |
 | Truncation | `TruncatedError` for a cut inside the header or a block; a cut between blocks reads short with no error |
@@ -75,8 +75,9 @@ never a damaged archive.
 ### 2.1 Seeking
 
 Every block decodes on its own: libbzip3 keeps nothing from one block to the next but the
-block size. So under declared seek demand or restart points (`seekable_members=True`), each block with
-output is a seek point, resumed by a new decoder told the block size
+block size. So under declared seek demand (`seekable_members=True`) or restart points
+(the codec stream of a random-access compressed TAR), each block with output is a seek
+point, resumed by a new decoder told the block size
 (`Bzip3Decompressor.resume`, through `framed_decoder.BlockResumable`). A forward read
 records each block it reaches. On a source that can seek, a `SEEK_END`, a size query or a
 seek past the known points walks the block headers from the start

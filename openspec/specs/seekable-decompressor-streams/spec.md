@@ -32,11 +32,13 @@ One stream asks for restart points without declaring seek demand: the codec stre
 around a sequential container (a compressed TAR, or a sequential format inside a
 compressor such as `.cpio.xz`) opened for random access, because the reader itself
 seeks back in it for every member read after the listing (maintainer ruling
-2026-11-10). Such a stream SHALL build the same seek-point tables, footers, trailer
-scans and walks as a declared-seekable one; each requirement below that says "on
-declared seek demand or restart points" covers it. Its accelerator `AUTO` SHALL still
-resolve as for an undeclared stream. A streaming open SHALL NOT ask for restart
-points.
+2026-11-10). Such a stream SHALL keep the seek points a decode finds as it passes
+them (each requirement below that says "on declared seek demand or restart points"
+covers it), and SHALL NOT read the file's own index: it parses no XZ footer, scans no
+lzip trailers, reads no zstd seek table and walks no BGZF, mgzip or bzip3 headers, so
+a crafted index cannot change what a default read returns. Its accelerator `AUTO`
+SHALL still resolve as for an undeclared stream. A streaming open SHALL NOT ask for
+restart points.
 
 `use_rapidgzip` and `use_indexed_bzip2` SHALL resolve their `AUTO` / `ON` / `OFF`
 configuration against declared seek demand, not the `streaming` access-mode
@@ -80,8 +82,6 @@ it, because every backward seek restarts decryption from the member's start.
 | Case | Expected |
 | --- | --- |
 | gzip/xz/bzip2/lzip opened without seekability under `AUTO` | No index, no accelerator, forward-only, except as the next two rows say |
-| Compressed TAR opened for random access, no `seekable_members` | The codec stream keeps restart points; accelerator `AUTO` as without seekability |
-| Compressed TAR opened with `streaming=True` | No restart points |
 | DEFLATE-family stream opened without seekability under `AUTO`, on Linux or macOS, seekable source, known size ≥ threshold, decoded size ≤ 3× compressed | rapidgzip decodes it; the stream stays forward-only |
 | bzip2 stream opened without seekability under `AUTO`, on Linux or macOS, a file on disk, known size ≥ `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`, two or more usable CPUs | rapidgzip decodes it; the stream stays forward-only |
 | Same stream opened with seekability, `AUTO`, accelerator installed, size ≥ threshold | Accelerator or native index provides random access |
@@ -90,6 +90,8 @@ it, because every backward seek restarts decryption from the member's start.
 | Declared-seekable bzip2 under `AUTO`, known size < `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` | rapidgzip not selected; stdlib backend used |
 | Declared-seekable bzip2, `use_indexed_bzip2=ON`, size below that threshold | rapidgzip still selected (threshold ignored) |
 | Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from the nearest member or BGZF block start before the target, else from the start; reports `STREAM_REWIND_REDECOMPRESSES`, naming the `[seekable]` accelerator, once the discarded progress reaches `REWIND_REDECODE_WARN_BYTES` |
+| Compressed TAR opened for random access, no `seekable_members` | The codec stream keeps the points a decode finds, reads no file index; accelerator `AUTO` as without seekability |
+| Compressed TAR opened with `streaming=True` | No restart points |
 
 ### Requirement: XZ and lzip use format-native indexes
 
