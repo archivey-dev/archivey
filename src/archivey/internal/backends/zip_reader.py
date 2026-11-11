@@ -188,6 +188,7 @@ from archivey.internal.password_confirm import (
     plan_password_confirm,
     run_password_confirm_plan,
 )
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
@@ -1114,7 +1115,9 @@ class _ZipLocator:
 
     Not the ``CentralEntry``: its extra field and comment would stay alive for every
     member, for data that is read only while listing. Read-only by convention, not
-    ``frozen``, for the construction cost (as ``CentralEntry``).
+    ``frozen``, for the construction cost (as ``CentralEntry``). Built positionally by
+    ``ZipReader._to_member``, for the same cost; test_hot_path_constructors pins this
+    field order.
     """
 
     #: Position in the central directory; tells same-offset entries apart.
@@ -1530,6 +1533,7 @@ class ZipReader(BaseArchiveReader):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> None:
         super().__init__(
             ArchiveFormat.ZIP,
@@ -1588,6 +1592,9 @@ class ZipReader(BaseArchiveReader):
         self._local_names_reported: set[int] = set()
         # The same for a local header naming another method (``_report_local_method``).
         self._local_methods_reported: set[int] = set()
+        # A PE program's resources, when the archive may be stored as one: bytes
+        # after that resource belong to the program (``_report_trailing_data``).
+        self._program_resources = program_resources
         self._refuse_lone_split_segment()
         self._open_index(source, start_offset, end_offset)
 
@@ -1887,14 +1894,17 @@ class ZipReader(BaseArchiveReader):
         TAR trailer or a 7z archive's end: a warning by default, refused under
         ``DiagnosticPolicy.STRICT`` (DR-3). Zero padding is silent, and the scan
         stops at ``MAX_TRAILING_SCAN`` bytes past the comment. 7-Zip warns on the same
-        input; Info-ZIP ``unzip`` says nothing.
+        input; Info-ZIP ``unzip`` says nothing. Not reported when the archive is
+        stored as a resource of the PE program it sits in and the byte follows that
+        resource (``ProgramResources.explains``): it is the rest of the program.
         """
         end = self._end
         if end.trailing == 0:
             return
+        archive_end = end.eocd_offset + EOCD_SIZE + end.comment_declared
         tail = SharedView(
             cast("BinaryIO", self._fp),
-            start=end.eocd_offset + EOCD_SIZE + end.comment_declared,
+            start=archive_end,
             length=end.trailing,
             lock=self._lock,
         )
@@ -1902,8 +1912,16 @@ class ZipReader(BaseArchiveReader):
             found = first_nonzero_offset(tail)
         finally:
             tail.close()
-        if found is not None:
-            self._emit_trailing_data(found)
+        if found is None:
+            return
+        resources = self._program_resources
+        if resources is not None:
+            # The resources count from the start of the source, the archive's
+            # offsets from the region's start.
+            archive_end += self._hint_origin
+            if resources.explains(archive_end, archive_end + found):
+                return
+        self._emit_trailing_data(found)
 
     def _emit_trailing_data(self, found: int) -> None:
         """Report a non-zero byte ``found`` bytes past the end record's comment; the
@@ -2782,23 +2800,26 @@ class ZipReader(BaseArchiveReader):
             extra=extra,
             # What reading the data needs, so _open_member needs no name/id lookup
             # table; not the entry, whose extra field and comment would stay alive.
+            # Positional, in field order (a keyword call costs about 0.3 µs more per
+            # member); test_hot_path_constructors pins the order.
             _raw=_ZipLocator(
-                index=index,
-                header_offset=entry.header_offset,
-                compressed_size=entry.compressed_size,
-                file_size=entry.file_size if size is None else size,
-                crc=crc,
-                flags=entry.flags,
-                method=method,
-                dos_time=entry.dos_time,
-                name=entry.name,
-                aes=aes_info,
-                # The bit test repeats the callee's first line, to skip the call for
-                # an unencrypted member; it must stay a necessary condition there.
-                strong_encryption=bool(entry.flags & _ZIP_MASK_ENCRYPTED)
+                index,  # index
+                entry.header_offset,  # header_offset
+                entry.compressed_size,  # compressed_size
+                entry.file_size if size is None else size,  # file_size
+                crc,  # crc
+                entry.flags,  # flags
+                method,  # method
+                entry.dos_time,  # dos_time
+                entry.name,  # name
+                aes_info,  # aes
+                # strong_encryption. The bit test repeats the callee's first line, to
+                # skip the call for an unencrypted member; it must stay a necessary
+                # condition there.
+                bool(entry.flags & _ZIP_MASK_ENCRYPTED)
                 and _uses_strong_encryption(entry.flags, entry.extra),
-                reparse_fallback=reparse_fallback,
-                size_unknown=size_unknown,
+                reparse_fallback,  # reparse_fallback
+                size_unknown,  # size_unknown
             ),
         )
         if size_unknown is not None:
@@ -4855,6 +4876,7 @@ class ZipReadBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> ZipReader:
         # `format` is always ZIP here (single-format backend); accepted for the uniform
         # ReadBackend signature.
@@ -4879,6 +4901,7 @@ class ZipReadBackend(ReadBackend):
             open_site=open_site,
             start_offset=start_offset,
             end_offset=end_offset,
+            program_resources=program_resources,
         )
 
 
