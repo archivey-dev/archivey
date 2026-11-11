@@ -3175,6 +3175,7 @@ def _parse_rar3_file_header(
         not is_service
         and not is_symlink
         and extract_version < _RAR3_UNP_VER_DIRECTORY_BITS
+        and mode is not None
         and mode & _RAR3_DOS_DIRECTORY_ATTRIBUTE
     ):
         is_directory = True
