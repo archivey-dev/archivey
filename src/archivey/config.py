@@ -811,6 +811,12 @@ class Budget:
       end the stream cannot size), and the one byte opening a compressed single file
       decodes to check it. A byte read again after a seek back counts again: it was
       decoded again;
+    - so does every byte decoded on the way to another: the members a solid stream
+      decodes past (a compressed TAR, cpio or RPM payload, a CAB folder, a streaming
+      ZIP's members whose end only decoding finds), and the headers between them, which
+      a compressed TAR's listing decodes too. A member that is read is drawn once, where
+      it is decoded, not again as its stream delivers it. Holes of a sparse TAR member
+      count as they are read;
     - every member a listing registers counts against ``max_members``, once per reader
       however often it is listed.
 
@@ -822,10 +828,8 @@ class Budget:
     their reads against the same room, so together they can overshoot by about one
     read each.
 
-    A compressed TAR's listing decodes the archive stream to walk its headers; that
-    decode is held by :attr:`DecoderLimits.max_ratio` and the listing limits, not by
-    this budget, which counts the members' bytes as they are read. A nested archive's
-    bytes count twice, once as the outer member read and again as what the inner
+    Each decode stage draws what it produces: a compressed payload inside a
+    compressed archive counts at both stages. A nested archive's bytes count twice, once as the outer member read and again as what the inner
     reader decodes from them. Decoder memory stays a per-decoder limit
     (:attr:`DecoderLimits.max_decoder_memory`), and time and memory as a whole belong
     to a child process the caller runs archivey in (``docs/security.md``).
@@ -911,6 +915,15 @@ class Budget:
         cap = self._max_decoded_bytes
         if cap is not None and self._decoded_bytes > cap:
             self._draw_bytes(0, force=True)
+
+    def _read_cap(self, want: int) -> int:
+        """How many of ``want`` bytes to decode next: all of them while the budget has
+        room, else one past what is left, so the draw of that read raises. Raises at
+        once if the budget is already spent. Draw what was decoded with
+        :meth:`_draw_bytes`."""
+        self._check_bytes_left()
+        room = self._bytes_room()
+        return want if room is None else min(want, room + 1)
 
     def _draw_bytes(self, n: int, *, force: bool = False) -> None:
         """Count ``n`` decoded bytes; raise once the total passes the limit. The bytes

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import gzip
 import io
 import pickle
 import tarfile
@@ -273,3 +274,219 @@ def test_a_seek_to_an_unsized_end_reads_there_and_draws() -> None:
     assert stream.read() == b"x" * 10
     # The ten bytes after the seek back are read again, so they count again.
     assert roomy.decoded_bytes == 5010
+
+
+# Bytes decoded for members nobody reads: every format draws them where they are
+# decoded, so skipping a member does not decode it for free, and a member that is read
+# is drawn once, not again by its own stream.
+
+
+class _Unseekable(io.RawIOBase):
+    """A write-only sink zipfile cannot seek back in: it writes data descriptors."""
+
+    def __init__(self) -> None:
+        self.data = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, b) -> int:  # type: ignore[override]
+        self.data += b
+        return len(b)
+
+
+def _zip_bit3(count: int = 4) -> bytes:
+    sink = _Unseekable()
+    with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i in range(count):
+            with zf.open(f"m{i}.bin", "w") as out:
+                out.write(bytes([i]) * _MEMBER)
+    return bytes(sink.data)
+
+
+def _tar_gz(count: int = 3) -> bytes:
+    return gzip.compress(_tar(count), mtime=0)
+
+
+def _read_last(reader: archivey.ArchiveReader, last: str) -> bytes:
+    """Iterate ``reader``'s members, reading only ``last``."""
+    out = b""
+    for member, stream in reader.stream_members():
+        if member.name == last:
+            assert stream is not None
+            out = stream.read()
+    return out
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
+def test_a_tar_gz_draws_the_members_it_decodes_past(streaming: bool) -> None:
+    budget = Budget()
+    with _open(_tar_gz(), budget, streaming=streaming) as reader:
+        assert _read_last(reader, "t2.bin") == b"t" * _MEMBER
+    assert budget.decoded_bytes >= 3 * _MEMBER
+
+
+def test_a_tar_gz_skip_stops_at_the_budget() -> None:
+    budget = Budget(max_decoded_bytes=_MEMBER + _MEMBER // 2)
+    with (
+        _open(_tar_gz(), budget, streaming=True) as reader,
+        pytest.raises(ResourceLimitError, match="Budget exhausted"),
+    ):
+        _read_last(reader, "t2.bin")
+
+
+def test_a_tar_gz_member_read_is_drawn_once() -> None:
+    data = _tar(3)
+    budget = Budget()
+    with _open(gzip.compress(data, mtime=0), budget, streaming=True) as reader:
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            assert len(stream.read()) == _MEMBER
+    # The headers and the members, decoded once: never more than the whole tar.
+    assert 3 * _MEMBER <= budget.decoded_bytes <= len(data)
+
+
+def _sparse_tar(size: int) -> bytes:
+    """A PAX 0.1 sparse member of ``size`` logical bytes: a hole, then 5 stored."""
+
+    def record(key: str, value: str) -> bytes:
+        body = f" {key}={value}\n".encode()
+        length = len(body) + 1
+        while len(str(length)) + len(body) != length:
+            length += 1
+        return str(length).encode() + body
+
+    def block(data: bytes) -> bytes:
+        return data + bytes(-len(data) % tarfile.BLOCKSIZE)
+
+    payload = (
+        record("GNU.sparse.size", str(size))
+        + record("GNU.sparse.numblocks", "1")
+        + record("GNU.sparse.map", f"{size - 5},5")
+    )
+    xhdr = tarfile.TarInfo("./PaxHeaders/holes.bin")
+    xhdr.type = tarfile.XHDTYPE
+    xhdr.size = len(payload)
+    member = tarfile.TarInfo("holes.bin")
+    member.size = 5
+    return b"".join(
+        [
+            xhdr.tobuf(format=tarfile.USTAR_FORMAT),
+            block(payload),
+            member.tobuf(format=tarfile.USTAR_FORMAT),
+            block(b"hello"),
+            bytes(2 * tarfile.BLOCKSIZE),
+        ]
+    )
+
+
+@pytest.mark.parametrize("compress", [False, True], ids=["tar", "tar.gz"])
+def test_sparse_holes_draw_in_a_compressed_tar_too(compress: bool) -> None:
+    """A compressed tar's members draw nothing themselves; the holes, which no
+    decoder makes, still draw, and stop at the budget."""
+    data = _sparse_tar(4 * _MEMBER)
+    if compress:
+        data = gzip.compress(data, mtime=0)
+    budget = Budget()
+    with _open(data, budget) as reader:
+        assert reader.read("holes.bin").endswith(b"hello")
+    assert budget.decoded_bytes >= 4 * _MEMBER
+    budget = Budget(max_decoded_bytes=_MEMBER)
+    with (
+        _open(data, budget) as reader,
+        pytest.raises(ResourceLimitError, match="Budget exhausted"),
+    ):
+        reader.read("holes.bin")
+    assert budget.decoded_bytes <= _MEMBER + 1 + len(data) + 2048
+
+
+def test_a_streaming_zip_draws_the_members_it_drains() -> None:
+    """A bit-3 member nobody reads is decoded as far as the pass needs (the start a
+    link target could be), and the scan finds the rest: that decode is drawn."""
+    data = _zip_bit3()
+    budget = Budget()
+    with _open_pipe(data, budget) as reader:
+        assert _read_last(reader, "m3.bin") == b"\3" * _MEMBER
+    drained = budget.decoded_bytes - _MEMBER
+    assert drained > 0
+    budget = Budget(max_decoded_bytes=_MEMBER + drained - 1)
+    with (
+        _open_pipe(data, budget) as reader,
+        pytest.raises(ResourceLimitError, match="Budget exhausted"),
+    ):
+        _read_last(reader, "m3.bin")
+
+
+def test_a_streaming_zip_member_read_is_drawn_once() -> None:
+    budget = Budget()
+    with _open_pipe(_zip_bit3(), budget) as reader:
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            assert len(stream.read()) == _MEMBER
+    assert budget.decoded_bytes == 4 * _MEMBER
+
+
+def _open_pipe(data: bytes, budget: Budget) -> archivey.ArchiveReader:
+    from tests.streams_util import NonSeekableBytesIO
+
+    return archivey.open_archive(
+        NonSeekableBytesIO(data), config=ArchiveyConfig(budget=budget), streaming=True
+    )
+
+
+def test_a_cab_folder_draws_the_members_it_decodes_past() -> None:
+    from tests.cab_util import CabFile, CabFolder, write_cab
+
+    files = [CabFile(f"c{i}.bin", bytes([i]) * _MEMBER) for i in range(3)]
+    data = write_cab(files, [CabFolder("mszip")])
+    budget = Budget()
+    with _open(data, budget) as reader:
+        assert reader.read("c2.bin") == b"\2" * _MEMBER
+    assert budget.decoded_bytes == 3 * _MEMBER
+    budget = Budget(max_decoded_bytes=_MEMBER)
+    with (
+        _open(data, budget) as reader,
+        pytest.raises(ResourceLimitError, match="Budget exhausted"),
+    ):
+        reader.read("c2.bin")
+    # The skip stops within a block (32 KiB) of the budget.
+    assert budget.decoded_bytes <= _MEMBER + 32768
+
+
+def test_a_plugin_layer_draws_the_members_it_decodes_past() -> None:
+    """An RPM's payload is a ``decompress()`` layer of the format adapter."""
+    from tests.test_rpm import _F, _build, _Package
+
+    blobs = [bytes([i]) * _MEMBER for i in range(3)]
+    files = [_F(f"/opt/f{i}".encode(), data=b) for i, b in enumerate(blobs)]
+    data = _build(_Package(files))
+    budget = Budget()
+    with _open(data, budget, streaming=True) as reader:
+        assert _read_last(reader, "opt/f2") == blobs[2]
+    assert budget.decoded_bytes >= 3 * _MEMBER
+    # Read whole, each member is drawn once: by the layer, not again by itself.
+    budget = Budget()
+    with _open(data, budget, streaming=True) as reader:
+        for _member, stream in reader.stream_members():
+            if stream is not None:
+                stream.read()
+    assert 3 * _MEMBER <= budget.decoded_bytes < 4 * _MEMBER
+
+
+def test_an_outer_compressed_cpio_draws_the_members_it_decodes_past() -> None:
+    from tests.test_cpio import _newc
+
+    raw = _newc(
+        *((f"f{i}".encode(), 0o100644, i + 1, 1, b"c" * _MEMBER) for i in range(3))
+    )
+    data = gzip.compress(raw, mtime=0)
+    budget = Budget()
+    with _open(data, budget, streaming=True) as reader:
+        assert _read_last(reader, "f2") == b"c" * _MEMBER
+    assert budget.decoded_bytes >= 3 * _MEMBER
+    budget = Budget()
+    with _open(data, budget, streaming=True) as reader:
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            stream.read()
+    assert 3 * _MEMBER <= budget.decoded_bytes <= len(raw)

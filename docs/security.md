@@ -315,7 +315,8 @@ config = archivey.ArchiveyConfig(budget=budget)
 
 Every reader opened with that config, or with a copy of it, draws the bytes it decodes and the
 members it lists from the one budget, so the total is shared across readers, nested archives and
-threads. A read that would go past it raises `ResourceLimitError`, and an extraction stops there.
+threads. Bytes decoded only to get past a member count too: skipping members of a `.tar.gz` or a
+CAB folder to reach a later one is not free. A read that would go past it raises `ResourceLimitError`, and an extraction stops there.
 The per-reader limits still apply. Decoder memory stays a per-decoder limit, and time and memory
 use are bounded by running the job in a process you can stop. See the
 [archives inside the upload](recipes.md#archives-inside-the-upload) recipe.

@@ -647,6 +647,14 @@ class _FolderStream:
         return data
 
     def skip(self, n: int) -> None:
+        """Pass ``n`` bytes of output. A compressed folder decodes them, and draws
+        them from the config's budget here: a member's own stream draws only what
+        its caller reads."""
+        budget = (
+            self._reader._context.config.budget
+            if self._folder.method != _STORED
+            else None
+        )
         while n > 0:
             if not self._pending and self._folder.method == _STORED:
                 # Whole stored blocks are skipped without reading them.
@@ -660,7 +668,14 @@ class _FolderStream:
                     self.position += block.decoded
                     n -= block.decoded
                     continue
-            n -= len(self.read(n))
+            if budget is None:
+                n -= len(self.read(n))
+                continue
+            # Up to a block or frame (32 KiB) past the budget is decoded before the
+            # draw refuses it, as a read stops one decoder call past it.
+            skipped = len(self.read(budget._read_cap(n)))
+            budget._draw_bytes(skipped)
+            n -= skipped
 
 
 class _MemberStream(io.RawIOBase):

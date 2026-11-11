@@ -1011,6 +1011,13 @@ pickled.
   threads MAY each overshoot by one read, since each sizes its read against the same
   room. Once spent, a budget
   SHALL refuse every later read before it decodes.
+- **Skipped bytes.** Bytes a decoder produces to get past a member nobody reads SHALL
+  be drawn too, in every format: a compressed TAR's, cpio's or RPM payload's skipped
+  members and headers (a compressed TAR's listing included), a CAB folder's output
+  before the member read, and the part of a streaming ZIP member the pass decodes. They
+  SHALL be drawn where they are decoded, so a member that is read SHALL be drawn once,
+  not again as its stream delivers it. A sparse TAR member's holes SHALL be drawn as
+  they are read.
 - **Members.** Each member a reader lists SHALL be drawn once per reader. The listing
   that would pass `max_members` SHALL raise `ResourceLimitError`, and the refused
   member SHALL NOT be counted.
@@ -1024,6 +1031,13 @@ pickled.
 - **THEN** the second reader's second read raises `ResourceLimitError` naming
   `max_decoded_bytes=350000`
 - **AND** the budget has drawn 350 001 bytes
+
+#### Scenario: Skipping members of a compressed TAR draws them
+
+- **GIVEN** an unlimited `Budget()` and a `.tar.gz` of three 100 000-byte members
+- **WHEN** `stream_members()` reads only the third member
+- **THEN** the budget has drawn at least 300 000 bytes
+- **AND** reading all three instead draws no more than the decoded tar's size
 
 #### Scenario: Extraction stops at a spent budget
 
