@@ -71,8 +71,17 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
   earlier member. A link to an id nothing holds raises `CorruptionError` at the end of
   the listing.
 - **Data.** Stored data is a view of the heap and must be as long as its size; encoded
-  data goes through `ReaderContext.decompress` with the decoded size, so archivey's
-  decoder limits and length checks apply. The extracted checksum is `member.hashes`, and
+  data goes through archivey's codecs (`ReaderContext._decompress_coder`) with the decoded
+  size, so archivey's decoder limits and length checks apply. A member's data is one
+  stream: any byte after its end, a second zlib stream, junk or zeros, raises
+  `CorruptionError`, as in a ZIP member, where a `.zz` file only reports it as trailing
+  data. libarchive fails on the same input ("XAR decompressor made no progress"), and
+  Apple's `xar` loops on it until an allocation fails. Under `rapidgzip`, which decodes
+  every zlib stream as one, the Adler-32 at the end covers only the last stream, and the
+  second decode that mismatch starts finds the first stream's end and raises; only a
+  forged last trailer that matches every stream gets past (`gzip.md` §5). The format's
+  own continuations still read: several bzip2 or LZMA Alone streams, xz streams and their
+  stream padding. The extracted checksum is `member.hashes`, and
   the verifying stream checks it (`hashlib.new(..., usedforsecurity=False)`, so a FIPS
   OpenSSL still computes MD5 and SHA-1).
 - **Unknown types.** A type the format does not define is a readable `FILE` when it has

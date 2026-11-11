@@ -18,6 +18,7 @@ and the ``unar`` read paths use them.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ from dataclasses import dataclass
 from typing import IO, BinaryIO, cast
 
 from archivey.exceptions import (
+    ArchiveyError,
     PackageNotInstalledError,
     ReadError,
     ResourceUnavailableError,
@@ -40,6 +42,7 @@ from archivey.internal.streams.child_process import (
     wait_or_kill,
 )
 from archivey.internal.streams.streamtools import DelegatingStream
+from archivey.internal.win32_errors import ERROR_FILENAME_EXCED_RANGE
 from archivey.terminal import display_path
 from archivey.types import MissingComponent
 
@@ -310,6 +313,47 @@ def terminate_process(proc: subprocess.Popen[bytes] | None) -> bool:
     return True
 
 
+# The ``errno`` values that say the program itself cannot run: it is gone, or so is a
+# script's interpreter (ENOENT), a part of its path is not a directory (ENOTDIR), it may
+# not be executed (EACCES, EPERM), or the system does not run its format (ENOEXEC, which
+# Python also gives for Windows' ERROR_BAD_EXE_FORMAT). The program is what to fix.
+_PROGRAM_CANNOT_RUN = frozenset(
+    (errno.ENOENT, errno.ENOTDIR, errno.EACCES, errno.EPERM, errno.ENOEXEC)
+)
+# The system ran short: no descriptor for a pipe, no memory or process slot for a child.
+_SYSTEM_SHORTAGE = frozenset((errno.EMFILE, errno.ENFILE, errno.ENOMEM, errno.EAGAIN))
+
+
+class _SpawnFailed(Exception):
+    """``spawn`` failed in :func:`spawn_for_stdout`; the ``OSError`` is the cause."""
+
+
+def _start_error(exc: OSError, *, name: str, not_started: str) -> ArchiveyError:
+    """The error for ``exc``, the ``OSError`` that kept ``name`` from starting.
+
+    Only a program that cannot run is :class:`PackageNotInstalledError`. A command
+    line the system will not take, or a system short of resources, says nothing about
+    the program, and a message that says to install it would send the caller the
+    wrong way.
+    """
+    if exc.errno == errno.E2BIG or (
+        getattr(exc, "winerror", None) == ERROR_FILENAME_EXCED_RANGE
+    ):
+        return ReadError(
+            f"{name} could not be started: its command line is longer than the "
+            f"system allows ({exc})."
+        )
+    if exc.errno in _PROGRAM_CANNOT_RUN:
+        return PackageNotInstalledError(not_started)
+    if exc.errno in _SYSTEM_SHORTAGE:
+        return ResourceUnavailableError(
+            f"{name} could not be started: the system did not give a resource for "
+            f"a new process ({exc}). The archive may be valid; read it again when "
+            "the system has more file descriptors, memory or processes available."
+        )
+    return ReadError(f"{name} could not be started ({exc}).")
+
+
 def spawn_for_stdout(
     cmd: Sequence[str | bytes],
     *,
@@ -320,20 +364,26 @@ def spawn_for_stdout(
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Start ``cmd`` with stdout on a pipe and stderr discarded; return ``(proc, stdout)``.
 
-    A program that cannot start raises ``PackageNotInstalledError(not_started)``. The
+    A program that cannot run raises ``PackageNotInstalledError(not_started)``; any
+    other start failure raises the error :func:`_start_error` gives for it. The
     caller owns the process until a :class:`ProcessOutputStream` takes it: nothing
     reaps it if the caller raises before that constructor's ``try`` is reached.
     ``env`` replaces the child's environment; ``None`` inherits this process's. An
     argument may be ``bytes`` on POSIX, where argv is bytes.
     """
-    proc = spawn(
-        cmd,
-        lambda _: PackageNotInstalledError(not_started),
-        stdin=stdin,
-        stderr=subprocess.DEVNULL,
-        bufsize=1024 * 1024,
-        env=env,
-    )
+    try:
+        proc = spawn(
+            cmd,
+            _SpawnFailed,
+            stdin=stdin,
+            stderr=subprocess.DEVNULL,
+            bufsize=1024 * 1024,
+            env=env,
+        )
+    except _SpawnFailed as failed:
+        cause = failed.__cause__
+        assert isinstance(cause, OSError)
+        raise _start_error(cause, name=name, not_started=not_started) from cause
     if proc.stdout is None:
         terminate_process(proc)
         # Defensive: stdout=PIPE was asked for, so this should be unreachable. Typed

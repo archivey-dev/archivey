@@ -335,11 +335,18 @@ class BackendRegistry:
 
         ``check(prefix)`` answers "does the source open with my header?" for a format
         with no magic but a self-checking header (``ReadBackend.HEADER_CHECKS``; today
-        TAR, by its header checksum). Built-in backends first, then plugins.
+        TAR, by its header checksum). Built-in backends first, then plugins, then the
+        stream codecs that declare a :meth:`StreamCodec.header_check` (uuencode and
+        base64, whose first lines prove the format without a magic).
         """
         checks: list[tuple[ArchiveFormat, Callable[[bytes], bool]]] = []
         for cls in (*self._reader_classes, *self._plugin_classes):
             checks.extend(cls.HEADER_CHECKS)
+        checks.extend(
+            (codec.single_file_format, codec.header_check)
+            for codec in single_file_codecs()
+            if codec.checks_header and codec.single_file_format is not None
+        )
         return checks
 
     def sfx_magic_entries(self) -> list[MagicSignature]:

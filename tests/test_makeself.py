@@ -86,7 +86,7 @@ def test_every_release_and_compressor_lists_and_verifies(
     with open_archive(DATA / name) as reader:
         assert reader.format == MAKESELF
         assert _contents(reader) == FILES
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         for member in reader.members():
             if member.is_file:
                 assert member.verified is Verification.CHECKSUM, member.name
@@ -129,7 +129,7 @@ def test_two_payloads_list_one_after_the_other() -> None:
         assert set(names[:-1]) == set(FILES)
         assert reader.read("c.txt") == b"appended\n"
         assert reader.info.extra["makeself.payloads"] == 2
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert all(
             m.verified is Verification.CHECKSUM for m in reader.members() if m.is_file
         )
@@ -188,7 +188,7 @@ def test_a_changed_payload_fails_its_digests() -> None:
     with open_archive(io.BytesIO(bytes(data))) as reader:
         with pytest.raises(CorruptionError, match="CRC and MD5 do not match"):
             reader.members()
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         assert {m.name for m, _ in failures} == set(FILES)
         assert all("do not match" in str(e) for _, e in failures)
         for member, _ in failures:
@@ -200,7 +200,10 @@ def test_a_cut_payload_raises_and_fails_what_it_covers() -> None:
     with open_archive(io.BytesIO(data)) as reader:
         with pytest.raises(TruncatedError):
             reader.members()
-        assert {m.name for m, _ in reader.verify_all()} >= {"a.txt", "setup.sh"}
+        assert {m.name for m, _ in reader.verify_all().failures} >= {
+            "a.txt",
+            "setup.sh",
+        }
 
 
 def test_bytes_after_the_last_payload_are_reported() -> None:
@@ -524,4 +527,4 @@ def test_a_payload_built_here_reads() -> None:
         )
     with open_archive(io.BytesIO(header + payload)) as reader:
         assert reader.read("x.txt") == b"xyz"
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()

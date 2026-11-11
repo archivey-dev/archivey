@@ -57,6 +57,9 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **CAB** (`.cab`, Microsoft cabinets): core, for stored, MSZIP and LZX folders. Listing:
   from its index. Members: solid when a folder is compressed, otherwise direct. Needs a source
   that can seek.
+- **LHA** (`.lzh`, `.lha`, `.lzs`): core, for stored members and the `-lh1-`, `-lh4-` to
+  `-lh7-`, `-lhx-`, `-lk7-`, `-lzs-` and `-lz5-` methods. Listing: header by header. Members: direct. Needs a source
+  that can seek.
 - **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
   direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.cpio.gz`,
   …); there, as with a compressed TAR, listing needs decompression and members are solid.
@@ -75,7 +78,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **Directory:** core. Listing: walks the tree. Members: direct.
 - **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
   Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
-  files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. One member. Members: direct. Readable from a pipe. Seeking inside the member
+  files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. uuencode and base64 text in core.
+  One member. Members: direct. Readable from a pipe. Seeking inside the member
   needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
 - **UDIF disk images** (`.dmg`): recognised and refused ([Disk images](#disk-images)).
 
@@ -200,6 +204,8 @@ A CRC-32 is four big-endian bytes, so a CRC you computed compares as
   combined from each member's CRC, equal to the CRC-32 of the whole payload.
 - **CPIO:** none. A crc archive stores a 32-bit sum of each file's data, which a full read
   checks, but it is not a digest `hashes` can hold.
+- **LHA:** none. Each member stores a CRC-16 of its data, which a full read checks, but it
+  is not a digest `hashes` can hold.
 - **Debian packages:** `md5`, for the files the package's `DEBIAN/md5sums` lists. It comes from
   the control tar, so it is known once listing has decompressed that, before the data tar.
 - **TAR, SquashFS, ar, directory, and every other single compressed file:** none.
@@ -239,11 +245,12 @@ far to trust each.
 
 ### Bytes after the end of an archive
 
-TAR, ZIP, 7z, RAR, ISO and CPIO archives, and single compressed files, all check for bytes after
-the archive's end. A non-zero byte there is reported as `ARCHIVE_TRAILING_DATA`, with the format in
+TAR, ZIP, 7z, RAR, ISO, CPIO and LHA archives, and single compressed files, all check for bytes
+after the archive's end. A non-zero byte there is reported as `ARCHIVE_TRAILING_DATA`, with the format in
 `format`: a warning under the default policy, raised under `DiagnosticPolicy.STRICT`. Zero bytes
 are padding and pass. ZIP, TAR, 7z, RAR, ISO and CPIO look at most 1 MiB past the end, so a byte
-further out goes unseen. Each format section says where its end is.
+further out goes unseen; LHA looks 64 KiB past its end byte, and takes the DOS end-of-file byte
+`0x1A` as padding too. Each format section says where its end is.
 
 Inside a ZIP or 7z member, bytes after the compressed stream are corruption, not trailing bytes
 ([ZIP](#zip)).
@@ -730,15 +737,18 @@ On a compressed tar, the stream's own checksum adds three cases:
   value, so a wrong password can give garbage, as in 7-Zip. Archivey reports `DIGEST_UNVERIFIABLE`
   (`reason="no_integrity_anchor"`). Treat the data as unchecked.
 - **Confirming a password on an encrypted block** first decrypts the block's last 32 bytes. 7-Zip
-  and `py7zr` pad the encrypted data with zeros, and when the padding is 4 bytes or more (about three
-  blocks in four), zero padding confirms the password without decoding anything. It proves the
-  password, not the data: a block with no CRC still reports `DIGEST_UNVERIFIABLE`. Padding that is
-  shorter or not zero proves nothing and rejects no password. Then archivey decodes only until it can
-  decide: the first member CRC covering at least 4 bytes, or 64 KiB of output for a compressed block,
-  whose codec rejects a wrong key within a few bytes. Peak memory is one 64 KiB chunk. Time grows
-  with the block's size only for stored-plus-AES (or PPMd) blocks whose only CRC is at the end, with
-  several candidates, and whose padding confirmed nothing. Give a single known password there when
-  you can. `ExtractionLimits` do not apply to this step.
+  and `py7zr` pad the encrypted data with zeros, and when the padding is 4 bytes or more (about
+  three blocks in four), zero padding confirms the password without decoding anything. It proves the
+  password, not the data: a block with no CRC still reports `DIGEST_UNVERIFIABLE`. With several
+  candidate passwords, or a password callback, the padding does not settle one first (a crafted
+  archive can make a wrong password find zero padding): the decode below runs first, and the padding
+  decides only when that decode cannot. Padding that is shorter or not zero proves nothing and
+  rejects no password. Then archivey decodes only until it can decide: the first member CRC covering
+  at least 4 bytes, or 64 KiB of output for a compressed block, whose codec rejects a wrong key
+  within a few bytes. Peak memory is one 64 KiB chunk. Time grows with the block's size only for
+  stored-plus-AES (or PPMd) blocks whose only CRC is at the end, with several candidates, and whose
+  padding confirmed nothing. Give a single known password there when you can. `ExtractionLimits` do
+  not apply to this step.
 - **Partial reads after an unconfirmed password** report `ENCRYPTED_MEMBER_UNVERIFIED`. When
   confirmation stopped at its 64 KiB budget without reaching a CRC, the member's own CRC at its end
   is the only check, and a stream closed before the end skips it.
@@ -886,7 +896,7 @@ them wrong, sometimes with a success exit:
   encrypted headers it refuses every member;
 - a password that is not ASCII;
 - a multi-volume RAR5 set with encrypted headers (Homebrew's `unar` 1.10.8 returns nothing for it);
-- in a solid RAR5 archive, a member with data after an empty file, a directory or a link;
+- in a solid RAR5 archive, a member with data after an empty file, a directory or a junction (other links do not count);
 - a member compressed with the RAR 1.5 algorithm;
 - an old-style volume set (`.rar`, `.r00`, ...) of more than 901 volumes: `unar` stops at `.z99`;
 - a multi-volume set with data before the first volume (an SFX stub). A single file with such a
@@ -1247,6 +1257,48 @@ what `makecab` and `gcab` write.
   `UnsupportedFeatureError` when read. A cabinet that is part of a set spanning several files
   (`file.cab`, `file2.cab`) raises `UnsupportedFeatureError` at open.
 
+## LHA
+
+LHA and LZH archives, from LHarc, LHA and their kin on DOS, the Amiga, OS/2, OS-9, the Atari
+ST and Japanese PCs, and from LHa for UNIX.
+
+- **Needs:** nothing. archivey decodes the methods itself, in Python, at about 4 to 8 MB a
+  second.
+- **Listing:** header by header: each member is a header and then its data, and the listing
+  reads each header and seeks past the data to the next one.
+- **Reading members:** each member is compressed on its own, so every member is direct.
+- **From a pipe:** no, for now: the listing seeks past each member's data.
+- Header levels 0 to 3 all read. Stored members (`-lh0-`, `-lz4-`, `-pm0-`) and the
+  `-lh1-` and `-lh4-` to `-lh7-` methods, UNLHA32's `-lhx-`, LHARK's `-lk7-` and LArc's
+  `-lzs-` and `-lz5-` decode; other methods (`-lh2-`, `-lh3-`, PMarc's `-pm1-` and `-pm2-`) are listed and
+  raise `UnsupportedFeatureError` when read. `member.compression` is `LZH` for every
+  `-lh?-` and `-lz?-` method, and `extra["lha.method"]` names the exact one.
+- Each member stores a CRC-16 of its data, which a read checks, so a member read to its
+  end is at `Verification.CHECKSUM`. A header's own checksum or CRC is checked when it is
+  read: a damaged header is `CorruptionError`.
+- `member.modified` is the Unix time a header stores, in UTC, or else its DOS time, with no
+  time zone. A Windows timestamps record adds `created` and `accessed`. Unix mode, owner and
+  group names come from LHa for UNIX's records; OS-9 permissions become a Unix mode as
+  lhasa reads them. A directory is a member of its own; a Unix symlink is listed with its
+  target. `create_system` comes from the header's OS id, and `extra["lha.os_id"]` keeps it.
+- Names are UTF-8 when valid, otherwise decoded with `encoding=` (an archive from a
+  Japanese PC is usually `encoding="cp932"`), as in every format. A name's `\` separators
+  become `/`. An Amiga file note stored after the name is `member.comment`.
+- An archive without the zero byte that ends it reports `ARCHIVE_EOF_MARKER_MISSING`, after
+  listing every member.
+- A self-extracting LHA program reads like an archive: the archive behind a DOS, Windows,
+  Amiga, Atari or X68000 stub is found by its first header, as for ZIP, 7z and RAR (see
+  [Detection](#detection)). An Amiga self-extractor's own usage text, a small archive inside
+  the stub, is passed over for the archive that ends the file.
+- A Mac file archived by MacLHA reads as its data fork (or its resource fork, when the
+  data fork is empty), as lhasa reads it: MacLHA wraps the file in MacBinary, a 128-byte
+  header that archivey strips when every field in it matches the LHA header (name, sizes,
+  and a time within 14 hours). `member.size` is the fork's size, and
+  `extra["lha.mac_type"]` and `extra["lha.mac_creator"]` keep the Finder's type and
+  creator codes. The listing decodes the first 128 bytes of each such member to check.
+  A level-0 member has no OS id to say it came from a Mac, so it reads with its wrapper,
+  as in lhasa.
+
 ## CPIO
 
 - **Needs:** nothing.
@@ -1445,6 +1497,24 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   has no checksum, and it decodes only when the whole file has arrived, so the first byte from a
   pipe waits for the end of the input. The decoded size must match the header, or the read raises
   `CorruptionError`.
+- **uuencode and base64** compress nothing, but they wrap a file as text the way a compressor
+  wraps it, so archivey peels them the same way: `files.tar.uu` lists the tar.
+  - **uuencode** (`.uu`, `.uue`): a `begin 644 name` line, encoded lines, then `end`; the
+    `begin-base64` variant (`uuencode -m`) ends at `====`. A file is recognised by its `begin`
+    line at the start, whatever its name. With a `.uu` or `.uue` name, text before `begin` (a
+    mail or news post) is skipped, up to 64 KiB. Only the first file is read, and text after its
+    end line is reported as `ARCHIVE_TRAILING_DATA`. The stored name is
+    `extra["uu.original_filename"]` and `raw_name`, and the stored mode is `mode`; the member
+    keeps the name it gets from the file's own name, so the stored name never picks a path.
+  - **base64** (`.b64`, `.base64`): bare base64 text, in lines of one length or one long line,
+    with or without `=` padding. Base64 has no signature, and plain text is often made of base64
+    characters, so without such a name a file is taken as base64 only when its first lines are
+    of one length and decode to the start of a format archivey knows (a pasted ZIP, gzip or tar).
+    Line breaks are skipped; any other character, a space included, is an error.
+  - Neither is found by a signature, so a source recognised from its contents alone is reported
+    as `PROBABLE`, not `CERTAIN`.
+  - Neither has a checksum, so a damaged character changes the output with no error unless it is
+    not a valid character. A missing `end` or `====` line raises `TruncatedError`.
 - **Listing:** one synthetic member, named from the source path, or `data` for a source with no
   name. `.jsonlz4` and `.baklz4` become `.json` and `.bak` (`sessionstore.jsonlz4` holds
   `sessionstore.json`). `encoding=` has no effect, and passing it reports `ENCODING_ARGUMENT_UNUSED`.
@@ -1682,11 +1752,11 @@ they open at once. Close the sending side when the file is done.
   (Windows `MZ`/PE, Linux ELF, or a macOS Mach-O header that parses) or a `#!` launcher line (a
   zipapp `.pyz`, a Spring Boot jar). The 2 MiB scan behind the stub reports where the archive starts
   as `payload_offset`, and sets `prefixed`. For a code-signed Windows program, `payload_end` is
-  where its signature starts: the ZIP, 7z and RAR readers stop there, so the signature is not
+  where its signature starts: the ZIP, 7z, RAR and LHA readers stop there, so the signature is not
   reported as data after the archive. A ZIP further into a Windows installer than the scan
   reaches is found from its end, when the program's header shows that something was
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
-  (ZIP, 7z, RAR) are searched for. Behind a Windows, Linux or macOS program whose header says
+  (ZIP, 7z, RAR, LHA) are searched for. Behind a Windows, Linux or macOS program whose header says
   where its own image ends, an archive that starts exactly there is taken first, ahead of
   anything else in the window. That holds under every detection budget: a smaller one, such as
   `FAST`, still looks there, with a seek. Read from a pipe, under a budget whose window ends before
@@ -1697,13 +1767,14 @@ they open at once. Close the sending side when the file is done.
   the file is preferred over an earlier one that ends short of it.
 - **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`
   and `unzip` find it: when no other step matched, the same 2 MiB scan runs without an executable
-  cue, for ZIP, 7z and RAR, each with its structural check. It is the last content step, so a file
+  cue, for ZIP, 7z, RAR and LHA, each with its structural check (LHA's is its header sum or
+  CRC; a DOS `.COM`, Amiga or Atari self-extractor has no executable header to cue on). It is the last content step, so a file
   archivey recognizes pays nothing for it; a file it does not recognize pays a read of up to 2 MiB.
   On a source that cannot seek and whose length is not known yet, such as a pipe, the scan covers
   only the bytes detection has already read, and `sfx_scan` is listed in `unavailable_tiers` as
   `CAPABILITY_UNAVAILABLE`.
-  A file whose name has a known extension skips it and gets the extension's guess; the ZIP, 7z and
-  RAR readers find an archive behind leading bytes themselves.
+  A file whose name has a known extension skips it and gets the extension's guess; the ZIP, 7z,
+  RAR and LHA readers find an archive behind leading bytes themselves.
 - **Ties go to the earlier step, then to registration order.** Detection stops at the first step
   that matches, and within a step the first backend registered wins. A file that is two formats at
   once (a polyglot) gets one fixed answer; pass `format=` to read it as the other.

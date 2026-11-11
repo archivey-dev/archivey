@@ -270,7 +270,7 @@ def _refuse_unjoined_volume_names(
     """
     if resolved.volume_count != 1:
         return
-    # Numbered parts are joined for ZIP and 7z. An explicit other format= (P8)
+    # Numbered parts are joined for ZIP and 7z. An explicit other format=
     # must be honoured or refused as a format conflict, not rewritten as a
     # missing-volume error. With discovery off nothing looked for the other parts,
     # so the part is read as the one file it is, and its reader says what it finds.
@@ -443,10 +443,10 @@ def open_archive(
 
     ``encoding`` names the codec for member names whose encoding the archive does not
     declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO, RAR 1.5-4, CPIO, ar,
-    RPM, makeself, SquashFS, CAB and XAR). A name whose bytes are valid UTF-8 is decoded as UTF-8 in every format,
+    RPM, makeself, SquashFS, CAB, XAR and LHA). A name whose bytes are valid UTF-8 is decoded as UTF-8 in every format,
     with or without ``encoding``, and ``encoding`` replaces only the format's fallback
     (cp437 or ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code
-    page for RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar, RPM, makeself, SquashFS, CAB and XAR).
+    page for RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar, RPM, makeself, SquashFS, CAB, XAR and LHA).
     ``member.raw_name`` keeps the stored bytes. A ZIP comment without the UTF-8 flag
     (the archive comment always) and an 8-bit RAR 1.5-4 comment decode the same way as
     a name without a declared encoding, and a byte the codec does not define survives
@@ -759,7 +759,7 @@ def _decide_format(
     # would raise FormatDetectionError or CorruptionError. Refuse by name first.
     # A joined set has ``volume_count > 1`` and is skipped. An explicit
     # ``format=TAR_GZ`` (etc.) is honoured or refused as a format conflict, never
-    # rewritten as a volume error (P8).
+    # rewritten as a volume error.
     #
     # A lone numbered part names the missing siblings (``TruncatedError``). Info-ZIP
     # ``.zNN`` stays the ZIP rejoin-first ``UnsupportedFeatureError`` — those are

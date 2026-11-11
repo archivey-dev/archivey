@@ -878,7 +878,7 @@ def test_a_compressed_cpio_with_no_check_drops_the_ceiling(streaming: bool) -> N
     # so the format adapter drops the ceiling to LENGTH.
     data = lzma.compress(_SPANNED, check=lzma.CHECK_NONE)
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         files = [m for m in reader.members_report().members if m.is_file]
     assert {(m.verified, m.verifiable) for m in files} == {(_V.LENGTH, _V.LENGTH)}
 
@@ -891,7 +891,7 @@ def test_a_compressed_cpio_cut_in_its_footer_keeps_the_ceiling(
     # and verify_all() returns them as failures.
     data = gzip.compress(_SPANNED)[:-6]
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         files = [m for m in reader.members_report().members if m.is_file]
     assert sorted(m.name for m, _e in failures) == ["a", "b"]
     assert {(m.verified, m.verifiable) for m in files} == {(_V.LENGTH, _V.CHECKSUM)}
@@ -904,5 +904,5 @@ def test_a_compressed_cpio_cut_in_its_footer_fails_after_listing_and_again() -> 
     with open_archive(io.BytesIO(data)) as reader:
         reader.members_report()
         for _ in range(2):
-            failures = reader.verify_all()
+            failures = reader.verify_all().failures
             assert sorted(m.name for m, _e in failures) == ["a", "b"]

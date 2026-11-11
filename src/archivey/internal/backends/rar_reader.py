@@ -83,6 +83,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
+    ResourceUnavailableError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -152,6 +153,7 @@ from archivey.internal.backends.rar_unrar import (
     unrar_mask_carries_non_ascii,
     unrar_matches_names_as_windows,
     unrar_may_cut_archive_path,
+    unrar_plain_name_max,
 )
 from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
@@ -982,7 +984,7 @@ def _psw_check_usable(enc: RarEncryptionInfo) -> bool:
     )
 
 
-def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool) -> str | None:
+def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool, name_max: int) -> str | None:
     """``raw``'s name as ``unrar`` reads it, when that reading is plain text.
 
     ``None`` when the name does not decode cleanly (RAR5 bytes that are not UTF-8,
@@ -991,7 +993,10 @@ def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool) -> str | None:
     (RAR5), a NUL or ``:``, a leading ``/``, or an empty, ``.`` or ``..`` component.
     A RAR 1.5-4 ``\\`` is a separator and reads as ``/``. A RAR5 history row gets
     its ``;n`` suffix, as ``unrar -ver`` names it; a RAR 1.5-4 one already stores it
-    in the name (as :func:`rar_synthetic.placeholder_mask` assumes).
+    in the name (as :func:`rar_synthetic.placeholder_mask` assumes). A name, with
+    that suffix, longer than ``name_max`` UTF-16 units
+    (:func:`rar_unrar.unrar_plain_name_max`) is not plain: ``unrar`` keeps only a
+    prefix of it.
     """
     stored = raw.orig_filename
     if stored is None:
@@ -1015,6 +1020,8 @@ def _plain_unrar_text(raw: RarMemberInfo, *, rar5: bool) -> str | None:
         return None
     if rar5 and raw.is_file_version_history():
         text = f"{text};{raw.file_version}"
+    if len(text.encode("utf-16-le")) // 2 > name_max:
+        return None
     return text
 
 
@@ -1055,7 +1062,12 @@ def _windows_plain(text: str, *, loose_directories: bool) -> bool:
 
 
 def _plain_unrar_masks(
-    members: list[ArchiveMember], *, rar5: bool, non_ascii: bool, windows: bool
+    members: list[ArchiveMember],
+    *,
+    rar5: bool,
+    non_ascii: bool,
+    windows: bool,
+    name_max: int,
 ) -> dict[int, str]:
     """The members an ``-n`` mask on the original archive selects alone, by
     ``id(member)``, with the mask text for each.
@@ -1077,7 +1089,7 @@ def _plain_unrar_masks(
         raw = member._raw
         if not isinstance(raw, RarMemberInfo):
             continue
-        text = _plain_unrar_text(raw, rar5=rar5)
+        text = _plain_unrar_text(raw, rar5=rar5, name_max=name_max)
         if text is None:
             return {}
         texts.append((member, raw, text.rstrip("/")))
@@ -3382,6 +3394,10 @@ class RarReader(BaseArchiveReader):
         if self._decompressor is RarDecompressor.NONE:
             # Decoding it would run a program, which the caller ruled out.
             return None
+        if CompressionAlgorithm.RAR in self._config.formats.exclude:
+            # The caller turned RAR's own decoder off, so the comment stays unread,
+            # as without a program.
+            return None
         # The selected program decodes the comment, ``unar`` included, without the
         # member refusals of ``UnarRarPolicy``: the CRC16 check below catches any wrong
         # or missing output, and a comment that fails it is dropped either way.
@@ -3406,10 +3422,16 @@ class RarReader(BaseArchiveReader):
         except (
             OSError,
             PackageNotInstalledError,
+            ReadError,
+            ResourceUnavailableError,
             subprocess.SubprocessError,
         ):
             # An undecodable comment degrades to None rather than sinking the
-            # listing.
+            # listing. That includes a program that could not start for a reason
+            # other than its absence (``spawn_for_stdout``): a shortage of
+            # descriptors, memory or processes is ``ResourceUnavailableError``, a
+            # command line the system refuses is ``ReadError``. The spawn is the only
+            # source of an archivey error here, so ``ReadError`` hides nothing else.
             return None
         if unpacked is None:
             return None
@@ -3642,6 +3664,9 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
+        # The copy's data is the source's, so the source's method decides, even where
+        # the copy was checked before its source was known.
+        self._check_member_method(source)
         stream = kept(source) if kept is not None else None
         if stream is None:
             return self._open_member(source)
@@ -5431,6 +5456,7 @@ class RarReader(BaseArchiveReader):
                     rar5=self._archive.version == 5,
                     non_ascii=unrar_mask_carries_non_ascii(),
                     windows=unrar_matches_names_as_windows(),
+                    name_max=unrar_plain_name_max(self._unrar_program),
                 )
             )
             self._plain_masks = masks

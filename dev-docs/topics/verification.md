@@ -328,8 +328,12 @@ is lower). It never reads past its own member, so a spanning check is not reache
 
 ### 3.2 `reader.verify_all()`
 
-Returns `tuple[tuple[ArchiveMember, ArchiveyError], ...]`, the failures in listing order.
-An empty tuple means everything checked out. It runs one `stream_members()` pass over a
+Returns a `VerifyReport`. `failures` holds each failed member with its error, in listing
+order; `structure_error` holds damage that stopped the walk through the archive (the same
+object as `members_report().error`); `diagnostics` holds what this call emitted. `ok` is
+`True` only when both of the first two are empty, and it is the one answer to "did every
+check pass". `raise_for_failure()` raises `structure_error`, else the first failure. The
+report has no length or truth value: `bool(report)` raises `TypeError`. It runs one `stream_members()` pass over a
 selector that keeps the members with something left to prove:
 
 - a member below its `verifiable`;
@@ -352,8 +356,8 @@ the pass goes on. Then:
   checksum may cover only some of the files (a concatenated `.tar.gz`, a `.tar.zst` of
   several frames) and nothing says which, so all are returned rather than pass a damaged
   one (DR-1). A member that already failed keeps its own error.
-- **Damage that stops the listing ends the call without raising.**
-  `members_report().error` holds it.
+- **Damage that stops the listing ends the call without raising.** The report's
+  `structure_error` holds it, and `ok` is `False`.
 - **Damage that keeps a spanning check from running** (a 7z folder decode that stops
   early, a `.tar.gz` cut before its trailer) returns each member only that check would
   prove, with a `SpanningCheckError` whose cause is the damage.
@@ -369,14 +373,16 @@ the pass goes on. Then:
 - **A `.zst`, `.lz4` or `.xz` member read only past a jump** is read again, once, so its
   frames can still prove `CHECKSUM`.
 
-Afterwards every listed member has `verified == verifiable`, except the ones returned.
+Afterwards every listed member has `verified == verifiable`, except the ones in
+`failures`.
 
 ### 3.3 Checking everything about an archive
 
 ```python
-failures = reader.verify_all()       # each member's data
-report = reader.members_report()     # report.error: damage that stopped the listing
-findings = reader.diagnostics        # archive-level findings
+report = reader.verify_all()
+if not report.ok:                    # a member failed, or the listing stopped early
+    report.raise_for_failure()
+findings = report.diagnostics        # archive-level findings from this call
 ```
 
 Archive-level damage, such as a missing end-of-archive marker
@@ -388,7 +394,8 @@ policy escalates it, and it is never a verification level.
 The design states twelve items, each with a test in `tests/test_verification_contract.py`
 or `tests/test_verification_scenarios.py`. In short:
 
-1. `verify_all()` returns per-member failures and raises only the errors listed in §3.2.
+1. `verify_all()` returns a `VerifyReport` (member failures and the damage that stopped
+   the listing) and raises only the errors listed in §3.2.
 2. After `verify_all()`, every member has `verified == verifiable` except the failures.
 3. A member stream's levels equal its member's at every moment, opened or not.
 4. `stream.verify()` reads nothing once the target is reached above `NONE`.
@@ -402,7 +409,7 @@ or `tests/test_verification_scenarios.py`. In short:
 10. `verify_all()` leaves the caller's streams alone, and a second call re-reads exactly
     the members §3.2 selects.
 11. On a streaming-only reader, `members_report()` after `verify_all()` reads nothing.
-12. "Check everything" is §3.3.
+12. "Check everything" is §3.3: one `verify_all()` call and its report's `ok`.
 
 ## 4. Per format
 

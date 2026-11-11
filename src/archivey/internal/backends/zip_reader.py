@@ -1114,7 +1114,9 @@ class _ZipLocator:
 
     Not the ``CentralEntry``: its extra field and comment would stay alive for every
     member, for data that is read only while listing. Read-only by convention, not
-    ``frozen``, for the construction cost (as ``CentralEntry``).
+    ``frozen``, for the construction cost (as ``CentralEntry``). Built positionally by
+    ``ZipReader._to_member``, for the same cost; test_hot_path_constructors pins this
+    field order.
     """
 
     #: Position in the central directory; tells same-offset entries apart.
@@ -2782,23 +2784,26 @@ class ZipReader(BaseArchiveReader):
             extra=extra,
             # What reading the data needs, so _open_member needs no name/id lookup
             # table; not the entry, whose extra field and comment would stay alive.
+            # Positional, in field order (a keyword call costs about 0.3 µs more per
+            # member); test_hot_path_constructors pins the order.
             _raw=_ZipLocator(
-                index=index,
-                header_offset=entry.header_offset,
-                compressed_size=entry.compressed_size,
-                file_size=entry.file_size if size is None else size,
-                crc=crc,
-                flags=entry.flags,
-                method=method,
-                dos_time=entry.dos_time,
-                name=entry.name,
-                aes=aes_info,
-                # The bit test repeats the callee's first line, to skip the call for
-                # an unencrypted member; it must stay a necessary condition there.
-                strong_encryption=bool(entry.flags & _ZIP_MASK_ENCRYPTED)
+                index,  # index
+                entry.header_offset,  # header_offset
+                entry.compressed_size,  # compressed_size
+                entry.file_size if size is None else size,  # file_size
+                crc,  # crc
+                entry.flags,  # flags
+                method,  # method
+                entry.dos_time,  # dos_time
+                entry.name,  # name
+                aes_info,  # aes
+                # strong_encryption. The bit test repeats the callee's first line, to
+                # skip the call for an unencrypted member; it must stay a necessary
+                # condition there.
+                bool(entry.flags & _ZIP_MASK_ENCRYPTED)
                 and _uses_strong_encryption(entry.flags, entry.extra),
-                reparse_fallback=reparse_fallback,
-                size_unknown=size_unknown,
+                reparse_fallback,  # reparse_fallback
+                size_unknown,  # size_unknown
             ),
         )
         if size_unknown is not None:
