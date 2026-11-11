@@ -77,6 +77,14 @@ _DATA_STREAMS = {
 # The control file's fields the archive info carries (as deb.package and so on).
 _FIELDS = (b"package", b"version", b"architecture")
 _HEX = frozenset(b"0123456789abcdefABCDEF")
+# The digits of an unsupported major version an error message shows.
+_VERSION_SHOWN = 20
+# What one md5sums entry holds beyond the bytes of its name, as 64-bit CPython measures
+# it: the name's str header (40 to 56 bytes), the 16-byte digest object (49) and the
+# entry's share of the dict, a 24-byte slot, its index and the spare room a dict keeps
+# (31 bytes an entry over 500 000 entries, up to 60 just after the dict grows). A
+# constant, not sys.getsizeof(), which PyPy does not implement.
+_MD5_ENTRY = 56 + 49 + 48
 
 
 def _tar_format(
@@ -183,9 +191,15 @@ class DebReader(SequentialReader):
         major, dot, _minor = version.partition(b".")
         if not (major.isdigit() and dot):
             raise CorruptionError("Debian package has no format version")
-        if int(major) != 2:
+        # The digits are compared as bytes: int() refuses more than 4300 digits with
+        # a ValueError, and the member may hold millions.
+        digits = major.lstrip(b"0") or b"0"
+        if digits != b"2":
+            shown = digits[:_VERSION_SHOWN].decode("ascii")
+            if len(digits) > _VERSION_SHOWN:
+                shown += f"... ({len(digits)} digits)"
             raise UnsupportedFeatureError(
-                f"Debian package format version {int(major)}: archivey reads 2.x, "
+                f"Debian package format version {shown}: archivey reads 2.x, "
                 "as dpkg-deb does"
             )
         self._version = version.decode("ascii", "replace")
@@ -233,8 +247,8 @@ class DebReader(SequentialReader):
     def _count(self, size: int, what: str) -> None:
         """Charge ``size`` more held bytes to the listing, refusing before they are
         read. ``debian-binary``, ``control`` and ``md5sums`` are held whole, and
-        their sizes come from the package. A walk started over to reach member data
-        charges nothing: the listing walk did."""
+        their sizes come from the package; so is each entry of the digest map. A walk
+        started over to reach member data charges nothing: the listing walk did."""
         self._context.charge_metadata(size, what=f"the Debian package {what}")
 
     def _read_control(self, data: bytes) -> None:
@@ -248,16 +262,25 @@ class DebReader(SequentialReader):
                 self._fields[key] = value.strip().decode("utf-8", "replace")
 
     def _read_md5sums(self, data: bytes) -> None:
-        """``<32 hex digits> <name>`` per line, the name relative to the root."""
+        """``<32 hex digits> <name>`` per line, the name relative to the root.
+
+        The lines are read one at a time, not split into a list, and each entry the
+        map keeps is charged to ``max_metadata_bytes`` before it is added: the file's
+        own bytes were charged when it was held, and the map holds about three times
+        as much again."""
         context = self._context
-        for line in data.split(b"\n"):
-            digest, _space, name = line.partition(b" ")
+        md5 = self._md5
+        for line in io.BytesIO(data):
+            digest, _space, name = line.removesuffix(b"\n").partition(b" ")
             # md5sum writes two spaces, the second a " " (text) or "*" (binary) mark.
             name = name[1:] if name[:1] in (b" ", b"*") else name
             if len(digest) != 32 or not set(digest) <= _HEX or not name:
                 continue
             path = context.normalize_name(context.decode_name(name), MemberType.FILE)
-            self._md5[path] = bytes.fromhex(digest.decode("ascii"))
+            if path not in md5:
+                # The name's UTF-8 bytes are at least the bytes its str holds.
+                self._count(len(name) + _MD5_ENTRY, "md5sums entries")
+            md5[path] = bytes.fromhex(digest.decode("ascii"))
 
 
 class DebHandler(SequentialFormatHandler):
