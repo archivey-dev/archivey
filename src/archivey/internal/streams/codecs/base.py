@@ -166,7 +166,7 @@ class CodecParams:
     - ``reduce_factor`` — ZIP Reduce's compression factor, 1 to 4 (methods 2 to 5).
       Reduce also needs ``unpack_size``: its data has no end marker.
     - ``single_stream`` — the coder's data is one stream of its codec: a bzip2 ZIP
-      member or 7z coder. The decoder ends at the first stream's end rather than
+      member or 7z coder, or a bzip2 or LZMA Alone XAR member. The decoder ends at the first stream's end rather than
       reading a further stream as a concatenated file's, so a further stream is
       input after the end, which a
       ``refuse_input_after_end`` stream refuses. Under the bzip2 accelerator, which
