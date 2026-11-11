@@ -223,6 +223,17 @@ def test_a_streaming_zip_counts_the_start_of_each_member_it_passes() -> None:
     ):
         for _member, _stream in reader.stream_members():
             pass
+    # A spent Budget stops the pass too: the drain re-raises it, not skips the member.
+    with (
+        archivey.open_archive(
+            NonSeekableBytesIO(data),
+            config=_config(None, budget=Budget(max_decoded_bytes=1000)),
+            streaming=True,
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="max_decoded_bytes"),
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
     # Read by the caller, the members count nothing.
     with stream(1) as reader:
         for _member, member_stream in reader.stream_members():
