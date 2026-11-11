@@ -189,7 +189,9 @@ jobs:
       # ``/usr/bin/7z``, which is the name the builder invokes.
       - name: Install p7zip (encrypted-ZIP corpus builder and BCJ2 oracle, Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y p7zip-full
+        uses: ./.github/actions/apt-install
+        with:
+          packages: p7zip-full
       - name: Verify 7z on PATH (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -273,7 +275,9 @@ jobs:
       # the block walk against.
       - name: Install unrar, unar, xorriso and bgzip (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y unrar unar xorriso tabix
+        uses: ./.github/actions/apt-install
+        with:
+          packages: unrar unar xorriso tabix
       # The built binary links against the image's libgnustep-base and libicu, whose
       # sonames change between Ubuntu releases, so the key names the image as well as
       # the pinned sources (the script's hash).
@@ -292,9 +296,9 @@ jobs:
       # not print its banner (a cache saved after a failed step), and that needs these.
       - name: Install unar build dependencies (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
-        run: >
-          sudo apt-get install -y gnustep-make libgnustep-base-dev gobjc
-          libbz2-dev zlib1g-dev libicu-dev libwavpack-dev
+        uses: ./.github/actions/apt-install
+        with:
+          packages: gnustep-make libgnustep-base-dev gobjc libbz2-dev zlib1g-dev libicu-dev libwavpack-dev
       - name: Build unar 1.10.8 and put it first on PATH (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: |
@@ -811,7 +815,9 @@ jobs:
           uv python install ${{ matrix.python }}
           uv run --python ${{ matrix.python }} --no-project python -VV
       - name: Install 7z, unrar and xorriso
-        run: sudo apt-get update && sudo apt-get install -y p7zip-full unrar xorriso
+        uses: ./.github/actions/apt-install
+        with:
+          packages: p7zip-full unrar xorriso
       - name: Sync zero-dep core
         run: uv sync --python ${{ matrix.python }} --no-dev
       - name: Assert zero-dependency core
@@ -889,7 +895,9 @@ jobs:
       # Listing (rar_open_list) works without it — do not drop this step or T3 silently
       # omits the data-path half of the gate (pytest fail-closes when CI=true).
       - name: Install unrar (RAR data structural cases)
-        run: sudo apt-get update && sudo apt-get install -y unrar
+        uses: ./.github/actions/apt-install
+        with:
+          packages: unrar
       - name: Structural benchmark gate
         run: >
           uv run --no-sync python -m benchmarks.harness
@@ -921,7 +929,10 @@ jobs:
       - name: Set up Python
         run: uv python install 3.11
       - name: Install liblzo2, which python-lzo builds against
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends liblzo2-dev
+        uses: ./.github/actions/apt-install
+        with:
+          packages: liblzo2-dev
+          install-recommends: "false"
       - name: Sync, then install python-lzo over it
         # The import check fails the job here, rather than letting the comparison skip.
         run: |
