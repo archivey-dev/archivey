@@ -1110,13 +1110,18 @@ def _rar5_redirect_target(file_redir: tuple[int, int, str]) -> str:
     (``dev-docs/formats/rar.md``): it refuses the prefixed spellings too, by a
     different route, and it creates a stored, unprefixed ``C:\\abs\\y`` as the
     relative link ``C:/abs/y``, which archivey refuses. It also refuses ``..\\up\\x``,
-    which archivey refuses only when the target leaves the destination. A Unix
-    symlink, a hard link and a file copy keep the stored string: in those a backslash
-    can be part of a name.
+    which archivey refuses only when the target leaves the destination.
+
+    A hard link names another member, so its ``\\`` becomes ``/`` as in the member's
+    own name (``backslash_is_separator=True`` in ``RarReader._to_member``); archivey
+    then normalizes the target as a name at registration. A Unix symlink and a file
+    copy keep the stored string: in those a backslash can be part of a name.
     """
     redir_type, _flags, target = file_redir
     if redir_type in _RAR5_XREDIR_REPARSE_POINTS:
         return normalize_windows_link_target(target)
+    if redir_type == _RAR5_XREDIR_HARD_LINK:
+        return target.replace("\\", "/")
     return target
 
 

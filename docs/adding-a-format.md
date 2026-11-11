@@ -581,8 +581,8 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
   outer listing, after the walk renames them.
 - **Yield every span, in order.** The inner reader numbers its members as the outer
   listing will, so yield each span before taking the next. The walk may change the
-  member first: rename it (and a hard link's `link_target` with it, as the inner
-  archive stores it; archivey normalizes both), or add `MemberSpan.digests` from a
+  member first: rename it (and a hard link's `link_target` with it: the inner listing
+  has normalized it already, and archivey normalizes the renamed one again), or add `MemberSpan.digests` from a
   checksum list the outer archive keeps.
 - **Cost.** Inner members are decoded data, so the rules of the next section hold: a
   pass reads them once, and `open()` of one afterwards walks the archive again to it.

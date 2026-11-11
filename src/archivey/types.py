@@ -1339,8 +1339,10 @@ class ArchiveMember:
     the member it links to, normalized in every format as member names are
     (``./b`` lists as ``b``), so it equals that member's ``name``. A hard-link
     target that ends in ``/`` keeps the ``/``: it names a directory, and does not
-    refer to a file of the same name. For a ``FILE`` that is a stored copy of an
-    earlier member (``extra["is_file_copy"]``), the source's path as stored."""
+    refer to a file of the same name. A target that names only the archive root
+    (``./``, ``/``) lists as ``.``, as such a member name does, and names no
+    member. For a ``FILE`` that is a stored copy of an earlier member
+    (``extra["is_file_copy"]``), the source's path as stored."""
 
     # compare=False: identity is path/type/metadata, not the resolved peer object
     # (resolution is late-bound and would make equality order-dependent).

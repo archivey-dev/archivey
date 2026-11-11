@@ -26,6 +26,14 @@ from archivey.internal.naming import (
     resolve_link_target_name,
 )
 from archivey.types import MemberType
+from tests.conftest import requires_binary
+from tests.test_audit_rar_iso_dir import (
+    _fixture,
+    _rar5_build,
+    _rar5_file_blocks,
+    _rar5_parse,
+    _vint,
+)
 
 _MODES = pytest.mark.parametrize("streaming", [False, True], ids=["random", "stream"])
 
@@ -279,3 +287,56 @@ def test_a_dot_slash_link_before_its_source_still_fails(
     assert results["hl"].status is ExtractionStatus.FAILED
     assert isinstance(results["hl"].error, LinkTargetNotFoundError)
     assert results["a"].status is ExtractionStatus.EXTRACTED
+
+
+def _rar_with_hard_link_to(tmp_path: Path, source: bytes, target: bytes) -> Path:
+    """``hardlinks_solid__.rar`` with ``file1.txt`` renamed ``source`` and the hard
+    link ``subdir/hardlink_to_file1.txt`` redirected to ``target``, both as stored."""
+    blocks = _rar5_parse(_fixture("hardlinks_solid__.rar").read_bytes())
+    files = _rar5_file_blocks(blocks)
+    (file1,) = [b for b in files if b["name"] == b"file1.txt"]
+    file1["name"] = source
+    (link,) = [b for b in files if b["name"] == b"subdir/hardlink_to_file1.txt"]
+    # REDIR extra record: size, type 5 (REDIR), redirect type 4 (HARD_LINK), flags,
+    # name length, name.
+    redir = b"\x0d\x05\x04\x00\x09file1.txt"
+    assert link["extra"].count(redir) == 1
+    body = b"\x05\x04\x00" + _vint(len(target)) + target
+    link["extra"] = link["extra"].replace(redir, _vint(len(body)) + body)
+    path = tmp_path / "t.rar"
+    path.write_bytes(_rar5_build(blocks))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("source", "target", "listed"),
+    [
+        pytest.param(b"file1.txt", b"./file1.txt", "file1.txt", id="dot-slash"),
+        pytest.param(b"d\\file1.txt", b"d\\file1.txt", "d/file1.txt", id="backslash"),
+        pytest.param(b"d/file1.txt", b".\\d\\file1.txt", "d/file1.txt", id="mixed"),
+    ],
+)
+def test_a_rar_hard_link_target_lists_as_its_source_name(
+    tmp_path: Path, source: bytes, target: bytes, listed: str
+) -> None:
+    """A RAR name turns ``\\`` into ``/``, so a hard link's target does too, then is
+    normalized as a name: it equals the source member's listed name."""
+    path = _rar_with_hard_link_to(tmp_path, source, target)
+    with open_archive(path) as reader:
+        link = reader.get("subdir/hardlink_to_file1.txt")
+        assert link.link_target == listed
+        assert link.link_target_member is reader.get(listed)
+
+
+@requires_binary("unrar")
+def test_a_rar_hard_link_with_a_backslash_target_reads_its_source(
+    tmp_path: Path,
+) -> None:
+    path = _rar_with_hard_link_to(tmp_path, b"d\\file1.txt", b"d\\file1.txt")
+    with open_archive(path) as reader:
+        assert reader.read("subdir/hardlink_to_file1.txt") == b"Hello 1!"
+    with open_archive(path) as reader:
+        report = reader.extract_all(tmp_path / "out")
+    assert {r.status for r in report.results} == {ExtractionStatus.EXTRACTED}
+    out = tmp_path / "out"
+    assert (out / "subdir" / "hardlink_to_file1.txt").read_bytes() == b"Hello 1!"
