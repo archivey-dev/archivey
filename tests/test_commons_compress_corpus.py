@@ -23,9 +23,10 @@ reads it.
 
 Triage (2026-10-28, CC master ``0c20ded``, 1.29.0-SNAPSHOT), in the report's groups:
 
-* **MISSING FORMAT** CC reads dump, ARJ and Snappy, which Archivey does not
-  implement. ZIP Implode and Shrink, once on this list, now read and match CC on all
-  five of CC's archives (140 members), and LHA on all fifteen of CC's LHA archives.
+* **MISSING FORMAT** CC reads dump and Snappy, which Archivey does not implement.
+  ZIP Implode and Shrink, once on this list, now read and match CC on all five of
+  CC's archives (140 members), LHA on all fifteen of CC's LHA archives, and ARJ on
+  all three of CC's ARJ archives.
 * **POLICY** Archivey refuses, as the format's own tool does: a TAR header with a wrong
   checksum, bytes after a member's Deflate stream (DR-3), and two 7z headers 7-Zip
   calls Headers Error.
@@ -85,10 +86,6 @@ _TRIAGE: dict[str, str] = {
             "org/apache/commons/compress/dump/looping_inodes-fail.dump",
         ),
         "MISSING FORMAT: dump",
-    ),
-    **dict.fromkeys(
-        ("bla.arj", "bla.unix.arj", "synthetic/long-name/long-name.arj"),
-        "MISSING FORMAT: ARJ",
     ),
     **dict.fromkeys(
         ("bla.tar.sz", "lorem-ipsum.txt.sz", "mixed.txt.sz"),
