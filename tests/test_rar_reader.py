@@ -60,6 +60,10 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_volumes,
 )
 from archivey.internal.external.cli import terminate_process
+from archivey.internal.password_confirm import (
+    PASSWORD_CONFIRM_PREFIX_BYTES,
+    PasswordConfirmVerdict,
+)
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.reader import ArchiveReader
 from archivey.terminal import display_path
@@ -76,6 +80,7 @@ from tests.conftest import (
     requires_unrar_cli,
 )
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.rar_util import flag_size_unknown
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -1348,39 +1353,10 @@ def test_volumes_written_from_stdin_take_the_size_from_the_last_part(
     assert (tmp_path / "stdin.txt").read_bytes() == payload
 
 
-def _flag_size_unknown(data: bytes, *, placeholder: bool = False) -> bytes:
-    """``data`` with the "size unknown" file flag (``0x08``) set on every RAR5 FILE
-    header, and each header CRC redone. ``placeholder`` also writes 127 over the first
-    member's size, a two-byte vint (rar pads it), so the header keeps its length."""
-    out = bytearray(data)
-    pos = 8  # past the RAR5 signature
-    while pos < len(out):
-        size, body_at = load_vint(out, pos + 4)
-        block_type, q = load_vint(out, body_at)
-        flags, q = load_vint(out, q)
-        if flags & 0x0001:  # extra area
-            _, q = load_vint(out, q)
-        data_size = 0
-        if flags & 0x0002:  # data area
-            data_size, q = load_vint(out, q)
-        if block_type == 2:  # FILE; its one-byte file flags are at q
-            out[q] |= 0x08
-            if placeholder:
-                assert out[q + 2] == 0x00  # a padded two-byte size vint
-                out[q + 1 : q + 3] = b"\xff\x00"
-                placeholder = False
-            crc = zlib.crc32(out[pos + 4 : body_at + size]) & 0xFFFFFFFF
-            out[pos : pos + 4] = crc.to_bytes(4, "little")
-        if block_type == 5:  # end of archive
-            break
-        pos = body_at + size + data_size
-    return bytes(out)
-
-
 def test_stored_member_of_unknown_size_takes_its_packed_size() -> None:
     """With the "size unknown" flag and no later part, a stored member's size is its
     packed size, which is what ``unrar`` reads; the size field is ignored."""
-    data = _flag_size_unknown(
+    data = flag_size_unknown(
         _fixture("basic_nonsolid__.rar").read_bytes(), placeholder=True
     )
     with open_archive(io.BytesIO(data)) as archive:
@@ -1396,7 +1372,7 @@ def test_stored_last_part_of_unknown_size_is_not_sized_alone(tmp_path: Path) -> 
     for part in (1, 2, 3):
         name = f"stdin_vol.part{part}.rar"
         data = _fixture(name).read_bytes()
-        (tmp_path / name).write_bytes(_flag_size_unknown(data) if part == 3 else data)
+        (tmp_path / name).write_bytes(flag_size_unknown(data) if part == 3 else data)
     payload = _stdin_payload("stdin_vol")
     with open_archive(tmp_path / "stdin_vol.part1.rar") as archive:
         [member] = archive.members()
@@ -1404,15 +1380,137 @@ def test_stored_last_part_of_unknown_size_is_not_sized_alone(tmp_path: Path) -> 
         assert archive.read(member) == payload
 
 
-@requires("cryptography")
-def test_encrypted_stored_member_of_unknown_size_keeps_its_declared_size() -> None:
+@requires_binary("unrar")
+def test_encrypted_stored_member_of_unknown_size_fails_as_unrar_does() -> None:
     """Ciphertext is padded to the AES block, so the packed size is not the member's
-    size; the declared one is kept."""
-    data = _flag_size_unknown(_fixture("encryption_stored_sizes__.rar").read_bytes())
+    size, and the header gives none: the member lists no size. Nothing tells where
+    the plaintext ends, so ``unrar`` 7.00 prints the padding too and fails the CRC
+    (exit 3); archivey reads it through ``unrar`` and fails the same way. A member
+    whose plaintext fills its last block reads whole."""
+    data = flag_size_unknown(_fixture("encryption_stored_sizes__.rar").read_bytes())
     with open_archive(io.BytesIO(data), password="password") as archive:
-        [member] = [m for m in archive.members() if m.name == "size_7.bin"]
-        assert member.size == 7
-        assert len(archive.read(member)) == 7
+        members = {m.name: m for m in archive.members()}
+        padded, whole = members["size_7.bin"], members["size_16.bin"]
+        assert padded.size is None and whole.size is None
+        with raises_corruption_not_truncation():
+            archive.read(padded)
+        assert padded.size is None
+        assert len(archive.read(whole)) == 16
+        assert whole.size == 16
+
+
+def _contents_and_sizes(
+    data: bytes, **kwargs: object
+) -> tuple[dict[str, bytes], dict[str, int | None]]:
+    with open_archive(io.BytesIO(data), **kwargs) as archive:  # type: ignore[arg-type]
+        members = archive.members()
+        contents = {m.name: archive.read(m) for m in members if m.is_file}
+        return contents, {m.name: m.size for m in members}
+
+
+@requires_binary("unrar")
+def test_compressed_member_of_unknown_size_lists_none_until_read() -> None:
+    """A compressed member whose header leaves the size unknown on its only part
+    lists ``size=None``, not the header's placeholder. A partial read leaves it
+    unknown; a verified full read fills it in, as ZIP and single-file members do."""
+    data = _fixture("basic_solid__.rar").read_bytes()
+    want, sizes = _contents_and_sizes(data)
+    flagged = flag_size_unknown(data)
+    with open_archive(io.BytesIO(flagged)) as archive:
+        member = archive.get("subdir/file2.txt")
+        assert member is not None and member._raw.size_unknown
+        assert member.size is None
+        assert not member.member_state_final
+        with archive.open(member) as stream:
+            assert stream.read(3) == want[member.name][:3]
+        assert member.size is None
+        assert archive.read(member) == want[member.name]
+        assert member.size == sizes[member.name]
+        assert member.member_state_final
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    "fixture",
+    # Solid, solid in several streams, and nonsolid (read in batches).
+    ["basic_solid__.rar", "solid_groups__.rar", "hostile_argv__.rar"],
+)
+@pytest.mark.parametrize("only", [None, 1], ids=["every-member", "second-member"])
+def test_passes_read_members_of_unknown_size(fixture: str, only: int | None) -> None:
+    """A pass splits one ``unrar`` output by member sizes. A member of unknown size,
+    and every member after it, has no place in it, so each is read on its own: the
+    contents are the archive's, and every size is filled in."""
+    data = _fixture(fixture).read_bytes()
+    want, sizes = _contents_and_sizes(data)
+    flagged = flag_size_unknown(data, only=only)
+    for streaming in (False, True):
+        with open_archive(io.BytesIO(flagged), streaming=streaming) as archive:
+            got = {m.name: s.read() for m, s in archive.stream_members() if s}
+            assert {name: got[name] for name in want} == want
+            if not streaming:
+                listed = archive.members()
+                assert any(m._raw.size_unknown for m in listed)
+                assert {m.name: m.size for m in listed} == sizes
+    with tempfile.TemporaryDirectory() as dest:
+        with open_archive(io.BytesIO(flagged)) as archive:
+            archive.extract_all(dest)
+        for name, content in want.items():
+            assert (Path(dest) / name).read_bytes() == content
+
+
+@requires_binary("unrar")
+def test_hard_link_of_unknown_size_lists_none() -> None:
+    """A hard link packs no bytes, so its packed size (0) does not size it: with the
+    flag it lists no size, and nothing fills one in. It still reads its target."""
+    flagged = flag_size_unknown(_fixture("hardlinks_solid__.rar").read_bytes(), only=2)
+    with open_archive(io.BytesIO(flagged)) as archive:
+        link = archive.get("subdir/hardlink_to_file1.txt")
+        assert link is not None and link.type is MemberType.HARDLINK
+        assert link.size is None
+        assert archive.read(link) == b"Hello 1!"
+        assert link.size is None
+        assert link.member_state_final
+
+
+def test_unar_pass_places_nothing_from_a_member_of_unknown_size() -> None:
+    """An all-entries ``unar`` run is split by sizes too: its offsets stop at the
+    first member of unknown size, which the pass then reads on its own."""
+    from archivey.internal.backends.rar_unar import UnarRarPolicy, unar_pipe_offsets
+
+    archive = parse_rar_archive(
+        io.BytesIO(
+            flag_size_unknown(_fixture("basic_solid__.rar").read_bytes(), only=1)
+        )
+    )
+    payload = [info for info in archive.members if info.is_payload_file()]
+    offsets = unar_pipe_offsets(archive)
+    assert [id(info) in offsets for info in payload] == [True, False, False, False]
+    policy = UnarRarPolicy(archive)
+    assert [policy.solid_pass_offset(info) for info in payload] == [0, None, None, None]
+
+
+@pytest.mark.parametrize(
+    ("output", "crc", "verdict"),
+    [
+        (b"x" * 64, zlib.crc32(b"x" * 64), PasswordConfirmVerdict.CONFIRMED),
+        (b"x" * 64, zlib.crc32(b"y"), PasswordConfirmVerdict.REJECTED),
+        (b"x" * 3, zlib.crc32(b"x" * 3), PasswordConfirmVerdict.INCONCLUSIVE),
+        (b"x" * 64, None, PasswordConfirmVerdict.INCONCLUSIVE),
+        (
+            b"x" * (PASSWORD_CONFIRM_PREFIX_BYTES + 1),
+            0,
+            PasswordConfirmVerdict.INCONCLUSIVE,
+        ),
+    ],
+    ids=["whole-match", "whole-mismatch", "too-short", "no-crc", "past-budget"],
+)
+def test_password_probe_of_unknown_size(
+    output: bytes, crc: int | None, verdict: PasswordConfirmVerdict
+) -> None:
+    """With no size to plan against, the probe reads the prefix and one byte more.
+    An output that ends first is the whole member, judged by its CRC32; one that
+    goes on is only evidence. A short output is never a rejection by itself."""
+    assert rar_reader._probe_unknown_size(io.BytesIO(output), crc) is verdict
 
 
 def test_stored_member_whose_encryption_is_unknown_keeps_its_declared_size() -> None:

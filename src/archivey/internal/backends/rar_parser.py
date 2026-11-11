@@ -1958,12 +1958,16 @@ def _settle_unknown_stored_size(member: RarMemberInfo) -> None:
     is in. A part before the last would give the size so far, and an unmerged
     continuation (``split_before``) only its own share. Only for plaintext, which
     packs exactly its own bytes; ciphertext is padded to the AES block, and a member
-    whose encryption is unknown may be ciphertext. Any other member keeps its
-    declared value, which no known writer leaves unresolved on the last part.
+    whose encryption is unknown may be ciphertext. Not for a hard link or a file
+    copy: it packs no bytes of its own, so its packed size says nothing of the
+    file's. Any other member keeps the flag, and the reader lists it with no size
+    (``rar_reader._size_left_unknown``); no known writer leaves one unresolved on
+    the last part.
     """
     if (
         member.size_unknown
         and member.is_stored
+        and not member.is_hardlink_or_copy
         and not member.split_after
         and not member.split_before
         and not member.is_encrypted

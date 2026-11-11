@@ -3018,7 +3018,7 @@ class BaseArchiveReader(ArchiveReader):
         stream: BinaryIO,
         member: ArchiveMember,
         *,
-        size: int,
+        size: int | None,
         check: Literal[
             "weak_open_check", "confirm_budget_exhausted", "no_password_check"
         ]

@@ -135,11 +135,26 @@ def unar_emitted_size(info: RarMemberInfo) -> int:
     return info.file_size
 
 
+def _emits_unknown_size(info: RarMemberInfo) -> bool:
+    """Whether ``unar`` writes data of a length no header gives for this entry.
+
+    A RAR5 entry whose size stays unknown on every part (``size_unknown`` after the
+    parse) holds a placeholder there, so nothing after it in a run can be placed.
+    """
+    return info.size_unknown and not _carries_no_data(info)
+
+
 def unar_pipe_offsets(archive: RarArchive) -> dict[int, int]:
-    """``id(member info)`` to where its bytes start in an all-entries ``unar`` run."""
+    """``id(member info)`` to where its bytes start in an all-entries ``unar`` run.
+
+    The map stops at the first entry of unknown size (:func:`_emits_unknown_size`):
+    that entry and every later one have no place in the run.
+    """
     offsets: dict[int, int] = {}
     position = 0
     for info in archive.members:
+        if _emits_unknown_size(info):
+            break
         offsets[id(info)] = position
         position += unar_emitted_size(info)
     return offsets
@@ -391,6 +406,9 @@ class UnarRarPolicy:
         self._pass_refusals: dict[int, str] = {}
         self._pass_indexes: list[int] | None = None
         self._pass_offsets: dict[int, int] = {}
+        # ``id`` of each entry a run that names entries (``_pass_indexes``) holds,
+        # placed or not (``unar_pipe_offsets``).
+        self._pass_selected: set[int] = set()
         if self._archive_refusal is None:
             self._plan_solid_pass()
 
@@ -419,8 +437,12 @@ class UnarRarPolicy:
                 self._pass_refusals[id(info)] = REFUSE_TOO_MANY_SELECTED
                 continue
             selected.append(info)
+        self._pass_selected = {id(info) for info in selected}
         position = 0
         for info in selected:
+            if _emits_unknown_size(info):
+                # As in ``unar_pipe_offsets``: nothing from here on can be placed.
+                break
             self._pass_offsets[id(info)] = position
             position += info.file_size
         self._pass_indexes = [self._index[id(info)] for info in selected]
@@ -479,7 +501,7 @@ class UnarRarPolicy:
             return any(
                 info.file_size > 0
                 for info in self._archive.members
-                if id(info) in self._pass_offsets
+                if id(info) in self._pass_selected
             )
         return any(unar_emitted_size(info) > 0 for info in self._archive.members)
 
@@ -499,9 +521,13 @@ class UnarRarPolicy:
         return any(
             info.is_encrypted
             for info in self._archive.members
-            if self._pass_indexes is None or id(info) in self._pass_offsets
+            if self._pass_indexes is None or id(info) in self._pass_selected
         )
 
-    def solid_pass_offset(self, info: RarMemberInfo) -> int:
-        """Where this readable payload member starts in the solid pass's run."""
-        return self._pass_offsets[id(info)]
+    def solid_pass_offset(self, info: RarMemberInfo) -> int | None:
+        """Where this readable payload member starts in the solid pass's run.
+
+        ``None`` for a member the run cannot place: one of unknown size, or one
+        after it (:func:`unar_pipe_offsets`). The pass reads it on its own.
+        """
+        return self._pass_offsets.get(id(info))
