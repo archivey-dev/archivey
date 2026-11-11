@@ -114,7 +114,7 @@ Apple's `xar` and bsdtar are compared by hand:
 holds one stream, two streams, or a stream followed by junk or zeros, for each encoding,
 and extracts them with all three readers. The manual
 `xar-oracle` workflow runs it on macOS, which ships both tools. On 2026-11-11 (Apple `xar`
-1.8dev, bsdtar 3.7.4):
+1.8dev, bsdtar 3.5.3 with libarchive 3.7.4):
 
 - Apple `xar` decodes only the first gzip or bzip2 stream and ignores the rest without an
   error, even when the declared checksum covers both streams. It cannot read xz (it writes

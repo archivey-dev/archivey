@@ -144,11 +144,19 @@ Path(sys.argv[2]).write_bytes(data)
 """
 
 
-def tools() -> dict[str, Callable[[Path, Path], list[str]] | None]:
-    xar = shutil.which("xar")
-    bsdtar = shutil.which("bsdtar") or (
-        "/usr/bin/tar" if sys.platform == "darwin" else None
-    )
+def binaries() -> dict[str, str | None]:
+    """The xar and bsdtar binaries to run, or None when one is not installed."""
+    return {
+        "xar": shutil.which("xar"),
+        "bsdtar": shutil.which("bsdtar")
+        or ("/usr/bin/tar" if sys.platform == "darwin" else None),
+    }
+
+
+def tools(
+    paths: dict[str, str | None],
+) -> dict[str, Callable[[Path, Path], list[str]] | None]:
+    xar, bsdtar = paths["xar"], paths["bsdtar"]
     return {
         "xar": (lambda arc, out: [xar, "-xf", str(arc), "-C", str(out)])
         if xar
@@ -171,7 +179,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, help="also write the table here")
     args = parser.parse_args()
 
-    found = tools()
+    paths = binaries()
+    found = tools(paths)
     lines = [
         "| encoding | case | " + " | ".join(found) + " |",
         "|---|---|" + "---|" * len(found),
@@ -196,13 +205,11 @@ def main() -> None:
             lines.append(
                 f"| {case.encoding} | {case.name} | " + " | ".join(cells) + " |"
             )
-    versions = []
-    for name, cmd in (
-        ("xar", ["xar", "--version"]),
-        ("bsdtar", ["bsdtar", "--version"]),
-    ):
-        if shutil.which(cmd[0]):
-            versions.append(f"{name}: {run(cmd, Path.cwd())[1] or '?'}")
+    versions = [
+        f"{name} ({path}): {run([path, '--version'], Path.cwd())[1] or '?'}"
+        for name, path in paths.items()
+        if path
+    ]
     table = "\n".join([f"Tools: {'; '.join(versions) or 'none found'}", "", *lines])
     print(table)
     if args.out:
