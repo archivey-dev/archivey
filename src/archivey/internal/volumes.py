@@ -8,12 +8,13 @@ a stream, an ``fsspec`` ``OpenFile`` or a list of volumes all come out as one so
    the names are checked first (:func:`_validate_volume_sequence_bases`,
    :func:`_validate_numbered_volume_completeness`). A one-element list is resolved
    as a single source.
-2. A single path or ``OpenFile`` may be one part of a set. Discovery
+2. A single path may be one part of a set. Discovery
    (:func:`discover_volume_siblings`) finds the other parts beside it from the three
    naming schemes below. Numbered parts (``x.7z.001``) are raw byte slices, so they
-   are joined. A local RAR set keeps the path of the first volume present, because
-   unrar walks the set on disk itself; a remote set of either kind is joined. The
-   RAR backend also uses the RAR naming helpers here.
+   are joined. A RAR set keeps the path of the first volume present, because unrar
+   walks the set on disk itself. The RAR backend also uses the RAR naming helpers
+   here. An ``OpenFile`` is never searched: a remote set is passed as a list
+   (maintainer ruling, 2026-11-11; :data:`REMOTE_VOLUMES_AS_LIST`).
 3. Anything else is one source: a path is read as the one file it names, an
    ``OpenFile`` is read by range (or through fsspec's decompression when it has a
    ``compression``), and a binary stream is wrapped as it is.
@@ -24,24 +25,21 @@ from __future__ import annotations
 import errno
 import io
 import os
-import posixpath
 import re
 import stat
 import sys
 from bisect import bisect_right
 from collections import Counter, OrderedDict
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
 from typing import (
     TYPE_CHECKING,
-    Any,
     BinaryIO,
     NoReturn,
     TypeAlias,
     TypeGuard,
     cast,
-    overload,
 )
 
 from archivey.exceptions import (
@@ -64,7 +62,6 @@ from archivey.internal.remote import (
     FsspecDecompressed,
     RangeSource,
     WindowPool,
-    display_url,
     is_open_file,
     open_decompressed,
     open_file_compression,
@@ -334,8 +331,8 @@ def _predicted_volume_name(scheme: int, named: str, part: int) -> str:
 
 
 def _pick_volume(
-    candidates: list[_VP], part: int, scheme: int, named: str, base: str
-) -> _VP:
+    candidates: list[Path], part: int, scheme: int, named: str, base: str
+) -> Path:
     """One file for a part number that several names in the directory carry.
 
     ``q.part2.rar`` and ``q.part02.rar`` are both part 2, as are ``x.7z.002`` and
@@ -362,7 +359,7 @@ def _pick_volume(
     predicted = _predicted_volume_name(scheme, named, part)
     predicted_width = _part_width(pattern, predicted)
 
-    def rank(candidate: _VP) -> tuple[bool, bool, bool, bool, bool, str]:
+    def rank(candidate: Path) -> tuple[bool, bool, bool, bool, bool, str]:
         name = candidate.name
         return (
             name != named,
@@ -376,11 +373,11 @@ def _pick_volume(
     return min(candidates, key=rank)
 
 
-def _pick_volumes(parent: _VP, scheme: int, base: str, name: str) -> list[_VP] | None:
+def _pick_volumes(parent: Path, scheme: int, base: str, name: str) -> list[Path] | None:
     """The sibling volumes of ``name``, one per part number, ordered by part."""
     pattern = _VOLUME_SCHEMES[scheme]
     part_of = _rar_part_number if scheme == _RAR_PART_SCHEME else _numbered_part_number
-    grouped: dict[int, list[_VP]] = {}
+    grouped: dict[int, list[Path]] = {}
     for candidate in _siblings_with_base(parent, pattern, base):
         grouped.setdefault(part_of(candidate.name), []).append(candidate)
     if len(grouped) <= 1:
@@ -402,8 +399,8 @@ def _is_old_scheme_first_volume_name(name: str) -> bool:
 
 
 def _old_rar_listed_file(
-    by_name: dict[str, list[_VP]], wanted: str, base: str
-) -> _VP | None:
+    by_name: dict[str, list[Path]], wanted: str, base: str
+) -> Path | None:
     """The file in the listing named ``wanted`` in any case, or ``None``.
 
     Of several that differ only in case, a name starting with ``base`` as spelled
@@ -424,25 +421,14 @@ def _old_rar_listed_file(
     return candidates[0] if candidates else None
 
 
-# Discovery is best-effort when it is refused: a directory it may not list (a local one of
-# mode ``0711``, a store or HTTP server that refuses the request) or a file whose first
-# bytes it may not read reads as "no sibling there". The file the caller named then
-# opens alone, as with ``discover_volumes=False``, and a part it needs is reported
-# missing by the check that refuses an incomplete set. What counts: any ``OSError`` (a
-# refusal is ``PermissionError`` or ``FileNotFoundError``; a ``TimeoutError`` is an
-# ``OSError`` too and counts the same), a file system with no ``ls``
-# (``NotImplementedError``), and an HTTP 4xx answer, which fsspec's HTTP file system
-# raises as ``aiohttp.ClientResponseError`` for every status but 404. That one is
-# recognised by its integer ``status``, so that core does not import ``aiohttp``.
-# Anything else (a 5xx, a bug in a file system, ``MemoryError``, an archivey error)
-# propagates, as DR-15a rules for an unknown exception.
-def _is_discovery_miss(exc: Exception) -> bool:
-    if isinstance(exc, (OSError, NotImplementedError)):
-        return True
-    status = getattr(exc, "status", None)
-    return type(status) is int and 400 <= status < 500
-
-
+# Discovery is best-effort when it is refused: a directory it may not list (one of mode
+# ``0711``) or a file whose first bytes it may not read reads as "no sibling there". The
+# file the caller named then opens alone, as with ``discover_volumes=False``, and a part
+# it needs is reported missing by the check that refuses an incomplete set. Only an
+# ``OSError`` counts (a refusal is ``PermissionError`` or ``FileNotFoundError``; a
+# ``TimeoutError`` is an ``OSError`` too). Anything else (``MemoryError``, an archivey
+# error) propagates, as DR-15a rules for an unknown exception. Discovery runs on local
+# paths only: an ``fsspec`` source is never searched (``_resolve_single``).
 def _log_discovery_miss(what: str, path: object, exc: BaseException) -> None:
     logger.debug(
         "Volume discovery could not %s %r, so it looks for no volumes there: %r",
@@ -452,130 +438,13 @@ def _log_discovery_miss(what: str, path: object, exc: BaseException) -> None:
     )
 
 
-def _listed(parent: _VP) -> list[_VP]:
-    """The entries of ``parent``, or none when listing it is refused
-    (:func:`_is_discovery_miss`). A ``RemoteVolumePath`` handles its own failure, in
-    ``_listing``."""
+def _listed(parent: Path) -> list[Path]:
+    """The entries of ``parent``, or none when listing it is refused (an ``OSError``)."""
     try:
         return list(parent.iterdir())
-    except Exception as exc:
-        if not _is_discovery_miss(exc):
-            raise
-        _log_discovery_miss("list", _shown(parent), exc)
+    except OSError as exc:
+        _log_discovery_miss("list", display_path(parent), exc)
         return []
-
-
-class RemoteVolumePath:
-    """A path on an ``fsspec`` file system, for volume discovery.
-
-    A directory is listed once, with ``ls(detail=True)``, and every question about a
-    name in it is answered from that listing, so discovering a set costs one request
-    whatever the scheme. ``head`` reads the start of a file, for the RAR signature
-    check on a continuation found past a gap.
-    """
-
-    def __init__(
-        self, fs: Any, path: str, listings: dict[str, dict[str, dict[str, Any]]]
-    ) -> None:
-        self.fs = fs
-        self.path = path.rstrip("/") or "/"
-        self._listings = listings
-
-    @override
-    def __str__(self) -> str:
-        # For messages only, so without credentials; the I/O uses ``self.path``.
-        unstrip = getattr(self.fs, "unstrip_protocol", None)
-        return display_url(unstrip(self.path) if callable(unstrip) else self.path)
-
-    @override
-    def __repr__(self) -> str:
-        return f"RemoteVolumePath({str(self)!r})"
-
-    @override
-    def __eq__(self, other: object) -> bool:
-        return (
-            isinstance(other, RemoteVolumePath)
-            and other.fs is self.fs
-            and other.path == self.path
-        )
-
-    @override
-    def __hash__(self) -> int:
-        return hash((id(self.fs), self.path))
-
-    @property
-    def name(self) -> str:
-        return posixpath.basename(self.path)
-
-    @property
-    def stem(self) -> str:
-        return PurePosixPath(self.name).stem
-
-    @property
-    def parent(self) -> RemoteVolumePath:
-        return RemoteVolumePath(self.fs, posixpath.dirname(self.path), self._listings)
-
-    def __truediv__(self, name: str) -> RemoteVolumePath:
-        return RemoteVolumePath(
-            self.fs, posixpath.join(self.path, name), self._listings
-        )
-
-    def _listing(self) -> dict[str, dict[str, Any]]:
-        listing = self._listings.get(self.path)
-        if listing is None:
-            try:
-                entries = self.fs.ls(self.path, detail=True)
-            except Exception as exc:
-                # Refused, or no ``ls``: no siblings to offer (``_is_discovery_miss``).
-                if not _is_discovery_miss(exc):
-                    raise
-                _log_discovery_miss("list", str(self), exc)
-                entries = []
-            listing = {
-                posixpath.basename(str(entry["name"]).rstrip("/")): entry
-                for entry in entries
-            }
-            self._listings[self.path] = listing
-        return listing
-
-    def _info(self) -> dict[str, Any] | None:
-        return self.parent._listing().get(self.name)
-
-    def iterdir(self) -> Iterator[RemoteVolumePath]:
-        for name in self._listing():
-            yield self / name
-
-    def is_file(self) -> bool:
-        # A link counts, as ``Path.is_file`` follows one: discovery then refuses it
-        # as a sibling that is a link, as it does a local one.
-        info = self._info()
-        return info is not None and (
-            info.get("type") == "file" or bool(info.get("islink"))
-        )
-
-    def is_symlink(self) -> bool:
-        info = self._info()
-        return info is not None and bool(info.get("islink"))
-
-    def head(self, n: int) -> bytes:
-        return cast(bytes, self.fs.cat_file(self.path, 0, n))
-
-    def listed_size(self) -> int | None:
-        """The size the listing gave, so opening the volume needs no ``info``
-        request; ``None`` when the listing has no whole-number size."""
-        info = self._info()
-        size = None if info is None else info.get("size")
-        return size if isinstance(size, int) and size >= 0 else None
-
-
-# What volume discovery runs on: a local path, or one on an ``fsspec`` file system. The
-# naming rules are the same for both, so a remote set is found as a local one is; a
-# set's paths are all of the kind that was named.
-_VP: TypeAlias = Path | RemoteVolumePath
-
-
-def _shown(path: _VP) -> str:
-    return display_path(path) if isinstance(path, Path) else str(path)
 
 
 # Both RAR signatures start with these bytes; every volume of a set carries one.
@@ -607,24 +476,19 @@ def rar_volume_number(name: str) -> int | None:
     return number if number <= _MAX_VOLUME_PART else None
 
 
-def _starts_like_rar(path: Path | RemoteVolumePath) -> bool:
+def _starts_like_rar(path: Path) -> bool:
     """Whether ``path`` starts with a RAR signature; ``False`` when reading it is
-    refused (:func:`_is_discovery_miss`)."""
+    refused (an ``OSError``)."""
     try:
-        if isinstance(path, Path):
-            with path.open("rb") as handle:
-                head = handle.read(len(_RAR_MARKER_PREFIX))
-        else:
-            head = path.head(len(_RAR_MARKER_PREFIX))
-    except Exception as exc:
-        if not _is_discovery_miss(exc):
-            raise
-        _log_discovery_miss("read", _shown(path), exc)
+        with path.open("rb") as handle:
+            head = handle.read(len(_RAR_MARKER_PREFIX))
+    except OSError as exc:
+        _log_discovery_miss("read", display_path(path), exc)
         return False
     return head == _RAR_MARKER_PREFIX
 
 
-def _collect_old_rar_volumes(parent: _VP, base: str) -> list[_VP] | None:
+def _collect_old_rar_volumes(parent: Path, base: str) -> list[Path] | None:
     """Volume 1, then each name unrar would look for next, then any past a gap.
 
     Volume 1 is ``<base>.rar``, else ``<base>.exe``, else ``<base>.sfx``. Every name,
@@ -645,7 +509,7 @@ def _collect_old_rar_volumes(parent: _VP, base: str) -> list[_VP] | None:
     ``notes.t01``. The contiguous walk from volume 1 needs no such check: unrar
     itself would look for each of those names.
     """
-    by_name: dict[str, list[_VP]] = {}
+    by_name: dict[str, list[Path]] = {}
     for candidate in _listed(parent):
         by_name.setdefault(candidate.name.lower(), []).append(candidate)
     first = None
@@ -653,7 +517,7 @@ def _collect_old_rar_volumes(parent: _VP, base: str) -> list[_VP] | None:
         first = _old_rar_listed_file(by_name, f"{base}{suffix}", base)
         if first is not None:
             break
-    volumes: list[_VP] = []
+    volumes: list[Path] = []
     if first is not None:
         volumes.append(first)
         current = first.name
@@ -669,7 +533,7 @@ def _collect_old_rar_volumes(parent: _VP, base: str) -> list[_VP] | None:
     # Past a gap, or with no volume 1: the rest of the listing, by number.
     walked = len(volumes) + (0 if first is not None else 1)
     folded = base.lower()
-    beyond: dict[int, _VP] = {}
+    beyond: dict[int, Path] = {}
     for lower_name in by_name:
         match = _OLD_RAR_CONTINUATION_RE.match(lower_name)
         if match is None or match.group("base") != folded:
@@ -684,12 +548,13 @@ def _collect_old_rar_volumes(parent: _VP, base: str) -> list[_VP] | None:
     return volumes if len(volumes) > 1 else None
 
 
-def _siblings_with_base(parent: _VP, pattern: re.Pattern[str], base: str) -> list[_VP]:
+def _siblings_with_base(
+    parent: Path, pattern: re.Pattern[str], base: str
+) -> list[Path]:
     """The files in ``parent`` that ``pattern`` reads with ``base``, case-folded.
 
     The name tests run before ``is_file``, so a large local directory costs a
-    ``stat`` per matching name, not one per entry. A ``RemoteVolumePath`` answers
-    every question from one cached listing of ``parent``.
+    ``stat`` per matching name, not one per entry.
     """
     folded = base.lower()
     return [
@@ -701,17 +566,7 @@ def _siblings_with_base(parent: _VP, pattern: re.Pattern[str], base: str) -> lis
     ]
 
 
-@overload
-def discover_volume_siblings(path: Path) -> list[Path] | None: ...
-
-
-@overload
-def discover_volume_siblings(
-    path: RemoteVolumePath,
-) -> list[RemoteVolumePath] | None: ...
-
-
-def discover_volume_siblings(path: _VP) -> list[Any] | None:
+def discover_volume_siblings(path: Path) -> list[Path] | None:
     """Return ordered sibling paths when ``path`` is part of a volume set, else ``None``.
 
     A sibling found this way that is a symlink is refused (:class:`OpenError`): in a
@@ -728,17 +583,15 @@ def discover_volume_siblings(path: _VP) -> list[Any] | None:
     return volumes
 
 
-def _discovered_link_error(
-    volume: Path | RemoteVolumePath, named: Path | RemoteVolumePath
-) -> OpenError:
+def _discovered_link_error(volume: Path, named: Path) -> OpenError:
     return OpenError(
-        f"Volume {_shown(volume)}, found beside {_shown(named)}, is a "
+        f"Volume {display_path(volume)}, found beside {display_path(named)}, is a "
         "symbolic link; archivey does not follow a link it found on its own. Pass "
         "the volumes as a list to read them anyway."
     )
 
 
-def _discover_volume_siblings(path: _VP) -> list[_VP] | None:
+def _discover_volume_siblings(path: Path) -> list[Path] | None:
     """:func:`discover_volume_siblings` without the symlink refusal.
 
     Classifies ``path``'s name first and touches the filesystem only for a name
@@ -767,10 +620,7 @@ def _discover_volume_siblings(path: _VP) -> list[_VP] | None:
         # matches the extension's case but spells the base as the stub does, so
         # ``archive.exe`` beside ``ARCHIVE.R00`` is not an entry point (the set is
         # still found from ``ARCHIVE.R00``). Closing that would cost an ``iterdir``
-        # on every local ``.exe`` / ``.sfx`` open. These costs are a local path's:
-        # on a ``RemoteVolumePath`` the first ``is_file`` lists the parent once, so
-        # every remote ``.rar``, ``.exe`` or ``.sfx`` open pays one listing, which
-        # ``discover_volumes=False`` skips.
+        # on every ``.exe`` / ``.sfx`` open.
         if not lower.endswith(".rar") and not any(
             (parent / f"{path.stem}.{letter}00").is_file() for letter in ("r", "R")
         ):
@@ -1496,8 +1346,22 @@ def _validate_numbered_volume_completeness(paths: Sequence[PurePath]) -> None:
         raise TruncatedError(_numbered_volume_sequence_error(base, numbered))
 
 
+# Added to the refusal of a lone ``OpenFile`` whose name or headers say it is one part of
+# a set. archivey never searches a remote folder for the other parts (maintainer ruling,
+# 2026-11-11, in ``_resolve_single``), so the caller is told the one way to read the set.
+REMOTE_VOLUMES_AS_LIST = (
+    "Pass the volume parts as a list of OpenFile objects, in order: archivey does not "
+    "look for the other parts of a remote archive."
+)
+
+
+def is_lone_remote(source: ArchiveSource) -> bool:
+    """Whether ``source`` reads one ``fsspec`` ``OpenFile`` by range, not a list."""
+    return len(source.remote_sources) == 1 and source.joined is None
+
+
 def incomplete_lone_numbered_volume_error(
-    archive_name: str | None,
+    archive_name: str | None, *, remote: bool = False
 ) -> TruncatedError | None:
     """``TruncatedError`` when ``archive_name`` is a numbered volume part.
 
@@ -1507,6 +1371,8 @@ def incomplete_lone_numbered_volume_error(
     are a truncated set, not a format-specific spanned-ZIP refusal. Callers
     skip this when ``format=`` names a format other than ZIP or 7z: that format
     is honoured or refused as a conflict, not reported as a missing volume.
+    ``remote`` (a lone ``OpenFile``, which is never searched) adds
+    :data:`REMOTE_VOLUMES_AS_LIST`.
     """
     if not archive_name:
         return None
@@ -1532,10 +1398,13 @@ def incomplete_lone_numbered_volume_error(
         missing_text = ", ".join(missing) + ", …"
     else:
         missing_text = ", ".join(missing)
-    return TruncatedError(
+    message = (
         f"Incomplete multi-volume set for {base}: "
         f"found part {part} only; missing {missing_text}"
     )
+    if remote:
+        message += f". {REMOTE_VOLUMES_AS_LIST}"
+    return TruncatedError(message)
 
 
 def join_volumes(paths: Sequence[Path]) -> ConcatenatedFile:
@@ -1610,14 +1479,9 @@ class _RangeSources:
     stream part, so the source over it closes these (:meth:`close_all`).
     """
 
-    def __init__(
-        self, max_read_through: int, sizes: dict[str, int] | None = None
-    ) -> None:
+    def __init__(self, max_read_through: int) -> None:
         self._pool = WindowPool()
         self._max_read_through = max_read_through
-        # Sizes discovery read from a listing, by path, so no part costs a size
-        # request of its own.
-        self._sizes = sizes or {}
         self.opened: list[RangeSource] = []
 
     def open(self, of: object) -> RangeSource:
@@ -1625,7 +1489,6 @@ class _RangeSources:
             of,
             pool=self._pool,
             max_read_through=self._max_read_through,
-            size=self._sizes.get(cast("OpenFile", of).path),
         )
         self.opened.append(ranged)
         return ranged
@@ -1690,17 +1553,14 @@ def _part_name(raw: object, item: Path | BinaryIO) -> PurePath | None:
 
 
 def _resolve_volume_list(
-    raw_items: Sequence[object],
-    max_read_through: int,
-    sizes: dict[str, int] | None = None,
+    raw_items: Sequence[object], max_read_through: int
 ) -> ResolvedSource:
-    """Join two or more parts, given by the caller or found by remote discovery.
+    """Join the two or more parts the caller listed.
 
-    ``sizes`` holds part sizes, by remote path, that a directory listing already
-    gave. The range sources opened for ``OpenFile`` parts close with the
-    returned source, or here if joining fails.
+    The range sources opened for ``OpenFile`` parts close with the returned source,
+    or here if joining fails.
     """
-    ranges = _RangeSources(max_read_through, sizes)
+    ranges = _RangeSources(max_read_through)
     try:
         items = [_coerce_path_or_stream(item, ranges) for item in raw_items]
         paths = [item for item in items if isinstance(item, Path)]
@@ -1730,38 +1590,13 @@ def _resolve_volume_list(
     return ResolvedSource(archive_source, name, len(items))
 
 
-def _remote_volume_siblings(
-    source: OpenFile,
-) -> tuple[list[OpenFile], dict[str, int]] | None:
-    """The volume set an ``OpenFile`` belongs to, found as a local one is, from one
-    ``ls`` of its directory (:class:`RemoteVolumePath`), and each part's size from
-    that listing; ``None`` when it is not part of one. The named file keeps its own
-    ``OpenFile``; each sibling gets one on the same file system."""
-    named = RemoteVolumePath(source.fs, source.path, {})
-    siblings = discover_volume_siblings(named)
-    if siblings is None:
-        return None
-    files = [
-        source
-        if sibling == named
-        else type(source)(source.fs, sibling.path, mode=source.mode)
-        for sibling in siblings
-    ]
-    sizes = {
-        sibling.path: size
-        for sibling in siblings
-        if (size := sibling.listed_size()) is not None
-    }
-    return files, sizes
-
-
 def _resolve_single(
     source: object, *, discover_volumes: bool, max_read_through: int
 ) -> ResolvedSource:
     """Resolve one source, which may still turn out to be part of a volume set.
 
     An ``OpenFile`` is read by range, or through fsspec's decompression when it
-    has a ``compression``. A path is a directory, a part of a set found beside it,
+    has a ``compression``; it is never part of a set found beside it. A path is a directory, a part of a set found beside it,
     or one file. Anything else must be a binary stream, which is wrapped as it is.
     """
     if is_open_file(source):
@@ -1782,14 +1617,12 @@ def _resolve_single(
                     raw.close()
                 raise
             return ResolvedSource(opened, open_file_name(source), 1)
-        siblings = (
-            _remote_volume_siblings(cast("OpenFile", source))
-            if discover_volumes
-            else None
-        )
-        if siblings is not None:
-            files, sizes = siblings
-            return _resolve_volume_list(files, max_read_through, sizes)
+        # Never searched for other volumes, whatever ``discover_volumes`` says
+        # (maintainer ruling, 2026-11-11): listing a remote folder depends on the
+        # store's permissions (S3), an HTTP server often has no index page and
+        # parsing one is fragile, and nothing bounds what a search costs. The
+        # caller passes a remote set as a list of ``OpenFile`` objects instead, and
+        # an open that finds a part missing says so (``REMOTE_VOLUMES_AS_LIST``).
         ranged = RangeSource.from_open_file(
             source, pool=WindowPool(), max_read_through=max_read_through
         )

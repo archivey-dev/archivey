@@ -95,6 +95,7 @@ from archivey.internal.backends.rar_parser import (
     _RAR3_M0,
     _RAR5_XENC_AES256,
     _RAR5_XREDIR_REPARSE_POINTS,
+    NEED_FIRST_VOLUME_MSG,
     RAR3_UOW_NAME,
     RAR5_ID,
     RAR5_QO_UNMATCHED_COPIES,
@@ -230,9 +231,11 @@ from archivey.internal.streams.streamtools.binaryio import ask_resume_offset
 from archivey.internal.streams.verify import build_member_verifier
 from archivey.internal.unix_mode import special_file_type
 from archivey.internal.volumes import (
+    REMOTE_VOLUMES_AS_LIST,
     ConcatenatedFile,
     JoinedViews,
     discover_volume_siblings,
+    is_lone_remote,
     next_rar_volume_name,
     rar_volume_name,
     rar_volume_number,
@@ -2327,8 +2330,15 @@ class RarReader(BaseArchiveReader):
         """Parse the headers, trying the password candidates when they are encrypted.
 
         Returns the listing and the password to hand ``unrar`` (see the comment at
-        the return).
+        the return). For a lone ``OpenFile``, which is never searched for the other
+        volumes, a missing volume's message ends with the remedy: pass the parts as
+        a list (``REMOTE_VOLUMES_AS_LIST``).
         """
+        remedy = (
+            REMOTE_VOLUMES_AS_LIST
+            if self._source is not None and is_lone_remote(self._source)
+            else None
+        )
         try:
             try:
                 archive = self._parse_headers(None)
@@ -2345,6 +2355,7 @@ class RarReader(BaseArchiveReader):
                     if self._volume_numbers
                     else max(self._volume_set_size(), 1)
                 ),
+                remedy=remedy,
             )
             # _first_candidate_str is the first configured candidate when
             # headers parsed without a password (data-only encryption; a wrong
@@ -2361,6 +2372,14 @@ class RarReader(BaseArchiveReader):
                 else "Password required to decrypt RAR headers"
             )
             raise EncryptionError(message) from exc
+        except UnsupportedFeatureError as exc:
+            if remedy is None or exc.raw_message != NEED_FIRST_VOLUME_MSG:
+                raise
+            raise UnsupportedFeatureError(
+                f"{NEED_FIRST_VOLUME_MSG}. {remedy}",
+                source_format=exc.source_format,
+                archive_name=exc.archive_name,
+            ) from exc
 
     def _parse_headers(self, password: bytes | None) -> RarArchive:
         """Run the header parser over the source, in the shape the source has.

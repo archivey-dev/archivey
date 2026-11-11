@@ -116,6 +116,10 @@
       questions are answered from one `ls(detail=True)`; the code is shared, not copied.
 - [x] 5.2 fsspec discovery through one `ls` of the parent; each volume its own
       `RangeSource`. Tests on `memory://` for all three naming schemes.
+- [x] 5.3 Remote discovery removed (davi, 2026-11-11; design D4): an `OpenFile` is never
+      searched, `RemoteVolumePath` and the remote listing are gone, and a lone remote
+      part that needs the others is refused naming the list of `OpenFile` objects. An
+      explicit list keeps its own `RangeSource` per part. Local discovery is unchanged.
 
 ## 6. Docs
 

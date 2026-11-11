@@ -97,23 +97,27 @@ file in the reason.
 | A shorter object while detection probes, or while TAR scans past its end marker | The call raises `SourceChangedError`; it does not return another format or end with only a diagnostic |
 | `OpenFile` with `compression=` | `SOURCE_CHANGE_UNDETECTABLE` at open, its reason naming fsspec's decompressing file |
 
-### Requirement: Multi-volume discovery over fsspec
+### Requirement: Multi-volume sets over fsspec are passed as a list
 
-When the source is one `OpenFile` of a multi-volume set, sibling discovery SHALL list the
-parent directory through the source's file system once and SHALL apply the same naming
-rules as local discovery (`archive-reading` §Multi-volume), giving the same set for the
-same names. Each discovered volume SHALL be opened as its own `OpenFile` source. A file
-system that cannot list a directory SHALL be treated as having no siblings.
+A single `OpenFile` source SHALL NOT be searched for sibling volumes, whatever
+`ArchiveyConfig.discover_volumes` says: archivey SHALL NOT list its directory and SHALL
+NOT ask the file system about any other file (davi, 2026-11-11). A multi-volume set
+SHALL be opened from a sequence of `OpenFile` objects, each read as its own `OpenFile`
+source and held to the same name checks as a sequence of paths. When a lone `OpenFile`
+is refused as one part of a set, the message SHALL say to pass the volume parts as a
+list of `OpenFile` objects.
 
-#### Scenario: fsspec volume discovery
+#### Scenario: fsspec volume sets
 
 | Case | Expected |
 | --- | --- |
-| `memory://d/x.7z.001` with `x.7z.002`, `x.7z.003` beside it | One reader over all three; one `ls` of `memory://d` |
-| `memory://d/q.part1.rar` with `q.part2.rar` and `q.part02.rar` | The same choice of part 2 as local discovery |
-| HTTP first volume, server cannot list | Opens as a lone first volume, as a local lone volume does |
-| The listing, or the read of a candidate's RAR signature, is refused with an HTTP 4xx status that is not an `OSError` (`aiohttp.ClientResponseError` for a 403) | The same: no sibling there, logged at DEBUG on `archivey.detection` |
-| The listing fails with an error that is not an `OSError` and has no 4xx status (an HTTP 5xx, a bug in the file system) | The error propagates unchanged |
+| `memory://d/x.7z.001` with `x.7z.002`, `x.7z.003` beside it | `TruncatedError` "found part 1 only" before any byte is read, naming the list remedy; no `ls` |
+| The same with `discover_volumes=False` | Read alone, as a local part is; no `ls` |
+| `memory://d/q.part1.rar` (or `q.rar`) with its later volumes beside it | Members of volume 1 listed, then `TruncatedError` (volume 2 missing) naming the list remedy; no `ls` |
+| `memory://d/q.part2.rar` or `q.r00` alone | `UnsupportedFeatureError` "Need first volume", naming the list remedy |
+| `[fsspec.open(u1), fsspec.open(u2), fsspec.open(u3)]` of one set | One reader over all three; no `ls` |
+| The same list with part 2 left out | `TruncatedError` naming the missing part, as for paths |
+| A complete RAR or ZIP named `x.rar`, `x.part1.rar` or `x.exe`, with `x.r00` beside it | Opens alone, with no volume diagnostic; no `ls` |
 
 ### Requirement: ArchiveyFileSystem exposes an archive as a read-only fsspec file system
 
