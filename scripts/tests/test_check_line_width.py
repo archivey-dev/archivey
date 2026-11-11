@@ -324,3 +324,16 @@ def test_a_line_the_fixer_cannot_shorten_is_not_reported() -> None:
     )
     assert not lw.breakable(link, 100)
     assert lw.breakable("word " * 30, 100)
+
+
+def test_a_short_line_ending_in_a_colon_inside_a_code_span_is_not_a_label() -> None:
+    source = (
+        "def f():\n"
+        '    """Summary.\n'
+        "\n"
+        "    prints a ``warning:\n"
+        "    resource usage not recorded`` rather than leaving the columns silently empty.\n"
+        '    """\n'
+    )
+    out = _py_reflow(source, {3})
+    assert "``warning: resource usage not recorded``" in out

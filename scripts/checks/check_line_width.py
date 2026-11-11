@@ -308,7 +308,7 @@ def segment(lines: list[str], *, docstring: bool) -> Layout:
         starts_new = (
             current is None
             or list_match is not None
-            or (docstring and stripped.endswith(":") and len(stripped.split()) <= 3)
+            or (docstring and _section_label(stripped))
             or current.cont_prefix != quote + indent
             and not _first_continuation(current, index, quote + indent)
         )
@@ -337,6 +337,20 @@ def segment(lines: list[str], *, docstring: bool) -> Layout:
     return Layout(paragraphs, prose)
 
 
+def _section_label(stripped: str) -> bool:
+    """A short capitalised ``Args:`` or ``See also:`` line, outside any code span.
+
+    ``prints a ``warning:`` is short too, but it is lower case and opens a span: the end
+    of a wrapped sentence, not a label.
+    """
+    return (
+        stripped.endswith(":")
+        and len(stripped.split()) <= 3
+        and stripped[:1].isupper()
+        and len(BACKTICK_RUN.findall(stripped)) % 2 == 0
+    )
+
+
 def _opens_section(stripped: str, lines: list[str], index: int) -> bool:
     """True when a docstring or comment line ending in ``:`` opens a section or block.
 
@@ -346,7 +360,7 @@ def _opens_section(stripped: str, lines: list[str], index: int) -> bool:
     """
     if not stripped.endswith(":"):
         return False
-    if stripped.endswith("::") or len(stripped.split()) <= 3:
+    if stripped.endswith("::") or _section_label(stripped):
         return True
     following = lines[index + 1] if index + 1 < len(lines) else ""
     if not following.strip():
@@ -369,6 +383,7 @@ def _first_continuation(paragraph: Paragraph, index: int, prefix: str) -> bool:
 
 # --- Rewrapping ------------------------------------------------------------------------
 
+BACKTICK_RUN = re.compile(r"`+")
 CODE_SPAN = re.compile(r"(`+)(?!`).*?(?<!`)\1(?!`)")
 #: How full a line must stay when the fixer ends it early on an old line break.
 RESUME_FILL = 0.75
