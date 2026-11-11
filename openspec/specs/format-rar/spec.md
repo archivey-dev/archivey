@@ -1468,7 +1468,10 @@ record has no check value.
 ### Requirement: Report bytes after a RAR end-of-archive block
 
 After an intact end-of-archive block and any data area it declares, the walk SHALL
-look at most 1 MiB further in that volume, and a non-zero byte there SHALL emit one
+look at most 1 MiB further in that volume, and no further than the payload end
+(`archive-reading`, *Honour detection payload_offset at open*): a code-signed
+self-extractor's certificate table is identified, not data after the archive, and SHALL
+raise no diagnostic. A non-zero byte in the part it looks at SHALL emit one
 `ARCHIVE_TRAILING_DATA` per volume after the members (`format="rar"`,
 `expected_marker="zeros_to_eof"`, `observed_kind="nonzero"`, `observed_bytes` the
 offset of that byte past the end block). It is a warning by default and raises under
@@ -1490,6 +1493,8 @@ an all-zero tail silent, because `rar` pads volumes with zeros.
 | `b"JUNK"` after the end block, or after zeros within 1 MiB | `ARCHIVE_TRAILING_DATA`, `observed_bytes` = zeros skipped | `DiagnosticRaisedError` |
 | `b"JUNK"` after volume 1 of a set | Full listing; one `ARCHIVE_TRAILING_DATA` naming volume 1 | `DiagnosticRaisedError` |
 | Non-zero byte at 1 MiB or more past the end block | Nothing | Opens |
+| Signed PE SFX (WinRAR's installer): end block, certificate (`payload_end` known) | Nothing | Opens |
+| Signed PE SFX: end block, `b"JUNK"`, certificate | `ARCHIVE_TRAILING_DATA` for `JUNK`; nothing for the certificate | `DiagnosticRaisedError` |
 
 ### Requirement: A damaged header after the main header SHALL list the members before it
 

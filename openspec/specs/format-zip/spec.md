@@ -666,7 +666,13 @@ SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="zip"`,
 offset of that byte past the end. It is a warning by default and raises under
 `DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. Bytes inside
 the declared comment are the comment, whatever they hold. The end record is searched for
-in the last 65 558 bytes of the file. When a longer tail hides it, the reader SHALL walk
+in the last 65 558 bytes before the payload end (`archive-reading`, *Honour detection
+payload_offset at open*), which is the end of the file when there is none. A forced
+`format=ZIP` is passed the same end (`archive-reading`), so it searches the same span and
+reports the same bytes as auto-detect. Bytes at or past
+the payload end are the executable's certificate, not data after the archive, and SHALL
+raise no diagnostic; a non-zero byte between the archive's end and the payload end is
+reported as above. When a longer tail hides the end record, the reader SHALL walk
 the local headers from the start, without decoding any member, to where the members end,
 and step over the directory and the ZIP64 end records there to the end record, which is
 then read as one the search found. Each local header the walk meets SHALL count toward
@@ -685,6 +691,9 @@ Info-ZIP `unzip` says nothing.
 | `JUNK` after the end record under `STRICT` | `DiagnosticRaisedError` |
 | 1 MiB of non-zero bytes after the end record, from a file or a pipe | One `ARCHIVE_TRAILING_DATA`, `observed_bytes` 0; members list and read |
 | The same with the directory gone | Members listed from their local headers, then `CorruptionError` (see the next requirement) |
+| Signed PE SFX: ZIP, zero padding, certificate (`payload_end` known) | No diagnostic; `STRICT` opens it |
+| Signed PE SFX: ZIP, `JUNK`, certificate | One `ARCHIVE_TRAILING_DATA` for `JUNK`; nothing for the certificate |
+| ZIP whose offsets count from byte 0, followed by a certificate over 64 KiB | The search before the payload end finds the end record; members list and read |
 
 ### Requirement: List a ZIP whose end record is missing
 
