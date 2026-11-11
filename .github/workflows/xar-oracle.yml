@@ -1,0 +1,25 @@
+# Throwaway: runs scripts/investigations/xar_multistream_oracle.py against Apple's xar
+# and libarchive's bsdtar on a macOS runner. Triggered only by pushes to its own
+# branch; not meant for main.
+on:
+  push:
+    branches: [claude/xar-multistream-oracle]
+  workflow_dispatch:
+
+jobs:
+  oracle:
+    name: macOS / xar multi-stream oracle
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --python 3.12 --no-dev
+      - name: Run oracle
+        run: |
+          uv run --no-sync python scripts/investigations/xar_multistream_oracle.py --out results.md
+          cat results.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xar-oracle
+          path: results.md
