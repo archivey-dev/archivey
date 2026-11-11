@@ -1913,16 +1913,8 @@ class SevenZipReader(BaseArchiveReader):
 
         def tail_confirms(kdf_password: bytes) -> bool:
             # Rung 1 of the ladder, the cheap key check: zero padding in the last AES
-            # block. Confirm-only, so a False goes on to the anchor plan. Padding under
-            # AES_TAIL_STRONG_PADDING settles a password only when no other candidate
-            # could be right: with several, a wrong key that passes it (1 in 2^32 at
-            # four bytes) would stop the search before the right one.
+            # block. Confirm-only, so a False goes on to the anchor plan.
             if tail is None:
-                return False
-            if (
-                tail_pack_size - tail.unpack_size < AES_TAIL_STRONG_PADDING
-                and self._passwords.is_ambiguous()
-            ):
                 return False
             return aes_tail_confirms(
                 self._folder_pack_views(folder_index)[0],
@@ -1936,8 +1928,28 @@ class SevenZipReader(BaseArchiveReader):
         # The callbacks below run once per candidate password, inside
         # ``attempt_with_confirm``: each judges the candidate against the folder,
         # raising the wrong-password error to move on.
+        # Padding under AES_TAIL_STRONG_PADDING settles a password first only when no
+        # other candidate could be right (one static password: a callback counts as
+        # several). With several, a wrong key that passes it (1 in 2^32 at four bytes,
+        # or by design in a crafted archive) would stop the search before the right
+        # one, so the anchor goes first and the tail only breaks an INCONCLUSIVE: in a
+        # folder with no CRC it is still the only evidence there is.
+        weak_tail = (
+            tail is not None
+            and tail_pack_size - tail.unpack_size < AES_TAIL_STRONG_PADDING
+        )
+
         def probe(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
             kdf_password = _password_to_kdf_bytes(candidate)
+            if weak_tail and self._passwords.is_ambiguous():
+                verdict = self._confirm_folder_password(
+                    folder_index, kdf_password, plan
+                )
+                if verdict is PasswordConfirmVerdict.INCONCLUSIVE and tail_confirms(
+                    kdf_password
+                ):
+                    verdict = PasswordConfirmVerdict.CONFIRMED
+                return kdf_password, verdict
             if tail_confirms(kdf_password):
                 return kdf_password, PasswordConfirmVerdict.CONFIRMED
             return kdf_password, self._confirm_folder_password(

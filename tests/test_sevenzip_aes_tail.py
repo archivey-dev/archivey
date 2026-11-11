@@ -357,3 +357,39 @@ def test_a_folder_with_no_crc_confirmed_on_its_tail_is_unlocked(pad: bytes) -> N
         counts = reader.diagnostics.counts  # type: ignore[attr-defined]
         assert counts.get(DiagnosticCode.DIGEST_UNVERIFIABLE, 0) == 1
         assert counts.get(DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED, 0) == 0
+
+
+@pytest.mark.parametrize(
+    "size", [9, 12, 28, 23], ids=["pad7", "pad4", "pad4-2", "pad9"]
+)
+def test_a_folder_with_no_crc_picks_the_right_password_on_short_padding(
+    size: int,
+) -> None:
+    # With no CRC anywhere the anchor leaves every candidate INCONCLUSIVE, so the
+    # tail is the only evidence, short padding or not: the right password must win
+    # over a wrong one listed first.
+    import io
+
+    from tests.test_audit_sevenzip import (
+        _AES,
+        _COPY,
+        _aes_encrypt,
+        _archive,
+        _coder,
+        _header,
+        _linear,
+    )
+
+    payload = bytes((i * 7 + 3) % 251 for i in range(size))
+    packed = _aes_encrypt(payload, "pw", pad=b"\0")
+    folder = _linear([_coder(_AES, props=b"\x00"), _coder(_COPY)])
+    header = _header(
+        folders=[folder],
+        coder_unpack_sizes=[[len(payload), len(payload)]],
+        pack_sizes=[len(packed)],
+        names=["x"],
+    )
+    data = _archive(packed, header)
+    with open_archive(io.BytesIO(data), password=["wrong-1", "pw"]) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == payload

@@ -648,10 +648,11 @@ def _open_aes_stage(
 #: tail 1 time in 256; at four, about 1 in 4 billion.
 AES_TAIL_MIN_PADDING = 4
 
-#: Fewest padding bytes for the tail key check to settle a password on its own when
-#: several candidates could be right. Under it (4 to 7 bytes: a wrong key passes 1
-#: time in 2^32 to 2^56), a candidate the tail check confirms still goes on to the
-#: integrity anchor, so a false confirm cannot stop the search before the right one.
+#: Fewest padding bytes for the tail key check to settle a password before the
+#: integrity anchor when several candidates (or a password callback) could be right.
+#: Under it (4 to 7 bytes: a wrong key passes 1 time in 2^32 to 2^56), the anchor
+#: runs first, so a false confirm cannot stop the search before the right one; the
+#: tail then only decides between candidates the anchor left INCONCLUSIVE.
 AES_TAIL_STRONG_PADDING = 8
 
 
