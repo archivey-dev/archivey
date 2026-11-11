@@ -232,9 +232,9 @@ def test_the_archivey_file_system_lists_them_under_trusted(tmp_path: Path) -> No
         info = fs.info("usr/bin/pwsh")
         assert info["islink"]
         assert info["destination"] == "/opt/microsoft/powershell/7/pwsh"
-        # It leads out of the destination, so it reads as nothing.
+        # The tree has no destination path, so it follows no such link: the link
+        # reads as nothing, and nothing under it is listed.
         assert info["type"] == "other"
-        # Nothing is written through it, so nothing under it is listed.
         assert not fs.exists("etc/mtab/inside")
         assert fs.cat("bin/env") == b"#!env\n"
     with ArchiveyFileSystem(str(archive), policy=ExtractionPolicy.STANDARD) as fs:
@@ -274,3 +274,55 @@ def test_an_earlier_link_through_a_later_rooted_link_is_removed(
     rooted = filled[-1][1]
     assert statuses[rooted] is ExtractionStatus.EXTRACTED
     assert os.readlink(dest / rooted) == str(outside)
+
+
+@_MODES
+def test_a_loop_closed_by_a_later_rooted_link_is_removed(
+    tmp_path: Path, streaming: bool
+) -> None:
+    dest = tmp_path / "dest"
+    report = open_and_extract(
+        io.BytesIO(_tar([("sym", "b", "a"), ("sym", "a", str(dest / "b"))])),
+        dest,
+        streaming=streaming,
+        policy=ExtractionPolicy.TRUSTED,
+        on_error=OnError.CONTINUE,
+    )
+    assert {r.member.name: r.status for r in report} == {
+        "b": ExtractionStatus.BLOCKED,
+        "a": ExtractionStatus.EXTRACTED,
+    }
+    assert sorted(os.listdir(dest)) == ["a"]
+
+
+def test_a_rooted_link_back_into_the_destination(tmp_path: Path) -> None:
+    """Extraction follows a target from ``/`` that leads back into the destination, as
+    any symlink. The ``archivey://`` tree has no destination path, so it leaves the
+    member out, and its diagnostic does not claim that extraction refuses it."""
+    pytest.importorskip("fsspec")
+    from archivey.fsspec import ArchiveyFileSystem
+
+    dest = tmp_path / "dest"
+    archive = tmp_path / "in.tar"
+    archive.write_bytes(
+        _tar(
+            [
+                ("dir", "sub/", ""),
+                ("sym", "abs-dir", str(dest / "sub")),
+                ("file", "abs-dir/f", b"through"),
+            ]
+        )
+    )
+    report = open_and_extract(archive, dest, policy=ExtractionPolicy.TRUSTED)
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report)
+    assert (dest / "sub/f").read_bytes() == b"through"
+    with ArchiveyFileSystem(str(archive), policy=ExtractionPolicy.TRUSTED) as fs:
+        assert not fs.exists("abs-dir/f")
+        messages = [
+            d.message
+            for d in fs.reader.diagnostics.retained
+            if "abs-dir/f" in d.message
+        ]
+        assert len(messages) == 1
+        assert "does not follow" in messages[0]
+        assert "would not write" not in messages[0]

@@ -68,8 +68,10 @@ no member replaces the destination itself. One link may point out: under `TRUSTE
 a symlink whose stored target starts at `/` is written as stored (maintainer ruling,
 2026-11-11), as GNU tar, cpio and unsquashfs write it, so a root filesystem or an
 initramfs image extracts. The link itself changes nothing outside, and nothing is
-written through it under any policy: the parent check below refuses a member under it,
-and the escape check refuses a link that resolves through it.
+written outside the destination through it under any policy: the parent check below
+refuses a member whose parent resolves through it to outside, and the escape check
+refuses a link that resolves through it to outside. A target that leads back into the
+destination is followed there, as any symlink is.
 
 **Mechanism.**
 - `internal/filters.py` `check_universal` runs on every member under every policy,
@@ -96,8 +98,9 @@ and the escape check refuses a link that resolves through it.
   inside to them while the kernel followed it outside (CVE-2025-4517 in `tarfile`).
 - Under `TRUSTED`, `check_universal(rooted_link_targets=True)` and `_write_symlink` skip
   the escape check for a target that starts with `/` (`filters.is_rooted_link_target`),
-  and the link is not tracked for recheck: it may point out already, so no later change
-  can make it escape. Its creation is still reported as a change
+  and the link is not tracked for recheck: it may point out already, and it stays even
+  when a later member changes where its target resolves (the exception in "A later
+  member cannot make an extracted symlink escape"). Its creation is still reported as a change
   (`LinkWatch.note_change`), so a link made before it whose walk runs through its path
   is rechecked, and removed if it now leads out. A drive or UNC target is still refused,
   and a single `\` target is a relative name on POSIX. The `archivey://` tree lists such
@@ -176,7 +179,11 @@ TAR.
 ### A later member cannot make an extracted symlink escape
 
 **Property.** No symlink the archive created is left on disk resolving outside the
-destination at any point a later member could observe, in either streaming mode.
+destination at any point a later member could observe, in either streaming mode. The
+one exception is a symlink whose stored target starts at `/`, which `TRUSTED` writes as
+stored wherever it points ("Extraction stays in the destination"): it is not rechecked,
+so it stays even when a later member makes its target resolve elsewhere. A relative
+link that resolves through it is rechecked as any other.
 
 A later member can change what an earlier link resolves to. Archive `l -> a/../secret`,
 then `a -> .`: when `l` is created, `a` does not exist, so `l` resolves to

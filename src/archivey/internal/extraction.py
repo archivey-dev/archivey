@@ -2277,8 +2277,9 @@ class ExtractionCoordinator:
                 if not self._keeps_rooted_target(transformed.link_target):
                     self._state.links.track(result.path, on_disk, result_index)
                 else:
-                    # A link kept as stored may lead out already, so no later change
-                    # can make it escape: it has nothing to recheck. Its creation is
+                    # A link kept as stored may lead out already, so it is not
+                    # rechecked: it stays wherever a later member makes it resolve
+                    # (threat model, O22's exception). Its creation is
                     # still a change, so a link made before it whose walk passes
                     # through its path is rechecked, and removed if it now leads out.
                     # A link made after it is checked through it when it is made.
@@ -3209,7 +3210,8 @@ class ExtractionCoordinator:
         # A later member can still change what this link resolves to; the caller
         # records the link in ``links`` for that.
         # Under TRUSTED a target from the filesystem root is written as stored and
-        # may lead out (``is_rooted_link_target``); nothing is written through it.
+        # may lead out (``is_rooted_link_target``); the parent check keeps every write
+        # through it inside the destination.
         problem = (
             None
             if self._keeps_rooted_target(target)

@@ -192,8 +192,9 @@ The rest depend on the policy:
 
 - **A link to `/etc/passwd` or `/opt/app/bin/tool`, with a target that starts at `/`:** `"strict"`
   and `"standard"` refuse it. `"trusted"` writes it as stored, as GNU tar, cpio and unsquashfs do,
-  so a root filesystem or an initramfs image extracts in full. Nothing is written through such a
-  link under any policy.
+  so a root filesystem or an initramfs image extracts in full. Nothing is written outside the
+  destination through such a link under any policy: a member under it is written only when the
+  link leads back into the destination.
 
 - **`/etc/evil.txt` or `C:/evil.txt`:** `"strict"` refuses it. `"standard"` and `"trusted"` write it
   as `etc/evil.txt` or `evil.txt`.

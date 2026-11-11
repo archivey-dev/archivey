@@ -465,14 +465,17 @@ stored, wherever it resolves, and is neither refused at creation nor rechecked, 
 tar, cpio and unsquashfs write it: a root filesystem or initramfs image holds hundreds
 (`usr/bin/pwsh -> /opt/microsoft/powershell/7/pwsh`). `STRICT` and `STANDARD` SHALL keep
 refusing one that escapes. A drive or UNC target stays refused under every policy, and a
-target that starts with a single `\` is not one of these. No member SHALL be written
-through such a link under any policy: a later member whose parent resolves through it is
-refused by the parent check, a link whose own resolution runs through it is refused as
-an escape (one made after it when it is made, one made before it by the recheck that the
-rooted link's creation starts), a hard link to a file under it is refused with its
-source, and a member that lands on the link's own name replaces the link or is refused
-by `overwrite`, never written through it. The `archivey://` tree under `TRUSTED` lists
-such a link and resolves nothing through it. Tests: `tests/test_rooted_symlinks.py`.
+target that starts with a single `\` is not one of these. Such a link is not rechecked:
+when a later member changes where its target resolves, it stays. No member SHALL be
+written outside `dest` through such a link under any policy: a later member whose parent
+resolves through it to outside is refused by the parent check, a link whose own
+resolution runs through it to outside is refused as an escape (one made after it when it
+is made, one made before it by the recheck that the rooted link's creation starts), a
+hard link to a file under it is refused with its source, and a member that lands on the
+link's own name replaces the link or is refused by `overwrite`, never written through
+it. A target that leads back into `dest` is followed there, as any symlink is. The
+`archivey://` tree under `TRUSTED` lists such a link as `"other"` and follows nothing
+through it, since it has no destination path: a member under it is left out. Tests: `tests/test_rooted_symlinks.py`.
 
 #### Scenario: symlink revalidation matrix
 
@@ -623,7 +626,7 @@ non-bypassable safety checks.
 | Behavior | `STRICT` default | `STANDARD` | `TRUSTED` |
 | --- | --- | --- | --- |
 | Path, absolute-path, link-escape, special-file rejection | Always | Always | Always |
-| SYMLINK whose target starts with `/` and leads out of `dest` | Refused | Refused | Written as stored; nothing written through it |
+| SYMLINK whose target starts with `/` and leads out of `dest` | Refused | Refused | Written as stored; nothing written outside `dest` through it |
 | Missing file/dir mode | File `0o644`, dir `0o755` | File `0o644`, dir `0o755` | Apply as stored |
 | Permission normalization | Files masked with `0o755` (execute kept when the owner has it; without owner execute, group/other execute are cleared too; group/other write stripped); dirs `0o755` | Preserve ordinary execute bits | Apply as stored |
 | setuid/setgid/sticky | Strip all | Strip all | Preserve |
