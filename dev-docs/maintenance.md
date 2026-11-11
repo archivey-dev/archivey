@@ -17,7 +17,7 @@ those use the AI plan's quota.
 
 | Workflow | When it runs | Uses AI quota | What a red run means |
 | --- | --- | --- | --- |
-| `review-loop.yml` | each time the `review` label is added | **yes**, one session per round: Opus for a standard or deep PR's first round, Sonnet for every other; up to 5 rounds an agent can ask for, 8 if a person keeps adding the label ([Review loop](review-loop.md)) | the review itself failed to post; re-add the label once |
+| `review-loop.yml` | each time the `review` label is added | **yes**, one session per round: Opus for every round of a standard or deep PR, Sonnet for a light one; up to 5 rounds an agent can ask for, 8 if a person keeps adding the label ([Review loop](review-loop.md)) | the review itself failed to post; re-add the label once |
 | `risk-label.yml` | each PR opened, pushed or retargeted (same-repository branches only) | no | the tier script failed; the `risk:` label stays as it was ([Review loop](review-loop.md)) |
 | `review-tally.yml` | weekly (Monday 06:17 UTC) and on demand | no | it could not read the week's pull requests; the report is the run's job summary ([Review loop](review-loop.md)) |
 | `claude.yml` | an `@claude` mention by a person on an issue or PR | **yes**, one session per mention | nothing, unless you asked for something |
@@ -26,6 +26,7 @@ those use the AI plan's quota.
 | `pr-gate.yml` | each PR | no | never red: it reports `CI gate` as passed so any PR can join the merge queue, where the real `CI gate` in `ci.yml` runs |
 | `docs-deploy.yml` | each push to `main` | no | the Pages deploy failed; the site keeps the previous version |
 | `ppmd-native-stress.yml` | weekly (Wednesday 05:29 UTC), on demand, and on PRs that change the PPMd code, its child process, its tests or the dependency pins | no | not a required check; see [Known issues](known-issues.md), pyppmd sections |
+| `fsspec-consumers.yml` | daily, on demand, and on PRs that change the fsspec file system, the remote source, their tests or the dependency pins | no | the `archivey://` tests failed with pandas, pyarrow or dask installed (their latest releases), or one of those tests skipped; not a required check; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `atheris-fuzz.yml` | nightly when `main` moved in the last 3 days, and on a dispatch | no | a fuzz target found an input; see [A fuzz job found a crash](#a-fuzz-job-found-a-crash); it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `benchmark-wall.yml` | daily, with a change guard | no | a wall-time ratio moved; see [The benchmark went red](#the-benchmark-went-red) |
 | `benchmark-compare.yml` | on demand only (baseline ref, candidate ref, rounds) | no | a side wrote no harness JSON; timings only report, for release notes ([release checklist](release-checklist.md)) |
@@ -82,7 +83,7 @@ Atheris writes the crashing input as an artifact of the run.
 ## The benchmark went red
 
 `benchmark-wall.yml` fails when a wall-time ratio drifts against the last measured
-night, or a case exceeds the 10x sanity ceiling. Shared runners are noisy.
+night, or a case exceeds the 13x sanity ceiling. Shared runners are noisy.
 
 1. Compare the failing case against the merges since the last green run. If nothing in
    that code path changed, it is probably noise. The failing night becomes the new

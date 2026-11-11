@@ -21,7 +21,7 @@ Modes:
 - ``full``: also report wall-time ratios vs stdlib peers, and the per-member cost and
   throughput fitted by ``benchmarks/cost_model.py``. Absolute ratios are noisy
   on shared runners, so full mode is **not** a PR gate. The change-guarded nightly
-  (``benchmark-wall.yml``) hard-fails on (1) the ~10× sanity ceiling and (2)
+  (``benchmark-wall.yml``) hard-fails on (1) the ~13× sanity ceiling and (2)
   **wall-ratio drift** vs the JSON artifact of the last run that measured, pass or
   fail (perf-review Q2 / debt-ledger Q1 option (a)). Quiet days re-publish that
   artifact (preserving ``measured_at``); a full re-measure is forced at least
@@ -119,7 +119,14 @@ SEEK_BASELINE_SLACK = 8
 # Wall-time sanity ceiling for --mode full. Absolute VISION ≤1.3× / ~2× bands stay
 # informational (shared-runner noise); nightly enforces *drift* vs the last measured
 # run's JSON instead (debt-ledger Q1 / perf Q2 option (a)).
-WALL_RATIO_BUDGET = 10.0
+WALL_RATIO_BUDGET = 13.0
+# Each timed sample of an open-and-list case repeats until this long has passed (see
+# _interleaved_pair_times): those listings take a millisecond or two on the archivey
+# side and a millisecond or less on the peer's. The mean of repeated calls favours the
+# peer (about +13% on the ZIP listing ratio in one measurement), so these ratios do not
+# compare with the single-shot numbers recorded before 2026-11-11; the ceiling is set
+# from repeated-call numbers (zip_open_list ~10.7x, rar_open_list ~11.1x).
+LISTING_MIN_SAMPLE_S = 0.05
 WALL_RATIO_VISION = 1.3
 WALL_RATIO_VISION_SAFETY = 2.0
 # Relative wall_ratio regression vs previous nightly. Dual gate: new > old×factor
@@ -131,7 +138,7 @@ WALL_RATIO_DRIFT_MIN_ABS = 0.15
 # its ratio by 2× on scheduler noise alone: rar_open_list went 2.60 → 5.71 (1.0 ms vs
 # a 0.2 ms peer) between the 2026-09-06 run and nightly run 34122511826 on 2026-09-07,
 # with no change to RAR listing cost that large. That one night froze the nightly
-# baseline for a month. Gross slowdowns of tiny cases still fail on the 10× ceiling.
+# baseline for a month. Gross slowdowns of tiny cases still fail on the 13× ceiling.
 WALL_RATIO_DRIFT_MIN_EXTRA_S = 0.001
 # Q1 listing bands (informational in full-mode reports; not PR-gated):
 # ZIP (stdlib) and TAR (native walker) → 2–3×/member vs zipfile/tarfile; native
@@ -304,8 +311,18 @@ def _interleaved_pair_times(
     stdlib_fn: Callable[[], None],
     *,
     rounds: int = 5,
+    min_sample_s: float = 0.0,
 ) -> tuple[float, Any, float]:
     """Alternate archivey/stdlib timing; return (median_ay_s, ay_result, median_std_s).
+
+    ``min_sample_s`` makes each sample call its function repeatedly until that much
+    time has passed and record the mean per call: a listing of a millisecond or less is
+    otherwise one timer reading per sample, and the ratio of two such readings swings
+    by more than the budget's margin on a shared runner. It also changes what is
+    measured: a warm loop speeds the peer up more than archivey, so a ratio taken this
+    way reads higher than a single-shot one (about +13% on the ZIP listing). Use it
+    only for functions that can run again and again unchanged (listings, not
+    extractions).
 
     One shared warmup of each side first. Alternating order removes the
     "whoever ran last left the page cache hot" bias. Diagnostic log spam is
@@ -318,6 +335,18 @@ def _interleaved_pair_times(
 
     archivey_fn()
     stdlib_fn()
+
+    def sample(fn: Callable[[], Any]) -> tuple[float, Any]:
+        wall, result = _timed(fn)
+        if wall >= min_sample_s:
+            return wall, result
+        calls, total = 1, wall
+        while total < min_sample_s:
+            more, result = _timed(fn)
+            calls += 1
+            total += more
+        return total / calls, result
+
     ay_samples: list[float] = []
     std_samples: list[float] = []
     last_ay: Any = None
@@ -326,14 +355,14 @@ def _interleaved_pair_times(
     try:
         for i in range(rounds):
             if i % 2 == 0:
-                wall, last_ay = _timed(archivey_fn)
+                wall, last_ay = sample(archivey_fn)
                 ay_samples.append(wall)
-                wall, _ = _timed(stdlib_fn)
+                wall, _ = sample(stdlib_fn)
                 std_samples.append(wall)
             else:
-                wall, _ = _timed(stdlib_fn)
+                wall, _ = sample(stdlib_fn)
                 std_samples.append(wall)
-                wall, last_ay = _timed(archivey_fn)
+                wall, last_ay = sample(archivey_fn)
                 ay_samples.append(wall)
     finally:
         logging.disable(prev_disable)
@@ -563,7 +592,8 @@ def run_cases(
         wall, _ignored, std_wall = _interleaved_pair_times(
             _ay_open_list,
             lambda: _stdlib_zip_open_list(fixtures.zip_path),
-            rounds=7,
+            rounds=11,
+            min_sample_s=LISTING_MIN_SAMPLE_S,
         )
     else:
         wall, _ = timed_with_optional_warmup(_ay_open_list)
@@ -779,7 +809,8 @@ def run_cases(
         wall, _ignored, std_wall = _interleaved_pair_times(
             _ay_tar_open_list,
             lambda: _stdlib_tar_open_list(fixtures.tar_path),
-            rounds=7,
+            rounds=11,
+            min_sample_s=LISTING_MIN_SAMPLE_S,
         )
     else:
         wall, _ = timed_with_optional_warmup(_ay_tar_open_list)
@@ -965,7 +996,8 @@ def run_cases(
                 wall, _ignored, std_wall = _interleaved_pair_times(
                     _ay_7z_open_list,
                     lambda: _py7zr_open_list(solid_7z_path),
-                    rounds=7,
+                    rounds=11,
+                    min_sample_s=LISTING_MIN_SAMPLE_S,
                 )
             else:
                 wall, _ = timed_with_optional_warmup(_ay_7z_open_list)
@@ -1049,7 +1081,8 @@ def run_cases(
                 wall, _ignored, std_wall = _interleaved_pair_times(
                     _ay,
                     lambda p=path: _py7zr_open_list(p),
-                    rounds=7,
+                    rounds=11,
+                    min_sample_s=LISTING_MIN_SAMPLE_S,
                 )
             else:
                 wall, _ = timed_with_optional_warmup(_ay)
@@ -1166,7 +1199,8 @@ def run_cases(
                 wall, _ignored, std_wall = _interleaved_pair_times(
                     _ay,
                     lambda p=path: _rarfile_open_list(p),
-                    rounds=7,
+                    rounds=11,
+                    min_sample_s=LISTING_MIN_SAMPLE_S,
                 )
             else:
                 wall, _ = timed_with_optional_warmup(_ay)

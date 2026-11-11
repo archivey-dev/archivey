@@ -45,6 +45,10 @@ class VerificationProofs:
     a read from the start to the end turns into a check of every byte.
     ``frame_unchecked``: a frame it has seen carries no such check, so no read can
     check every byte. All but ``key_in_doubt`` hold for the member's own bytes only.
+
+    Every field is joined with OR in two places: :meth:`combine` and, for speed,
+    ``ArchiveStreamImpl._proofs_over``. A new field goes in both; test_proofs_over
+    fails otherwise.
     """
 
     key_in_doubt: bool = False

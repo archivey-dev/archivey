@@ -56,6 +56,7 @@ from archivey.internal.naming import (
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource, seeks_to_end_are_cheap
 from archivey.internal.streams.archive_stream import MemberStreamParts
@@ -67,7 +68,13 @@ from archivey.internal.streams.codecs import (
     single_file_codecs,
     stream_codec_for_format,
 )
-from archivey.internal.streams.codecs.lzip_decoder import peek_index_summary
+from archivey.internal.streams.codecs.lzip_decoder import (
+    last_member_is_the_whole_file,
+    peek_index_summary,
+)
+from archivey.internal.streams.codecs.xz_decoder import (
+    last_stream_is_the_whole_file,
+)
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     IndexReport,
@@ -88,6 +95,14 @@ from archivey.types import (
 )
 
 _T = TypeVar("_T")
+# The last bytes a remote tail probe hints: the xz stream footer (12 bytes) or the
+# lzip member trailer (20 bytes), with their padding before them. The planner places
+# the window by the end of the object (design D2 rule 5), so a later walk steps back
+# from it (rule 6); a hint of a whole window would be placed by its start instead.
+_TAIL_HINT = 64
+# The xz stream padding a remote probe looks past: one minimum planner fetch, the
+# window the hint above brings in.
+_TAIL_PEEK = 64 * 1024
 
 
 def _compression_exts() -> frozenset[str]:
@@ -495,6 +510,46 @@ class SingleFileReader(BaseArchiveReader):
         assert data is not None  # the source is a path or seekable
         return data
 
+    def _remote_with_earlier_streams(self, f: BinaryIO, size: int) -> bool:
+        """Whether a remote source holds more than one xz stream or lzip member.
+
+        On a remote source (an fsspec ``OpenFile``) the index walk that gives the size
+        reads one step per stream, each a range request past the planner's window, so
+        the open reads only the last stream's footer and index (or the last member's
+        trailer) and stops when an earlier stream exists. The listing then reports no
+        size, and a seek walks the rest when it needs it (maintainer ruling,
+        2026-11-08: lazy for multi-stream files, remote only). A local file keeps the
+        whole walk.
+
+        xz stream padding (zeros after the last stream) has no length limit, and
+        the scan back over it reads every byte, so on a remote source a padded file
+        would cost about three times its size to list. When the last
+        :data:`_TAIL_PEEK` bytes are all zeros the answer is "cannot tell", treated
+        as here: no size, no walk. The forward decoder still checks the padding on
+        read.
+        """
+        src = self._source
+        if src is None or not src.remote_sources:
+            return False
+        # The tail is a run of its own, placed by its end, so the read does not
+        # read through from the head and drop the head's window, and a later walk
+        # steps back from it (design D2 rules 3, 5 and 6).
+        peek = min(size, _TAIL_PEEK)
+        src.will_read(max(0, size - _TAIL_HINT), size)
+        try:
+            if self._codec is Codec.XZ:
+                if size > peek:
+                    f.seek(size - peek)
+                    if not f.read(peek).strip(b"\0"):
+                        return True
+                return not last_stream_is_the_whole_file(f, size)
+            if self._codec is Codec.LZIP:
+                return not last_member_is_the_whole_file(f, size)
+        except ArchiveyError:
+            # The full probe meets the same damage and answers ``None`` itself.
+            return False
+        return False
+
     def _probe_lzip_index(self) -> tuple[int, int] | None:
         """Decompressed size + combined CRC-32 from one seekable lzip index scan.
 
@@ -510,6 +565,8 @@ class SingleFileReader(BaseArchiveReader):
         def probe(f: BinaryIO) -> tuple[int, int] | None:
             size = f.seek(0, io.SEEK_END)
             if size < 26:  # header(6) + trailer(20)
+                return None
+            if self._remote_with_earlier_streams(f, size):
                 return None
             try:
                 return peek_index_summary(f, size)
@@ -546,6 +603,8 @@ class SingleFileReader(BaseArchiveReader):
         config = replace(self._metadata_config, collector=recorder)
 
         def probe(f: BinaryIO) -> int | None:
+            if self._remote_with_earlier_streams(f, f.seek(0, io.SEEK_END)):
+                return None
             try:
                 backend = resolve_codec(self._codec, config)
                 stream = backend.open(SlicingStream(f, start=0))
@@ -734,8 +793,11 @@ class SingleFileBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> SingleFileReader:
-        reject_start_offset(start_offset, format, archive_name, end_offset)
+        reject_start_offset(
+            start_offset, format, archive_name, end_offset, program_resources
+        )
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.
         return SingleFileReader(

@@ -43,7 +43,11 @@ From the Microsoft Cabinet Format specification (MS-CAB) and libmspack's `cabd.c
   attributes `_A_EXEC` (`0x40`) and `_A_NAME_IS_UTF` (`0x80`): in a Windows attribute mask
   those bits are `FILE_ATTRIBUTE_DEVICE` and `FILE_ATTRIBUTE_NORMAL`.
 - **`CFDATA`** blocks per folder: checksum, stored size, decoded size (at most 32 KiB),
-  the data reserve, then the stored bytes.
+  the data reserve, then the stored bytes. A decoded size of 0 marks a block split across
+  cabinets; libmspack fails it when there is no next cabinet. archivey refuses cabinet
+  sets, so it raises `CorruptionError` for such a block, and for one over the size
+  limits. As in libmspack, which reads each header only when it needs that block, the
+  error comes when a read reaches the block: the members before it still read.
 
 The methods are 0 stored, 1 MSZIP, 2 Quantum and 3 LZX.
 
@@ -94,26 +98,57 @@ the last one up to the folder's total, whatever size each block says.
 When a member stream closes, the reader keeps its folder decoder; the next member of the
 same folder at a later offset continues from it. So `stream_members()` and members read
 in order decode each folder once. Only one decoder is kept: memory stays at one LZX window
-(at most 2 MiB).
+(at most 2 MiB), and the window is checked against `max_decoder_memory` before a member of
+the folder opens. A member of size 0 reads as empty and decodes nothing.
 
 A member is `checked` (`Verification.CHECKSUM` once read to the end) when every block
 from the folder's start through its last byte has a checksum. LZX history means an
-earlier block's damage reaches the member, so the earlier blocks count too.
+earlier block's damage reaches the member, so the earlier blocks count too. The listing
+estimates `CHECKSUM` for every non-empty member of a stored, MSZIP or LZX folder, and the
+first open settles it at `LENGTH` when one of those blocks has none.
+
+The block checksums cover the folder's bytes, not the file table: nothing checks a
+`CFFILE` record's offset or size. A damaged offset would make a file read other bytes of
+its folder, which pass every block checksum. So at open the reader checks the layout
+(`_check_file_layout`): every writer lays a folder's files back to back from byte 0, in
+some order, so the non-empty files of a folder, sorted by offset, must each start where
+the one before ended. A gap or an overlap is `CorruptionError` for the whole cabinet,
+because the damage does not show which record is wrong (maintainer ruling, 2026-11-11).
+When a folder's block table is read, the end of its last file must also be the folder's
+decoded size, which catches a last file's size made smaller. cabextract checks neither.
+The check is its own step so that a salvage read can skip it later and return the members
+marked damaged. A file table that ends early or holds a bad record is left to the listing,
+which reports it at that record. The records before it are still checked for overlaps,
+which no later record can undo. A gap could be filled by a record past the bad one, so
+gaps and the folder's end are not judged, and the members before it read at `LENGTH`:
+nothing vouched for their offsets.
 
 ### 2.4 The LZX decoder
 
 `lzx_decoder.py` follows libmspack's `lzxd.c` wherever the format leaves a choice, so the
-two agree on every stream; its docstring lists those choices (code-length runs that spill
-past their range, empty trees, matches that cross a frame or reach before the start, the
-E8 limits). Each tree decodes through a two-level table: a root as wide as the longest
+two agree on every stream but one kind; its docstring lists those choices (code-length
+runs that spill past their range, code lengths a delta wraps out of range, which trees may
+be empty, matches that cross a frame or reach before the start, the E8 limits). The
+exception: a tree whose codes no longer than `lzxd.c`'s first table level (6 bits for the
+pretree, 7 for the aligned tree, 12 for the others) already fill the code space, and that
+also has a code longer than that level, is refused as overfull. `lzxd.c` stops building
+once the first level is full and never sees the longer code, so cabextract decodes on, but
+no encoder writes such a tree and the bytes after it come out wrong (maintainer ruling,
+2026-11-10). Each tree decodes through a two-level table: a root as wide as the longest
 code, at most 10 bits, and a sub-table under each root entry whose codes are longer. A
-block may be empty and still carry up to six trees, so a table's cost follows its tree:
-a stream of nothing but block headers, with the deepest pretrees the format allows,
-decodes at about 2 µs an input byte (0.5 MB/s, CPython 3.11), against 12 µs with one
-65 536-entry table per tree. No byte comes out, so `ExtractionLimits` does not see it
-(threat model, §No CPU or wall-clock bound).
-Past the end of the input it reads zero bytes, as `lzxd.c` does for two bytes, and refuses
-a stream that uses more than two of them (`TruncatedError`). It runs at about 5-10 MB/s.
+block may be empty and still carry up to six trees, so a table's cost follows its tree: a
+stream of nothing but block headers, with the deepest pretrees the format allows, decodes
+at about 2 µs an input byte (0.5 MB/s, CPython 3.11), against 12 µs with one 65 536-entry
+table per tree. No byte comes out, so `ExtractionLimits` does not see it (threat model,
+§No CPU or wall-clock bound).
+Past the end of the input come two zero bytes, as in `lzxd.c`, and the decoder refuses a
+stream (`TruncatedError`) that `lzxd.c` would *read* further for. That counts its look-ahead,
+not just the bits the stream uses: 16 bits ahead of each Huffman symbol, and one more word
+to realign at the end of a frame. So a stream whose last frame ends inside the zero bytes
+can still be refused. Stored bytes may read the two zero bytes too: in a folder without
+block checksums, an uncompressed block up to 2 bytes short decodes with zeros for the
+missing bytes, as cabextract 1.11 does, and 3 bytes short is refused. It runs at about
+5-10 MB/s.
 
 ## 3. Tests
 

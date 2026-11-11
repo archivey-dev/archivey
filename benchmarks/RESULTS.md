@@ -11,7 +11,7 @@ run fires it:
 
 - records results (JSON + markdown report artifacts, job summary table) with
   `measured_at` / source provenance;
-- hard-fails on the ~10× sanity ceiling **or** on **wall-ratio drift** vs the
+- hard-fails on the ~13× sanity ceiling **or** on **wall-ratio drift** vs the
   JSON of the last run that measured, pass or fail (relative regression gate —
   debt-ledger Q1 / perf Q2 option (a)). A case drifts when its ratio rises to
   more than 1.25× the baseline ratio **and** by at least +0.15 in absolute terms
@@ -45,6 +45,95 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 # Realistic wall-time vs stdlib (multi-MiB corpora; interleaved medians)
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
+
+## Since 0.3.0 (2026-11-09)
+
+**Trees.** Before is the `v0.3.0` tag (`f013eec9`). After is `main` at `37e08c35`. Both
+trees ran this branch's `benchmarks/` against their own `src/`, as the 2026-10-28 round
+did, and shared one `ARCHIVEY_BENCH_CACHE`, so both read the same archive files. The
+interval holds the per-member work of PRs 1359 (layer proofs asked once per member sync)
+and 1373 (a small ZIP member read whole at open), plus the new formats and many fixes. The
+attribution below is an inference from what those PRs change.
+
+**Host and method.** A 4-vCPU Intel Xeon KVM container, Linux x86_64, CPython 3.11.18,
+libarchive-c over libarchive 3.7.2, py7zr 1.1.4, rapidgzip 0.16.0. Each tree ran
+`benchmarks.harness --mode full --scale realistic --warmup` and `benchmarks.peers --scale
+realistic` twice, in the order before, after, before, after. Each cell is the mean of a
+tree's two runs. Extraction wrote to `/dev/shm`. Ratio is archivey ÷ peer, against the
+peer timed in the same run.
+
+### Many small members
+
+The 4 000-file corpus of [Many small members](#many-small-members). The table
+lists the rows where archivey's own time fell by 10% or more. Every other row moved by
+less than 10%, inside the noise band of the earlier rounds, except one ZIP `list` pair
+discussed below.
+
+| Archive | Operation | Peer | archivey 0.3.0 | ratio 0.3.0 | archivey main | ratio main |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| ZIP | read_all | zipfile | 691 ms | 15.3× | 340 ms | 7.7× |
+| ZIP | extract | zipfile | 1 358 ms | 13.7× | 870 ms | 8.7× |
+| ZIP | read_all | libarchive-c | 705 ms | 28.9× | 332 ms | 13.7× |
+| ZIP | extract | libarchive-c | 1 394 ms | 23.0× | 876 ms | 14.3× |
+| ZIP stored | read_all | zipfile | 437 ms | 11.2× | 328 ms | 8.5× |
+| ZIP stored | extract | zipfile | 947 ms | 10.4× | 812 ms | 9.0× |
+| 7z | read_all | py7zr | 354 ms | 1.05× | 306 ms | 0.93× |
+| 7z | read_all | libarchive-c | 352 ms | 19.5× | 301 ms | 16.5× |
+
+What the numbers show:
+
+- **Reading a small ZIP member costs half what it did.** `read_all` over 4 000 DEFLATE
+  members fell from 691 to 340 ms (about 170 to 85 µs a member), and extraction by a
+  third. PR 1373 decodes a member of up to 64 KiB in one call at open and skips the
+  codec layer stack when nothing in the member looks unusual. Stored members gain less
+  (−25%), because they had no decoder to skip.
+- **7z gains about 14% on reading.** PR 1359, which asks the layer proofs once per
+  member sync in every format, is the likeliest cause. TAR does not show a gain, so the
+  saving may show only where the rest of a member's cost is low; this round did not
+  profile it.
+- **TAR, tar.gz and listing did not move** beyond noise (−4% to +5%). The ZIP `list`
+  row read +15% in one pair of runs; a re-run of 15 alternating calls per side gave
+  55 ms, the 0.3.0 figure, and the ratio stayed at 6.3–6.5× throughout.
+- **The harness corpus did not move either** (64 members of 256 KiB, decode-bound): every
+  row's ratio stayed inside its run-to-run range. `zip_extract` again had no stable
+  `zipfile` time (10–43 ms between runs).
+
+### Large `.tar.bz2` under AUTO (open PR 1369)
+
+PR 1369, not merged when this was measured, sends a large sequential bzip2 read from a
+local file through the parallel accelerator under the default `AUTO`. Its tree
+(`129d3347`) and `main` read a 9.1 MiB `.tar.bz2` of 32 text-like members of 1 MiB with
+`stream_members()`, against a one-pass `tarfile` (median of 7 alternating calls):
+
+| Tree | archivey | tarfile | ratio |
+| --- | ---: | ---: | ---: |
+| `main` | 1 800 ms | 1 747 ms | 1.03× |
+| PR 1369 | 510 ms | 1 698 ms | 0.30× |
+
+The harness's own `.tar.bz2` is 23 KB on disk, far below the rule's 1 MiB threshold, so its `AUTO`
+time did not change (272 against 277 ms). If PR 1369 does not merge, drop this
+subsection.
+
+### New formats against libarchive
+
+The same 4 000-file tree as an MSZIP cabinet written by `gcab` 1.6, and as a binary RPM
+with a gzip payload written by `rpmbuild` 4.18 (both are skipped when the tool is
+missing). One run of `main`, 9 timed calls per side.
+
+| Archive | Operation | archivey | libarchive-c | ratio |
+| --- | --- | ---: | ---: | ---: |
+| CAB | list | 38 ms | 9 ms | 4.1× |
+| CAB | read_all | 264 ms | 17 ms | 16.0× |
+| CAB | extract | 785 ms | 52 ms | 15.0× |
+| RPM | list | 127 ms | 14 ms | 9.1× |
+| RPM | read_all | 377 ms | 20 ms | 18.6× |
+| RPM | extract | 985 ms | 59 ms | 16.7× |
+
+Both sit where TAR and 7z sit against libarchive on this corpus (15–24× on reading and
+extraction): the cost is per member, not in the decoders. RPM listing is the slowest of
+the new rows. A profile of it shows little decoding: most of the time goes to the forward
+walk over the cpio payload, one entry at a time through the format-API adapter, where a
+CAB lists from its file table.
 
 ## 0.2.0 release figures (2026-10-21)
 

@@ -14,6 +14,12 @@ but does not read. A compressed folder is solid: a file is reached by decoding i
 folder from the start. The reader keeps the folder decoder the last member stream left
 behind, so members read in order decode each folder once.
 
+The listing is the file table: each ``CFFILE`` record becomes a ``FILE`` member whose
+locator is its folder and its offset in that folder's output. Opening a member reads
+the folder's ``CFDATA`` headers once (the block table), then reaches that offset: a
+stored folder from the block that holds it, a compressed one by decoding, from the
+folder's start or on from the parked decoder.
+
 Cabinet sets (a folder continued in the next ``.cab``) are refused. The handbook page
 is ``dev-docs/formats/cab.md``.
 """
@@ -27,7 +33,6 @@ import zlib
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, NamedTuple
 
-from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
@@ -44,6 +49,7 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
+from archivey.internal.config import check_decoder_memory
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import metadata_limit_error
 from archivey.internal.overrides import override
@@ -53,7 +59,6 @@ from archivey.internal.streams.codecs.lzx_decoder import (
     MIN_WINDOW_BITS,
     LzxDecoder,
 )
-from archivey.internal.timestamps import dos_to_datetime
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -98,6 +103,7 @@ _METHODS = {
     _QUANTUM: CompressionAlgorithm.QUANTUM,
     _LZX: CompressionAlgorithm.LZX,
 }
+_READABLE = frozenset({_STORED, _MSZIP, _LZX})
 _METHOD_NAMES = {_STORED: "stored", _MSZIP: "MSZIP", _QUANTUM: "Quantum", _LZX: "LZX"}
 
 # Read the file table this many bytes at a time.
@@ -109,15 +115,20 @@ class _Folder(NamedTuple):
     """Where its first CFDATA block starts."""
     blocks: int
     method: int
+    """``_STORED``, ``_MSZIP``, ``_QUANTUM`` or ``_LZX``, or a value no writer uses."""
     window_bits: int
+    """The LZX window size as a power of two; ignored for the other methods."""
 
 
 class _Block(NamedTuple):
     payload: int
     """Where its stored bytes start."""
     stored: int
+    """How many bytes it stores."""
     decoded: int
+    """How many bytes of folder output it decodes to."""
     checksum: int
+    """The ``CFDATA`` checksum, 0 when the writer left it out."""
 
 
 # ``_A_EXEC`` and ``_A_NAME_IS_UTF``: bits a cabinet gives its own meaning, which in a
@@ -135,10 +146,18 @@ class _BlockTable(NamedTuple):
     output: tuple[int, ...]
     """Where each block's output starts in the folder's output, and, last, the total."""
     complete: bool
-    """``False`` when the cabinet ends before the folder's last block header."""
+    """``False`` when the table stops before the folder's last block header: the
+    cabinet ends there, or that header is refused (``refused``)."""
+    refused: str | None = None
+    """Why the block header after the last one in the table is damage. As in libmspack,
+    which reads each header only when the decoder needs that block, the refusal is
+    raised when a read reaches the block, not when the table is read."""
 
 
 class _Location(NamedTuple):
+    """Where a member's bytes are: an index into the folder records, and where the
+    member starts in that folder's decoded output."""
+
     folder: int
     offset: int
 
@@ -217,6 +236,11 @@ class CabReader(IndexedReader[_Location]):
         self._max_meta = context.config.listing_limits.max_metadata_bytes
         # The folder decoder a member stream left behind, to go on from.
         self._parked: _FolderStream | None = None
+        # Where each folder's files end, when the whole file table was read
+        # (``_check_file_layout``). ``None`` when the table ends early or holds a bad
+        # record: the members before it then read unchecked.
+        self._extents: dict[int, int] | None = None
+        self._check_file_layout()
 
     # ── Header ───────────────────────────────────────────────────────────────────────
 
@@ -236,6 +260,61 @@ class CabReader(IndexedReader[_Location]):
             start, blocks, kind = _FOLDER.unpack_from(raw, index * record)
             folders.append(_Folder(start, blocks, kind & 0x0F, (kind >> 8) & 0x1F))
         return tuple(folders)
+
+    def _check_file_layout(self) -> None:
+        """Refuse a file table whose files do not tile their folders.
+
+        No checksum covers a ``CFFILE`` record: the ``CFDATA`` checksums cover the
+        folder's bytes, not where each file says it starts. A damaged offset or size
+        makes a file read other, correctly checksummed bytes of its folder, and the
+        read would pass. Every writer lays a folder's files back to back from its
+        first byte, in some order, so the files of a folder, sorted by offset, must
+        each start where the one before ended, from 0. A gap or an overlap is damage,
+        and since it cannot tell which record is wrong, the whole cabinet is refused
+        with ``CorruptionError``. Empty files read no bytes and are not checked. The
+        end of the last file is compared with the folder's decoded size when the
+        folder's block table is read (:meth:`open_member`).
+
+        A separate step on purpose: a salvage read would skip it, read the members
+        anyway and mark them damaged. A table that ends early or holds a bad record
+        is left to the listing, which reports it at that record. The records before
+        it are still checked for overlaps, which no later record can undo. A gap
+        could be filled by a record past the bad one, so gaps and folder ends are
+        not judged, and the members before it read unchecked (``LENGTH``): nothing
+        vouched for their offsets.
+        """
+        table = _Cursor(self, self._files_at)
+        ranges: dict[int, list[tuple[int, int]]] = {}
+        complete = True
+        try:
+            for _ in range(self._file_count):
+                size, offset, folder, *_rest = _FILE.unpack(
+                    table.read(_FILE.size, "a file record")
+                )
+                table.read_name()
+                if folder >= len(self._folders):
+                    complete = False  # the listing refuses it at this record
+                    break
+                if size:
+                    ranges.setdefault(folder, []).append((offset, size))
+        except (TruncatedError, CorruptionError):
+            complete = False
+        extents: dict[int, int] = {}
+        for folder, spans in ranges.items():
+            spans.sort()
+            end = 0
+            for offset, size in spans:
+                if offset < end or (complete and offset != end):
+                    where = "overlaps" if offset < end else "leaves a gap after"
+                    raise CorruptionError(
+                        f"a file in folder {folder} starts at byte {offset}, which "
+                        f"{where} the files before it (they end at byte {end}); the "
+                        "file table is damaged"
+                    )
+                end = offset + size
+            extents[folder] = end
+        if complete:
+            self._extents = extents
 
     # ── Listing ──────────────────────────────────────────────────────────────────────
 
@@ -265,7 +344,6 @@ class CabReader(IndexedReader[_Location]):
                 name=name,
                 raw_name=raw,
                 size=size,
-                modified=dos_to_datetime(stamp),
                 windows_attrs=attribs & ~_CAB_ONLY_ATTRIBUTES,
                 compression=(
                     CompressionMethod(
@@ -275,18 +353,16 @@ class CabReader(IndexedReader[_Location]):
                     ),
                 ),
             )
-            if member.modified is None and stamp:
-                context.report(
-                    DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                    f"Invalid cabinet date for {quoted(member.name)}: 0x{stamp:08x}",
-                    MemberTimestampContext(
-                        member_name=member.name,
-                        field="modified",
-                        source="dos",
-                        value_repr=f"0x{stamp:08x}",
-                    ),
-                    member=member,
-                )
+            if (
+                size
+                and self._extents is not None
+                and self._folders[folder].method in _READABLE
+            ):
+                # The blocks of nearly every cabinet carry checksums, and a read
+                # checks them; the first open settles it at LENGTH when a block of
+                # this file has none.
+                member._listing_checksum = True
+            context.set_dos_time(member, "modified", stamp, source="dos")
             yield MemberRecord(member, _Location(folder, offset))
 
     # ── Data ─────────────────────────────────────────────────────────────────────────
@@ -306,6 +382,7 @@ class CabReader(IndexedReader[_Location]):
         header = _DATA.size + self._data_reserve
         size = self._source.size
         complete = True
+        refused: str | None = None
         max_meta = self._max_meta
         for number in range(folder.blocks):
             if max_meta is not None and (
@@ -322,16 +399,26 @@ class CabReader(IndexedReader[_Location]):
                 complete = False
                 break
             checksum, stored, decoded = _DATA.unpack(raw)
-            if stored > _INPUT_MAX or decoded > _BLOCK_MAX:
-                raise CorruptionError(
+            if not decoded:
+                # libmspack reads this as a block split across cabinets, and fails
+                # it when there is no next cabinet. Sets are refused at open.
+                refused = (
+                    f"data block {number} of folder {index} has no output: a block "
+                    "split across cabinets, in a cabinet that is not part of a set"
+                )
+            elif stored > _INPUT_MAX or decoded > _BLOCK_MAX:
+                refused = (
                     f"data block {number} of folder {index} stores {stored} bytes "
                     f"for {decoded}; a block holds at most {_INPUT_MAX} for "
                     f"{_BLOCK_MAX}"
                 )
+            if refused is not None:
+                complete = False
+                break
             blocks.append(_Block(pos + header, stored, decoded, checksum))
             output.append(output[-1] + decoded)
             pos += header + stored
-        table = _BlockTable(tuple(blocks), tuple(output), complete)
+        table = _BlockTable(tuple(blocks), tuple(output), complete, refused)
         with self._lock:
             kept = self._tables.get(index)
             if kept is not None:  # another thread read it meanwhile
@@ -372,29 +459,61 @@ class CabReader(IndexedReader[_Location]):
                 f"folder {locator.folder} declares an LZX window of "
                 f"2**{folder.window_bits} bytes"
             )
-        table = self._block_table(locator.folder)
+        if folder.method == _LZX:
+            check_decoder_memory(
+                1 << folder.window_bits,
+                limits=self._context.config.decoder_limits,
+                what=f"folder {locator.folder}'s LZX window",
+                usage=self._context._usage,
+            )
         size = member.size or 0
+        if not size:
+            # Nothing to decode: do not run the folder up to the member's offset.
+            return MemberData(io.BytesIO(b""), bounded=True)
+        table = self._block_table(locator.folder)
         end = locator.offset + size
+        if table.refused is not None and end > table.output[-1]:
+            raise CorruptionError(table.refused)
         if table.complete and end > table.output[-1]:
             raise CorruptionError(
                 f"{quoted(member.name)} ends at byte {end} of folder "
                 f"{locator.folder}, which decodes to {table.output[-1]}"
             )
-        # The member is checked when every block up to its end carries a checksum.
+        extent = None if self._extents is None else self._extents.get(locator.folder)
+        if table.complete and extent is not None and extent != table.output[-1]:
+            # The files tile the folder from 0 (``_check_file_layout``), so they
+            # must end exactly where the folder's output does: short means a size
+            # was made smaller, long means one runs past the folder.
+            raise CorruptionError(
+                f"the files of folder {locator.folder} end at byte {extent}, but "
+                f"the folder decodes to {table.output[-1]}; the file table is "
+                "damaged"
+            )
+        # The member is checked when the whole file table vouched for its offset
+        # and every block up to its end carries a checksum.
         last = _block_at(table, max(end - 1, 0))
-        checked = last is not None and all(
-            block.checksum for block in table.blocks[: last + 1]
+        checked = (
+            self._extents is not None
+            and last is not None
+            and all(block.checksum for block in table.blocks[: last + 1])
         )
         stream = self._folder_stream(locator.folder, folder, table, locator.offset)
         return MemberData(
             _MemberStream(self, stream, size),
-            checked=checked and size > 0,
+            checked=checked,
             bounded=True,
         )
 
     def _folder_stream(
         self, index: int, folder: _Folder, table: _BlockTable, offset: int
     ) -> _FolderStream:
+        """A folder stream positioned at ``offset`` of folder ``index``'s output.
+
+        The parked stream is taken when it is on the same folder and not yet past
+        ``offset``, so members read in order decode the folder once. Otherwise a
+        compressed folder decodes again from its first block, because each block
+        depends on the output before it.
+        """
         with self._lock:
             parked, self._parked = self._parked, None
         if parked is not None and parked.index == index and parked.position <= offset:
@@ -418,7 +537,8 @@ class CabReader(IndexedReader[_Location]):
 
 def _block_at(table: _BlockTable, offset: int) -> int | None:
     """The block whose output holds byte ``offset`` of the folder, or the next block
-    when ``offset`` is where one starts; ``None`` past the blocks read."""
+    when ``offset`` is where one starts; ``None`` at or past the end of the blocks
+    read."""
     output = table.output
     lo, hi = 0, len(output) - 1
     if hi == 0 or offset >= output[-1]:
@@ -476,7 +596,13 @@ class _Cursor:
 
 
 class _FolderStream:
-    """A folder's output, decoded block by block from where it starts."""
+    """A folder's output, decoded block by block from where it starts.
+
+    ``first`` is the block to start at: 0 for a compressed folder, any block for a
+    stored one, or ``None`` for an offset at or past the end of the blocks read. That
+    one starts at the end of those blocks' output, so its first read raises
+    ``TruncatedError``; a member of size 0 there never reads.
+    """
 
     def __init__(
         self,
@@ -494,10 +620,14 @@ class _FolderStream:
         self.position = (
             table.output[self._next] if first is not None else (table.output[-1])
         )
+        # Decoded bytes not yet handed out.
         self._pending = b""
+        # MSZIP: the last 32 KiB of output, the next block's deflate dictionary.
         self._history = b""
+        # Set when a decode raised, so the stream is not parked for the next member.
         self.failed = False
         self._lzx: LzxDecoder | None = None
+        # LZX: the next block whose bytes the decoder pulls through ``_lzx_more``.
         self._lzx_input = self._next
         if folder.method == _LZX:
             self._lzx = LzxDecoder(folder.window_bits, self._lzx_more)
@@ -512,6 +642,8 @@ class _FolderStream:
         return data
 
     def _lzx_more(self) -> bytes | None:
+        """The LZX decoder's input: the next block's stored bytes, checked when its
+        checksum is not 0; ``None`` after the last."""
         if self._lzx_input >= len(self._table.blocks):
             return None
         data = self._payload(self._lzx_input)
@@ -529,10 +661,20 @@ class _FolderStream:
                 raise TruncatedError(
                     f"folder {self.index} ends after {self.position} bytes"
                 )
+            if table.refused is not None and left <= 0:
+                raise CorruptionError(table.refused)
             frame = min(FRAME_SIZE, left) if table.complete else FRAME_SIZE
-            return self._lzx.decode_frame(frame)
+            try:
+                return self._lzx.decode_frame(frame)
+            except TruncatedError:
+                # The input ran out at the refused block, not at a cut.
+                if table.refused is not None:
+                    raise CorruptionError(table.refused) from None
+                raise
         number = self._next
         if number >= len(table.blocks):
+            if table.refused is not None:
+                raise CorruptionError(table.refused)
             raise TruncatedError(
                 f"folder {self.index} ends after {self.position} bytes"
                 if table.complete

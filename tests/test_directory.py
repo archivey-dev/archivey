@@ -23,8 +23,10 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.internal.backends import directory_reader
 from archivey.types import ContainerFormat, StreamFormat
 from tests.scandir_util import patch_dir_entry_stat
+from tests.stack_util import recursion_limit_above_caller
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -452,10 +454,10 @@ def test_junction_falls_back_to_the_reparse_tag_without_is_junction() -> None:
     ``st_reparse_tag`` says it instead, so a junction is not walked as a directory."""
     from types import SimpleNamespace
 
-    from archivey.internal.backends.directory_reader import _is_junction
     from archivey.internal.windows_reparse import (
         IO_REPARSE_TAG_MOUNT_POINT,
         IO_REPARSE_TAG_SYMLINK,
+        entry_is_junction,
     )
 
     old_entry = SimpleNamespace()  # no is_junction attribute, as on 3.11
@@ -465,12 +467,12 @@ def test_junction_falls_back_to_the_reparse_tag_without_is_junction() -> None:
         (0, False),
     ):
         st = SimpleNamespace(st_reparse_tag=tag)
-        assert _is_junction(old_entry, st) is expected  # type: ignore[arg-type]
+        assert entry_is_junction(old_entry, st) is expected  # type: ignore[arg-type]
     # No st_reparse_tag at all (every platform but Windows).
-    assert _is_junction(old_entry, SimpleNamespace()) is False  # type: ignore[arg-type]
+    assert entry_is_junction(old_entry, SimpleNamespace()) is False  # type: ignore[arg-type]
     # Where is_junction() exists, it decides.
     new_entry = SimpleNamespace(is_junction=lambda: True)
-    assert _is_junction(new_entry, SimpleNamespace()) is True  # type: ignore[arg-type]
+    assert entry_is_junction(new_entry, SimpleNamespace()) is True  # type: ignore[arg-type]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows-only")
@@ -603,18 +605,8 @@ def test_tree_deeper_than_recursion_limit_lists(tmp_path: Path) -> None:
     leaf.mkdir(parents=True)
     (leaf / "f").write_bytes(b"deep")
 
-    frames = 0
-    frame = sys._getframe()
-    while frame is not None:
-        frames += 1
-        frame = frame.f_back
-    old_limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(frames + depth // 2)
-    try:
-        with open_archive(tmp_path) as reader:
-            names = [m.name for m in reader]
-    finally:
-        sys.setrecursionlimit(old_limit)
+    with recursion_limit_above_caller(depth // 2), open_archive(tmp_path) as reader:
+        names = [m.name for m in reader]
 
     assert len(names) == depth + 1
     assert names[-1] == "d/" * depth + "f"
@@ -963,14 +955,78 @@ def test_a_file_rewritten_at_the_same_size_reads_its_new_content(
         assert reader.read(member) == b"ABCDE"
 
 
-def test_a_file_listed_empty_reads_whatever_it_holds_at_open(tmp_path: Path) -> None:
-    # A listed size of 0 is exempt from the size check: procfs and sysfs list 0 for
-    # files with content, and an empty file has nothing a stale listing could hide.
+def test_a_file_listed_empty_that_grew_is_refused(tmp_path: Path) -> None:
+    # Size 0 means empty: a file that has grown since the walk is refused like any
+    # other resized file, so its bytes do not escape the limits the listing set. Only
+    # procfs and sysfs files list with no size (the next tests).
     (tmp_path / "e.txt").write_bytes(b"")
     with open_archive(tmp_path) as reader:
         member = reader.get("e.txt")
+        assert member.size == 0
         (tmp_path / "e.txt").write_bytes(b"now filled")
-        assert reader.read(member) == b"now filled"
+        with pytest.raises(OSError, match=r"changed size \(0 to 10 bytes\)"):
+            reader.read(member)
+
+
+@pytest.mark.skipif(
+    not Path("/proc/sys/kernel/random/uuid").is_file(), reason="needs Linux procfs"
+)
+def test_a_procfs_file_lists_with_no_size_and_reads_to_the_end() -> None:
+    # procfs reports st_size 0 for /proc/sys/kernel/random/uuid, which reads 37 bytes.
+    with open_archive("/proc/sys/kernel/random") as reader:
+        member = reader.get("uuid")
+        assert member.size is None
+        assert len(reader.read(member)) == 37
+
+
+_MOUNTINFO = """\
+22 27 0:21 / /proc rw,relatime - proc proc rw
+23 27 0:22 / /sys rw,relatime shared:7 - sysfs sysfs rw
+24 27 0:6 / /dev rw,relatime - devtmpfs devtmpfs rw,size=8223772k
+29 1 8:1 / / rw,relatime shared:1 master:1 - ext4 /dev/sda1 rw
+30 29 0:40 / /tmp/a\\040b rw - tmpfs tmpfs rw
+"""
+
+
+def test_mountinfo_names_the_procfs_and_sysfs_devices() -> None:
+    # Optional fields (shared:7) sit before the "-"; the type is the field after it.
+    devices = directory_reader._pseudo_filesystem_devices(_MOUNTINFO)
+    assert devices == {(0, 21), (0, 22)}
+    garbage = "garbage\n- \n1 2 0:3 / / rw -  \n"
+    assert directory_reader._pseudo_filesystem_devices(garbage) == set()
+
+
+def test_no_pseudo_filesystem_needs_no_device_numbers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows has no os.major: with no procfs or sysfs mount, nothing decodes st_dev.
+    (tmp_path / "f").write_bytes(b"x")
+    monkeypatch.setattr(
+        directory_reader, "_read_pseudo_filesystem_devices", lambda: frozenset()
+    )
+    monkeypatch.delattr(os, "major", raising=False)
+    with open_archive(tmp_path) as reader:
+        assert reader.get("f").size == 1
+
+
+@pytest.mark.skipif(not hasattr(os, "major"), reason="no device numbers (Windows)")
+def test_a_file_on_a_pseudo_filesystem_lists_with_no_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As if tmp_path were sysfs (which lists 4096 for short files): no size, so the
+    # open checks none and the read goes to the end.
+    (tmp_path / "attr").write_bytes(b"1\n")
+    device = os.stat(tmp_path).st_dev
+    monkeypatch.setattr(
+        directory_reader,
+        "_read_pseudo_filesystem_devices",
+        lambda: frozenset({(os.major(device), os.minor(device))}),
+    )
+    with open_archive(tmp_path) as reader:
+        member = reader.get("attr")
+        assert member.size is None
+        (tmp_path / "attr").write_bytes(b"12\n")
+        assert reader.read(member) == b"12\n"
 
 
 def _swap_in_symlink(path: Path, target: Path) -> None:

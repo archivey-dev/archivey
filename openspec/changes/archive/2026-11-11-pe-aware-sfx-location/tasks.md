@@ -98,11 +98,26 @@ Block 3 is the overlay-start rule. Each reuses Block 1's PE layout helper.
 
 ## 4. Verify
 
-- [ ] 4.1 `./scripts/check.sh --fix` and `./scripts/test.sh`
-- [ ] 4.2 By hand, on the installers in the design's table: IRPF detects as `ZIP`; WinRAR's
+- [x] 4.1 `./scripts/check.sh --fix` and `./scripts/test.sh` (each of #1303, #1304, #1306,
+      #1311; the one failure, `test_prepare_holds_history_up_to_head_only`, fails on main
+      too)
+- [x] 4.2 By hand, on the installers in the design's table: IRPF detects as `ZIP`; WinRAR's
       installer opens with no trailing-data warning, while GitHub Desktop's still warns
       (its ZIP sits inside `.rsrc`, so program bytes follow it); the other files
-      give the same answers as today; record timings before and after for one large file
-- [ ] 4.3 `openspec validate --strict pe-aware-sfx-location`
-- [ ] 4.4 At archive: amend the `detection-cost` Purpose note, which expects a tail probe
+      give the same answers as today; record timings before and after for one large file.
+      Done 2026-11-11 on main (dcf2a69) against a7353d74 (before #1303), auto-detect and
+      forced `format=` giving the same answer on every file:
+      - IRPF 2026 1.3: was `FormatDetectionError`; now `ZIP` at 35 536 406, `payload_end`
+        110 923 264, 174 members, no trailing data, opens under `STRICT`. Forced
+        `format=ZIP` listed the same 174 members with a trailing-data warning before.
+        Detection 11 ms (a miss) before, 24 ms (the tail probe) after; forced open 12 ms
+        before, 26 ms after.
+      - WinRAR 7.22: 28 members both before and after; the trailing-data warning is gone.
+      - GitHub Desktop: `ZIP` at 169 888, 5 members, still warns (and `STRICT` refuses),
+        as before.
+      - 7-Zip 26.01: `SEVEN_Z` at 46 080, 107 members, unchanged. Git for Windows 2.51
+        (Inno Setup) and Notepad++ 8.9.8.1 (NSIS): refused, unchanged.
+- [x] 4.3 `openspec validate --strict pe-aware-sfx-location`: no errors; 11 warnings, all
+      the table-form scenarios and long requirements the main specs carry too
+- [x] 4.4 At archive: amend the `detection-cost` Purpose note, which expects a tail probe
       to bring its own budget field, to say the PE gate stands in for one (design §8)

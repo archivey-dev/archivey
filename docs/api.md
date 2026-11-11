@@ -34,6 +34,7 @@ flags calls to them. The object is still an `ArchiveReader` at run time, and tho
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
 ::: archivey.Verification
+::: archivey.VerifyReport
 ::: archivey.MemberPass
 ::: archivey.MemberSelector
 ::: archivey.MemberListReport
@@ -84,6 +85,7 @@ See [Extracting](extracting.md).
 ::: archivey.OverwritePolicy
 ::: archivey.OnError
 ::: archivey.AbortOn
+::: archivey.OnBlocked
 ::: archivey.MemberFilter
 ::: archivey.sanitize_names
 
@@ -181,6 +183,17 @@ actually did.
 ::: archivey.detection_cost.DetectionCostReceipt
 ::: archivey.detection_cost.TierSkip
 ::: archivey.detection_cost.TierSkipReason
+
+## fsspec file system
+
+`ArchiveyFileSystem` lives in the `archivey.fsspec` module, the only archivey module that
+imports [fsspec](https://filesystem-spec.readthedocs.io/). fsspec finds it as the `archivey`
+protocol without an import, so `pandas.read_csv("archivey://t.csv::s3://bucket/a.7z")` works
+once archivey is installed.
+
+::: archivey.fsspec.ArchiveyFileSystem
+    options:
+      members: [reader, close]
 
 ## Display and naming helpers
 

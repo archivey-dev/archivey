@@ -38,7 +38,7 @@ from archivey.internal.overrides import override
 from archivey.terminal import escape_control_chars
 
 if TYPE_CHECKING:
-    from archivey.diagnostics import Diagnostic
+    from archivey.diagnostics import Diagnostic, ExtractionReport
     from archivey.types import ArchiveFormat, MemberType, MissingComponent
 
 
@@ -288,7 +288,34 @@ class FilterRejectionError(ExtractionError):
     destination OS cannot store safely under the active policy (see ``safe-extraction``),
     and a name built to display as something it is not (a Unicode bidi override or
     isolate). The member is ``BLOCKED`` whichever check fired, and the message says which.
+
+    ``report`` is the :class:`~archivey.ExtractionReport` of the whole call when
+    ``extract_all()`` raised this at its end under ``on_blocked="raise"``, after
+    extracting every member it could: every refused member is in it as ``BLOCKED``.
+    It is ``None`` when the error stopped the call at the first refusal
+    (``abort_on=["blocked_member"]``), and on the error a ``BLOCKED`` result holds.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        source_format: ArchiveFormat | None = None,
+        archive_name: str | None = None,
+        member_name: str | None = None,
+        link_target: str | None = None,
+        format_unconfirmed: bool = False,
+        report: ExtractionReport | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            source_format=source_format,
+            archive_name=archive_name,
+            member_name=member_name,
+            link_target=link_target,
+            format_unconfirmed=format_unconfirmed,
+        )
+        self.report = report
 
 
 class NameCollisionError(ExtractionError):
@@ -336,7 +363,9 @@ class ResourceUnavailableError(ResourceLimitError):
     Raised when a decoder or helper program is ended by SIGKILL (most often the
     out-of-memory killer), when a decoder that
     :class:`~archivey.config.ProcessIsolation` runs only in a child process cannot
-    have one (a frozen application, a refused spawn), when a PPMd decoder process
+    have one (a frozen application, a refused spawn), when a helper program such as
+    ``unrar`` or ``unar`` cannot start because the system has no file descriptor,
+    memory or process slot for it, when a PPMd decoder process
     cannot allocate the member's model (a container memory limit), and when a volume
     file cannot be opened because the process is out of file descriptors. The data may
     be valid: read it again with more memory, more descriptors, or where child

@@ -119,6 +119,9 @@ binds.
 - [DR-22a](#dr-22a-a-caveat-in-the-docs-is-a-question-for-the-code). **A caveat in the
   docs is a question for the code.** Before writing a caveat, ask whether the code can
   change instead.
+- [DR-22b](#dr-22b-user-docs-are-written-and-reviewed-by-opus). **User docs are written
+  and reviewed by Opus.** `docs/`, the README, the CHANGELOG and SECURITY.md get Opus as
+  writer and first reviewer.
 - [DR-23](#dr-23-zero-debt-in-the-code-you-touch). **Zero debt in the code you touch.**
   Leave no debt in the code you touch; existing code is no justification.
 - [DR-23a](#dr-23a-share-what-must-agree-copy-what-agrees-by-coincidence). **Share what
@@ -1129,6 +1132,25 @@ to explain (2026-10-09).
 
 **Reopen if** a fix would break the upload-server test or hide data (principles 1 and
 2); then the caveat stays.
+
+### DR-22b. User docs are written and reviewed by Opus
+
+**Rule.** The prose users read is written by Opus, and Opus reviews it first: the pages
+under `docs/`, `README.md`, `CHANGELOG.md` and `SECURITY.md`. `review_prep.py tier`
+counts these files as standard, never light, so the review loop's first round on them is
+the Opus pass (`review_loop_gate.OPUS_PASS_TIERS`). Maintainer prose (`dev-docs/`) stays
+light.
+
+**Why.** User docs are where a wrong sentence costs most: a reader acts on it, and it
+ships in a release that can't be edited (the README on PyPI). The maintainer asked for
+Opus as writer and reviewer of user docs (2026-10-21). The loop's tiers (2026-10-30)
+gave every light pull request Sonnet rounds only, and docs were light, so #1350, a new
+user page, was reviewed by Sonnet; the maintainer chose to move user docs out of the
+light tier rather than review them by hand (2026-11-08).
+
+**Reopen if** Sonnet's rounds on docs are shown to catch what Opus's do, at a review
+evaluation like the 2026-10-21 shadow comparison, or the cost of an Opus round on every
+docs pull request becomes the limit.
 
 ---
 

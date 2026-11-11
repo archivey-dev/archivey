@@ -22,8 +22,8 @@ name: Review loop
 # The first lines of this workflow's closing comments are the only state: which rounds
 # ran, with what verdict, and where a review failed. Nothing runs without a fresh label.
 #
-# The reviewer is Opus for the first round of a standard or deep pull request, and
-# Sonnet for every other round (`OPUS_PASS_TIERS` in the gate says why).
+# The reviewer is Opus for every round of a standard or deep pull request (the first is
+# its Opus pass), and Sonnet for a light one (`OPUS_PASS_TIERS` in the gate says why).
 #
 # `scripts/review/review_loop_gate.py` makes the decisions and writes the closing comment, and
 # is unit tested. `dev-docs/review-loop.md` is the prose version.
@@ -166,6 +166,7 @@ jobs:
             echo "final=$(jq -r .final /tmp/gate.json)"
             echo "max_rounds=$(jq -r .max_rounds /tmp/gate.json)"
             echo "opus_pass=$(jq -r '.opus_pass // false' /tmp/gate.json)"
+            echo "opus_model=$(jq -r '.opus_model // false' /tmp/gate.json)"
             echo "head_sha=$REVIEWED_SHA"
           } >> "$GITHUB_OUTPUT"
           jq -r '"Gate: run=\(.run) round=\(.round) — \(.reason)"' /tmp/gate.json \
@@ -276,13 +277,13 @@ jobs:
           # cannot spend review credits. The action reports the actor with and without
           # the `[bot]` suffix depending on the code path, so both spellings are listed.
           allowed_bots: "claude,claude[bot],cursor,cursor[bot]"
-          # Opus for a standard or deep pull request's first round, which finds most
-          # of what matters; Sonnet, at about an eighth of the cost, for a light pull
-          # request and for every round that re-reads fixes (`OPUS_PASS_TIERS`).
+          # Opus for every round of a standard or deep pull request, the first look and
+          # the rounds that re-read fixes; Sonnet, at about an eighth of the cost, for a
+          # light pull request (`OPUS_PASS_TIERS`).
           # `Task` (`Agent` in newer CLIs) lets the reviewer start subagents. They get
           # this same allowlist and environment, so narrowing `Bash` here narrows them too.
           claude_args: |
-            --model ${{ steps.gate.outputs.opus_pass == 'true' && 'claude-opus-5-5' || 'claude-sonnet-5-5' }}
+            --model ${{ steps.gate.outputs.opus_model == 'true' && 'claude-opus-5-5' || 'claude-sonnet-5-5' }}
             --allowedTools Read,Grep,Glob,WebFetch,Bash,Task,Agent
           prompt: ${{ steps.prompt.outputs.prompt }}
 
