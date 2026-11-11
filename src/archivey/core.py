@@ -94,6 +94,7 @@ from archivey.internal.format_args import (
 from archivey.internal.format_provenance import FormatProvenance, stamp_error_context
 from archivey.internal.open_site import OpenSite, capture_open_site
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import (
     format_availability,
     get_registry,
@@ -184,6 +185,24 @@ def _forced_payload_end(
     if not backend_cls.SFX_MAGIC or not archive_source.seekable():
         return None
     return read_payload_end(archive_source, archive_source.size)
+
+
+def _program_resources(
+    archive_source: ArchiveSource, backend_cls: type[ReadBackend]
+) -> ProgramResources | None:
+    """The resources of a PE program at the start of the source, for a backend that
+    can carry a stub (``SFX_MAGIC``) on a seekable source of known size.
+
+    Built for detected and forced opens alike, so an archive stored as a program
+    resource gets the same trailing-data answer either way. Reads nothing here: the
+    backend's trailing-data check reads the headers when it found a non-zero byte.
+    """
+    if not backend_cls.SFX_MAGIC or not archive_source.seekable():
+        return None
+    size = archive_source.size
+    if size is None:
+        return None
+    return ProgramResources(archive_source, size)
 
 
 def _name_makeself(
@@ -1139,6 +1158,7 @@ def _open_resolved(
                 open_site=open_site,
                 start_offset=payload_offset,
                 end_offset=payload_end,
+                program_resources=_program_resources(archive_source, backend_cls),
             )
             reader._format_provenance = provenance
             reader._format_info = decision.format_info

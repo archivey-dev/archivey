@@ -131,6 +131,7 @@ from archivey.internal.password_confirm import (
     plan_password_confirm,
     run_password_confirm_plan,
 )
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
@@ -931,6 +932,7 @@ class SevenZipReader(BaseArchiveReader):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> None:
         super().__init__(
             ArchiveFormat.SEVEN_Z,
@@ -1001,6 +1003,9 @@ class SevenZipReader(BaseArchiveReader):
         # view stops there (``_view``), so nothing at or past it is read, and no
         # signature inside the table is taken for the archive's.
         self._end: int | None = end_offset
+        # A PE program's resources, when the archive may be stored as one: bytes
+        # after that resource belong to the program (``_report_trailing_data``).
+        self._program_resources = program_resources
         probe = self._region_view(start_offset)
         try:
             self._origin = start_offset + find_signature_offset(probe)
@@ -1082,7 +1087,9 @@ class SevenZipReader(BaseArchiveReader):
         self-extractor's certificate table is not reported: ``_view`` stops before it,
         because it is identified, not unexplained (maintainer decision; see
         ``dev-docs/formats/7z.md`` §6). Any other tail of a self-extractor is reported,
-        measured from the archive's own end.
+        measured from the archive's own end, except a tail that follows the program
+        resource the archive is stored in (``ProgramResources.explains``): that is the
+        rest of the program.
         """
         fp = self._view(self._archive.end_offset)
         try:
@@ -1090,6 +1097,12 @@ class SevenZipReader(BaseArchiveReader):
         finally:
             fp.close()
         if found is None:
+            return
+        archive_end = self._origin + self._archive.end_offset
+        resources = self._program_resources
+        if resources is not None and resources.explains(
+            archive_end, archive_end + found
+        ):
             return
         self._diagnostics_collector.emit(
             code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
@@ -2355,6 +2368,7 @@ class SevenZipReadBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> SevenZipReader:
         del format
         return SevenZipReader(
@@ -2369,6 +2383,7 @@ class SevenZipReadBackend(ReadBackend):
             open_site=open_site,
             start_offset=start_offset,
             end_offset=end_offset,
+            program_resources=program_resources,
         )
 
 

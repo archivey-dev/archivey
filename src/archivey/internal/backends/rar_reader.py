@@ -199,6 +199,7 @@ from archivey.internal.password_confirm import (
     plan_password_confirm,
     run_password_confirm_plan,
 )
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
@@ -1615,6 +1616,7 @@ class RarReader(BaseArchiveReader):
         volume_count: int = 1,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> None:
         """Open the source, parse every header, and build the member table.
 
@@ -1756,6 +1758,11 @@ class RarReader(BaseArchiveReader):
         self._end: int | None = end_offset if self._volume_set_size() <= 1 else None
         self._cost_notes = self._source_copy_notes(source)
         self._archive, self._unrar_password = self._parse_archive()
+        # A lone archive stored as a resource of the PE program it sits in: bytes
+        # after that resource are the rest of the program, not data after the
+        # archive (``_emit_trailing_data``). Decided here, while nothing else reads
+        # the source, and only when the walk found such bytes.
+        self._program_tail = self._trailing_in_program(program_resources)
         self._choose_unrar_volume_paths()
         # unrar only consults the password when something is actually encrypted, so
         # a spawn for a plain archive is not given one: nothing is decrypted with it,
@@ -3275,6 +3282,17 @@ class RarReader(BaseArchiveReader):
                 logger=logger,
             )
 
+    def _trailing_in_program(self, resources: ProgramResources | None) -> bool:
+        """Whether a lone archive's trailing bytes follow the PE program resource the
+        archive is stored in (``ProgramResources.explains``). The walk's offsets are
+        the file's own for a lone archive, as the resources' are."""
+        trailing = self._archive.trailing_data_volumes.get(0)
+        if resources is None or trailing is None or self._volume_set_size() > 1:
+            return False
+        return resources.explains(
+            trailing.archive_end, trailing.archive_end + trailing.offset
+        )
+
     def _emit_trailing_data(self) -> None:
         """Report each volume with a non-zero byte after its end-of-archive block.
 
@@ -3284,9 +3302,14 @@ class RarReader(BaseArchiveReader):
         since ``rar`` pads volumes with zeros. ``unrar`` says nothing about these
         bytes; 7-Zip warns "There are data after the end of archive" for any tail,
         zeros included. ``observed_bytes`` counts from the end of that volume's end
-        block.
+        block. Not reported for a lone archive stored as a PE program resource when
+        the byte follows that resource (``_program_tail``): it is the rest of the
+        program.
         """
-        for index, offset in sorted(self._archive.trailing_data_volumes.items()):
+        for index, trailing in sorted(self._archive.trailing_data_volumes.items()):
+            if self._program_tail:
+                continue
+            offset = trailing.offset
             where = f"volume {index + 1} of the set" if self._in_set else "RAR archive"
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
@@ -6212,6 +6235,7 @@ class RarReadBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> RarReader:
         del format
         return RarReader(
@@ -6226,6 +6250,7 @@ class RarReadBackend(ReadBackend):
             open_site=open_site,
             start_offset=start_offset,
             end_offset=end_offset,
+            program_resources=program_resources,
         )
 
 

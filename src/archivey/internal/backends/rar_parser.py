@@ -638,6 +638,16 @@ class DamagedServiceHeader:
     header_walk_stop_reason: str | None
 
 
+class TrailingData(NamedTuple):
+    """A non-zero byte after a volume's end-of-archive block."""
+
+    #: Where the end block's bytes stop, in the volume's own offsets (the parser's
+    #: read positions).
+    archive_end: int
+    #: How far past ``archive_end`` the byte lies.
+    offset: int
+
+
 @dataclass(slots=True)
 class RarArchive:
     version: int  # 4 = RAR3-on-disk family (1.5/2/3); 5 = RAR5 (not "RAR 4.x")
@@ -722,13 +732,13 @@ class RarArchive:
     #: unproven: there a CRC mismatch reads the same as a wrong key, so the walk raises
     #: the wrong-password ``EncryptionError`` instead.
     end_block_damaged_volumes: dict[int, int] = field(default_factory=dict)
-    #: 0-based volume index -> offset, counted from the end of that volume's
-    #: end-of-archive block, of the first non-zero byte within
-    #: :data:`~archivey.internal.trailing_scan.MAX_TRAILING_SCAN` bytes after it.
-    #: Only for a volume whose end block was read intact: a damaged one is taken for
-    #: the end block only when nothing but zeros follows it. The reader reports each as
+    #: 0-based volume index -> the first non-zero byte within
+    #: :data:`~archivey.internal.trailing_scan.MAX_TRAILING_SCAN` bytes after that
+    #: volume's end-of-archive block (:class:`TrailingData`). Only for a volume whose
+    #: end block was read intact: a damaged one is taken for the end block only when
+    #: nothing but zeros follows it. The reader reports each as
     #: ``ARCHIVE_TRAILING_DATA`` after the members. Zero padding is not recorded.
-    trailing_data_volumes: dict[int, int] = field(default_factory=dict)
+    trailing_data_volumes: dict[int, TrailingData] = field(default_factory=dict)
     #: RAR 1.5-4 only: an encrypted header of this volume, or of an earlier volume
     #: of the set, decrypted with a matching CRC16, which proves the header password.
     #: :func:`parse_rar_volumes` passes it to the next volume's walk, since a set has
@@ -1398,8 +1408,8 @@ def _seek_to(source: BinaryIO, pos: int) -> None:
         raise CorruptionError(f"RAR packed-data seek failed at offset {pos}") from exc
 
 
-def _scan_after_end_block(source: BinaryIO, end: int) -> int | None:
-    """Where the first non-zero byte after an end block at ``end`` lies, if any.
+def _scan_after_end_block(source: BinaryIO, end: int) -> TrailingData | None:
+    """The first non-zero byte after an end block at ``end``, if any.
 
     ``end`` is where the block's bytes stop in the volume: past any data area it
     declares, as every other block ends, and past its AES padding when headers are
@@ -1408,9 +1418,10 @@ def _scan_after_end_block(source: BinaryIO, end: int) -> int | None:
     """
     _seek_to(source, end)
     try:
-        return first_nonzero_offset(source)
+        found = first_nonzero_offset(source)
     finally:
         source.seek(end)
+    return None if found is None else TrailingData(end, found)
 
 
 def _only_zeros_after(source: BinaryIO, pos: int) -> bool:
@@ -2657,7 +2668,7 @@ class _Rar3Walk:
         self.damaged: str | None = None
         self.main_seen = False
         self.end_block_damaged_at: int | None = None
-        self.trailing_at: int | None = None
+        self.trailing_at: TrailingData | None = None
 
     def run(self) -> RarArchive:
         """Walk the blocks after the signature and return what they describe."""
@@ -3887,7 +3898,7 @@ class _Rar5Walk:
         self.main_seen = False
         self.end_block_seen = False
         self.end_block_damaged_at: int | None = None
-        self.trailing_at: int | None = None
+        self.trailing_at: TrailingData | None = None
         # Only the first MAIN of a volume is asked for the quick-open table. unrar
         # accepts a repeated MAIN, and each try reads a QO payload of up to
         # _RAR5_QO_PAYLOAD_MAX, so trying on every MAIN would let a 17-byte header buy

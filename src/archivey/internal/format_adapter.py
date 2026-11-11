@@ -100,6 +100,7 @@ from archivey.internal.naming import emit_member_name_normalized, normalize_memb
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.source import ArchiveSource
@@ -2755,6 +2756,7 @@ class _PluginBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> _PluginAdapter:
         common = (
             self.PLUGIN(),
@@ -2771,12 +2773,16 @@ class _PluginBackend(ReadBackend):
             "open_site": open_site,
         }
         if issubclass(self.PLUGIN, SequentialFormatHandler):
-            reject_start_offset(start_offset, format, archive_name, end_offset)
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
             return SequentialReaderAdapter(*common, **options)
         # Only a built-in format that declares SFX magic is handed a region, which its
         # reader reads as the whole source (``IndexedReaderAdapter``).
         if not self.SFX_MAGIC:
-            reject_start_offset(start_offset, format, archive_name, end_offset)
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
         return IndexedReaderAdapter(
             *common, region=(start_offset, end_offset), **options
         )
