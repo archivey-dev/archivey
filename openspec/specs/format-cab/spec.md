@@ -65,8 +65,10 @@ file past its folder's output. No checksum covers a `CFFILE` record, so the back
 also raise `CorruptionError` at open when the non-empty files of a folder, sorted by
 offset, do not each start where the one before ends, from byte 0 (a gap or an overlap),
 and on read when the last file of a folder ends before the folder's decoded output does.
-The layout check SHALL be a step of its own, which a salvage read can skip. A cut cabinet SHALL raise `TruncatedError` for what it cuts
-off, and still read the files before the cut. The block tables the backend keeps, one per
+When the file table ends early or holds a bad record, the records before it SHALL still
+be refused for an overlap, and the members they list SHALL read at `LENGTH`, not
+`CHECKSUM`, since a gap or a folder's end cannot be judged then. A cut cabinet SHALL
+raise `TruncatedError` for what it cuts off, and still read the files before the cut. The block tables the backend keeps, one per
 folder read, SHALL be weighed against `max_metadata_bytes` as they are read, 256 bytes a
 block, and crossing it SHALL raise `ResourceLimitError`. An LZX window over
 `DecoderLimits.max_decoder_memory` SHALL raise `ResourceLimitError` when a member of the
@@ -82,6 +84,8 @@ folder is read. A member of size 0 SHALL read as empty without decoding its fold
 | A file's offset moved back or forward, or the first file's offset not 0 | `CorruptionError` at open |
 | The last file's size made smaller | Listed; `CorruptionError` when a member of that folder is read |
 | An empty file at any offset | Accepted |
+| An overlap, and a bad record after it | `CorruptionError` at open |
+| A gap, and a bad record after it | The members before the bad record read at `LENGTH`; the listing raises at it |
 | Random bit flips in an LZX folder with no checksums | An `ArchiveyError`, never another exception |
 | A cabinet cut inside its last folder | The earlier files read; `TruncatedError` for the cut one |
 | An LZX match reaching before the stream start, or past the frame | `CorruptionError` |

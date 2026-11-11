@@ -118,7 +118,10 @@ When a folder's block table is read, the end of its last file must also be the f
 decoded size, which catches a last file's size made smaller. cabextract checks neither.
 The check is its own step so that a salvage read can skip it later and return the members
 marked damaged. A file table that ends early or holds a bad record is left to the listing,
-which reports it at that record, and the layout is not checked.
+which reports it at that record. The records before it are still checked for overlaps,
+which no later record can undo. A gap could be filled by a record past the bad one, so
+gaps and the folder's end are not judged, and the members before it read at `LENGTH`:
+nothing vouched for their offsets.
 
 ### 2.4 The LZX decoder
 

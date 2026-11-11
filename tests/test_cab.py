@@ -1285,3 +1285,37 @@ def test_a_folder_without_checksums_settles_at_length_on_open() -> None:
         assert reader.read(member) == BLOB
         assert member.verifiable is Verification.LENGTH
         assert member.verified is Verification.LENGTH
+
+
+def _bad_last_name(raw: bytes) -> bytes:
+    """``raw`` with the last file record's name made empty, which the listing refuses."""
+    out = bytearray(raw)
+    where, _record = _file_records(raw)[-1]
+    out[where + 16] = 0
+    return bytes(out)
+
+
+def test_an_overlap_before_a_bad_record_is_still_refused_at_open() -> None:
+    """A later bad record stops the layout check early, but an overlap among the
+    records before it is damage whatever follows."""
+    raw = _case("mszip")
+    (offset,) = struct.unpack_from("<I", _file_records(raw)[1][1], 4)
+    damaged = _bad_last_name(_patch_file(raw, 1, offset=offset - 10))
+    with pytest.raises(CorruptionError, match="overlaps .*file table is damaged"):
+        open_archive(io.BytesIO(damaged))
+
+
+def test_members_before_a_bad_record_read_unchecked() -> None:
+    """A gap before a bad record might be filled by a record past it, so it is not
+    refused; nothing vouched for the offsets, so the members read at ``LENGTH``."""
+    raw = _case("mszip")
+    (offset,) = struct.unpack_from("<I", _file_records(raw)[1][1], 4)
+    damaged = _bad_last_name(_patch_file(raw, 1, offset=offset + 10))
+    seen = []
+    with open_archive(io.BytesIO(damaged)) as reader, pytest.raises(CorruptionError):
+        for member, stream in reader.stream_members():
+            assert member.verifiable is Verification.LENGTH
+            assert stream is not None
+            stream.read()
+            seen.append((member.name, member.verified))
+    assert seen == [(NAMES[0], Verification.LENGTH), (NAMES[1], Verification.LENGTH)]

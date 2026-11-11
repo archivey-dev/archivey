@@ -237,7 +237,8 @@ class CabReader(IndexedReader[_Location]):
         # The folder decoder a member stream left behind, to go on from.
         self._parked: _FolderStream | None = None
         # Where each folder's files end, when the whole file table was read
-        # (``_check_file_layout``).
+        # (``_check_file_layout``). ``None`` when the table ends early or holds a bad
+        # record: the members before it then read unchecked.
         self._extents: dict[int, int] | None = None
         self._check_file_layout()
 
@@ -276,11 +277,15 @@ class CabReader(IndexedReader[_Location]):
 
         A separate step on purpose: a salvage read would skip it, read the members
         anyway and mark them damaged. A table that ends early or holds a bad record
-        is left to the listing, which reports it at that record; the check then has
-        too little to go on and is skipped.
+        is left to the listing, which reports it at that record. The records before
+        it are still checked for overlaps, which no later record can undo. A gap
+        could be filled by a record past the bad one, so gaps and folder ends are
+        not judged, and the members before it read unchecked (``LENGTH``): nothing
+        vouched for their offsets.
         """
         table = _Cursor(self, self._files_at)
         ranges: dict[int, list[tuple[int, int]]] = {}
+        complete = True
         try:
             for _ in range(self._file_count):
                 size, offset, folder, *_rest = _FILE.unpack(
@@ -288,17 +293,18 @@ class CabReader(IndexedReader[_Location]):
                 )
                 table.read_name()
                 if folder >= len(self._folders):
-                    return  # the listing refuses it at this record
+                    complete = False  # the listing refuses it at this record
+                    break
                 if size:
                     ranges.setdefault(folder, []).append((offset, size))
         except (TruncatedError, CorruptionError):
-            return
+            complete = False
         extents: dict[int, int] = {}
         for folder, spans in ranges.items():
             spans.sort()
             end = 0
             for offset, size in spans:
-                if offset != end:
+                if offset < end or (complete and offset != end):
                     where = "overlaps" if offset < end else "leaves a gap after"
                     raise CorruptionError(
                         f"a file in folder {folder} starts at byte {offset}, which "
@@ -307,7 +313,8 @@ class CabReader(IndexedReader[_Location]):
                     )
                 end = offset + size
             extents[folder] = end
-        self._extents = extents
+        if complete:
+            self._extents = extents
 
     # ── Listing ──────────────────────────────────────────────────────────────────────
 
@@ -346,7 +353,11 @@ class CabReader(IndexedReader[_Location]):
                     ),
                 ),
             )
-            if size and self._folders[folder].method in _READABLE:
+            if (
+                size
+                and self._extents is not None
+                and self._folders[folder].method in _READABLE
+            ):
                 # The blocks of nearly every cabinet carry checksums, and a read
                 # checks them; the first open settles it at LENGTH when a block of
                 # this file has none.
@@ -470,17 +481,21 @@ class CabReader(IndexedReader[_Location]):
             )
         extent = None if self._extents is None else self._extents.get(locator.folder)
         if table.complete and extent is not None and extent != table.output[-1]:
-            # The files tile the folder from 0 (``_check_file_layout``); bytes past
-            # the last one mean a size or offset in the file table is damaged.
+            # The files tile the folder from 0 (``_check_file_layout``), so they
+            # must end exactly where the folder's output does: short means a size
+            # was made smaller, long means one runs past the folder.
             raise CorruptionError(
                 f"the files of folder {locator.folder} end at byte {extent}, but "
                 f"the folder decodes to {table.output[-1]}; the file table is "
                 "damaged"
             )
-        # The member is checked when every block up to its end carries a checksum.
+        # The member is checked when the whole file table vouched for its offset
+        # and every block up to its end carries a checksum.
         last = _block_at(table, max(end - 1, 0))
-        checked = last is not None and all(
-            block.checksum for block in table.blocks[: last + 1]
+        checked = (
+            self._extents is not None
+            and last is not None
+            and all(block.checksum for block in table.blocks[: last + 1])
         )
         stream = self._folder_stream(locator.folder, folder, table, locator.offset)
         return MemberData(
