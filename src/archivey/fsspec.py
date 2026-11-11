@@ -19,7 +19,7 @@ import tempfile
 import threading
 import weakref
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Literal, Self, cast
 
@@ -30,6 +30,7 @@ from fsspec.core import OpenFile
 from archivey.core import open_archive
 from archivey.diagnostics import DiagnosticCode, PathRefusedContext
 from archivey.exceptions import FilterRejectionError
+from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.enum_args import coerce_enum
 from archivey.internal.extraction import hardlink_chain_end
 from archivey.internal.filters import (
@@ -75,7 +76,10 @@ class _Node:
 
     __slots__ = (
         "children",
+        "dependents",
         "entry",
+        "held",
+        "held_final",
         "key",
         "kind",
         "leads_to",
@@ -92,7 +96,9 @@ class _Node:
         self.kind = kind
         # A directory's entries by component; a file and a link have none.
         self.children: dict[str, _Node] | None = {} if kind == "dir" else None
-        self.target: str | None = None  # a symlink's target text
+        # A symlink's target, as the components a walk takes: ``""`` and ``"."``,
+        # which a walk skips, are left out.
+        self.target: list[str] | None = None
         # The member's ``info()``, without its ``"name"``; ``None`` for a directory
         # that no member names.
         self.entry: dict[str, Any] | None = None
@@ -104,6 +110,11 @@ class _Node:
         # on the way, as a parent and as the end of a path (``_Tree._follow``).
         self.leads_to: tuple[_Node, int] | None = None
         self.leads_to_final: tuple[_Node, int] | None = None
+        # Any other walk of the link, or its refusal, with the hops before it.
+        self.held: tuple[int, _Walk | _Refusal] | None = None
+        self.held_final: tuple[int, _Walk | _Refusal] | None = None
+        # The links whose held walk followed this link's held walk.
+        self.dependents: list[_Node] | None = None
 
     def child(self, part: str) -> _Node | None:
         return self.children.get(part) if self.children else None
@@ -158,8 +169,11 @@ class _Tree:
         self.root = _Node(None, "", "dir")
         self.root.key = _KeyNode(None, "")
         self.links: list[_Node] = []  # every symlink as written
-        # The links whose final walk was kept since the last ``place`` began.
+        # The links whose final walk was kept or held since the last ``place`` began.
         self._kept_final: list[_Node] = []
+        # A directory and a name it does not hold -> the links whose held walk
+        # looked the name up there (``_Tree._follow``).
+        self._watch: dict[tuple[_Node, str], list[_Node]] = {}
 
     def place(self, name: str, view: ArchiveMember) -> _Node | _Refusal:
         """Claim ``name`` and return the node it is written at, or say why extraction
@@ -191,18 +205,26 @@ class _Tree:
         for part in missing:
             parent = self._add(parent, part, "dir")
             made.append(parent)
+        target = view.link_target or ""
+        if kind == "link" and len(os.fsencode(target)) > MAX_LINK_TARGET_BYTES:
+            # Past ``PATH_MAX``: ``symlink()`` refuses it once the parents are made,
+            # and readers refuse a target this long stored as member data.
+            return _Refusal(
+                f"its target is longer than {MAX_LINK_TARGET_BYTES} bytes, more than "
+                "a symlink's target can be"
+            )
         node = self._add(parent, last, kind)
         if kind == "link":
-            target = view.link_target or ""
-            node.target = target
+            node.target = [part for part in target.split("/") if part not in ("", ".")]
             # A link that leads out through a link made before it is refused before
             # anything is written. One that loops is found only once it is made, so
             # it is removed, and the parents made for it stay.
             self._kept_final.clear()
-            problem = self._resolve(self._start(parent, target), target, final=True)
+            problem = self._resolve(parent, target, final=True)
             if isinstance(problem, _Refusal):
                 for kept in self._kept_final:
                     kept.leads_to_final = None
+                    self._drop(kept)
                 self._remove(node)
                 if problem is not _LOOP:
                     for made_dir in reversed(made):
@@ -213,21 +235,18 @@ class _Tree:
             claim.claimed = True
         return node
 
-    @staticmethod
-    def _add(parent: _Node, part: str, kind: _Kind) -> _Node:
+    def _add(self, parent: _Node, part: str, kind: _Kind) -> _Node:
         node = _Node(parent, part, kind)
         cast("dict[str, _Node]", parent.children)[part] = node
+        # A walk that found ``part`` missing here no longer holds.
+        for link in self._watch.pop((parent, part), ()):
+            self._drop(link)
         return node
 
     @staticmethod
     def _remove(node: _Node) -> None:
         parent = cast("_Node", node.parent)
         del cast("dict[str, _Node]", parent.children)[node.part]
-
-    def _start(self, parent: _Node, target: str) -> _Node:
-        """Where a link's target text starts, as ``posixpath.join(parent, target)``
-        reads it: an absolute target starts at the root."""
-        return self.root if target.startswith("/") else parent
 
     def _claim_key(self, parent: _Node, missing: list[str], last: str) -> _KeyNode:
         """The key node of ``collision_key`` of the path ``parent/missing.../last``.
@@ -292,10 +311,16 @@ class _Tree:
     def link_destination(self, link: _Node) -> _Spot | None:
         """Where ``link`` leads once every member is written, as the destination
         resolves its target text, or ``None`` for a loop or a way out."""
-        target = cast("str", link.target)
         parent = cast("_Node", link.parent)
-        spot = self._resolve(self._start(parent, target), target, final=True)
-        return None if isinstance(spot, _Refusal) else spot
+        walked = self._walk(
+            parent,
+            cast("list[str]", link.target),
+            final=True,
+            from_link=True,
+            hops=0,
+            deps=_Deps(),
+        )
+        return None if isinstance(walked, _Refusal) else (walked.node, walked.missing)
 
     def _resolve(
         self, start: _Node, name: str, *, final: bool = False
@@ -307,20 +332,29 @@ class _Tree:
         path under it. With ``final``, ``name`` is a link's target, which may lead
         anywhere inside the destination: only a loop and a way out are refused.
         """
-        walked = self._walk(start, name, final=final, from_link=False, hops=0)
+        walked = self._walk(
+            start, name.split("/"), final=final, from_link=False, hops=0, deps=_Deps()
+        )
         if isinstance(walked, _Refusal):
             return walked
         return walked.node, walked.missing
 
     def _walk(
-        self, start: _Node, name: str, *, final: bool, from_link: bool, hops: int
+        self,
+        start: _Node,
+        parts: list[str],
+        *,
+        final: bool,
+        from_link: bool,
+        hops: int,
+        deps: _Deps,
     ) -> _Walk | _Refusal:
-        """``_resolve``'s walk of ``name`` from ``start``, with ``hops`` links followed
-        before it. ``from_link`` says ``name`` is a link's target."""
+        """``_resolve``'s walk of the components ``parts`` from ``start``, with
+        ``hops`` links followed before it. ``from_link`` says the components are a
+        link's target. ``deps`` collects what the result depends on."""
         node = start
         missing: list[str] = []
-        steady = True
-        for part in name.split("/"):
+        for part in parts:
             if part in ("", "."):
                 continue
             if part == "..":
@@ -333,40 +367,56 @@ class _Tree:
                 else:
                     node = node.parent
                 continue
-            child = None if missing else node.child(part)
-            if child is None:
+            if missing:
+                # Under a missing directory: nothing there to look up.
                 if from_link and not final:
                     return _Refusal(
                         "a parent of it is a symlink that leads to no directory"
                     )
                 missing.append(part)
-                steady = False
+                continue
+            child = node.child(part)
+            if child is None:
+                deps.absent.append((node, part))
+                if from_link and not final:
+                    return _Refusal(
+                        "a parent of it is a symlink that leads to no directory"
+                    )
+                missing.append(part)
                 continue
             if child.kind == "link":
                 # The target is relative to the link's parent, which ``node`` is.
-                followed = self._follow(child, node, final=final, hops=hops)
+                # ``check_universal`` refuses an absolute target under every policy,
+                # so no target starts at the root.
+                followed = self._follow(child, node, final=final, hops=hops, deps=deps)
                 if isinstance(followed, _Refusal):
                     return followed
                 node, missing = followed.node, list(followed.missing)
                 hops = followed.hops
-                steady = steady and followed.steady
                 continue
             if child.kind == "file" and not final:
                 return _Refusal("a parent of it is a file")
             node = child
-        return _Walk(node, missing, hops, steady)
+        return _Walk(node, missing, hops)
 
     def _follow(
-        self, link: _Node, parent: _Node, *, final: bool, hops: int
+        self, link: _Node, parent: _Node, *, final: bool, hops: int, deps: _Deps
     ) -> _Walk | _Refusal:
         """Follow ``link``, in ``parent``, as one more hop after ``hops``.
 
-        The end of a link's target is kept on the link once the walk to it met no
-        missing component, so a link that many paths go through is walked once: a
-        component added later cannot change such a walk. A walk without ``final``
-        runs only before a member's nodes are added; one with ``final`` can run
-        through a link and parents that ``place`` then removes, so ``place`` drops
-        what was kept then (``_kept_final``).
+        A link's walk is kept on the link, so a link that many paths go through is
+        walked once while what it depends on stays the same:
+
+        - A walk that looked up no missing name and followed only kept links is kept
+          for good: a node added later cannot change it (``leads_to``).
+        - Any other walk, and a refusal, is held for the hops before it
+          (``held``). It depends on the names it found missing and on the links it
+          followed whose walk is held too. Adding a node of such a name drops it
+          (``_add``), and dropping a link's walk drops the walks that followed it.
+
+        A walk with ``final`` can run through a link and parents that ``place`` then
+        removes, so ``place`` drops what was kept then (``_kept_final``). A walk
+        without ``final`` runs only before a member's nodes are added.
         """
         hops += 1
         if hops > _MAX_SYMLINK_HOPS:
@@ -376,29 +426,67 @@ class _Tree:
             node, used = kept
             if hops + used > _MAX_SYMLINK_HOPS:
                 return _LOOP  # where the walk itself would have stopped
-            return _Walk(node, [], hops + used, True)
+            return _Walk(node, [], hops + used)
+        held = link.held_final if final else link.held
+        if held is not None and held[0] == hops:
+            deps.links.append(link)
+            return held[1]
+        inner = _Deps()
         walked = self._walk(
-            parent, cast("str", link.target), final=final, from_link=True, hops=hops
+            parent,
+            cast("list[str]", link.target),
+            final=final,
+            from_link=True,
+            hops=hops,
+            deps=inner,
         )
-        if isinstance(walked, _Refusal) or not walked.steady:
+        if final:
+            self._kept_final.append(link)
+        if isinstance(walked, _Walk) and not inner.absent and not inner.links:
+            if final:
+                link.leads_to_final = (walked.node, walked.hops - hops)
+            else:
+                link.leads_to = (walked.node, walked.hops - hops)
             return walked
         if final:
-            link.leads_to_final = (walked.node, walked.hops - hops)
-            self._kept_final.append(link)
+            link.held_final = (hops, walked)
         else:
-            link.leads_to = (walked.node, walked.hops - hops)
+            link.held = (hops, walked)
+        for absent in inner.absent:
+            self._watch.setdefault(absent, []).append(link)
+        for followed in inner.links:
+            if followed.dependents is None:
+                followed.dependents = []
+            followed.dependents.append(link)
+        deps.links.append(link)
         return walked
+
+    def _drop(self, link: _Node) -> None:
+        """Drop the held walks of ``link`` and of every link whose walk followed it."""
+        stack = [link]
+        while stack:
+            item = stack.pop()
+            item.held = item.held_final = None
+            stack.extend(item.dependents or ())
+            item.dependents = None
 
 
 @dataclass
 class _Walk:
-    """Where a walk ends, with the links followed so far and whether every component
-    on the way existed (``steady``)."""
+    """Where a walk ends, with the links followed so far."""
 
     node: _Node
     missing: list[str]
     hops: int
-    steady: bool
+
+
+@dataclass
+class _Deps:
+    """What a walk's result depends on: the names it looked up and found missing, by
+    directory, and the links it followed whose walk is held, not kept."""
+
+    absent: list[tuple[_Node, str]] = field(default_factory=list)
+    links: list[_Node] = field(default_factory=list)
 
 
 def _info(node: _Node, name: str) -> dict[str, Any]:
@@ -431,8 +519,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     policy will not write, a symlink whose target leaves the destination), a hard link
     to a refused member, a member whose name collides with one before it (the
     policy's collision key: ``README`` and ``readme`` collide under ``STRICT`` and
-    ``STANDARD``), a path under a file, and a symlink that loops or leads out through
-    another link. Each is a ``MEMBER_PATH_REFUSED`` diagnostic on
+    ``STANDARD``), a path under a file, a symlink that loops or leads out through
+    another link, and a symlink whose target is over 4096 bytes, which ``symlink()``
+    refuses on Linux and readers refuse when the target is stored as member data.
+    Each is a ``MEMBER_PATH_REFUSED`` diagnostic on
     ``fs.reader.diagnostics``. A duplicate name shows its current entry. A member
     under one of the archive's own symlinks is listed where extraction writes it,
     through the link: ``l/y`` under ``l -> d`` is ``d/y``, and a path under a link that

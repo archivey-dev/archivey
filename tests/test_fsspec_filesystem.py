@@ -537,17 +537,88 @@ def test_the_tree_grows_with_the_names_not_with_their_depth() -> None:
     assert elapsed < 2.0
 
 
-def test_a_long_symlink_target_resolves_in_linear_time() -> None:
-    """Each component of a target is taken from the end of a stack: from the front
-    of a list, a target of 60 000 components took 8 s to list (S48-K5)."""
-    data = _tar_entries([("dir", "d", ""), ("sym", "s", "./" * 60_000 + "d")])
+def test_a_target_longer_than_a_symlink_can_hold_is_refused_unwalked() -> None:
+    """A target over 4096 bytes is refused before it is walked, as ``symlink()``
+    refuses it once extraction has made the parents: a target of 60 000 ``./``
+    components took 8 s to list, and was listed (S48-K5)."""
+    data = _tar_entries(
+        [("dir", "d", ""), ("sym", "p/s", "./" * 60_000 + "d"), ("sym", "t", "d")]
+    )
     with ArchiveyFileSystem(io.BytesIO(data)) as fs:
         fs.reader.members()
         start = time.perf_counter()
-        assert fs.info("s")["type"] == "directory"
+        assert fs.find("", withdirs=True) == ["d", "p", "t"]
         elapsed = time.perf_counter() - start
-    # Measured: under 0.05 s. The bound is loose for slow CI runners.
+        (refusal,) = [
+            d
+            for d in fs.reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_PATH_REFUSED
+        ]
+        assert refusal.context.member_name == "p/s"
+        assert "longer than 4096 bytes" in refusal.context.reason
+    # Measured: under 0.01 s. The bound is loose for slow CI runners.
     assert elapsed < 2.0
+
+
+def test_a_target_of_4096_bytes_resolves() -> None:
+    target = "./" * 2047 + "d"  # 4095 bytes, as long as Linux writes
+    data = _tar_entries([("dir", "d", ""), ("sym", "s", target), ("file", "d/f", b"F")])
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        assert fs.info("s")["type"] == "directory"
+        assert fs.cat("s/f") == b"F"
+
+
+@pytest.mark.parametrize("end", ["nope", "f"], ids=["missing", "file"])
+def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(end: str) -> None:
+    """A walk that ends on a missing name or on a file, or is refused, is held until
+    a member makes a name it found missing. Here 2000 names and 2000 links go
+    through a chain of 20 links, each 2400 components long (``d/..`` cannot be
+    skipped unwalked: ``d`` could be a link), which ends on ``end``."""
+    entries: list[tuple[str, str, bytes | str]] = [
+        ("dir", "d", ""),
+        ("file", "f", b"F"),
+    ]
+    entries += [("sym", f"l{n}", "d/../" * 800 + f"l{n + 1}") for n in range(19)]
+    entries.append(("sym", "l19", "d/../" * 800 + end))
+    entries += [("file", f"l0/{n}", b"") for n in range(2000)]
+    entries += [("sym", f"x{n}", "l0") for n in range(2000)]
+    data = _tar_entries(entries)
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        fs.reader.members()
+        start = time.perf_counter()
+        assert fs.info("x1999")["type"] == ("file" if end == "f" else "other")
+        elapsed = time.perf_counter() - start
+        assert not fs.exists("l0/0")
+    # Measured: under 0.3 s, and 4.4 s to 12.7 s with every walk done again.
+    assert elapsed < 2.0
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        # A's check holds K's walk, which finds p missing; p/z then makes p.
+        [("sym", "K", "p"), ("sym", "A", "K/z"), ("file", "p/z", b"Z")],
+        # J's held walk follows K's: making p drops both.
+        [
+            ("sym", "K", "p"),
+            ("sym", "J", "K"),
+            ("sym", "A", "J/z"),
+            ("file", "p/z", b"Z"),
+        ],
+        # K/a is refused while p is missing; K/b is written once p/z made p.
+        [("sym", "K", "p"), ("file", "K/a", b""), ("file", "p/z", b"Z")],
+    ],
+    ids=["made-later", "through-a-held-link", "names-under-it"],
+)
+def test_a_held_walk_is_dropped_when_its_missing_name_is_made(
+    entries: list[tuple[str, str, bytes | str]],
+) -> None:
+    data = _tar_entries([*entries, ("sym", "M", "K/z"), ("file", "K/b", b"B")])
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        assert fs.cat("M") == b"Z"
+        assert fs.cat("p/b") == b"B"
+        if any(name == "A" for _, name, _ in entries):
+            assert fs.cat("A") == b"Z"
 
 
 def test_a_link_that_many_paths_go_through_is_walked_once() -> None:
