@@ -555,7 +555,9 @@ entries it reads after the last member (`format-zip`).
 compressed TAR's (or cpio's, or an RPM payload's, or another `decompress()` layer's)
 stream as the walk reads headers and skips member data, the start of each compressed
 member a streaming ZIP pass decodes as it passes over it (up to the link-target cap
-and a reparse prefix), and a 7z header stored compressed, decoded at open. Each
+and a reparse prefix), a solid folder decoded up to the symlinks whose targets the
+listing reads, the first header a reader parses at open, and a 7z header stored
+compressed, decoded at open. Each
 reader's listing SHALL count from zero, and so SHALL a walk started over after a
 failure. Bytes a caller reads from a member SHALL NOT
 count, whether between walk steps or on another thread. The step that crosses the cap

@@ -277,7 +277,8 @@ in the repository measures what each limit costs in time and memory on your mach
   the decoding itself: measured with the standard library's decoders on 4 cores, gzip about 110-145
   MiB/s, xz 55-65 MiB/s and bzip2 23-26 MiB/s, so about 30 s, 70 s and 3 minutes at the default. A
   ZIP read from a pipe counts much less, about 4 KiB per compressed member it passes over, the start
-  it keeps in case the member is a link.
+  it keeps in case the member is a link. A solid 7z counts its folder up to the last symlink whose
+  target the listing reads; `read_link_targets=False` skips that.
 - **`decoder_limits.max_decoder_memory`**, default 2 GiB, caps the memory an archive can ask a
   decoder for, and the memory of rapidgzip's process for gzip, zlib and DEFLATE. It costs the memory
   itself. Detection's trial decodes are held to the same cap. A stream whose decoder is over it is

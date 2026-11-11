@@ -462,12 +462,14 @@ class ListingLimits:
     headers sit between the members' data, so listing it decodes all of it. A
     streaming ZIP decodes the start of each compressed member it passes over (up to
     about 4 KiB, in case the directory makes it a link), so it counts about 4 KiB a
-    member. That work happens on ``open_archive`` and the first listing call, before
-    the caller has read anything, so this caps it. Each reader's listing counts from
-    zero, and so does a walk started over after a failure; a reader keeps its listing,
-    so listing again decodes nothing. The bytes a caller reads from a member do not
-    count, only those the walk decodes on its own to reach the next header. A 7z
-    header stored compressed counts too, at open.
+    member. A solid 7z decodes its folder up to the last symlink whose target it reads
+    (``read_link_targets``). That work happens on ``open_archive`` and the first
+    listing call, before the caller has read anything, so this caps it. Each reader's
+    listing counts from zero, and so does a walk started over after a failure; a reader
+    keeps its listing, so listing again decodes nothing. The bytes a caller reads from
+    a member do not count, only those the reader decodes on its own: the header read
+    at open, the data a walk passes over to reach the next header, the link targets it
+    reads. A 7z header stored compressed counts too, at open.
 
     :attr:`DecoderLimits.max_ratio` already holds a listing's decode to a multiple of
     the archive's size; this is the absolute cap, for a large archive that compresses

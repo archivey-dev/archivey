@@ -1599,7 +1599,12 @@ class BaseArchiveReader(ArchiveReader):
         if counter is not None:
             stream = OutputCountingStream(stream, counter)
         if draw_budget:
-            stream = self._budget_drawn(stream)
+            # Opened for listing work (a link target the listing reads): that work
+            # counts toward the listing's cap too.
+            listing = self._listing_decode
+            stream = self._budget_drawn(
+                stream, stage=listing is not None and listing.room() is not None
+            )
         return stream
 
     def _budget_drawn(self, stream: BinaryIO, *, stage: bool = False) -> BinaryIO:
@@ -1608,9 +1613,11 @@ class BaseArchiveReader(ArchiveReader):
 
         Put on a decode stage, it draws what the decoder produces whoever reads it: a
         member's reads, and the bytes of members skipped on the way to another.
-        ``stage=True`` is for a stream a listing walk decodes (a compressed archive's
-        own stream, a ``decompress()`` layer): it also draws, while a walk step runs,
-        from ``ListingLimits.max_decoded_bytes`` (``_stage_draws``).
+        ``stage=True`` is for a stream listing work decodes (a compressed archive's
+        own stream, a ``decompress()`` layer, a stream opened during
+        :meth:`_listing_work`): it also draws from ``ListingLimits.max_decoded_bytes``
+        (``_stage_draws``), which counts only while listing work runs, so a caller's
+        own reads between walk steps do not count.
         """
         budget = self._stage_draws if stage else self._config.budget
         if budget is None:
@@ -1624,6 +1631,21 @@ class BaseArchiveReader(ArchiveReader):
             stream._hold_inner(lambda inner: BudgetDrawStream(inner, budget))
             return stream
         return BudgetDrawStream(stream, budget)
+
+    @contextlib.contextmanager
+    def _listing_work(self) -> Generator[None]:
+        """Count what the reader decodes in this block, on this thread, toward
+        ``ListingLimits.max_decoded_bytes``: listing work the caller does not
+        control, as a walk step's is (``_pull_members_locked``)."""
+        listing_decode = self._listing_decode
+        if listing_decode is None:
+            yield
+            return
+        entered = listing_decode.enter()
+        try:
+            yield
+        finally:
+            listing_decode.leave(entered)
 
     def _seek_handle_wrapper(self) -> Callable[[BinaryIO], BinaryIO] | None:
         """Return a ``SharedSource(wrap_handle=…)`` callback when measurement is on."""
@@ -2026,7 +2048,8 @@ class BaseArchiveReader(ArchiveReader):
         """
         self._listing_tracker.assert_within_limits()
         # Under the walk lock: a pass cursor beside it links the members it yields.
-        with self._walk_lock:
+        # Link targets read to finish the listing count toward its decode cap.
+        with self._walk_lock, self._listing_work():
             self._finalize_links(error=error, child_scope=child_scope)
             return self._publish_materialized(error=error)
 

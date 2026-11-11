@@ -1078,13 +1078,8 @@ class SevenZipReader(BaseArchiveReader):
     def _load_archive(self) -> SevenZipArchive:
         # The header is the listing: decoding it at open counts toward
         # ``ListingLimits.max_decoded_bytes``, as a walk step's decoding does.
-        listing_decode = self._listing_decode
-        entered = listing_decode.enter() if listing_decode is not None else None
-        try:
+        with self._listing_work():
             return self._load_archive_counted()
-        finally:
-            if listing_decode is not None:
-                listing_decode.leave(entered)
 
     def _load_archive_counted(self) -> SevenZipArchive:
         return load_sevenzip_archive(

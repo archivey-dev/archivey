@@ -131,6 +131,45 @@ def test_an_encoded_7z_header_counts_at_open() -> None:
         assert reader.members()
 
 
+def test_a_solid_7z_link_sweep_counts() -> None:
+    """``members()`` decodes a solid folder up to its last link to read the targets:
+    listing work, counted although it runs after the walk's last step."""
+    path = Path(__file__).parent / "fixtures" / "sevenzip" / "links_mid_folder_solid.7z"
+    with archivey.open_archive(path, config=_config(1 << 20)) as reader:
+        reader.members()
+        # The encoded header, then the 6368-byte folder up to its last link.
+        assert reader._listing_decode.drawn > 6368  # type: ignore[attr-defined]
+    with (
+        archivey.open_archive(path, config=_config(4000)) as reader,
+        pytest.raises(ResourceLimitError, match="has decoded 4001 bytes"),
+    ):
+        reader.members()
+    # Without link targets, the listing decodes only the header.
+    with archivey.open_archive(
+        path, config=_config(4000, read_link_targets=False)
+    ) as reader:
+        assert len(reader.members()) == 6
+        assert reader._listing_decode.drawn < 4000  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_the_first_header_read_at_open_counts(streaming: bool) -> None:
+    """A compressed TAR parses its first header at open, through an 8 KiB read-ahead:
+    that fill is part of the first listing pass."""
+    data = gzip.compress(_tar(1))
+    with (
+        pytest.raises(ResourceLimitError, match="has decoded 1001 bytes"),
+        archivey.open_archive(
+            io.BytesIO(data), config=_config(1000), streaming=streaming
+        ),
+    ):
+        pass
+    with archivey.open_archive(
+        io.BytesIO(data), config=_config(1 << 20), streaming=streaming
+    ) as reader:
+        assert reader._listing_decode.drawn >= 8192  # type: ignore[attr-defined]
+
+
 def test_a_random_access_zip_lists_without_decoding() -> None:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

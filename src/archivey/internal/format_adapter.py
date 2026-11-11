@@ -1725,7 +1725,11 @@ class SequentialReaderAdapter(_PluginAdapter):
             # The first step of the walk is taken now, so a file that is not one of
             # the format's archives fails to open (DR-15b), as a TAR does.
             walk = self._new_walk()
-            with self._translated_errors(), self._handle_guard():
+            with (
+                self._translated_errors(),
+                self._handle_guard(),
+                self._listing_work(),
+            ):
                 first = self._walk_next(walk)
             self._open_walk: tuple[Iterator[MemberSpan], object] | None = (
                 walk,
