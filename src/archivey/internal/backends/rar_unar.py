@@ -139,34 +139,36 @@ def _emits_unknown_size(info: RarMemberInfo) -> bool:
     """Whether ``unar`` writes data of a length no header gives for this entry.
 
     A RAR5 entry whose size stays unknown on every part (``size_unknown`` after the
-    parse) holds a placeholder there, so nothing after it in a run can be placed.
+    parse) holds a placeholder there. It has no offset of its own in a run, and the
+    entries after it are placed once its size is known (:func:`_place_entries`).
     """
     return info.size_unknown and not _carries_no_data(info)
 
 
 def _place_entries(
     entries: list[RarMemberInfo],
-) -> tuple[dict[int, int], dict[int, tuple[RarMemberInfo, ...]]]:
+) -> tuple[dict[int, int], dict[int, int], list[RarMemberInfo]]:
     """Where each entry's bytes start in a run that writes ``entries`` in order.
 
-    Returns the known part of each offset, and the entries of unknown size
-    (:func:`_emits_unknown_size`) whose bytes come before it: the offset is the known
-    part plus their sizes, which the reader learns by reading each on its own. An
-    entry of unknown size gets no offset.
+    Returns the known part of each offset, how many entries of unknown size
+    (:func:`_emits_unknown_size`) come before it, and those entries in run order.
+    The offset is the known part plus the sizes of that many leading entries of the
+    list, which the reader learns by reading each on its own. An entry of unknown
+    size gets no offset. Linear in the entries: a count, not a tuple, per entry.
     """
     offsets: dict[int, int] = {}
-    before: dict[int, tuple[RarMemberInfo, ...]] = {}
-    unknown: tuple[RarMemberInfo, ...] = ()
+    before: dict[int, int] = {}
+    unknown: list[RarMemberInfo] = []
     position = 0
     for info in entries:
         if _emits_unknown_size(info):
-            unknown = (*unknown, info)
+            unknown.append(info)
             continue
         offsets[id(info)] = position
         if unknown:
-            before[id(info)] = unknown
+            before[id(info)] = len(unknown)
         position += unar_emitted_size(info)
-    return offsets, before
+    return offsets, before, unknown
 
 
 def unar_pipe_offsets(archive: RarArchive) -> dict[int, int]:
@@ -424,7 +426,8 @@ class UnarRarPolicy:
         self._pass_refusals: dict[int, str] = {}
         self._pass_indexes: list[int] | None = None
         self._pass_offsets: dict[int, int] = {}
-        self._pass_unknown_before: dict[int, tuple[RarMemberInfo, ...]] = {}
+        self._pass_unknown_before: dict[int, int] = {}
+        self._pass_unknown: list[RarMemberInfo] = []
         # ``id`` of each entry a run that names entries (``_pass_indexes``) holds,
         # placed or not (``unar_pipe_offsets``).
         self._pass_selected: set[int] = set()
@@ -446,8 +449,8 @@ class UnarRarPolicy:
             if reason is not None:
                 self._pass_refusals[id(info)] = reason
         if not self._pass_refusals:
-            self._pass_offsets, self._pass_unknown_before = _place_entries(
-                list(self._archive.members)
+            self._pass_offsets, self._pass_unknown_before, self._pass_unknown = (
+                _place_entries(list(self._archive.members))
             )
             return
         selected: list[RarMemberInfo] = []
@@ -460,7 +463,9 @@ class UnarRarPolicy:
             selected.append(info)
         self._pass_selected = {id(info) for info in selected}
         # Each selected member is a payload file: it writes ``file_size`` bytes.
-        self._pass_offsets, self._pass_unknown_before = _place_entries(selected)
+        self._pass_offsets, self._pass_unknown_before, self._pass_unknown = (
+            _place_entries(selected)
+        )
         self._pass_indexes = [self._index[id(info)] for info in selected]
 
     def entry_index(self, info: RarMemberInfo) -> int:
@@ -549,8 +554,12 @@ class UnarRarPolicy:
         """
         return self._pass_offsets.get(id(info))
 
-    def solid_pass_unknown_before(
-        self, info: RarMemberInfo
-    ) -> tuple[RarMemberInfo, ...]:
-        """The members of unknown size whose bytes come before ``info``'s in the run."""
-        return self._pass_unknown_before.get(id(info), ())
+    def solid_pass_unknown_before(self, info: RarMemberInfo) -> int:
+        """How many members of unknown size have bytes before ``info``'s in the run:
+        the first that many of :attr:`solid_pass_unknown`."""
+        return self._pass_unknown_before.get(id(info), 0)
+
+    @property
+    def solid_pass_unknown(self) -> list[RarMemberInfo]:
+        """The run's members of unknown size, in run order."""
+        return self._pass_unknown

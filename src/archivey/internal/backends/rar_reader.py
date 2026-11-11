@@ -6256,6 +6256,21 @@ class RarReader(BaseArchiveReader):
         def _refuse(member: ArchiveMember, reason: str) -> BinaryIO:
             raise self._unar_refused(member, reason)
 
+        # Running byte totals of the run's members of unknown size, measured in run
+        # order as later members need them: ``totals[i]`` covers the first ``i``.
+        totals = [0]
+
+        def unknown_bytes(count: int) -> int | None:
+            unknown = policy.solid_pass_unknown
+            while len(totals) <= count:
+                member = self._member_for(unknown[len(totals) - 1])
+                measured = self._measured_size(member)
+                if measured is None:
+                    # Its own read failed: nothing after it can be placed.
+                    return None
+                totals.append(totals[-1] + measured)
+            return totals[count]
+
         def _plan(
             member: ArchiveMember,
             raw: RarMemberInfo,
@@ -6274,12 +6289,8 @@ class RarReader(BaseArchiveReader):
             offset = policy.solid_pass_offset(raw)
             if offset is not None:
                 # The run's bytes of each earlier member of unknown size come first.
-                for info in policy.solid_pass_unknown_before(raw):
-                    measured = self._measured_size(self._member_for(info))
-                    if measured is None:
-                        offset = None
-                        break
-                    offset += measured
+                skipped = unknown_bytes(policy.solid_pass_unknown_before(raw))
+                offset = None if skipped is None else offset + skipped
             if not has_digest or offset is None:
                 # No digest would catch misplaced bytes from the shared run (above),
                 # or the run has no place for the member: one of unknown size, or

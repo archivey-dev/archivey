@@ -1550,8 +1550,33 @@ def test_unar_pass_places_members_after_one_of_unknown_size() -> None:
     position = 0
     for info in later:
         assert offsets[id(info)] == policy.solid_pass_offset(info) == position
-        assert policy.solid_pass_unknown_before(info) == (unknown,)
+        assert policy.solid_pass_unknown_before(info) == 1
         position += info.file_size
+    assert policy.solid_pass_unknown == [unknown]
+
+
+def test_unar_placement_stays_linear_in_members_of_unknown_size() -> None:
+    """Each entry records a count of the entries of unknown size before it, not a
+    copy of them, so alternating flagged and sized members cost linear memory."""
+    from types import SimpleNamespace
+
+    from archivey.internal.backends import rar_unar
+
+    entries = [
+        SimpleNamespace(
+            size_unknown=index % 2 == 0,
+            is_directory=False,
+            file_redir=None,
+            is_hardlink_or_copy=False,
+            file_size=1,
+        )
+        for index in range(10_000)
+    ]
+    offsets, before, unknown = rar_unar._place_entries(entries)  # type: ignore[arg-type]
+    assert len(unknown) == 5_000
+    assert all(isinstance(count, int) for count in before.values())
+    assert before[id(entries[-1])] == 5_000
+    assert offsets[id(entries[-1])] == 4_999
 
 
 @pytest.mark.parametrize(
