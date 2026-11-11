@@ -35,7 +35,7 @@ from archivey.exceptions import (
 from archivey.types import ArchiveMember, MemberType
 
 # Codes saying a digest went unchecked: the bytes were read but nothing confirmed them,
-# so the run is not a clean verification (X6). Archive-level digests count too, such as
+# so the run is not a clean verification. Archive-level digests count too, such as
 # a gzip trailer past the trailing-data scan bound.
 _UNVERIFIED_CODES = (
     DiagnosticCode.DIGEST_UNVERIFIABLE,
@@ -112,13 +112,13 @@ def run_test(
         member_error: BaseException | None = None
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
-            # count as FAIL and still reach the summary (F4). A member's data error is
+            # count as FAIL and still reach the summary. A member's data error is
             # raised from its own stream read and the pass goes on, solid archives
             # included. Of the damage cases, only damage to the archive's structure (a
             # cut TAR, a failed compressed TAR stream, a pipe ZIP whose local-header
             # walk loses its place) makes the pass raise; so can non-damage errors such
             # as a ListingLimits bound. Further next() then yields StopIteration and
-            # the remaining members are reported "not tested" (P8).
+            # the remaining members are reported "not tested".
             # The ``with`` ends the pass here, deterministically, whatever leaves the
             # loop (Ctrl-C, a broken stderr pipe), rather than leaving a suspended
             # pass for ``reader.close()`` or the garbage collector to end while the
@@ -162,12 +162,16 @@ def run_test(
                         member_bytes = _read_member(
                             stream, member, progress, on_progress
                         )
-                        ok += 1
                         progress.files_done += 1
                         if on_progress is not None:
                             on_progress(progress.event(member, member_bytes))
                         if verbose:
                             print(f"OK   {escape_member_name(member.name)}", file=err)
+                        # Counted after the member's last progress event and its -v
+                        # line, the writes in this ``try``: an OSError from either
+                        # fails the member below, and a member is counted only once,
+                        # OK or failed.
+                        ok += 1
                     except BrokenPipeError:
                         # The -v line or the progress bar lost its reader: not a
                         # member failure. main() exits 141 for it, with no message.
@@ -434,7 +438,7 @@ def _is_link_destination_error(exc: ReadError | ArchiveyUsageError) -> bool:
 
 
 def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:
-    """Untested remainder of an indexed selection; ``0`` when unknown or none (P8).
+    """Untested remainder of an indexed selection; ``0`` when unknown or none.
 
     The summary line and the exit code both read this, so they cannot disagree.
     """
@@ -446,8 +450,8 @@ def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:
 def _test_summary(
     *, ok: int, failed: int, members_total: int | None, not_verified: int = 0
 ) -> str:
-    """Format the quiet test summary, with the untested remainder (P8) and unchecked
-    digests (X6) when there are any.
+    """Format the quiet test summary, with the untested remainder and the unchecked
+    digests when there are any.
     """
     summary = f"{ok} OK, {failed} failed"
     not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)

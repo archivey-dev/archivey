@@ -197,6 +197,22 @@ it too.
 `ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
 UTF-8 wins, then the caller's `encoding=`, then UTF-8 with no byte lost.
 
+Three helpers fill fields many formats store the same way, and report a bad value as a
+built-in format does:
+
+- `unix_member_type(mode, has_data=...)` turns a Unix `st_mode` into the member's `type`,
+  and names a device, FIFO or socket for `extra["special_file_type"]`. Such a file is
+  `OTHER`, or a `FILE` when the archive stores data for it. Type bits it does not know
+  come back as `"unknown"`: store that in `extra` as well, and report it as
+  `MEMBER_TYPE_UNKNOWN`.
+- `ReaderContext.set_unix_time(member, "modified", seconds, nanoseconds=0, source="cpio")`
+  sets a UTC time from seconds since 1970.
+- `ReaderContext.set_dos_time(member, "modified", stamp, source="dos")` sets a local time
+  from a DOS date and time word (`date << 16 | time`). Zero means no time.
+
+A time no `datetime` can hold leaves the field unset and is reported as
+`MEMBER_TIMESTAMP_INVALID` on the member.
+
 The locator is anything your reader needs to find the member's data again: an offset, a
 tuple, or an object from the library you wrap. archivey keeps it and hands it back to
 `open_member()` without looking inside. `IndexedReader[Locator]` tells a type checker what
@@ -574,8 +590,8 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
 
 ### Data a library decodes
 
-Some formats compress each member on its own, with a method only a library decodes (LHA,
-ARJ), or are read through a library that decodes as it walks (a libarchive wrapper).
+Some formats compress each member on its own, with a method only a library decodes (ARJ,
+ACE), or are read through a library that decodes as it walks (a libarchive wrapper).
 There are no stored bytes to describe with `data_length`. Hand archivey the decoded
 data instead, as a stream in `MemberSpan.data`, and leave `data_length` at 0:
 
@@ -820,7 +836,7 @@ with open_archive("a.zip", config=MY_ZIP) as reader:
 The replacement is an indexed plugin whose `format` is the built-in one, here
 `ArchiveFormat.ZIP`, and it declares no `extensions`, `magic` or `probe`: the file is
 found by the built-in detection, which does not change. `reader.format` is the built-in
-format and `format_info.from_plugin` is false. ZIP, 7z, RAR, ISO, SquashFS and XAR can be
+format and `format_info.from_plugin` is false. ZIP, 7z, RAR, ISO, SquashFS, XAR, CAB and LHA can be
 replaced.
 `FormatPolicy` checks the plugin when it is built, so a plugin that does not fit fails
 there, before any open.

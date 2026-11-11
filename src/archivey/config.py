@@ -1,7 +1,22 @@
-"""Public configuration types for archivey."""
+"""Public configuration types for archivey: :class:`ArchiveyConfig` and its parts.
+
+A caller builds one :class:`ArchiveyConfig` and passes it as ``config=`` to the
+functions that open, detect or report on archives: :func:`~archivey.open_archive`,
+:func:`~archivey.open_stream`, :func:`~archivey.detect_format`,
+:func:`~archivey.format_availability` and :func:`~archivey.list_supported_formats`. Its
+fields are grouped into the limit classes here (:class:`ExtractionLimits`,
+:class:`ListingLimits`, :class:`DecoderLimits`, :class:`SpoolLimits`), the enums that
+pick an accelerator, an external program, or which decoders run in a child process
+(:class:`AcceleratorMode`, :class:`RarDecompressor`, :class:`ProcessIsolation`), and
+policies defined in their own modules (diagnostics, formats, detection budget). Every
+field is checked when the config is built, so a wrong value fails at the caller's line
+rather than deep inside a read. This module also holds the password types.
+"""
 
 from __future__ import annotations
 
+import os
+import pathlib
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -14,7 +29,7 @@ from archivey.detection_cost import (
     DetectionBudgetPreset,
 )
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
-from archivey.exceptions import ArchiveyUsageError
+from archivey.exceptions import ArchiveyUsageError, _UsageTypeError, _UsageValueError
 from archivey.format_policy import FormatPolicy
 from archivey.internal.arg_checks import (
     check_callable,
@@ -25,6 +40,7 @@ from archivey.internal.arg_checks import (
 )
 from archivey.internal.config_copy import copying_config
 from archivey.internal.enum_args import coerce_enum
+from archivey.terminal import quoted
 from archivey.types import ArchiveMember, OptionalLibrary
 
 
@@ -65,9 +81,10 @@ class AcceleratorMode(Enum):
         ``PackageNotInstalledError`` if the package is missing — the user asked for it
         explicitly; ``min_size`` is ignored). ``AUTO`` enables it only when ``seekable``
         is true and the package is available, so a missing package falls back silently.
-        ``seekable`` is the demand for the accelerator: declared seeking, or for the
-        DEFLATE family also a large sequential read judged worth it
-        (``_sequential_read_pays`` in ``codecs/rapidgzip_select.py``). When ``min_size``
+        ``seekable`` is the demand for the accelerator: declared seeking, or a large
+        sequential read judged worth it (``_sequential_read_pays`` in
+        ``codecs/rapidgzip_select.py`` for the DEFLATE family,
+        ``_bzip2_sequential_read_pays`` in ``codecs/bzip2_codec.py``). When ``min_size``
         is set and ``input_size`` is known and strictly below that threshold, ``AUTO``
         also falls back (tiny members do not repay per-stream accelerator setup).
         Unknown ``input_size`` keeps the pre-threshold AUTO behaviour.
@@ -215,7 +232,9 @@ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
 # for itself much sooner than for DEFLATE: a full read broke even near 0.6 MiB
 # compressed with 4 cores, and near 2 MiB with one
 # (``scripts/investigations/bench_bzip2_child.py``). 1 MiB sits between the two. A
-# caller that seeks backward a lot gains from the index sooner, and can set ``ON``.
+# caller that seeks backward a lot gains from the index sooner, and can set ``ON``. The
+# same threshold gates a large sequential read on two or more CPUs, where the parallel
+# decoder pays more (``_bzip2_sequential_read_pays`` in ``codecs/bzip2_codec.py``).
 INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE: int = 1024 * 1024
 
 
@@ -384,6 +403,8 @@ class ListingLimits:
     for the whole image, every tree together.
     RPM refuses a header that lists more files than ``max_members`` at open, before it
     builds the file list.
+    makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at
+    open.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than is left of ``max_metadata_bytes``, before reading it.
     A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
@@ -961,8 +982,25 @@ class ArchiveyConfig:
     30 ms at 50 MB/s). ``0`` fetches only the bytes a read needs.
     """
 
+    unrar_path: str | os.PathLike[str] | None = None
+    """The RARLAB ``unrar`` or ``rar`` program to run, as an absolute path, or ``None``
+    to look for ``unrar`` and then ``rar`` on ``PATH``.
+
+    When set, archivey runs that file and no other RARLAB program: ``PATH`` is not
+    searched, so a program put there later cannot be picked up. It is still identified
+    before it first runs, and one that is not RARLAB's, or older than 6.0, is refused as
+    a missing one is. A relative path is refused, since it would depend on the current
+    directory. Stored as a ``str``. :func:`~archivey.format_availability` answers for it
+    when passed the config."""
+
+    unar_path: str | os.PathLike[str] | None = None
+    """The ``unar`` program to run, as an absolute path, or ``None`` to look for
+    ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
+    ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
+
     def __post_init__(self) -> None:
-        """Check the fields at construction, and convert the two that hold enums.
+        """Check the fields at construction, and convert the ones that hold enums or
+        program paths.
 
         A config field is read wherever it is needed, which is never where it was
         written: ``ArchiveyConfig(extraction_limits="none")`` builds fine and then
@@ -972,73 +1010,16 @@ class ArchiveyConfig:
         points does not reach this: the object passed there *is* an ``ArchiveyConfig``,
         and the wrong type is one field in.
 
-        The two accelerator fields are **converted** rather than only checked, because
-        their consumers test them with ``is`` (:meth:`AcceleratorMode.enabled_for`): a
-        string that survived construction would not be refused on use, it would read as
-        "neither ON nor OFF" and silently take the AUTO path. Converting here means the
-        field always holds a member, and a bad spelling names itself at the call site
-        that wrote it rather than during some later stream open.
-
-        They stay annotated ``AcceleratorMode`` rather than ``AcceleratorMode | str``
-        because that is what they hold once constructed, and it keeps every consumer
-        honest. A string is still accepted at construction — a type checker flags it,
-        which is the right answer for a typed caller who has the enum imported anyway,
-        and an untyped script gets the conversion.
-
-        That conversion goes through ``object.__setattr__`` because the dataclass is
-        frozen and it *rewrites* the field rather than only inspecting it. The checks
-        above reject without writing, so they need no such thing.
+        The steps run in this order, not field order: with several bad fields, the
+        first check that fails is the error the caller sees.
         """
-        # The checks below run in this order, not field order: with several bad
-        # fields, the first check that fails is the error the caller sees.
-        instance_fields: tuple[tuple[str, type], ...] = (
-            ("extraction_limits", ExtractionLimits),
-            ("listing_limits", ListingLimits),
-            ("decoder_limits", DecoderLimits),
-            ("spool_limits", SpoolLimits),
-            ("diagnostic_policy", DiagnosticPolicy),
-            ("formats", FormatPolicy),
-        )
-        for field_name, expected in instance_fields:
-            check_instance(
-                getattr(self, field_name),
-                expected,
-                call=f"ArchiveyConfig({field_name}=…)",
-                allow_none=False,
-            )
-        if not isinstance(self.detection_budget, DetectionBudget):
-            # A preset member, or its name, is converted here so the field always
-            # holds the budget detection reads. The annotation stays the budget alone,
-            # as it does for ``use_rapidgzip`` below: it is read by every consumer of
-            # the attribute, not only by the constructor's callers, and after
-            # construction it always holds a ``DetectionBudget``.
-            # ``tests/test_enum_arguments.py`` records the exemption.
-            preset = coerce_enum(
-                self.detection_budget,
-                DetectionBudgetPreset,
-                call="ArchiveyConfig()",
-                param="detection_budget=",
-                also_accepts="DetectionBudget",
-            )
-            object.__setattr__(
-                self, "detection_budget", DetectionBudget.for_preset(preset)
-            )
-        # Guard switches: a string such as "false" is truthy, so it would silently
-        # turn a refusal off. Only a real bool is accepted.
-        for field_name in (
-            "rar_allow_glob_member_concatenation",
-            "read_link_targets",
-            "always_probe_content",
-            "discover_volumes",
-        ):
-            check_instance(
-                getattr(self, field_name),
-                bool,
-                call=f"ArchiveyConfig({field_name}=…)",
-                allow_none=False,
-            )
+        _check_policy_fields(self)
+        _convert_detection_budget(self)
+        _check_guard_switches(self)
         # Archivey's own copies of a caller's config (``copy_config_quietly``) pass
         # the field on as if it were set again; only the caller's construction warns.
+        # The warning stays in this method so that ``stacklevel=3`` names the caller's
+        # line: one level is this method, the next is the dataclass ``__init__``.
         if self.rar_allow_glob_member_concatenation and not copying_config():
             warnings.warn(
                 "ArchiveyConfig.rar_allow_glob_member_concatenation is deprecated and "
@@ -1047,78 +1028,220 @@ class ArchiveyConfig:
                 DeprecationWarning,
                 stacklevel=3,
             )
-        check_callable(self.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
-        check_encoding(
-            self.zip_unflagged_fallback_encoding,
-            call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
+        _check_scalar_fields(self)
+        _convert_enum_fields(self)
+        _convert_program_paths(self)
+        _refuse_unusable_forced_accelerator(self)
+
+
+# The helpers below are the steps of ``ArchiveyConfig.__post_init__``. The ones that
+# convert a field write it with ``object.__setattr__``, because the dataclass is
+# frozen; the checks reject without writing, so they need no such thing.
+
+
+def _check_policy_fields(config: ArchiveyConfig) -> None:
+    """Refuse a limits or policy field that does not hold an object of its own class."""
+    instance_fields: tuple[tuple[str, type], ...] = (
+        ("extraction_limits", ExtractionLimits),
+        ("listing_limits", ListingLimits),
+        ("decoder_limits", DecoderLimits),
+        ("spool_limits", SpoolLimits),
+        ("diagnostic_policy", DiagnosticPolicy),
+        ("formats", FormatPolicy),
+    )
+    for field_name, expected in instance_fields:
+        check_instance(
+            getattr(config, field_name),
+            expected,
+            call=f"ArchiveyConfig({field_name}=…)",
             allow_none=False,
         )
-        check_limit(
-            self.max_read_through,
-            cls="ArchiveyConfig",
-            field_name="max_read_through",
+
+
+def _convert_detection_budget(config: ArchiveyConfig) -> None:
+    """Replace a :class:`DetectionBudgetPreset` member, or its name, with its budget.
+
+    The field then always holds the :class:`DetectionBudget` that detection reads. The
+    annotation stays the budget alone, for the reason :func:`_convert_enum_fields`
+    gives. ``tests/test_enum_arguments.py`` records the exemption.
+    """
+    if isinstance(config.detection_budget, DetectionBudget):
+        return
+    preset = coerce_enum(
+        config.detection_budget,
+        DetectionBudgetPreset,
+        call="ArchiveyConfig()",
+        param="detection_budget=",
+        also_accepts="DetectionBudget",
+    )
+    object.__setattr__(config, "detection_budget", DetectionBudget.for_preset(preset))
+
+
+def _check_guard_switches(config: ArchiveyConfig) -> None:
+    """Refuse a boolean switch that does not hold a real ``bool``.
+
+    A string such as ``"false"`` is truthy, so it would silently turn a refusal off.
+    """
+    for field_name in (
+        "rar_allow_glob_member_concatenation",
+        "read_link_targets",
+        "always_probe_content",
+        "discover_volumes",
+    ):
+        check_instance(
+            getattr(config, field_name),
+            bool,
+            call=f"ArchiveyConfig({field_name}=…)",
             allow_none=False,
         )
-        check_limit(
-            self.max_retained_diagnostic_references,
-            cls="ArchiveyConfig",
-            field_name="max_retained_diagnostic_references",
-            allow_none=False,
-        )
-        # These two are coerced at a public boundary with no ``Literal`` alias beside
-        # them (as are ``ArchiveFormat``'s two fields), and that is deliberate: the
-        # annotation is read by every consumer of the attribute, not only by the
-        # constructor's callers, and after construction the field always holds a
-        # member. ``tests/test_enum_arguments.py``
-        # records the exemption so the gap is not "fixed" back into a union.
-        for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
-            object.__setattr__(
-                self,
-                field_name,
-                coerce_enum(
-                    getattr(self, field_name),
-                    AcceleratorMode,
-                    call="ArchiveyConfig()",
-                    param=f"{field_name}=",
-                ),
-            )
+
+
+def _check_scalar_fields(config: ArchiveyConfig) -> None:
+    """Check the callback, the ZIP fallback encoding and the two integer limits."""
+    check_callable(config.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
+    check_encoding(
+        config.zip_unflagged_fallback_encoding,
+        call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
+        allow_none=False,
+    )
+    check_limit(
+        config.max_read_through,
+        cls="ArchiveyConfig",
+        field_name="max_read_through",
+        allow_none=False,
+    )
+    check_limit(
+        config.max_retained_diagnostic_references,
+        cls="ArchiveyConfig",
+        field_name="max_retained_diagnostic_references",
+        allow_none=False,
+    )
+
+
+def _convert_enum_fields(config: ArchiveyConfig) -> None:
+    """Replace each enum field's value, a member or its name, with the member.
+
+    The fields are **converted** rather than only checked because their consumers
+    test them with ``is`` (:meth:`AcceleratorMode.enabled_for`, for one): a string
+    that survived construction would not be refused on use, it would read as "neither
+    ON nor OFF" and silently take the AUTO path. Converting here means the field
+    always holds a member, and a bad spelling names itself at the call site that
+    wrote it rather than during some later stream open.
+
+    The fields stay annotated with the enum alone, with no ``Literal`` alias beside
+    it (as do ``ArchiveFormat``'s two fields), because that is what they hold once
+    constructed, and the annotation is read by every consumer of the attribute, not
+    only by the constructor's callers. A string is still accepted at construction: a
+    type checker flags it, which is the right answer for a typed caller who has the
+    enum imported anyway, and an untyped script gets the conversion.
+    ``tests/test_enum_arguments.py`` records the exemption so the gap is not "fixed"
+    back into a union.
+    """
+    # Each call names its enum class directly: ``tests/test_enum_arguments.py`` reads
+    # the coerced classes from the second argument of every ``coerce_enum`` call.
+    for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
         object.__setattr__(
-            self,
-            "rar_decompressor",
+            config,
+            field_name,
             coerce_enum(
-                self.rar_decompressor,
-                RarDecompressor,
+                getattr(config, field_name),
+                AcceleratorMode,
                 call="ArchiveyConfig()",
-                param="rar_decompressor=",
+                param=f"{field_name}=",
             ),
         )
-        object.__setattr__(
-            self,
-            "process_isolation",
-            coerce_enum(
-                self.process_isolation,
-                ProcessIsolation,
-                call="ArchiveyConfig()",
-                param="process_isolation=",
-            ),
+    object.__setattr__(
+        config,
+        "rar_decompressor",
+        coerce_enum(
+            config.rar_decompressor,
+            RarDecompressor,
+            call="ArchiveyConfig()",
+            param="rar_decompressor=",
+        ),
+    )
+    object.__setattr__(
+        config,
+        "process_isolation",
+        coerce_enum(
+            config.process_isolation,
+            ProcessIsolation,
+            call="ArchiveyConfig()",
+            param="process_isolation=",
+        ),
+    )
+
+
+def _refuse_unusable_forced_accelerator(config: ArchiveyConfig) -> None:
+    """Refuse an accelerator set to ``ON`` that the rest of the config turns off.
+
+    rapidgzip runs only in a child process, so ``process_isolation=NONE`` rules it
+    out, and so does excluding the library in :attr:`ArchiveyConfig.formats`. ``ON``
+    asks for the accelerator by name, so the conflict is refused when the config is
+    built rather than when a stream opens.
+    """
+    forced = next(
+        (
+            field_name
+            for field_name in ("use_rapidgzip", "use_indexed_bzip2")
+            if getattr(config, field_name) is AcceleratorMode.ON
+        ),
+        None,
+    )
+    if forced is None:
+        return
+    if config.process_isolation is ProcessIsolation.NONE:
+        raise ArchiveyUsageError(
+            f"ArchiveyConfig({forced}=ON) cannot be combined with "
+            "process_isolation=NONE: rapidgzip runs only in a child "
+            "process. Use AUTO or OFF, or another process_isolation."
         )
-        if self.process_isolation is ProcessIsolation.NONE:
-            for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
-                if getattr(self, field_name) is AcceleratorMode.ON:
-                    raise ArchiveyUsageError(
-                        f"ArchiveyConfig({field_name}=ON) cannot be combined with "
-                        "process_isolation=NONE: rapidgzip runs only in a child "
-                        "process. Use AUTO or OFF, or another process_isolation."
-                    )
-        if OptionalLibrary.RAPIDGZIP in self.formats.exclude_libraries:
-            for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
-                if getattr(self, field_name) is AcceleratorMode.ON:
-                    raise ArchiveyUsageError(
-                        f"ArchiveyConfig({field_name}=ON) cannot be combined with "
-                        "formats=FormatPolicy(exclude_libraries=) naming rapidgzip, "
-                        "which turns that accelerator off. Use AUTO or OFF, or drop "
-                        "the exclusion."
-                    )
+    if OptionalLibrary.RAPIDGZIP in config.formats.exclude_libraries:
+        raise ArchiveyUsageError(
+            f"ArchiveyConfig({forced}=ON) cannot be combined with "
+            "formats=FormatPolicy(exclude_libraries=) naming rapidgzip, "
+            "which turns that accelerator off. Use AUTO or OFF, or drop "
+            "the exclusion."
+        )
+
+
+def _convert_program_paths(config: ArchiveyConfig) -> None:
+    """Replace ``unrar_path`` and ``unar_path`` with an absolute ``str``, or refuse
+    them (:func:`_coerce_program_path`)."""
+    for field_name in ("unrar_path", "unar_path"):
+        object.__setattr__(
+            config,
+            field_name,
+            _coerce_program_path(field_name, getattr(config, field_name)),
+        )
+
+
+def _coerce_program_path(field_name: str, value: object) -> str | None:
+    """An ``unrar_path=`` / ``unar_path=`` value as an absolute ``str``, or ``None``."""
+    if value is None:
+        return None
+    if isinstance(value, bytes) or not isinstance(value, (str, os.PathLike)):
+        raise _UsageTypeError(
+            f"ArchiveyConfig({field_name}=) takes a path as a str or os.PathLike, "
+            f"got {type(value).__name__}."
+        )
+    path = os.fspath(value)
+    if not isinstance(path, str):
+        raise _UsageTypeError(
+            f"ArchiveyConfig({field_name}=) takes a str path, got a bytes one."
+        )
+    # ``PurePath.is_absolute`` needs a drive or share on Windows on every version;
+    # ``os.path.isabs`` before 3.13 accepts a root-relative ``/usr/bin/unrar``.
+    if not path or not pathlib.PurePath(path).is_absolute():
+        raise _UsageValueError(
+            f"ArchiveyConfig({field_name}=) takes an absolute path, got {quoted(path)}: a "
+            "relative one would depend on the current directory."
+        )
+    if "\0" in path:
+        raise _UsageValueError(
+            f"ArchiveyConfig({field_name}=) got a path with a NUL character."
+        )
+    return path
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()

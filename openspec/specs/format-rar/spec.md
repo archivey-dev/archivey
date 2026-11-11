@@ -338,6 +338,15 @@ requirement applies when `ArchiveyConfig.rar_decompressor` is `unrar`, or `auto`
 default) with a usable RARLAB binary found; `unar` is covered by `Read RAR member
 data with unar`.
 
+`ArchiveyConfig.unrar_path`, when set, SHALL be the only RARLAB binary tried, in place of
+the `PATH` and WinRAR-folder search, by every read and by `format_availability(config=)`;
+`unar_path` SHALL do the same for `unar`. The pinned binary SHALL pass the same
+identification (banner, version floor, and for `unar` the RAR5 check), and a missing or
+refused one SHALL raise `PackageNotInstalledError` that names the setting and SHALL NOT
+fall back to `PATH`. `AUTO` SHALL resolve with the pinned paths. Each SHALL be an absolute
+`str` or `os.PathLike[str]`, stored as `str`; a relative or empty path, a NUL, or a
+non-path SHALL be refused at construction.
+
 #### Scenario: unrar dependency matrix
 
 | Case | Expected |
@@ -356,6 +365,9 @@ data with unar`.
 | RARLAB `unrar` older than 6.0 and no usable `rar`, or a RARLAB banner with no parseable version | `PackageNotInstalledError` names the floor and the version found; refused at identification |
 | RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed member data and encrypted data archivey does not decrypt; spawn is `rar p` |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
+| `unrar_path` names a RARLAB 6.0+ binary, another on `PATH` | The pinned one is used |
+| `unrar_path` names a missing file, a usable `unrar` on `PATH` | `PackageNotInstalledError` naming `ArchiveyConfig.unrar_path`; `PATH` is not searched |
+| `unrar_path="unrar"` | `ArchiveyUsageError` (a `ValueError`) at construction |
 | Windows, nothing usable on `PATH`, WinRAR 6.0+ in Program Files | WinRAR's `UnRAR.exe` is used |
 | Listing only, both missing | No data dependency is checked |
 | Listing only, both missing, archive has a compressed RAR 1.5-4 comment | The comment is `None`; nothing else depends on a data program |
@@ -1259,7 +1271,8 @@ system SHALL refuse with `UnsupportedFeatureError`, before spawning `unar`:
 - every member of a multi-volume RAR5 set with encrypted headers (XADMaster 1.10.8
   returns no data for it, and exits 0);
 - in a RAR5 solid archive, a member with data that follows an empty file, a
-  directory or a link;
+  directory or a junction (a symlink, hard link or file copy before it does not
+  count: XADMaster 1.10.8 decodes it);
 - a compressed member whose extract version is below 20 (RAR 1.5 algorithm);
 - any member of a multi-volume set that has a prefix before the RAR.
 

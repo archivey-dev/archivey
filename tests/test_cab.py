@@ -16,10 +16,13 @@ import archivey
 from archivey import (
     AccessCost,
     ArchiveFormat,
+    ArchiveyConfig,
     ArchiveyError,
     CompressionAlgorithm,
     CorruptionError,
+    DecoderLimits,
     DiagnosticCode,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
     Verification,
@@ -168,7 +171,7 @@ def test_makecab_cabinets(fixture: str, method: CompressionAlgorithm) -> None:
         assert reader.read("empty") == b""
         if "zero" in members:
             assert reader.read("zero") == bytes(33000)
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
 
 
 def test_a_code_page_name_decodes_with_encoding() -> None:
@@ -407,6 +410,69 @@ def test_a_file_past_its_folder_end() -> None:
         reader.read("a")
 
 
+def _second_block(raw: bytes) -> int:
+    """Where the first folder's second CFDATA header starts (no reserve areas)."""
+    start = _data_start(raw)
+    (stored,) = struct.unpack_from("<H", raw, start + 4)
+    return start + 8 + stored
+
+
+@pytest.mark.parametrize(("value", "match"), [(0, "has no output"), (40000, "at most")])
+@pytest.mark.parametrize("method", ["none", "mszip", "lzx"])
+def test_a_refused_block_fails_only_the_members_that_reach_it(
+    method: str, value: int, match: str
+) -> None:
+    # libmspack reads a decoded size of 0 as a block split across cabinets, and
+    # fails it in a cabinet with no next one. It reads each block header only when
+    # the decoder needs that block, so the members before it still read.
+    files = [CabFile("a", TEXT[:100]), CabFile("b", BLOB[:51200])]
+    raw = bytearray(_cab(CabFolder(method), files))
+    struct.pack_into("<H", raw, _second_block(raw) + 6, value)
+    with open_archive(io.BytesIO(bytes(raw))) as reader:
+        assert reader.read("a") == TEXT[:100]
+        with pytest.raises(CorruptionError, match=match):
+            reader.read("b")
+    with open_archive(io.BytesIO(bytes(raw))) as reader:
+        names = []
+        with pytest.raises(CorruptionError, match=match):
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                stream.read()
+                names.append(member.name)
+        assert names == ["a"]
+
+
+def test_an_empty_member_decodes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    real = LzxDecoder.decode_frame
+
+    def counting(self: LzxDecoder, size: int) -> bytes:
+        nonlocal calls
+        calls += 1
+        return real(self, size)
+
+    monkeypatch.setattr(LzxDecoder, "decode_frame", counting)
+    files = [CabFile("a", TEXT), CabFile("empty", b"")]
+    with open_archive(io.BytesIO(_cab(CabFolder("lzx"), files))) as reader:
+        assert reader.read("empty") == b""
+        assert calls == 0
+        assert reader.read("a") == TEXT
+
+
+def test_the_lzx_window_counts_against_max_decoder_memory() -> None:
+    raw = _cab(CabFolder("lzx", 21), [CabFile("a", b"hello" * 1000)])
+    low = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=1 << 20))
+    with open_archive(io.BytesIO(raw), config=low) as reader:
+        with pytest.raises(ResourceLimitError, match="LZX window"):
+            reader.read("a")
+        # The declaration is noted before the comparison, so a refusal records it.
+        assert reader._resource_usage().decoder_memory == 1 << 21
+    enough = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=1 << 21))
+    with open_archive(io.BytesIO(raw), config=enough) as reader:
+        assert reader.read("a") == b"hello" * 1000
+        assert reader._resource_usage().decoder_memory == 1 << 21
+
+
 def test_a_name_with_no_end_is_refused() -> None:
     raw = _cab(CabFolder("none"), [CabFile("a" * 300, b"x")])
     with (
@@ -529,18 +595,19 @@ def test_lzx_frames_are_whole() -> None:
 
 
 def _shared_blocks(folders: int, blocks: int) -> bytes:
-    """A cabinet whose folders all name one run of empty stored blocks, one empty
-    file in each."""
+    """A cabinet whose folders all name one run of one-byte stored blocks, with a
+    one-byte file in each. (A block of no output is refused, and an empty file
+    reads no table.)"""
     files_at = 36 + 8 * folders
     files = b"".join(
-        struct.pack("<IIHHHH", 0, 0, i, 0x5A21, 0x6000, 0x20) + b"f%d\0" % i
+        struct.pack("<IIHHHH", 1, 0, i, 0x5A21, 0x6000, 0x20) + b"f%d\0" % i
         for i in range(folders)
     )
     data_at = files_at + len(files)
     body = (
         struct.pack("<IHH", data_at, blocks, 0) * folders
         + files
-        + struct.pack("<IHH", 0, 0, 0) * blocks
+        + (struct.pack("<IHH", 0, 1, 1) + b"x") * blocks
     )
     header = struct.pack(
         "<4sIIIIIBBHHHHH",
@@ -570,8 +637,8 @@ def test_kept_block_tables_are_weighed_against_max_metadata_bytes() -> None:
     with open_archive(io.BytesIO(raw), config=config) as reader:
         members = reader.members()
         for member in members[:3]:
-            assert reader.read(member) == b""
-        assert reader.read(members[0]) == b""  # a kept table is not weighed again
+            assert reader.read(member) == b"x"
+        assert reader.read(members[0]) == b"x"  # a kept table is not weighed again
         with pytest.raises(
             archivey.ResourceLimitError,
             match=f"max_metadata_bytes={3 * weight} .*{3 * weight} bytes, and folder 3's "
@@ -669,6 +736,48 @@ def test_lzx_a_tree_that_does_not_fill_its_code_space_is_damage(
         lzx_decoder._build_table(lengths, len(lengths), "main")
 
 
+def _zero_lengths(w: BitWriter, count: int, codes: dict[int, int]) -> None:
+    """``count`` lengths of 0 as pretree runs, through 2-bit ``codes``."""
+    while count >= 20:
+        run = min(count, 51)
+        w.bits(codes[18], 2)
+        w.bits(run - 20, 5)
+        count -= run
+    if count >= 4:
+        w.bits(codes[17], 2)
+        w.bits(count - 4, 4)
+        count = 0
+    for _ in range(count):
+        w.bits(codes[0], 2)
+
+
+def test_lzx_a_tree_with_an_unreachable_long_code_is_damage() -> None:
+    """A pretree whose four 2-bit codes fill the code space, plus an 8-bit code for
+    symbol 1. cabextract decodes on (lzxd.c stops at its 6-bit first table level and
+    never sees the 8-bit code), but no encoder writes such a tree: it comes from
+    damage, and the bytes after it are wrong. archivey refuses it, on purpose."""
+    pre = [0] * 20
+    pre[0] = pre[16] = pre[17] = pre[18] = 2
+    pre[1] = 8
+    codes = {0: 0b00, 16: 0b01, 17: 0b10, 18: 0b11}
+    size = 100
+    w = BitWriter()
+    w.bits(0, 1)
+    w.bits(1, 3)  # a verbatim block
+    w.bits(size >> 8, 16)
+    w.bits(size & 0xFF, 8)
+    for first, last, ones in ((0, 256, 2), (256, 496, 0), (0, 249, 0)):
+        for n in pre:
+            w.bits(n, 4)
+        for _ in range(ones):
+            w.bits(codes[16], 2)  # length (0 - 16) % 17 = 1
+        _zero_lengths(w, last - first - ones, codes)
+    for i in range(size):
+        w.bits(i & 1, 1)
+    with pytest.raises(CorruptionError, match="pretree tree overfills"):
+        _decoder(_end(w)).decode_frame(size)
+
+
 def test_lzx_long_codes_decode_through_sub_tables() -> None:
     # Codes of 1 to 16 bits: the root takes 10 bits, the rest go to sub-tables.
     lengths = [*range(1, 16), 16, 16]
@@ -693,19 +802,76 @@ def test_lzx_long_codes_decode_through_sub_tables() -> None:
     ]
 
 
-def test_lzx_a_tree_with_no_codes_is_none() -> None:
-    assert lzx_decoder._build_table([0] * 8, 8, "aligned") is None
+def test_lzx_only_the_length_tree_may_have_no_codes() -> None:
+    # lzxd.c builds the length tree with BUILD_TABLE_MAYBE_EMPTY, every other tree
+    # with BUILD_TABLE, which fails on a table that is not full.
+    assert lzx_decoder._build_table([0] * 8, 8, "length", may_be_empty=True) is None
+    with pytest.raises(CorruptionError, match="LZX aligned tree has no codes"):
+        lzx_decoder._build_table([0] * 8, 8, "aligned")
 
 
-def test_lzx_an_aligned_match_with_an_empty_aligned_tree_is_damage() -> None:
-    # 'A' and a slot-8 match (3 extra bits, which an aligned block reads through
-    # the aligned tree), with the aligned tree empty.
-    w = _raw_lzx(40, {65: 1, 320: 1}, block_type=2, aligned=[0] * 8)
-    w.bits(0, 30)  # 30 x 'A'
-    w.bits(1, 1)  # the match
-    w.bits(0, 3 + 8)
-    with pytest.raises(CorruptionError, match="aligned symbol read from an empty"):
-        _decoder(_end(w)).decode_frame(40)
+def test_lzx_an_empty_aligned_tree_is_damage_even_when_unused() -> None:
+    # Four literals, and no match that would read the aligned tree.
+    w = _raw_lzx(4, {65: 1, 66: 1}, block_type=2, aligned=[0] * 8)
+    w.bits(0b0101, 4)
+    with pytest.raises(CorruptionError, match="LZX aligned tree has no codes"):
+        _decoder(_end(w)).decode_frame(4)
+
+
+def test_lzx_an_empty_main_tree_is_damage_in_an_empty_block() -> None:
+    w = _raw_lzx(0, {})
+    with pytest.raises(CorruptionError, match="LZX main tree has no codes"):
+        _decoder(_end(w)).decode_frame(1)
+
+
+def test_lzx_a_length_out_of_range_gives_its_symbol_no_code() -> None:
+    # As lzxd.c, which keeps code lengths in bytes: lengths above 16 take no code
+    # space, and do make the tree not empty.
+    tree = lzx_decoder._build_table([1, 1, 255, 254], 4, "main")
+    assert tree is not None
+    with pytest.raises(CorruptionError, match="LZX length tree does not fill"):
+        lzx_decoder._build_table([0, 255], 2, "length", may_be_empty=True)
+
+
+def test_lzx_a_same_length_run_of_code_18_wraps_as_lzxd_does() -> None:
+    # Pretree code 19, then symbol 18 as the run's delta: lzxd.c computes
+    # 0 - 18 + 17 = -1 into an unsigned char, 255, so the four symbols have no
+    # code and the literal tree (all 256 at 8 bits) is complete on its own.
+    pre = [0] * 20
+    pre[9], pre[18], pre[17], pre[19] = 1, 2, 3, 3
+    codes = canonical_codes(pre)
+    w = BitWriter()
+
+    def sym(code: int) -> None:
+        w.bits(codes[code], pre[code])
+
+    def zeros(*runs: int) -> None:
+        for run in runs:
+            sym(18)
+            w.bits(run - 20, 5)
+
+    w.bits(0, 1)  # no E8
+    w.bits(1, 3)  # verbatim
+    w.bits(0, 16)
+    w.bits(4, 8)  # 4 bytes
+    for n in pre:
+        w.bits(n, 4)
+    for _ in range(256):
+        sym(9)  # (0 - 9) mod 17: 8 bits
+    for n in pre:
+        w.bits(n, 4)
+    sym(19)
+    w.bits(0, 1)  # a run of 4
+    sym(18)
+    zeros(51, 51, 51, 51, 32)  # the rest of 256 to 496
+    for n in pre:
+        w.bits(n, 4)
+    zeros(51, 51, 51, 51, 45)  # an empty length tree
+    for c in b"ABCD":
+        w.bits(c, 8)
+    decoder = _decoder(_end(w))
+    assert decoder.decode_frame(4) == b"ABCD"
+    assert decoder._main_lengths[256:261] == [255, 255, 255, 255, 0]
 
 
 def test_lzx_a_match_past_the_end_of_the_window_is_damage() -> None:
@@ -751,6 +917,76 @@ def test_lzx_a_stream_that_reads_past_its_end_is_truncated() -> None:
     # lzxd.c reads before it refuses the stream.
     with pytest.raises(TruncatedError, match="ends before its output"):
         _decoder(whole[:-4]).decode_frame(800)
+
+
+@pytest.mark.parametrize("size", [800, 801], ids=["word-end", "mid-word-end"])
+def test_lzx_a_frame_lzxd_reads_past_the_two_zero_bytes_for_is_truncated(
+    size: int,
+) -> None:
+    """lzxd.c reads 16 bits ahead of each symbol, and one more word at the end of a
+    frame whose last word it has not used up. With the last word cut, the zeros
+    after the input still decode to the right bytes here, but lzxd.c needs more
+    than its two zero bytes to read them, so it refuses the stream (cabextract:
+    "error in CAB data format"). Checking only the bits used accepted it.
+    """
+    w = _raw_lzx(size, {0: 1, 1: 1})
+    w.bits(0, size)
+    whole = _end(w, pad=0)
+    assert _decoder(whole).decode_frame(size) == bytes(size)
+    with pytest.raises(TruncatedError, match="ends before its output"):
+        _decoder(whole[:-2]).decode_frame(size)
+
+
+def test_lzx_a_frame_with_nothing_read_ahead_may_end_in_the_zero_bytes() -> None:
+    """When the last field of a frame ends on a word boundary and fills what
+    lzxd.c read for the symbol before it, lzxd.c holds no bits ahead, and the
+    two zero bytes after the input may be the frame's last word."""
+    # A 2**17 window, with the match symbol for slot 32 (15 extra bits) as the code
+    # "0": the code and its extra bits are one word. Two frames of 'A' first, so
+    # the match (distance 65 534, all extra bits zero) reaches back into them.
+    match = 256 + 32 * 8  # slot 32, a match of 2
+    size = 2 * FRAME + 10
+    w = BitWriter()
+    w.bits(0, 1)
+    w.bits(1, 3)  # a verbatim block
+    w.bits(size >> 8, 16)
+    w.bits(size & 0xFF, 8)
+    lengths = [0] * (256 + 34 * 8)
+    lengths[match], lengths[65], lengths[66] = 1, 2, 2  # "0", "10", "11"
+    _lengths(w, lengths, 0, 256, 0)
+    _lengths(w, lengths, 256, len(lengths), 0)
+    _lengths(w, [0] * 249, 0, 249, 0)
+    for frame_symbols in (FRAME, FRAME, 8):
+        for _ in range(frame_symbols):
+            w.bits(0b10, 2)  # 'A'
+        w.align()
+    w.bits(0, 16)  # the match: code "0" and 15 zero extra bits
+    data = w.take()
+    expected = [b"A" * FRAME, b"A" * FRAME, b"A" * 10]
+    for stream in (data, data[:-2]):
+        chunks = iter([stream])
+        decoder = LzxDecoder(17, lambda chunks=chunks: next(chunks, None))
+        assert [decoder.decode_frame(len(f)) for f in expected] == expected
+
+
+@pytest.mark.parametrize(
+    ("cut", "expected"), [(2, b"abcdef\0\0"), (3, None)], ids=["two", "three"]
+)
+def test_lzx_a_stored_block_may_read_the_two_zero_bytes(
+    cut: int, expected: bytes | None
+) -> None:
+    """lzxd.c reads stored bytes from its two zero bytes past the input too, and
+    refuses the stream only past them: cabextract reads a stored block cut by two
+    bytes, with zeros for them, and refuses one cut by three."""
+    w = BitWriter()
+    w.bits(0, 1)
+    _uncompressed_block(w, b"abcdefgh", (1, 1, 1))
+    stream = _end(w, pad=0)[:-cut]
+    if expected is None:
+        with pytest.raises(TruncatedError, match="inside an uncompressed block"):
+            _decoder(stream).decode_frame(8)
+    else:
+        assert _decoder(stream).decode_frame(8) == expected
 
 
 def test_format_is_listed() -> None:

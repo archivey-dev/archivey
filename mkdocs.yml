@@ -8,6 +8,7 @@ nav:
   - Cheat sheet: cheat-sheet.md
   - Opening an archive: opening.md
   - Choosing how to read: reading.md
+  - Remote archives: remote.md
   - Extracting: extracting.md
   - Security: security.md
   - Errors and diagnostics: errors-and-diagnostics.md
@@ -69,6 +70,7 @@ plugins:
         Using archivey:
           - opening.md: open_archive and open_stream sources, formats, passwords, name encodings, configuration
           - reading.md: Solid archives, streaming=True, seekable_members and concurrent_operations
+          - remote.md: Reading an archive on S3, HTTP or another fsspec store by range requests, without downloading it
           - extracting.md: extract_all arguments, extraction policies, overwrite, limits, filters
           - security.md: What safe extraction guarantees, where it stops, and resource limits
           - errors-and-diagnostics.md: The exception hierarchy, damaged archives, and non-fatal diagnostics

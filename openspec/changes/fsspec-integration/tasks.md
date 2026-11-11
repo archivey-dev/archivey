@@ -44,6 +44,16 @@
 - [x] 2.3 `ArchiveSource` uses `RangeSource` for an `OpenFile`; `seek_is_expensive` is
       `True`; `close()` drops the fetched windows, and nothing of the caller's is closed
       (no file object is ever opened).
+- [x] 2.3a Tail reads run on a remote source (design D1, maintainer 2026-11-08):
+      `RangeSource.nearest_resume_offset` answers the target, a joined set asks the
+      volume that holds it, detection's tail read asks `seeks_to_end_are_cheap` and
+      hints its span, and a
+      new run at the end keeps the minimum fetch (D2 rule 5), and a read just before a
+      window steps that window back (D2 rule 6). Tested from a path and
+      from an `OpenFile`: a bzip2-first UDIF image, a `.xz` size, a `.gz` ISIZE.
+      A multi-stream `.xz` or multi-member `.lz` from an `OpenFile` reads only the last
+      stream's index and stops (maintainer 2026-11-08, "lazy for multi-stream only"):
+      `size` is `None`, the walk runs when a seek needs it, a path is unchanged.
 - [x] 2.4 Run the full corpus and the short-returning-source tests through a memory-backed
       `OpenFile`: identical listings and bytes to a path source.
 - [x] 2.5 Change detection, tier 3 (design D7): `SourceChangedError`, the size
@@ -79,19 +89,25 @@
 
 ## 4. `ArchiveyFileSystem`
 
-- [ ] 4.1 `archivey/fsspec.py` with `ArchiveyFileSystem` (design D3), and the
+- [x] 4.1 `archivey/fsspec.py` with `ArchiveyFileSystem` (design D3), and the
       `fsspec.specs` entry point in `pyproject.toml`.
-- [ ] 4.2 The tree from the extraction view: reuse the code `extract_all()` uses to map a
+- [x] 4.2 The tree from the extraction view: reuse the code `extract_all()` uses to map a
       member to its relative path and to refuse it (DR-23a: these must agree, so share
       them). Refused members become diagnostics.
-- [ ] 4.3 `info`, links, errors, read-only methods, pickling, `policy=`,
+- [x] 4.3 `info`, links, errors, read-only methods, pickling, `policy=`,
       `cachable = False`, `close()` and a `weakref.finalize` that closes the reader.
-      Red-green: open 10 000 distinct `archivey://` URLs, drop every reference, and
+      Red-green: open 1 000 distinct `archivey://` URLs, drop every reference, and
       check no reader stays open.
-- [ ] 4.4 Consumer tests: pandas CSV, pyarrow Parquet, dask over two threads and over
+- [x] 4.4 Consumer tests: pandas CSV, pyarrow Parquet, dask over two threads and over
       a process pool (pickling), a nested `archivey::archivey::` chain. These tests
       skip when the consumer package is missing; CI installs them on one leg.
-- [ ] 4.5 The remote benchmark's file-system case.
+      (`.github/workflows/fsspec-consumers.yml` installs the latest pandas, pyarrow and
+      dask and fails on a skip. pandas and dask also read through a nested chain, and
+      dask's process scheduler runs on a `spawn` pool, so each task reaches its worker
+      pickled.)
+- [x] 4.5 The remote benchmark's file-system case. `file_system` builds an
+      `ArchiveyFileSystem` over the remote file and `cat`s the middle member, under every
+      cache mode; with the planner a ZIP takes 3 requests (list 2, member 1).
 
 ## 5. Volumes over fsspec
 
@@ -112,7 +128,7 @@
 - [ ] 6.2 `dev-docs/threat-model.md`: a remote-source section with two lines: chained
       URLs reach the protocol they name, and a same-length replacement of an unpinned
       remote object is not detected (design D7).
-- [ ] 6.3 IDEAS.md: replace the fsspec entry with a pointer to this change, and add
+- [x] 6.3 IDEAS.md: replace the fsspec entry with a pointer to this change, and add
       a persisted member index (offsets saved so a later open lists with no walk) as a
       separate idea.
 

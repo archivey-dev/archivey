@@ -380,6 +380,7 @@ def _scan_open_reader(
                 Path(tmp) / "out",
                 dry_run=True,
                 on_error="continue",
+                on_blocked="skip",
                 on_progress=on_progress,
             )
     except Exception as exc:  # noqa: BLE001

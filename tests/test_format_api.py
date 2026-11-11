@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import bz2
 import dataclasses
+import gzip
 import hashlib
 import io
 import logging
@@ -208,7 +209,7 @@ def test_stream_members_and_extract(toya: ArchiveFormat, tmp_path: Path) -> None
     assert seen["docs/a.txt"] == b"alpha\n"
     dest = tmp_path / "out"
     with open_archive(path) as reader:
-        reader.extract_all(dest)
+        reader.extract_all(dest, on_blocked="skip")
     assert (dest / "docs" / "a.txt").read_bytes() == b"alpha\n"
     assert (dest / "b.bin").read_bytes() == bytes(range(256)) * 4
 
@@ -252,7 +253,7 @@ def test_dotdot_member_not_written_outside(toya: ArchiveFormat, tmp_path: Path) 
     dest = tmp_path / "out"
     dest.mkdir()
     with open_archive(path) as reader:
-        reader.extract_all(dest)
+        reader.extract_all(dest, on_blocked="skip")
     assert not (tmp_path / "escape.txt").exists()
     assert (dest / "docs" / "a.txt").read_bytes() == b"alpha\n"
     assert (dest / "b.bin").exists()
@@ -1042,7 +1043,7 @@ def test_a_bad_open_member_is_not_reported_as_corruption_on_any_path(
                 if stream is not None:
                     stream.read()
         else:
-            archive.extract_all(tmp_path / "out")
+            archive.extract_all(tmp_path / "out", on_blocked="skip")
     assert not isinstance(exc_info.value, CorruptionError)
 
 
@@ -1207,6 +1208,32 @@ def test_decompress_reads_every_frame(
     register_format(_compressed_plugin(method))
     with open_archive(_compressed_archive(tmp_path, stored)) as reader:
         assert reader.read("m.bin") == _PLAIN
+
+
+@pytest.mark.parametrize(
+    "method", [CompressionAlgorithm.DEFLATE, StreamFormat.GZIP], ids=lambda m: m.name
+)
+def test_decompress_refuses_a_method_the_policy_excludes(
+    clean_registry: None, tmp_path: Path, method: CompressionAlgorithm | StreamFormat
+) -> None:
+    """A method in ``FormatPolicy(exclude=)`` refuses a plugin's decompress call for
+    it, or for a stream format that decodes with it, before the codec runs."""
+    stored = (
+        _raw_deflate(_PLAIN)
+        if method is CompressionAlgorithm.DEFLATE
+        else gzip.compress(_PLAIN)
+    )
+    register_format(_compressed_plugin(method))
+    config = archivey.ArchiveyConfig(
+        formats=archivey.FormatPolicy(exclude={CompressionAlgorithm.DEFLATE})
+    )
+    with (
+        open_archive(_compressed_archive(tmp_path, stored), config=config) as reader,
+        pytest.raises(
+            archivey.UnsupportedFeatureError, match=r"CompressionAlgorithm\.DEFLATE"
+        ),
+    ):
+        reader.read("m.bin")
 
 
 def test_decompress_second_bzip2_stream_is_corrupt(

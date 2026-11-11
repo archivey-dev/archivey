@@ -68,6 +68,7 @@ from archivey.diagnostics import (
     ExtractionReport,
     MemberListReport,
     OnDiagnostic,
+    VerifyReport,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -123,6 +124,7 @@ from archivey.types import (
     MemberType,
     MissingComponent,
     NameRewrite,
+    OnBlocked,
     OnError,
     OptionalLibrary,
     OverwritePolicy,
@@ -191,6 +193,7 @@ __all__ = [
     "NameCollisionError",
     "NameRewrite",
     "NameRewrittenError",
+    "OnBlocked",
     "OnDiagnostic",
     "OnError",
     "OpenError",
@@ -215,6 +218,7 @@ __all__ = [
     "TruncatedError",
     "UnsupportedFeatureError",
     "Verification",
+    "VerifyReport",
     "__version__",
     "detect_format",
     "format_availability",

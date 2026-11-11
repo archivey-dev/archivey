@@ -30,7 +30,6 @@ from typing import BinaryIO
 
 from archivey.exceptions import (
     CorruptionError,
-    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -99,8 +98,6 @@ class DebReader(SequentialReader):
         self._version: str | None = None
         self._fields: dict[bytes, str] = {}
         self._md5: dict[str, bytes] = {}
-        # Bytes of control and md5sums held so far, against max_metadata_bytes.
-        self._held = 0
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:
@@ -205,9 +202,8 @@ class DebReader(SequentialReader):
             inner = member.name
             member.name = CONTROL_DIR if inner == "." else CONTROL_DIR + inner
             if member.type is MemberType.HARDLINK and member.link_target:
-                # Normalized before the prefix, so "./x" does not become "DEBIAN/./x".
-                target = context.normalize_name(member.link_target, MemberType.FILE)
-                member.link_target = CONTROL_DIR + target
+                # archivey normalizes the prefixed target as it does names.
+                member.link_target = CONTROL_DIR + member.link_target
             if member.type is MemberType.FILE and inner in ("control", "md5sums"):
                 held = self._hold(span, inner)
                 if inner == "control":
@@ -235,18 +231,11 @@ class DebReader(SequentialReader):
         return span.data.read() if span.data is not None else b""
 
     def _count(self, size: int, what: str) -> None:
-        """Count ``size`` more held bytes, refusing before they are read.
-
-        ``debian-binary``, ``control`` and ``md5sums`` are held whole, and their
-        sizes come from the package, so their total is what the limit bounds.
-        """
-        limit = self._context.config.listing_limits.max_metadata_bytes
-        if limit is not None and self._held + size > limit:
-            raise ResourceLimitError(
-                f"Debian package {what} of {size} bytes takes the metadata "
-                f"held to {self._held + size} bytes, over max_metadata_bytes={limit}"
-            )
-        self._held += size
+        """Charge ``size`` more held bytes to the listing, refusing before they are
+        read. ``debian-binary``, ``control`` and ``md5sums`` are held whole, and
+        their sizes come from the package. A walk started over to reach member data
+        charges nothing: the listing walk did."""
+        self._context.charge_metadata(size, what=f"the Debian package {what}")
 
     def _read_control(self, data: bytes) -> None:
         """The first paragraph's Package, Version and Architecture fields."""

@@ -310,11 +310,11 @@ def test_probe_constants_mirror_the_zip_parser() -> None:
 def test_member_stream_records_sfx_tail_not_trailer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A seek to a member stream's end re-decodes it, so the tail is not read, and the
-    # decline names the probe's own tier.
+    # A seek to a deflated member's end re-decodes it, so the tail is not read, and
+    # the decline names the probe's own tier.
     data = _installer(_zip())
     outer = io.BytesIO()
-    with zipfile.ZipFile(outer, "w", zipfile.ZIP_STORED) as archive:
+    with zipfile.ZipFile(outer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("setup.exe", data)
     outer.seek(0)
     recorded = _recorded_skips(monkeypatch)
@@ -325,6 +325,21 @@ def test_member_stream_records_sfx_tail_not_trailer(
     ):
         detect_format(member)
     assert _TAIL_SKIP in recorded
+
+
+def test_a_stored_member_stream_has_its_tail_probed() -> None:
+    # A stored member is a slice of its archive: a seek to its end decodes nothing
+    # (``seeks_to_end_are_cheap``), so the tail probe runs as on a file.
+    data = _installer(_zip())
+    outer = io.BytesIO()
+    with zipfile.ZipFile(outer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("setup.exe", data)
+    outer.seek(0)
+    with (
+        open_archive(outer, seekable_members=True) as reader,
+        reader.open("setup.exe") as member,
+    ):
+        assert detect_format(member).format == detect_format(io.BytesIO(data)).format
 
 
 def test_probe_access_shape_is_one_seek_toward_the_end() -> None:

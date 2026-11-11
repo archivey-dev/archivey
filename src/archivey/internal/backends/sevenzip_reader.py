@@ -98,6 +98,7 @@ from archivey.internal.config import (
     KeyDerivationBudget,
     StreamConfig,
     stream_config_from_archivey,
+    without_accelerators,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
@@ -1345,6 +1346,11 @@ class SevenZipReader(BaseArchiveReader):
         is_reparse_point = _is_windows_reparse_point(raw.record.attributes)
         if self._link_data_refused_by_size(member, is_reparse_point=is_reparse_point):
             return None
+        try:
+            self._check_member_method(member)
+        except UnsupportedFeatureError as exc:
+            self._link_data[member_id] = exc
+            return None
         with ExitStack() as owned:
             stream = owned.enter_context(opener())
             try:
@@ -1879,10 +1885,12 @@ class SevenZipReader(BaseArchiveReader):
 
         Chosen once per folder and cached: each folder may use its own password.
         ``member`` is the member whose read asked; a password provider is told it.
-        Each candidate goes up the confirm ladder: the AES tail-padding check
-        (rung 1), then the bounded anchor plan, then the full plan when several
-        candidates survive. A folder accepted without proof is kept in
-        ``_folders_unconfirmed``.
+        Each candidate goes up the confirm ladder. A single static password tries the
+        AES tail-padding check (rung 1) first, then the bounded anchor plan. With
+        several candidates or a provider the anchor plan goes first and the tail only
+        decides an INCONCLUSIVE, since a crafted archive can make a wrong candidate
+        pass the tail. The full plan runs when several candidates survive. A folder
+        accepted without proof is kept in ``_folders_unconfirmed``.
         """
         folder = self._archive.folders[folder_index]
         if not folder_is_encrypted(folder):
@@ -1921,8 +1929,24 @@ class SevenZipReader(BaseArchiveReader):
         # The callbacks below run once per candidate password, inside
         # ``attempt_with_confirm``: each judges the candidate against the folder,
         # raising the wrong-password error to move on.
+        # The tail settles a password first only when no other candidate could be
+        # right (one static password: a callback counts as several). Its last block is
+        # the archive writer's to choose, so a crafted archive can make a wrong
+        # candidate decrypt to zero padding while the right one still reads clean
+        # (the member CRC is computed over what the right key gives). With several
+        # candidates the anchor goes first, and the tail only breaks an INCONCLUSIVE:
+        # in a folder with no CRC it is still the only evidence there is.
         def probe(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
             kdf_password = _password_to_kdf_bytes(candidate)
+            if tail is not None and self._passwords.is_ambiguous():
+                verdict = self._confirm_folder_password(
+                    folder_index, kdf_password, plan
+                )
+                if verdict is PasswordConfirmVerdict.INCONCLUSIVE and tail_confirms(
+                    kdf_password
+                ):
+                    verdict = PasswordConfirmVerdict.CONFIRMED
+                return kdf_password, verdict
             if tail_confirms(kdf_password):
                 return kdf_password, PasswordConfirmVerdict.CONFIRMED
             return kdf_password, self._confirm_folder_password(
@@ -1955,8 +1979,9 @@ class SevenZipReader(BaseArchiveReader):
         """The confirm ladder's plan for one encrypted folder (rungs 2 and 3).
 
         7z AES has no password check value. Rung 1 is the AES tail-padding check,
-        which ``_password_for_folder`` runs before this plan; this plan covers a
-        candidate that check did not confirm, starting at the integrity anchor: member
+        which ``_password_for_folder`` runs before this plan for a single static
+        password and after it, as a tie-break, with several candidates; this plan
+        starts at the integrity anchor: member
         CRCs in substream order, then the folder digest. The earliest anchor covering
         at least 4 bytes wins; one past ``PASSWORD_CONFIRM_PREFIX_BYTES`` is walked
         only when no decoder in the chain rejects random input, or when ``full`` asks
@@ -2029,7 +2054,12 @@ class SevenZipReader(BaseArchiveReader):
             folder,
             password=kdf_password,
             key_cache=self._key_cache,
-            stream_config=self._stream_config,
+            # The confirm reads a prefix, under the cap. A parallel decoder in a child
+            # reads ahead of what it delivers, and hands a cut at the cap back to the
+            # standard library, which reads the capped input again: the packed bytes
+            # read would pass the cap. The codec sees the folder's packed size, not the
+            # cap, so its size gates would not keep the child out.
+            stream_config=without_accelerators(self._stream_config),
             collector=self._diagnostics_collector,
         )
         try:

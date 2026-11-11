@@ -289,6 +289,34 @@ def _read_index_backwards(
     ]
 
 
+def last_member_is_the_whole_file(stream: BinaryIO, file_size: int) -> bool:
+    """Whether the last lzip member starts at offset 0, read from its trailer.
+
+    Reads the last 20 bytes only when they hold a plausible trailer, so on a remote
+    source a multi-member file costs no more requests than a single-member one
+    (fsspec-integration design D1): a member size equal to the file size is one
+    member, a smaller valid one is an earlier member. Anything else (data appended
+    after the last member, damage) falls back to the first step of the full walk,
+    which looks past appended data and checks the member's header. A wrong "earlier
+    member" answer only leaves the size unknown; the forward decoder still checks
+    every member.
+    """
+    if file_size >= _TRAILER_SIZE:
+        stream.seek(file_size - _TRAILER_SIZE)
+        trailer = stream.read(_TRAILER_SIZE)
+        if len(trailer) == _TRAILER_SIZE:
+            member_size = int.from_bytes(trailer[12:20], "little")
+            if member_size == file_size:
+                return True
+            if _HEADER_SIZE + _TRAILER_SIZE <= member_size < file_size:
+                return False
+    for start, _data_size, _member_size, _crc in _iter_trailers_backwards(
+        stream, file_size
+    ):
+        return start == 0
+    return True
+
+
 def peek_index_summary(stream: BinaryIO, file_size: int) -> tuple[int, int]:
     """One backward index scan → ``(total_decompressed_size, combined_crc32)``.
 

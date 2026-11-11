@@ -11,6 +11,8 @@ from __future__ import annotations
 import bz2
 import io
 import lzma
+import random
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -160,6 +162,30 @@ def test_a_non_seekable_source_cannot_see_the_trailer() -> None:
         for _member, stream in reader.stream_members():
             assert stream is not None
             assert stream.read() == payload
+
+
+@pytest.mark.parametrize(
+    ("compression", "expected"),
+    [
+        # A stored entry is a slice of the ZIP: its end is as cheap as a file's.
+        (zipfile.ZIP_STORED, ArchiveFormat.DMG),
+        # A deflated entry would decode all of itself to reach its end.
+        (zipfile.ZIP_DEFLATED, ArchiveFormat.BZ2),
+    ],
+)
+def test_a_member_stream_shows_its_trailer_when_its_end_is_cheap(
+    compression: int, expected: ArchiveFormat
+) -> None:
+    blob = _udif(bz2.compress(random.Random(9).randbytes(200_000)))
+    outer = io.BytesIO()
+    with zipfile.ZipFile(outer, "w", compression) as archive:
+        archive.writestr("disk.dmg", blob)
+    outer.seek(0)
+    with (
+        open_archive(outer, seekable_members=True) as reader,
+        reader.open("disk.dmg") as member,
+    ):
+        assert detect_format(member).format == expected
 
 
 def test_detection_restores_the_stream_position() -> None:

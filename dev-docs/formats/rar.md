@@ -17,7 +17,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
 | Core dependencies | None to list an unencrypted archive. Compressed member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or, by default, `unar` 1.10+ when no RARLAB binary is found (§3). Stored encrypted members need `cryptography` instead |
 | Optional | `[recommended]` (`cryptography`): header decryption, RAR3/RAR4 and RAR5 alike. BLAKE2sp needs nothing — stdlib `hashlib` |
-| Refuses | Non-seekable sources · a non-RARLAB `unrar`/`rar` (no fallback to `7z` / `bsdtar` / `unrar-free`; `unar` when no RARLAB binary is found, unless `rar_decompressor="unrar"`) · with `unar`: encrypted RAR 2.x-4.x data and, in a solid archive, compressed members after it in the same solid stream, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a member that can only be read in place in the original archive (a large member on a path source, a RAR4 member past 4 GiB, a solid chain with unreachable data) when its name is not plain enough to select it alone (§2.3) · a member whose dictionary, as the chosen program allocates it, is over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`, §7) · writing |
+| Refuses | Non-seekable sources · a non-RARLAB `unrar`/`rar` (no fallback to `7z` / `bsdtar` / `unrar-free`; `unar` when no RARLAB binary is found, unless `rar_decompressor="unrar"`) · with `unar`: encrypted RAR 2.x-4.x data and, in a solid archive, compressed members after it in the same solid stream, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a member that can only be read in place in the original archive (a RAR4 member past 4 GiB, a solid chain with unreachable data) when its name is not plain enough to select it alone (§2.3); a large member on a path source whose name is not plain is copied instead, and refused (`ResourceLimitError`) only when that copy is over `SpoolLimits.max_bytes` · a member whose dictionary, as the chosen program allocates it, is over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`, §7) · writing |
 
 **Two things a reader might expect and will not find.** Nothing amortizes repeated
 random reads of a solid archive: there is no `unrar x` anywhere in `src/`, so every
@@ -981,20 +981,34 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   (`_plain_unrar_masks`): every name in the archive decodes cleanly (valid UTF-8 for RAR5,
   ASCII for an 8-bit RAR 1.5-4 name, no lone surrogate in a Unicode one) with no `\` (RAR5;
   a RAR 1.5-4 `\` is a separator), NUL, `:`, leading `/`, or empty, `.` or `..` component,
-  so `unrar`'s reading of each name is archivey's; and the target has no `*` or `?`,
+  and none is longer than `unrar` keeps whole (`unrar_plain_name_max`), so `unrar`'s
+  reading of each name is archivey's. `unrar` cuts a stored name to a fixed buffer but
+  compares it with the full mask, so a longer name matches no mask, and two names that
+  share the kept prefix match one. 6.x keeps 2047 wide units of a name and of a mask
+  (`FileName[NM]`, `CurMask[NM]`, unrarsrc 6.2.12), less the mask's `./`: 2045 units.
+  7.00 keeps 65 536 characters (measured on Linux), but the mask must also pass as one
+  argument (32 767 units for a whole Windows command line, 128 KiB per argument on
+  Linux), so the bound there is 16 384 units. The version comes from the banner probe;
+  without one the 6.x bound applies. The target has no `*` or `?`,
   no component ending in `.`, is ASCII unless `unrar_mask_carries_non_ascii()` (Windows,
   or a UTF-8 locale for the child on POSIX), and no other name equal to it or starting with it plus
-  `/`, compared after `upper().casefold()` (Windows `unrar` folds case with `towupper`, under
-  which `ı` and `i` are equal though `casefold()` keeps them apart). Such a mask selects the
-  target alone, with no wildcard and no dot rule, so the pipe holds the member and nothing
-  else. History rows count only against the rows `-ver` lists. Every other read gets a
-  synthetic archive whatever its size, within the spool limit; where none can be made (a
-  RAR 1.5-4 member past 4 GiB with no 64-bit sizes, a solid chain with data out of reach)
-  a name that is not plain raises `UnsupportedFeatureError`. This replaced a port of
-  `unrar`'s name reading and matcher (`UtfToWide`, `CharToWide`, `ConvertPath`, `CmpName`),
-  the dot-rule probe for unrar 7.30 beta 2, a skip past the members a mask selected before
-  the target, the glob-concatenation refusal and the `AUTO` fallback to `unar` for names
-  `unrar` could not be given; all were removed with the synthetic route (0.4.0).
+  `/`, compared after NFC and `upper().casefold()` (Windows `unrar` converts a Unix-host
+  name to NFC before it compares it, and folds case with `towupper`, under which `ı` and `i`
+  are equal though `casefold()` keeps them apart). Where `unrar_matches_names_as_windows()`,
+  a name that is not NFC is not plain either (the NFD name `unrar` sees is not the mask);
+  and once any name in the archive has a directory that is not printable ASCII, no name with
+  a directory is plain (`unrar` compares the directory part with `CompareStringW`, which
+  ignores some code points and joins canonical equivalents, so `ab` and `a` U+00AD `b` can be
+  one directory). Such a mask selects the target alone, with no wildcard and no dot rule,
+  so the pipe holds the member and nothing else. History rows count only against the rows
+  `-ver` lists. Every other read gets a synthetic archive whatever its size, within the
+  spool limit; where none can be made (a RAR 1.5-4 member past 4 GiB with no 64-bit sizes,
+  a solid chain with data out of reach) a name that is not plain raises
+  `UnsupportedFeatureError`. This replaced a port of `unrar`'s name reading and matcher
+  (`UtfToWide`, `CharToWide`, `ConvertPath`, `CmpName`), the dot-rule probe for unrar 7.30
+  beta 2, a skip past the members a mask selected before the target, the
+  glob-concatenation refusal and the `AUTO` fallback to `unar` for names `unrar` could not
+  be given; all were removed with the synthetic route (0.4.0).
 - **`-ver` is added** when the target is a history row, or when a solid pass contains any
   versioned payload FILE, because the mask excludes history rows otherwise and the demux
   would go out of alignment.

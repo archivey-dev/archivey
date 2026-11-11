@@ -21,6 +21,7 @@ all in the first one.
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -63,9 +64,16 @@ class RawSectorLayout:
         return self.mode in (1, 2) and not self.form2 and self.sector_size is not None
 
     @property
+    def cooked(self) -> bool:
+        """A ``.cue`` track of 2048-byte sectors (``MODE1/2048``): user data only."""
+        return self.sector_size == USER_DATA_SIZE
+
+    @property
     def data_offset(self) -> int:
         """Where the 2048 bytes of user data start in a sector: after the 16-byte
         header, and for Mode 2 also after the 8-byte subheader."""
+        if self.cooked:
+            return 0
         return 16 if self.mode == 1 else 24
 
     def describe(self) -> str:
@@ -115,8 +123,13 @@ class _SectorChecker:
     """Checks raw sectors against the layout, and knows the image's cooked size."""
 
     def __init__(
-        self, layout: RawSectorLayout, archive_name: str | None, raw_size: int
+        self,
+        layout: RawSectorLayout,
+        archive_name: str | None,
+        raw_size: int,
+        where: str = "Raw CD sector",
     ) -> None:
+        self.where = where
         assert layout.sector_size is not None
         self.layout = layout
         self.sector_size = layout.sector_size
@@ -131,7 +144,7 @@ class _SectorChecker:
 
     def problem(self, sector: bytes) -> str | None:
         """Why ``sector`` is not a data sector of this layout, or ``None``."""
-        if len(sector) < self.layout.data_offset:
+        if self.layout.cooked or len(sector) < self.layout.data_offset:
             return None  # a cut sector: its payload is short, which the size says
         if sector[:12] != RAW_SECTOR_SYNC:
             return "it does not start with the sector sync"
@@ -147,14 +160,14 @@ class _SectorChecker:
             return
         if self._is_form2(sector):
             raise UnsupportedFeatureError(
-                f"Raw CD sector {index} is a Mode 2 Form 2 sector (video or audio, as "
+                f"{self.where} {index} is a Mode 2 Form 2 sector (video or audio, as "
                 "on a Video CD or in a CD-XA file); its payload is not ISO 9660 data, "
                 "and reading it is not supported.",
                 source_format=ArchiveFormat.ISO,
                 archive_name=self.archive_name,
             )
         raise CorruptionError(
-            f"Raw CD sector {index} is not a {self.layout.describe()} data sector: "
+            f"{self.where} {index} is not a {self.layout.describe()} data sector: "
             f"{problem}. The data track may end before this point (a later track "
             "needs the .cue sheet), or the image is damaged.",
             source_format=ArchiveFormat.ISO,
@@ -165,20 +178,19 @@ class _SectorChecker:
         return self.problem(sector) is None
 
 
+# Reads the user data of sectors from the first given up to (not including) the
+# second, or of fewer of them: at least the first one, unless it is past the end.
+_Loader = Callable[[int, int], bytes]
+
+
 class _CookedView(io.RawIOBase):
     """``length`` bytes of user data from cooked offset ``start``, as a stream."""
 
     def __init__(
-        self,
-        source: ReaderSource,
-        checker: _SectorChecker,
-        start: int,
-        length: int | None,
+        self, load: _Loader, size: int, start: int, length: int | None
     ) -> None:
         super().__init__()
-        self._source = source
-        self._checker = checker
-        size = checker.cooked_size
+        self._load_run = load
         self._start = min(start, size)
         end = size if length is None else min(size, self._start + max(0, length))
         self._length = end - self._start
@@ -215,22 +227,9 @@ class _CookedView(io.RawIOBase):
         return pos
 
     def _load(self, sector: int) -> None:
-        checker = self._checker
-        size = checker.sector_size
         last = (self._start + self._length - 1) // USER_DATA_SIZE + 1
-        count = max(1, min(_SECTORS_PER_READ, last - sector))
-        raw = self._source.read_at(sector * size, count * size)
-        offset = checker.layout.data_offset
-        parts = []
-        for i in range(0, len(raw), size):
-            one = raw[i : i + size]
-            if i and not checker.is_data_sector(one):
-                # Read ahead, not asked for: the sector fails only when it is read.
-                break
-            checker.check(sector + i // size, one)
-            parts.append(one[offset : offset + USER_DATA_SIZE])
+        self._cache = self._load_run(sector, max(sector + 1, last))
         self._cache_at = sector * USER_DATA_SIZE
-        self._cache = b"".join(parts)
 
     @override
     def readinto(self, buffer: WriteableBuffer, /) -> int:
@@ -271,15 +270,10 @@ class CookedSource(ReaderSource):
         self._raw = raw
         self._checker = checker
 
-        def view(start: int, length: int | None) -> BinaryIO:
-            return io.BufferedReader(  # type: ignore[return-value]
-                _CookedView(raw, checker, start, length), buffer_size=USER_DATA_SIZE
-            )
+        def load(first: int, end: int) -> bytes:
+            return load_sectors(raw.read_at, checker, first, end - first, 0, first)
 
-        def read_at(offset: int, n: int) -> bytes:
-            with view(offset, n) as stream:
-                return stream.read(n)
-
+        view, read_at = cooked_access(load, checker.cooked_size)
         super().__init__(view, checker.cooked_size, raw.path, read_at)
 
     @property
@@ -308,6 +302,50 @@ class CookedSource(ReaderSource):
                 return max(start, sector * USER_DATA_SIZE)
             sector += 1
         return end
+
+
+def load_sectors(
+    read_at: Callable[[int, int], bytes],
+    checker: _SectorChecker,
+    first: int,
+    count: int,
+    file_offset: int,
+    index: int,
+) -> bytes:
+    """The user data of up to ``count`` sectors (at most a read's worth) from sector
+    ``first`` of a file whose sector 0 is at ``file_offset``, each checked; ``index``
+    names the first one in an error. A sector read ahead that is not a data sector
+    ends the run there: it fails only when a read asks for it."""
+    size = checker.sector_size
+    count = max(1, min(_SECTORS_PER_READ, count))
+    raw = read_at(file_offset + first * size, count * size)
+    offset = checker.layout.data_offset
+    parts = []
+    for i in range(0, len(raw), size):
+        one = raw[i : i + size]
+        if i and not checker.is_data_sector(one):
+            break
+        checker.check(index + i // size, one)
+        parts.append(one[offset : offset + USER_DATA_SIZE])
+    return b"".join(parts)
+
+
+def cooked_access(
+    load: _Loader, size: int
+) -> tuple[Callable[[int, int | None], BinaryIO], Callable[[int, int], bytes]]:
+    """``ReaderSource``'s ``view`` and ``read_at`` over ``size`` bytes of user data
+    that ``load`` reads sector by sector."""
+
+    def view(start: int, length: int | None) -> BinaryIO:
+        return io.BufferedReader(  # type: ignore[return-value]
+            _CookedView(load, size, start, length), buffer_size=USER_DATA_SIZE
+        )
+
+    def read_at(offset: int, n: int) -> bytes:
+        with view(offset, n) as stream:
+            return stream.read(n)
+
+    return view, read_at
 
 
 def cooked_source(
