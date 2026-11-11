@@ -26,6 +26,7 @@ import base64
 import binascii
 import hashlib
 import io
+import re
 import struct
 import zlib
 from collections.abc import Iterator
@@ -118,6 +119,19 @@ _DATA_FIELDS = frozenset({"length", "offset", "size"})
 # which needs far fewer than 2048 elements. The cap does not bound what building the
 # paths costs: each path is charged to ``max_metadata_bytes`` as it is built.
 _MAX_DEPTH = 2048
+
+# The most pieces one tag may hold before expat parses it. expat builds a tag's whole
+# attribute dict before any handler runs, so the TOC byte cap does not bound it: a
+# 13 MB TOC of one element with millions of attributes took 1.67 GB. A piece is one
+# character outside quotes or one whole quoted value, so the count grows with the
+# attributes and not with a long value, which costs only its own bytes. Honest tags
+# have a handful of attributes and are a few hundred bytes long.
+_MAX_TAG_PIECES = 65536
+# A tag (or a comment or processing instruction, which honest TOCs keep short) of
+# more than ``_MAX_TAG_PIECES`` pieces. ``<`` cannot appear in an attribute value,
+# but ``>`` can, so quoted values are taken whole. Each piece starts with a different
+# character, so a short tag fails at once, without backtracking.
+_LONG_TAG = re.compile(rb"""<(?>[^<>"']|"[^"]*"|'[^']*'){%d}""" % _MAX_TAG_PIECES)
 
 
 class _Data(NamedTuple):
@@ -220,6 +234,11 @@ class _TocParser:
         self._budget = context.config.listing_limits.max_metadata_bytes
 
     def parse(self, xml: bytes) -> _Toc:
+        if _LONG_TAG.search(xml) is not None:
+            raise CorruptionError(
+                "the XAR table of contents has a tag of more than "
+                f"{_MAX_TAG_PIECES} characters and attributes"
+            )
         parser = expat.ParserCreate()
         # Entities are declared only inside a document type declaration: refusing
         # that keeps every entity from being expanded.

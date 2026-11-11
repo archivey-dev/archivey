@@ -57,7 +57,9 @@ contents whose stored or decoded size, as the header gives them, is over
 `ListingLimits.max_metadata_bytes`, and one that lists
 more than `max_members` files, while it is parsed. It SHALL raise `CorruptionError` for a
 table of contents that does not decode to the size its header gives, is not XML, declares
-a document type (so no entity is ever expanded), nests more than 2048 elements, or fails
+a document type (so no entity is ever expanded), has a tag of more than 65 536 pieces (a
+character outside quotes, or one quoted value; checked before the XML is parsed), nests
+more than 2048 elements, or fails
 the checksum the header names (SHA-1 or MD5, or a named algorithm). It SHALL raise
 `UnsupportedFeatureError` for a version other than 1 and for a named checksum algorithm
 it does not compute. A hard link to an id no entry has, a name that is empty or not
@@ -72,6 +74,8 @@ read, and a file that fails its checksum SHALL fail `verify_all()`.
 | --- | --- |
 | A stored or decoded TOC size over `max_metadata_bytes` | `ResourceLimitError` at open |
 | A DOCTYPE with nested entities | `CorruptionError` at open |
+| One `<file>` tag with 200 000 attributes | `CorruptionError` at open, before expat builds them |
+| A 100 000-byte attribute value, or a `>` inside values | A long value is one piece and lists; `>` does not end the tag |
 | A flipped bit in the TOC checksum | `CorruptionError` at open |
 | A flipped bit in a stored file | `verify_all()` returns it with `CorruptionError` |
 | Five files with `max_members=4` | `ResourceLimitError` at open |

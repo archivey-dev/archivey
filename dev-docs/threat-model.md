@@ -376,6 +376,8 @@ data its pass keeps for link targets beside it.
   `max_metadata_bytes` both the decoded table's size (from the header, before
   decoding) and every full path it builds there, since nested directories make the
   paths grow with the square of the depth before any member exists (`xar_reader.py`).
+  Before parsing, it refuses a tag of more than 65 536 attributes and characters, since
+  expat builds a tag's attributes before any handler can weigh them.
   makeself weighs its shell header against `max_metadata_bytes` as it reads it, parses
   it in one pass and keeps only the variables it uses; the header is parsed, never run
   (`makeself_reader.py`).

@@ -55,8 +55,13 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
 
 - **Open.** The header's TOC sizes, stored and decoded, are checked against `max_metadata_bytes` before any byte
   is decoded; the TOC is decoded with a cap of that size plus one and must end exactly
-  there. Expat parses it in one call with a `StartDoctypeDeclHandler` that raises: entity
-  declarations only exist inside a document type, so none is expanded. The parser keeps
+  there. Before expat sees it, one regex pass (`_LONG_TAG`) refuses with `CorruptionError` any
+  tag of more than 65 536 pieces, a piece being one character outside quotes or one whole
+  quoted value: expat builds a tag's whole attribute dict before any handler runs, so a 13 MB
+  TOC of one element with millions of attributes took 1.67 GB, beyond the TOC byte cap
+  (maintainer ruling, 2026-11-11). The pass costs about a tenth of a listing. Expat parses
+  it in one call with a `StartDoctypeDeclHandler` that raises: entity declarations only
+  exist inside a document type, so none is expanded. The parser keeps
   one frame per open `<file>`, reserves the entry's slot when the element opens (so a
   directory is listed before its files) and computes its path when its `<name>` closes,
   from the enclosing frame's. A second `<name>` with the same text is the same name: Apple's
