@@ -152,15 +152,17 @@ show its current entry (`ArchiveMember.is_current`), and directories implied by 
 paths SHALL exist. A member the policy refuses SHALL be absent, with the refusal recorded
 on `fs.reader.diagnostics`, and so SHALL a member extraction does not write because of the
 members before it: a name that collides by the policy's collision key (the first member
-keeps it), a path under a file, a hard link to a refused member, a symlink that loops
-or leads out through another link, and a symlink whose target is over 4096 bytes
-(`symlink()` refuses it on Linux, after the parents are made, which stay). A member under one of the archive's own symlinks SHALL
-be listed where extraction writes it, through the link, and SHALL be absent when the link
-leads to no directory. Paths SHALL compare as on a case-sensitive disk, with only files
-and links colliding by the policy's collision key. Behaviour that depends on a destination
-(`overwrite=`, existing files, names its file system cannot hold, a disk that folds case, a link Windows keeps because it collapses `..` first),
-a link a later member makes lead out, and `filter=` are outside the tree. A hard link to a symlink SHALL be listed as that
-symlink, with its target read from the hard link's own directory, as extraction writes it.
+keeps it), a path under a file, a hard link to a refused member, a symlink that loops or
+leads out through another link, and a symlink whose target is over 4096 bytes (`symlink()`
+refuses it on Linux, after the parents are made, which stay). A member under one of the
+archive's own symlinks SHALL be listed where extraction writes it, through the link, and
+SHALL be absent when the link leads to no directory. Paths SHALL compare as on a
+case-sensitive disk, with only files and links colliding by the policy's collision key.
+Behaviour that depends on a destination (`overwrite=`, existing files, names its file
+system cannot hold, a disk that folds case, a link Windows keeps because it collapses `..`
+first), a link a later member makes lead out, and `filter=` are outside the tree. A hard
+link to a symlink SHALL be listed as that symlink, with its target read from the hard
+link's own directory, as extraction writes it.
 
 | Operation | Behaviour |
 | --- | --- |
