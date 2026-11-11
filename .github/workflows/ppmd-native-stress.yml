@@ -3,13 +3,15 @@ name: PPMd native stress
 # Stress for the known ``pyppmd`` native issue on PPMd streams. See
 # dev-docs/known-issues.md.
 #
-# Runs weekly, on demand, and on a pull request that changes the PPMd code, the child
-# process around it, its tests, the scripts below, this file, or the dependency pins (a
-# pyppmd upgrade); scripts/tests/test_ppmd_stress_paths.py keeps that list matching the
-# tree and the `run:` steps. There is no post-merge run: the stress marker, the hard
-# raw-streams soak and the valgrind gate run nowhere else, so a regression that arrives
-# through a pull request outside the list (the 7z reader, streamtools, the decompressor
-# stream) waits for the weekly run.
+# Runs weekly, on demand, and after a merge to main that changes the PPMd code, the
+# child process around it, its tests, the scripts below, this file, or the dependency
+# pins (a pyppmd upgrade); scripts/tests/test_ppmd_stress_paths.py keeps that list
+# matching the tree and the `run:` steps. It never runs on a pull request: four legs of
+# up to 20 minutes on each push cost more than they caught, and the main CI already runs
+# the PPMd tests once. Dispatch it on your branch to stress a PPMd change before
+# merging. The stress marker, the hard raw-streams soak and the valgrind gate run
+# nowhere else, so a regression that arrives through a change outside the list (the 7z
+# reader, streamtools, the decompressor stream) waits for the weekly run.
 # It lives in its *own* workflow on purpose: do **not** add this check as a required
 # status check — a red run here must not block merge. The main CI Windows matrix runs
 # the 7z PPMd codec param but skips test_encrypted_ppmd_chunked_reads_roundtrip;
@@ -18,7 +20,8 @@ name: PPMd native stress
 on:
   schedule:
     - cron: "29 5 * * 3"
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - "src/archivey/internal/streams/codecs/ppmd_*.py"
       - "src/archivey/internal/streams/codecs/decoder_child.py"
@@ -39,7 +42,7 @@ on:
         default: "20"
 
 concurrency:
-  group: ppmd-native-stress-${{ github.event.pull_request.number || github.ref }}
+  group: ppmd-native-stress-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
