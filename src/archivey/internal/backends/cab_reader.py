@@ -295,10 +295,12 @@ class CabReader(IndexedReader[_Location]):
         A cabinet that lists one name twice keeps table order, which says which entry
         is current, and each later entry of the name reports
         ``MEMBER_NAME_DUPLICATE_UNEXPECTED``: a cabinet has no way to update a file,
-        so no writer repeats a name. A damaged table yields the members before the damage, then the
-        error, as when each record is read as it is reached; those members are sorted
-        by the same rule, since a crafted table could otherwise add one bad record at
-        its end to turn the sort off.
+        so no writer repeats a name.
+
+        A damaged table yields the members before the damage, then the error, as when
+        each record is read as it is reached; those members are sorted by the same
+        rule, since a crafted table could otherwise add one bad record at its end to
+        turn the sort off.
 
         The whole table is read before the first member comes. That holds at most
         65 535 records, each a stored name read once from the table and six numbers,
