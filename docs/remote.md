@@ -21,9 +21,9 @@ system that holds it and its path, which nothing has opened yet. Pass it to `ope
 `open_stream` or `detect_format` as is, without a `with` block around it. Unless the `OpenFile`
 has a `compression` ([below](#what-archivey-takes-from-an-openfile)), archivey never opens it as a
 file. It asks the file system for the object's size once, at open, and then reads the bytes it
-needs as ranges, which most stores serve as one request each. A name that a part of a split
-archive could have, such as `.rar`, `.exe`, `.sfx` or `.001`, also lists the folder that holds
-it, once, to look for the other parts ([Archives in several volumes](#archives-in-several-volumes)).
+needs as ranges, which most stores serve as one request each. It doesn't list the folder that
+holds the file or look for other files beside it, even when the name is one that a part of a
+split archive could have ([Archives in several volumes](#archives-in-several-volumes)).
 
 Archivey doesn't depend on fsspec, and no extra installs it. The package for your store, such as
 `s3fs`, `gcsfs` or `adlfs`, installs it; HTTP needs `fsspec` and `aiohttp`. The URL and its
@@ -127,7 +127,9 @@ never makes archivey look for the other parts, whatever `ArchiveyConfig.discover
 archivey lists no folder and asks for no other file. If the part you pass turns out to need the
 others, such as `backup.7z.001` or a RAR first volume whose header says more follow, opening it
 or listing its members raises an error that says to pass the parts as a list. A `.rar` or
-`.exe` that is a complete archive opens as usual.
+`.exe` that is a complete archive opens as usual. With `discover_volumes=False`, a numbered part
+such as `backup.7z.001` is read alone, as a local one is: the error is whatever its format
+reports for a cut archive, without that advice.
 
 ??? note "Why not find the other parts, as for a local path?"
     Listing a remote folder is unreliable. On S3 it depends on a permission that reading a file

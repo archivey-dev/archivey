@@ -2508,9 +2508,11 @@ class RarReader(BaseArchiveReader):
                 # first member that continues an earlier one. Only a RAR 1.5 /
                 # 2.x later volume whose first member starts on its boundary
                 # records neither, and lists as volume 1 of an incomplete set.
-                raise TruncatedError(
-                    "Incomplete RAR multi-volume set: additional volumes required"
-                )
+                message = "Incomplete RAR multi-volume set: additional volumes required"
+                if self._source is not None and self._source.is_lone_remote:
+                    # A lone OpenFile is never searched for the other volumes.
+                    message += f". {REMOTE_VOLUMES_AS_LIST}"
+                raise TruncatedError(message)
             return archive
         finally:
             view.close()

@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import io
 import shutil
+import struct
 import zipfile
+import zlib
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -36,8 +38,9 @@ FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
 
 class CountingMemoryFS(MemoryFileSystem):
-    """A memory file system of its own that counts ``ls``, ``info`` and existence
-    checks, the calls a search for sibling volumes would make."""
+    """A memory file system of its own that records ``ls`` calls and the paths that
+    ``info``, ``exists`` and ``cat_file`` were asked about: the calls a search for
+    sibling volumes would make."""
 
     cachable = False
 
@@ -46,20 +49,29 @@ class CountingMemoryFS(MemoryFileSystem):
         self.store: dict[str, Any] = {}
         self.pseudo_dirs = [""]
         self.listings = 0
-        self.infos: list[str] = []
+        self.asked: list[str] = []
 
     def ls(self, path: str, detail: bool = True, **kwargs: Any) -> Any:
         self.listings += 1
         return super().ls(path, detail=detail, **kwargs)
 
     def info(self, path: str, **kwargs: Any) -> Any:
-        self.infos.append(self._strip_protocol(path))
+        self.asked.append(self._strip_protocol(path))
         return super().info(path, **kwargs)
+
+    def exists(self, path: str, **kwargs: Any) -> bool:
+        self.asked.append(self._strip_protocol(path))
+        return super().exists(path, **kwargs)
+
+    def cat_file(self, path: str, *args: Any, **kwargs: Any) -> Any:
+        self.asked.append(self._strip_protocol(path))
+        return super().cat_file(path, *args, **kwargs)
 
     def assert_no_search(self, named: str) -> None:
         """No listing, and no question about any file but the one named."""
         assert self.listings == 0
-        assert set(self.infos) <= {named}
+        assert self.asked
+        assert set(self.asked) == {named}
 
 
 @pytest.fixture
@@ -137,6 +149,61 @@ def test_a_remote_numbered_first_part_is_refused_by_name_naming_the_list(
         caught.value
     )
     fs.assert_no_search(f"/d/x.{ext}.001")
+
+
+def test_a_remote_numbered_part_without_discovery_is_read_alone(
+    fs: CountingMemoryFS,
+) -> None:
+    """``discover_volumes=False`` reads the part as the one file it names, as for a
+    local part: its format's own error, without the list remedy."""
+    fs.pipe("/d/x.7z.001", b"not a 7z")
+    fs.pipe("/d/x.7z.002", b"part")
+    with pytest.raises(Exception) as caught:
+        open_archive(
+            OpenFile(fs, "/d/x.7z.001", mode="rb"),
+            config=ArchiveyConfig(discover_volumes=False),
+        )
+    assert "found part 1 only" not in str(caught.value)
+    assert "list of OpenFile" not in str(caught.value)
+    fs.assert_no_search("/d/x.7z.001")
+
+
+def _later_volume_with_no_number(data: bytes) -> bytes:
+    """A RAR 2.9/4 volume whose end block neither says another follows nor stores a
+    volume number: how a RAR 1.5 or 2.x later volume looks when its first member
+    starts on its boundary. The end block's header CRC16 is recomputed."""
+    out = bytearray(data)
+    pos = 7
+    end = None
+    while pos < len(out):
+        _crc, block_type, flags, size = struct.unpack_from("<HBHH", out, pos)
+        add = struct.unpack_from("<I", out, pos + 7)[0] if flags & 0x8000 else 0
+        if block_type == 0x7B:
+            end = (pos, pos + size, flags)
+        pos += size + add
+    assert end is not None  # precondition: the fixture has an end block
+    block_pos, header_end, flags = end
+    struct.pack_into("<H", out, block_pos + 3, flags & ~(0x0001 | 0x0008))
+    crc = zlib.crc32(out[block_pos + 2 : header_end]) & 0xFFFF
+    struct.pack_into("<H", out, block_pos, crc)
+    return bytes(out)
+
+
+def test_a_remote_volume_that_expects_no_other_names_the_list(
+    fs: CountingMemoryFS,
+) -> None:
+    """The refusal of a volume that says nothing follows it gains the remedy for a
+    lone ``OpenFile`` only: a stream has no remote set to pass."""
+    data = _later_volume_with_no_number((FIXTURES / "tinyvol_rnn.rar").read_bytes())
+    fs.pipe("/d/set.rar", data)
+    fs.pipe("/d/set.r00", (FIXTURES / "tinyvol_rnn.r00").read_bytes())
+    with pytest.raises(TruncatedError, match="additional volumes required") as caught:
+        _read_all(OpenFile(fs, "/d/set.rar", mode="rb"))
+    assert REMOTE_VOLUMES_AS_LIST in str(caught.value)
+    fs.assert_no_search("/d/set.rar")
+    with pytest.raises(TruncatedError, match="additional volumes required") as caught:
+        _read_all(io.BytesIO(data))
+    assert REMOTE_VOLUMES_AS_LIST not in str(caught.value)
 
 
 def test_a_local_numbered_first_part_alone_keeps_its_message(tmp_path: Path) -> None:

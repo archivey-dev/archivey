@@ -476,8 +476,9 @@ What the caller sees instead:
   `discover_volumes=False` it is read alone, as a local part is.
 - A RAR volume read alone whose headers say another follows (`x.part1.rar`, `x.rar`, an
   SFX `.exe`) lists what it holds and then raises `TruncatedError`, and a later volume
-  read alone (`x.part2.rar`, `x.r00`) raises "Need first volume"; for a lone `OpenFile`
-  both messages add the same remedy.
+  read alone (`x.part2.rar`, `x.r00`) raises "Need first volume", and a volume that
+  says nothing follows it raises "additional volumes required"; for a lone `OpenFile`
+  each message adds the same remedy, and for a stream none does.
 - A remote archive that is complete opens as before, under a volume-shaped name too, with
   no diagnostic: a local lone part that opens has none either.
 - `discover_volumes=True` on a remote source is neither warned about nor refused: it is
