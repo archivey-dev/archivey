@@ -16,23 +16,25 @@ behind, so members read in data order decode each folder once. The members come 
 order, or sorted into data order when table order would decode a block twice
 (:meth:`CabReader.iter_members`).
 
+The listing is the file table: each ``CFFILE`` record becomes a ``FILE`` member whose
+locator is its folder and its offset in that folder's output. Opening a member reads
+the folder's ``CFDATA`` headers once (the block table), then reaches that offset: a
+stored folder from the block that holds it, a compressed one by decoding, from the
+folder's start or on from the parked decoder.
+
 Cabinet sets (a folder continued in the next ``.cab``) are refused. The handbook page
 is ``dev-docs/formats/cab.md``.
 """
 
 from __future__ import annotations
 
-import functools
 import io
-import operator
 import struct
-import sys
 import threading
 import zlib
 from collections.abc import Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
-from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -60,7 +62,6 @@ from archivey.internal.streams.codecs.lzx_decoder import (
     MIN_WINDOW_BITS,
     LzxDecoder,
 )
-from archivey.internal.timestamps import dos_to_datetime
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -116,15 +117,20 @@ class _Folder(NamedTuple):
     """Where its first CFDATA block starts."""
     blocks: int
     method: int
+    """``_STORED``, ``_MSZIP``, ``_QUANTUM`` or ``_LZX``, or a value no writer uses."""
     window_bits: int
+    """The LZX window size as a power of two; ignored for the other methods."""
 
 
 class _Block(NamedTuple):
     payload: int
     """Where its stored bytes start."""
     stored: int
+    """How many bytes it stores."""
     decoded: int
+    """How many bytes of folder output it decodes to."""
     checksum: int
+    """The ``CFDATA`` checksum, 0 when the writer left it out."""
 
 
 # ``_A_EXEC`` and ``_A_NAME_IS_UTF``: bits a cabinet gives its own meaning, which in a
@@ -164,24 +170,34 @@ class _Record(NamedTuple):
 
 
 class _Location(NamedTuple):
+    """Where a member's bytes are: an index into the folder records, and where the
+    member starts in that folder's decoded output."""
+
     folder: int
     offset: int
 
 
 def _checksum(data: bytes, seed: int = 0) -> int:
     """libmspack's ``cabd_checksum``: the little-endian 32-bit words XORed together,
-    then the 1 to 3 bytes left, the first one highest."""
+    then the 1 to 3 bytes left, the first one highest.
+
+    The words are read as one little-endian integer and folded in halves cut on a word
+    boundary until one word is left: each fold XORs words in pairs, which keeps the
+    XOR of them all. One Python-level XOR per word is about seven times slower on a
+    32 KiB block, and slower than inflating the block.
+    """
     whole = len(data) & ~3
-    words = (
-        memoryview(data)[:whole].cast("I")
-        if sys.byteorder == "little"
-        else struct.unpack(f"<{whole // 4}I", data[:whole])
-    )
-    value = functools.reduce(operator.xor, words, seed)
+    value = int.from_bytes(memoryview(data)[:whole], "little")
+    bits = whole * 8
+    while bits > 32:
+        # The low half: a whole number of words, at most half of them.
+        half = (bits >> 6) << 5
+        value = (value & ((1 << half) - 1)) ^ (value >> half)
+        bits -= half
     tail = 0
     for byte in data[whole:]:
         tail = tail << 8 | byte
-    return value ^ tail
+    return value ^ seed ^ tail
 
 
 def _block_checksum(payload: bytes, decoded: int) -> int:
@@ -343,16 +359,11 @@ class CabReader(IndexedReader[_Location]):
         )
 
     def _record(self, record: _Record) -> MemberRecord[_Location]:
-        context = self._context
-        raw = record.raw
-        name = context.decode_name(raw).replace("\\", "/")
-        stamp = record.stamp
         member = ArchiveMember(
             type=MemberType.FILE,
-            name=name,
-            raw_name=raw,
+            name=self._context.decode_name(record.raw).replace("\\", "/"),
+            raw_name=record.raw,
             size=record.size,
-            modified=dos_to_datetime(stamp),
             windows_attrs=record.attribs & ~_CAB_ONLY_ATTRIBUTES,
             compression=(
                 CompressionMethod(
@@ -363,18 +374,7 @@ class CabReader(IndexedReader[_Location]):
                 ),
             ),
         )
-        if member.modified is None and stamp:
-            context.report(
-                DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                f"Invalid cabinet date for {quoted(member.name)}: 0x{stamp:08x}",
-                MemberTimestampContext(
-                    member_name=member.name,
-                    field="modified",
-                    source="dos",
-                    value_repr=f"0x{stamp:08x}",
-                ),
-                member=member,
-            )
+        self._context.set_dos_time(member, "modified", record.stamp, source="dos")
         return MemberRecord(member, _Location(record.folder, record.offset))
 
     # ── Data ─────────────────────────────────────────────────────────────────────────
@@ -404,9 +404,13 @@ class CabReader(IndexedReader[_Location]):
             if size is not None and pos + header > size:
                 complete = False
                 break
-            checksum, stored, decoded = _DATA.unpack(
-                self._read(pos, _DATA.size, "a data block header")
-            )
+            try:
+                raw = self._read(pos, _DATA.size, "a data block header")
+            except TruncatedError:
+                # The same cut as above, on a source whose size is not known.
+                complete = False
+                break
+            checksum, stored, decoded = _DATA.unpack(raw)
             if not decoded:
                 # libmspack reads this as a block split across cabinets, and fails
                 # it when there is no next cabinet. Sets are refused at open.
@@ -502,6 +506,13 @@ class CabReader(IndexedReader[_Location]):
     def _folder_stream(
         self, index: int, folder: _Folder, table: _BlockTable, offset: int
     ) -> _FolderStream:
+        """A folder stream positioned at ``offset`` of folder ``index``'s output.
+
+        The parked stream is taken when it is on the same folder and not yet past
+        ``offset``, so members read in order decode the folder once. Otherwise a
+        compressed folder decodes again from its first block, because each block
+        depends on the output before it.
+        """
         with self._lock:
             parked, self._parked = self._parked, None
         if parked is not None and parked.index == index and parked.position <= offset:
@@ -558,7 +569,8 @@ def _decodes_twice(
 
 def _block_at(table: _BlockTable, offset: int) -> int | None:
     """The block whose output holds byte ``offset`` of the folder, or the next block
-    when ``offset`` is where one starts; ``None`` past the blocks read."""
+    when ``offset`` is where one starts; ``None`` at or past the end of the blocks
+    read."""
     output = table.output
     lo, hi = 0, len(output) - 1
     if hi == 0 or offset >= output[-1]:
@@ -616,7 +628,13 @@ class _Cursor:
 
 
 class _FolderStream:
-    """A folder's output, decoded block by block from where it starts."""
+    """A folder's output, decoded block by block from where it starts.
+
+    ``first`` is the block to start at: 0 for a compressed folder, any block for a
+    stored one, or ``None`` for an offset at or past the end of the blocks read. That
+    one starts at the end of those blocks' output, so its first read raises
+    ``TruncatedError``; a member of size 0 there never reads.
+    """
 
     def __init__(
         self,
@@ -634,10 +652,14 @@ class _FolderStream:
         self.position = (
             table.output[self._next] if first is not None else (table.output[-1])
         )
+        # Decoded bytes not yet handed out.
         self._pending = b""
+        # MSZIP: the last 32 KiB of output, the next block's deflate dictionary.
         self._history = b""
+        # Set when a decode raised, so the stream is not parked for the next member.
         self.failed = False
         self._lzx: LzxDecoder | None = None
+        # LZX: the next block whose bytes the decoder pulls through ``_lzx_more``.
         self._lzx_input = self._next
         if folder.method == _LZX:
             self._lzx = LzxDecoder(folder.window_bits, self._lzx_more)
@@ -652,6 +674,8 @@ class _FolderStream:
         return data
 
     def _lzx_more(self) -> bytes | None:
+        """The LZX decoder's input: the next block's stored bytes, checked when its
+        checksum is not 0; ``None`` after the last."""
         if self._lzx_input >= len(self._table.blocks):
             return None
         data = self._payload(self._lzx_input)
@@ -771,13 +795,19 @@ class _MemberStream(io.RawIOBase):
 
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
+        # Full-count (ADR 0014): archivey takes a short read from its own stream as
+        # the member's end, and a folder read stops at the end of each data block (at
+        # most 32 KiB) or LZX frame, so read on until the buffer is full or the member
+        # ends.
         with memoryview(b) as outer, outer.cast("B") as view:
-            if self._left == 0 or self._folder is None or not len(view):
-                return 0
-            data = self._folder.read(min(len(view), self._left))
-            n = len(data)
-            view[:n] = data
-            self._left -= n
+            n = 0
+            while n < len(view) and self._left > 0 and self._folder is not None:
+                data = self._folder.read(min(len(view) - n, self._left))
+                if not data:
+                    break
+                view[n : n + len(data)] = data
+                n += len(data)
+                self._left -= len(data)
             return n
 
     @override

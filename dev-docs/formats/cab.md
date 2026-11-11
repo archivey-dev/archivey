@@ -123,18 +123,29 @@ earlier block's damage reaches the member, so the earlier blocks count too.
 ### 2.4 The LZX decoder
 
 `lzx_decoder.py` follows libmspack's `lzxd.c` wherever the format leaves a choice, so the
-two agree on every stream; its docstring lists those choices (code-length runs that spill
-past their range, code lengths a delta wraps out of range, which trees may be empty,
-matches that cross a frame or reach before the start, the
-E8 limits). Each tree decodes through a two-level table: a root as wide as the longest
+two agree on every stream but one kind; its docstring lists those choices (code-length
+runs that spill past their range, code lengths a delta wraps out of range, which trees may
+be empty, matches that cross a frame or reach before the start, the E8 limits). The
+exception: a tree whose codes no longer than `lzxd.c`'s first table level (6 bits for the
+pretree, 7 for the aligned tree, 12 for the others) already fill the code space, and that
+also has a code longer than that level, is refused as overfull. `lzxd.c` stops building
+once the first level is full and never sees the longer code, so cabextract decodes on, but
+no encoder writes such a tree and the bytes after it come out wrong (maintainer ruling,
+2026-11-10). Each tree decodes through a two-level table: a root as wide as the longest
 code, at most 10 bits, and a sub-table under each root entry whose codes are longer. A
-block may be empty and still carry up to six trees, so a table's cost follows its tree:
-a stream of nothing but block headers, with the deepest pretrees the format allows,
-decodes at about 2 µs an input byte (0.5 MB/s, CPython 3.11), against 12 µs with one
-65 536-entry table per tree. No byte comes out, so `ExtractionLimits` does not see it
-(threat model, §No CPU or wall-clock bound).
-Past the end of the input it reads zero bytes, as `lzxd.c` does for two bytes, and refuses
-a stream that uses more than two of them (`TruncatedError`). It runs at about 5-10 MB/s.
+block may be empty and still carry up to six trees, so a table's cost follows its tree: a
+stream of nothing but block headers, with the deepest pretrees the format allows, decodes
+at about 2 µs an input byte (0.5 MB/s, CPython 3.11), against 12 µs with one 65 536-entry
+table per tree. No byte comes out, so `ExtractionLimits` does not see it (threat model,
+§No CPU or wall-clock bound).
+Past the end of the input come two zero bytes, as in `lzxd.c`, and the decoder refuses a
+stream (`TruncatedError`) that `lzxd.c` would *read* further for. That counts its look-ahead,
+not just the bits the stream uses: 16 bits ahead of each Huffman symbol, and one more word
+to realign at the end of a frame. So a stream whose last frame ends inside the zero bytes
+can still be refused. Stored bytes may read the two zero bytes too: in a folder without
+block checksums, an uncompressed block up to 2 bytes short decodes with zeros for the
+missing bytes, as cabextract 1.11 does, and 3 bytes short is refused. It runs at about
+5-10 MB/s.
 
 ## 3. Tests
 

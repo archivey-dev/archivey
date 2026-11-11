@@ -13,7 +13,9 @@ start and length itself:
 | --- | --- |
 | Sequential run | The first two reads of a run fetch what they ask for, and at least a fixed minimum fetch size (64 KiB). From the third read that continues the last fetch, each fetch doubles, up to a fixed maximum fetch size |
 | Short forward gap | A forward seek no longer than `ArchiveyConfig.max_read_through` (default 1 MiB; `archive-reading` §"Explicit configuration object") continues the run instead of starting a new request |
-| Jump | A backward seek, or a longer forward one, starts a new run at the minimum fetch size |
+| Jump | A backward seek, or a longer forward one, starts a new run at the minimum fetch size, except as the next row says |
+| Step back | A read that ends before the start of a window placed by its end, by at most that window's size and at most `max_read_through`, (the run at the end, or an earlier step back) fetches the bytes before that window, ending where it starts, and doubles as a sequential run does. A walk toward the start of the object (one step per stream or member) fetches each byte about once, in about as many requests as a forward read of the same bytes |
+| Run at the end | A new run that the end of the object would cut short starts earlier, so its fetch still holds the minimum fetch size and ends at the end |
 | Backend range hint | A span the backend declares it will read next is fetched in one request, up to the maximum fetch size, then continued as a run |
 | Known spans of a whole-archive pass | Merged across gaps of at most `max_read_through`, and fetched with `cat_ranges` in groups whose total is at most the pass's maximum fetch; the next group is fetched once the previous one is consumed |
 
@@ -29,9 +31,13 @@ Hints SHALL change only how bytes are fetched, never which bytes a read returns,
 do nothing on a local source. The source facts are those of `archive-reading` §"The source
 facts of an OpenFile".
 
-The ZIP, 7z and ISO backends SHALL hint the index they read at open and each member's
-stored span before reading it. The RAR backend SHALL hint each header position during
-its listing walk.
+The ZIP and 7z backends SHALL hint the index they read at open, and the ZIP, 7z and ISO
+backends SHALL hint each member's stored span before reading it. A format plugin SHALL be
+able to name the spans a member's stream reads in `MemberData.ranges`, which archivey
+SHALL pass to the source as hints when `open_member` returns and which do nothing on a
+local source. A remote source SHALL keep several pending hints, so members read side by
+side each keep their own. The RAR listing walk SHALL NOT be hinted: it reads through by
+the planner's rules.
 
 #### Scenario: ceilings that follow from the format
 
@@ -46,6 +52,9 @@ listed are held by its baseline.
 | 7z, solid | ≤ 2 requests | bytes fetched ≤ (member end − folder start) + `F` |
 | ISO, member within `F` | baseline | list + 1 request |
 | RAR5, TAR, compressed TAR | bytes fetched ≤ archive size + `F` | the same; a compressed RAR member also spools the archive |
+| A single-stream `.xz`, a `.gz` or a UDIF image larger than the first fetch | The tail reads add 1 request | the same |
+| A `.xz` whose last 64 KiB are stream padding | `size` is `None` and the padding is not scanned: the head, the tail once, and the bounded look past the stream (bytes fetched ≤ 1 MiB plus the head and tail windows), whatever the padding's length | the same |
+| A multi-stream `.xz` or a multi-member `.lz` | ≤ 2 requests, whatever the stream count; the member's `size` is `None` (maintainer ruling, 2026-11-08) | read from the start: about one request per planner fetch. A seek: bytes fetched ≤ 2 × archive size + `F` for the index walk |
 
 #### Scenario: concurrent streams share the pool
 
@@ -68,7 +77,13 @@ read at open. A fetch that returns more bytes than it asked for SHALL raise `OSE
 file system ignores range requests, which is not a change of the object. A file system for
 which archivey does not implement version pinning or header forwarding SHALL be treated as
 offering neither. A change that is detected SHALL raise; it MUST NOT return bytes of the
-new object as bytes of the archive.
+new object as bytes of the archive. Once detected, every later read of the source SHALL
+raise it again, and detection, the open and a walk over the members SHALL end with
+`SourceChangedError` rather than an answer or another error, even where a handler for
+damage to the archive caught the first one and recorded a diagnostic for it. An
+`OpenFile` read through fsspec's decompressing file (`compression=`) is not checked for a
+change at all; the reader SHALL record `SOURCE_CHANGE_UNDETECTABLE` for it, naming that
+file in the reason.
 
 #### Scenario: changed object
 
@@ -79,6 +94,8 @@ new object as bytes of the archive.
 | No version, no `ETag` | `SOURCE_CHANGE_UNDETECTABLE` at open; a shorter object raises `SourceChangedError` on the next fetch past its end; a longer one is not detected |
 | A file system that ignores ranges and returns the whole object | `OSError` on the first fetch, not `SourceChangedError` |
 | `DiagnosticPolicy.STRICT`, no version, no `ETag` | Opens; the diagnostic is collected, not raised |
+| A shorter object while detection probes, or while TAR scans past its end marker | The call raises `SourceChangedError`; it does not return another format or end with only a diagnostic |
+| `OpenFile` with `compression=` | `SOURCE_CHANGE_UNDETECTABLE` at open, its reason naming fsspec's decompressing file |
 
 ### Requirement: Multi-volume discovery over fsspec
 
@@ -95,6 +112,8 @@ system that cannot list a directory SHALL be treated as having no siblings.
 | `memory://d/x.7z.001` with `x.7z.002`, `x.7z.003` beside it | One reader over all three; one `ls` of `memory://d` |
 | `memory://d/q.part1.rar` with `q.part2.rar` and `q.part02.rar` | The same choice of part 2 as local discovery |
 | HTTP first volume, server cannot list | Opens as a lone first volume, as a local lone volume does |
+| The listing, or the read of a candidate's RAR signature, is refused with an HTTP 4xx status that is not an `OSError` (`aiohttp.ClientResponseError` for a 403) | The same: no sibling there, logged at DEBUG on `archivey.detection` |
+| The listing fails with an error that is not an `OSError` and has no 4xx status (an HTTP 5xx, a bug in the file system) | The error propagates unchanged |
 
 ### Requirement: ArchiveyFileSystem exposes an archive as a read-only fsspec file system
 
@@ -130,16 +149,27 @@ The tree SHALL be the name view of `extract_all(dest, policy=policy)`: each path
 the relative path that policy's name transform gives the member, a duplicate name SHALL
 show its current entry (`ArchiveMember.is_current`), and directories implied by member
 paths SHALL exist. A member the policy refuses SHALL be absent, with the refusal recorded
-on `fs.reader.diagnostics`. Behaviour that depends on a destination (`overwrite=`, existing
-files, case-insensitive collisions) and `filter=` are outside the tree.
+on `fs.reader.diagnostics`, and so SHALL a member extraction does not write because of the
+members before it: a name that collides by the policy's collision key (the first member
+keeps it), a path under a file, a hard link to a refused member, and a symlink that loops
+or leads out through another link. A member under one of the archive's own symlinks SHALL
+be listed where extraction writes it, through the link, and SHALL be absent when the link
+leads to no directory. Paths SHALL compare as on a case-sensitive disk, with only files
+and links colliding by the policy's collision key. Behaviour that depends on a destination
+(`overwrite=`, existing files, names its file system cannot hold, a disk that folds case, a link Windows keeps because it collapses `..` first),
+a link a later member makes lead out, and `filter=` are outside the tree. A hard link to a symlink SHALL be listed as that
+symlink, with its target read from the hard link's own directory, as extraction writes it.
 
 | Operation | Behaviour |
 | --- | --- |
 | `info(path)` | `name`, `size` (declared size, or `None`), `type` (`"file"`, `"directory"` or `"other"`), `mtime` (POSIX seconds) when known, and `member` (the `ArchiveMember`) |
 | `ls`, `find`, `glob`, `walk` | From the tree above; no member data read |
 | `open(path, "rb")` | A seekable member stream; backward seeks MAY re-decode (loud-slow-rewind) |
-| A link that resolves to a member | Listed as the target's type with `islink: True` and `destination`; opens the target |
-| A link that resolves to nothing | Listed as `"other"`; `open` raises `FileNotFoundError` |
+| A symlink that resolves to a written path | Its target text resolved among the written paths, as the destination resolves it once every member is written. Listed as that path's type with `islink: True` and `destination`; opens what is written there. A name extraction did not write is not reached, even when a member was stored under it |
+| A symlink that resolves to nothing written | Listed as `"other"`; `open` raises `FileNotFoundError` |
+| A path through a symlink to a directory | `ls` lists the directory's entries under the link's name, and `info` and `open` reach them (`s/f` under `s -> d` is `d/f`). `walk`, `find` and `glob` list the link and do not descend into it, as `os.walk` does |
+| A hard link to a file | Listed as the file, with `islink: True`; opens its source |
+| A hard link with no file listed before it as its source | Absent, as extraction does not make it; a hard link to a symlink is listed as that symlink |
 | Missing path | `FileNotFoundError` |
 | `open` on a directory | `IsADirectoryError` |
 | Any write method, or a mode other than `"rb"` | `NotImplementedError` |
@@ -157,6 +187,6 @@ pickle. A file-object `fo` SHALL raise `TypeError` on pickling, naming the reaso
 | `pyarrow.parquet.read_table` on a member through the file system | Same table as from the extracted file |
 | A ZIP with members `a/../../x`, `/etc/y` and `a/b` twice, default `policy` (`STRICT`) | Tree holds `a/b` (current entry); `a/../../x` and `/etc/y` absent, each with a diagnostic |
 | The same ZIP, `policy="standard"` | Tree also holds `etc/y` |
-| 10 000 distinct `archivey://m::memory://a{n}.zip` URLs opened and every reference dropped | No reader stays open |
+| 1 000 distinct `archivey://m::memory://a{n}.zip` URLs opened and every reference dropped | No reader stays open |
 | `pickle.loads(pickle.dumps(fs))` with a URL `fo` | A working file system over the same archive |
 | Two threads read two members at once | Both read their members' bytes |

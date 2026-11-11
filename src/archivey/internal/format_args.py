@@ -37,6 +37,15 @@ The message is the point as much as the type is: a ``StreamFormat`` **object** h
 an ``ArchiveFormat`` parameter is still refused rather than widened, and named alongside
 the ``ArchiveFormat`` pairs that contain it, because the caller who reached there made
 an understandable mistake and one message should end it.
+
+The module also holds the tables that registration extends. A plugin format or codec
+(``format_adapter.register_plugin``, ``codec_adapter.register_plugin_codec``) adds its
+spellings with :func:`add_plugin_spellings`, after checking them with
+:func:`plugin_spelling_clash`. A built-in sequential format
+(``format_adapter.register_builtin_format``) adds its compressed pairs' spellings the
+same way (``ar.gz``), and its container joins ``SEQUENTIAL_CONTAINERS``, which
+:func:`outer_stream_format` reads, and ``PAIR_SPELLED_CONTAINERS``, which
+``codec_adapter`` reads so that a codec registered later spells its pair too.
 """
 
 from __future__ import annotations
@@ -100,6 +109,8 @@ PAIR_SPELLED_CONTAINERS: set[ContainerFormat] = set()
 
 
 def _plugin_format_spellings(fmt: ArchiveFormat) -> tuple[str, str]:
+    """The two ``format=`` spellings a registered format takes: its file extension and
+    its display name."""
     return fmt.file_extension(), fmt.display_name
 
 
@@ -161,7 +172,7 @@ def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | PluginStream | Non
     builds the pair from it): ``open_stream`` peels that layer only and returns the
     tar bytes, as ``gzip.open`` does for a ``.tar.gz``. The compressed pair of every
     other container read in one pass (``.a.gz``, ``.cpio.gz``, a sequential plugin's
-    ``.lha.gz``) is the same. One rule for an explicit ``format=``, a detected format
+    ``.arj.gz``) is the same. One rule for an explicit ``format=``, a detected format
     and the accepted-spellings message, so the three cannot disagree. Every other
     container, an uncompressed tar included, has no compression layer to remove.
     ``(RAW_STREAM, UNCOMPRESSED)`` comes back as ``UNCOMPRESSED``, which ``open_stream``
@@ -181,10 +192,10 @@ def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | PluginStream | Non
 def _accepted_stream_formats() -> str:
     """The spellings worth recommending for ``open_stream``, which is a narrower set.
 
-    ``coerce_stream_or_archive_format`` resolves every archive spelling, so it used to
-    borrow this message from ``coerce_archive_format`` — and then recommended ``zip``,
-    ``tar`` and the other container spellings to a call that refuses them one frame
-    later. Only the formats ``outer_stream_format`` gives a codec for open here.
+    ``coerce_stream_or_archive_format`` resolves every archive spelling, but the
+    message of ``coerce_archive_format`` would recommend ``zip``, ``tar`` and the
+    other container spellings to a call that refuses them one frame later. Only the
+    formats ``outer_stream_format`` gives a codec for open here.
     ``uncompressed`` coerces but is refused by ``open_stream``, which needs a
     compressed stream, so it is left out for the same reason ``DIRECTORY`` and
     ``UNKNOWN`` are left out above. The list is built from ``_FORMAT_NAMES``, so the
@@ -229,12 +240,13 @@ def coerce_archive_format(
         return value
     # Before the string branch, and this ordering is the point: several of our enums
     # are ``StrEnum``, so a member of one is *also* a ``str`` whose value is often
-    # exactly an extension spelling. Without this, ``ContainerFormat.TAR`` coerced to
-    # ``ArchiveFormat.TAR`` — the caller's half-specified assertion silently completed
-    # with an ``UNCOMPRESSED`` stream, so ``open_archive("a.tar.gz",
-    # format=ContainerFormat.TAR)`` failed as ``TruncatedError`` on a healthy archive:
-    # a caller bug reported as damaged input, inside the tree ``except ArchiveyError``
-    # catches. ``coerce_enum`` orders its branches the same way for the same reason.
+    # exactly an extension spelling. Read as a string, ``ContainerFormat.TAR`` would
+    # coerce to ``ArchiveFormat.TAR``: the caller's half-specified assertion silently
+    # completed with an ``UNCOMPRESSED`` stream, so ``open_archive("a.tar.gz",
+    # format=ContainerFormat.TAR)`` would fail as ``TruncatedError`` on a healthy
+    # archive, a caller bug reported as damaged input, inside the tree
+    # ``except ArchiveyError`` catches. ``coerce_enum`` orders its branches the same
+    # way for the same reason.
     if isinstance(value, StreamFormat):
         # Earns its own message: it is half of the pair, so naming the pairs ends it.
         _reject_stream_format(value, call=call)
@@ -264,8 +276,8 @@ def coerce_stream_or_archive_format(
     if isinstance(value, (ArchiveFormat, StreamFormat, PluginStream)):
         return value
     # As in ``coerce_archive_format``: a ``StrEnum`` member of a third enum would
-    # otherwise be read as a spelling. ``ContainerFormat.ZIP`` survived here only
-    # because ``_resolve_stream_format`` refuses container formats later, for an
+    # otherwise be read as a spelling. ``ContainerFormat.ZIP`` would then coerce to
+    # ``ArchiveFormat.ZIP``, refused only later by ``_resolve_stream_format``, for an
     # unrelated reason and with an unrelated message.
     if isinstance(value, Enum):
         _reject_wrong_enum(

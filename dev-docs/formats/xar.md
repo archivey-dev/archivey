@@ -18,7 +18,7 @@ and registered as a built-in, as ISO, SquashFS and ar are.
 | Core dependencies | None. zlib, bz2 and lzma from the standard library; the XML through `xml.parsers.expat` |
 | Encryption | None read. Apple's `xar` can sign the TOC (`<signature>`), which is not checked |
 | Name encoding | UTF-8 text in the XML, or base64 of raw bytes (`enctype="base64"`), then UTF-8 first, `encoding=`, escaped |
-| Checksums | The TOC's (SHA-1 by default, MD5, or a named algorithm), checked at open; each file's `extracted-checksum` as `member.hashes`, checked by the verifying stream |
+| Checksums | The TOC's (SHA-1 by default, MD5, or a named algorithm), checked at open; each file's `extracted-checksum` as `member.hashes`, checked by the verifying stream. One whose style is not MD5, SHA-1, SHA-256 or SHA-512, or that names no style, is not a hash: the file reads unchecked and reports `DIGEST_UNVERIFIABLE` (`reason="unknown_algorithm_or_backend"`, the style in `algorithm`) |
 | Refuses | Version other than 1; a DOCTYPE in the TOC; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-xar/spec.md` |
 
@@ -59,7 +59,10 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
   declarations only exist inside a document type, so none is expanded. The parser keeps
   one frame per open `<file>`, reserves the entry's slot when the element opens (so a
   directory is listed before its files) and computes its path when its `<name>` closes,
-  from the enclosing frame's. `max_members` is checked as each `<file>` opens. The TOC
+  from the enclosing frame's. A second `<name>` with the same text is the same name: Apple's
+  productbuild writes each top-level file's name twice (seen in the Node.js, GitHub CLI and
+  Miniconda installers), and bsdtar 3.7 joins the two into `DistributionDistribution`. A second
+  name that differs raises `CorruptionError`. `max_members` is checked as each `<file>` opens. The TOC
   digest is then checked over the compressed TOC bytes, as Apple's `xar` computes it.
 - **Hard links.** Apple's `xar` and bsdtar mark the entry that holds the data
   `<type link="original">hardlink</type>` (listed as a `FILE`) and every other name
@@ -68,8 +71,17 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
   earlier member. A link to an id nothing holds raises `CorruptionError` at the end of
   the listing.
 - **Data.** Stored data is a view of the heap and must be as long as its size; encoded
-  data goes through `ReaderContext.decompress` with the decoded size, so archivey's
-  decoder limits and length checks apply. The extracted checksum is `member.hashes`, and
+  data goes through archivey's codecs (`ReaderContext._decompress_coder`) with the decoded
+  size, so archivey's decoder limits and length checks apply. A member's data is one
+  stream: any byte after its end, a second zlib stream, junk or zeros, raises
+  `CorruptionError`, as in a ZIP member, where a `.zz` file only reports it as trailing
+  data. libarchive fails on the same input ("XAR decompressor made no progress"), and
+  Apple's `xar` loops on it until an allocation fails. Under `rapidgzip`, which decodes
+  every zlib stream as one, the Adler-32 at the end covers only the last stream, and the
+  second decode that mismatch starts finds the first stream's end and raises; only a
+  forged last trailer that matches every stream gets past (`gzip.md` §5). The format's
+  own continuations still read: several bzip2 or LZMA Alone streams, xz streams and their
+  stream padding. The extracted checksum is `member.hashes`, and
   the verifying stream checks it (`hashlib.new(..., usedforsecurity=False)`, so a FIPS
   OpenSSL still computes MD5 and SHA-1).
 - **Unknown types.** A type the format does not define is a readable `FILE` when it has

@@ -180,6 +180,21 @@ def rpm_seeds() -> list[bytes]:
     return tiny + [path.read_bytes() for path in paths]
 
 
+def makeself_seeds() -> list[bytes]:
+    """The magic, and a few of the makeself archives in tests/fixtures/makeself: the old
+    and new header forms, two payloads, base64 and an uncompressed payload."""
+    magic = b"#!/bin/sh\n# This script was generated using Makeself "
+    folder = _REPO_ROOT / "tests" / "fixtures" / "makeself"
+    names = (
+        "gzip-2.2.0.run",
+        "gzip-2.7.1.run",
+        "append-2.4.0.run",
+        "base64-2.7.1.run",
+        "nocomp-2.7.1.run",
+    )
+    return [b"", magic, magic + b"2.7.1\n"] + [(folder / n).read_bytes() for n in names]
+
+
 def squashfs_seeds() -> list[bytes]:
     """Tiny blobs and the images in tests/fixtures/squashfs, one per compressor and
     layout (no fragments, tail ends), each a few KiB."""
@@ -202,6 +217,20 @@ def cab_seeds() -> list[bytes]:
     tiny = [b"", b"MSCF\0\0\0\0", b"MSCF" + bytes(32)]
     folder = _REPO_ROOT / "tests" / "fixtures" / "external" / "cab_libarchive"
     return tiny + [path.read_bytes() for path in sorted(folder.glob("*.cab"))]
+
+
+def lha_seeds() -> list[bytes]:
+    """Tiny blobs and the archives in tests/fixtures/external/lha_lhasa: header levels
+    0 to 3, stored, -lh4- to -lh7-, -lhx- and -lk7- members, links and directories, most
+    of them about 7 KB."""
+    tiny = [
+        b"",
+        b"\x16\0-lh0-" + bytes(15),
+        b"\x1a\0-lh5-" + bytes(13) + b"\x02" + bytes(5),
+    ]
+    folder = _REPO_ROOT / "tests" / "fixtures" / "external" / "lha_lhasa"
+    paths = sorted(p for p in folder.iterdir() if p.suffix in (".lzh", ".lzs", ".pma"))
+    return tiny + [path.read_bytes() for path in paths]
 
 
 def _fixture_seeds(folder: str, pattern: str) -> list[bytes]:

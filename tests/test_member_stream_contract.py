@@ -918,6 +918,14 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         ),
     ),
     (
+        "uu",
+        "no corpus builder for uuencode; tests/test_text_codecs.py seeks in a file",
+    ),
+    (
+        "base64",
+        "no corpus builder for base64; tests/test_text_codecs.py seeks in a file",
+    ),
+    (
         "ar",
         (
             "no corpus builder: the corpus trees hold directories, which ar cannot; "
@@ -933,6 +941,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "no corpus builder; tests/test_cpio.py seeks inside members, plain and gzip",
     ),
     (
+        "deb",
+        "no corpus builder (needs dpkg-deb); tests/test_deb.py seeks inside members",
+    ),
+    (
         "xar",
         "no corpus builder (needs bsdtar); tests/test_xar.py seeks inside members",
     ),
@@ -944,8 +956,19 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         ),
     ),
     (
+        "lha",
+        "no corpus builder (needs an LHA writer); tests/test_lha.py seeks inside members",
+    ),
+    (
         "rpm",
         "no corpus builder (needs rpmbuild); tests/test_rpm.py seeks inside members",
+    ),
+    (
+        "makeself",
+        (
+            "no corpus builder (needs makeself); its members are TAR members read "
+            "through ReaderContext.open_nested, which the TAR rows cover"
+        ),
     ),
 )
 
@@ -959,12 +982,19 @@ _UNTESTED_FORMATS = {
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.MOZLZ4): "mozlz4",
     **{ArchiveFormat(ContainerFormat.AR, stream): "ar" for stream in StreamFormat},
     **{ArchiveFormat(ContainerFormat.CPIO, s): "cpio" for s in StreamFormat},
+    **{ArchiveFormat(ContainerFormat.DEB, s): "deb" for s in StreamFormat},
     ArchiveFormat.SQUASHFS: "squashfs",
     ArchiveFormat.BZIP3: "bzip3",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP3): "bzip3",
+    ArchiveFormat.UU: "uu",
+    ArchiveFormat(ContainerFormat.TAR, StreamFormat.UU): "uu",
+    ArchiveFormat.BASE64: "base64",
+    ArchiveFormat(ContainerFormat.TAR, StreamFormat.BASE64): "base64",
     ArchiveFormat.XAR: "xar",
     ArchiveFormat.CAB: "cab",
+    ArchiveFormat.LHA: "lha",
     **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},
+    **{ArchiveFormat(ContainerFormat.MAKESELF, s): "makeself" for s in StreamFormat},
 }
 
 
@@ -1130,6 +1160,7 @@ def test_each_member_read_builds_one_archive_stream(
         built.clear()
 
 
+@pytest.mark.usefixtures("zip_general_path")
 def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> None:
     """STORED ZIP: public ArchiveStream verifies directly over SlicingStream.
 

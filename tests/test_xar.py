@@ -7,6 +7,7 @@ import io
 import zlib
 from datetime import UTC, datetime
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 import pytest
 
@@ -25,6 +26,10 @@ from archivey import (
     detect_format,
     open_archive,
 )
+from archivey.config import AcceleratorMode
+from archivey.diagnostics import MemberTimestampContext, UnknownMemberTypeContext
+from tests.conftest import requires
+from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.xar_util import ENCODINGS, HEADER, XarFile, pack_xar, write_xar
 
@@ -100,7 +105,7 @@ def test_bsdtar_archives_list_and_read(encoding: str) -> None:
         assert read["dir/a.txt"] == b"hello\n"
         assert read["caf�.txt"] == b"latin-1 name\n"
         assert len(read["b.txt"]) == text.size
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert not reader.diagnostics.retained
 
 
@@ -127,15 +132,124 @@ def test_every_file_checksum_is_a_member_hash(digest: str) -> None:
         assert member.verified is Verification.CHECKSUM
 
 
+@pytest.mark.parametrize(
+    ("attrs", "style"),
+    [(' style="sha224"', "sha224"), ("", ""), (' style=""', "")],
+    ids=["unsupported style", "no style", "empty style"],
+)
+def test_a_file_checksum_archivey_cannot_check_is_reported(
+    attrs: str, style: str
+) -> None:
+    digest = hashlib.sha224(b"0123456789").hexdigest()
+    toc = (
+        '<?xml version="1.0"?><xar><toc><file id="1"><name>a</name><type>file</type>'
+        "<data><length>10</length><offset>0</offset><size>10</size>"
+        '<encoding style="application/octet-stream"/>'
+        f"<extracted-checksum{attrs}>{digest}</extracted-checksum></data>"
+        "</file></toc></xar>"
+    ).encode()
+    with _open(pack_xar(toc, b"0123456789", algorithm=0)) as reader:
+        (member,) = reader.members()
+        assert member.hashes == {}
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code is DiagnosticCode.DIGEST_UNVERIFIABLE
+        assert diagnostic.context.algorithm == style  # type: ignore[union-attr]
+        assert reader.read("a") == b"0123456789"
+        assert member.verified is Verification.LENGTH
+
+
+def test_a_file_with_no_checksum_reports_nothing() -> None:
+    toc = (
+        b'<?xml version="1.0"?><xar><toc><file id="1"><name>a</name><type>file</type>'
+        b"<data><length>10</length><offset>0</offset><size>10</size>"
+        b'<encoding style="application/octet-stream"/></data></file></toc></xar>'
+    )
+    with _open(pack_xar(toc, b"0123456789", algorithm=0)) as reader:
+        (member,) = reader.members()
+        assert not member.diagnostics
+
+
 def test_a_file_that_fails_its_checksum_is_reported() -> None:
     raw = bytearray(write_xar([XarFile("a.txt", TEXT, encoding="none")]))
     raw[-1] ^= 1
     with _open(bytes(raw)) as reader:
-        ((member, error),) = reader.verify_all()
+        ((member, error),) = reader.verify_all().failures
         assert member.name == "a.txt"
         assert isinstance(error, CorruptionError)
     with _open(bytes(raw)) as reader, pytest.raises(CorruptionError):
         reader.read("a.txt")
+
+
+# --- bytes after a member's stream ---------------------------------------------------
+
+# Two zlib streams, A then B, in one member. libarchive fails on anything after a
+# member's stream ("XAR decompressor made no progress"), and so does archivey, with or
+# without rapidgzip: under it the Adler-32 at the end covers only B, and the second
+# decode that mismatch starts finds the first stream ending early.
+_FIRST = b"first stream " * 400
+_SECOND = b"second stream " * 300
+_ACCELERATOR_MODES = [
+    pytest.param(AcceleratorMode.OFF, id="off"),
+    pytest.param(AcceleratorMode.ON, id="rapidgzip", marks=requires("rapidgzip")),
+]
+
+
+def _member_stored_as(stored: bytes, data: bytes, encoding: str = "gzip") -> bytes:
+    """A XAR of one file ``a`` whose heap holds ``stored`` and whose TOC declares the
+    size and sha1 of ``data``."""
+    style = ENCODINGS[encoding][0]
+    digest = hashlib.sha1(data).hexdigest()
+    return _single(
+        f"<length>{len(stored)}</length><offset>0</offset><size>{len(data)}</size>"
+        f"<encoding style={quoteattr(style)}/>"
+        f'<extracted-checksum style="sha1">{digest}</extracted-checksum>',
+        heap=stored,
+    )
+
+
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+@pytest.mark.parametrize(
+    "declared", [_FIRST + _SECOND, _FIRST], ids=["declares-both", "declares-first"]
+)
+@pytest.mark.parametrize("chunk", [-1, 1024], ids=["whole", "bounded"])
+def test_a_second_zlib_stream_in_a_member_is_refused(
+    mode: AcceleratorMode, declared: bytes, chunk: int
+) -> None:
+    raw = _member_stored_as(zlib.compress(_FIRST) + zlib.compress(_SECOND), declared)
+    config = archivey.ArchiveyConfig(use_rapidgzip=mode)
+    with (
+        _open(raw, config=config) as reader,
+        reader.open("a") as stream,
+        pytest.raises(CorruptionError),
+    ):
+        while stream.read(chunk) and chunk > 0:
+            pass
+
+
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+def test_an_empty_second_zlib_stream_in_a_member_is_refused(
+    mode: AcceleratorMode,
+) -> None:
+    # rapidgzip's output is A, and the last trailer is the empty stream's Adler-32
+    # (1), so the check's second decode reaches the first stream's end exactly at
+    # the output's end, with input left (round 1 K1).
+    raw = _member_stored_as(zlib.compress(_FIRST) + zlib.compress(b""), _FIRST)
+    config = archivey.ArchiveyConfig(use_rapidgzip=mode)
+    with (
+        _open(raw, config=config) as reader,
+        pytest.raises(CorruptionError, match="after its end"),
+    ):
+        reader.read("a")
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "bzip2", "lzma", "xz"])
+@pytest.mark.parametrize("tail", [b"junk", b"\0\0\0\0"], ids=["junk", "zeros"])
+def test_bytes_after_a_member_stream_are_refused(encoding: str, tail: bytes) -> None:
+    if encoding == "xz" and tail[0] == 0:
+        pytest.skip("four zero bytes are xz stream padding, part of the format")
+    raw = _member_stored_as(ENCODINGS[encoding][1](TEXT) + tail, TEXT, encoding)
+    with _open(raw) as reader, pytest.raises(CorruptionError, match="after its end"):
+        reader.read("a")
 
 
 def test_nested_files_take_their_directory_path_in_document_order() -> None:
@@ -298,11 +412,39 @@ def test_a_name_that_is_not_base64_is_refused() -> None:
         ([XarFile("", b"x", name_xml="")], "has no name"),
         ([XarFile("", b"x", name_xml="<name></name>")], "empty name"),
         ([XarFile("a", b"x", extra="<name>b</name>")], "two names"),
+        # The same text under another encoding is another name.
+        (
+            [XarFile("Zm9v", b"x", extra='<name enctype="base64">Zm9v</name>')],
+            "two names",
+        ),
     ],
 )
 def test_name_damage(files: list[XarFile], message: str) -> None:
     with pytest.raises(CorruptionError, match=message):
         _open(write_xar(files))
+
+
+def test_a_name_repeated_the_same_is_one_name() -> None:
+    """Apple's productbuild writes each top-level file's <name> twice, the same both
+    times: every real installer package seen (Node.js 22, GitHub CLI 2.62, Miniconda)
+    was refused before. The repeat is one name, as xar and pkgutil read it, also for a
+    directory and the files under it."""
+    files = [
+        XarFile("Distribution", b"<installer/>", extra="<name>Distribution</name>"),
+        XarFile(
+            "Resources",
+            type="directory",
+            extra="<name>Resources</name>",
+            children=[XarFile("LICENSE", b"text", extra="<name>LICENSE</name>")],
+        ),
+    ]
+    with _open(write_xar(files)) as reader:
+        assert [m.name for m in reader.members()] == [
+            "Distribution",
+            "Resources/",
+            "Resources/LICENSE",
+        ]
+        assert reader.read("Resources/LICENSE") == b"text"
 
 
 def test_a_directory_listing_files_before_its_name_is_refused() -> None:
@@ -465,6 +607,25 @@ def test_toc_damage() -> None:
         _open(pack_xar(deep, b"", algorithm=0), format=ArchiveFormat.XAR)
 
 
+def test_text_of_many_lines_is_not_kept_one_piece_per_line() -> None:
+    # expat hands character data over one line at a time unless asked to buffer it,
+    # and the parser kept each piece in a list: 8 bytes of list slot for each byte of
+    # a TOC of "a\n" lines, so a 64 MiB TOC took 704 MB to open. Here the peak was
+    # 11x the TOC. Buffered, it is about 4x: the TOC, the pieces and their join.
+    head = b'<xar><toc><file id="1"><name>a</name><type>file</type><mode>'
+    tail = b"</mode></file></toc></xar>"
+    xml = head + b"a\n" * (1 << 20) + tail
+    raw = pack_xar(xml, b"", algorithm=0)
+
+    def list_it() -> None:
+        with _open(raw, format=ArchiveFormat.XAR) as reader:
+            assert [m.name for m in reader.members()] == ["a"]
+
+    list_it()
+    peak = traced_peak(list_it)
+    assert peak < 7 * len(xml), peak
+
+
 def test_the_toc_size_must_match_its_header() -> None:
     xml = b"<xar><toc></toc></xar>"
     with pytest.raises(CorruptionError, match="not the 23"):
@@ -566,3 +727,124 @@ def test_compressed_members_seek() -> None:
         assert stream.read(20) == TEXT[1000:1020]
         stream.seek(10)
         assert stream.read(5) == TEXT[10:15]
+
+
+# --- edges the mutation sweep found untested ---------------------------------------
+
+
+def test_extended_attributes_do_not_replace_a_files_checksum() -> None:
+    """Apple's xar writes ``<ea>`` elements inside ``<file>``, after ``<data>``, each
+    with its own ``<name>`` and ``<extracted-checksum>``: they are skipped."""
+    digest = hashlib.sha1(b"alpha").hexdigest()
+    toc = (
+        '<xar><toc><file id="1"><name>a.txt</name><type>file</type>'
+        "<data><length>5</length><offset>0</offset><size>5</size>"
+        '<encoding style="application/octet-stream"/>'
+        f'<extracted-checksum style="sha1">{digest}</extracted-checksum></data>'
+        '<ea id="0"><name>com.apple.quarantine</name><length>4</length>'
+        "<offset>5</offset><size>4</size>"
+        '<extracted-checksum style="md5">' + "0" * 32 + "</extracted-checksum>"
+        "</ea></file></toc></xar>"
+    ).encode()
+    with _open(pack_xar(toc, b"alpha1234", algorithm=0)) as reader:
+        (member,) = reader.members()
+        assert member.name == "a.txt"
+        assert member.hashes == {HashAlgorithm.SHA1: bytes.fromhex(digest)}
+        assert reader.read("a.txt") == b"alpha"
+
+
+def test_toc_level_elements_beside_the_checksum_are_skipped() -> None:
+    """xar writes ``<creation-time>`` in the TOC, before or after its checksum."""
+    head = "<creation-time>2024-03-01T12:00:00</creation-time>"
+    for checksum in ("none", "sha1"):
+        raw = write_xar(TREE, checksum=checksum, toc_head=head)
+        with _open(raw) as reader:
+            assert len(reader.members()) == 3
+
+
+def test_the_toc_checksum_is_read_at_its_heap_offset() -> None:
+    """The TOC names where in the heap its checksum sits; it need not be first."""
+    toc = (
+        b'<xar><toc><checksum style="sha1"><offset>5</offset><size>20</size>'
+        b'</checksum><file id="1"><name>a</name><type>directory</type></file>'
+        b"</toc></xar>"
+    )
+    digest = hashlib.sha1(zlib.compress(toc)).digest()
+    with _open(pack_xar(toc, b"\xff" * 5 + digest)) as reader:
+        assert [m.name for m in reader.members()] == ["a/"]
+    with pytest.raises(CorruptionError, match="fails its checksum"):
+        _open(pack_xar(toc, digest + b"\xff" * 5))
+
+
+@pytest.mark.parametrize(
+    "data_xml",
+    [
+        "<length>-4</length><offset>0</offset><size>4</size>",
+        "<length>4</length><offset>0</offset><size>-4</size>",
+    ],
+    ids=["length", "size"],
+)
+def test_a_negative_length_or_size_is_refused(data_xml: str) -> None:
+    with pytest.raises(CorruptionError, match="'a' has a negative data field"):
+        _open(_single(data_xml), format=ArchiveFormat.XAR)
+
+
+def test_a_named_algorithm_needs_room_for_its_name() -> None:
+    """Algorithm 3 names its hash after the 28 header bytes: a 28-byte header has no
+    name, which is damage, not an unknown hash."""
+    xml = b"<xar><toc></toc></xar>"
+    with pytest.raises(CorruptionError, match="^XAR checksum algorithm 3"):
+        _open(pack_xar(xml, b"", algorithm=3), format=ArchiveFormat.XAR)
+
+
+def test_an_unknown_algorithm_number_is_damage_even_with_a_longer_header() -> None:
+    xml = b"<xar><toc></toc></xar>"
+    raw = pack_xar(xml, b"", algorithm=9, header_extra=b"sha256".ljust(36, b"\0"))
+    with pytest.raises(CorruptionError, match="^XAR checksum algorithm 9"):
+        _open(raw, format=ArchiveFormat.XAR)
+
+
+def test_elements_nested_to_the_depth_cap_are_read() -> None:
+    """2048 open elements, ``<xar>`` included, is the deepest TOC read."""
+    deep = b"<xar>" + b"<toc>" * 2047 + b"</toc>" * 2047 + b"</xar>"
+    with _open(pack_xar(deep, b"", algorithm=0), format=ArchiveFormat.XAR) as reader:
+        assert reader.members() == []
+
+
+def test_a_file_reports_its_stored_size() -> None:
+    raw = write_xar([XarFile("a", b"a" * 1000, encoding="gzip")])
+    with _open(raw) as reader:
+        (member,) = reader.members()
+    assert member.size == 1000
+    assert member.compressed_size == len(zlib.compress(b"a" * 1000))
+
+
+def test_an_unknown_type_diagnostic_names_the_member_type_and_size() -> None:
+    raw = write_xar([XarFile("odd", b"12345", type="whiteout")])
+    with _open(raw) as reader:
+        (member,) = reader.members()
+        (diagnostic,) = member.diagnostics
+    assert diagnostic.code is DiagnosticCode.MEMBER_TYPE_UNKNOWN
+    context = diagnostic.context
+    assert isinstance(context, UnknownMemberTypeContext)
+    assert (context.member_name, context.stored_type, context.size) == (
+        "odd",
+        "whiteout",
+        5,
+    )
+
+
+@pytest.mark.parametrize(
+    ("stored", "attr"),
+    [("mtime", "modified"), ("atime", "accessed"), ("ctime", "ctime")],
+)
+def test_an_unreadable_time_diagnostic_names_its_field(stored: str, attr: str) -> None:
+    raw = write_xar([XarFile("a", b"x", extra=f"<{stored}>soon</{stored}>")])
+    with _open(raw) as reader:
+        (member,) = reader.members()
+        (diagnostic,) = member.diagnostics
+    assert diagnostic.message.startswith(f"Invalid XAR {stored} for 'a': 'soon'")
+    context = diagnostic.context
+    assert isinstance(context, MemberTimestampContext)
+    assert context.member_name == "a"
+    assert (context.field, context.source, context.value_repr) == (attr, "xar", "soon")

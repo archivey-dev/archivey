@@ -1,4 +1,12 @@
-"""Retained metadata-byte accounting for :class:`~archivey.config.ListingLimits`."""
+"""Retained metadata-byte accounting for :class:`~archivey.config.ListingLimits`.
+
+A listing bomb is an archive whose member list, not its data, costs too much memory:
+millions of members, or huge names, comments or extra fields. Each reader owns one
+:class:`ListingLimitTracker` and charges every member to it as the listing registers
+it, so ``max_members`` and ``max_metadata_bytes`` refuse the archive while it is being
+listed. Parsers that keep metadata before members exist (7z, RAR, ISO) weigh it with
+:func:`text_bytes` and :func:`check_metadata_budget` by the same rules.
+"""
 
 from __future__ import annotations
 
@@ -120,6 +128,9 @@ class ListingLimitTracker:
         # each was charged, by identity, until ``release_member`` takes it off.
         self._held: dict[int, tuple[ArchiveMember, int]] = {}
         self._held_bytes = 0
+        # What a reader keeps while it walks, beyond its members (``charge_walk``),
+        # taken off when the walk ends.
+        self._walk_bytes = 0
 
     def reset(self) -> None:
         self.member_count = 0
@@ -127,31 +138,46 @@ class ListingLimitTracker:
         self._archive_comment_counted = False
         self._held = {}
         self._held_bytes = 0
+        self._walk_bytes = 0
 
-    def account_archive_comment(
-        self, comment: str | None, *, enforce: bool = True
-    ) -> None:
+    def charge_walk(self, nbytes: int, what: str) -> None:
+        """Charge ``nbytes`` a reader keeps while it walks (a name table, a header)
+        to ``max_metadata_bytes``, with the members, and refuse them before the
+        reader allocates them. ``what`` names them, for the refusal. The charge
+        stays until :meth:`release_held`, at the walk's end."""
+        next_bytes = self.metadata_bytes + nbytes
+        max_meta = self._limits.max_metadata_bytes
+        if max_meta is not None and next_bytes > max_meta:
+            raise metadata_limit_error(
+                max_meta,
+                f"retained {next_bytes} bytes, {nbytes} of them for {what}",
+            )
+        self.metadata_bytes = next_bytes
+        self._walk_bytes += nbytes
+
+    def account_archive_comment(self, comment: str | None) -> None:
+        """Charge the archive's comment to ``max_metadata_bytes``, once per listing."""
         if self._archive_comment_counted:
             return
         self._archive_comment_counted = True
         added = archive_comment_bytes(comment)
         if added <= 0:
             return
-        self._add_bytes(added, enforce=enforce)
+        self._add_bytes(added, enforce=True)
 
-    def account_member(self, member: ArchiveMember, *, enforce: bool = True) -> None:
+    def account_member(self, member: ArchiveMember) -> None:
+        """Count one registered member and its metadata, refusing it past either cap."""
         # Called once per member of every listing, so the checks are inlined; each
         # raise still goes through the shared helpers.
         next_count = self.member_count + 1
         next_bytes = self.metadata_bytes + member_metadata_bytes(member)
-        if enforce:
-            limits = self._limits
-            max_members = limits.max_members
-            if max_members is not None and next_count > max_members:
-                self._check_members(next_count)
-            max_meta = limits.max_metadata_bytes
-            if max_meta is not None and next_bytes > max_meta:
-                self._check_metadata(next_bytes)
+        limits = self._limits
+        max_members = limits.max_members
+        if max_members is not None and next_count > max_members:
+            self._check_members(next_count)
+        max_meta = limits.max_metadata_bytes
+        if max_meta is not None and next_bytes > max_meta:
+            self._check_metadata(next_bytes)
         # Raises before storing, so a refused member changes neither total.
         self.metadata_bytes = next_bytes
         self.member_count = next_count
@@ -200,10 +226,13 @@ class ListingLimitTracker:
             self._uncharge(entry[1])
 
     def release_held(self) -> None:
-        """Take off every charge still held: the walk that held them has ended."""
+        """Take off every charge still held, and what the walk kept beyond its
+        members (:meth:`charge_walk`): the walk that held them has ended."""
         held, self._held = self._held, {}
         for _, nbytes in held.values():
             self._uncharge(nbytes)
+        self.metadata_bytes -= self._walk_bytes
+        self._walk_bytes = 0
 
     def _uncharge(self, nbytes: int) -> None:
         self._held_bytes -= nbytes
@@ -229,6 +258,8 @@ class ListingLimitTracker:
         self._add_bytes(nbytes, enforce=enforce)
 
     def _add_bytes(self, nbytes: int, *, enforce: bool) -> None:
+        """Add ``nbytes``; ``enforce=False`` records them without refusing, for a
+        caller that weighs metadata outside a listing call."""
         next_bytes = self.metadata_bytes + nbytes
         if enforce:
             self._check_metadata(next_bytes)

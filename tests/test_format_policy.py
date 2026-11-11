@@ -689,7 +689,11 @@ def test_a_replacement_is_not_given_a_raw_sector_image(tmp_path: Path) -> None:
     path = tmp_path / "disc.bin"
     path.write_bytes(_raw_sector_image(mode=1))
     config = ArchiveyConfig(formats=FormatPolicy(replace={C.ISO: _RecordingIsoPlugin}))
-    with pytest.raises(UnsupportedFeatureError, match="raw CD sector image"):
+    # A Mode 1 image, which the built-in reader opens: a replacement is refused it.
+    with pytest.raises(
+        UnsupportedFeatureError,
+        match="_RecordingIsoPlugin .*cannot read a raw CD sector image",
+    ):
         open_archive(path, config=config)
     assert _opened == []
 
@@ -704,6 +708,7 @@ def test_the_containers_a_plugin_can_replace() -> None:
         C.SQUASHFS,
         C.XAR,
         C.CAB,
+        C.LHA,
     }
 
 

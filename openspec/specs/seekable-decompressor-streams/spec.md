@@ -26,7 +26,7 @@ The system SHALL construct seek support only when seekability is declared:
 single-stream API. Undeclared streams SHALL NOT parse XZ footers, scan lzip
 trailers, retain rewind buffers, or retain seek-point tables, and SHALL NOT
 instantiate rapidgzip accelerators except for the large sequential DEFLATE-family
-read below; they are forward-only, whichever decoder reads them.
+and bzip2 reads below; they are forward-only, whichever decoder reads them.
 
 `use_rapidgzip` and `use_indexed_bzip2` SHALL resolve their `AUTO` / `ON` / `OFF`
 configuration against declared seek demand, not the `streaming` access-mode
@@ -54,6 +54,14 @@ rapidgzip decodes in parallel, which repays the child process on a full read onl
 that is not very compressible, and not on Windows, where the child costs more than it saves
 (`formats/gzip.md` §2.3). The stream stays forward-only.
 
+Without declared seek demand, `use_indexed_bzip2=AUTO` SHALL select rapidgzip for a bzip2
+stream only when it is otherwise eligible, the platform is Linux or macOS, the source is a path
+or a byte range of a regular file, the compressed input size is known and reaches
+`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`, and the process may run on at least two CPUs.
+rapidgzip decodes bzip2 blocks in parallel; on one CPU it is slower than the standard library,
+and it reads its input about twice, which a caller's stream (a remote file above all) would
+serve twice (`formats/bzip2.md` §2.3). The stream stays forward-only.
+
 Over a ZipCrypto decrypt stage `AUTO` SHALL resolve to `OFF` for the codec that reads
 it, because every backward seek restarts decryption from the member's start.
 
@@ -61,8 +69,9 @@ it, because every backward seek restarts decryption from the member's start.
 
 | Case | Expected |
 | --- | --- |
-| gzip/xz/bzip2/lzip opened without seekability under `AUTO` | No index, no accelerator, forward-only, except as the next row says |
+| gzip/xz/bzip2/lzip opened without seekability under `AUTO` | No index, no accelerator, forward-only, except as the next two rows say |
 | DEFLATE-family stream opened without seekability under `AUTO`, on Linux or macOS, seekable source, known size ≥ threshold, decoded size ≤ 3× compressed | rapidgzip decodes it; the stream stays forward-only |
+| bzip2 stream opened without seekability under `AUTO`, on Linux or macOS, a file on disk, known size ≥ `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`, two or more usable CPUs | rapidgzip decodes it; the stream stays forward-only |
 | Same stream opened with seekability, `AUTO`, accelerator installed, size ≥ threshold | Accelerator or native index provides random access |
 | Declared-seekable deflate/zlib/gzip under `AUTO`, known size < threshold | rapidgzip not selected; stdlib backend used |
 | Declared-seekable DEFLATE-family stream, `use_rapidgzip=ON`, size below threshold | rapidgzip still selected (threshold ignored) |

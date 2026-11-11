@@ -1,4 +1,5 @@
-"""Find and identify an external decompressor on ``PATH``, once per binary.
+"""Find and identify an external decompressor on ``PATH``, or at the one path the
+caller pinned, once per binary.
 
 A program on ``PATH`` with the right name is not proof that it is the right program, so
 each candidate runs once with an identification argv, and its banner decides. The
@@ -17,6 +18,7 @@ and the ``unar`` read paths use them.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
@@ -27,6 +29,7 @@ from dataclasses import dataclass
 from typing import IO, BinaryIO, cast
 
 from archivey.exceptions import (
+    ArchiveyError,
     PackageNotInstalledError,
     ReadError,
     ResourceUnavailableError,
@@ -39,6 +42,7 @@ from archivey.internal.streams.child_process import (
     wait_or_kill,
 )
 from archivey.internal.streams.streamtools import DelegatingStream
+from archivey.internal.win32_errors import ERROR_FILENAME_EXCED_RANGE
 from archivey.terminal import display_path
 from archivey.types import MissingComponent
 
@@ -59,6 +63,8 @@ class Banner:
 
 @dataclass(frozen=True, slots=True)
 class _Probe:
+    """One binary's cached probe answer, valid while its stat identity holds."""
+
     banner: Banner
     identity: tuple[int, int, int, int]
     timed_out: bool
@@ -74,7 +80,8 @@ def stat_identity(path: str) -> tuple[int, int, int, int]:
 
 
 class CliToolFinder:
-    """Locate one program on ``PATH`` and accept it only if its banner identifies it.
+    """Locate one program on ``PATH``, or at the one path the caller pinned, and accept
+    it only if its banner identifies it.
 
     ``names`` are tried in order; the first candidate that identifies and meets
     ``version_floor`` wins. ``parse_banner`` receives stdout and stderr of
@@ -107,9 +114,11 @@ class CliToolFinder:
         parse_banner: Callable[[str], Banner],
         version_floor: tuple[int, ...],
         install_hint: str,
+        setting: str,
         verify: Callable[[str], str | None] | None = None,
     ) -> None:
         self._display_name = display_name
+        self._setting = setting
         self._names = tuple(names)
         self._probe_args = tuple(probe_args)
         self._parse_banner = parse_banner
@@ -147,24 +156,28 @@ class CliToolFinder:
             and banner.version >= self._version_floor
         )
 
-    def find(self, *, purpose: str) -> str:
+    def _candidates(self, program: str | None) -> list[str]:
+        if program is not None:
+            return [program]
+        # Sample PATH once, so a concurrent ``os.environ`` rewrite cannot mix two values.
+        path_env = os.environ.get("PATH", "")
+        found = (shutil.which(name, path=path_env) for name in self._names)
+        return [os.path.abspath(c) for c in found if c is not None]
+
+    def find(self, *, purpose: str, program: str | None = None) -> str:
         """Return the absolute path of a usable binary, or raise ``PackageNotInstalledError``.
 
         ``purpose`` completes "<program> is required …" in the refusal, so the caller
-        can say which read needed the program.
+        can say which read needed the program. ``program``, when set, is the only
+        binary tried (``PATH`` is not searched), under the same checks; the refusal
+        names the config field that set it (the finder's ``setting``).
         """
-        # Sample PATH once, so a concurrent ``os.environ`` rewrite cannot mix two values.
-        path_env = os.environ.get("PATH", "")
         too_old: list[tuple[str, tuple[int, ...] | None]] = []
         timed_out: list[str] = []
         rejected: list[tuple[str, str]] = []
         unchecked: list[tuple[str, OSError]] = []
         cause: BaseException | None = None
-        for name in self._names:
-            candidate = shutil.which(name, path=path_env)
-            if candidate is None:
-                continue
-            candidate = os.path.abspath(candidate)
+        for candidate in self._candidates(program):
             try:
                 identity = stat_identity(candidate)
             except OSError as exc:
@@ -203,7 +216,9 @@ class CliToolFinder:
                 too_old.append((candidate, cached.banner.version))
             elif cached.timed_out:
                 timed_out.append(candidate)
-        message = self._refusal(purpose, too_old, timed_out, rejected, unchecked)
+        message = self._refusal(
+            purpose, too_old, timed_out, rejected, unchecked, program=program
+        )
         raise PackageNotInstalledError(
             message, missing=(MissingComponent(self._display_name, message),)
         ) from cause
@@ -215,13 +230,31 @@ class CliToolFinder:
         timed_out: list[str],
         rejected: list[tuple[str, str]],
         unchecked: list[tuple[str, OSError]],
+        *,
+        program: str | None = None,
     ) -> str:
         name = self._display_name
+        where = "on PATH" if program is None else f"at {self._setting}"
+        # A pinned binary is the only one tried, so installing another on PATH changes
+        # nothing: the advice is to point the setting elsewhere.
+        hint = (
+            self._install_hint
+            if program is None
+            else (
+                f"archivey does not look on PATH when {self._setting} is set; point "
+                f"it at {name} {self._floor_text()} or later."
+            )
+        )
         if rejected:
             # The reason carries its own advice: a generic install hint could name the
-            # very package that was just rejected.
+            # very package that was just rejected. Under a pin the reason's install
+            # hint is swapped for the pin's advice.
             found = "; ".join(
-                f"{display_path(path)} {reason}" for path, reason in rejected
+                f"{display_path(path)} {reason}"
+                if program is None
+                else f"{display_path(path)} "
+                f"{reason.removesuffix(self._install_hint).rstrip()} {hint}"
+                for path, reason in rejected
             )
             return f"{name} is required {purpose}, but {found}"
         if unchecked:
@@ -231,7 +264,7 @@ class CliToolFinder:
                 f"{display_path(path)} ({exc})" for path, exc in unchecked
             )
             return (
-                f"{name} is required {purpose}. Found {found} on PATH and identified "
+                f"{name} is required {purpose}. Found {found} {where} and identified "
                 f"it, but archivey could not run its check on it. The check writes a "
                 "small archive to the temporary directory, so check that it exists "
                 "and has space. archivey tries the check again on the next lookup."
@@ -246,15 +279,21 @@ class CliToolFinder:
             )
             return (
                 f"{name} {self._floor_text()} or later is required {purpose}, but "
-                f"{found}. {self._install_hint}"
+                f"{found}. {hint}"
             )
         if timed_out:
             shown = " and ".join(display_path(path) for path in timed_out)
             return (
-                f"{name} is required {purpose}. Found {shown} on PATH, but it did not "
+                f"{name} is required {purpose}. Found {shown} {where}, but it did not "
                 f"answer the identification probe within {PROBE_TIMEOUT_SECONDS:g} "
                 "seconds. archivey does not probe an unchanged binary again in this "
-                f"process. {self._install_hint}"
+                f"process. {hint}"
+            )
+        if program is not None:
+            return (
+                f"{name} is required {purpose}, but {self._setting} names "
+                f"{display_path(program)}, which could not be run, or is not {name}. "
+                f"archivey does not look on PATH when {self._setting} is set."
             )
         return (
             f"{name} is required {purpose}, but it was not found on PATH (or the "
@@ -274,6 +313,47 @@ def terminate_process(proc: subprocess.Popen[bytes] | None) -> bool:
     return True
 
 
+# The ``errno`` values that say the program itself cannot run: it is gone, or so is a
+# script's interpreter (ENOENT), a part of its path is not a directory (ENOTDIR), it may
+# not be executed (EACCES, EPERM), or the system does not run its format (ENOEXEC, which
+# Python also gives for Windows' ERROR_BAD_EXE_FORMAT). The program is what to fix.
+_PROGRAM_CANNOT_RUN = frozenset(
+    (errno.ENOENT, errno.ENOTDIR, errno.EACCES, errno.EPERM, errno.ENOEXEC)
+)
+# The system ran short: no descriptor for a pipe, no memory or process slot for a child.
+_SYSTEM_SHORTAGE = frozenset((errno.EMFILE, errno.ENFILE, errno.ENOMEM, errno.EAGAIN))
+
+
+class _SpawnFailed(Exception):
+    """``spawn`` failed in :func:`spawn_for_stdout`; the ``OSError`` is the cause."""
+
+
+def _start_error(exc: OSError, *, name: str, not_started: str) -> ArchiveyError:
+    """The error for ``exc``, the ``OSError`` that kept ``name`` from starting.
+
+    Only a program that cannot run is :class:`PackageNotInstalledError`. A command
+    line the system will not take, or a system short of resources, says nothing about
+    the program, and a message that says to install it would send the caller the
+    wrong way.
+    """
+    if exc.errno == errno.E2BIG or (
+        getattr(exc, "winerror", None) == ERROR_FILENAME_EXCED_RANGE
+    ):
+        return ReadError(
+            f"{name} could not be started: its command line is longer than the "
+            f"system allows ({exc})."
+        )
+    if exc.errno in _PROGRAM_CANNOT_RUN:
+        return PackageNotInstalledError(not_started)
+    if exc.errno in _SYSTEM_SHORTAGE:
+        return ResourceUnavailableError(
+            f"{name} could not be started: the system did not give a resource for "
+            f"a new process ({exc}). The archive may be valid; read it again when "
+            "the system has more file descriptors, memory or processes available."
+        )
+    return ReadError(f"{name} could not be started ({exc}).")
+
+
 def spawn_for_stdout(
     cmd: Sequence[str | bytes],
     *,
@@ -284,20 +364,26 @@ def spawn_for_stdout(
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Start ``cmd`` with stdout on a pipe and stderr discarded; return ``(proc, stdout)``.
 
-    A program that cannot start raises ``PackageNotInstalledError(not_started)``. The
+    A program that cannot run raises ``PackageNotInstalledError(not_started)``; any
+    other start failure raises the error :func:`_start_error` gives for it. The
     caller owns the process until a :class:`ProcessOutputStream` takes it: nothing
     reaps it if the caller raises before that constructor's ``try`` is reached.
     ``env`` replaces the child's environment; ``None`` inherits this process's. An
     argument may be ``bytes`` on POSIX, where argv is bytes.
     """
-    proc = spawn(
-        cmd,
-        lambda _: PackageNotInstalledError(not_started),
-        stdin=stdin,
-        stderr=subprocess.DEVNULL,
-        bufsize=1024 * 1024,
-        env=env,
-    )
+    try:
+        proc = spawn(
+            cmd,
+            _SpawnFailed,
+            stdin=stdin,
+            stderr=subprocess.DEVNULL,
+            bufsize=1024 * 1024,
+            env=env,
+        )
+    except _SpawnFailed as failed:
+        cause = failed.__cause__
+        assert isinstance(cause, OSError)
+        raise _start_error(cause, name=name, not_started=not_started) from cause
     if proc.stdout is None:
         terminate_process(proc)
         # Defensive: stdout=PIPE was asked for, so this should be unreachable. Typed

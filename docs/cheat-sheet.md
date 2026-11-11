@@ -39,7 +39,8 @@ What each call returns, and the errors you're most likely to meet. The
 [next section](#exceptions) has all of them.
 
 - **`open_archive(source)`** returns an [`ArchiveReader`][archivey.ArchiveReader], to use in a
-  `with` block. `source` is a path, a binary file object or a folder. A missing file raises
+  `with` block. `source` is a path, a binary file object, a folder, or a remote file from
+  `fsspec.open(url)` ([Remote archives](remote.md)). A missing file raises
   `FileNotFoundError`, and a file in no format archivey reads raises `FormatDetectionError`. A
   file object that can't seek, such as a pipe, raises `StreamNotSeekableError` unless you pass
   `streaming=True`, which reads TAR, ZIP and single compressed files from one.
@@ -58,8 +59,9 @@ What each call returns, and the errors you're most likely to meet. The
   `None` for links and most directories, and works only until the loop moves on.
   [Read everything in one pass](index.md#read-everything-in-one-pass)
 - **`archive.extract_all(dest)`** returns an [`ExtractionReport`][archivey.ExtractionReport]
-  with one result per member. A refused member, such as `../evil.txt`, is skipped and recorded
-  in the report with the status `BLOCKED`, without raising. By default the first member that
+  with one result per member. A refused member, such as `../evil.txt`, isn't written, and the
+  rest still extracts. Then the call raises `FilterRejectionError`, whose `report` attribute is
+  the full report; pass `on_blocked="skip"` to get the report back instead. By default the first member that
   fails raises and ends the extraction: `ExtractionError` for a file already at the destination,
   `CorruptionError` for damaged data. [Extracting](extracting.md)
 - **`open_stream(source)`** returns a file object with the decompressed contents. On a
@@ -121,6 +123,7 @@ with archivey.open_archive("download.zip") as archive:
         policy="strict",    # portable names; no setuid bits or group and other write
         overwrite="error",  # an existing file fails the member
         on_error="stop",    # the first failed member raises
+        on_blocked="raise", # a refused member raises once the rest are done
         limits=archivey.ExtractionLimits(
             max_extracted_bytes=2 * 2**30,  # 2 GiB written in total
             max_entries=262_144,            # files, folders and links created

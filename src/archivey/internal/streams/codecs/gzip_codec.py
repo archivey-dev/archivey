@@ -120,7 +120,15 @@ def _config_with_gzip_isize(source: CodecSource, config: StreamConfig) -> Stream
     bound for ``VerifyingStream``, but ISIZE is mod 2**32 and multi-member gzip's
     trailer covers only the last member.
     """
-    if config.gzip_isize_backstop or config.expected_decompressed_size is not None:
+    if (
+        config.gzip_isize_backstop
+        or config.expected_decompressed_size is not None
+        # A detection probe needs no ISIZE: it never selects the accelerator, and the
+        # standard library checks any trailer the probe reaches. Its source may be a
+        # window whose end is not the file's, so seeking there would pull the whole
+        # window (up to 1 MiB) and read four bytes from the wrong place.
+        or config.probe_read_bound is not None
+    ):
         return config
     # Reading the trailer seeks to the end of the source. On a member stream that
     # decompresses, that decodes all of it, and the restore decodes it again. Without
@@ -1017,8 +1025,8 @@ class GzipCodec(_DeflateFamilyCodec):
         file tells those cases apart. ``member.size`` comes from the first full read
         instead (the reader's late fill-in).
 
-        **The trailer CRC-32 is deliberately never put in** ``member.hashes``. Maintainer
-        decision (PR 441); the reasoning, so it is not re-litigated:
+        **The trailer CRC-32 is deliberately never put in** ``member.hashes``: a settled
+        decision, recorded in ``dev-docs/formats/gzip.md`` §6, for these reasons:
 
         - A digest is worth having for two things: skipping a decompression because an
           equal file was already processed (it must be known *before* the read), or
@@ -1027,14 +1035,14 @@ class GzipCodec(_DeflateFamilyCodec):
         - The trailer CRC covers only the **last** member. It equals the digest of the
           whole content only when the file holds exactly one member, and nothing in the
           header says so.
-        - Proving single-memberness at open means scanning the whole compressed file.
-          That was the old behaviour: O(file size) on every open (a full download for a
-          remote source), and on large files the 3-byte member magic ``1f 8b 08``
-          matches by chance (about once per 16 MiB), so the scan usually concluded
-          "multi-member" and dropped the CRC anyway.
-        - Adding the CRC after a full read was implemented and removed: by then the
-          decoder has already checked every member's CRC and raised on a mismatch, so
-          the digest serves neither purpose. It also could not be made uniform, since
+        - Proving single-memberness at open means scanning the whole compressed file:
+          O(file size) on every open (a full download for a remote source), and on large
+          files the 3-byte member magic ``1f 8b 08`` matches by chance (about once per
+          16 MiB), so the scan would usually conclude "multi-member" and drop the CRC
+          anyway.
+        - Adding the CRC after a full read gains nothing: by then the decoder has
+          already checked every member's CRC and raised on a mismatch, so the digest
+          serves neither purpose. It also could not be made uniform, since
           the rapidgzip accelerator hides member boundaries.
 
         A caller that wants a digest of a gzip's content computes one while reading.

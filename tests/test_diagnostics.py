@@ -1109,6 +1109,8 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
         DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
+        # The caller's access pattern, like the rewind code above.
+        DiagnosticCode.SOLID_OPEN_REDECOMPRESSES,
         DiagnosticCode.PROBE_FORMAT_UNCONFIRMED,
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED,
         # Fires only on a stream abandoned before EOF; in strict it would turn a peek
@@ -1133,6 +1135,8 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.MEMBER_READERS_DISAGREE,
         # The transport an fsspec source arrives through, not the archive's bytes.
         DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
+        # An extraction policy's choice for the archivey:// tree, not a new finding.
+        DiagnosticCode.MEMBER_PATH_REFUSED,
     }
 
 
