@@ -106,8 +106,11 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   not run.
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
-  files it wrote before then on disk. 7z, RAR and ISO archives check the limits before they give you
-  any member, with or without `streaming=True`. A ZIP read from a file checks the member count its
+  files it wrote before then on disk. 7z, RAR, ISO, XAR and SquashFS archives check the limits
+  before they give you any member, with or without `streaming=True`. ar and CPIO archives check them
+  as they go, like a TAR. An RPM checks the member count and the size its headers declare before any
+  member, and weighs the names as it lists them, so names that cross `max_metadata_bytes` give you
+  members up to that point before the error. A ZIP read from a file checks the member count its
   end record declares before any member, and the rest as it reads its index, so an index holding
   more members than its end record says gives you members up to the limit before the error, as a TAR
   does. A ZIP read from a pipe is checked like a TAR as its members arrive, and again on its index

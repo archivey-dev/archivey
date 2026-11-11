@@ -109,6 +109,8 @@ refuses only a listing that would cross the limit anyway, before making any memb
 twice early. The charge covers the paths' and targets' bytes only: what each entry
 costs beyond them (about 170 bytes in the walk, and the 96-byte record until its
 member is made) is bounded by `max_members` alone, as every member's fixed cost is.
+The walk stops one entry past `max_members`, and a tree with more entries than that is
+refused before any member is made, with or without `streaming=True`.
 
 A block stored with size 0 is a hole and reads as zeros. `is_sparse` is true for a file
 whose block list holds one, read from the list at listing time: `mksquashfs` writes most
