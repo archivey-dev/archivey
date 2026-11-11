@@ -34,7 +34,8 @@ compressor such as `.cpio.xz`) opened for random access, because the reader itse
 seeks back in it for every member read after the listing (maintainer ruling
 2026-11-10). Such a stream SHALL keep the seek points a decode finds as it passes
 them (each requirement below that says "on declared seek demand or restart points"
-covers it), and SHALL NOT read the file's own index: it parses no XZ footer, scans no
+covers it, and XZ blocks a decode passes, §"XZ blocks found by a forward decode"), and
+SHALL NOT read the file's own index: it parses no XZ footer, scans no
 lzip trailers, reads no zstd seek table and walks no BGZF, mgzip or bzip3 headers, so
 a crafted index cannot change what a default read returns. Its accelerator `AUTO`
 SHALL still resolve as for an undeclared stream. A streaming open SHALL NOT ask for
@@ -110,6 +111,22 @@ uncompressed offset.
 | Seek within XZ | Only containing block range is decompressed |
 | Seekable lzip source opens | Trailer scan locates block boundaries |
 | Seek within lzip | Only required block range is decompressed |
+
+#### Scenario: XZ blocks found by a forward decode
+
+With restart points and no seek demand, the XZ decoder SHALL find each stream's blocks
+from the bytes it decodes: a block header gives its own size, and the LZMA2 chunk
+headers give each chunk's compressed and decompressed size up to the end marker. It
+SHALL keep those block points only once the stream has decoded to its end (liblzma has
+then checked the stream's index against the blocks), and only when the stream's index
+lists the same blocks the walk found. Otherwise it SHALL keep none for that stream.
+
+| Case | Expected |
+| --- | --- |
+| Multi-block `.tar.xz` opened for random access | After the listing, every block with output is a point; a later member read resumes at the block before it |
+| Index that does not match the blocks | liblzma refuses the stream; no block points |
+| Stream not decoded to its end yet | No block points for it |
+| Stream opened with neither seek demand nor restart points | No walk, no points |
 
 ### Requirement: rapidgzip is the only gzip and bzip2 accelerator
 

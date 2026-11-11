@@ -55,6 +55,13 @@ def _tar_lz() -> bytes:
     return make_multi_member_lzip([raw[i : i + step] for i in range(0, len(raw), step)])
 
 
+def _tar_xz() -> bytes:
+    # One xz block per MiB, in one stream: the blocks a decode passes are the points.
+    if not xz_cli_available():
+        pytest.skip("the xz CLI builds the multi-block fixture")
+    return make_multiblock_xz(_tar(), block_size=1 << 20)
+
+
 def _tar_zst() -> bytes:
     # One zstd frame per MiB: the frame starts a decode passes are the restart points.
     try:
@@ -67,7 +74,9 @@ def _tar_zst() -> bytes:
 
 
 @pytest.mark.parametrize(
-    "build", [_tar_gz, _tar_lz, _tar_zst], ids=["gzip", "lzip", "zstd"]
+    "build",
+    [_tar_gz, _tar_lz, _tar_xz, _tar_zst],
+    ids=["gzip", "lzip", "xz", "zstd"],
 )
 def test_member_read_after_listing_resumes_near_the_member(
     build: Callable[[], bytes],

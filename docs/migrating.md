@@ -153,7 +153,8 @@ member once, in order, in every format ([Solid archives](reading.md#solid-archiv
 `open` cost more. In a `.tar.gz`, the first one lists the whole archive, which takes a pass of its
 own, and reading members in the archive's order after that takes one more pass. Going back to an
 earlier member starts from the restart point archivey kept nearest to it while listing: about
-1 MiB before it in a `.tar.gz`, and usually the beginning in a `.tar.bz2` or `.tar.xz`. In 7z and RAR, each read decompresses again
+1 MiB before it in a `.tar.gz`, the xz block before it in a `.tar.xz` written in blocks, and
+usually the beginning in a `.tar.bz2`. In 7z and RAR, each read decompresses again
 everything before its member. If you want to make sure your code avoids these costs, open the
 archive with `streaming=True`: `read` and `open` then always raise, and `stream_members()` is the
 only way to read members.
