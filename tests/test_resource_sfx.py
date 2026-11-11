@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import struct
+import time
 
 import pytest
 
@@ -20,7 +21,7 @@ from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.pe_resources import ProgramResources
 from archivey.types import ArchiveFormat
-from tests.pe_build import pe_file, pe_with_resources
+from tests.pe_build import pe_file, pe_with_resource_tables, pe_with_resources
 from tests.test_signed_sfx import _payload
 
 _STRICT = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
@@ -140,16 +141,48 @@ def test_no_resources(data: bytes) -> None:
     assert not resources.explains(10, 20)
 
 
-def test_a_table_that_names_itself_ends() -> None:
-    """A subdirectory entry pointing back at its own table is walked to the depth
-    bound, not forever."""
-    data, _ = pe_with_resources([b"payload"])
-    table = _rsrc_offset(data)
-    patched = bytearray(data)
-    # The root's one entry now points at the root.
-    struct.pack_into("<I", patched, table + 16 + 4, 0x80000000)
-    resources = ProgramResources(io.BytesIO(bytes(patched)), len(patched))
+def _table(entries: list[int]) -> bytes:
+    """A resource directory table whose numbered entries point at ``entries``
+    (offsets in the section; ``_SUBDIR`` marks a subdirectory)."""
+    table = struct.pack("<IIHHHH", 0, 0, 0, 0, 0, len(entries))
+    return table + b"".join(
+        struct.pack("<II", index + 1, target) for index, target in enumerate(entries)
+    )
+
+
+_SUBDIR = 0x80000000
+
+
+def test_a_carpet_of_self_pointing_entries_is_cut_by_the_entry_bound() -> None:
+    """A root of many entries that all point back at the root would visit n + n**2 +
+    n**3 entries before the depth bound stops it (27 million for 300). The entry
+    bound stops it after a few thousand."""
+    rsrc = _table([_SUBDIR] * 300)
+    data = pe_with_resource_tables(rsrc)
+    resources = ProgramResources(io.BytesIO(data), len(data))
+    started = time.perf_counter()
     assert resources.extents() == ()
+    assert time.perf_counter() - started < 1.0
+
+
+@pytest.mark.parametrize("hops", [2, 3], ids=["depth-2-found", "depth-3-ignored"])
+def test_a_data_entry_deeper_than_the_tree_is_not_a_resource(hops: int) -> None:
+    """Type, name, language, then data: a data entry reached through a third
+    subdirectory hop is not a resource."""
+    # Tables at 0, 24, 48, 72 (one entry each), then the data entry, then the data.
+    tables = [24 * (index + 1) | _SUBDIR for index in range(hops)]
+    entry_at = 24 * (hops + 1)
+    data_at = entry_at + 16
+    rsrc = b"".join(_table([target]) for target in tables)
+    rsrc += _table([entry_at])
+    rsrc += struct.pack("<IIII", 0x2000 + data_at, 8, 0, 0) + b"resource"
+    data = pe_with_resource_tables(rsrc)
+    resources = ProgramResources(io.BytesIO(data), len(data))
+    if hops == 2:
+        start = _rsrc_offset(data) + data_at
+        assert resources.extents() == ((start, start + 8),)
+    else:
+        assert resources.extents() == ()
 
 
 def test_a_resource_past_the_file_is_dropped() -> None:

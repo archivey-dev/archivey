@@ -159,6 +159,18 @@ def pe_with_resources(
     return data, extents
 
 
+def pe_with_resource_tables(rsrc: bytes) -> bytes:
+    """A PE whose ``.rsrc`` section is ``rsrc``, verbatim: for tables a test writes by
+    hand. The section sits at file offset ``2 * FILE_ALIGNMENT``, RVA ``0x2000``."""
+    rsrc += b"\0" * (-len(rsrc) % FILE_ALIGNMENT)
+    head = pe_headers(
+        [(FILE_ALIGNMENT, FILE_ALIGNMENT), (FILE_ALIGNMENT * 2, len(rsrc))],
+        resources=(0x2000, len(rsrc)),
+        virtual_addresses=[0x1000, 0x2000],
+    )
+    return head + b"\xcc" * FILE_ALIGNMENT + rsrc
+
+
 def _certificate(size: int) -> bytes:
     """A ``WIN_CERTIFICATE`` of ``size`` bytes: its length, revision 2, PKCS#7 type,
     and non-zero filler, so a trailing-data scan that reached it would report it."""

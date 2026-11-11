@@ -41,9 +41,12 @@ object seeks the source and restores its position, as `read_payload_end` does.
 ## 4. Why a new `open_read` argument
 
 `open_read`'s promise is a view of `[start_offset, end_offset)`: a backend never reads
-before its start. The resource table sits before the archive, so `open_archive` reads it,
-as it reads the certificate end. The argument says so; a hidden attribute or a method on
-the source would not.
+before its start. The resource table sits before the archive, and the backend's
+trailing-data check is what reads it: `open_archive` hands the backend an object that
+reads the program's headers on the backend's first question. That is an exception to the
+view promise, and the explicit argument is what makes it visible; a hidden attribute or a
+method on the source would not. The exception is narrow: the object answers one yes-or-no
+question about bytes after the archive, and nothing it reads reaches the listing.
 
 ## 5. LHA
 
