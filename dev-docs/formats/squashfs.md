@@ -252,8 +252,9 @@ offsets the image declares:
   child process under `NATIVE_DECODERS`, so `exclude_libraries` and process isolation
   reach it as they reach every native decoder. An earlier version of this reader kept
   its own Python-only decoder for that reason; the shared codec made it unnecessary.
-  The tests read the LZO images with each decoder, and the `LZO against liblzo2` CI job
-  and the session setup script install `python-lzo` so that both run.
+  The tests read the LZO images with each decoder, and the CI benchmark job (its
+  `LZO against liblzo2` step) and the session setup script install `python-lzo` so
+  that both run.
 - **Extended attributes are not read.** archivey's members have no field for them.
 - **`is_sparse` comes from the block list.** Reading it costs a scan of each file's
   list during the listing; the list sits in the inode table next to the inode, which the

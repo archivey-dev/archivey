@@ -11,13 +11,15 @@ name: Accelerator crash search
 # - the known DEFLATE truncation abort is listed but does not; when a run no longer
 #   finds it, the verdict line says it may be fixed upstream.
 #
-# It runs monthly (the 1st), on demand, and on a PR that changes the script, this file or the
-# lockfile (a rapidgzip upgrade). Not a required check: a red run is the signal we want,
+# It runs monthly (the 1st), on demand, and after a merge to main that changes the script,
+# this file or the lockfile (a rapidgzip upgrade); that run searches 60 seconds per codec.
+# It never runs on a pull request (CI cost). Not a required check: a red run is the signal we want,
 # not a merge gate.
 on:
   schedule:
     - cron: "23 5 1 * *"
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - "scripts/investigations/accelerator_crash_search.py"
       - ".github/workflows/accelerator-crash-search.yml"
@@ -30,7 +32,7 @@ on:
         default: "300"
 
 concurrency:
-  group: accel-crash-search-${{ github.event.pull_request.number || github.ref }}
+  group: accel-crash-search-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -46,7 +48,7 @@ jobs:
       UV_PYTHON: "3.11"
       # A PR run is a short check that the script and the lockfile's rapidgzip work;
       # the scheduled and manual runs search longer.
-      SECONDS_PER_CODEC: ${{ github.event_name == 'pull_request' && '60' || inputs.seconds || '300' }}
+      SECONDS_PER_CODEC: ${{ github.event_name == 'push' && '60' || inputs.seconds || '300' }}
     steps:
       - uses: actions/checkout@v4
 

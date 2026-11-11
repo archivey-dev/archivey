@@ -63,7 +63,8 @@ on:
 # set plus the free-threaded 3.15t leg (the `scope` job). Every job below runs on pull
 # requests unless it says otherwise. On a pull request: lint (with the script tests),
 # the `test` legs (Linux 3.11 and 3.15 [all], Linux 3.11 core-only, Windows 3.15 [all]),
-# free-threaded 3.13t, the structural benchmark and the LZO check against liblzo2. A
+# free-threaded 3.13t, and one job with the structural benchmark and the LZO check
+# against liblzo2. A
 # pull request whose diff misses every `FULL` path runs lint alone, which runs the
 # script tests. Not on a pull request: the `test-queue` legs (3.15 core-only, macOS 3.15,
 # the 3.16 prerelease), 3.15t, the distribution unar packages and PyPy, plus the
@@ -487,7 +488,8 @@ jobs:
   # `scripts/ci/ci_scope.py` (the library, the plugin packages, the library tests, the
   # dependencies, this CI, and every script outside the folders its NOT_FULL lists)
   # says `full=false`. On a pull request push that skips the library legs of the pull
-  # request set: `test`, `free-threaded-concurrency`, `benchmark` and `lzo-oracle`.
+  # request set: `test`, `free-threaded-concurrency` and `benchmark` (which also runs
+  # the LZO check).
   # Lint, which runs the script tests, still runs. In the merge queue those legs still
   # run, on the merged tree, so a script-only pull request is tested once before it
   # merges; `full=false` there skips the three queue-only jobs: `test-queue`,
@@ -871,15 +873,23 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/junit_failure_lines.py pypy-extras.xml
 
-  # Blocking gate = **structural only** (seek baselines + solid decode-once).
-  # Wall-time ratios are noisy on shared runners; they run separately, non-blocking,
-  # as a change-guarded scheduled job — see `.github/workflows/benchmark-wall.yml`.
+  # Two quick Linux checks that share one runner, one Python and one sync, so a pull
+  # request pays for the setup once (they used to be two jobs; the setup was most of
+  # each one's time). A failure in the first part still runs the second (`!cancelled()`).
+  #
+  # 1. Benchmark gate = **structural only** (seek baselines + solid decode-once).
+  #    Wall-time ratios are noisy on shared runners; they run separately, non-blocking,
+  #    as a change-guarded scheduled job — see `.github/workflows/benchmark-wall.yml`.
+  # 2. archivey's LZO decoder against liblzo2 through python-lzo, which archivey uses in
+  #    a child process when it is installed but never depends on (GPL, no Linux
+  #    wheels). python-lzo goes in after the benchmark, so the benchmark measures the
+  #    environment every other job has.
   benchmark:
-    name: Benchmark gate (structural)
+    name: Benchmark gate (structural) + LZO against liblzo2
     needs: scope
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -892,12 +902,14 @@ jobs:
       - name: Sync (dev + all extras)
         run: uv sync --group dev --extra all
       # RAR *data* structural cases (rar_solid_*, rar_encrypted_*) need RARLAB unrar.
-      # Listing (rar_open_list) works without it — do not drop this step or T3 silently
+      # Listing (rar_open_list) works without it — do not drop unrar or T3 silently
       # omits the data-path half of the gate (pytest fail-closes when CI=true).
-      - name: Install unrar (RAR data structural cases)
+      # liblzo2-dev is what python-lzo builds against, for the LZO part.
+      - name: Install unrar (RAR data structural cases) and liblzo2
         uses: ./.github/actions/apt-install
         with:
-          packages: unrar
+          packages: unrar liblzo2-dev
+          install-recommends: "false"
       - name: Structural benchmark gate
         run: >
           uv run --no-sync python -m benchmarks.harness
@@ -910,36 +922,14 @@ jobs:
           path: benchmark-structural.json
       - name: Pytest structural gate + measurement unit tests
         run: uv run --no-sync pytest tests/test_benchmark_gate.py tests/test_measurement.py -q
-
-  # archivey's LZO decoder against liblzo2 through python-lzo, which archivey uses in a
-  # child process when it is installed but never depends on (GPL, no Linux wheels).
-  lzo-oracle:
-    name: LZO against liblzo2
-    needs: scope
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Set up Python
-        run: uv python install 3.11
-      - name: Install liblzo2, which python-lzo builds against
-        uses: ./.github/actions/apt-install
-        with:
-          packages: liblzo2-dev
-          install-recommends: "false"
-      - name: Sync, then install python-lzo over it
-        # The import check fails the job here, rather than letting the comparison skip.
+      - name: Install python-lzo over the synced environment
+        if: ${{ !cancelled() }}
+        # The import check fails the step here, rather than letting the comparison skip.
         run: |
-          uv sync --group dev --extra all
           uv pip install python-lzo
           uv run --no-sync python -c "import lzo"
-      - name: Pytest
+      - name: LZO against liblzo2
+        if: ${{ !cancelled() }}
         # This is the job with python-lzo, so the comparison with liblzo2 and the
         # decode in a child process run nowhere else.
         run: >-
@@ -954,7 +944,7 @@ jobs:
   gate:
     name: CI gate
     if: ${{ always() && github.event_name == 'merge_group' }}
-    needs: [scope, lint, test, test-queue, test-lowest, unar-distro-packages, free-threaded-concurrency, pypy, benchmark, lzo-oracle]
+    needs: [scope, lint, test, test-queue, test-lowest, unar-distro-packages, free-threaded-concurrency, pypy, benchmark]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
