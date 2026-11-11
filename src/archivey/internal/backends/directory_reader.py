@@ -229,9 +229,9 @@ class DirectoryReader(BaseArchiveReader):
         # uid/gid -> name caches: most entries in a tree share an owner/group, and
         # pwd/grp lookups hit the system database (nss) on every call, so we memoize.
         self._uname_cache: dict[int, str | None] = {}
+        self._gname_cache: dict[int, str | None] = {}
         # procfs and sysfs devices, read on the first file (_on_pseudo_filesystem).
         self._pseudo_devices: frozenset[tuple[int, int]] | None = None
-        self._gname_cache: dict[int, str | None] = {}
 
     @override
     def _check_extraction_dest(self, dest: Path) -> None:
@@ -659,8 +659,8 @@ class DirectoryReader(BaseArchiveReader):
         fails with ``ELOOP`` from the kernel; anything else that changed fails with
         ``ESTALE``, as does a file whose size is no longer the listed one, 0 included.
         A file on procfs or sysfs is listed with no size (``_make_member``), so it has
-        none to check and reads to the end. A member
-        listed with no identity (``st_ino`` 0) is checked on type and size alone.
+        none to check and reads to the end. A member listed with no identity
+        (``st_ino`` 0) is checked on type and size alone.
         Windows has no ``O_NOFOLLOW``, so there the identity check carries it, with a
         reparse-point check on the path when the listing had no identity.
         """

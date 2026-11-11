@@ -255,8 +255,9 @@ There are no producers; there are filesystems, and each reports `lstat` differen
   (`/proc/sys/kernel/random/uuid` reads 37 bytes) and sysfs 4096. The walk lists their
   regular files with `size=None`, and a read goes to the end. It finds them by device in
   `/proc/self/mountinfo`, read once per walk, because Python has no `statfs` with the
-  filesystem magic. Where that file cannot be read, every file lists its `st_size`. The walk does not check
-  `st_dev` against the root's, so a root above a mount point descends into it.
+  filesystem magic. Where that file cannot be read, every file lists its `st_size`. The
+  walk does not check `st_dev` against the root's, so a root above a mount point
+  descends into it.
 - **A tree an archive was extracted into** is the common input. It carries whatever that
   archive carried: symlinks pointing outside the root, deep nesting, names that are not
   UTF-8. The deep-tree case is why the walk is iterative.
