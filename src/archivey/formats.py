@@ -573,6 +573,14 @@ class ReaderContext:
     # ``_spanning_check(key)`` returns the check for one spanning check of the
     # archive. Internal, set by the adapter; not for plugins.
     _spanning_check: Callable[[object], _SpanningCheck] | None = None
+    # ``_decompress_coder(data, stream_format, size)`` decodes ``data`` as one stream
+    # of ``stream_format`` that is a container coder's whole data, as ``decompress``
+    # does, except that any byte after the stream's end raises ``CorruptionError``
+    # (as for a ZIP member) instead of being reported as trailing data. Internal, set
+    # by the adapter; not for plugins.
+    _decompress_coder: (
+        Callable[[BinaryIO, StreamFormat, int | None], BinaryIO] | None
+    ) = None
 
     def __init__(
         self,

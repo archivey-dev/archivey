@@ -14,8 +14,8 @@ offset ``<toc><checksum>`` gives.
 The reader reads the whole TOC at open, bounded by ``max_metadata_bytes`` before it is
 decoded and by ``max_members`` while it is parsed, and checks its checksum. The XML is
 parsed with expat, refusing a document type declaration, so no entity is ever
-expanded. A member's data is decoded through ``ReaderContext.decompress`` and checked
-against its extracted checksum. A ``.pkg``'s payloads are listed as the files they are
+expanded. A member's data is decoded through archivey's codecs, as one stream with nothing
+after its end, and checked against its extracted checksum. A ``.pkg``'s payloads are listed as the files they are
 (``Payload``, a gzip-compressed CPIO), not opened. Handbook page:
 ``dev-docs/formats/xar.md``.
 """
@@ -692,7 +692,12 @@ class XarReader(IndexedReader[_Location]):
                     f"says {data.size}"
                 )
             return MemberData(view)
-        return MemberData(self._context.decompress(view, stream_format, size=data.size))
+        # A member's data is exactly one stream: libarchive fails on anything after
+        # its end, so a byte there (a second zlib stream, junk, zeros) is refused,
+        # as in a ZIP member, not reported as trailing data.
+        decompress_coder = self._context._decompress_coder
+        assert decompress_coder is not None  # set by the adapter
+        return MemberData(decompress_coder(view, stream_format, data.size))
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:

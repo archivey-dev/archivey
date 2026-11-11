@@ -42,6 +42,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
     _StdlibOnAcceleratorError,
 )
 from archivey.internal.streams.decompressor_stream import (
+    DataAfterEndError,
     StreamChecksumError,
     input_after_end_error,
     release_decoder,
@@ -170,6 +171,14 @@ class _ZlibAdlerCheckStream(DelegatingStream):
     is accepted, and every stream is content (an accepted difference, handbook
     ``gzip.md`` §5).
 
+    A stream opened with ``refuse_input_after_end`` (``refuse_after_end``: a container
+    coder's data, such as a XAR member) takes no second stream at all. When the
+    second decode finds the first stream ending before the output rapidgzip
+    delivered, the read or seek that reached the end raises
+    :class:`DataAfterEndError`, as the standard library does at that end, whatever
+    the caller has read. Only a last trailer that matches every stream, forged, gets
+    past, since the second decode runs only on a mismatch.
+
     A third cause is a cut stream: rapidgzip reads a zlib stream cut inside its body
     as a shorter whole one, with no error, and can stop before output the standard
     library still decodes. When that decode agrees with every byte delivered and then
@@ -197,9 +206,11 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         views: _SourceViews,
         trailer: int | None,
         natives: Natives = IN_PROCESS,
+        refuse_after_end: bool = False,
     ) -> None:
         super().__init__(inner)
         self._natives = natives
+        self._refuse_after_end = refuse_after_end
         # The same object as ``_inner``, typed: the cut-stream handover calls it.
         self._takeover = inner
         self._views = views
@@ -309,7 +320,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         except _ZlibFirstStreamEnds as first:
             self._pos = max(first.end, start)
             return self._hand_to_stdlib(size, at=self._pos)
-        except StreamChecksumError as exc:
+        except (StreamChecksumError, DataAfterEndError) as exc:
             # Kept as a copy: the raised instance's traceback holds this frame,
             # which holds the codec (kept_errors).
             self._verdict = KeptError.of(exc)
@@ -332,7 +343,9 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         :class:`_ZlibStoppedShort` when they agree and the standard library has more
         to say past them: more output, or the end of the source inside the stream.
         Raises :class:`_ZlibFirstStreamEnds` when the first zlib stream ends before
-        those bytes do and the caller has none of the bytes past its end.
+        those bytes do and the caller has none of the bytes past its end, and
+        :class:`DataAfterEndError` there whatever the caller has under
+        ``refuse_after_end``.
         """
         produced = 0
         adler = 1
@@ -346,6 +359,10 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                     if decoder.eof:
                         if produced == self._sum.frontier:
                             break
+                        if self._refuse_after_end:
+                            # A container coder's data is one zlib stream; the
+                            # standard library raises the same at this end.
+                            raise input_after_end_error("zlib", produced)
                         if first and self._returned <= produced:
                             # zlib checked this stream's Adler-32. Without the
                             # accelerator the read ends here, and the standard
@@ -651,8 +668,13 @@ class ZlibCodec(_ZlibErrorCodec):
         with _restoring_position(source):
             trailer = _zlib_adler_trailer(accel_source)
         natives = config.natives
+        refuse = config.refuse_input_after_end
         return lambda stream: _ZlibAdlerCheckStream(
-            stream, views=views, trailer=trailer, natives=natives
+            stream,
+            views=views,
+            trailer=trailer,
+            natives=natives,
+            refuse_after_end=refuse,
         )
 
     @override
