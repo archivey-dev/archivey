@@ -732,6 +732,10 @@ On a compressed tar, the stream's own checksum adds three cases:
   pure Python like ARM64. On real RISC-V code a read runs at roughly half the speed of the same
   file with no filter. The filter slows with branch density: on data where every word is a branch,
   it runs about 15 times slower than on real code.
+- **LZMA with `lc + lp` over 4** cannot be read. 7-Zip writes it with `-m0=LZMA:lc=8` and reads it
+  back, and some real archives use it: Git for Windows' PortableGit is one. liblzma, which archivey
+  decodes LZMA with, takes `lc + lp` up to 4 only. Such an archive lists, but reading a member in
+  that block raises `UnsupportedFeatureError`. Extract it with 7-Zip instead.
 - Bytes after a coder's stream are corruption, as in a ZIP member ([ZIP](#damaged-and-unusual-endings)),
   except that a Zstandard or LZ4 coder reads concatenated frames as one stream, so a further frame is
   content that counts against the declared size.
