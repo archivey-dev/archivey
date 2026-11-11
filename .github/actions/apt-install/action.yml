@@ -46,33 +46,37 @@ runs:
         set -euo pipefail
         flags=(-y -q -o Acquire::Retries=3)
         [ "$RECOMMENDS" = false ] && flags+=(--no-install-recommends)
+        # apt takes a named .deb from its archive directory only when that directory
+        # is $DEBS; otherwise it fetches the same version from the mirror, and
+        # --no-download then refuses. With both set, an install never goes online.
+        local_install=(sudo apt-get install "${flags[@]}" --no-download
+          -o Dir::Cache::archives="$DEBS")
         export DEBIAN_FRONTEND=noninteractive
         if [ "$HIT" = true ] && compgen -G "$DEBS/*.deb" > /dev/null; then
           # $DEBS holds what this step needed on top of the system as it was when
-          # the entry was saved. With only local files named, apt fetches nothing
-          # unless a dependency is missing; then it uses the mirror, and if that
-          # fails, the miss path below runs. (apt 2.8 refuses --no-download with
-          # .deb paths.)
-          if sudo apt-get install "${flags[@]}" "$DEBS"/*.deb; then
+          # the entry was saved. If that is not enough, the install fails offline
+          # and the miss path below runs.
+          if "${local_install[@]}" "$DEBS"/*.deb; then
             echo "saved=skip" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "::warning::Cached .deb files did not install; fetching from the mirror."
         fi
-        # Miss: download into $DEBS (only what the image lacks), then install from it.
-        rm -rf "$DEBS" && mkdir -p "$DEBS/partial"
+        # Miss: download into $DEBS (only what the system lacks), then install from it.
+        sudo rm -rf "$DEBS" && mkdir -p "$DEBS/partial"
         sudo apt-get update -q -o Acquire::Retries=3
         sudo apt-get install "${flags[@]}" --download-only \
           -o Dir::Cache::archives="$DEBS" $PACKAGES
-        sudo rm -rf "$DEBS/partial" "$DEBS/lock"
-        sudo chown -R "$(id -u)" "$DEBS"
         if compgen -G "$DEBS/*.deb" > /dev/null; then
-          sudo apt-get install "${flags[@]}" "$DEBS"/*.deb
+          "${local_install[@]}" "$DEBS"/*.deb
           echo "saved=yes" >> "$GITHUB_OUTPUT"
         else
-          # The image already has every package: nothing to cache.
+          # The system already has every package: nothing to cache.
           echo "saved=skip" >> "$GITHUB_OUTPUT"
         fi
+        # apt's lock and partial/ are root's; the cache saves only the .deb files.
+        sudo rm -rf "$DEBS/partial" "$DEBS/lock"
+        sudo chown -R "$(id -u)" "$DEBS"
     - if: steps.install.outputs.saved == 'yes'
       uses: actions/cache/save@v4
       with:
