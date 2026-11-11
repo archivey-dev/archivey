@@ -192,6 +192,32 @@ def test_wrong_candidates_do_not_confirm_on_the_tail(
     assert spies.anchor == 2
 
 
+def test_a_false_confirm_on_short_padding_does_not_stop_the_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Seven padding bytes: a wrong key finds them zero 1 time in 2^56, at four bytes
+    # 1 in 2^32. Stand in for that by making every tail check pass. With several
+    # candidates such a tail settles nothing, so the anchor rejects the wrong one and
+    # the right one is still tried.
+    archive, payload = _copy_aes(tmp_path, 9)
+    assert _padding(archive) < pipeline_mod.AES_TAIL_STRONG_PADDING
+    spies = _Spies(monkeypatch)
+    monkeypatch.setattr(reader_mod, "aes_tail_confirms", lambda *_a, **_k: True)
+    assert _read_all(archive, password=["wrong-1", _PASSWORD]) == payload
+    assert spies.anchor == 2
+
+
+def test_short_padding_still_confirms_a_lone_password_on_the_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With one candidate there is nothing a false confirm could hide.
+    archive, payload = _copy_aes(tmp_path, 9)
+    spies = _Spies(monkeypatch)
+    assert _read_all(archive, password=_PASSWORD) == payload
+    assert spies.tail == [True]
+    assert spies.anchor == 0
+
+
 def test_the_tail_picks_the_right_password_when_no_anchor_can(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

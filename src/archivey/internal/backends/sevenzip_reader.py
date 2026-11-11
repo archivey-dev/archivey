@@ -80,6 +80,7 @@ from archivey.internal.backends.sevenzip_parser import (
     read_signature_and_next_header,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
+    AES_TAIL_STRONG_PADDING,
     aes_tail_confirms,
     check_aes_tail_sizes,
     decode_encoded_header,
@@ -1912,8 +1913,16 @@ class SevenZipReader(BaseArchiveReader):
 
         def tail_confirms(kdf_password: bytes) -> bool:
             # Rung 1 of the ladder, the cheap key check: zero padding in the last AES
-            # block. Confirm-only, so a False goes on to the anchor plan.
+            # block. Confirm-only, so a False goes on to the anchor plan. Padding under
+            # AES_TAIL_STRONG_PADDING settles a password only when no other candidate
+            # could be right: with several, a wrong key that passes it (1 in 2^32 at
+            # four bytes) would stop the search before the right one.
             if tail is None:
+                return False
+            if (
+                tail_pack_size - tail.unpack_size < AES_TAIL_STRONG_PADDING
+                and self._passwords.is_ambiguous()
+            ):
                 return False
             return aes_tail_confirms(
                 self._folder_pack_views(folder_index)[0],
