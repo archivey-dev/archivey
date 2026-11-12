@@ -119,10 +119,37 @@ jobs:
       # The runner's default shell: PowerShell on Windows, as in ci.yml. Under Git Bash,
       # Git's own `tar` comes first on PATH and the GNU tar comparison tests call it with
       # Windows paths it cannot take.
+      # The same split as ci.yml's [all] legs: the native-heavy modules run in their
+      # own processes, and the PPMd one soft-passes pyppmd's known abort at exit
+      # (dev-docs/known-issues.md), so neither can fail the main run.
       - name: Run tests
+        env:
+          PYTHONFAULTHANDLER: "1"
         run: >-
           uv run --no-sync pytest tests/ -q -n auto --no-cov
           --deselect tests/test_benchmark_gate.py::test_benchmark_structural_gate
+          --ignore=tests/test_property_safety.py
+          --ignore=tests/test_rapidgzip_deflate_zlib.py
+          --ignore=tests/test_accelerator_shutdown.py
+          --ignore=tests/test_accelerator_corruption.py
+          --ignore=tests/test_ppmd_raw_streams.py
+
+      - name: Run accelerator stream tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: uv run --no-sync python scripts/ci/ci_run_native_modules.py
+
+      - name: Run PPMd raw stream tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: >-
+          uv run --no-sync python scripts/ci/ci_run_native_modules.py
+          --modules tests/test_ppmd_raw_streams.py --allow-exit-after-green
+
+      - name: Run property-safety tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: uv run --no-sync pytest tests/test_property_safety.py -q -n auto --no-cov
 
   # Distribution Pythons, each in its own image: GitHub has no Fedora runner, and the
   # Ubuntu runner images carry tools (p7zip 16.02, Git's tar) that the comparison tests
@@ -172,7 +199,34 @@ jobs:
 
       # The container runs as root. The tests that depend on file permissions check
       # os.geteuid() and skip under root, as they do in a development container.
+      # The same split as ci.yml's [all] legs: the native-heavy modules run in their
+      # own processes, and the PPMd one soft-passes pyppmd's known abort at exit
+      # (dev-docs/known-issues.md), so neither can fail the main run.
       - name: Run tests
+        env:
+          PYTHONFAULTHANDLER: "1"
         run: >-
           uv run --no-sync pytest tests/ -q -n auto --no-cov
           --deselect tests/test_benchmark_gate.py::test_benchmark_structural_gate
+          --ignore=tests/test_property_safety.py
+          --ignore=tests/test_rapidgzip_deflate_zlib.py
+          --ignore=tests/test_accelerator_shutdown.py
+          --ignore=tests/test_accelerator_corruption.py
+          --ignore=tests/test_ppmd_raw_streams.py
+
+      - name: Run accelerator stream tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: uv run --no-sync python scripts/ci/ci_run_native_modules.py
+
+      - name: Run PPMd raw stream tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: >-
+          uv run --no-sync python scripts/ci/ci_run_native_modules.py
+          --modules tests/test_ppmd_raw_streams.py --allow-exit-after-green
+
+      - name: Run property-safety tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: uv run --no-sync pytest tests/test_property_safety.py -q -n auto --no-cov

@@ -16,6 +16,16 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "python-distributions.yml"
 
 
+# ci.yml's [all] legs run these outside the main pytest (dev-docs/known-issues.md).
+_SPLIT_OUT = (
+    "tests/test_property_safety.py",
+    "tests/test_rapidgzip_deflate_zlib.py",
+    "tests/test_accelerator_shutdown.py",
+    "tests/test_accelerator_corruption.py",
+    "tests/test_ppmd_raw_streams.py",
+)
+
+
 def _load() -> dict:
     yaml = pytest.importorskip("yaml")
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
@@ -58,6 +68,14 @@ def test_each_leg_runs_the_suite_on_the_chosen_interpreter() -> None:
         assert any("uv sync --python" in run for run in runs), name
         assert any("pytest tests/" in run for run in runs), name
         assert any("print_codec_libraries.py" in run for run in runs), name
+        main = next(run for run in runs if "pytest tests/ " in run)
+        for module in _SPLIT_OUT:
+            assert f"--ignore={module}" in main, (name, module)
+        assert any("ci_run_native_modules.py" in run for run in runs), name
+        assert any(
+            "test_ppmd_raw_streams.py --allow-exit-after-green" in run for run in runs
+        ), name
+        assert any("pytest tests/test_property_safety.py" in run for run in runs), name
     hosted = "\n".join(step.get("run", "") for step in jobs["hosted"]["steps"])
     assert 'test "$want" = "$got"' in hosted
 
