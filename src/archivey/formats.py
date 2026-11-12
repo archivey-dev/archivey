@@ -1023,7 +1023,13 @@ class SequentialReader(FormatReader):
     yielded before it, and a stream whose data the walk is already past raises
     ``CorruptionError`` when read. archivey reads a pass's members in the order the
     walk yields them, and opens a member out of that order with a walk of its own,
-    started over from the start of the archive, as for any ``data``."""
+    started over from the start of the archive, as for any ``data``.
+
+    The data must be the walk's own bytes, read through the walk's stream or the
+    layer it decompressed (:meth:`ForwardStream.decompress`), not decoded again:
+    archivey draws a compressed layer's bytes from the
+    :class:`~archivey.Budget` as the layer decodes them, so it does not draw the
+    data streams over that layer a second time."""
 
     @abstractmethod
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:

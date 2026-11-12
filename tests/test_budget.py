@@ -472,17 +472,22 @@ def test_a_cab_folder_draws_the_members_it_decodes_past() -> None:
     assert budget.decoded_bytes <= _MEMBER + 32768
 
 
-def test_a_plugin_layer_draws_the_members_it_decodes_past() -> None:
-    """An RPM's payload is a ``decompress()`` layer of the format adapter."""
+@pytest.mark.parametrize("compressor", [b"gzip", None], ids=["gzip", "uncompressed"])
+def test_a_plugin_layer_draws_the_members_it_decodes_past(
+    compressor: bytes | None,
+) -> None:
+    """An RPM's payload is a ``decompress()`` layer of the format adapter, whose
+    member data streams read it on demand. Stored, the data streams draw."""
     from tests.test_rpm import _F, _build, _Package
 
     blobs = [bytes([i]) * _MEMBER for i in range(3)]
     files = [_F(f"/opt/f{i}".encode(), data=b) for i, b in enumerate(blobs)]
-    data = _build(_Package(files))
+    data = _build(_Package(files, compressor=compressor))
     budget = Budget()
     with _open(data, budget, streaming=True) as reader:
         assert _read_last(reader, "opt/f2") == blobs[2]
-    assert budget.decoded_bytes >= 3 * _MEMBER
+    # Stored, the members skipped on the way are not decoded, so not drawn.
+    assert budget.decoded_bytes >= (3 if compressor else 1) * _MEMBER
     # Read whole, each member is drawn once: by the layer, not again by itself.
     budget = Budget()
     with _open(data, budget, streaming=True) as reader:

@@ -2304,7 +2304,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             expected, custom = self._member_digests(member, span.digests, "walk")
         decoded: _Decoded | None = None
         if data is not None:
-            stream = self._decoded_stream(data, index)
+            stream = self._decoded_stream(data, index, layer)
             decoded = _Decoded(stream, span.checked, index, member.size, member.name)
         forward = layer.forward
         record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
@@ -2569,7 +2569,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                             data.close()
                     raise
                 return _Decoded(
-                    self._decoded_stream(data, index),
+                    self._decoded_stream(data, index, walk.layer),
                     span.checked,
                     index,
                     decoded.size,
@@ -2581,7 +2581,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 if data is not None:
                     self._leave_decoded(
                         _Decoded(
-                            self._decoded_stream(data, index),
+                            self._decoded_stream(data, index, walk.layer),
                             span.checked,
                             index,
                             span.member.size,
@@ -2604,13 +2604,24 @@ class SequentialReaderAdapter(_PluginAdapter):
         else:
             decoded.finish()
 
-    def _decoded_stream(self, data: BinaryIO | io.RawIOBase, index: int) -> BinaryIO:
+    def _decoded_stream(
+        self, data: BinaryIO | io.RawIOBase, index: int, layer: _Layer | None
+    ) -> BinaryIO:
         """A reader's decoded data as archivey reads it: full-count, counted as
         decompressed output, the drain's bytes too (``_decoded_parts`` does not count
         them again), and held to the ratio, the drain too, as the data of the member
-        at ``index`` of the walk."""
+        at ``index`` of the walk.
+
+        It draws from the budget, except for a ``data_on_demand`` reader over a layer
+        that draws already (``decompress()``): its data is a window of that layer's
+        bytes, drawn there, so each byte is drawn once, as a span's is."""
+        drawn = (
+            layer is not None
+            and layer.drawn
+            and getattr(self._reader, "data_on_demand", False)
+        )
         return self._ratio_guarded(
-            self._track_decompressed(_full_count(data)),
+            self._track_decompressed(_full_count(data), draw_budget=not drawn),
             self._decoded_ratio_tally,
             index,
         )
