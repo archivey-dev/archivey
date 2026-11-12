@@ -341,6 +341,14 @@ _DATA_IN_DEBIAN = [
     pytest.param("./DEBIAN/", "DEBIAN/", None, id="directory"),
     pytest.param("./DEBIAN", "DEBIAN", b"x", id="file"),
     pytest.param("./DEBIAN@symlink", "DEBIAN", b"usr", id="symlink"),
+    # Stricter than dpkg-deb -R, which writes a literal "usr\..\DEBIAN" directory on
+    # POSIX: sanitize_names, and Windows, read the backslashes as separators.
+    pytest.param(
+        "usr\\..\\DEBIAN/postinst", "usr\\..\\DEBIAN/postinst", b"x", id="backslash"
+    ),
+    # Stricter too: GNU tar writes a literal "C:" directory, but extraction drops a
+    # drive root on every OS.
+    pytest.param("C:/DEBIAN/control", "C:/DEBIAN/control", b"x", id="drive"),
 ]
 
 
@@ -375,6 +383,71 @@ def test_extracting_a_package_with_data_in_debian_raises(tmp_path: Path) -> None
     ):
         reader.extract_all(tmp_path)
     assert (tmp_path / "DEBIAN" / "control").read_bytes() == CONTROL
+
+
+@pytest.mark.parametrize(
+    "name", ["usr\\..\\DEBIAN/postinst", "usr/../DEBIAN/postinst", "/DEBIAN/postinst"]
+)
+def test_sanitize_names_cannot_move_a_data_member_into_debian(
+    name: str, tmp_path: Path
+) -> None:
+    data = [("./usr/", None), ("./usr/a", b"alpha"), (name, b"echo evil\n")]
+    with (
+        pytest.raises(CorruptionError, match="DEBIAN/"),
+        open_archive(io.BytesIO(_deb(data=data))) as reader,
+    ):
+        reader.extract_all(tmp_path, filter=archivey.sanitize_names)
+    assert sorted(p.name for p in (tmp_path / "DEBIAN").iterdir()) == [
+        "control",
+        "md5sums",
+    ]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(
+    ("stored", "listed"),
+    [
+        pytest.param("./../usr/a", "DEBIAN/../usr/a", id="dotdot"),
+        pytest.param("../../x", "DEBIAN/../../x", id="above"),
+        pytest.param("..\\usr\\a", "DEBIAN/..\\usr\\a", id="backslash"),
+    ],
+)
+def test_a_control_member_outside_debian_is_refused(
+    stored: str, listed: str, pipe: bool
+) -> None:
+    """GNU tar under dpkg-deb -R refuses a ".." name; sanitize_names would write this
+    member into the data tree."""
+    control = [("./", None), ("./control", CONTROL), (stored, b"from control")]
+    seen = []
+    with (
+        pytest.raises(CorruptionError, match="outside DEBIAN/") as caught,
+        open_archive(_source(_deb(control=control), pipe), streaming=pipe) as reader,
+    ):
+        for member, _stream in reader.stream_members():
+            seen.append(member.name)
+    assert caught.value.member_name == listed
+    assert seen == ["DEBIAN/", "DEBIAN/control"]
+
+
+def test_a_control_member_with_dotdot_inside_debian_is_listed() -> None:
+    control = [
+        ("./", None),
+        ("./control", CONTROL),
+        ("./a/../postinst", b"#!/bin/sh\n"),
+    ]
+    with open_archive(io.BytesIO(_deb(control=control))) as reader:
+        assert reader.read("DEBIAN/a/../postinst") == b"#!/bin/sh\n"
+
+
+def test_a_control_hard_link_out_of_debian_is_refused() -> None:
+    control = [("./", None), ("./control", CONTROL), ("./x@link", b"../usr/a")]
+    with (
+        pytest.raises(CorruptionError, match="hard link") as caught,
+        open_archive(io.BytesIO(_deb(control=control))) as reader,
+    ):
+        reader.members()
+    assert caught.value.member_name == "DEBIAN/x"
+    assert caught.value.link_target == "DEBIAN/../usr/a"
 
 
 def test_a_data_hard_link_to_a_control_file_is_refused() -> None:

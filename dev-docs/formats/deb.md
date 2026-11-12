@@ -20,7 +20,7 @@ own TAR reader, in the one forward pass.
 | Encryption | None |
 | Checksums | MD5 per installed file, from `DEBIAN/md5sums`, in `member.hashes` and checked on a full read |
 | Name encoding | Bytes, as TAR's: UTF-8 first, then `encoding=`, then escaped |
-| Refuses | A format version other than 2.x (`UnsupportedFeatureError`); a member other than `_*` before the data tar, or a data-tar member in `DEBIAN/` (`CorruptionError`) |
+| Refuses | A format version other than 2.x (`UnsupportedFeatureError`); a member other than `_*` before the data tar, a data-tar member in `DEBIAN/`, or a control-tar member outside it (`CorruptionError`) |
 | Spec | `openspec/specs/format-deb/spec.md` |
 
 Not here, though a reader might look for it: the old pre-ar format (`0.939000`), signature
@@ -74,24 +74,38 @@ members, and hands each tar to `open_nested` through `stream.take(size)`:
   tar alone gives). A `FILE` whose normalized name is in the map gets
   `hashes[HashAlgorithm.MD5]`, which the read path checks as it checks any listed digest.
   A hard link's target is normalized, so it names the member the listing has.
-- **`DEBIAN` in the data tar is refused.** A data member at `DEBIAN` or under it raises
-  `CorruptionError` naming the member (`member_name`), and so does a data hard link
-  whose target is there (`member_name` and `link_target`). The listing and iteration
-  raise when they reach the member, after the members before it; open does not reach it.
-  Without the refusal, a data `DEBIAN/control` or `DEBIAN/postinst` would supersede the
-  control tar's file of that name in the listing and in extraction, and a data hard link
-  would read a control file's bytes. `dpkg-deb -R` (checked against 1.22.6,
-  `src/deb/extract.c`) unpacks the data tar into the target directory first, then
-  `mkdir`s `DEBIAN` for the control tar with `DPKG_TAR_CREATE_DIR` and fails with
-  "unexpected pre-existing pathname" if any path exists there: a file, a directory, a
-  symlink. The test is on the first segment of the name as it extracts: the root is
-  dropped (GNU tar drops it), `.` and empty segments are skipped, and `..` is resolved
-  (GNU tar refuses a `..` name, so `dpkg-deb -R` refuses these too). The match is
-  case-sensitive: `debian/x` and `usr/DEBIAN/x` are ordinary data names, and
-  `dpkg-deb -R` unpacks them. A data symlink whose target points into `DEBIAN/` is
-  listed: it is a path, not a member, and `dpkg-deb -R` writes it. A hard link to
-  `DEBIAN/control` fails under `dpkg-deb -R` because GNU tar finds no such file when it
-  unpacks the data tar.
+- **The two tars stay apart.** A data member that extracts to `DEBIAN` or under it
+  raises `CorruptionError` naming the member (`member_name`), and so does a data hard
+  link whose target does (`member_name` and `link_target`). A control member whose
+  prefixed name extracts outside `DEBIAN/` (`../usr/x` lists as `DEBIAN/../usr/x`)
+  raises the same way, and so does a control hard link whose prefixed target does. The
+  listing and iteration raise when they reach the member, after the members before it;
+  open does not reach it. Without the refusal, a data `DEBIAN/control` or
+  `DEBIAN/postinst` would supersede the control tar's file of that name in the listing
+  and in extraction, a control member would land in the data tree under
+  `sanitize_names`, and a hard link would read the other tar's bytes.
+
+  `dpkg-deb -R` (checked against 1.22.6, `src/deb/extract.c`) unpacks the data tar into
+  the target directory first, then `mkdir`s `DEBIAN` for the control tar with
+  `DPKG_TAR_CREATE_DIR` and fails with "unexpected pre-existing pathname" if any path
+  exists there: a file, a directory, a symlink. GNU tar refuses a `..` name in either
+  tar, and finds no data `DEBIAN/control` for a data hard link to point at.
+
+  The test is `filters.extracted_top_segment`: the first segment of the path a name can
+  extract to, after the rewrites extraction makes. The root is dropped (a drive root
+  too), `..` is resolved as `sanitize_names` resolves it, and both `/` and `\` separate
+  segments. The match is case-sensitive: `debian/x` and `usr/DEBIAN/x` are ordinary
+  data names, and `dpkg-deb -R` unpacks them. A data symlink whose target points into
+  `DEBIAN/` is listed: its target is a path, not a member, and `dpkg-deb -R` writes it.
+
+  Two data names are refused that `dpkg-deb -R` unpacks: `usr\..\DEBIAN/x` and
+  `C:/DEBIAN/x`. GNU tar on POSIX writes them under a literal `usr\..\DEBIAN` or `C:`
+  directory. But `sanitize_names` (and Windows, for the backslashes) puts the first in
+  `DEBIAN/`, and extraction drops the drive root of the second on every OS. Each factor
+  in [`design-rules.md`](../design-rules.md) §"When consistency and the official tool
+  disagree" points to refusing: listing them would break the promise that the control
+  files are the control tar's, the lenient reading would weaken this check, and only a
+  crafted package holds such a name.
 - **After the data tar** the walk stops, as `dpkg-deb` does: trailing members and bytes
   are not read.
 

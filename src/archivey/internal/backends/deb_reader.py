@@ -14,10 +14,12 @@ are read through :meth:`ReaderContext.open_nested`, in the one forward pass, so 
 
 As ``dpkg-deb`` does, the walk refuses a version other than ``2.x``, skips members
 whose name starts with ``_`` before the data tar, refuses any other member there, and
-stops after the data tar. It also refuses a data-tar member at ``DEBIAN`` or under it,
-and a data-tar hard link to such a path: ``dpkg-deb -R`` unpacks the data tar first,
-then fails on the ``DEBIAN`` path the data tar made before it unpacks the control tar
-there. ``DEBIAN/md5sums`` lists an MD5 per installed file: the walk
+stops after the data tar. It also keeps the two tars apart, as ``dpkg-deb -R`` does: a
+data-tar member that extracts to ``DEBIAN`` or under it is refused, and so is a
+control-tar member that extracts outside ``DEBIAN/`` and a hard link in either tar
+whose target crosses to the other. ``dpkg-deb -R`` unpacks the data tar first, then
+fails on a ``DEBIAN`` path the data tar made, and GNU tar refuses a ``..`` name.
+``DEBIAN/md5sums`` lists an MD5 per installed file: the walk
 holds it (it is part of the control tar, so it arrives first) and gives each data file
 its digest in ``ArchiveMember.hashes``, which a read then checks. A line that is not an
 MD5 and a name is skipped, as ``dpkg --verify`` skips it.
@@ -45,6 +47,7 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.filters import extracted_top_segment
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.types import (
@@ -65,8 +68,8 @@ MAGIC = (
     AR_MAGIC + (VERSION_MEMBER + b"/").ljust(16),
 )
 CONTROL_DIR = "DEBIAN/"
-# The first path segment of CONTROL_DIR. dpkg-deb -R refuses a data tar that makes it,
-# with any case-sensitive match: "debian/" is an ordinary data directory.
+# The first path segment of CONTROL_DIR, matched case-sensitively as dpkg-deb -R
+# matches it: "debian/" is an ordinary data directory.
 _CONTROL_TOP = CONTROL_DIR.rstrip("/")
 # dpkg-deb accepts these compressions for each tar.
 _CONTROL_STREAMS = {
@@ -109,25 +112,6 @@ def _str_bytes(text: str) -> int:
     if len(text.encode("utf-16-le", "surrogatepass")) > 2 * len(text):
         return 4 * len(text)
     return 2 * len(text)
-
-
-def _top_segment(name: str) -> str:
-    """The first segment of the path that ``name`` extracts to, or ``""`` for the root.
-
-    The root is dropped, as GNU tar drops it under ``dpkg-deb`` and as extraction drops
-    it. ``.`` and empty segments are skipped. Each ``..`` removes the segment before it,
-    as ``sanitize_names`` resolves it, and is dropped when there is no segment before
-    it. GNU tar refuses a ``..`` name, so ``dpkg-deb -R`` refuses each name that this
-    function resolves to ``DEBIAN``.
-    """
-    kept: list[str] = []
-    for part in name.split("/"):
-        if part == "..":
-            if kept:
-                kept.pop()
-        elif part not in ("", "."):
-            kept.append(part)
-    return kept[0] if kept else ""
 
 
 def _tar_format(
@@ -251,16 +235,31 @@ class DebReader(SequentialReader):
         """The control tar's members, under ``DEBIAN/``.
 
         ``control`` and ``md5sums`` are read whole on the way, for the archive info and
-        the data files' digests, so their spans are served from those held bytes.
+        the data files' digests, so their spans are served from those held bytes. A
+        member whose prefixed name extracts outside ``DEBIAN/`` (``../usr/x``) is
+        refused, and so is a hard link whose prefixed target does.
         """
         context = self._context
         for span in context.open_nested(data, fmt):
             member = span.member
             inner = member.name
             member.name = CONTROL_DIR if inner == "." else CONTROL_DIR + inner
+            if extracted_top_segment(member.name) != _CONTROL_TOP:
+                raise CorruptionError(
+                    "Debian package control tar has a member outside DEBIAN/, the "
+                    "directory of the control files; dpkg-deb refuses the package",
+                    member_name=member.name,
+                )
             if member.type is MemberType.HARDLINK and member.link_target:
                 # archivey normalizes the prefixed target as it does names.
                 member.link_target = CONTROL_DIR + member.link_target
+                if extracted_top_segment(member.link_target) != _CONTROL_TOP:
+                    raise CorruptionError(
+                        "Debian package control tar has a hard link to a path outside "
+                        "DEBIAN/; dpkg-deb refuses the package",
+                        member_name=member.name,
+                        link_target=member.link_target,
+                    )
             if member.type is MemberType.FILE and inner in ("control", "md5sums"):
                 held = self._hold(span, inner)
                 if inner == "control":
@@ -273,15 +272,21 @@ class DebReader(SequentialReader):
     def _data(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
         """The data tar's members, each file with its digest from ``md5sums``.
 
-        A member at ``DEBIAN`` or under it is refused, and so is a hard link to such a
-        path. The control files are listed under ``DEBIAN/``, so a data copy of
+        A member that extracts to ``DEBIAN`` or under it is refused, and so is a hard
+        link whose target does. The test makes extraction's rewrites, so it is
+        stricter than ``dpkg-deb -R`` for two shapes, which GNU tar on POSIX writes
+        under a literal directory: ``usr\\..\\DEBIAN/x``, which ``sanitize_names``
+        (and Windows) puts in ``DEBIAN/``, and ``C:/DEBIAN/x``, whose drive root
+        extraction drops on every OS.
+
+        The control files are listed under ``DEBIAN/``, so a data copy of
         ``DEBIAN/control`` would replace the real control file in the listing and in
         extraction, and a hard link would read a control file's bytes.
         """
         context = self._context
         for span in context.open_nested(data, fmt):
             member = span.member
-            if _top_segment(member.name) == _CONTROL_TOP:
+            if extracted_top_segment(member.name) == _CONTROL_TOP:
                 raise CorruptionError(
                     "Debian package data tar has a member in DEBIAN/, the directory of "
                     "the control files; dpkg-deb refuses the package",
@@ -290,7 +295,7 @@ class DebReader(SequentialReader):
             if (
                 member.type is MemberType.HARDLINK
                 and member.link_target
-                and _top_segment(member.link_target) == _CONTROL_TOP
+                and extracted_top_segment(member.link_target) == _CONTROL_TOP
             ):
                 raise CorruptionError(
                     "Debian package data tar has a hard link to a path in DEBIAN/, "

@@ -987,6 +987,24 @@ def _collapse_dotdot(name: str) -> str:
     return joined.lstrip("/\\") or "."
 
 
+def extracted_top_segment(name: str) -> str:
+    """The first segment of the furthest-reaching path that ``name`` can extract to, or
+    ``""`` when that path is the destination itself.
+
+    The rewrites are the ones extraction makes: the root is dropped, as every policy
+    drops it with :func:`sanitize_names` and ``STANDARD`` and ``TRUSTED`` drop it
+    without; each ``..`` is resolved as :func:`sanitize_names` resolves it; and both
+    ``/`` and ``\\`` separate segments, as they do on Windows and in these rewrites.
+    A reader that keeps two trees apart in one listing tests a member with it, so that
+    no rewrite moves the member into the other tree.
+    """
+    resolved = _collapse_dotdot(strip_absolute_root(name))
+    for segment in _SEP_SPLIT.split(resolved):
+        if segment not in ("", "."):
+            return segment
+    return ""
+
+
 def _sanitize_segment(segment: str) -> str:
     """A path segment made writable on Windows: ``:`` becomes ``_`` and a reserved
     device name gets ``_`` after its stem (``CON.txt`` → ``CON_.txt``)."""
