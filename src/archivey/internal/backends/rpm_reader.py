@@ -171,7 +171,6 @@ _DIGESTS: dict[int, tuple[str, Callable[[], Hasher]]] = {
 
 _S_IFMT = 0o170000
 _S_IFREG = 0o100000
-_S_IFDIR = 0o040000
 _S_IFLNK = 0o120000
 
 _NEWC = b"070701"

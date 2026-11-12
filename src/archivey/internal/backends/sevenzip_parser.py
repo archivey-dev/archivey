@@ -610,10 +610,6 @@ class _Cursor:
         value, self.pos = _load_u32(self.buf, self.pos)
         return value
 
-    def real_uint64(self) -> int:
-        value, self.pos = _load_u64(self.buf, self.pos)
-        return value
-
     def uint64(self) -> int:
         value, self.pos = _load_uint64(self.buf, self.pos)
         return value
