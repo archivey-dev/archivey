@@ -1,8 +1,8 @@
 """``FormatPolicy(only_libraries=)``: the allowlist form of ``exclude_libraries=``.
 
-``tests/test_exclude_libraries.py`` runs every behaviour test under both forms; this
-file holds what only the allowlist has: its construction rules, ``allows_library``, and
-the guard that every check reads the combined set.
+``tests/test_exclude_libraries.py`` runs every behaviour test under both forms; this file
+holds what only the allowlist has: its construction rules, ``allows_library``, and the
+guard that every check reads the combined set.
 """
 
 from __future__ import annotations

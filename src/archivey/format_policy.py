@@ -278,9 +278,10 @@ class FormatPolicy:
     format. ``plugins``, ``exclude_libraries`` and ``only_libraries`` turn off the code
     that decodes, wherever it runs, so they hold for every member too: under
     ``plugins=False`` no plugin codec decodes anything in the call, and an excluded
-    package decodes nothing. A :class:`~archivey.CompressionAlgorithm` in ``exclude``
-    turns that decoder off: it refuses every member compressed with that method, in
-    every archive the call opens, and a file compressed with it as a whole.
+    package decodes nothing.
+    A :class:`~archivey.CompressionAlgorithm` in ``exclude`` turns that decoder off:
+    it refuses every member compressed with that method, in every archive the call
+    opens, and a file compressed with it as a whole.
 
     :func:`~archivey.open_archive` and :func:`~archivey.open_stream` refuse a format
     the policy does not allow with :class:`~archivey.UnsupportedFeatureError`,
@@ -432,7 +433,8 @@ class FormatPolicy:
     this call, with the same effects, including on a package a later archivey release
     adds. ``only_libraries=set()`` runs with no optional package; on Python 3.14 that
     also turns off the standard library's ``compression.zstd``, which is listed as one.
-    Both may be set, as long as no package is in both.
+    Both may be set,
+    as long as no package is in both.
 
     It covers archivey's own optional packages. A plugin's own modules are not
     :class:`~archivey.OptionalLibrary` members, so it leaves them alone: ``plugins=``
@@ -552,9 +554,10 @@ class FormatPolicy:
         part of (``lz4.block`` is part of ``lz4``), or :attr:`only_libraries` does not
         list it. A name that is not an :class:`~archivey.OptionalLibrary`, such as a
         plugin's own module or ``zlib``, is always allowed. ``module`` is the exact
-        import name and is case-sensitive (``"LZ4"`` is not ``lz4``); a non-string
-        raises ``ArchiveyUsageError``. A plugin reader that imports an optional package
-        outside its ``requires`` asks this before it imports it.
+        import name and is case-sensitive (``"LZ4"`` is not ``lz4``); a non-string raises
+        ``ArchiveyUsageError``. A plugin reader that
+        imports an optional package outside its ``requires`` asks this before it imports
+        it.
         """
         check_instance(
             module, str, call="FormatPolicy.allows_library(module=…)", allow_none=False
@@ -589,9 +592,9 @@ class FormatPolicy:
         the rest of an archive a reader hands on), or ``None``.
 
         Only ``plugins``, ``exclude_libraries``, ``only_libraries`` and a method in
-        ``exclude`` reach that far; ``only`` and the format entries of ``exclude``
-        choose the file opened, so they are not asked. An excluded package is refused by
-        the codec layer, which reads it as missing.
+        ``exclude`` reach that far; ``only`` and the format entries of ``exclude`` choose the file
+        opened, so they are not asked. An excluded package is refused by the codec
+        layer, which reads it as missing.
         """
         if isinstance(codec, CompressionAlgorithm):
             if codec in self.exclude:
