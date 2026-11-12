@@ -714,7 +714,7 @@ only when the program is found but cannot start, where no component is missing; 
 refusal for no usable `unar` SHALL name `unar`. A
 component that the caller's `FormatPolicy` excludes SHALL have the policy as its
 `reason`, so a caller tells a policy refusal from a missing install by checking
-whether a component's `name` is in its own `exclude_libraries`.
+whether its own policy's `allows_library(name)` is false.
 
 The message SHALL still name the package and its install hint, as the format
 requirements ask. The rule that a structured name is not also interpolated into the

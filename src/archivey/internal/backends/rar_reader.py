@@ -149,10 +149,9 @@ from archivey.internal.backends.rar_unrar import (
     find_rarlab_unrar,
     open_unrar_p,
     rarlab_unrar_missing,
-    unrar_expands_wildcards,
     unrar_mask_carries_non_ascii,
     unrar_matches_names_as_windows,
-    unrar_may_cut_archive_path,
+    unrar_needs_staged_name,
     unrar_plain_name_max,
 )
 from archivey.internal.base_reader import (
@@ -201,6 +200,7 @@ from archivey.internal.password_confirm import (
 )
 from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
 from archivey.internal.streams.archive_stream import (
@@ -215,6 +215,7 @@ from archivey.internal.streams.crypto import (
     AesParams,
     _crypto_available,
     crypto_missing,
+    note_crypto_use,
     open_aes_decrypt_stage,
     open_aes_decrypt_stream,
 )
@@ -1660,10 +1661,14 @@ class _ClosesSyntheticFile(DelegatingStream):
 
 
 def _open_unar_blob_pipe(
-    path: Path, program: str | None = None
+    path: Path,
+    program: str | None = None,
+    usage: ResourceUsageRecorder | None = None,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """``unar`` for the one-entry archive :func:`decompress_rar3_blob` builds."""
-    return open_unar_stdout(path, [0], purpose=UNAR_PURPOSE, program=program)
+    return open_unar_stdout(
+        path, [0], purpose=UNAR_PURPOSE, program=program, usage=usage
+    )
 
 
 # What a service header's payload would have answered, for the diagnostic that
@@ -1746,9 +1751,9 @@ class RarReader(BaseArchiveReader):
         kdf_budget = KeyDerivationBudget(self._config.decoder_limits)
         self._usage.watch_key_derivation(kdf_budget)
         self._kdf_cache = RarKdfCache(budget=kdf_budget)
-        # The call's ``FormatPolicy.exclude_libraries``: ``cryptography`` there reads
+        # The call's ``FormatPolicy._libraries_off``: ``cryptography`` there reads
         # as not installed for this reader.
-        self._excluded = self._config.formats.exclude_libraries
+        self._excluded = self._config.formats._libraries_off
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False
@@ -1865,6 +1870,9 @@ class RarReader(BaseArchiveReader):
         self._archive_has_encryption = self._archive.has_header_encryption or any(
             info.is_encrypted for info in self._archive.members
         )
+        if self._archive.has_header_encryption:
+            # The headers were decrypted to list the archive (``rar_parser``).
+            note_crypto_use(self._usage)
         self._behind_encryption = self._members_behind_encryption()
         if self._in_set:
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
@@ -2075,20 +2083,21 @@ class RarReader(BaseArchiveReader):
         unrar), so it cannot read a file this reader never parsed, or miss one it
         did.
 
-        A path holding a wildcard character is staged too: unrar expands one in
-        the archive name (:func:`unrar_expands_wildcards`), so ``rep*.rar`` would
-        also open a planted ``rep-a.rar``, or block on a FIFO of that name. The
-        staged names are fixed and hold none. So is a path longer than unrar 6.x
-        keeps (:func:`unrar_may_cut_archive_path`): it would open the file that the
-        cut path names. The private directory's path is short.
+        A file whose name unrar would misread is staged too
+        (:func:`unrar_needs_staged_name`): unrar expands a wildcard in the archive
+        name, so ``rep*.rar`` would also open a planted ``rep-a.rar``, or block on
+        a FIFO of that name, and 6.x cuts a long one and opens the file the cut
+        path names. The staged names are fixed and hold none. On POSIX
+        ``open_unrar_p`` always starts ``unrar`` in the archive's directory and
+        passes the name alone, so only the name counts there: a long or wildcard
+        directory, the caller's or the private one in the system temp directory,
+        never reaches unrar. On Windows unrar gets the whole path, so the whole
+        path counts.
         """
         if self._archive_path is None or self._stage_volume_paths:
             return
         if (
-            not any(
-                unrar_expands_wildcards(path) or unrar_may_cut_archive_path(path)
-                for path in self._volume_paths
-            )
+            not any(unrar_needs_staged_name(path) for path in self._volume_paths)
             and self._volume_numbers is None
             and _unrar_finds_exactly(
                 self._volume_paths,
@@ -2950,7 +2959,7 @@ class RarReader(BaseArchiveReader):
 
     def _crypto_usable(self) -> bool:
         """Whether ``cryptography`` can decrypt here: installed, and not turned off by
-        the call's ``FormatPolicy.exclude_libraries``."""
+        the call's ``FormatPolicy._libraries_off``."""
         return CRYPTO_PACKAGE not in self._excluded and _crypto_available()
 
     def _natively_decryptable(self, raw: RarMemberInfo) -> bool:
@@ -3057,6 +3066,7 @@ class RarReader(BaseArchiveReader):
         stage = open_aes_decrypt_stage(
             self._stored_data_cipher(raw, password), excluded=self._excluded
         )
+        note_crypto_use(self._usage)
         view = self._direct_view(raw, raw.compress_size)
         crc = 0
         remaining = raw.file_size
@@ -3533,10 +3543,14 @@ class RarReader(BaseArchiveReader):
         try:
             unpacked = decompress_rar3_blob(
                 open_pipe=(
-                    functools.partial(open_unrar_p, program=self._unrar_program)
+                    functools.partial(
+                        open_unrar_p, program=self._unrar_program, usage=self._usage
+                    )
                     if self._unar_policy is None
                     else functools.partial(
-                        _open_unar_blob_pipe, program=self._unar_program
+                        _open_unar_blob_pipe,
+                        program=self._unar_program,
+                        usage=self._usage,
                     )
                 ),
                 extract_version=comment.extract_version,
@@ -3942,6 +3956,7 @@ class RarReader(BaseArchiveReader):
                 version_control=version_control,
                 rar5=self._archive.version == 5,
                 program=self._unrar_program,
+                usage=self._usage,
             )
             # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
             # and declared length via fused ArchiveStream verify), so the pipe-level
@@ -4138,6 +4153,7 @@ class RarReader(BaseArchiveReader):
                 version_control=True,
                 rar5=version == 5,
                 program=self._unrar_program,
+                usage=self._usage,
             )
         except BaseException:
             cleanup()
@@ -4356,6 +4372,7 @@ class RarReader(BaseArchiveReader):
                     version_control=True,
                     rar5=version == 5,
                     program=self._unrar_program,
+                    usage=self._usage,
                 )
             except BaseException:
                 cleanup()
@@ -4759,8 +4776,8 @@ class RarReader(BaseArchiveReader):
                     f"{stop_reason}; it is listed from what was read before that."
                     if member is not None
                     else f"This archive's {name} service header was not read to "
-                    f"the end because {stop_reason}, so {_SERVICE_PAYLOAD_LOST.get(name, 'its payload')} "
-                    f"was not used."
+                    f"the end because {stop_reason}, so "
+                    f"{_SERVICE_PAYLOAD_LOST.get(name, 'its payload')} was not used."
                 ),
                 context=MemberHeaderRecordContext(
                     archive_name=self._archive_name,
@@ -5247,9 +5264,9 @@ class RarReader(BaseArchiveReader):
         the member-stream ``tell()`` is the whole re-decode cost.
 
         History rows are counted even without ``-ver``: ``-ver`` controls what
-        unrar *emits*, not what it *decodes*, and a solid chain must decompress history to reach later
-        members. This value is a ``RewindWarning.min_redecode_bytes`` floor, not
-        a pipe offset.
+        unrar *emits*, not what it *decodes*, and a solid chain must decompress history
+        to reach later members. This value is a ``RewindWarning.min_redecode_bytes``
+        floor, not a pipe offset.
         """
         if not self._archive.is_solid:
             return 0
@@ -5510,6 +5527,7 @@ class RarReader(BaseArchiveReader):
             plain = open_aes_decrypt_stream(
                 view, params, owns_inner=True, excluded=self._excluded
             )
+        note_crypto_use(self._usage)
         with _close_on_error(plain):
             # The ciphertext is padded to whole blocks; the member ends at its
             # unpacked size, and the padding after it is not content.
@@ -5707,6 +5725,7 @@ class RarReader(BaseArchiveReader):
                 version_control=version_control,
                 rar5=self._archive.version == 5,
                 program=self._unrar_program,
+                usage=self._usage,
             )
             owned = _UnrarOwnedStream(
                 stdout,
@@ -5999,6 +6018,7 @@ class RarReader(BaseArchiveReader):
                 version_control=True,
                 rar5=self._archive.version == 5,
                 program=self._unrar_program,
+                usage=self._usage,
             )
             owned = _UnrarOwnedStream(
                 stdout,
@@ -6011,6 +6031,27 @@ class RarReader(BaseArchiveReader):
                 return self._track_decompressed(owned)
 
         return _spawn
+
+    def _drawing_solid_prefix(
+        self, member: ArchiveMember, spawn: Callable[[], BinaryIO]
+    ) -> Callable[[], BinaryIO]:
+        """``spawn``, drawing from the config's budget the solid prefix each run
+        decodes and does not emit (:meth:`_solid_run`), before the process starts:
+        the pipe's own bytes are drawn as they are read, the prefix is not. A prefix
+        that does not fit is refused, drawing nothing, before any process runs."""
+        budget = self._config.budget
+        run = self._solid_run(member) if budget is not None else None
+        if budget is None or run is None or run.offset <= 0:
+            return spawn
+        prefix = run.offset
+
+        def drawing_spawn() -> BinaryIO:
+            budget._draw_whole(
+                prefix, "the solid prefix its decompressor decodes first"
+            )
+            return spawn()
+
+        return drawing_spawn
 
     def _open_spawned_member(
         self,
@@ -6031,6 +6072,7 @@ class RarReader(BaseArchiveReader):
         # corruption still map on the completing read — the exit status is only
         # known after the process ends. The boundary maps a stream source closed
         # before its first spool to disk, as every format's member open does.
+        spawn = self._drawing_solid_prefix(member, spawn)
         with self._translated_errors(member.name):
             inner = spawn()
         try:
@@ -6214,6 +6256,7 @@ class RarReader(BaseArchiveReader):
                 purpose=UNAR_PURPOSE,
                 password=data_password,
                 program=self._unar_program,
+                usage=self._usage,
             )
             owned = UnarOutputStream(
                 stdout,
@@ -6256,6 +6299,7 @@ class RarReader(BaseArchiveReader):
                 purpose=UNAR_PURPOSE,
                 password=password,
                 program=self._unar_program,
+                usage=self._usage,
             )
             # Every member read from this pipe is checked against its declared
             # size and its stored CRC32 or BLAKE2sp; a member without one is read

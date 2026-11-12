@@ -38,7 +38,8 @@ Scenarios (``--scenarios``):
 ::
 
     uv run --no-sync python scripts/investigations/rapidgzip_resume_stress.py
-    uv run --no-sync python scripts/investigations/rapidgzip_resume_stress.py 50 --scenarios xdist contended
+    uv run --no-sync python scripts/investigations/rapidgzip_resume_stress.py 50 \\
+        --scenarios xdist contended
 
 Exit code is non-zero if any iteration failed, crashed, timed out or stalled. Console
 output is ASCII-safe.
@@ -138,7 +139,8 @@ _PLUGIN = textwrap.dedent(
             try:
                 return real_reap(proc, stderr, kill=kill)
             finally:
-                _event("child_reaped", proc.pid, proc.returncode, f"{time.monotonic() - started:.3f}")
+                elapsed = f"{time.monotonic() - started:.3f}"
+                _event("child_reaped", proc.pid, proc.returncode, elapsed)
 
         rc.spawn = spawn
         rc.RapidgzipChildStream._child_died = died

@@ -1030,7 +1030,10 @@ class TarReader(BaseArchiveReader):
         # parts and is the one wrapper.
         with self._translated_errors(member.name):
             return self._member_parts(
-                self._member_body(member, in_walk=True), member.name, size=member.size
+                self._member_body(member, in_walk=True),
+                member.name,
+                size=member.size,
+                draw_budget=not self._compressed,
             )
 
     @override
@@ -1959,7 +1962,10 @@ class TarReader(BaseArchiveReader):
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         with self._translated_errors(member.name):
             return self._member_parts(
-                self._member_body(member, in_walk=False), member.name, size=member.size
+                self._member_body(member, in_walk=False),
+                member.name,
+                size=member.size,
+                draw_budget=not self._compressed,
             )
 
     def _member_body(self, member: ArchiveMember, *, in_walk: bool) -> BinaryIO:
@@ -1985,12 +1991,32 @@ class TarReader(BaseArchiveReader):
             stream = self._independent_data(span)
         if span.sparse is not None:
             stream = SparseStream(
-                stream, span.sparse.offsets, span.sparse.lengths, span.size
+                stream,
+                span.sparse.offsets,
+                span.sparse.lengths,
+                span.size,
+                draw_hole=self._hole_drawer(),
             )
         if self._streaming:
             assert self._handle_lock is not None
             stream = LockedStream(stream, self._handle_lock)
         return stream
+
+    def _hole_drawer(self) -> Callable[[int], int] | None:
+        """Draws a sparse member's holes from the budget when its stored bytes are
+        drawn below it, by the codec stream of a compressed tar. The member itself
+        draws nothing then (``draw_budget=False``), and holes are bytes no decoder
+        produces."""
+        budget = self._config.budget
+        if budget is None or not self._compressed:
+            return None
+
+        def draw(want: int) -> int:
+            count = budget._read_cap(want)
+            budget._draw_bytes(count)
+            return count
+
+        return draw
 
     def _independent_data(self, span: TarSpan, start: int = 0) -> BinaryIO:
         """``span``'s data area from ``start``, read independently of the walk.
@@ -2059,6 +2085,7 @@ class TarReader(BaseArchiveReader):
                 self._member_body(member, in_walk=False),
                 member.name,
                 size=member.size,
+                draw_budget=not self._compressed,
             )
         )
 

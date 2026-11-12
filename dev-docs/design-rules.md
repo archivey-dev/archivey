@@ -447,6 +447,14 @@ that is right on one format and wrong on another breaks callers silently.
   kept the retry and asked for it on every interpreter (2026-10-20, PR 915). Reopen if
   the collection on the refusal path has a measured cost that matters.
 
+- A deliberate exception: `ArchiveyConfig.recover_partial_data=False` skips the second
+  decode that hands back the bytes before damage in a member, so a read that meets the
+  damage loses up to one decoder call's bytes before it. It changes only partial bytes
+  before the same error: the members, the whole members' data and the error type stay
+  the same. A compressed TAR's own stream recovers either way, so every member before
+  the damage still reads whole. davi asked for it so callers who discard a damaged
+  member anyway don't pay for recovery (2026-11-11; name ruled 2026-11-12).
+
 **Reopen if** matching would require an OS feature that one platform lacks; then refuse
 on every platform rather than diverge.
 

@@ -2005,7 +2005,7 @@ def _resume_point_rewind_messages(
     caplog: pytest.LogCaptureFixture,
     past_middle: int = 100,
 ) -> list[str]:
-    """Read ``REWIND_CONTENT`` to its end, then seek back to ``past_middle`` bytes past its midpoint.
+    """Read ``REWIND_CONTENT`` to its end, then seek back to ``past_middle`` bytes past the middle.
 
     The callers split the content into pieces at the midpoint, so the seek resumes
     from a resume point that is not the start, and still discards more than the

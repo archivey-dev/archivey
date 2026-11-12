@@ -84,15 +84,19 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
   size, so archivey's decoder limits and length checks apply. A member's data is one
   stream: any byte after its end, a second zlib stream, junk or zeros, raises
   `CorruptionError`, as in a ZIP member, where a `.zz` file only reports it as trailing
-  data. libarchive fails on the same input ("XAR decompressor made no progress"), and
-  Apple's `xar` loops on it until an allocation fails. Under `rapidgzip`, which decodes
+  data. The official readers disagree (§3): on macOS, Apple's `xar` writes the first
+  stream and ignores the rest, and bsdtar hangs. On Linux, libarchive failed on a 24 MiB
+  member ("XAR decompressor made no progress"). Under `rapidgzip`, which decodes
   every zlib stream as one, the Adler-32 at the end covers only the last stream, and the
   second decode that mismatch starts finds the first stream's end and raises; only a
-  forged last trailer that matches every stream gets past (`gzip.md` §5). The format's
-  own continuations still read: several bzip2 or LZMA Alone streams, xz streams and their
-  stream padding. The extracted checksum is `member.hashes`, and
-  the verifying stream checks it (`hashlib.new(..., usedforsecurity=False)`, so a FIPS
-  OpenSSL still computes MD5 and SHA-1).
+  forged last trailer that matches every stream gets past (`gzip.md` §5). A bzip2 or LZMA
+  Alone member is one stream too, as Apple's `xar` writes it and libarchive reads it (it
+  ends its decoder at the first stream's end), so a further stream is refused, where a
+  `.bz2` or `.lzma` file reads it on. xz keeps its further streams and stream padding, as
+  in a ZIP xz member: the xz format defines its data as one or more streams. The
+  extracted checksum is `member.hashes`, and the verifying stream checks it
+  (`hashlib.new(..., usedforsecurity=False)`, so a FIPS OpenSSL still computes MD5 and
+  SHA-1).
 - **Unknown types.** A type the format does not define is a readable `FILE` when it has
   data and `OTHER` otherwise, with `MEMBER_TYPE_UNKNOWN` (DR-25).
 
@@ -102,4 +106,20 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
 (one per compression) and archives `tests/xar_util.py` writes for every encoding, file
 checksum and TOC checksum, hard links in either order, base64 names, and each refusal.
 The fuzz target `xar` (`tests/atheris_fuzz/targets.py`) opens mutated bsdtar archives.
-7-Zip cannot list bsdtar's archives, so there is no second reader to compare against.
+7-Zip cannot list bsdtar's archives, so the test suite has no second reader to compare
+against.
+
+Apple's `xar` and bsdtar are compared by hand:
+`scripts/investigations/xar_multistream_oracle.py` writes one-file archives whose member
+holds one stream, two streams, or a stream followed by junk or zeros, for each encoding,
+and extracts them with all three readers. The manual
+`xar-oracle` workflow runs it on macOS, which ships both tools. On 2026-11-11 (Apple `xar`
+1.8dev, bsdtar 3.5.3 with libarchive 3.7.4):
+
+- Apple `xar` decodes only the first gzip or bzip2 stream and ignores the rest without an
+  error, even when the declared checksum covers both streams. It cannot read xz (it writes
+  the raw bytes) or LZMA ("not compiled in").
+- bsdtar reads every xz stream and the stream padding, as archivey does, and ignores junk
+  after an xz stream. It hangs on any byte after a gzip stream and fails on any byte after
+  a bzip2 or LZMA stream.
+- archivey refuses every byte after a gzip, bzip2 or LZMA stream (§2), and junk after xz.

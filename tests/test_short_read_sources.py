@@ -250,8 +250,9 @@ def test_streaming_format_opens_from_short_read_non_seekable(
     """Each streaming-capable format, with and without ``format=``.
 
     The explicit-``format=`` case skips detection, so the replay prefix is never
-    filled and the source's own full-count read is the only coalescing layer. Plain uncompressed TAR is
-    in this matrix: that is the path that previously leaned on ``tarfile._Stream``.
+    filled and the source's own full-count read is the only coalescing layer. Plain
+    uncompressed TAR is in this matrix: that is the path that previously leaned on
+    ``tarfile._Stream``.
     """
     skip_unless_runnable(entry, key)
     data = _corpus_archive_path(entry, key, tmp_path).read_bytes()

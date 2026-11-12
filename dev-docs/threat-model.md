@@ -692,15 +692,24 @@ grown by more than the cap since the source was opened. The cap travels in the c
 data: the standard library reads the rest of the stream from the last index point, so
 the caller gets the same bytes and no error.
 
-**Residual.** Detection decodes an LZMA or compressed-tar sample uncapped, so under a
-memory cap an oversized declaration can surface as `MemoryError` from `open_archive`
-(public in extracting.md §Limits). Two probes carry a fixed ceiling of their own instead
-of the caller's cap: zstd's window at 128 MiB, and a `.tar.bz3`'s block size at 16 MiB,
-about 163 MiB of libbzip3 state (`bzip3_codec.py` `_PROBE_BLOCK_SIZE_MAX`). The RAR counts rest on measurements of `unrar` 7.00
-and `unar` 1.10.1; another version that allocates differently is not measured. The
-rapidgzip child's peak can pass the cap by what it allocates between two checks (about
-17 MB measured on four cores; a check delayed on a busy machine is caught by the one
-before the next read). Where the platform does not report a process's peak memory
+Detection decodes under the same cap. Its probes reserve only what their bounded read
+needs where the codec allows it (an LZMA dictionary of 4 to 64 KiB), and the cap is
+checked against that reservation; a decoder that cannot shrink (a zstd window, a bzip3
+block) and is over the cap is "can't tell", recorded as `CAPABILITY_UNAVAILABLE` and
+reported as `DETECTION_DECODER_LIMITED` with the limit (`internal/detection.py`
+`_report_probe_refused`; a probe's own ceiling is an INFO log instead). A
+`.tar.zst` is then reported as a bare `.zst`, and the read refuses the same window. Two
+probes also carry a fixed ceiling of their own under the cap: zstd's window at 128 MiB,
+and a `.tar.bz3`'s block size at 16 MiB, about 163 MiB of libbzip3 state
+(`bzip3_codec.py` `_PROBE_BLOCK_SIZE_MAX`).
+
+**Residual.** Codecs whose memory their format bounds at 16 MiB or less (gzip, bzip2,
+Brotli, LZ4 frames) are not checked against the cap, in detection or on read. The RAR
+counts rest on measurements of `unrar` 7.00 and `unar` 1.10.1; another version that
+allocates differently is not measured. The rapidgzip child's peak can pass the cap by
+what it allocates between two checks (about 17 MB measured on four cores; a check
+delayed on a busy machine is caught by the one before the next read). Where the platform
+does not report a process's peak memory
 (`VmHWM` on Linux, `getrusage` on macOS and the BSDs, `GetProcessMemoryInfo` on
 Windows), the child is not capped.
 
@@ -1161,7 +1170,16 @@ setting, never replaced by one from `PATH`. `internal/backends/rar_unrar.py` pas
 `-n./<name>` include-mask switch, so a leading `-` cannot become an option. The name is a
 placeholder or a plain name with no `*` or `?`, so `unrar`'s matcher, which
 backtracks exponentially on a hostile mask, never sees a glob (`unrar_member_refusal`
-refuses anything else before spawning). The password goes to stdin. `internal/external/unar.py` ends
+refuses anything else before spawning). The password goes to stdin. `unrar` reads only
+the files archivey parsed: it expands `*` and `?` anywhere in the archive argument, `--`
+or not, and 6.x cuts a long one. On POSIX `_unrar_archive_argument` always starts
+`unrar` in the archive's directory with the name alone, so no part of a directory, the
+staging directory included, reaches argv, and `_choose_unrar_volume_paths` stages only a
+file whose name `unrar` would misread (`unrar_needs_staged_name`). The program is
+always an absolute path, so the working directory never chooses it. On Windows `unrar`
+gets the whole path: a path holding a wildcard or too long anywhere is staged, and the
+staged path goes over whole while 6.x keeps it and is refused past that before any
+process starts ([`formats/rar.md`](formats/rar.md)). `internal/external/unar.py` ends
 argv with `--` and the absolute archive path, names members by entry index, and puts the
 password as its own item after `-p`. ADR
 [0002](decisions/0002-native-rar-metadata-unrar-data.md),
@@ -1222,7 +1240,12 @@ cabinet made of nothing but block headers decodes at about 2 µs an input byte (
 producing nothing, since each header builds its trees
 ([CAB §2.4](formats/cab.md#24-the-lzx-decoder)); an LHA member made of blocks with no
 commands and full tables does the same, at about 2 µs an input byte
-([LHA §2.4](formats/lha.md#24-the-lzh-decoder)). On declared seek demand,
+([LHA §2.4](formats/lha.md#24-the-lzh-decoder)). A cabinet whose file table is out of
+data order is listed in data order, so each folder decodes once, unless a name is listed
+twice: then table order is kept, and each member can decode its folder again from the
+start (150 members of 32 KiB in one LZX folder, reversed: 58 s against under 1 s;
+`STRICT` refuses such a cabinet at listing with `MEMBER_NAME_DUPLICATE_UNEXPECTED`)
+([CAB §6](formats/cab.md#6-decisions)). On declared seek demand,
 a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
 Zstandard seek table, and a forward seek past the known points or a `SEEK_END` walks a
 BGZF file's members. Both scans are linear but run one
@@ -1474,7 +1497,9 @@ file system raises propagates unchanged
 ([DR-15a](design-rules.md#dr-15a-translate-archive-problems-let-io-problems-through)), so
 a missing object's `FileNotFoundError` can carry the URL as given, secrets included.
 Contract: `openspec/changes/fsspec-integration/specs/archive-reading/spec.md`
-§"OpenFile facts".
+§"OpenFile facts". Accepted by the maintainer (2026-11-11): rewriting another library's
+exceptions loses information. Public:
+[remote.md §Credentials in URLs](../docs/remote.md#credentials-in-urls).
 
 ## 5. Open design gaps
 

@@ -1,4 +1,6 @@
-"""Guardrails for the simplicity & consistency review (`review/archive/2026-08-15-simplicity-consistency/`).
+"""Guardrails for the simplicity & consistency review.
+
+The review is in `review/archive/2026-08-15-simplicity-consistency/`.
 
 The file started as two kinds of test: **guardrails** (plain assertions pinning a rule
 the review classified as *format law* or *settled*) and **red halves**

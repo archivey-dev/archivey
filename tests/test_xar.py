@@ -242,6 +242,42 @@ def test_an_empty_second_zlib_stream_in_a_member_is_refused(
         reader.read("a")
 
 
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param(AcceleratorMode.OFF, id="off"),
+        pytest.param(
+            AcceleratorMode.ON, id="indexed_bzip2", marks=requires("indexed_bzip2")
+        ),
+    ],
+)
+@pytest.mark.parametrize("encoding", ["bzip2", "lzma"])
+@pytest.mark.parametrize(
+    "declared", [_FIRST + _SECOND, _FIRST], ids=["declares-both", "declares-first"]
+)
+def test_a_second_bzip2_or_lzma_stream_in_a_member_is_refused(
+    mode: AcceleratorMode, encoding: str, declared: bytes
+) -> None:
+    # One stream per member, as Apple's xar writes and libarchive reads: a further
+    # stream is input after the end, where a .bz2 or .lzma file reads it on.
+    encode = ENCODINGS[encoding][1]
+    raw = _member_stored_as(encode(_FIRST) + encode(_SECOND), declared, encoding)
+    config = archivey.ArchiveyConfig(use_indexed_bzip2=mode)
+    with (
+        _open(raw, config=config) as reader,
+        pytest.raises(CorruptionError, match="after its end"),
+    ):
+        reader.read("a")
+
+
+def test_further_xz_streams_in_a_member_read_as_in_zip() -> None:
+    # xz data is one or more streams with their padding, in a ZIP xz member too.
+    encode = ENCODINGS["xz"][1]
+    raw = _member_stored_as(encode(_FIRST) + encode(_SECOND), _FIRST + _SECOND, "xz")
+    with _open(raw) as reader:
+        assert reader.read("a") == _FIRST + _SECOND
+
+
 @pytest.mark.parametrize("encoding", ["gzip", "bzip2", "lzma", "xz"])
 @pytest.mark.parametrize("tail", [b"junk", b"\0\0\0\0"], ids=["junk", "zeros"])
 def test_bytes_after_a_member_stream_are_refused(encoding: str, tail: bytes) -> None:

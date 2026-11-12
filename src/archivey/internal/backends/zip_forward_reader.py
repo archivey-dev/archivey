@@ -126,6 +126,7 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.codecs import open_codec_stream
+from archivey.internal.streams.crypto import note_crypto_use
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from archivey.internal.streams.streamtools import (
     OneReadEachStream,
@@ -820,6 +821,7 @@ class _PassData:
                     compress_size=header.compressed_size,
                     excluded=excluded,
                 )
+                note_crypto_use(reader._usage)
                 if not probe:
                     self._aes_stage = stage
                 return stage
@@ -830,6 +832,7 @@ class _PassData:
                 hold_back=None if ends_with_data else _AES_HOLD_BACK,
                 excluded=excluded,
             )
+            note_crypto_use(reader._usage)
             if not probe:
                 self._aes_stage = forward
                 if not ends_with_data:
@@ -1181,6 +1184,11 @@ class _PassData:
             # the overrun, refused as the file read refuses it. The raise below
             # keeps ``_size`` at or under ``declared``, so this asks for one at least.
             n = min(n, declared + 1 - self._size)
+        # A codec member's decoded bytes are drawn here, not by the caller's stream
+        # (``_open_member``), so a drain past a member nobody read draws them too.
+        budget = self._reader._config.budget if self._method() != 0 else None
+        if budget is not None:
+            n = budget._read_cap(n)
         try:
             chunk = decoded.read(n)
         except DataAfterEndError:
@@ -1194,6 +1202,8 @@ class _PassData:
             raise CorruptionError(
                 f"Decompressed content exceeds its declared size of {declared} bytes."
             )
+        if budget is not None:
+            budget._draw_bytes(len(chunk))
         if chunk:
             self._crc = zlib.crc32(chunk, self._crc)
             self._size += len(chunk)
@@ -2744,7 +2754,14 @@ class ZipForwardReader(ZipReader):
                 digest="integrity check",
                 why="the password was accepted on a weaker check",
             )
-        return self._member_parts(stream, member.name, size=member.size)
+        # A codec member's bytes are drawn as they decode (``_PassData._read_chunk``),
+        # read or drained; a STORED member's, decoded by nothing, as the caller reads.
+        return self._member_parts(
+            stream,
+            member.name,
+            size=member.size,
+            draw_budget=current._method() == 0,
+        )
 
     @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
