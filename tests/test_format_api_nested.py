@@ -24,6 +24,7 @@ from archivey import (
     ArchiveMember,
     ArchiveyConfig,
     ArchiveyUsageError,
+    Budget,
     CompressionAlgorithm,
     ContainerFormat,
     CorruptionError,
@@ -57,6 +58,7 @@ from archivey.internal.format_adapter import (
     _Primed,
     registration_scope,
 )
+from archivey.internal.listing_limits import ListingLimitTracker
 from tests.streams_util import NonSeekableBytesIO
 
 _KINDS = {
@@ -546,6 +548,44 @@ def test_what_inner_levels_keep_counts_against_one_metadata_budget(
             # The inner levels' charges came off when they closed.
             tracker = reader._listing_tracker  # type: ignore[attr-defined]
             assert tracker._nested_bytes == 0
+
+
+def test_a_member_the_nest_refuses_to_hold_is_not_drawn_from_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 3rd level's held member crosses the nest's 1000 bytes: the shared budget
+    keeps the 2 members the outer levels drew, not 3."""
+    monkeypatch.setitem(_KINDS, b"H", HoldingBoxesHandler.format)
+    data = _boxes((b"H", _boxes((b"H", _boxes((b"T", _tar([("a", b"a")])))))))
+    budget = Budget(max_members=100)
+    config = ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=1000), budget=budget
+    )
+    with registration_scope():
+        register_format(HoldingBoxesHandler)
+        with pytest.raises(
+            ResourceLimitError, match="max_metadata_bytes=1000.*inner archive"
+        ):
+            _names(data, HoldingBoxesHandler.format, config)
+    assert budget.members == 2
+
+
+def test_a_hold_the_budget_refuses_takes_its_nest_charge_back() -> None:
+    """The nest's charge goes first; when the shared budget then refuses the member,
+    the outermost tracker keeps nothing of it."""
+    budget = Budget(max_members=1)
+    limits = ListingLimits(max_metadata_bytes=10_000)
+    outer = ListingLimitTracker(limits, budget=budget)
+    inner = ListingLimitTracker(limits, budget=budget, outer=outer)
+    inner.hold_member(ArchiveMember(name="a", type=MemberType.FILE), "held")
+    charged = outer._nested_bytes
+    assert charged > 0
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        inner.hold_member(ArchiveMember(name="b", type=MemberType.FILE), "held")
+    assert budget.members == 1
+    assert outer._nested_bytes == inner._charged_outward == charged
+    inner.leave_nest()
+    assert outer._nested_bytes == 0
 
 
 class ChargingBoxesContainer(PluginContainer):

@@ -201,6 +201,13 @@ class ListingLimitTracker:
         root._nested_bytes += nbytes
         self._charged_outward += nbytes
 
+    def _uncharge_outward(self, nbytes: int) -> None:
+        """Take ``nbytes`` this inner tracker charged off the outermost tracker."""
+        root = self._root
+        if root is not self:
+            root._nested_bytes -= nbytes
+            self._charged_outward -= nbytes
+
     def charge_walk(self, nbytes: int, what: str) -> None:
         """Charge ``nbytes`` a reader keeps while it walks (a name table, a header)
         to ``max_metadata_bytes``, with the members, and refuse them before the
@@ -288,10 +295,16 @@ class ListingLimitTracker:
                 f"retained {next_bytes + self._nested_bytes} bytes, {held_bytes} of "
                 f"them for {held} {reason}",
             )
+        # The nest's check goes first: a refused charge leaves nothing behind, while a
+        # budget draw cannot be taken back. A refused draw takes the charge off.
+        self._charge_outward(nbytes, enforce=True, what=f"{held} {reason}")
         # Drawn as account_member draws, before the reader keeps it: the high-water
         # mark means the register after the release does not draw it again.
-        self._draw_budget_members(next_count)
-        self._charge_outward(nbytes, enforce=True, what=f"{held} {reason}")
+        try:
+            self._draw_budget_members(next_count)
+        except BaseException:
+            self._uncharge_outward(nbytes)
+            raise
         self._held[key] = (member, nbytes)
         self._held_bytes = held_bytes
         self.member_count = next_count
@@ -312,20 +325,14 @@ class ListingLimitTracker:
         for _, nbytes in held.values():
             self._uncharge(nbytes)
         self.metadata_bytes -= self._walk_bytes
-        root = self._root
-        if root is not self:
-            root._nested_bytes -= self._walk_bytes
-            self._charged_outward -= self._walk_bytes
+        self._uncharge_outward(self._walk_bytes)
         self._walk_bytes = 0
 
     def _uncharge(self, nbytes: int) -> None:
         self._held_bytes -= nbytes
         self.member_count -= 1
         self.metadata_bytes -= nbytes
-        root = self._root
-        if root is not self:
-            root._nested_bytes -= nbytes
-            self._charged_outward -= nbytes
+        self._uncharge_outward(nbytes)
 
     def account_link_target(self, target: str, *, enforce: bool = True) -> None:
         """Add a link target that was resolved after its member was registered.
