@@ -308,8 +308,11 @@ class SingleFileReader(BaseArchiveReader):
         ``_open_member`` builds a fresh one. The error names no member, since nobody asked
         for one yet.
 
-        A non-seekable source is not probed: the read would consume a byte of the one
-        pass the first ``open_member`` hands out, so it still fails on that read.
+        A non-seekable source is probed only when detection's peek already holds all of
+        it (``ArchiveSource.held_rest``): the probe then decodes a copy, and the pass
+        the first ``open_member`` hands out reads nothing less. So a short damaged
+        stream from a pipe fails at open as it does from a file. Otherwise the read
+        would consume a byte of the one pass, so the stream still fails on that read.
 
         The probe decodes with the standard library: rapidgzip runs in a child process,
         and one byte does not pay for starting one (about 30 ms) that the member read then
@@ -318,15 +321,23 @@ class SingleFileReader(BaseArchiveReader):
         process possible fails at open. ``AUTO`` is left to the read, which resolves it
         against the config the registry prepares.
         """
+        held: bytes | None = None
         if not self._seekable:
-            return
+            assert self._source is not None  # always set in __init__
+            held = self._source.held_rest()
+            if held is None:
+                return
         # Inside probe_streams an error raises where the decoder meets it: no bytes
         # handed back before it and no second decode to find them, so damage at the
         # start fails the open here. The one-byte read asks the decoder for one byte.
         with (
             probe_streams(),
             self._member_stream(
-                self._open_codec_parts(attribute_member=False, accelerated=False)
+                self._open_codec_parts(
+                    attribute_member=False,
+                    accelerated=False,
+                    held=None if held is None else io.BytesIO(held),
+                )
             ) as probe,
         ):
             probe.read(1)
@@ -635,7 +646,11 @@ class SingleFileReader(BaseArchiveReader):
         yield self._member
 
     def _open_codec_parts(
-        self, *, attribute_member: bool = True, accelerated: bool = True
+        self,
+        *,
+        attribute_member: bool = True,
+        accelerated: bool = True,
+        held: BinaryIO | None = None,
     ) -> MemberStreamParts:
         """Open a fresh decompression stream over the source, as the member's parts.
 
@@ -648,7 +663,8 @@ class SingleFileReader(BaseArchiveReader):
         source is passed through as a path (the codec opens an independent handle — the
         same concurrent-open shape as ZIP path-source), except under measurement, where it
         shares one handle too so its seeks stay visible. A non-seekable source is read
-        once, forward-only.
+        once, forward-only. ``held`` replaces the source with a copy of the bytes the
+        source still holds, for the open-time probe of a non-seekable source.
         """
         member_name = self._member.name if attribute_member else None
 
@@ -662,7 +678,9 @@ class SingleFileReader(BaseArchiveReader):
         # source has no trusted size (``_trusted_source_size``), so the live ratio guard
         # has a denominator. A path
         # source always has a cheap ``stat`` size, so the path branch needs none.
-        if self._shared is not None:
+        if held is not None:
+            codec_source = held
+        elif self._shared is not None:
             # Whole-source view + fresh codec per open (no per-member byte range for a
             # single-file archive). The view is non-owning; the SharedSource outlives it.
             codec_source = self._wrap_compressed_input(self._shared.view(0))

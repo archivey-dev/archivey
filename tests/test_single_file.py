@@ -21,6 +21,7 @@ import zipfile
 import zlib
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -33,6 +34,7 @@ from archivey import (
 )
 from archivey.cost import AccessCost, ListingCost
 from archivey.exceptions import (
+    ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
     PackageNotInstalledError,
@@ -1254,8 +1256,8 @@ def test_open_time_failure_names_no_member(tmp_path: Path) -> None:
 
 
 def test_non_seekable_source_still_defers_validation_to_the_read() -> None:
-    # A probe read would consume a byte the one-shot member stream needs, so a
-    # non-seekable source keeps failing on the read, as documented.
+    # With the format given, detection peeks nothing, and a probe read would consume
+    # a byte the one-shot member stream needs: the source keeps failing on the read.
     with (
         open_archive(
             NonSeekableBytesIO(b"\x00" * 40_000),
@@ -1265,6 +1267,45 @@ def test_non_seekable_source_still_defers_validation_to_the_read() -> None:
         raises_corruption_not_truncation(),
     ):
         _read_single_streamed_member(ar)
+
+
+def _tar_of(size: int) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        data = random.Random(1).randbytes(size)
+        info = tarfile.TarInfo("data")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _open_verdict(source: Any, **kwargs: Any) -> str | None:
+    """The error ``open_archive`` raises, by type name; ``None`` when it opens."""
+    try:
+        with open_archive(source, **kwargs):
+            return None
+    except ArchiveyError as exc:
+        return type(exc).__name__
+
+
+@pytest.mark.parametrize(
+    "compress",
+    [bz2.compress, gzip.compress, lambda d: lzma.compress(d, format=lzma.FORMAT_XZ)],
+    ids=["bz2", "gz", "xz"],
+)
+def test_a_short_cut_stream_fails_at_open_from_a_pipe_as_from_a_file(
+    compress: Callable[[bytes], bytes],
+) -> None:
+    """A stream that detection's peek holds whole is probed at open from a pipe too,
+    from a copy of what the peek holds, so the pipe and the file give the same
+    verdict at open. A cut bzip2 block was the case that differed."""
+    packed = compress(_tar_of(60_000))
+    cut = packed[: len(packed) * 2 // 3]
+    from_file = _open_verdict(io.BytesIO(cut))
+    # bzip2 gives no byte before its block decodes: the cut fails the open's probe.
+    # gzip and xz give bytes before the cut, so both open and the read raises.
+    assert from_file == ("TruncatedError" if compress is bz2.compress else None)
+    assert _open_verdict(NonSeekableBytesIO(cut), streaming=True) == from_file
 
 
 @pytest.mark.parametrize(
