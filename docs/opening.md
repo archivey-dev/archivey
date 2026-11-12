@@ -247,7 +247,7 @@ xz-compressed ZIP member, but opening, reading or extracting that member raises
 `UnsupportedFeatureError` before anything is decoded. A format that compresses data inside itself
 without naming the method on each member, such as a `.deb` with a `data.tar.xz`, an RPM package or
 a SquashFS image, doesn't open at all when you exclude that method. `only=` takes no methods.
-`plugins=False`, `exclude_libraries=` and `only_libraries=` are different, since they turn off the code that
-decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format runs in the
-call, even for a member or an archive inside an archive: reading a member that needs one raises
+`plugins=False`, `exclude_libraries=` and `only_libraries=` are different, since they turn off the
+code that decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format runs in
+the call, even for a member or an archive inside an archive: reading a member that needs one raises
 `UnsupportedFeatureError`.
