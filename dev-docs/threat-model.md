@@ -1596,7 +1596,8 @@ there most often raises `CorruptionError`; other bytes, such as an index, a TAR 
 or a partly read member, may come from the new file with no error. archivey records the
 advisory `SOURCE_CHANGE_UNDETECTABLE` at open, so silence never reads as "checked".
 Version pinning and `If-Match` would close this per file system; they are later work
-(`openspec/changes/fsspec-integration/design.md` §D7, tiers 1 and 2). Public: [remote.md
+(`openspec/changes/fsspec-integration/design.md` §D7, tiers 1 and 2). Accepted by the
+maintainer (2026-10-25, design §Decisions by the maintainer, item 3). Public: [remote.md
 §If the remote file changes](../docs/remote.md#if-the-remote-file-changes).
 
 ### A file system's own error can carry a URL's credentials
