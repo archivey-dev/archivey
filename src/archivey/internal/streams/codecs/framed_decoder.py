@@ -507,6 +507,13 @@ class FramedDecoder(BaseDecoder):
         return self._draining
 
     @property
+    @override
+    def holds_back_errors(self) -> bool:
+        # A raise here comes only after the bytes earlier calls gave (``_raise_next``),
+        # so the decoder holds back errors when its decompressor does.
+        return bool(getattr(self._decomp, "holds_back_errors", False))
+
+    @property
     def finished(self) -> bool:
         return self._done
 

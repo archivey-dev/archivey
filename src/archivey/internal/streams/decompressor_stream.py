@@ -414,6 +414,17 @@ class Decoder(Protocol):
         ...
 
     @property
+    def holds_back_errors(self) -> bool:
+        """True when a ``feed`` that meets bad data first returns every byte decoded
+        before it, and raises only from a later call that returns nothing.
+
+        A stream then gets every byte before an error from the calls themselves, so it
+        does not decode again to find them (``_redecode_to_error``): a second decode
+        would find nothing more.
+        """
+        ...
+
+    @property
     def pending_error(self) -> BaseException | None: ...
 
     def clear_pending_error(self) -> None:
@@ -500,6 +511,8 @@ class BaseDecoder:
     # See Decoder.index_reads_whole_source. The xz, lzip and zstd scans read only
     # index/trailer structures, not the payload.
     index_reads_whole_source = False
+    # See Decoder.holds_back_errors. The in-house decoders and bzip3 set it.
+    holds_back_errors = False
 
     @property
     def pending_error(self) -> BaseException | None:
@@ -1762,7 +1775,12 @@ class DecompressorStream(ReadOnlyIOStream):
         decode from the seek point and one more per probe that raises, paid only on
         damaged data.
         """
-        if self._probe or not self._recover or not self._inner.seekable():
+        if (
+            self._probe
+            or not self._recover
+            or self._decoder.holds_back_errors
+            or not self._inner.seekable()
+        ):
             return b""
         point = self._find_best_seek_point(before)
         got = bytearray()
