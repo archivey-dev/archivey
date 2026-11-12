@@ -29,6 +29,7 @@ from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
     check_decoder_memory,
+    probe_dictionary_origin,
     probe_lzma_dictionary,
 )
 from archivey.internal.hashing import crc32_digest
@@ -43,6 +44,7 @@ from archivey.internal.streams.codecs.base import (
     ProbeReadAt,
     StreamCodec,
 )
+from archivey.internal.streams.codecs.declared_memory import noting
 from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
     StreamStart,
@@ -131,6 +133,7 @@ class XzCodec(_SizedLzmaCodec):
                 source,
                 config.probe_read_bound,
                 config.natives,
+                config.decoder_limits,
             )
         return XzDecompressorStream(
             source,
@@ -141,6 +144,7 @@ class XzCodec(_SizedLzmaCodec):
             refuse_input_after_end=config.refuse_input_after_end,
             initial_index=config.seek_index,
             natives=config.natives,
+            usage=config.usage,
         )
 
 
@@ -308,11 +312,15 @@ class _ClampedAloneDecompressor:
     header, so a detection probe (``StreamConfig.probe_read_bound``) rewrites bytes 1-4
     of its own copy to :func:`~archivey.internal.config.probe_lzma_dictionary` first.
     The output up to the bound is the same bytes. Each stream of a concatenated
-    ``.lzma`` gets a new one, so every header the probe reaches is clamped.
+    ``.lzma`` gets a new one, so every header the probe reaches is clamped. The clamped
+    dictionary, which is what liblzma reserves, is checked against ``limits``.
     """
 
-    def __init__(self, read_bound: int, natives: Natives = IN_PROCESS) -> None:
+    def __init__(
+        self, read_bound: int, limits: DecoderLimits, natives: Natives = IN_PROCESS
+    ) -> None:
         self._read_bound = read_bound
+        self._limits = limits
         self._dec = natives.lzma_decompressor(format=lzma.FORMAT_ALONE)
         self._header: bytes | None = b""
 
@@ -323,8 +331,13 @@ class _ClampedAloneDecompressor:
                 self._header = header
                 return b""
             self._header = None
-            dict_size = probe_lzma_dictionary(
-                int.from_bytes(header[1:5], "little"), self._read_bound
+            declared = int.from_bytes(header[1:5], "little")
+            dict_size = probe_lzma_dictionary(declared, self._read_bound)
+            check_decoder_memory(
+                dict_size,
+                limits=self._limits,
+                what="the LZMA dictionary a detection probe reserves",
+                counted_from=probe_dictionary_origin(declared),
             )
             data = header[:1] + dict_size.to_bytes(4, "little") + header[5:]
         return self._dec.decompress(data, max_length)
@@ -354,11 +367,19 @@ def _new_alone_decompressor(
     (``error-handling``). The single-file reader opens a codec stream eagerly at
     ``open_archive``, before that provenance is attached, so a refusal raised on open
     would reach the caller unstamped, telling them to raise the cap for a file the
-    probe may have misread. A probe (``read_bound``) clamps the dictionary instead.
+    probe may have misread. A probe (``read_bound``) clamps the dictionary instead, and
+    the cap is checked against the clamped size.
     """
     if read_bound is None:
         return new_capped_decompressor(limits, lzma.FORMAT_ALONE, natives)
-    return _ClampedAloneDecompressor(read_bound, natives)
+    return _ClampedAloneDecompressor(read_bound, limits, natives)
+
+
+def _alone_dictionary(header: bytes) -> int | None:
+    """The dictionary an LZMA Alone header declares, after its properties byte."""
+    if len(header) < 5:
+        return None
+    return int.from_bytes(header[1:5], "little")
 
 
 class LzmaAloneCodec(_LzmaErrorCodec):
@@ -377,10 +398,19 @@ class LzmaAloneCodec(_LzmaErrorCodec):
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
-        return _new_alone_decompressor(
+        decompressor = _new_alone_decompressor(
             config.probe_read_bound,
             config.decoder_limits,
             config.natives,
+        )
+        if config.probe_read_bound is not None:
+            return decompressor
+        return noting(
+            decompressor,
+            config.usage,
+            header_size=_ALONE_HEADER_SIZE,
+            declared=_alone_dictionary,
+            what="an LZMA Alone header's dictionary",
         )
 
     @override
@@ -409,6 +439,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         read_at: ProbeReadAt | None = None,
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
         """Recognize LZMA Alone: plausible 13-byte header that then yields decode output.
 
@@ -433,6 +464,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
             source_length=source_length,
             require_output=True,
             isolation=isolation,
+            decoder_limits=decoder_limits,
         )
 
 

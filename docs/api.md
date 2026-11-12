@@ -18,6 +18,8 @@ See [Opening an archive](opening.md).
 ::: archivey.FormatSupport
 ::: archivey.MissingComponent
 ::: archivey.OptionalLibrary
+::: archivey.BackendUse
+::: archivey.BackendKindStr
 ::: archivey.list_supported_formats
 ::: archivey.list_known_formats
 
@@ -101,6 +103,7 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 ::: archivey.ListingLimits
 ::: archivey.DecoderLimits
 ::: archivey.SpoolLimits
+::: archivey.Budget
 ::: archivey.AcceleratorMode
 ::: archivey.ProcessIsolation
 ::: archivey.RarDecompressor

@@ -492,7 +492,8 @@ class ForwardStream:
 
         The caller's ``FormatPolicy`` holds here as for a member: under
         ``plugins=False`` a ``PluginStream`` raises ``UnsupportedFeatureError``, and a
-        package ``exclude_libraries`` turns off reads as missing. ``only`` and the
+        package the policy turns off (``exclude_libraries`` or ``only_libraries``)
+        reads as missing. ``only`` and the
         format entries of ``exclude`` do not apply, since they check only the file the
         call opens. A :class:`~archivey.CompressionAlgorithm` in ``exclude`` does: a
         format whose method it lists (``StreamFormat.XZ`` under
@@ -624,6 +625,9 @@ class ReaderContext:
         self._hold = hold
         self._charge_metadata = charge_metadata
         self._open_nested = open_nested
+        # Set by archivey's adapter: where a built-in reader that calls a package
+        # itself (SquashFS's lz4) records it for ``ArchiveReader.backends_used``.
+        self._usage: ResourceUsageRecorder | None = None
 
     @property
     def encoding(self) -> str | None:
@@ -753,9 +757,12 @@ class ReaderContext:
         own reader for that format, in one forward pass, and yields one
         :class:`MemberSpan` per inner member, with the decoded data as
         :attr:`MemberSpan.data` (``None`` for a member with no data). The inner reader
-        works for this archive: its listing limits are this archive's, what it
-        reports goes into this archive's diagnostics, under the caller's
-        ``DiagnosticPolicy``, and its errors raise from the walk.
+        works for this archive: what it reports goes into this archive's diagnostics,
+        under the caller's ``DiagnosticPolicy``, and its errors raise from the walk.
+        It shares this archive's limits rather than getting its own: what it keeps
+        counts toward the same ``max_metadata_bytes``, its decoders get the
+        ``max_decoder_memory`` this archive's decoders left, and its ``max_ratio`` is
+        to the compressed size of the archive the caller opened.
 
         Yield every span, in order, from :meth:`SequentialReader.walk` before taking
         the next one: the inner reader numbers its members as the outer listing will,
@@ -766,7 +773,8 @@ class ReaderContext:
         closed when Python collects it, and at the latest when the archive is closed.
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
-        format is read by its replacement, ``exclude_libraries`` holds, and under
+        format is read by its replacement, ``exclude_libraries`` and ``only_libraries``
+        hold, and under
         ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``,
         and so does a format whose compression decodes with a
         :class:`~archivey.CompressionAlgorithm` ``exclude`` lists. ``only`` and the
@@ -911,7 +919,8 @@ class ReaderContext:
 
         The caller's ``FormatPolicy`` holds for each member: under ``plugins=False`` a
         ``PluginStream`` raises ``UnsupportedFeatureError`` before the codec runs, and
-        a package ``exclude_libraries`` turns off raises ``PackageNotInstalledError``.
+        a package the policy turns off (``exclude_libraries`` or ``only_libraries``)
+        raises ``PackageNotInstalledError``.
         ``only`` and the format entries of ``exclude`` do not apply: they check only the
         file the call opens, so a member stored with ``StreamFormat.XZ`` decodes under
         ``exclude={StreamFormat.XZ}``. A :class:`~archivey.CompressionAlgorithm` in

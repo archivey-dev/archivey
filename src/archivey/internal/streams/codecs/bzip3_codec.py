@@ -130,6 +130,10 @@ class Bzip3Decompressor:
     Every check runs inside :meth:`decompress`, so the properties never raise.
     """
 
+    # A failed block raises only once the blocks before it are handed out
+    # (``_raise_after``): see ``Decoder.holds_back_errors``.
+    holds_back_errors = True
+
     def __init__(
         self,
         check_block_size: Callable[[int], None],

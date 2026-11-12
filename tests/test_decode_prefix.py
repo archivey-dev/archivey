@@ -479,3 +479,109 @@ def test_a_large_read_finds_the_failing_byte_in_few_calls(
     assert got % (1 << 20) > 100_000, "the damage must be far into the read"
     assert counts["restarts"] <= 8
     assert counts["calls"] <= 4096
+
+
+_NO_RECOVERY = replace(_CONFIG, recover_partial_data=False)
+
+
+@pytest.mark.parametrize("name", list(CODECS))
+def test_recovery_off_does_not_decode_again(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``recover_partial_data=False``: the read that meets the damage raises the same
+    error with no second decode, and the bytes the failing decoder call gave before
+    it are lost."""
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    codec, compress = CODECS[name]
+    damaged = _damage(compress(PAYLOAD), 0.5)
+    recovered = _prefix(io.BytesIO(damaged), codec, 1 << 20)
+    restarts = 0
+    real = DecompressorStream._redecode_restart
+
+    def counting(self: Any, *args: Any) -> Any:
+        nonlocal restarts
+        restarts += 1
+        return real(self, *args)
+
+    monkeypatch.setattr(DecompressorStream, "_redecode_restart", counting)
+    got, error = _prefix(io.BytesIO(damaged), codec, 1 << 20, _NO_RECOVERY)
+    assert restarts == 0
+    assert error == recovered[1]
+    # The calls before the failing one still come back; the failing call's are lost.
+    # bzip2 and zstd fail at a block or frame start, where that call gave nothing.
+    assert recovered[0] - (1 << 20) <= got <= recovered[0]
+    if name in ("gzip", "xz"):
+        assert got < recovered[0]
+
+
+def test_recovery_off_takes_no_deflate_copy_on_a_pipe() -> None:
+    """On a pipe the deflate decoder keeps the bytes before an error by copying its
+    state before each call; with recovery off it takes no copy, so the failing call's
+    bytes are lost there too."""
+    damaged = _damage(gzip.compress(PAYLOAD, mtime=0), 0.5)
+    kept = _prefix(NonSeekableBytesIO(damaged), Codec.GZIP, 1 << 20)
+    lost = _prefix(NonSeekableBytesIO(damaged), Codec.GZIP, 1 << 20, _NO_RECOVERY)
+    assert lost[1] == kept[1] is not None
+    assert lost[0] < kept[0]
+
+
+def _lzop(data: bytes) -> bytes:
+    from tests.lzop_build import make_lzop
+
+    return make_lzop(data)
+
+
+@pytest.mark.parametrize(
+    ("codec", "compress"),
+    [
+        pytest.param(Codec.BZIP3, _bzip3, marks=requires("bz3")),
+        (Codec.LZOP, _lzop),
+        pytest.param(Codec.UNIX_COMPRESS, _unix_compress, marks=requires("ncompress")),
+        (Codec.SHRINK, _shrink),
+    ],
+    ids=["bzip3", "lzop", "unix_compress", "shrink"],
+)
+def test_a_decoder_that_holds_back_errors_is_not_decoded_again(
+    codec: Codec, compress: Callable[[bytes], bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """These decoders hand out every byte before an error before they raise it, so a
+    file gets those bytes with no second decode: it would find nothing more."""
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    restarts = 0
+    real = DecompressorStream._redecode_restart
+
+    def counting(self: Any, *args: Any) -> Any:
+        nonlocal restarts
+        restarts += 1
+        return real(self, *args)
+
+    damaged = _bad_code(compress(_text(600_000, 4)), 0.6)
+    expected = _exact_prefix(damaged, codec)
+    assert 0 < expected < 600_000
+    monkeypatch.setattr(DecompressorStream, "_redecode_restart", counting)
+    for size in (4096, 1 << 20):
+        assert _prefix(io.BytesIO(damaged), codec, size) == (
+            expected,
+            "CorruptionError",
+        ), size
+    assert restarts == 0
+
+
+@pytest.mark.parametrize("size", [4096, 1 << 20])
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_damaged_second_stream_start_keeps_the_first_stream(
+    size: int, pipe: bool
+) -> None:
+    """A second lzop stream whose magic is damaged raises only after the first
+    stream's bytes are handed out, from a file and from a pipe: the decoder holds that
+    error back too, so nothing decodes the file again for them."""
+    first = _lzop(_text(200_000, 4))
+    second = bytearray(_lzop(_text(200_000, 5)))
+    second[8] ^= 0xFF  # the last byte of the 9-byte magic
+    damaged = first + bytes(second)
+    expected = _exact_prefix(damaged, Codec.LZOP)
+    assert expected == 200_000
+    source = NonSeekableBytesIO(damaged) if pipe else io.BytesIO(damaged)
+    assert _prefix(source, Codec.LZOP, size) == (expected, "CorruptionError")

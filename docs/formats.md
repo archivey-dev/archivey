@@ -1253,6 +1253,16 @@ what `makecab` and `gcab` write.
 - **Reading members:** a cabinet groups its files into folders, and each folder is one
   compressed stream, so a compressed folder is solid: reaching a file decodes the folder from
   its start. Files read in order decode each folder once. A stored folder is direct.
+- **Member order:** the order of the cabinet's file table, which writers keep in the order
+  the files' bytes are stored. When reading the files in table order would decode part of a
+  folder twice (a table that is crafted or edited, for example reversed), the files are
+  listed by folder and by position in the folder instead, so each folder is decoded once,
+  unless a name is listed twice: then the table's order is kept, because the entry listed
+  last is the one that counts, and reading can be much slower.
+- **A name listed twice** is reported with `MEMBER_NAME_DUPLICATE_UNEXPECTED` as well as
+  `MEMBER_NAME_DUPLICATE`: a cabinet has no way to add or update a file, so no writer repeats a
+  name. `STRICT` refuses such a cabinet; the default policy lists it, and the entry listed last
+  is the one that counts.
 - **From a pipe:** no; the file table points at folders anywhere in the file, so the cabinet
   needs a source that can seek.
 - `ArchiveInfo.format_version` is the cabinet's version, `"1.3"` for every current writer.
@@ -1720,8 +1730,10 @@ they open at once. Close the sending side when the file is done.
   `zstd --long=31` reading standard input reads. A window over the cap raises `ResourceLimitError`.
   The cap is rounded down to a power of two for zstd. A window over 2 GiB is beyond what libzstd
   decodes at any setting, and raises `UnsupportedFeatureError`. Detection decodes its sample with
-  the window capped at 128 MiB, what `zstd -d` decodes without `--long`. Detection never
-  reserves more than that, whatever the frame declares.
+  the window capped at 128 MiB (what `zstd -d` decodes without `--long`) or at
+  `max_decoder_memory`, whichever is smaller. It does not look inside a frame over that, so a
+  `.tar.zst` is reported as a bare `.zst`. When your cap is the reason, the diagnostic
+  `DETECTION_DECODER_LIMITED` names it, and reading the file raises the same `ResourceLimitError`.
 - A mozlz4 header declares the decoded size, and the decode holds twice that at its
   peak (the decode buffer and the copy returned). `DecoderLimits.max_decoder_memory` caps
   twice the size, and a size over the cap raises `ResourceLimitError`.

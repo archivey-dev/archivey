@@ -1055,7 +1055,20 @@ before it, whatever `n` is, found by decoding again from the last seek point to 
 failing byte. Each decoder call SHALL ask for what the read asks, at most 1 MiB, so a
 clean read costs about what it did before fixed feeding. A read after an index seek MAY
 return a different prefix from a linear read (DR-4a). An accelerator SHALL give the
-prefix of the decoder it replaces.
+prefix of the decoder it replaces. A decoder that hands out every byte before an error
+before it raises it ("In-house decoders hand back their bytes before an error") already
+gives that prefix, and SHALL NOT be decoded again for it.
+
+With `ArchiveyConfig.recover_partial_data=False` a stream SHALL NOT decode again: the
+read that meets the error raises the same error, and MAY lose the bytes the failing
+decoder call gave before it. On a pipe a deflate decoder SHALL NOT copy its state for
+them either ("A pipe loses at most the call that failed" then holds to its bound for
+deflate too). What costs no extra work still holds under it: "In-house decoders hand
+back their bytes before an error" and "A read that meets a decoder error returns what it
+holds first". Brotli's replay to find its stream's end is not recovery and runs under
+both settings, since it decides the error. A compressed TAR's own stream SHALL recover
+its bytes whatever the setting, so every member that ends before the damage reads whole
+under both settings.
 
 #### Scenario: read sizes
 
@@ -1085,7 +1098,8 @@ call that raised. Each call SHALL be fed compressed input up to the next multipl
 64 KiB of compressed offset from where the decoder started (a short source read is fed
 as it is) and SHALL ask for what the read asks, at most 64 KiB.
 
-A gzip, zlib or raw deflate decoder on such a source SHALL lose nothing: it copies its
+Unless the caller set `recover_partial_data=False`, a gzip, zlib or raw deflate decoder
+on such a source SHALL lose nothing: it copies its
 zlib state (`decompressobj.copy()`) before each call, and when a call raises, the copy
 decodes the same input again one output byte per call up to the error. The decoder
 returns those bytes and raises the error from its next call. A decoder in a decoder

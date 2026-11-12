@@ -475,6 +475,36 @@ OptionalLibraryStr = Literal[
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 
 
+BackendKindStr = Literal["reader", "codec", "library", "program"]
+"""What a :class:`BackendUse` names: see :attr:`BackendUse.kind`."""
+
+
+@dataclass(frozen=True)
+class BackendUse:
+    """One piece of code, package or program a reader ran to read its archive.
+
+    ``reader.backends_used`` lists them. Experimental: any release may add a kind or
+    change what a name holds.
+    """
+
+    kind: BackendKindStr
+    """``"reader"``: the format reader, built in or a plugin. ``"codec"``: a plugin
+    codec. ``"library"``: an optional package (an :class:`OptionalLibrary` value), or a
+    module a plugin's ``requires`` names. ``"program"``: an external program."""
+
+    name: str
+    """``"archivey"`` for a built-in reader; a plugin's handler class, as
+    ``module.QualName``; the package's import name; or the program's name, such as
+    ``"unrar"``."""
+
+    used_for: str
+    """What it read: the format (``"RAR"``), or what a package or codec decoded
+    (``"ppmd"``, ``"AES decryption"``)."""
+
+    path: str | None = None
+    """The absolute path of a program that ran, else ``None``."""
+
+
 @dataclass(frozen=True)
 class MissingComponent:
     """A package, extra, or external tool required for a format (or a codec inside it).
