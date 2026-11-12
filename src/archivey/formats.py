@@ -15,8 +15,9 @@ index: list the members first, then open any one of them); a
 data, header, data, read in one forward pass, from a pipe too). The reader hands
 archivey members and bytes; archivey does the rest the same way for every format: name
 normalization and the name checks, listing limits, link resolution, safe extraction and
-its limits, and the size and digest checks on member data. Formats that do not fit, or need special features or more speed, are
-written against archivey's internal reader classes instead.
+its limits, and the size and digest checks on member data. Formats that do not fit, or
+need special features or more speed, are written against archivey's internal reader
+classes instead.
 
 A program registers a format with :func:`register_format`. Nothing is loaded
 automatically. Plugin code runs in the caller's process as trusted code: archivey's
@@ -267,7 +268,7 @@ class MemberSpan(NamedTuple):
 
     data: BinaryIO | io.RawIOBase | None = None
     """The member's decoded bytes, for a format whose library decodes each member
-    (ARJ, ACE, a libarchive wrapper), which has no stored bytes to describe with
+    (ACE, Zoo, a libarchive wrapper), which has no stored bytes to describe with
     ``data_length``; that stays 0. The stream need only be good until the walk moves
     on: archivey reads what the caller leaves of it, up to ``member.size``, before it
     asks the walk for the next member, so the library is past it, and then closes it.
@@ -298,7 +299,7 @@ class ReaderArchiveInfo(NamedTuple):
     comment: str | None = None
     extra: Mapping[str, object] = {}
     """Format-specific values, under keys that start with the format's name
-    (``"arj.method"``)."""
+    (``"zoo.method"``)."""
 
 
 class ReaderSource:
@@ -1028,7 +1029,7 @@ class FormatHandler(ABC):
     ``ArchiveFormat.ZIP``, and is not registered."""
 
     extensions: ClassVar[tuple[str, ...]] = ()
-    """File extensions with the dot (``".arj"``). An extension a built-in format uses
+    """File extensions with the dot (``".zoo"``). An extension a built-in format uses
     (``".cpio"``) is refused at registration. A replacement plugin declares none: the
     built-in detection finds its files."""
 
@@ -1091,7 +1092,7 @@ class SequentialFormatHandler(FormatHandler):
     :attr:`~FormatHandler.magic` in the first 512 decoded bytes, so each magic must end
     within them. A format with no reliable magic is found there by its
     :attr:`~FormatHandler.probe` on those same 512 bytes, where the extension names it
-    inside the compressor (``.arj.gz``) or ``always_probe_content`` is set, as on an
+    inside the compressor (``.zoo.gz``) or ``always_probe_content`` is set, as on an
     uncompressed source."""
 
     @abstractmethod

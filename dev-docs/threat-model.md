@@ -1482,7 +1482,9 @@ file system raises propagates unchanged
 ([DR-15a](design-rules.md#dr-15a-translate-archive-problems-let-io-problems-through)), so
 a missing object's `FileNotFoundError` can carry the URL as given, secrets included.
 Contract: `openspec/changes/fsspec-integration/specs/archive-reading/spec.md`
-§"OpenFile facts".
+§"OpenFile facts". Accepted by the maintainer (2026-11-11): rewriting another library's
+exceptions loses information. Public:
+[remote.md §Credentials in URLs](../docs/remote.md#credentials-in-urls).
 
 ## 5. Open design gaps
 

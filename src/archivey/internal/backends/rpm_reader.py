@@ -39,9 +39,10 @@ The signature header stores digests of the main header, from its magic to the en
 of its data store: ``RPMSIGTAG_SHA256`` and the older ``RPMSIGTAG_SHA1``. The walk
 checks every one of them the package stores as it reads the header, so damage to what
 only the header holds (a link target, a mode, an owner) is ``CorruptionError`` before
-any member is listed. The digests are not signed: they detect damage, not tampering. ``FILEDIGESTS`` holds each regular file's digest in the
-algorithm ``FILEDIGESTALGO`` names (MD5 when absent): it is checked as the member is
-read. Signatures are reported in the archive info, not checked.
+any member is listed. The digests are not signed: they detect damage, not tampering.
+``FILEDIGESTS`` holds each regular file's digest in the algorithm ``FILEDIGESTALGO``
+names (MD5 when absent): it is checked as the member is read. Signatures are reported in
+the archive info, not checked.
 
 The reader is written against ``archivey.formats`` and archivey's public names only,
 as a format added from outside would be; ``register_builtin_format`` is the one

@@ -80,10 +80,10 @@ _HEX = frozenset(b"0123456789abcdefABCDEF")
 # The digits of an unsupported major version an error message shows.
 _VERSION_SHOWN = 20
 # What one md5sums entry holds beyond its name's characters (_str_bytes), as 64-bit
-# CPython measures it: the name's str header (40 to 56 bytes), the 16-byte digest object (49) and the
-# entry's share of the dict, a 24-byte slot, its index and the spare room a dict keeps
-# (31 bytes an entry over 500 000 entries, up to 60 just after the dict grows). A
-# constant, not sys.getsizeof(), which PyPy does not implement.
+# CPython measures it: the name's str header (40 to 56 bytes), the 16-byte digest object
+# (49) and the entry's share of the dict, a 24-byte slot, its index and the spare room a
+# dict keeps (31 bytes an entry over 500 000 entries, up to 60 just after the dict
+# grows). A constant, not sys.getsizeof(), which PyPy does not implement.
 _MD5_ENTRY = 56 + 49 + 48
 
 
