@@ -58,13 +58,13 @@ from archivey.formats import (
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.internal.sfx import (
-    SFX_MAX,
-    VALIDATOR_PEEK_MAX,
     HitOutcome,
+    PeekSource,
     ScanNeedle,
-    describe_scan_miss,
-    overlay_start_of,
-    scan_for_magic,
+    ShortPeek,
+    rebased_source,
+    scan_miss_error,
+    scan_reader_source,
 )
 from archivey.internal.streams.codecs.arj_fast_decoder import ArjFastDecoder
 from archivey.internal.streams.codecs.lzh_decoder import LzhDecoder
@@ -204,7 +204,7 @@ class _Header:
 
 class _HeaderSource(Protocol):
     """What reading headers needs of a source: a :class:`ReaderSource`, or the bytes
-    the self-extracting scan peeks at a candidate (:class:`_PeekSource`)."""
+    the self-extracting scan peeks at a candidate (:class:`~archivey.internal.sfx.PeekSource`)."""
 
     @property
     def size(self) -> int | None: ...
@@ -606,43 +606,6 @@ class _ArjStream(io.RawIOBase):
 _SFX_NEEDLES = (ScanNeedle(_MAGIC, 0),)
 
 
-class _ShortPeek(Exception):
-    """The scan's peek ends before the header does: the candidate was not checked."""
-
-
-class _PeekSource:
-    """A candidate's bytes, as the self-extracting scan peeks them. The peek grows by
-    doubling and is kept."""
-
-    _FIRST_PEEK = 4096
-
-    def __init__(self, peek_more: Callable[[int], bytes], remaining: int | None):
-        self._peek_more = peek_more
-        self.size = remaining
-        self._peeked = b""
-        self._ended = False  # the peek returned fewer bytes than asked: no more exist
-
-    def read_at(self, offset: int, n: int) -> bytes:
-        end = offset + n
-        if end > VALIDATOR_PEEK_MAX:
-            raise _ShortPeek
-        if end > len(self._peeked) and not self._ended:
-            want = min(
-                max(end, 2 * len(self._peeked), self._FIRST_PEEK), VALIDATOR_PEEK_MAX
-            )
-            self._peeked = self._peek_more(want)
-            self._ended = len(self._peeked) < want
-        return self._peeked[offset:end]
-
-    def read_exact(self, offset: int, n: int) -> bytes:
-        data = self.read_at(offset, n)
-        if len(data) < n:
-            if self.size is None or offset + n <= self.size:
-                raise _ShortPeek
-            raise TruncatedError("the candidate ends inside its header")
-        return data
-
-
 def _validate_main_header(
     peek_more: Callable[[int], bytes], remaining: int | None
 ) -> HitOutcome:
@@ -653,10 +616,10 @@ def _validate_main_header(
     8-bit sum, one header is enough: the validator does not walk on to the members. A
     main header the source ends inside is ``DAMAGED``.
     """
-    headers = _Headers(_PeekSource(peek_more, remaining), probe_cut=False)
+    headers = _Headers(PeekSource(peek_more, remaining), probe_cut=False)
     try:
         header = headers._read_header(0)
-    except _ShortPeek:
+    except ShortPeek:
         return HitOutcome.NOT_THIS_FORMAT
     except TruncatedError:
         return HitOutcome.DAMAGED
@@ -673,28 +636,10 @@ def _payload(source: ReaderSource) -> ReaderSource:
     ``format=`` reads the archive detection would."""
     if source.read_at(0, 2) == _MAGIC:
         return source
-    view = source.view(0)
-    try:
-        scan = scan_for_magic(
-            view,
-            _SFX_NEEDLES,
-            validator=_validate_main_header,
-            first_at=overlay_start_of(view),
-        )
-    finally:
-        view.close()
+    scan = scan_reader_source(source, _SFX_NEEDLES, _validate_main_header)
     if scan.hit is None:
-        raise CorruptionError(
-            "Not an ARJ archive: " + describe_scan_miss(scan, limit=SFX_MAX)
-        )
-    origin = scan.hit.candidate_origin
-    size = source.size
-    return ReaderSource(
-        lambda start, length: source.view(origin + start, length),
-        None if size is None else size - origin,
-        source.path,
-        lambda offset, n: source.read_at(origin + offset, n),
-    )
+        raise scan_miss_error("ARJ", scan)
+    return rebased_source(source, scan.hit.candidate_origin)
 
 
 class ArjHandler(IndexedFormatHandler):

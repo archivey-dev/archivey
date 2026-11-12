@@ -51,10 +51,13 @@ from collections.abc import (
     Set as AbstractSet,
 )
 from enum import Enum
-from typing import BinaryIO, Generic, NamedTuple, Protocol, TypeVar
+from typing import TYPE_CHECKING, BinaryIO, Generic, NamedTuple, Protocol, TypeVar
 
-from archivey.exceptions import TruncatedError
+from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.streams.streamtools import source_byte_size
+
+if TYPE_CHECKING:
+    from archivey.formats import ReaderSource
 
 _T = TypeVar("_T")
 
@@ -1270,3 +1273,92 @@ def iter_magic_in_prefix(
         if len(data) < step:
             return  # the source ended inside this peek; nothing more to search
         searched = len(data)
+
+
+# ── Built-in format readers behind a stub ──────────────────────────────────────────
+#
+# What the LHA and ARJ readers (``archivey.formats`` built-ins that declare SFX magic)
+# share: the source their hit validator reads headers from, and the scan that finds
+# their payload when a forced ``format=`` opens a file whose byte 0 is not theirs.
+
+
+class ShortPeek(Exception):
+    """The scan's peek ends before the header does: the candidate was not checked.
+
+    A validator turns it into ``NOT_THIS_FORMAT``, never ``DAMAGED``: a byte past the
+    peek says nothing about the candidate.
+    """
+
+
+class PeekSource:
+    """A candidate's bytes, as the self-extracting scan peeks them, behind the
+    ``size`` / ``read_at`` / ``read_exact`` a reader's header code reads.
+
+    The peek grows by doubling and is kept, so walking a candidate's headers copies
+    its prefix a few times in all, not once per header read. A read past
+    :data:`VALIDATOR_PEEK_MAX`, or past the peek inside a source that goes on, raises
+    :class:`ShortPeek`; a read past a known end of source is ``TruncatedError``.
+    """
+
+    _FIRST_PEEK = 4096
+
+    def __init__(self, peek_more: Callable[[int], bytes], remaining: int | None):
+        self._peek_more = peek_more
+        self.size = remaining
+        self._peeked = b""
+        self._ended = False  # the peek returned fewer bytes than asked: no more exist
+
+    def read_at(self, offset: int, n: int) -> bytes:
+        end = offset + n
+        if end > VALIDATOR_PEEK_MAX:
+            raise ShortPeek
+        if end > len(self._peeked) and not self._ended:
+            want = min(
+                max(end, 2 * len(self._peeked), self._FIRST_PEEK), VALIDATOR_PEEK_MAX
+            )
+            self._peeked = self._peek_more(want)
+            self._ended = len(self._peeked) < want
+        return self._peeked[offset:end]
+
+    def read_exact(self, offset: int, n: int) -> bytes:
+        data = self.read_at(offset, n)
+        if len(data) < n:
+            if self.size is None or offset + n <= self.size:
+                raise ShortPeek
+            raise TruncatedError("the candidate ends inside its header")
+        return data
+
+
+def scan_reader_source(
+    source: ReaderSource, needles: Sequence[ScanNeedle], validator: HitValidator
+) -> MagicScan:
+    """:func:`scan_for_magic` over a reader's whole ``source``, overlay start first,
+    with the needles and validator detection uses, so a forced ``format=`` finds the
+    payload detection would."""
+    view = source.view(0)
+    try:
+        return scan_for_magic(
+            view, needles, validator=validator, first_at=overlay_start_of(view)
+        )
+    finally:
+        view.close()
+
+
+def scan_miss_error(format_name: str, scan: MagicScan) -> CorruptionError:
+    """The error for a forced ``format=`` whose scan found no candidate."""
+    return CorruptionError(
+        f"Not an {format_name} archive: " + describe_scan_miss(scan, limit=SFX_MAX)
+    )
+
+
+def rebased_source(source: ReaderSource, origin: int) -> ReaderSource:
+    """``source`` from byte ``origin`` on, as the reader's whole source."""
+    from archivey.formats import ReaderSource
+
+    size = source.size
+    return ReaderSource(
+        lambda start, length: source.view(origin + start, length),
+        None if size is None else size - origin,
+        source.path,
+        lambda offset, n: source.read_at(origin + offset, n),
+    )

@@ -544,11 +544,13 @@ def test_a_self_extractor_from_arj_for_unix() -> None:
 
 def _decoys() -> bytes:
     # Stub code with the two magic bytes in it, as any stub has: once bare, once with
-    # a size the header allows but no CRC to match, and once with the main header's
-    # bytes behind a CRC that fails.
+    # a size the header allows but no CRC to match, once with the main header's bytes
+    # behind a CRC that fails, and once as a whole member header, whose CRC holds but
+    # whose file type is not the main header's.
     main = _header(b"test.arj", file_type=2)
     broken = main[:-8] + bytes([main[-8] ^ 1]) + main[-7:]
-    return b"\x60\xea\x90\x90" + b"\x60\xea\x40\x00" + bytes(64) + broken
+    member = _header(b"x", file_type=0)
+    return b"\x60\xea\x90\x90" + b"\x60\xea\x40\x00" + bytes(64) + broken + member
 
 
 # Stubs: a DOS program (``MZ`` with no PE header, as ARJ's own DOS modules are), a PE,
