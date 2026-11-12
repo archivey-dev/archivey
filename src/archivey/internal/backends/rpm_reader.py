@@ -882,23 +882,32 @@ class _Payload:
             if found is file:
                 return size
             if found.mode & _S_IFMT == _S_IFLNK and not found.flags & RPMFILE_GHOST:
-                # Its size is the header's target length (checked above), so the read
-                # is no larger than a string the header already holds.
-                self._compare_target(found, payload.read_exact(size))
-                self._data_end = payload.offset
+                self._compare_target(found, size)
                 continue
             self._skip(size)
 
-    def _compare_target(self, file: _File, stored: bytes) -> None:
-        """Report a symlink whose payload entry stores another target than the
-        header, whose target the member keeps (``FILELINKTOS``, as rpm installs it)."""
+    def _compare_target(self, file: _File, size: int) -> None:
+        """Move past a symlink's payload entry, of ``size`` bytes, and report it when
+        it stores another target than the header, whose target the member keeps
+        (``FILELINKTOS``, as rpm installs it)."""
         reader = self._reader
         targets = self._package.targets
         assert targets is not None  # _files refuses a symlink with no target
         listed = targets[file.index]
-        if stored == listed or file.index in reader._reported_targets:
+        if size != len(listed):
+            # ``FILESIZES`` gives another length than the target: the copies differ,
+            # and the entry is skipped unread, as it may be of any size.
+            self._skip(size)
+            shown = f"a target of {size} bytes"
+        else:
+            # No larger than a string the header already holds.
+            stored = self._payload.read_exact(size)
+            self._data_end = self._payload.offset
+            if stored == listed:
+                return
+            shown = f"the target {_shown(stored)}"
+        if file.index in reader._reported_targets:
             return
-        reader._reported_targets.add(file.index)
         context = reader._context
         raw = file.raw_name
         name = context.normalize_name(
@@ -907,12 +916,15 @@ class _Payload:
         )
         context.report(
             DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
-            f"RPM symlink {_shown(raw)}: the payload stores the target "
-            f"{_shown(stored)}, the header {_shown(listed)}; the header's is used",
+            f"RPM symlink {_shown(raw)}: the payload stores {shown}, the header "
+            f"{_shown(listed)}; the header's is used",
             HeaderAmbiguityContext(
                 member_name=name, ambiguity="copies_differ", field="FILELINKTOS"
             ),
         )
+        # Only once the report is recorded: one ``STRICT`` raises on is raised again by
+        # every walk that passes the entry.
+        reader._reported_targets.add(file.index)
 
     def _skip(self, size: int) -> None:
         self._pending = None

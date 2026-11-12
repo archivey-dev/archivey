@@ -1698,6 +1698,37 @@ def test_a_symlink_whose_payload_target_differs_fails_the_read_under_strict() ->
         assert reader.read("opt/t/a.txt") == b"alpha\n"
         with pytest.raises(archivey.ArchiveyError):
             reader.read("opt/t/h2")
+        # Read again, the conflict is found again: STRICT refuses it every time.
+        with pytest.raises(archivey.ArchiveyError):
+            reader.read("opt/t/h2")
+
+
+def test_a_long_payload_target_is_skipped_not_read() -> None:
+    """The entry's size comes from FILESIZES, which need not be the length of
+    FILELINKTOS: a target of another length is reported without reading it."""
+    import tracemalloc
+
+    files = _tree()
+    files[6].link = b"z" * 5_000_000
+    data = _build(
+        _Package(
+            files,
+            order=[0, 1, 2, 6, 4, 5],
+            extra_tags={1036: (_STRING_ARRAY, [f.link[:5] or b"" for f in files])},
+        )
+    )
+    tracemalloc.start()
+    try:
+        with _open(data) as reader:
+            assert reader.read("opt/t/h2") == b"linked\n"
+            (report,) = reader.diagnostics.retained
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert report.code is DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
+    assert "a target of 5000000 bytes" in report.message
+    assert len(report.message) < 200
+    assert peak < 2 * 2**20
 
 
 def test_a_matching_payload_target_is_not_reported() -> None:
