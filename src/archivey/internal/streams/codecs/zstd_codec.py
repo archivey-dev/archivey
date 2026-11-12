@@ -32,6 +32,7 @@ from archivey.internal.streams.codecs.base import (
     CodecParams,
     StreamCodec,
 )
+from archivey.internal.streams.codecs.declared_memory import noting
 from archivey.internal.streams.codecs.framed_decoder import (
     FrameCheck,
     StreamIndex,
@@ -40,6 +41,8 @@ from archivey.internal.streams.codecs.framed_decoder import (
 )
 from archivey.internal.streams.codecs.zstd_framing import (
     FRAME_MAGIC as ZSTD_FRAME_MAGIC,
+    MAX_FRAME_HEADER_SIZE,
+    frame_window_size,
     regular_frame_behind_skippable_frames,
 )
 from archivey.internal.streams.codecs.zstd_seek_table import build_seek_table_index
@@ -173,7 +176,13 @@ class ZstdCodec(StreamCodec):
         window_log_max, _ = _zstd_window_log_max(config.decoder_limits)
         window_log_max = _probe_window_log_max(window_log_max, config.probe_read_bound)
         options = {deps.zstd.DecompressionParameter.window_log_max: window_log_max}
-        return config.natives.zstd_decompressor(options)
+        return noting(
+            config.natives.zstd_decompressor(options),
+            None if config.probe_read_bound is not None else config.usage,
+            header_size=MAX_FRAME_HEADER_SIZE,
+            declared=frame_window_size,
+            what="a zstd frame's window",
+        )
 
     @override
     def frame_check(self) -> FrameCheck:

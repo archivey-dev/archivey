@@ -452,6 +452,10 @@ class ListingLimits:
     That data does not count here; the pass holds at most this many bytes of it,
     dropping the longest first. A link whose data was dropped is listed without its
     target and reports ``SYMLINK_TARGET_UNAVAILABLE``.
+
+    An archive a format reads inside its own (``ReaderContext.open_nested``) counts
+    toward the same total: what its reader keeps beyond the members it hands out is
+    added while it reads, and its members count once, as the outer listing lists them.
     """
 
     UNLIMITED: ClassVar[ListingLimits]
@@ -593,6 +597,12 @@ class DecoderLimits:
     liblzma's own memory limit, which also counts about 64 KiB of the
     decoder's overhead; a 128 KiB allowance keeps a dictionary exactly
     at the cap readable there as on every other path.
+
+    An archive a format reads inside its own (``ReaderContext.open_nested``) decodes
+    while the outer archive's decoder runs, so the two share the cap: the inner
+    archive's decoders get it less the largest working set the outer archive declared
+    by the time the inner archive's first byte was decoded, and a refusal there names
+    what was left.
 
     What the default is *not* is a promise about the machine. The cap
     bounds what an archive may ask for; whether an allocation succeeds

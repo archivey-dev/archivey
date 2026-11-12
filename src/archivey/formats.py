@@ -756,9 +756,12 @@ class ReaderContext:
         own reader for that format, in one forward pass, and yields one
         :class:`MemberSpan` per inner member, with the decoded data as
         :attr:`MemberSpan.data` (``None`` for a member with no data). The inner reader
-        works for this archive: its listing limits are this archive's, what it
-        reports goes into this archive's diagnostics, under the caller's
-        ``DiagnosticPolicy``, and its errors raise from the walk.
+        works for this archive: what it reports goes into this archive's diagnostics,
+        under the caller's ``DiagnosticPolicy``, and its errors raise from the walk.
+        It shares this archive's limits rather than getting its own: what it keeps
+        counts toward the same ``max_metadata_bytes``, its decoders get the
+        ``max_decoder_memory`` this archive's decoders left, and its ``max_ratio`` is
+        to the compressed size of the archive the caller opened.
 
         Yield every span, in order, from :meth:`SequentialReader.walk` before taking
         the next one: the inner reader numbers its members as the outer listing will,

@@ -55,7 +55,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 | archivey to a terminal or log | Messages carrying archive-derived text | Escaped at construction ([terminal](#attacker-bytes-reaching-a-terminal-are-inert)) |
 | Directory source to other processes | The tree between listing and reading | No-follow opens and identity checks ([directory sources](#directory-sources-changed-concurrently)) |
 | Caller to fsspec, through `archivey://` | A `str` archive location given to `ArchiveyFileSystem`, which fsspec opens with whatever protocol it names; a URL chained on `::` | Not defended: the location is trusted caller input, unlike a `str` given to `open_archive`, which is only ever a local path. A member name belongs in the path given to `open()`, never formatted into a URL, where a `::` in it would name a protocol of its own (`ArchiveyFileSystem` docstring). The tree holds only paths extraction under the file system's policy writes |
-| Caller to archivey | Recursion into nested archives, time budgets | Not defended: the caller bounds them ([non-guarantees](#4-accepted-non-guarantees)) |
+| Caller to archivey | Recursion into nested archives the caller opens, time budgets | Not defended: the caller bounds them, and can cap their decoded bytes and members with one shared `ArchiveyConfig.budget` ([non-guarantees](#4-accepted-non-guarantees)); a format's own nesting (`open_nested`) shares one `max_metadata_bytes`, one `max_decoder_memory` and the outermost archive's `max_ratio` denominator across its levels ([nested-archive amplification](#nested-archive-amplification)) |
 
 ## 3. Defended properties
 
@@ -810,8 +810,10 @@ inflated claim used as the static denominator would also switch off the live rat
 (`BaseArchiveReader._trusted_source_size`). The global guards
 raise `AlwaysStopResourceLimitError`, so they halt even under `OnError.CONTINUE`.
 
-**Residual.** The tracker is per archive and not nesting-aware
-([accepted](#nested-archive-amplification)). A nested archive's static denominator is
+**Residual.** The tracker is per archive and not aware of the nesting a caller does
+([accepted](#nested-archive-amplification)); a format's own nesting (`open_nested`)
+divides every level by the outermost archive's size. A nested archive the caller opens
+from a member stream has a static denominator that is
 the member length its container declares, and nothing checks that declaration first: an
 inflated one switches off both archive-wide guards for the inner archive, and the
 container refuses the short member (`TruncatedError`) only after the payload is decoded,
@@ -1394,11 +1396,44 @@ measured. Public: [where the guarantees stop](../docs/security.md#where-the-guar
 
 ### Nested-archive amplification
 
-Recursion into archives inside archives is caller-driven, so a zip quine loops only if
-the caller loops. The bomb tracker measures one archive, so a zip of zips can pass the
-budget one level at a time. The caller bounds depth and total size. Public:
+Two kinds of recursion into archives inside archives, with different answers.
+
+**The caller recurses.** A caller that opens a member stream as an archive starts a new
+reader, with its own limits. A zip quine loops only if the caller loops. The bomb
+tracker measures one archive, so a zip of zips can pass the budget one level at a time.
+The caller bounds depth and total size. Public:
 [security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop)
 ("Limits apply to each archive separately").
+
+**A format recurses.** `ReaderContext.open_nested` lets a format reader read an archive
+stored inside its own (a `.deb`'s data tar, a `.pkg`'s payload) as members of the outer
+one, up to `MAX_NESTED_DEPTH` (8) levels, with no caller in the loop. These levels share
+one budget for each limit (maintainer ruling, 2026-11-08: "charge across the nesting"),
+so 8 levels cannot use 8 times the caps:
+
+- `max_metadata_bytes`: what an inner level keeps beyond the members it hands out (held
+  members, `charge_metadata` tables, archive comments, late link targets, sparse maps)
+  counts with the outermost listing while that level is open. Its members count once,
+  in the outermost listing.
+- `max_decoder_memory`: an inner level's decoders get the cap less the largest working
+  set each enclosing level declared by the time the inner archive's first byte was
+  decoded, since the outer decoders run while the inner ones do. Reading that byte
+  first makes a member decoder that reads its own header (xz, LZMA Alone, zstd from
+  `ReaderContext.decompress`) declare before the inner cap is set. A level's largest
+  declaration stands for the level, ended decoders included, so the count errs toward
+  refusing. Within one level the cap is still one decoder's. xz, LZMA Alone and zstd
+  declarations are recorded from the first block header, the stream header and each
+  frame header; a later xz block with a larger dictionary is checked by liblzma against
+  the level's cap alone.
+- `max_ratio`: every level is held to the ratio of the outermost archive's compressed
+  size (or the bytes taken from it so far, from a pipe), not of its own input, so a nest
+  of `n` levels decodes at most `n` times the ratio of the caller's bytes, not the ratio
+  to the `n`-th power. The members the walk yields count toward the outermost reader's
+  own guards, which hold the total output as before.
+
+`max_members` needs no change: every inner member reaches the outermost listing, which
+counts it. Code: `archivey.internal.nesting`, `ListingLimitTracker._charge_outward`,
+`_PluginAdapter._nested_config`, `BaseArchiveReader._trusted_source_size`.
 
 ### Reads have no output bound
 
