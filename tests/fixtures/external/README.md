@@ -256,6 +256,9 @@ open-source continuation of Robert Jung's ARJ. Nothing on the CI image writes AR
 - `links.arj`: `arj a -a1 -r` of a file, a symlink to it, a hard link to it, a FIFO and a
   directory, which ARJ for Unix stores as type-6 members with `U` extended headers.
 - `garbled.arj`: `small.txt` garbled with `-gsecret`.
+- `sfx_junior`: `small.txt` with `arj a -je1 -m1`, a self-extractor whose stub is ARJ for
+  Unix's small ARJSFXJR module, an x86-64 ELF program (GPL-2, built from the `arj`
+  source package), written 2026-11-11. The archive starts at byte 23 104.
 - `cc_bla_dos.arj` and `cc_bla_unix.arj`: Commons Compress's `bla.arj` (ARJ for Windows,
   host 11) and `bla.unix.arj` (Apache-2.0, github.com/apache/commons-compress
   `src/test/resources`), fetched 2026-11-09.

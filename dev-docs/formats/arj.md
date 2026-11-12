@@ -12,7 +12,7 @@ written against `archivey.formats` and registered as a built-in, as LHA and CAB 
 | --- | --- |
 | Read | Yes. `internal/backends/arj_reader.py`, an `ArjHandler` (`IndexedFormatHandler`) and an `ArjReader` (`IndexedReader`), registered with `register_builtin_format` |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
-| Source | A file or a stream that can seek. Not a pipe, for now: the listing seeks past each member's data to the next header |
+| Source | A file or a stream that can seek, from its start or behind a self-extracting stub (§4). Not a pipe, for now: the listing seeks past each member's data to the next header |
 | Listing cost | Header by header, one read per header and a seek past the data |
 | Access cost | `DIRECT`: each member is its own stream |
 | Core dependencies | None. Methods 1 to 3 through `lzh_decoder.py` (LHA's decoder), method 4 through `arj_fast_decoder.py`, both archivey's own, in Python |
@@ -22,9 +22,9 @@ written against `archivey.formats` and registered as a built-in, as LHA and CAB 
 | Refuses | Garbled members and members split across volumes, when read; methods past 4, when read; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-arj/spec.md` |
 
-Not here, though a reader might look for it: self-extracting archives (the archive after
-an `.exe` stub) are not searched for; multi-volume sets (`.arj`, `.a01`, ...) are not
-joined; ARJ's security envelope is not checked; chapter archives (backups that keep several
+Not here, though a reader might look for it: multi-volume sets (`.arj`, `.a01`, ...) are
+not joined (tracked internally, after 0.4.0); ARJ's security envelope is not checked, only
+skipped (§3); chapter archives (backups that keep several
 versions of a file) get no special handling, and their chapter labels list as `OTHER`.
 
 ## 1. Shape
@@ -87,16 +87,40 @@ member's data reports `ARCHIVE_EOF_MARKER_MISSING` (`expected_marker="end_of_arc
 after listing every member. Up to 64 KiB after the end header is scanned for non-zero
 bytes (`ARCHIVE_TRAILING_DATA`); `0x00` and the DOS end-of-file byte `0x1A` are padding.
 
+**ARJ-SECURITY envelope.** A registered ARJ can sign an archive (`-hk`): main-header flag
+`0x40`, and the envelope right after the end header. The main header's size field (offset
+16, the archive's size) is then where the envelope starts, and its mode field (offset 26)
+the envelope's length. When the flag is set and the size field is the end header's end,
+the trailing-data check starts past the envelope. The envelope is not checked: ARJ 3.10
+for Unix cannot check ARJ 2.41a's own (it reports it damaged), and 7-Zip ignores it with
+a warning. Nothing in it changes what the members hold.
+
 ## 4. Detection
 
 The two magic bytes at offset 0. That is weak, as for `.Z`; the main header's size, CRC-32
 and file type then confirm it at open, so another file that starts with `60 EA` fails as
 `CorruptionError`.
 
+**Self-extracting archives.** ARJ's `-je` writes a program with the archive after it:
+ARJSFX, ARJSFXV or ARJSFXJR, DOS `MZ` programs (no PE header) from ARJ for DOS, ELF ones
+from ARJ for Unix. No DOS ARJ module is a `.COM`. The backend declares `60 EA` at offset 0
+as SFX magic (`SFX_PARSER_SCANS`), with `_validate_main_header`: the header there must
+pass its size bounds, its CRC-32, its layout and its extended headers' CRC-32s, and be
+file type 2. The CRC-32 leaves a stub's stray `60 EA` a chance of 1 in 2^32, so, unlike
+LHA, the validator does not walk on to the members. A main header the source ends inside
+is `DAMAGED`. When byte 0 is not `60 EA`, `_payload` runs the same scan (overlay start
+first), so `format=ARJ` opens what detection finds; a scan that finds only decoys falls
+back to the first, as RAR and 7z do, and the error names what is wrong there.
+
+Measured once (2026-11-11): ARJ 2.41a's own distribution, `arj241a.exe` (a DOS ARJSFX
+stub, the archive at byte 16 959, an ARJ-SECURITY envelope after it, from the IF Archive),
+lists its 25 members, detected and forced, with no diagnostic, and each member's bytes
+match 7-Zip's. ARJ for Unix's `-je` and `-je1` programs (ELF) read the same way.
+
 ## 5. Tests and fixtures
 
 - `tests/test_arj.py`: `tests/fixtures/external/arj_310` (ARJ 3.10 for Linux: each method,
-  links, a FIFO, a directory, a garbled member) and two of Commons Compress's archives
+  links, a FIFO, a directory, a garbled member, a `-je1` self-extractor) and two of Commons Compress's archives
   (one from ARJ for Windows); damaged archives from a test-only writer of stored members.
 - The Commons Compress corpus test matches CC on its three ARJ archives.
 - Fuzz target `arj` (`tests/atheris_fuzz`).
