@@ -128,6 +128,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container: ${{ matrix.image }}
+    env:
+      # apt's tzdata otherwise waits for a time zone on stdin until the job times out.
+      DEBIAN_FRONTEND: noninteractive
     strategy:
       fail-fast: false
       matrix:
@@ -141,7 +144,7 @@ jobs:
             python: /usr/bin/python3.11
             install: >-
               apt-get update
-              && DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common git gcc g++ curl ca-certificates
+              && apt-get install -y software-properties-common git gcc g++ curl ca-certificates
               && add-apt-repository -y ppa:deadsnakes/ppa
               && apt-get install -y python3.11 python3.11-dev python3.11-venv
     steps:
