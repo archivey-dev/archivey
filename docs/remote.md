@@ -104,7 +104,11 @@ because some formats keep an index and others have to be walked from the start
   this).
 - **A solid archive** has to be decompressed from the start of a block to reach a member in it,
   so reading a member near its end fetches everything before it
-  ([Solid archives](reading.md#solid-archives)). Compressed TARs are solid this way.
+  ([Solid archives](reading.md#solid-archives)). Compressed TARs are solid this way, but
+  listing one keeps restart points, so a read after the listing fetches only from the nearest
+  point before the member. A `.tar.gz` has one about every MiB, and a `.tar.xz` written in
+  several blocks one per block. Other compressed TARs restart only where the stream starts a
+  new part, and most have just one, so a read there fetches the stream again from its start.
 - **A pass over every member**, with `stream_members()` or `extract_all()`, reads the archive
   from start to end. Archivey makes each request larger as the reads stay in order, up to 8 MiB,
   so a 40 MB ZIP is read in fewer than ten requests.
