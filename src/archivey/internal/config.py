@@ -40,6 +40,8 @@ __all__ = [
     "ProcessIsolation",
     "StreamConfig",
     "check_decoder_memory",
+    "decoder_cap_error",
+    "decoder_cap_refusal",
     "probe_lzma_dictionary",
     "stream_config_from_archivey",
     "without_accelerators",
@@ -69,6 +71,12 @@ class StreamConfig:
     seekable: bool = False
     """Declared seek demand (``MemberStreams.SEEKABLE``): accelerator ``AUTO``
     resolution and index construction key off it."""
+
+    restart_points: bool = False
+    """Record restart points (the decoder's seek index) without declaring seek demand:
+    accelerator ``AUTO`` resolves as for a stream read once. A compressed TAR opened for
+    random access sets it, because a member read after the listing seeks back into the
+    decoded stream. See :attr:`records_restart_points`."""
 
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     """The caller's ``ArchiveyConfig.use_rapidgzip``: whether a gzip stream may go
@@ -159,8 +167,17 @@ class StreamConfig:
     there. A detection probe builds its config without one, so a probe's sizes are
     never recorded."""
 
+    recover_partial_data: bool = True
+    """The caller's ``ArchiveyConfig.recover_partial_data``: whether a decompressing
+    stream decodes again to hand back the bytes before a decoder error
+    (:func:`~archivey.internal.streams.decompressor_stream.partial_data_recovery`). A
+    container's own stream (a compressed TAR) sets it ``True`` whatever the caller
+    says: one read of it can hold several whole members before the damage, which a
+    lost decoder call would take with it."""
+
     excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS
-    """The caller's ``FormatPolicy.exclude_libraries``: a codec whose package it names
+    """The packages the caller's ``FormatPolicy`` turns off (``FormatPolicy._libraries_off``,
+    from ``exclude_libraries`` and ``only_libraries``): a codec whose package it names
     opens as if the package were not installed."""
 
     @property
@@ -171,6 +188,12 @@ class StreamConfig:
         from archivey.internal.streams.codecs.isolated import natives_for
 
         return natives_for(self.process_isolation)
+
+    @property
+    def records_restart_points(self) -> bool:
+        """Whether the decoder records restart points: on declared seek demand
+        (:attr:`seekable`) or when asked for them alone (:attr:`restart_points`)."""
+        return self.seekable or self.restart_points
 
 
 def stream_config_from_archivey(
@@ -191,7 +214,8 @@ def stream_config_from_archivey(
         use_indexed_bzip2=config.use_indexed_bzip2,
         decoder_limits=config.decoder_limits,
         process_isolation=config.process_isolation,
-        excluded_libraries=config.formats.exclude_libraries,
+        recover_partial_data=config.recover_partial_data,
+        excluded_libraries=config.formats._libraries_off,
     )
 
 
@@ -243,6 +267,45 @@ def probe_lzma_dictionary(declared: int, read_bound: int | None) -> int:
     return min(declared, max(read_bound + _LZMA_FILTER_LOOKAHEAD, _LZMA_DICT_MIN))
 
 
+def probe_dictionary_origin(declared: int) -> str:
+    """``check_decoder_memory``'s ``counted_from`` for a probe's clamped dictionary."""
+    return (
+        f"the {declared}-byte dictionary the header declares, cut to what the "
+        "detection probe reads"
+    )
+
+
+# The attribute a ``ResourceLimitError`` carries when the caller's
+# ``max_decoder_memory`` refused the decoder: ``(cap, needed)``. A private attribute
+# rather than a subclass, so the caller still sees the public type; it lives in the
+# instance ``__dict__``, which pickling keeps (``ArchiveyError.__reduce__``), so a
+# refusal from a decoder child arrives with it.
+_CAP_REFUSAL_ATTR = "_archivey_decoder_cap_refusal"
+
+
+def decoder_cap_error(
+    message: str, *, cap: int, needed: int | None
+) -> ResourceLimitError:
+    """A ``ResourceLimitError`` that says the caller's ``max_decoder_memory`` refused.
+
+    ``cap`` is the caller's ``max_decoder_memory``. ``needed`` is what the decoder
+    would have reserved, or ``None`` when the decoder only says it is over the cap (a
+    zstd window). Raised where the cap, and not a probe's own ceiling or a missing
+    resource, is what refused: :func:`check_decoder_memory`, and libzstd's window
+    refusal under the cap. Detection reads it back with :func:`decoder_cap_refusal`
+    to report ``DETECTION_DECODER_LIMITED`` with the numbers.
+    """
+    error = ResourceLimitError(message)
+    setattr(error, _CAP_REFUSAL_ATTR, (cap, needed))
+    return error
+
+
+def decoder_cap_refusal(exc: BaseException) -> tuple[int, int | None] | None:
+    """``(cap, needed)`` when ``exc`` came from :func:`decoder_cap_error`, else ``None``."""
+    refusal: tuple[int, int | None] | None = getattr(exc, _CAP_REFUSAL_ATTR, None)
+    return refusal
+
+
 def check_decoder_memory(
     declared: int,
     *,
@@ -292,10 +355,12 @@ def check_decoder_memory(
     else:
         detail = f"{what} is {declared} bytes, counted from {counted_from}"
         numbers = "these numbers"
-    raise ResourceLimitError(
+    raise decoder_cap_error(
         f"Decoder limit reached: max_decoder_memory={cap} "
         f"({detail}). The archive chose {numbers}; "
-        "raise DecoderLimits.max_decoder_memory if the archive is trusted."
+        "raise DecoderLimits.max_decoder_memory if the archive is trusted.",
+        cap=cap,
+        needed=declared,
     )
 
 

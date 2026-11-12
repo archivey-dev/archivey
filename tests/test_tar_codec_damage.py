@@ -3,10 +3,10 @@
 A codec stream hands back the bytes before damage and raises on the next read (ADR
 0014). Four TAR reads took that short read as the end of the archive and never read
 again: the header read, the extended-header read, a member read with no size, and the
-forward walk's skip over member data. So a corrupt ``.tar.gz`` or ``.tar.xz`` listed with only a warning about
-a missing end-of-archive marker, a full read of a member raised ``TruncatedError``,
-and on a pipe the skip raised ``TruncatedError``. Each now raises the codec's
-``CorruptionError``. Found by fuzzing seekable against pipe reads.
+forward walk's skip over member data. So a corrupt ``.tar.gz`` or ``.tar.xz`` listed
+with only a warning about a missing end-of-archive marker, a full read of a member
+raised ``TruncatedError``, and on a pipe the skip raised ``TruncatedError``. Each now
+raises the codec's ``CorruptionError``. Found by fuzzing seekable against pipe reads.
 """
 
 from __future__ import annotations

@@ -73,6 +73,14 @@ problems; it does not rewrite files. Prefer the script over `uv run pre-commit i
 Cursor remaps `core.hooksPath`, and the script installs into the chained original hooks
 directory so the hook still runs.
 
+**Line width.** Prose is wrapped at 88 columns (100 under `docs/`), and no line may pass
+100: ruff's E501 checks every Python line, comments and docstrings included, and
+`scripts/checks/check_line_width.py` checks the Markdown lines a branch adds (in
+`check.sh`, CI and the git hook). After an edit, `./scripts/check.sh --fix` rewraps only
+the paragraphs it touched, Markdown, comment or docstring, from the edited line to where
+the old line breaks resume, so the diff stays the edit. A whole-file formatter would
+rewrap every paragraph instead.
+
 **From a `git worktree`,** both scripts work unchanged. A worktree starts without a
 `.venv`, so they create one for it (about a second; uv hardlinks from its cache), and the
 tree gets its own environment. One trap if you bypass the scripts: a bare
@@ -134,7 +142,9 @@ distribution unar packages, plus the minimum-versions leg when the change touche
 `pyproject.toml`, `uv.lock`, `.python-version` or `ci.yml`, and a failure there takes the
 pull request out of the queue. Linux 3.12–3.14 and macOS and Windows 3.11 run only on the
 daily run and a dispatched run, so the release gate's dispatch is their last run before
-a release; Atheris runs nightly and in the release gates. A queued
+a release; Atheris runs nightly and in the release gates. `python-distributions.yml`
+runs the suite daily on python.org, Ubuntu 22.04, Fedora and conda-forge Pythons, whose
+liblzma, zlib and bzip2 differ from the ones uv's Pythons bundle. A queued
 change that touches no path on `FULL` in `scripts/ci/ci_scope.py` (the library, the
 library tests and the files they read, the benchmarks, the dependencies, the CI, and
 every script outside the folders its `NOT_FULL` lists,

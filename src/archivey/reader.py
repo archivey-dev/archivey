@@ -37,6 +37,7 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    BackendUse,
     ExtractionPolicy,
     ExtractionPolicyStr,
     ExtractionProgress,
@@ -554,6 +555,26 @@ class ForwardArchiveReader(ABC):
 
     @property
     @abstractmethod
+    def backends_used(self) -> tuple[BackendUse, ...]:
+        """The readers, packages and programs this reader has run so far, in the order
+        each was first used.
+
+        A snapshot: it grows as members are read. The format reader comes first
+        (``BackendUse("reader", "archivey", "ZIP")``, or the plugin that reads the
+        format), then each optional package the moment it decodes something (``pyppmd``
+        for a PPMd member, ``rapidgzip`` when the accelerator runs), each plugin codec
+        with the packages its ``requires`` names, and each external program with its
+        path (``unrar`` at ``/usr/bin/unrar``). An archive a plugin reads through
+        ``ReaderContext.open_nested`` adds its own reader and packages here. The
+        standard library's codecs are not listed, except zstd, which names the module in
+        use (``compression.zstd`` on Python 3.14 and later). Decodes made while
+        detecting the format are not listed either. Experimental, as
+        :class:`~archivey.BackendUse` is.
+        """
+        ...
+
+    @property
+    @abstractmethod
     def diagnostics(self) -> DiagnosticSummary:
         """Fresh immutable cumulative snapshot of diagnostics for this reader."""
         ...
@@ -802,8 +823,9 @@ class ForwardArchiveReader(ABC):
         checks, so it sees unsafe members too; it may rename/sanitize a member (return
         a ``.replace()``d copy) or skip it (return ``None``), and the safety checks run
         on what it returns. The call runs under the config the reader was opened with;
-        ``limits`` overrides its extraction limits for this call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
-        summary is the delta for this extraction call.
+        ``limits`` overrides its extraction limits for this call only. Returns an
+        :class:`~archivey.ExtractionReport` whose diagnostic summary is the delta for
+        this extraction call.
 
         ``abort_on`` names events that end the whole call the first time they occur —
         raising instead of returning a report. It is independent of ``on_error``: see

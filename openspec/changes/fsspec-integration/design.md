@@ -119,7 +119,7 @@ other way or refuses them, rather than drop them in silence (DR-1, DR-15):
 | `size` | `fs.size(path)`, read once at open, as a **fact**: it clamps reads, the way `stat` does for a path. The archive is the object as it was at open; a later change is D7's to catch, not the clamp's |
 | `size_hint` | The same value |
 | `path`, `volume_paths` | `None`: there is no local file. A backend that needs a path (RAR's `unrar`) spools, under `SpoolLimits`, as it does for any stream |
-| `name` | `of.path` without credentials: the `user:password@` of a URL is removed, and for `http`/`https` the query and fragment too, because a signed URL keeps its signature there. The name reaches `archive_name` and archivey's own messages, diagnostics and logs, so it must not carry a secret. An I/O error the file system raises propagates unchanged (DR-15a) and can carry the URL as given. Detection's name checks read it. Volume discovery (D4) and every fetch use `of.path` as given |
+| `name` | `of.path` without credentials: the `user:password@` of a URL is removed, and for `http`/`https` the query and fragment too, because a signed URL keeps its signature there. The name reaches `archive_name` and archivey's own messages, diagnostics and logs, so it must not carry a secret. An I/O error the file system raises propagates unchanged (DR-15a) and can carry the URL as given. Detection's name checks read it. Every fetch uses `of.path` as given |
 | `seek_is_expensive` | `True`: a seek may cost a request, so detection's probe reads at an offset grow the prefix instead (`detection.md` §4.2) |
 | `nearest_resume_offset(target)` | `target`: a range request starts anywhere and decodes nothing, so the tail reads run as on a path, one request each (below) |
 | Ownership | Nothing to close: the planner holds `(fs, path, size)` and its fetched windows, and `close()` drops the windows. The caller's file system object is never closed |
@@ -185,8 +185,8 @@ Why this shape:
   paths, streams and sequences. An `OpenFile` is one more kind of source.
 - **It gives archivey what it needs and a file object does not:** the file system and
   the path. With those, archivey fetches ranges directly (`fs.cat_file(path, start,
-  end)`), learns the size once (`fs.size(path)`), and lists the parent directory to find
-  sibling volumes.
+  end)`) and learns the size once (`fs.size(path)`). It does not list the parent
+  directory for sibling volumes (D4).
 - **The check costs nothing without fsspec.** `open_archive()` tests for `OpenFile` only
   when `"fsspec" in sys.modules`. A caller who has not imported fsspec cannot be holding
   an `OpenFile`.
@@ -454,16 +454,42 @@ Rejected:
 
 ### D4. Sibling volumes over fsspec
 
-For an `OpenFile` source, volume discovery lists the parent directory once (`fs.ls(parent,
-detail=True)`, cached per directory) and applies the same naming rules as local discovery
-(`archive-reading` §Multi-volume). The rules run on a path-like adaptor,
-`RemoteVolumePath`, that answers every question they ask (`iterdir`, `is_file`,
-`is_symlink`) from that one listing, so the same rule code serves both callers; the
-listing's `type` and `islink` keep the link refusal. Each volume becomes its own
-`RangeSource`, with its size taken from the listing, so no part costs an `info` request. A
-file system without listing (plain HTTP) finds no siblings, and a multi-volume open then
-fails as it does today for a lone first volume; an explicit sequence of `OpenFile` objects
-is the way to open those.
+**An `OpenFile` source is never searched for sibling volumes** (davi, 2026-11-11, which
+replaces the remote discovery this section first designed). archivey does not list the
+parent directory and probes no sibling name, whatever `ArchiveyConfig.discover_volumes`
+says. A remote set is opened from an explicit sequence of `OpenFile` objects, in order;
+each one becomes its own `RangeSource` over the reader's one window pool (D2 rule 4), and
+the sequence is held to the same name checks as a list of paths (a gap or two sets is
+refused).
+
+Why: listing a remote folder is unreliable. On S3 it needs a permission that reading an
+object does not, HTTP servers often have no index page and parsing one is fragile, and
+nothing bounds what a search costs on a large folder, while every remote `.rar`, `.exe`
+or `.sfx` open would pay it. The caller knows the parts, so the list is cheaper and
+certain.
+
+What the caller sees instead:
+
+- A lone remote part whose name marks it as one (`x.7z.001`, `x.zip.001`, `x.exe.001`) is
+  refused by name with `TruncatedError` ("found part 1 only"), as a lone local part is,
+  and the message adds: pass the volume parts as a list of `OpenFile` objects. With
+  `discover_volumes=False` it is read alone, as a local part is.
+- A RAR volume read alone whose headers say another follows (`x.part1.rar`, `x.rar`, an
+  SFX `.exe`) lists what it holds and then raises `TruncatedError`, and a later volume
+  read alone (`x.part2.rar`, `x.r00`) raises "Need first volume", and a volume that
+  says nothing follows it raises "additional volumes required"; for a lone `OpenFile`
+  each message adds the same remedy, and for a stream none does.
+- A remote archive that is complete opens as before, under a volume-shaped name too, with
+  no diagnostic: a local lone part that opens has none either.
+- `discover_volumes=True` on a remote source is neither warned about nor refused: it is
+  the default, so an explicit `True` cannot be told from no choice, and a warning on
+  every remote open would be noise.
+- Info-ZIP `x.z01` keeps the spanned-ZIP refusal: a list does not help there, as no
+  spanned set is read.
+
+Reopen if a store gives a cheap, permission-free and bounded way to find the parts (a
+manifest, a known naming convention the caller opts into). Lazy opening of parts and
+probing predicted names instead of listing are a later design, not started here.
 
 ### D5. Batched fetches for whole-archive passes
 

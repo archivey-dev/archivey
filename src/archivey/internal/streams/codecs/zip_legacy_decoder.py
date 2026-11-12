@@ -72,6 +72,9 @@ class _BitDecompressor:
     """
 
     label = ""
+    # A corrupt code raises only once the bytes before it are handed out
+    # (``_raise_after``): see ``Decoder.holds_back_errors``.
+    holds_back_errors = True
 
     def __init__(self, unpack_size: int | None) -> None:
         self._unpack_size = unpack_size

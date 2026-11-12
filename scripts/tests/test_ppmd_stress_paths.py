@@ -3,8 +3,8 @@
 That workflow is the only place the stress marker, the hard raw-streams soak and the
 valgrind gate run; besides its weekly run, it runs after a merge to main that changes a
 listed path. A merge outside its list starts no run, so a renamed file or a new script
-step shows up as nothing rather than as a red run. This pins the list against the tree and against the scripts the
-workflow's own steps run.
+step shows up as nothing rather than as a red run. This pins the list against the tree
+and against the scripts the workflow's own steps run.
 """
 
 from __future__ import annotations

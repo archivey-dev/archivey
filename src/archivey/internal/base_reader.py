@@ -4,10 +4,11 @@
 the backend's ``open_read`` builds a reader: a :class:`BaseArchiveReader` subclass for
 one format. The reader subclass supplies four hooks: list the members
 (``_iter_members``), open one member's data (``_open_member``), describe the archive
-(``_get_archive_info``) and release what it built (``_close_archive``). The base class turns those into the public
-:class:`~archivey.ArchiveReader` surface and owns everything that does not depend on
-the format: who may call when, the member list, links, limits, verification and
-diagnostics. The class docstring of :class:`BaseArchiveReader` is the full contract.
+(``_get_archive_info``) and release what it built (``_close_archive``). The base class
+turns those into the public :class:`~archivey.ArchiveReader` surface and owns everything
+that does not depend on the format: who may call when, the member list, links, limits,
+verification and diagnostics. The class docstring of :class:`BaseArchiveReader` is the
+full contract.
 
 How a call flows. ``members()``, ``get()`` and ``open()`` first build the member list
 once (``_materialize_members``). The list comes from the reader's single *member walk*
@@ -176,8 +177,10 @@ from archivey.internal.naming import (
     emit_member_name_controls,
     link_target_name_keys,
     name_controls_possible,
+    normalize_hardlink_target,
     resolve_link_target_name,
 )
+from archivey.internal.nesting import enclosing_reader
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import is_unverified_data_error
 from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
@@ -238,6 +241,7 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    BackendUse,
     ExtractionPolicy,
     ExtractionPolicyStr,
     ExtractionProgress,
@@ -817,6 +821,9 @@ class BaseArchiveReader(ArchiveReader):
         # (``ReaderContext.open_nested``) knows its depth from the start, so the checks
         # its open makes already skip what the outer listing checks.
         self._nested_depth = self._diagnostics_collector.nesting_depth
+        # The reader this one reads inside, or ``None`` at the top: the readers of one
+        # nest share their budgets (``archivey.internal.nesting``).
+        self._nest_outer: BaseArchiveReader | None = enclosing_reader()
         self._member_streams = member_streams
         self._open_site = open_site
         # A random, opaque identity token (not id(self), which the allocator can reuse
@@ -914,11 +921,18 @@ class BaseArchiveReader(ArchiveReader):
         self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
         # The published listing (``_publish_materialized``); ``None`` until then.
         self._materialized: _Materialized | None = None
-        self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
+        self._listing_tracker = ListingLimitTracker(
+            self._config.listing_limits,
+            budget=self._config.budget,
+            outer=None
+            if self._nest_outer is None
+            else self._nest_outer._listing_tracker,
+        )
         # How close this reader came to each reader-lifetime limit (private; read by
         # the scan script and ``archivey extract --dry-run``).
         self._usage = ResourceUsageRecorder()
         self._usage.watch_listing(self._listing_tracker)
+        self._note_reader_backend(format)
         # A streaming reader's one forward pass: whether it has started, and the
         # shared iterator every caller of ``_begin_forward_pass`` gets.
         self._forward_pass_started: bool = False
@@ -1205,6 +1219,8 @@ class BaseArchiveReader(ArchiveReader):
             # BaseException: an interrupt propagates alone, through the finally.
             teardown_exc = exc
         finally:
+            # What a reader inside another one kept is no longer the nest's.
+            self._listing_tracker.leave_nest()
             # Also on an interrupt: teardown is never retried, so it is complete either way.
             self._state.complete_teardown()
         if pending is not None and teardown_exc is not None:
@@ -1566,17 +1582,47 @@ class BaseArchiveReader(ArchiveReader):
 
     # --- Measurement counters and source read hints -----------------------------------
 
-    def _track_decompressed(self, stream: BinaryIO) -> BinaryIO:
-        """Wrap ``stream`` to count decoded/output bytes when measurement is on.
+    def _track_decompressed(
+        self, stream: BinaryIO, *, draw_budget: bool = True
+    ) -> BinaryIO:
+        """Wrap ``stream`` to count decoded/output bytes when measurement is on, and to
+        draw them from the config's :class:`~archivey.Budget` when it holds one.
 
         Backends call this on the stream that *is* the decompressor (or stored-data)
         output: member streams for ZIP/TAR/single-file, folder/solid-block streams for
-        solid 7z/RAR. Identity when measurement is off.
+        solid 7z/RAR. Identity when measurement is off and there is no budget.
+
+        ``draw_budget=False`` counts without drawing, for member data a decode stage
+        below already draws (:meth:`_budget_drawn`): a compressed TAR's members, whose
+        archive stream draws every byte it decodes, skipped members and headers too, a
+        format adapter's compressed layer, a streaming ZIP's codec members.
         """
         counter = self._decompressed_counter
-        if counter is None:
+        if counter is not None:
+            stream = OutputCountingStream(stream, counter)
+        if draw_budget:
+            stream = self._budget_drawn(stream)
+        return stream
+
+    def _budget_drawn(self, stream: BinaryIO) -> BinaryIO:
+        """``stream``, drawing every byte it delivers from the config's
+        :class:`~archivey.Budget`, or ``stream`` itself when there is none.
+
+        Put on a decode stage, it draws what the decoder produces whoever reads it: a
+        member's reads, and the bytes of members skipped on the way to another.
+        """
+        budget = self._config.budget
+        if budget is None:
             return stream
-        return OutputCountingStream(stream, counter)
+        # Imported here, as the other wrappers built only on request.
+        from archivey.internal.streams.counting import BudgetDrawStream
+
+        if isinstance(stream, ArchiveStreamImpl):
+            # A codec's own handle stays one, so the member's handle collapses it
+            # and takes over its checks; the draw goes on its inner stream.
+            stream._hold_inner(lambda inner: BudgetDrawStream(inner, budget))
+            return stream
+        return BudgetDrawStream(stream, budget)
 
     def _seek_handle_wrapper(self) -> Callable[[BinaryIO], BinaryIO] | None:
         """Return a ``SharedSource(wrap_handle=…)`` callback when measurement is on."""
@@ -1739,6 +1785,7 @@ class BaseArchiveReader(ArchiveReader):
         checks_content: bool = False,
         custom_digests: CustomDigests | None = None,
         bounded: bool = False,
+        draw_budget: bool = True,
     ) -> MemberStreamParts:
         """A raw member stream and how to serve it: what ``_open_member`` returns.
 
@@ -1779,13 +1826,17 @@ class BaseArchiveReader(ArchiveReader):
         records none, or records one that cannot be trusted (a macOS ZIP's size
         modulo 2³²).
 
+        ``draw_budget=False`` leaves the config's :class:`~archivey.Budget` to a decode
+        stage below ``inner`` that draws every byte it produces (``_budget_drawn``),
+        so the member's bytes are not drawn twice.
+
         ``translate`` is the translator of a codec ``inner`` was opened with
         (:func:`~archivey.internal.streams.codecs.registry.open_codec_raw`). It is asked
         before the backend's, as it would be had ``inner`` been the codec's own
         ``ArchiveStream`` collapsed into this one.
         """
         if track_output:
-            inner = self._track_decompressed(inner)
+            inner = self._track_decompressed(inner, draw_budget=draw_budget)
         if seekable is None and (
             # A nested ``ArchiveStream`` is asked now, as its own declaration counts.
             # Any other stream is asked on first use, if ever: a lazy handle that
@@ -2579,8 +2630,9 @@ class BaseArchiveReader(ArchiveReader):
         the default lists every member first, with the limits enforced, so nothing is
         written from an archive over them. A backend whose listing is itself a scan of
         the data may instead list as members arrive during the pass (TAR, a sequential
-        format: :meth:`_pass_reads_through_walk`), and not decode the archive twice. A streaming reader always does that: its one pass is
-        the listing. Every pass enforces the limits as it registers members.
+        format: :meth:`_pass_reads_through_walk`), and not decode the archive twice. A
+        streaming reader always does that: its one pass is the listing. Every pass
+        enforces the limits as it registers members.
 
         A listing that ends in damage does not raise here: the pass writes the
         members listed before it and then raises the damage, as a TAR pass does.
@@ -2646,6 +2698,11 @@ class BaseArchiveReader(ArchiveReader):
         """
         member._member_id = idx
         member._archive_id = self._archive_id
+        if member.type is MemberType.HARDLINK and member.link_target:
+            # A hard link names another member, so its target lists in that member's
+            # name form, whichever reader built it (``normalize_hardlink_target``).
+            # Done before the presentation checks below, which look the target up.
+            member.link_target = normalize_hardlink_target(member.link_target)
         # A nested reader's members are checked again, by name, as the outer
         # listing lists them (``ReaderContext.open_nested``): only once, there.
         if idx >= self._walk_presented and not self._nested_depth:
@@ -3608,11 +3665,11 @@ class BaseArchiveReader(ArchiveReader):
         A hard link is always bounded by its own id, so a caller passes no other
         ``before_id`` for one. It takes the latest entry listed before itself, across
         both spellings, and never one listed after it, in any format or mode: a hard
-        link names a file already archived. ``tar(1)`` and ``unrar`` extract one by linking to what they
-        have already written, and ``unrar`` fails a link whose target comes later ("You
-        need to unpack the link target first"). The other formats store no hard-link
-        record. A backward answer also never changes as a streaming walk lists more
-        members, so it can be memoized.
+        link names a file already archived. ``tar(1)`` and ``unrar`` extract one by
+        linking to what they have already written, and ``unrar`` fails a link whose
+        target comes later ("You need to unpack the link target first"). The other
+        formats store no hard-link record. A backward answer also never changes as a
+        streaming walk lists more members, so it can be memoized.
         """
         if not member.link_target:
             return None
@@ -3825,6 +3882,16 @@ class BaseArchiveReader(ArchiveReader):
         self._state.require_open("cost")
         return self._cost_receipt()
 
+    def _note_reader_backend(self, format: ArchiveFormat) -> None:
+        """Record the format reader in :attr:`backends_used`. A plugin adapter records
+        its plugin instead; a reader built on a package (ISO on pycdlib) adds it."""
+        self._usage.note_backend("reader", "archivey", format.display_name)
+
+    @property
+    @override
+    def backends_used(self) -> tuple[BackendUse, ...]:
+        return self._usage.backends()
+
     def _cost_receipt(self) -> CostReceipt:
         """``ArchiveInfo.cost``; overridden as :meth:`_archive_comment` is."""
         return self._get_archive_info().cost
@@ -3873,7 +3940,15 @@ class BaseArchiveReader(ArchiveReader):
         complements. A seekable source's hint counts, and so does a member stream's
         declared length (``seek_is_expensive``), itself unchecked until the member ends.
         A caller's non-seekable stream's ``size`` does not.
+
+        A reader inside another one (``ReaderContext.open_nested``) answers with the
+        outermost archive's: every level of a nest is held to ``max_ratio`` of the
+        compressed bytes the caller handed over, so a nest of ``n`` levels decodes at
+        most ``n`` times that ratio in all, and not the ratio to the ``n``-th power.
         """
+        outer = self._nest_outer
+        if outer is not None:
+            return outer._trusted_source_size()
         src = self._source
         if src is None:
             return None
@@ -3915,7 +3990,13 @@ class BaseArchiveReader(ArchiveReader):
         forward-only bytes, so a guard built before a backend installs its counter loses
         nothing by keeping the source's count. The furthest offset counts a byte read
         again once, so it never passes the archive's size.
+
+        A reader inside another one answers with the outermost archive's, as
+        :meth:`_trusted_source_size` does.
         """
+        outer = self._nest_outer
+        if outer is not None:
+            return outer._live_consumed()
         counter = self._compressed_input_counter
         if counter is not None:
             return lambda: counter.bytes_read
@@ -4032,6 +4113,16 @@ class BaseArchiveReader(ArchiveReader):
                     usage=self._usage,
                 ),
                 report_trailing_data=True,
+                # Random access reads members after the listing has decoded past
+                # them, so each read seeks back. Restart points let it resume near
+                # the member and not decode again from the start. A streaming walk
+                # never seeks back, so it keeps none.
+                restart_points=not streaming,
+                # The members are read through this stream, several small ones to
+                # one read (the TAR walk reads ahead): a failing call that lost its
+                # bytes would take whole members before the damage with it. So it
+                # recovers them whatever the caller set.
+                recover_partial_data=True,
             ),
             stamp=lambda exc: self._stamp_error_context(exc),
             collector=self._diagnostics_collector,
@@ -4041,6 +4132,10 @@ class BaseArchiveReader(ArchiveReader):
             # read that reaches the damage; each member stream repeats its own.
             repeat_verdict=streaming,
         )
+        # The archive stream is the decode stage: it draws every byte decoded, the
+        # headers and the members a walk skips too, so its members draw nothing more
+        # (``draw_budget=False``).
+        decoded = self._budget_drawn(decoded)
         limits = self._ratio_limits()
         if limits.max_ratio is None:
             return decoded

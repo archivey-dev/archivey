@@ -12,7 +12,6 @@ from __future__ import annotations
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
-    ResourceLimitError,
     UnsupportedFeatureError,
     exception_detail,
 )
@@ -20,6 +19,7 @@ from archivey.formats import Decompressor
 from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
+    decoder_cap_error,
 )
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
@@ -32,6 +32,7 @@ from archivey.internal.streams.codecs.base import (
     CodecParams,
     StreamCodec,
 )
+from archivey.internal.streams.codecs.declared_memory import noting
 from archivey.internal.streams.codecs.framed_decoder import (
     FrameCheck,
     StreamIndex,
@@ -40,6 +41,8 @@ from archivey.internal.streams.codecs.framed_decoder import (
 )
 from archivey.internal.streams.codecs.zstd_framing import (
     FRAME_MAGIC as ZSTD_FRAME_MAGIC,
+    MAX_FRAME_HEADER_SIZE,
+    frame_window_size,
     regular_frame_behind_skippable_frames,
 )
 from archivey.internal.streams.codecs.zstd_seek_table import build_seek_table_index
@@ -130,11 +133,13 @@ def _zstd_window_refusal(exc: Exception, limits: DecoderLimits) -> ArchiveyError
             if 1 << window_log_max <= cap
             else "the smallest window libzstd can be limited to"
         )
-        return ResourceLimitError(
+        return decoder_cap_error(
             f"Decoder limit reached: max_decoder_memory={cap} (a zstd frame declares "
             f"a window over {1 << window_log_max} bytes, {bound}; libzstd refused it "
             f"before allocating). The archive chose this number; raise "
-            f"DecoderLimits.max_decoder_memory if the archive is trusted."
+            f"DecoderLimits.max_decoder_memory if the archive is trusted.",
+            cap=cap,
+            needed=None,
         )
     return UnsupportedFeatureError(
         f"A zstd frame declares a window over {1 << window_log_max} bytes, the "
@@ -171,7 +176,13 @@ class ZstdCodec(StreamCodec):
         window_log_max, _ = _zstd_window_log_max(config.decoder_limits)
         window_log_max = _probe_window_log_max(window_log_max, config.probe_read_bound)
         options = {deps.zstd.DecompressionParameter.window_log_max: window_log_max}
-        return config.natives.zstd_decompressor(options)
+        return noting(
+            config.natives.zstd_decompressor(options),
+            None if config.probe_read_bound is not None else config.usage,
+            header_size=MAX_FRAME_HEADER_SIZE,
+            declared=frame_window_size,
+            what="a zstd frame's window",
+        )
 
     @override
     def frame_check(self) -> FrameCheck:
@@ -190,11 +201,11 @@ class ZstdCodec(StreamCodec):
         self, params: CodecParams, config: StreamConfig
     ) -> StreamIndex | None:
         del params
-        if not config.seekable:
+        if not config.records_restart_points:
             return None
-        # Declared seek demand only (``seekable-decompressor-streams``): each
-        # regular frame starts a seek point, and the seekable format's table
-        # lists them all without decoding.
+        # Declared seek demand or restart points only
+        # (``seekable-decompressor-streams``): each regular frame starts a seek point,
+        # and the seekable format's table lists them all without decoding.
         collector = config.collector
         return StreamIndex(
             resumes_at=lambda data: data.startswith(ZSTD_FRAME_MAGIC),

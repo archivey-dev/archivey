@@ -124,6 +124,10 @@ class ContainerFormat(StrEnum):
     Header levels 0 to 3 are read, with stored members (``-lh0-``, ``-lz4-``,
     ``-pm0-``) and the ``-lh1-``, ``-lh4-`` to ``-lh7-``, ``-lhx-``, ``-lk7-``,
     ``-lzs-`` and ``-lz5-`` methods; needs a source that can seek."""
+    ARJ = "arj"
+    """An ARJ archive (``.arj``), from DOS and ARJ for Unix. Methods 0 to 4 are read;
+    garbled (password-protected) members and members split across volumes are listed
+    but not read. Needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -144,10 +148,10 @@ class PluginContainer(StrEnum):
     A plugin subclasses it with one member per container it adds, and builds its
     :class:`~archivey.ArchiveFormat` from that member::
 
-        class ArjContainer(PluginContainer):
-            ARJ = "arj"
+        class ZooContainer(PluginContainer):
+            ZOO = "zoo"
 
-        ARJ = ArchiveFormat(ArjContainer.ARJ, StreamFormat.UNCOMPRESSED)
+        ZOO = ArchiveFormat(ZooContainer.ZOO, StreamFormat.UNCOMPRESSED)
 
     Experimental, with the rest of ``archivey.formats``: any release may change it.
     Code that matches on ``ArchiveFormat.container`` needs a default case once a plugin
@@ -306,6 +310,7 @@ class ArchiveFormat:
     XAR: ClassVar[ArchiveFormat]
     CAB: ClassVar[ArchiveFormat]
     LHA: ClassVar[ArchiveFormat]
+    ARJ: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -402,6 +407,7 @@ ArchiveFormat.SQUASHFS = ArchiveFormat(
 ArchiveFormat.XAR = ArchiveFormat(ContainerFormat.XAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CAB = ArchiveFormat(ContainerFormat.CAB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.LHA = ArchiveFormat(ContainerFormat.LHA, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.ARJ = ArchiveFormat(ContainerFormat.ARJ, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -466,6 +472,36 @@ OptionalLibraryStr = Literal[
     "bz3",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
+
+
+BackendKindStr = Literal["reader", "codec", "library", "program"]
+"""What a :class:`BackendUse` names: see :attr:`BackendUse.kind`."""
+
+
+@dataclass(frozen=True)
+class BackendUse:
+    """One piece of code, package or program a reader ran to read its archive.
+
+    ``reader.backends_used`` lists them. Experimental: any release may add a kind or
+    change what a name holds.
+    """
+
+    kind: BackendKindStr
+    """``"reader"``: the format reader, built in or a plugin. ``"codec"``: a plugin
+    codec. ``"library"``: an optional package (an :class:`OptionalLibrary` value), or a
+    module a plugin's ``requires`` names. ``"program"``: an external program."""
+
+    name: str
+    """``"archivey"`` for a built-in reader; a plugin's handler class, as
+    ``module.QualName``; the package's import name; or the program's name, such as
+    ``"unrar"``."""
+
+    used_for: str
+    """What it read: the format (``"RAR"``), or what a package or codec decoded
+    (``"ppmd"``, ``"AES decryption"``)."""
+
+    path: str | None = None
+    """The absolute path of a program that ran, else ``None``."""
 
 
 @dataclass(frozen=True)
@@ -625,8 +661,9 @@ class MemberType(Enum):
     SYMLINK = "symlink"
     """A symbolic link. ``link_target`` holds the target as stored."""
     HARDLINK = "hardlink"
-    """A hard link to another member, whose data it shares. ``link_target`` names that
-    member, and ``link_target_member`` is the member when the archive has it."""
+    """A hard link to another member, whose data it shares. ``link_target`` is that
+    member's listed name, and ``link_target_member`` is the member when the archive
+    has it."""
     OTHER = "other"
     """An entry with no data that is not a file, directory or link, such as a device,
     FIFO or socket. Extraction refuses it under every policy."""
@@ -741,8 +778,11 @@ class CompressionAlgorithm(Enum):
     of 32 KiB to 2 MiB."""
     LZH = "lzh"
     """LHA's LZ77 methods: with Huffman codes, ``-lh1-`` to ``-lh7-`` and their kin,
-    and without, LArc's ``-lzs-`` and ``-lz5-``. ``ArchiveMember.extra["lha.method"]``
-    names the exact method."""
+    and without, LArc's ``-lzs-`` and ``-lz5-``; and ARJ's methods 1 to 3.
+    ``ArchiveMember.extra["lha.method"]`` or ``["arj.method"]`` names the exact
+    method."""
+    ARJ_FAST = "arj_fast"
+    """ARJ's method 4, "fastest": LZ77 with no Huffman codes."""
     QUANTUM = "quantum"
     """Quantum, an older cabinet method. archivey lists its members but cannot read
     them."""
@@ -786,6 +826,9 @@ class CreateSystem(Enum):
     - RAR 1.5 to 4: ``FAT`` (MS-DOS), ``OS2_HPFS``, ``WINDOWS_NTFS``, ``UNIX``,
       ``MACINTOSH`` or ``BEOS``; ``UNKNOWN`` for any other host byte.
     - RAR5: ``WINDOWS_NTFS`` or ``UNIX``.
+    - ARJ: ``FAT`` (MS-DOS), ``UNIX`` (and NeXT), ``AMIGA``, ``MACINTOSH``,
+      ``OS2_HPFS``, ``ATARI_ST``, ``OPENVMS``, ``VFAT`` (Windows 95) or
+      ``WINDOWS_NTFS`` (Win32); ``UNKNOWN`` for any other host byte.
     - 7z records no host. archivey reports ``UNIX`` when the member stores a Unix mode,
       and ``WINDOWS_NTFS`` otherwise.
     - TAR, ISO, a directory and a single-file format such as ``.gz`` leave
@@ -1025,6 +1068,9 @@ class MemberExtra(dict[str, object]):
       member whose MacBinary wrapper archivey strips; the member then reads as its
       data fork, or as its resource fork when the data fork is empty.
     * ``lha.mac_creator`` (``bytes``) — that member's Mac creator code (``b"ttxt"``).
+    * ``arj.method`` (``int``) — the ARJ method, 0 (stored) to 4.
+    * ``arj.file_type`` (``int``) — the ARJ file type: 0 binary, 1 text, 3 directory,
+      4 volume label, 5 chapter label, 6 Unix special file.
     """
 
     __slots__ = ()
@@ -1097,6 +1143,10 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["lha.mac_type"], /) -> bytes: ...
     @overload
     def __getitem__(self, key: Literal["lha.mac_creator"], /) -> bytes: ...
+    @overload
+    def __getitem__(self, key: Literal["arj.method"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["arj.file_type"], /) -> int: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
@@ -1334,9 +1384,14 @@ class ArchiveMember:
     """Owner group name, if recorded."""
 
     link_target: str | None = None
-    """For a symlink/hardlink, the raw target path string as stored. For a ``FILE``
-    that is a stored copy of an earlier member (``extra["is_file_copy"]``), the
-    source's path as stored."""
+    """For a symlink, the target path string as stored. For a hard link, the name of
+    the member it links to, normalized in every format as member names are
+    (``./b`` lists as ``b``), so it equals that member's ``name``. A hard-link
+    target that ends in ``/`` keeps the ``/``: it names a directory, and does not
+    refer to a file of the same name. A target that names only the archive root
+    (``./``, ``/``) lists as ``.``, as such a member name does, and names no
+    member. For a ``FILE`` that is a stored copy of an earlier member
+    (``extra["is_file_copy"]``), the source's path as stored."""
 
     # compare=False: identity is path/type/metadata, not the resolved peer object
     # (resolution is late-bound and would make equality order-dependent).
@@ -1431,13 +1486,15 @@ class ArchiveMember:
     walk ends). Cleared once the listing's links are resolved, when the walk stops
     keeping members, when the reader closes, and on a :meth:`replace` copy; not when
     the walk ends, since a peek ends it before any link is resolved. Read it through
-    the public :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
+    the public :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the
+    public contract."""
     _link_target_unread: bool = field(default=False, repr=False, compare=False)
     """Set while this symlink's target is stored as member data nobody has read yet.
 
     Reading it can set ``link_target`` and, for a Windows reparse point whose data is
     not a link buffer, change ``type``. Cleared once the backend has looked, found or
-    not. Read it through :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
+    not. Read it through :attr:`~archivey.ArchiveMember.member_state_final`. Not part
+    of the public contract."""
     _size_unread: bool = field(default=False, repr=False, compare=False)
     """Set while ``size`` is ``None`` and a full read of the member would fill it in.
 
@@ -1608,8 +1665,9 @@ class ArchiveMember:
         :meth:`~archivey.ForwardArchiveReader.verify_all`, or a read of a whole 7z
         folder whose checksum covers this member. A stream opened from a
         ``replace()`` copy raises the reader's own member, not the copy. It never goes
-        down. Not part of equality, and not covered by :attr:`~archivey.ArchiveMember.member_state_final`: it
-        can still rise after that is ``True``.
+        down. Not part of equality, and not covered by
+        :attr:`~archivey.ArchiveMember.member_state_final`: it can still rise after that
+        is ``True``.
 
         Experimental: any release, a patch included, may change or remove this property,
         its levels or what they mean.
@@ -1620,7 +1678,8 @@ class ArchiveMember:
 
     @property
     def verifiable(self) -> Verification:
-        """The most :attr:`~archivey.ArchiveMember.verified` can reach if the archive is not damaged.
+        """The most :attr:`~archivey.ArchiveMember.verified` can reach if the archive is
+        not damaged.
 
         ``CHECKSUM`` when a checksum archivey can compute covers the member's data,
         ``LENGTH`` when none does, and ``NONE`` for an encrypted member whose password
@@ -1783,7 +1842,8 @@ class ArchiveInfo:
     """Archive-level comment, if the format records one."""
 
     is_encrypted: bool
-    """Header-level encryption (7z, RAR5) — not per-member encryption (see ``ArchiveMember.is_encrypted``)."""
+    """Header-level encryption (7z, RAR5) — not per-member encryption (see
+    ``ArchiveMember.is_encrypted``)."""
 
     is_multivolume: bool
     """Whether the archive spans multiple volumes."""

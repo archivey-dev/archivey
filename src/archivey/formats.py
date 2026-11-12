@@ -15,8 +15,9 @@ index: list the members first, then open any one of them); a
 data, header, data, read in one forward pass, from a pipe too). The reader hands
 archivey members and bytes; archivey does the rest the same way for every format: name
 normalization and the name checks, listing limits, link resolution, safe extraction and
-its limits, and the size and digest checks on member data. Formats that do not fit, or need special features or more speed, are
-written against archivey's internal reader classes instead.
+its limits, and the size and digest checks on member data. Formats that do not fit, or
+need special features or more speed, are written against archivey's internal reader
+classes instead.
 
 A program registers a format with :func:`register_format`. Nothing is loaded
 automatically. Plugin code runs in the caller's process as trusted code: archivey's
@@ -267,7 +268,7 @@ class MemberSpan(NamedTuple):
 
     data: BinaryIO | io.RawIOBase | None = None
     """The member's decoded bytes, for a format whose library decodes each member
-    (ARJ, ACE, a libarchive wrapper), which has no stored bytes to describe with
+    (ACE, Zoo, a libarchive wrapper), which has no stored bytes to describe with
     ``data_length``; that stays 0. The stream need only be good until the walk moves
     on: archivey reads what the caller leaves of it, up to ``member.size``, before it
     asks the walk for the next member, so the library is past it, and then closes it.
@@ -298,7 +299,7 @@ class ReaderArchiveInfo(NamedTuple):
     comment: str | None = None
     extra: Mapping[str, object] = {}
     """Format-specific values, under keys that start with the format's name
-    (``"arj.method"``)."""
+    (``"zoo.method"``)."""
 
 
 class ReaderSource:
@@ -490,7 +491,8 @@ class ForwardStream:
 
         The caller's ``FormatPolicy`` holds here as for a member: under
         ``plugins=False`` a ``PluginStream`` raises ``UnsupportedFeatureError``, and a
-        package ``exclude_libraries`` turns off reads as missing. ``only`` and the
+        package the policy turns off (``exclude_libraries`` or ``only_libraries``)
+        reads as missing. ``only`` and the
         format entries of ``exclude`` do not apply, since they check only the file the
         call opens. A :class:`~archivey.CompressionAlgorithm` in ``exclude`` does: a
         format whose method it lists (``StreamFormat.XZ`` under
@@ -622,6 +624,9 @@ class ReaderContext:
         self._hold = hold
         self._charge_metadata = charge_metadata
         self._open_nested = open_nested
+        # Set by archivey's adapter: where a built-in reader that calls a package
+        # itself (SquashFS's lz4) records it for ``ArchiveReader.backends_used``.
+        self._usage: ResourceUsageRecorder | None = None
 
     @property
     def encoding(self) -> str | None:
@@ -751,9 +756,12 @@ class ReaderContext:
         own reader for that format, in one forward pass, and yields one
         :class:`MemberSpan` per inner member, with the decoded data as
         :attr:`MemberSpan.data` (``None`` for a member with no data). The inner reader
-        works for this archive: its listing limits are this archive's, what it
-        reports goes into this archive's diagnostics, under the caller's
-        ``DiagnosticPolicy``, and its errors raise from the walk.
+        works for this archive: what it reports goes into this archive's diagnostics,
+        under the caller's ``DiagnosticPolicy``, and its errors raise from the walk.
+        It shares this archive's limits rather than getting its own: what it keeps
+        counts toward the same ``max_metadata_bytes``, its decoders get the
+        ``max_decoder_memory`` this archive's decoders left, and its ``max_ratio`` is
+        to the compressed size of the archive the caller opened.
 
         Yield every span, in order, from :meth:`SequentialReader.walk` before taking
         the next one: the inner reader numbers its members as the outer listing will,
@@ -764,7 +772,8 @@ class ReaderContext:
         closed when Python collects it, and at the latest when the archive is closed.
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
-        format is read by its replacement, ``exclude_libraries`` holds, and under
+        format is read by its replacement, ``exclude_libraries`` and ``only_libraries``
+        hold, and under
         ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``,
         and so does a format whose compression decodes with a
         :class:`~archivey.CompressionAlgorithm` ``exclude`` lists. ``only`` and the
@@ -909,7 +918,8 @@ class ReaderContext:
 
         The caller's ``FormatPolicy`` holds for each member: under ``plugins=False`` a
         ``PluginStream`` raises ``UnsupportedFeatureError`` before the codec runs, and
-        a package ``exclude_libraries`` turns off raises ``PackageNotInstalledError``.
+        a package the policy turns off (``exclude_libraries`` or ``only_libraries``)
+        raises ``PackageNotInstalledError``.
         ``only`` and the format entries of ``exclude`` do not apply: they check only the
         file the call opens, so a member stored with ``StreamFormat.XZ`` decodes under
         ``exclude={StreamFormat.XZ}``. A :class:`~archivey.CompressionAlgorithm` in
@@ -1028,7 +1038,7 @@ class FormatHandler(ABC):
     ``ArchiveFormat.ZIP``, and is not registered."""
 
     extensions: ClassVar[tuple[str, ...]] = ()
-    """File extensions with the dot (``".arj"``). An extension a built-in format uses
+    """File extensions with the dot (``".zoo"``). An extension a built-in format uses
     (``".cpio"``) is refused at registration. A replacement plugin declares none: the
     built-in detection finds its files."""
 
@@ -1091,7 +1101,7 @@ class SequentialFormatHandler(FormatHandler):
     :attr:`~FormatHandler.magic` in the first 512 decoded bytes, so each magic must end
     within them. A format with no reliable magic is found there by its
     :attr:`~FormatHandler.probe` on those same 512 bytes, where the extension names it
-    inside the compressor (``.arj.gz``) or ``always_probe_content`` is set, as on an
+    inside the compressor (``.zoo.gz``) or ``always_probe_content`` is set, as on an
     uncompressed source."""
 
     @abstractmethod

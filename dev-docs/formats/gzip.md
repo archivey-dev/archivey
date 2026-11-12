@@ -16,7 +16,7 @@ behaviour and links the row.
 | Read | gzip and zlib as one-member archives; raw DEFLATE as a ZIP or 7z coder, and inside `.tar.gz` |
 | Write | **Not shipped** |
 | Backends | The standard library's `zlib` under `DecompressorStream`, always available. `rapidgzip` from `[seekable]`, used when `use_rapidgzip` selects it (§2.3) |
-| Seeking | Without `rapidgzip`, a backward seek decodes again from the start, or, on declared seek demand, from the nearest point a forward read has passed: a member start, or a zlib snapshot taken about every MiB inside a member; every member of a BGZF (`bgzip`) file is walked without decoding (§2.3). With `rapidgzip`, from the nearest point of the index it builds while decoding |
+| Seeking | Without `rapidgzip`, a backward seek decodes again from the start, or, on declared seek demand or restart points, from the nearest point a forward read has passed: a member start, or a zlib snapshot taken about every MiB inside a member; every member of a BGZF (`bgzip`) file is walked without decoding (§2.3). With `rapidgzip`, from the nearest point of the index it builds while decoding |
 | Size | `None`, for both. gzip's ISIZE is the last member's size mod 2³²; zlib has no size field |
 | Digests | None listed. Every gzip member's CRC-32 is checked on read, and a zlib stream's Adler-32 too; under `rapidgzip`, archivey checks the Adler-32 when the stream is read to its end (§2.3) |
 | Metadata | gzip only: `MTIME` → `modified`, `FNAME` → `raw_name` and `extra["gzip.original_filename"]` |
@@ -132,24 +132,26 @@ DEFLATE use `ZlibDecoder` with `wbits=15` and `-15`. Truncation is certain on th
 a member that did not reach its trailer arms a `TruncatedError` at the end of input.
 
 **Member starts and BGZF blocks.** On declared seek demand (`seekable_members=True`,
-`open_stream(seekable=True)`), `GzipDecoder` records every member after the first as a
-seek point once the member has output, so a backward seek after a forward read resumes at
-the member before the target. An empty member (BGZF's end marker) shares its offset with
-what follows and adds none. A forward seek past the known points or `SEEK_END` walks a
-BGZF file (`codecs/bgzf_index.py`): each member's `BC` extra subfield names
-its size, and its ISIZE, exact since a member holds at most 64 KiB, its output. The walk
-reads the first header (one read buffer's worth) and stops there when the file is not
-BGZF; otherwise it reads the file once, front to back in 256 KiB pieces, and inflates
-nothing. Jumping from header to header reads fewer bytes only on paper: through the
-stream's read buffer (`io.DEFAULT_BUFFER_SIZE`, 8 KiB, 128 KiB from Python 3.14) each
-jump refills the buffer, and on a remote source it is one request per member. The walk
-stops quietly at the first member without a `BC` subfield (an ordinary gzip member,
-trailing data, padding) and keeps the points before it; the size is known only when it
-reaches the end of the file, so a BGZF file with NUL padding after it seeks by its
-blocks and learns its size by decoding to the end. The sizes are trusted like the xz and lzip
-indexes (threat-model O17); a forward read still checks every member's CRC-32 and ISIZE,
-and a decode that finds a member at another output offset than the walk gives it, or
-reaches the end with another total, drops the walk's points and size
+`open_stream(seekable=True)`) or restart points (the codec stream of a compressed TAR
+opened for random access, [`tar.md`](tar.md) §2.3), `GzipDecoder` records every member
+after the first as a seek point once the member has output, so a backward seek after a
+forward read resumes at the member before the target. An empty member (BGZF's end
+marker) shares its offset with what follows and adds none. On declared seek demand only
+(restart points alone never read the file's own sizes), a forward seek past the known
+points or `SEEK_END` walks a BGZF file (`codecs/bgzf_index.py`): each member's `BC`
+extra subfield names its size, and its ISIZE, exact since a member holds at most 64 KiB,
+its output. The walk reads the first header (one read buffer's worth) and stops there
+when the file is not BGZF; otherwise it reads the file once, front to back in 256 KiB
+pieces, and inflates nothing. Jumping from header to header reads fewer bytes only on
+paper: through the stream's read buffer (`io.DEFAULT_BUFFER_SIZE`, 8 KiB, 128 KiB from
+Python 3.14) each jump refills the buffer, and on a remote source it is one request per
+member. The walk stops quietly at the first member without a `BC` subfield (an ordinary
+gzip member, trailing data, padding) and keeps the points before it; the size is known
+only when it reaches the end of the file, so a BGZF file with NUL padding after it seeks
+by its blocks and learns its size by decoding to the end. The sizes are trusted like the
+xz and lzip indexes (threat-model O17); a forward read still checks every member's
+CRC-32 and ISIZE, and a decode that finds a member at another output offset than the
+walk gives it, or reaches the end with another total, drops the walk's points and size
 (`SEEK_INDEX_DEGRADED`, scan `decode_check`).
 A size query (`try_get_size()`, `ArchiveStream.size`) does not walk, because the walk reads
 the whole file and a size query must be cheap (`GzipDecoder.index_reads_whole_source`).
@@ -157,11 +159,11 @@ The size is `None`, as for plain gzip, until a seek walks the file or a read rea
 end. A `.gzi` index is a separate file, which a stream cannot find, so it is not read. Under
 `rapidgzip` none of this applies: its own index serves the seeks.
 
-**zlib snapshots.** On declared seek demand, `GzipDecoder` also records a seek point
-inside a member, and `ZlibDecoder` (zlib, and raw DEFLATE such as a ZIP member's) inside
-its stream, about every MiB of output (`SNAPSHOT_SPACING`), whose state is
-`decompressobj.copy()` (`ZlibSnapshot`). Python's `zlib` reports no DEFLATE block
-boundary, so the window-and-bit-offset points `deflate_resume.py` builds from
+**zlib snapshots.** On declared seek demand or restart points, `GzipDecoder` also
+records a seek point inside a member, and `ZlibDecoder` (zlib, and raw DEFLATE such as a
+ZIP member's) inside its stream, about every MiB of output (`SNAPSHOT_SPACING`), whose
+state is `decompressobj.copy()` (`ZlibSnapshot`). Python's `zlib` reports no DEFLATE
+block boundary, so the window-and-bit-offset points `deflate_resume.py` builds from
 `rapidgzip`'s index cannot be found here; a copy needs none, because it holds the whole
 inflate state, mid-block included. It holds the running checksum too (gzip's CRC-32 and
 length, zlib's Adler-32), so a decode resumed from it still checks a gzip or zlib
@@ -709,7 +711,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `AUTO` uses `rapidgzip` for declared-seekable streams (the concurrent-member-streams change, PR #59), and for a sequential read from 16 MiB at 3:1 or less, on Linux and macOS (maintainer ruling, 2026-10-26) | Seek machinery is built on declared demand, for every codec; the parallel decode pays on a full read only for data that is not very compressible, and on Windows the child costs more than it saves. A short read of a large stream now costs about 60 to 80 ms more: the child's start and open, and its decode ahead (§2.3) | `AUTO` keyed on the `streaming` access mode; sequential `AUTO` at any ratio, which is up to 2.4 times slower on very compressible data; sequential `AUTO` on Windows, or on any platform but Windows, which ships it where nobody measured |
 | `AUTO` falls back to the standard library with one log warning where no child can start | The accelerator is an enhancement; a frozen application must still read `.gz` | Raising, which `ON` does |
 | Report `FNAME` decoded as Latin-1, keep the bytes in `raw_name` | RFC 1952 says so, and the bytes are there for a caller who knows better | Guessing UTF-8 |
-| Member starts as seek points, and a BGZF walk by `BC` subfields, on declared seek demand | A member start is an exact restart point; BGZF names every member's size, so seeking needs no `rapidgzip` for the most common blocked gzip | A `BgzfDecompressorStream` of its own, as first proposed; reading `.gzi` files, which a stream cannot locate |
+| Member starts as seek points (on declared seek demand or restart points), and a BGZF walk by `BC` subfields (on declared seek demand only) | A member start is an exact restart point; BGZF names every member's size, so seeking needs no `rapidgzip` for the most common blocked gzip | A `BgzfDecompressorStream` of its own, as first proposed; reading `.gzi` files, which a stream cannot locate |
 
 ## 7. Open questions
 

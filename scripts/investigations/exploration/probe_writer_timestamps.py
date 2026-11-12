@@ -16,7 +16,8 @@ change time, so only three. Each writer that is
 installed archives the file; the script then parses the raw time fields out of every
 archive and labels each stored time with the source time it matches.
 
-Usage: ``python scripts/investigations/exploration/probe_writer_timestamps.py [--out DIR] [--json FILE]``.
+Usage:
+``python scripts/investigations/exploration/probe_writer_timestamps.py [--out DIR] [--json FILE]``.
 Needs archivey importable (for the 7z header parser) and nothing else; writers that
 are not installed are reported as skipped.
 """

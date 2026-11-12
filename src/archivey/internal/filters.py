@@ -75,7 +75,7 @@ def _has_windows_root(target: str) -> bool:
     root (two separators, ``//server/share`` or ``\\\\server\\share``).
 
     A single leading ``\\`` (``\\foo``) is not a Windows root here; see the comment
-    in :func:`check_universal`.
+    in :func:`_check_symlink_target`.
     """
     if target[:1] in ("/", "\\") and target[1:2] in ("/", "\\"):
         return True
@@ -419,11 +419,11 @@ def check_name_shape(member: ArchiveMember) -> None:
     # one. An absolute name reaching here was not re-rooted: STRICT, or a filter that
     # returned one (see reroot_absolute).
     # A name the platform filesystem encoding cannot represent can never be
-    # materialized under dest, and it would otherwise crash the parent resolution in
-    # ``check_universal`` with a raw UnicodeEncodeError. The extraction coordinator passes the
-    # member through ``disk_spelled`` first, so a lone surrogate reaches here as
-    # bytes on POSIX; a caller of this function that does not still gets a
-    # rejection. (Windows' surrogatepass encoding represents lone surrogates.)
+    # materialized under dest, and it would otherwise crash ``_resolve_parent_within``
+    # with a raw UnicodeEncodeError. The extraction coordinator passes the member
+    # through ``disk_spelled`` first, so a lone surrogate reaches here as bytes on
+    # POSIX; a caller of this function that does not still gets a rejection.
+    # (Windows' surrogatepass encoding represents lone surrogates.)
     _check_path_string(name, member_name=name, what="member name")
     if _is_absolute(name):
         raise FilterRejectionError("Absolute path not allowed", member_name=name)
@@ -492,15 +492,32 @@ def check_universal(
     the link gets its bytes from (``ExtractionCoordinator._source_refused``).
     """
     check_name_shape(member)
+    dest_root = _resolve_parent_within(
+        member, dest, show_os_error=show_os_error, dest_resolved=dest_resolved
+    )
+    target = member.link_target
+    if target is not None and member.type == MemberType.SYMLINK:
+        _check_symlink_target(member, target, dest_root, link_target_on_disk)
+
+
+def _resolve_parent_within(
+    member: ArchiveMember,
+    dest: Path,
+    *,
+    show_os_error: Callable[[OSError], None] | None,
+    dest_resolved: bool,
+) -> Path:
+    """Refuse ``member`` when its parent directory resolves outside ``dest``; return
+    the resolved ``dest``.
+
+    The parent is resolved, not the full path: the final component may be a
+    pre-existing (possibly hostile) symlink that the OverwritePolicy will unlink
+    rather than follow, so following it here would wrongly reject a REPLACE. Combined
+    with the no-".." name check, a parent inside the root guarantees the member lands
+    inside the root. A symlinked *parent* that escapes is still caught.
+    """
     name = member.name
     rel = name.rstrip("/")
-
-    # Pre-extraction path computation: the destination's PARENT directory must resolve
-    # within the root. We resolve the parent, not the full path — the final component may
-    # be a pre-existing (possibly hostile) symlink that the OverwritePolicy will unlink
-    # rather than follow, so following it here would wrongly reject a REPLACE. Combined
-    # with the no-".." name check above, a parent inside the root guarantees the member
-    # lands inside the root. A symlinked *parent* that escapes is still caught.
     is_root = rel in ("", ".")  # "" / "." is the root dir member itself
     try:
         dest_root = dest if dest_resolved else resolve_or_raise_on_loop(dest)
@@ -528,45 +545,54 @@ def check_universal(
             f"A path in the destination does not resolve ({cause}): {exc}",
             member_name=name,
         ) from exc
+    return dest_root
 
-    # Symlink-target escape at planning time (the authoritative check is re-run
-    # post-creation in the coordinator). The target is relative to the link's own
-    # directory; an absolute target makes the join absolute, so it passes only when it
-    # names a path inside dest.
-    target = member.link_target
-    if target is not None and member.type == MemberType.SYMLINK:
-        # Same string-level guards as for names: a NUL or an unencodable target
-        # cannot name a filesystem path, and would crash the resolves below with a
-        # raw ValueError / UnicodeEncodeError instead of a typed rejection.
-        _check_path_string(
-            target, member_name=name, what="link target", link_target=target
+
+def _check_symlink_target(
+    member: ArchiveMember,
+    target: str,
+    dest_root: Path,
+    link_target_on_disk: Callable[[str], str] | None,
+) -> None:
+    """Refuse symlink ``member``, whose target is ``target``, when the target escapes
+    ``dest_root`` (the resolved destination).
+
+    This is the planning-time check; the authoritative one is re-run after the link
+    is created, in the coordinator. The target is relative to the link's own
+    directory; an absolute target makes the join absolute, so it passes only when it
+    names a path inside the destination.
+    """
+    name = member.name
+    # Same string-level guards as for names: a NUL or an unencodable target cannot
+    # name a filesystem path, and would crash the resolves below with a raw
+    # ValueError / UnicodeEncodeError instead of a typed rejection.
+    _check_path_string(target, member_name=name, what="link target", link_target=target)
+    # A drive or UNC target leaves the destination on Windows and is a relative
+    # name on POSIX. It is refused on every OS so that one archive extracts the
+    # same way everywhere (maintainer ruling, 2026-10-06); unrar 7.00 on POSIX
+    # refuses the `\??\`-prefixed spellings too.
+    if _has_windows_root(target):
+        raise FilterRejectionError(
+            "Symlink target is a Windows drive or UNC path",
+            member_name=name,
+            link_target=member.link_target,
         )
-        # A drive or UNC target leaves the destination on Windows and is a relative
-        # name on POSIX. It is refused on every OS so that one archive extracts the
-        # same way everywhere (maintainer ruling, 2026-10-06); unrar 7.00 on POSIX
-        # refuses the `\??\`-prefixed spellings too.
-        if _has_windows_root(target):
-            raise FilterRejectionError(
-                "Symlink target is a Windows drive or UNC path",
-                member_name=name,
-                link_target=member.link_target,
-            )
-        # Named exception: a target rooted by a single `\` (`\foo`) is left alone.
-        # Windows resolves it to the drive root and refuses it as an escape, but on
-        # POSIX a backslash is an ordinary filename character, so `\foo` is a
-        # legitimate relative link there. Refusing it would block an archive that is
-        # valid on POSIX, and ADR 0013 rules that extracting beats refusing. Only
-        # TRUSTED keeps that `\` literal: STRICT and STANDARD write a TAR `\` as `/`,
-        # so `link_target_on_disk` below turns `\foo` into `/foo`, an escape.
-        if link_target_on_disk is not None:
-            target = link_target_on_disk(target)
-        problem = link_resolution_problem((dest_root / name).parent / target, dest_root)
-        if problem is not None:
-            raise FilterRejectionError(
-                problem,
-                member_name=name,
-                link_target=member.link_target,
-            )
+    # Named exception: a target rooted by a single `\` (`\foo`) is left alone.
+    # Windows resolves it to the drive root and refuses it as an escape, but on
+    # POSIX a backslash is an ordinary filename character, so `\foo` is a
+    # legitimate relative link there. Refusing it would block an archive that is
+    # valid on POSIX, and ADR 0013 rules that extracting beats refusing. Only
+    # TRUSTED keeps that `\` literal: STRICT and STANDARD write a TAR `\` as `/`,
+    # so `link_target_on_disk` below turns `\foo` into `/foo`, an escape.
+    if link_target_on_disk is not None:
+        target = link_target_on_disk(target)
+    problem = link_resolution_problem((dest_root / name).parent / target, dest_root)
+    if problem is not None:
+        raise FilterRejectionError(
+            problem,
+            member_name=name,
+            link_target=member.link_target,
+        )
 
 
 # --- Policy permission transforms (applied to a transient copy) ---------------------
@@ -985,6 +1011,37 @@ def _collapse_dotdot(name: str) -> str:
         kept += [segment, separator]
     joined = "".join(kept)
     return joined.lstrip("/\\") or "."
+
+
+def extracted_top_segment(name: str) -> str:
+    """The first segment of the furthest-reaching path that ``name`` can extract to, as
+    stored, or ``""`` when that path is the destination itself.
+
+    It makes the rewrites that move a name between directories: the root is dropped, as
+    every policy drops it with :func:`sanitize_names` and ``STANDARD`` and ``TRUSTED``
+    drop it without; each ``..`` is resolved as :func:`sanitize_names` resolves it; and
+    both ``/`` and ``\\`` separate segments, as they do on Windows and in these
+    rewrites. The segment keeps its spelling. :func:`extracted_top_key` also folds it
+    as the filesystem may, for a test that must catch every spelling.
+    """
+    resolved = _collapse_dotdot(strip_absolute_root(name))
+    for segment in _SEP_SPLIT.split(resolved):
+        if segment not in ("", "."):
+            return segment
+    return ""
+
+
+def extracted_top_key(name: str) -> str:
+    """:func:`extracted_top_segment`, folded as :func:`collision_key` folds a name under
+    ``STANDARD``: NFC, case-folded, and a trailing dot or space trimmed.
+
+    Two names with the same key can land in one directory: ``STRICT`` trims the trailing
+    dot or space, Win32 trims it too, and a case-insensitive filesystem (Windows, and
+    macOS by default) makes ``D/`` and ``d/`` one directory. A reader that keeps two
+    trees apart in one listing compares a member's key with the other tree's, so that no
+    extraction rewrite and no filesystem moves the member into the other tree.
+    """
+    return collision_key(extracted_top_segment(name), ExtractionPolicy.STANDARD)
 
 
 def _sanitize_segment(segment: str) -> str:
