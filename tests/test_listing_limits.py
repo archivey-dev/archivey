@@ -505,13 +505,23 @@ def _members_of_many_keywords(keywords: int, members: int) -> bytes:
 
 
 @pytest.mark.parametrize(
-    "raw",
+    ("raw", "refusal"),
     [
-        pytest.param(_global_header_then_members(3_000, 200), id="global-copied"),
-        pytest.param(_members_of_many_keywords(1_000, 200), id="many-members"),
+        pytest.param(
+            _global_header_then_members(3_000, 200),
+            "a copy of the PAX global records",
+            id="global-copied",
+        ),
+        pytest.param(
+            _members_of_many_keywords(1_000, 200),
+            "max_metadata_bytes",
+            id="many-members",
+        ),
     ],
 )
-def test_tar_pax_entries_are_weighed_by_what_they_keep(raw: bytes) -> None:
+def test_tar_pax_entries_are_weighed_by_what_they_keep(
+    raw: bytes, refusal: str
+) -> None:
     """Each ``extra["tar.pax_headers"]`` entry weighs what it keeps, about 90 bytes
     beyond its keyword and value, and a member's copy of the global records is
     weighed before it is made.
@@ -532,7 +542,7 @@ def test_tar_pax_entries_are_weighed_by_what_they_keep(raw: bytes) -> None:
     def list_it() -> None:
         # Raised at open or at the listing: which one is not what this checks.
         with (
-            pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+            pytest.raises(ResourceLimitError, match=refusal),
             open_archive(io.BytesIO(raw), config=cfg) as reader,
         ):
             reader.members()

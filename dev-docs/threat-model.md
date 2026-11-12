@@ -495,7 +495,7 @@ data its pass keeps for link targets beside it.
   `PAX_KEYWORD_BYTES` of them, about 270 bytes each) and one member's headers. Measured
   under the default 64 MiB cap: one global header of 200,000 keywords followed by 100
   members that each have an `x` header (a 1.9 MB archive) peaks at 86 MB RSS, and 1,500
-  members that each have 10,000 keywords peak at 92 MB, both with about 39 MB of that
+  members that each have 10,000 keywords peak at 92 MB. About 39 MB of each figure is
   the interpreter's own.
 - A symlink target stored as member data (ZIP, 7z, RAR3/4) is read with a cap of
   `MAX_LINK_TARGET_BYTES` (4096, Linux `PATH_MAX`; `internal/base_reader.py`). A member

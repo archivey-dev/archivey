@@ -406,7 +406,9 @@ class ListingLimits:
     makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at
     open.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
-    more than is left of ``max_metadata_bytes``, before reading it.
+    more than is left of ``max_metadata_bytes``, before reading it. While it parses a PAX
+    header, TAR also charges 256 bytes for each distinct keyword, once: a repeated
+    keyword does not count again.
     A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
     ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
     ``max_metadata_bytes``, before reading it.
@@ -437,7 +439,8 @@ class ListingLimits:
     Counts member names (and raw names), comments, link targets, owner and group names
     and the string or bytes values in ``extra``, plus the keys of a dict nested in it
     (such as TAR's PAX keywords) with 96 bytes more for each such text key, plus the
-    archive comment. The top-level ``extra`` keys are fixed per format and do not
+    archive comment. Each distinct PAX keyword also counts 256 bytes once while its header
+    is parsed. The top-level ``extra`` keys are fixed per format and do not
     count. Non-ASCII text counts four bytes per character, so it is an upper bound
     rather than an exact size. A TAR sparse member's map, which the listing keeps to
     read the member, counts 24 bytes per entry, and each ZIP extra field kept in
