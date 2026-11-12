@@ -988,21 +988,34 @@ def _collapse_dotdot(name: str) -> str:
 
 
 def extracted_top_segment(name: str) -> str:
-    """The first segment of the furthest-reaching path that ``name`` can extract to, or
-    ``""`` when that path is the destination itself.
+    """The first segment of the furthest-reaching path that ``name`` can extract to, as
+    stored, or ``""`` when that path is the destination itself.
 
-    The rewrites are the ones extraction makes: the root is dropped, as every policy
-    drops it with :func:`sanitize_names` and ``STANDARD`` and ``TRUSTED`` drop it
-    without; each ``..`` is resolved as :func:`sanitize_names` resolves it; and both
-    ``/`` and ``\\`` separate segments, as they do on Windows and in these rewrites.
-    A reader that keeps two trees apart in one listing tests a member with it, so that
-    no rewrite moves the member into the other tree.
+    It makes the rewrites that move a name between directories: the root is dropped, as
+    every policy drops it with :func:`sanitize_names` and ``STANDARD`` and ``TRUSTED``
+    drop it without; each ``..`` is resolved as :func:`sanitize_names` resolves it; and
+    both ``/`` and ``\\`` separate segments, as they do on Windows and in these
+    rewrites. The segment keeps its spelling. :func:`extracted_top_key` also folds it
+    as the filesystem may, for a test that must catch every spelling.
     """
     resolved = _collapse_dotdot(strip_absolute_root(name))
     for segment in _SEP_SPLIT.split(resolved):
         if segment not in ("", "."):
             return segment
     return ""
+
+
+def extracted_top_key(name: str) -> str:
+    """:func:`extracted_top_segment`, folded as :func:`collision_key` folds a name under
+    ``STANDARD``: NFC, case-folded, and a trailing dot or space trimmed.
+
+    Two names with the same key can land in one directory: ``STRICT`` trims the trailing
+    dot or space, Win32 trims it too, and a case-insensitive filesystem (Windows, and
+    macOS by default) makes ``D/`` and ``d/`` one directory. A reader that keeps two
+    trees apart in one listing compares a member's key with the other tree's, so that no
+    extraction rewrite and no filesystem moves the member into the other tree.
+    """
+    return collision_key(extracted_top_segment(name), ExtractionPolicy.STANDARD)
 
 
 def _sanitize_segment(segment: str) -> str:

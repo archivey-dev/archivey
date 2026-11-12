@@ -91,21 +91,35 @@ members, and hands each tar to `open_nested` through `stream.take(size)`:
   exists there: a file, a directory, a symlink. GNU tar refuses a `..` name in either
   tar, and finds no data `DEBIAN/control` for a data hard link to point at.
 
-  The test is `filters.extracted_top_segment`: the first segment of the path a name can
-  extract to, after the rewrites extraction makes. The root is dropped (a drive root
-  too), `..` is resolved as `sanitize_names` resolves it, and both `/` and `\` separate
-  segments. The match is case-sensitive: `debian/x` and `usr/DEBIAN/x` are ordinary
-  data names, and `dpkg-deb -R` unpacks them. A data symlink whose target points into
-  `DEBIAN/` is listed: its target is a path, not a member, and `dpkg-deb -R` writes it.
+  The tests share their path handling with extraction. `filters.extracted_top_segment`
+  gives the first segment of the path a name can extract to: the root is dropped (a
+  drive root too), `..` is resolved as `sanitize_names` resolves it, and both `/` and
+  `\` separate segments. The control side compares that segment with `DEBIAN` exactly.
+  The data side compares `filters.extracted_top_key`, the same segment folded as the
+  extraction collision key folds a name (NFC, case-folded, a trailing dot or space
+  trimmed), with the folded `DEBIAN`. The control side is not folded, because folding
+  would accept a control `../debian/x`, which is a data path on Linux. Only the first
+  segment counts: `usr/DEBIAN/x` and `debianx/x` are ordinary data names. A data
+  symlink whose target points into `DEBIAN/` is listed: its target is a path, not a
+  member, and `dpkg-deb -R` writes it.
 
-  Two data names are refused that `dpkg-deb -R` unpacks: `usr\..\DEBIAN/x` and
-  `C:/DEBIAN/x`. GNU tar on POSIX writes them under a literal `usr\..\DEBIAN` or `C:`
-  directory. But `sanitize_names` (and Windows, for the backslashes) puts the first in
-  `DEBIAN/`, and extraction drops the drive root of the second on every OS. Each factor
-  in [`design-rules.md`](../design-rules.md) §"When consistency and the official tool
-  disagree" points to refusing: listing them would break the promise that the control
-  files are the control tar's, the lenient reading would weaken this check, and only a
-  crafted package holds such a name.
+  Some data names are refused that `dpkg-deb -R` unpacks, because GNU tar on Linux
+  writes them byte for byte, under a literal directory:
+  - `usr\..\DEBIAN/x`: `sanitize_names`, and Windows, read the backslashes as
+    separators and put it in `DEBIAN/`.
+  - `C:/DEBIAN/x`: extraction drops the drive root on every OS.
+  - `DEBIAN./x` and `DEBIAN /x`: `STRICT`, the default policy, trims the dot or space,
+    and so does Win32.
+  - `debian/x`, and any other case spelling: a case-insensitive filesystem (Windows,
+    and macOS by default) makes it one directory with `DEBIAN/`, and extraction's
+    collision key already treats it so. **A package whose data tar installs a
+    `debian/` directory is refused.**
+
+  Each factor in [`design-rules.md`](../design-rules.md) §"When consistency and the
+  official tool disagree" points to refusing these: listing them would break the
+  promise that the control files are the control tar's (DR-5: one archive extracts the
+  same way on every OS, or is refused everywhere), the lenient reading would weaken
+  this check, and only a crafted package holds such a name.
 - **After the data tar** the walk stops, as `dpkg-deb` does: trailing members and bytes
   are not read.
 

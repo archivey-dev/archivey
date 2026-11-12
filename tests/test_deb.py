@@ -349,6 +349,12 @@ _DATA_IN_DEBIAN = [
     # Stricter too: GNU tar writes a literal "C:" directory, but extraction drops a
     # drive root on every OS.
     pytest.param("C:/DEBIAN/control", "C:/DEBIAN/control", b"x", id="drive"),
+    # Stricter too: STRICT and Win32 trim a trailing dot or space, and a
+    # case-insensitive filesystem makes debian/ and DEBIAN/ one directory.
+    pytest.param("DEBIAN./postinst", "DEBIAN./postinst", b"x", id="trailing-dot"),
+    pytest.param("DEBIAN /postinst", "DEBIAN /postinst", b"x", id="trailing-space"),
+    pytest.param("./debian/postinst", "debian/postinst", b"x", id="lower-case"),
+    pytest.param("./Debian./x", "Debian./x", b"x", id="mixed"),
 ]
 
 
@@ -450,6 +456,35 @@ def test_a_control_hard_link_out_of_debian_is_refused() -> None:
     assert caught.value.link_target == "DEBIAN/../usr/a"
 
 
+@pytest.mark.parametrize("name", ["DEBIAN./postinst", "DEBIAN /postinst"])
+def test_default_extraction_cannot_trim_a_data_member_into_debian(
+    name: str, tmp_path: Path
+) -> None:
+    data = [("./usr/", None), ("./usr/a", b"alpha"), (name, b"echo evil\n")]
+    with (
+        pytest.raises(CorruptionError, match="DEBIAN/"),
+        open_archive(io.BytesIO(_deb(data=data))) as reader,
+    ):
+        reader.extract_all(tmp_path)
+    assert sorted(p.name for p in (tmp_path / "DEBIAN").iterdir()) == [
+        "control",
+        "md5sums",
+    ]
+
+
+@pytest.mark.parametrize(
+    "stored", ["../debian/x", "../DEBIAN./x"], ids=["lower-case", "trailing-dot"]
+)
+def test_the_control_side_is_not_folded(stored: str) -> None:
+    """A control member must stay under DEBIAN/ exactly: "debian/x" is data on Linux."""
+    control = [("./", None), ("./control", CONTROL), (stored, b"x")]
+    with (
+        pytest.raises(CorruptionError, match="outside DEBIAN/"),
+        open_archive(io.BytesIO(_deb(control=control))) as reader,
+    ):
+        reader.members()
+
+
 def test_a_data_hard_link_to_a_control_file_is_refused() -> None:
     """GNU tar under dpkg-deb -R finds no DEBIAN/control in the data tar to link to."""
     data = [("./usr/", None), ("./usr/a@link", b"DEBIAN/control")]
@@ -463,18 +498,19 @@ def test_a_data_hard_link_to_a_control_file_is_refused() -> None:
 
 
 def test_debian_elsewhere_in_the_data_tar_is_an_ordinary_name() -> None:
-    """dpkg-deb -R accepts each of these: the name is case-sensitive, only the first
-    segment counts, and a symlink's target is a path, not a member."""
+    """dpkg-deb -R accepts each of these, and so does archivey: a longer first segment
+    is another directory, only the first segment counts, and a symlink's target is a
+    path, not a member."""
     data = [
-        ("./debian/", None),
-        ("./debian/x", b"lower"),
+        ("./debianx/", None),
+        ("./debianx/x", b"longer"),
         ("./usr/", None),
         ("./usr/DEBIAN/", None),
         ("./usr/DEBIAN/x", b"nested"),
         ("./usr/c@symlink", b"../DEBIAN/control"),
     ]
     with open_archive(io.BytesIO(_deb(data=data))) as reader:
-        assert reader.read("debian/x") == b"lower"
+        assert reader.read("debianx/x") == b"longer"
         assert reader.read("usr/DEBIAN/x") == b"nested"
         assert reader.get("usr/c").link_target == "../DEBIAN/control"
         assert reader.read("DEBIAN/control") == CONTROL
