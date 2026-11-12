@@ -974,18 +974,18 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   (`_unrar_archive_argument`), for every read: one path, not a branch taken only for a
   rare temp directory (maintainer, 2026-11-12). So on POSIX only the name decides
   staging: a long or wildcard directory needs no copy, and an archive deep in a long
-  directory is read in place (maintainer, 2026-11-12). `unrar` opens the name
-  relative to its working directory, and the system resolves that with no length to
-  cut. A name that would be expanded is staged first, under a name that is fixed or
-  made by `mkstemp`, and `unrar` finds a set's next volume beside it. `unrar p` writes only to stdout, so the working directory moves no output.
-  Windows names cannot hold a wildcard, and a directory long enough to be cut is past
-  what `CreateProcess` takes as a working directory, so there the staged path goes
-  over whole, with no working directory, while 6.x keeps it (2047 UTF-16 units less
-  16 for the longest staged volume name; the 1024 margin is for paths archivey did
-  not make). Past that it is refused with `ReadError` before any process starts (a
-  configuration fact, like a command line the system refuses, not a shortage a
-  retry clears). A directory the child
-  cannot enter is `ReadError`, not the "install unrar" error.
+  directory is read in place (maintainer, 2026-11-12). `unrar` opens the name relative
+  to its working directory, and the system resolves that with no length to cut. A name
+  that would be expanded is staged first, under a name that is fixed or made by
+  `mkstemp`, and `unrar` finds a set's next volume beside it. `unrar p` writes only to
+  stdout, so the working directory moves no output. Windows names cannot hold a
+  wildcard, and a directory long enough to be cut is past what `CreateProcess` takes as
+  a working directory, so there the staged path goes over whole, with no working
+  directory, while 6.x keeps it (2047 UTF-16 units less 16 for the longest staged volume
+  name; the 1024 margin is for paths archivey did not make). Past that it is refused
+  with `ReadError` before any process starts (a configuration fact, like a command line
+  the system refuses, not a shortage a retry clears). A directory the child cannot enter
+  is `ReadError`, not the "install unrar" error.
 
 - **The member is never positional.** It is the value of the `-n` include mask, prefixed
   `./`. Passed positionally, a member literally named `-inul` is parsed by `unrar` as a
