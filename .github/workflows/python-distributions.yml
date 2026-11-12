@@ -8,7 +8,8 @@ name: Python distributions
 # and an end marker (#1420), and no ci.yml leg could see that. Each leg here is one such
 # distribution, chosen for the libraries it links, not for its Python version:
 #
-# - python.org on macOS (3.11) and Windows (3.14): their own bundled, older libraries.
+# - python.org on macOS (3.11): its own bundled, older zlib and liblzma. On Windows
+#   (3.14): its own bundled zlib-ng and liblzma.
 # - Python 3.11 on Ubuntu 22.04 (deadsnakes): the distribution's xz 5.2.5 (older than
 #   the 5.2.12 fix above), zlib and bzip2.
 # - Fedora's python3: zlib is zlib-ng in compatibility mode, a different deflate.

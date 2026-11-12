@@ -90,5 +90,5 @@ def test_the_library_printer_runs() -> None:
         text=True,
         check=True,
     ).stdout
-    for key in ("python ", "zlib ", "liblzma", "openssl"):
+    for key in ("python ", "zlib ", "liblzma", "bzip2 ", "openssl"):
         assert key in out
