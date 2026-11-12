@@ -103,6 +103,7 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
+from archivey.internal.resource_usage import handler_name
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
@@ -216,6 +217,11 @@ class _PluginAdapter(BaseArchiveReader):
 
     _reader: FormatReader
 
+    @override
+    def _note_reader_backend(self, format: ArchiveFormat) -> None:
+        # Recorded once ``_plugin`` is set: the plugin, not archivey, reads the format.
+        pass
+
     def __init__(
         self,
         plugin: FormatHandler,
@@ -243,6 +249,7 @@ class _PluginAdapter(BaseArchiveReader):
         )
         self._source = source
         self._plugin = plugin
+        self._usage.note_backend("reader", handler_name(plugin), format.display_name)
         # The caller's ``encoding=``, for a nested reader (``_open_nested``).
         self._encoding = encoding
         # Iterators ReaderContext.open_nested() returned, closed with the archive at the
@@ -299,6 +306,7 @@ class _PluginAdapter(BaseArchiveReader):
             open_nested=self._open_nested,
             usage=self._usage,
         )
+        context._usage = self._usage
         context._spanning_check = self._new_spanning_check
         context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)
@@ -735,6 +743,9 @@ class _PluginAdapter(BaseArchiveReader):
                 config=self._config,
                 collector=collector,
             )
+        # The inner archive's reader and packages are listed in the outer reader's
+        # ``backends_used``, which is the only one the caller holds.
+        reader._usage.report_backends_to(self._usage)
         try:
             pairs = iter(reader.stream_members())
             while True:
@@ -2796,20 +2807,27 @@ class _PluginBackend(ReadBackend):
             "member_streams": member_streams,
             "open_site": open_site,
         }
+        reader: _PluginAdapter
         if issubclass(self.PLUGIN, SequentialFormatHandler):
             reject_start_offset(
                 start_offset, format, archive_name, end_offset, program_resources
             )
-            return SequentialReaderAdapter(*common, **options)
-        # Only a built-in format that declares SFX magic is handed a region, which its
-        # reader reads as the whole source (``IndexedReaderAdapter``).
-        if not self.SFX_MAGIC:
-            reject_start_offset(
-                start_offset, format, archive_name, end_offset, program_resources
+            reader = SequentialReaderAdapter(*common, **options)
+        else:
+            # Only a built-in format that declares SFX magic is handed a region, which
+            # its reader reads as the whole source (``IndexedReaderAdapter``).
+            if not self.SFX_MAGIC:
+                reject_start_offset(
+                    start_offset, format, archive_name, end_offset, program_resources
+                )
+            reader = IndexedReaderAdapter(
+                *common, region=(start_offset, end_offset), **options
             )
-        return IndexedReaderAdapter(
-            *common, region=(start_offset, end_offset), **options
-        )
+        # The packages the handler reads with: pycdlib for ISO, a plugin's ``requires``.
+        for library in (self.OPTIONAL_DEPENDENCY, *self.REQUIRED_MODULES):
+            if library is not None:
+                reader._usage.note_backend("library", str(library), format.display_name)
+        return reader
 
 
 def prefix_probe(probe: object) -> ContentProbe:

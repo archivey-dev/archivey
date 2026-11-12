@@ -35,6 +35,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_reported
 from archivey.internal.overrides import override
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -48,6 +49,15 @@ from archivey.types import ArchiveFormat, MissingComponent, OptionalLibrary
 # The package name surfaced to users, and the single install hint every AES raise site
 # (here and in zip_aes) formats its message from.
 CRYPTO_PACKAGE = OptionalLibrary.CRYPTOGRAPHY
+
+
+def note_crypto_use(usage: ResourceUsageRecorder | None) -> None:
+    """Record ``cryptography`` in ``ArchiveReader.backends_used``: a reader calls it
+    once it decrypts with the package (WinZip AES, 7z AES, RAR's own AES)."""
+    if usage is not None:
+        usage.note_backend("library", CRYPTO_PACKAGE.value, "AES decryption")
+
+
 CRYPTO_REQUIREMENT = MissingComponent(
     CRYPTO_PACKAGE, "pip install archivey[recommended]", ("aes",)
 )

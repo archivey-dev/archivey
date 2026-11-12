@@ -247,6 +247,13 @@ such as brotli 1.2.1 for a decoder buffer overflow that version fixed, but archi
 that's already installed whatever its version. If one came from somewhere else, such as a system
 package, upgrade it, for example with `pip install -U brotli`.
 
+To see what actually ran, read `reader.backends_used` once you've read what you need. It lists the
+format reader, each optional package as it decodes something, and each external program with its
+path, for example `BackendUse("program", "unrar", "RAR", "/usr/bin/unrar")`. What a plugin reads
+through a nested archive is listed too. The standard library's codecs aren't listed, except zstd,
+which names the module in use (`compression.zstd` on Python 3.14 and later). It's experimental, so
+its entries may change in a later release.
+
 Every limit has a default that lets large legitimate archives through. A higher limit lets a
 malicious archive use more memory, disk space or processing time before it's stopped, so if you know
 what your archives look like, lower the limits to fit them. They're set in `ArchiveyConfig`, and

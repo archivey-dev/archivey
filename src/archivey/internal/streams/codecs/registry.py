@@ -386,9 +386,18 @@ def _open_backend(
     (:func:`partial_data_recovery`)."""
     with partial_data_recovery(config.recover_partial_data):
         if config.probe_read_bound is None:
-            return backend.open(source, params)
-        with probe_streams():
-            return backend.open(source, params)
+            stream = backend.open(source, params)
+        else:
+            with probe_streams():
+                stream = backend.open(source, params)
+    usage = config.usage
+    # A detection probe's decode is not the reader's: ``backends_used`` leaves it out
+    # even when a recorder reaches the probe.
+    if usage is not None and config.probe_read_bound is None:
+        sc = _BY_CODEC[backend.codec]
+        for kind, name in sc.backend_uses():
+            usage.note_backend(kind, name, sc.stream_name)
+    return stream
 
 
 def _prepared_backend(

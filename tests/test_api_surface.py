@@ -123,6 +123,10 @@ def test_experimental_names_are_pinned() -> None:
         "archivey.ForwardArchiveReader.verify_all",
         "archivey.ArchiveReader.verify_all",
         "archivey.VerifyReport",
+        "archivey.BackendUse",
+        "archivey.BackendKindStr",
+        "archivey.ForwardArchiveReader.backends_used",
+        "archivey.ArchiveReader.backends_used",
     )
 
 

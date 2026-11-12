@@ -239,6 +239,7 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    BackendUse,
     ExtractionPolicy,
     ExtractionPolicyStr,
     ExtractionProgress,
@@ -922,6 +923,7 @@ class BaseArchiveReader(ArchiveReader):
         # the scan script and ``archivey extract --dry-run``).
         self._usage = ResourceUsageRecorder()
         self._usage.watch_listing(self._listing_tracker)
+        self._note_reader_backend(format)
         # A streaming reader's one forward pass: whether it has started, and the
         # shared iterator every caller of ``_begin_forward_pass`` gets.
         self._forward_pass_started: bool = False
@@ -3863,6 +3865,16 @@ class BaseArchiveReader(ArchiveReader):
     def cost(self) -> CostReceipt:
         self._state.require_open("cost")
         return self._cost_receipt()
+
+    def _note_reader_backend(self, format: ArchiveFormat) -> None:
+        """Record the format reader in :attr:`backends_used`. A plugin adapter records
+        its plugin instead; a reader built on a package (ISO on pycdlib) adds it."""
+        self._usage.note_backend("reader", "archivey", format.display_name)
+
+    @property
+    @override
+    def backends_used(self) -> tuple[BackendUse, ...]:
+        return self._usage.backends()
 
     def _cost_receipt(self) -> CostReceipt:
         """``ArchiveInfo.cost``; overridden as :meth:`_archive_comment` is."""

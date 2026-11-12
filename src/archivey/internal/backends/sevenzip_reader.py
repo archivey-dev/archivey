@@ -139,7 +139,7 @@ from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     MemberStreamParts,
 )
-from archivey.internal.streams.crypto import _AesCbcTruncatedError
+from archivey.internal.streams.crypto import _AesCbcTruncatedError, note_crypto_use
 from archivey.internal.streams.decompressor_stream import retire_decoder_children
 from archivey.internal.streams.resume import ask_resume_offset, ask_seek_resume_offset
 from archivey.internal.streams.streamtools import (
@@ -1941,7 +1941,7 @@ class SevenZipReader(BaseArchiveReader):
             # block. Confirm-only, so a False goes on to the anchor plan.
             if tail is None:
                 return False
-            return aes_tail_confirms(
+            confirmed = aes_tail_confirms(
                 self._folder_pack_views(folder_index)[0],
                 tail_pack_size,
                 tail,
@@ -1949,6 +1949,8 @@ class SevenZipReader(BaseArchiveReader):
                 key_cache=self._key_cache,
                 excluded=self._stream_config.excluded_libraries,
             )
+            note_crypto_use(self._usage)
+            return confirmed
 
         # The callbacks below run once per candidate password, inside
         # ``attempt_with_confirm``: each judges the candidate against the folder,

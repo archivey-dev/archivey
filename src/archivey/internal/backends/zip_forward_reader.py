@@ -123,6 +123,7 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.codecs import open_codec_stream
+from archivey.internal.streams.crypto import note_crypto_use
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from archivey.internal.streams.streamtools import (
     OneReadEachStream,
@@ -804,6 +805,7 @@ class _PassData:
                     compress_size=header.compressed_size,
                     excluded=excluded,
                 )
+                note_crypto_use(reader._usage)
                 if not probe:
                     self._aes_stage = stage
                 return stage
@@ -814,6 +816,7 @@ class _PassData:
                 hold_back=None if ends_with_data else _AES_HOLD_BACK,
                 excluded=excluded,
             )
+            note_crypto_use(reader._usage)
             if not probe:
                 self._aes_stage = forward
                 if not ends_with_data:

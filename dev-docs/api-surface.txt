@@ -139,6 +139,7 @@ method archivey.ArchiveMember.replace(self, **kwargs: object) -> ArchiveMember
 property archivey.ArchiveMember.verifiable: Verification
 property archivey.ArchiveMember.verified: Verification
 class archivey.ArchiveReader(ForwardArchiveReader)
+property archivey.ArchiveReader.backends_used: tuple[BackendUse, ...]
 method archivey.ArchiveReader.close(self) -> None
 property archivey.ArchiveReader.cost: CostReceipt
 property archivey.ArchiveReader.diagnostics: DiagnosticSummary
@@ -203,6 +204,13 @@ class archivey.ArchiveyError(Exception)
 init archivey.ArchiveyError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.ArchiveyUsageError(Exception)
 init archivey.ArchiveyUsageError(message: str, *, refused_member_type: MemberType | None = None) -> None
+alias archivey.BackendKindStr = Literal['reader', 'codec', 'library', 'program']
+class archivey.BackendUse()
+init archivey.BackendUse(kind: BackendKindStr, name: str, used_for: str, path: str | None = None) -> None
+field archivey.BackendUse.kind: BackendKindStr
+field archivey.BackendUse.name: str
+field archivey.BackendUse.path: str | None = None
+field archivey.BackendUse.used_for: str
 class archivey.Budget()
 init archivey.Budget(*, max_decoded_bytes: int | None = None, max_members: int | None = None) -> None
 property archivey.Budget.decoded_bytes: int
@@ -470,6 +478,7 @@ value archivey.FormatSupport.FULL = 'full'
 value archivey.FormatSupport.PARTIAL = 'partial'
 value archivey.FormatSupport.NONE = 'none'
 class archivey.ForwardArchiveReader(ABC)
+property archivey.ForwardArchiveReader.backends_used: tuple[BackendUse, ...]
 method archivey.ForwardArchiveReader.close(self) -> None
 property archivey.ForwardArchiveReader.cost: CostReceipt
 property archivey.ForwardArchiveReader.diagnostics: DiagnosticSummary
