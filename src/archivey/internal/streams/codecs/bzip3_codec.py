@@ -420,10 +420,11 @@ class Bzip3Codec(StreamCodec):
         self, params: CodecParams, config: StreamConfig
     ) -> StreamIndex | None:
         del params
-        if not config.seekable:
+        if not config.records_restart_points:
             return None
-        # Declared seek demand only, as zstd (``seekable-decompressor-streams``): no
-        # stream follows the last block, so the points are the blocks.
+        # Declared seek demand or restart points only, as zstd
+        # (``seekable-decompressor-streams``): no stream follows the last block, so the
+        # points are the blocks.
         collector = config.collector
         return StreamIndex(
             resumes_at=lambda data: False,

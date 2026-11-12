@@ -135,8 +135,9 @@ print(df.shape)
 
 Member streams don't seek by default. A reader that needs to seek, such as one for Parquet files,
 needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)). On
-a `.tar.gz` or a solid 7z archive, opening members one by one decompresses the data before each of
-them again, and the next recipe avoids that.
+a solid 7z archive or a `.tar.bz2`, opening members one by one decompresses the data before each of
+them again. On a `.tar.gz` it goes back only to a restart point near each member
+([Solid archives](reading.md#solid-archives)). The next recipe avoids both.
 
 ### Read every member of a large archive once
 

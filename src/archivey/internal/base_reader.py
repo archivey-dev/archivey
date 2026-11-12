@@ -4113,6 +4113,11 @@ class BaseArchiveReader(ArchiveReader):
                     usage=self._usage,
                 ),
                 report_trailing_data=True,
+                # Random access reads members after the listing has decoded past
+                # them, so each read seeks back. Restart points let it resume near
+                # the member and not decode again from the start. A streaming walk
+                # never seeks back, so it keeps none.
+                restart_points=not streaming,
                 # The members are read through this stream, several small ones to
                 # one read (the TAR walk reads ahead): a failing call that lost its
                 # bytes would take whole members before the damage with it. So it
