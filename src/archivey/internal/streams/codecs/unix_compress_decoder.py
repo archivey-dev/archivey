@@ -683,6 +683,13 @@ class LzwState:
 class UnixCompressDecoder(BaseDecoder):
     """LZW decoder: CLEAR seek points (after-placement) + deferred truncation."""
 
+    @property
+    @override
+    def holds_back_errors(self) -> bool:
+        # A bad code raises only once the bytes before it are handed out
+        # (``LzwState._raise_after``).
+        return True
+
     def __init__(
         self,
         state: LzwState,

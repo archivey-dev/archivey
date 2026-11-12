@@ -9,7 +9,7 @@ import zlib
 from collections.abc import Callable
 from typing import BinaryIO
 
-from archivey.config import ProcessIsolation
+from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     exception_detail,
@@ -695,8 +695,12 @@ class ZlibCodec(_ZlibErrorCodec):
         read_at: ProbeReadAt | None = None,
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
         """Recognize a zlib stream: an RFC 1950 CMF/FLG header (fail-fast) that then decodes."""
         return _zlib_header_plausible(prefix) and self._decodes_sample(
-            prefix, source_length=source_length, isolation=isolation
+            prefix,
+            source_length=source_length,
+            isolation=isolation,
+            decoder_limits=decoder_limits,
         )

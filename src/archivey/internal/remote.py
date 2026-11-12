@@ -687,10 +687,8 @@ class RangeSource(io.RawIOBase):
         *,
         pool: WindowPool,
         max_read_through: int,
-        size: int | None = None,
     ) -> RangeSource:
-        """Check ``of`` and learn its size, with one ``fs.size`` call unless the
-        caller already has it (from a directory listing)."""
+        """Check ``of`` and learn its size, with one ``fs.size`` call."""
         check_open_file(of)
         compression = open_file_compression(of)
         if compression is not None:
@@ -703,8 +701,7 @@ class RangeSource(io.RawIOBase):
             )
         fs = of.fs
         path = of.path
-        if size is None:
-            size = fs.size(path)
+        size = fs.size(path)
         if not isinstance(size, int) or size < 0:
             raise OSError(
                 f"fsspec file system gave no size for {display_url(str(path))!r}: "

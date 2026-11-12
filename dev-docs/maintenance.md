@@ -36,6 +36,7 @@ those use the AI plan's quota.
 | `scheduled-failure-alert.yml` | each time a watched workflow finishes a scheduled or post-merge (`push`) run on `main` | no | its own script failed. A failed scheduled run, or a failed post-merge run of a workflow that runs after a merge to `main`, opens one issue per workflow, assigned to the maintainer; each later failure comments on it and the next green scheduled run closes it. GitHub's own failure email goes only to whoever last edited the cron line, which is often the merge-queue bot |
 | `conflict-notice.yml` | each push to `main`, and hourly | no | its own script failed; it only comments on PRs |
 | `rapidgzip-truncation-sweep.yml`, `writer-timestamps.yml` | on demand (the sweep also after a merge to `main` that changes it); never on a PR | no | investigation probes; ignore unless you are working on them |
+| `xar-oracle.yml` | on demand only | no | an investigation probe: compares archivey's XAR reads with Apple's `xar` and bsdtar on macOS ([XAR](formats/xar.md) §3); ignore unless you are working on XAR |
 | `publish.yml` | a `v*` tag, or on demand | no | see [Release checklist](release-checklist.md) §6 |
 
 At the lower budget, review rounds are the cost to control. The implementing agent adds

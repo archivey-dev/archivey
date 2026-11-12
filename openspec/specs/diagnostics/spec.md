@@ -62,6 +62,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `MEMBER_SIZE_WRAPPED` | `SizeWrapContext`: `kind="size_wrap"`, `archive_name`, `format`, `member_name`, `member_id`, `stored_compressed_size`, `compressed_size`, `stored_size`, `size` (`None` when only a read can tell) |
 | `MEMBER_TYPE_UNKNOWN` | `UnknownMemberTypeContext`: `kind="unknown_member_type"`, `archive_name`, `member_name`, `member_id`, `stored_type` (the TAR typeflag byte as a one-character string, the byte read as Latin-1; for a RAR5 redirect, the type number in decimal), `size` (the member's `size`; `None` for an `OTHER` member) |
 | `MEMBER_NAME_DUPLICATE` | `NameDuplicateContext`: `kind="name_duplicate"`, `archive_name`, `member_name`, `member_id`, `earlier_member_id` (the latest earlier member under the name, or under it with or without a final `/`), `earlier_type` and `member_type` (`MemberType` values). Emitted at listing, in every format, when a current member has the name of an earlier current one and the two are not both directories. Names are compared as the listing presents them: a ZIP read from a pipe compares the central directory's names, once it has read the directory |
+| `MEMBER_NAME_DUPLICATE_UNEXPECTED` | `UnexpectedNameDuplicateContext`: `kind="name_duplicate_unexpected"`, `archive_name`, `member_name`, `member_id`, `format` (the format whose layout has no way to repeat a name, `"cab"`). Emitted at listing by a format with no append, update or file versions, when a member has the name, normalized, of an earlier one; the same member also reports `MEMBER_NAME_DUPLICATE`. CAB emits it; another format with no way to repeat a name may adopt it |
 | `MEMBER_READERS_DISAGREE` | `ReaderDisagreementContext`: `kind="reader_disagreement"`, `archive_name`, `member_name`, `member_id`, `shape` (`"file_named_as_directory"`, `"link_name_on_file"` (the header's field or a PAX `linkpath` on a regular file), `"star_prefix"` or `"gnu_prefix_bytes"` for a TAR header; `"hardlink_to_symlink"` in every format with hard links; `"nul_in_name"` in every format; `"directory_attribute_without_slash"` for a ZIP entry; `"file_only_in_joliet"`, `"file_only_in_iso9660"` or `"file_only_in_udf"` for a file an ISO image's Joliet, plain ISO 9660 or UDF tree holds and its listed tree does not, with `member_name` its path in that tree and `member_id` `None`) |
 | `ENCRYPTED_MEMBER_UNVERIFIED` | `EncryptedVerificationContext`: `kind="encrypted_verification"`, `archive_name`, `member_name`, `member_id`, `check`, `reason` |
 | `SEEK_INDEX_DEGRADED` | `SeekIndexContext`: `kind="seek_index"`, `archive_name`, `member_name`, `member_id`, `codec`, `scan`, `error_type` |
@@ -530,7 +531,7 @@ the archive's own bytes or metadata as anomalous:
 
 | In `ARCHIVE_INTEGRITY_CODES` | Excluded |
 | --- | --- |
-| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `MEMBER_HEADER_AMBIGUOUS`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `SOLID_OPEN_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file), `MEMBER_NAME_DUPLICATE` and `MEMBER_READERS_DISAGREE` (real archives have the shapes, read as the format's tool reads them) |
+| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `MEMBER_HEADER_AMBIGUOUS`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS`, `MEMBER_NAME_DUPLICATE_UNEXPECTED` (no writer of the format makes the shape) | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `SOLID_OPEN_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file), `MEMBER_NAME_DUPLICATE` and `MEMBER_READERS_DISAGREE` (real archives have the shapes, read as the format's tool reads them) |
 
 Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
 rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
@@ -579,6 +580,9 @@ bytes win and the archive reads in full, so `STRICT` would refuse a well-formed 
 saved as `b.gz`. The code is still recorded, and a caller who wants the refusal adds it
 to `raise_on`. Its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is **in** the set: U+200B,
 U+2060 and U+FEFF have no use inside a filename.
+`MEMBER_NAME_DUPLICATE_UNEXPECTED`, the sibling of `MEMBER_NAME_DUPLICATE`, is **in**
+the set: only a format with no way to repeat a name reports it, so no writer of that
+format makes the shape (maintainer, 2026-11-11).
 `EXTENSION_FORMAT_UNCONFIRMED`, its sibling, is **in** the set because it also fires
 on a successful open: an extension-only empty listing, where no byte confirmed the
 format at all, is exactly the case a `STRICT` caller wants stopped.
@@ -747,3 +751,68 @@ disposition is `COLLECT`.
 | `extract_all(members=["a.txt", "typo.txt"])` on an archive holding `a.txt` | `a.txt` extracted; the report carries one `MEMBER_SELECTOR_UNMATCHED` with `entry="typo.txt"`, `entry_kind="name"` |
 | Same call under `DiagnosticPolicy.STRICT` | No raise; the diagnostic is collected |
 | `stream_members(members=lambda m: False)` | No `MEMBER_SELECTOR_UNMATCHED` |
+
+### Requirement: Report a detection step the decoder memory cap stopped
+
+When the caller's `DecoderLimits.max_decoder_memory` refuses a decoder a detection step
+needs (`format-detection`), the system SHALL emit `DETECTION_DECODER_LIMITED`. It
+travels as every detection diagnostic does: on `FormatInfo.diagnostics`, on the
+reader's diagnostics when `open_archive` detects, and through `on_diagnostic`. A step
+that refuses once per candidate SHALL be reported once per detection pass for each
+stream format.
+
+#### Scenario: detection cap diagnostic
+
+- **WHEN** a detection step's decoder is over the caller's cap
+- **THEN** the code is emitted as below
+
+| Case | Expected |
+| --- | --- |
+| `.tar.zst`, 8 MiB window, `max_decoder_memory=4 MiB` | `ZST`; one `DETECTION_DECODER_LIMITED` on `FormatInfo.diagnostics`; WARNING on `archivey.detection`; `on_diagnostic` called |
+| Same file through `open_archive` | The same diagnostic reaches `on_diagnostic` before the read raises `ResourceLimitError` |
+| `.lzma` (LZMA Alone) under `max_decoder_memory=1024` | One diagnostic for the content probe |
+| LZMA Alone between 4 KiB and 64 KiB long, cap between the window's and the re-check's dictionary | The hit stands; one diagnostic for the whole-source re-check |
+| `.tar.xz` declaring 64 MiB, cap 32 MiB | `TAR_XZ`; no diagnostic (the probe reserves 4 KiB) |
+
+### Requirement: Only the caller's cap is reported as a detection limit
+
+The code SHALL be emitted only when the caller's cap refused the decoder. A probe's own
+fixed ceiling (an lzop or mozlz4 block, a bzip3 block size over 16 MiB, a zstd window
+over 128 MiB) and a `ResourceUnavailableError` (a decoder child that could not run) are
+not the caller's setting, and SHALL stay an INFO log on `archivey.detection`.
+
+#### Scenario: a probe ceiling is not the caller's cap
+
+- **WHEN** a `.tar.zst` whose window is over 128 MiB is detected with no cap
+- **THEN** it is `ZST` with `inner_tar` recorded as `CAPABILITY_UNAVAILABLE`, and no
+  `DETECTION_DECODER_LIMITED` is emitted
+
+### Requirement: Detection limit context
+
+The context of `DETECTION_DECODER_LIMITED` SHALL be `DetectionDecoderLimitContext`, a
+member of the `DiagnosticContext` union: `kind="detection_decoder_limit"`,
+`archive_name`, `tier` ∈ `{"inner_tar","content_probe","probe_completion"}` (the
+receipt's name for the step), `stream_format` (the codec's `StreamFormat` name),
+`max_decoder_memory` (the cap) and `needed` (what the decoder would have reserved, or
+`None` when the decoder only says it is over the cap, as libzstd does for a window).
+
+#### Scenario: detection limit context fields
+
+- **WHEN** the `.tar.zst` with an 8 MiB window is detected under a 4 MiB cap
+- **THEN** the context is `tier="inner_tar"`, `stream_format="ZSTD"`,
+  `max_decoder_memory=4194304`, `needed=None`, and the message names
+  `max_decoder_memory=4194304`
+
+### Requirement: The detection limit code is advisory
+
+`DETECTION_DECODER_LIMITED` SHALL NOT be a member of `ARCHIVE_INTEGRITY_CODES`: it
+reports the caller's cap, not the archive's bytes, and the read that follows refuses
+the same decoder with `ResourceLimitError`. Its log record is WARNING, as for any code
+outside `_INFO_LOG_CODES`.
+
+#### Scenario: the detection limit code under policies
+
+- **WHEN** the `.tar.zst` above is detected under `DiagnosticPolicy.STRICT`
+- **THEN** detection answers `ZST` and does not raise
+- **WHEN** it is detected with `raise_on=["detection_decoder_limited"]`
+- **THEN** `detect_format` raises `DiagnosticRaisedError`

@@ -22,16 +22,19 @@ decoded by archivey's own decoder, in Python. The format handbook is
 
 ### Requirement: Read a cabinet's files from a seekable source
 
-The CAB backend SHALL list one `FILE` member per `CFFILE` record, in table order, named
-as stored with `\` turned into `/` after decoding, with its size, the DOS date and time
-as a naive `modified`, its attributes as `windows_attrs` (without the cabinet-only bits
+The CAB backend SHALL list one `FILE` member per `CFFILE` record, in table order (sorted
+by folder and offset instead when reading in table order would decode a block twice),
+named as stored with `\` turned into `/` after decoding, with its size, the DOS date and
+time as a naive `modified`, its attributes as `windows_attrs` (without the cabinet-only bits
 `0x40` and `0x80`), and its folder's method as
 `compression`. It SHALL read stored, MSZIP and LZX folders (LZX windows 2^15 to 2^21),
 check each data block's checksum when it is not 0, and report a member whose blocks from
 the folder start through its end all carry one as `Verification.CHECKSUM` once read to the
 end. The listing SHALL estimate `verifiable` as `CHECKSUM` for a non-empty member of a
 stored, MSZIP or LZX folder, settled at `LENGTH` on the first open when one of its blocks
-has no checksum. `ArchiveInfo.format_version` SHALL be `major.minor` from the header, and
+has no checksum. A file whose name, normalized, an earlier file has SHALL report
+`MEMBER_NAME_DUPLICATE_UNEXPECTED`, since a cabinet has no way to repeat a name.
+`ArchiveInfo.format_version` SHALL be `major.minor` from the header, and
 `ArchiveInfo.is_solid` SHALL be true when any folder is compressed. A pipe SHALL be refused
 with `StreamNotSeekableError`.
 
@@ -42,13 +45,14 @@ with `StreamNotSeekableError`.
 | A cabinet with a stored, MSZIP or LZX folder (verbatim, aligned and uncompressed blocks, E8 translation, every window size) | The same members and bytes; each member `CHECKSUM` |
 | `makecab.exe` cabinets, stored, MSZIP and LZX (libarchive's test files) | The same members and bytes |
 | A cp932 name opened with `encoding="cp932"` | The Japanese name, whole |
-| Members read in order from one LZX folder | Each 32 KiB frame decoded once |
+| Members streamed from a table in data order, reversed, or with folders interleaved | Table order kept unless it would decode a block twice, then by folder and offset unless a name is listed twice; each block decoded once when sorted |
 | A member in the middle of a stored folder | The blocks before it not read |
 | Header, folder and data reserve areas | Skipped |
 | A block whose checksum is 0 | The member read, `LENGTH` |
 | A checksummed folder, listed | Each non-empty member `verifiable == CHECKSUM` before any read |
-| File records listed out of offset order, laid back to back | Listed in table order; every member reads |
+| File records listed out of offset order, laid back to back | Listed in data order when table order would decode a block twice; every member reads |
 | An invalid DOS date | `modified is None`; `MEMBER_TIMESTAMP_INVALID` |
+| A name listed twice, compared after normalization | Table order kept; the later entry reports `MEMBER_NAME_DUPLICATE_UNEXPECTED` and `MEMBER_NAME_DUPLICATE`; `STRICT` refuses the cabinet |
 | Attributes `0xE1` | `windows_attrs == 0x21` |
 
 ### Requirement: Refuse damaged and unsupported cabinets

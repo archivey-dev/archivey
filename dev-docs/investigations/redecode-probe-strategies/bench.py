@@ -15,7 +15,6 @@ from __future__ import annotations
 import gzip
 import io
 import json
-import lzma
 import random
 import subprocess
 import sys
@@ -134,6 +133,7 @@ STRATS: dict[str, Any] = {
     "gallop4k-r16": gallop(4096, 16),
 }
 
+REAL_PROBE = ds._redecode_probe
 STATS = {"restarts": 0, "steps": 0, "redecodes": 0}
 real_restart = ds.DecompressorStream._redecode_restart
 real_step = ds.DecompressorStream._redecode_step
@@ -253,7 +253,14 @@ def main() -> None:
                 ref = None
                 for sname in strats:
                     BASELINE[0] = sname == "none"
-                    ds._redecode_probe = STRATS.get(sname, STRATS["linear"])
+                    # The strategies above predate the restart distance argument;
+                    # "real" is what the library does.
+                    strat = STRATS.get(sname, STRATS["linear"])
+                    ds._redecode_probe = (
+                        REAL_PROBE
+                        if sname == "real"
+                        else (lambda d, h, m, *_, f=strat: f(d, h, m))
+                    )
                     for k in STATS:
                         STATS[k] = 0
                     t = time.perf_counter()

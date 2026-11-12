@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from archivey.config import ProcessIsolation
+from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.config import StreamConfig
 from archivey.internal.excluded_libraries import (
@@ -28,6 +28,7 @@ from archivey.internal.format_args import (
 )
 from archivey.internal.overrides import override
 from archivey.internal.registry import _optional, get_registry
+from archivey.internal.resource_usage import handler_name
 from archivey.internal.streams.codecs.base import (
     CodecParams,
     StreamCodec,
@@ -35,6 +36,7 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.registry import add_stream_codec, stream_codecs
 from archivey.types import (
     ArchiveFormat,
+    BackendKindStr,
     ContainerFormat,
     MagicSignature,
     MissingComponent,
@@ -60,6 +62,18 @@ class PluginCodec(StreamCodec):
 
     # Per registration, as ``format_adapter.prefix_probe``'s flag: nothing outlives it.
     _detection_error_logged = False
+
+    @override
+    def backend_uses(self) -> tuple[tuple[BackendKindStr, str], ...]:
+        # The plugin, then the packages its ``requires`` names, as a format plugin's
+        # are listed. A codec archivey ships through the plugin interface is
+        # archivey's own code, so only its packages are listed.
+        name = handler_name(self.handler)
+        uses: list[tuple[BackendKindStr, str]] = []
+        if name != "archivey":
+            uses.append(("codec", name))
+        uses.extend(("library", module) for module in self.handler.requires)
+        return tuple(uses)
 
     def detection_error_level(self) -> int:
         """The level to log the decoder's exception at when detection takes it as no
@@ -144,8 +158,9 @@ def _content_probe(probe: Callable[[bytes], bool]) -> Callable[..., bool]:
         read_at: object = None,
         charge_decode: object = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
-        del self, source_length, read_at, charge_decode, isolation
+        del self, source_length, read_at, charge_decode, isolation, decoder_limits
         return check(prefix)
 
     return content_probe

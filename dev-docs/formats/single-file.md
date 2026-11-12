@@ -115,13 +115,15 @@ only when the source's extension names its format; `always_probe_content=True` a
 ([`topics/detection.md`](../topics/detection.md) §2.6).
 [`topics/detection.md`](../topics/detection.md) has the order and why.
 
-What is codec-specific about a probe: it runs with accelerators off and decoder memory
-limits lifted, because a probe decodes a bounded sample and a capped probe would call a
-stream with a large dictionary "not this format" for a caller who opened it with
-`DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG`). The open that follows applies the
-caller's limits. Lifting the cap does not mean reserving what the header declares: a probe
-sets `StreamConfig.probe_read_bound`, and the decoder is sized to that read (§4). The shared machinery around the probes (the sample size, the
-whole-source re-check, the decode allowance, and the `format_unconfirmed` stamp on a
+What is codec-specific about a probe: it runs with accelerators off and under the
+caller's `DecoderLimits` (`StreamCodec._decodes_sample`). It does not reserve what the
+header declares: a probe sets `StreamConfig.probe_read_bound`, the decoder is sized to
+that read (§4), and the cap is checked against that size, so a stream whose declared
+dictionary is over the cap is still recognised and then refused on open. A probe the cap
+refuses raises `ResourceLimitError`, which detection reads as "can't tell", not "not
+this format": it records `content_probe` as `CAPABILITY_UNAVAILABLE` and reports
+`DETECTION_DECODER_LIMITED`. The shared machinery around the probes (the sample size,
+the whole-source re-check, the decode allowance, and the `format_unconfirmed` stamp on a
 probe-only result) is on [`topics/detection.md`](../topics/detection.md) §2.4 and §4.1.
 
 Every match is then offered to the **inner-TAR probe** (`_probe_inner_tar`; its bounds are

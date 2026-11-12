@@ -9,7 +9,9 @@ and the listing totals.
 from __future__ import annotations
 
 import io
+import lzma
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -25,8 +27,13 @@ from archivey import (
 from archivey.internal.config import check_decoder_memory
 from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.spool import SpoolBudget
-from tests.conftest import requires
-from tests.streams_util import make_lzip_member
+from archivey.internal.streams.codecs.declared_memory import NotingDecompressor
+from archivey.internal.streams.codecs.zstd_framing import (
+    MAX_FRAME_HEADER_SIZE,
+    frame_window_size,
+)
+from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.streams_util import lzma_alone_with_filter, make_lzip_member
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -149,3 +156,69 @@ def test_the_largest_declaration_wins() -> None:
     recorder.note_decoder_memory(20, "middle")
     usage = recorder.snapshot()
     assert (usage.decoder_memory, usage.decoder_memory_what) == (30, "large")
+
+
+def _lzma1_alone(data: bytes) -> bytes:
+    return lzma_alone_with_filter(data, {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 20})
+
+
+def _lzma2_xz(data: bytes) -> bytes:
+    # The check is named: PyPy's lzma passes the default -1 on to liblzma with a
+    # filter chain, which refuses it ("Internal error").
+    filters = [{"id": lzma.FILTER_LZMA2, "dict_size": 1 << 20}]
+    return lzma.compress(data, check=lzma.CHECK_CRC64, filters=filters)
+
+
+@pytest.mark.parametrize(
+    ("fmt", "compress"),
+    [(ArchiveFormat.XZ, _lzma2_xz), (ArchiveFormat.LZMA_ALONE, _lzma1_alone)],
+    ids=["xz", "alone"],
+)
+def test_a_dictionary_liblzma_checks_is_recorded(
+    fmt: ArchiveFormat, compress: Callable[[bytes], bytes]
+) -> None:
+    # liblzma reads the dictionary and checks it against the cap itself; archivey
+    # records it from the same header, for an archive read inside this one.
+    data = compress(b"a" * 100_000)
+    with archivey.open_archive(io.BytesIO(data), format=fmt) as reader:
+        reader.read(reader.members()[0])
+        usage = reader._resource_usage()
+    assert usage.decoder_memory == 1 << 20
+
+
+@requires_zstd()
+def test_a_zstd_window_is_recorded() -> None:
+    data = zstd_backend().compress(b"a" * 100_000)
+    with archivey.open_archive(io.BytesIO(data), format=ArchiveFormat.ZST) as reader:
+        reader.read(reader.members()[0])
+        usage = reader._resource_usage()
+    assert usage.decoder_memory == frame_window_size(data[:MAX_FRAME_HEADER_SIZE])
+    assert usage.decoder_memory > 0
+
+
+class _Inner:
+    """A decompressor that decodes nothing, for :class:`NotingDecompressor`."""
+
+    eof = False
+    unused_data = b""
+    needs_input = True
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        return b""
+
+
+def test_a_stream_shorter_than_its_header_records_what_it_holds() -> None:
+    recorder = ResourceUsageRecorder()
+    noted = NotingDecompressor(
+        _Inner(),
+        recorder,
+        header_size=13,
+        declared=lambda head: len(head) if len(head) >= 3 else None,
+        what="a header",
+    )
+    assert noted.decompress(b"ab") == b""
+    assert noted.decompress(b"c") == b""
+    assert noted.decompress(b"d") == b""
+    usage = recorder.snapshot()
+    assert (usage.decoder_memory, usage.decoder_memory_what) == (3, "a header")
+    assert (noted.eof, noted.unused_data, noted.needs_input) == (False, b"", True)

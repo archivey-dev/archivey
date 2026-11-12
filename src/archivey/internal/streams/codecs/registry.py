@@ -205,7 +205,7 @@ def is_codec_available(
     codec: CodecId, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
 ) -> bool:
     """Whether ``codec``'s decompression backend is importable right now, and
-    ``excluded`` (a call's ``FormatPolicy.exclude_libraries``) does not turn it off.
+    ``excluded`` (a call's ``FormatPolicy._libraries_off``) does not turn it off.
 
     A codec with no ``requirement`` is stdlib-backed and always available; an optional codec
     reports on its backing package's live sentinel. Used by the registry to compute a
@@ -387,9 +387,18 @@ def _open_backend(
     (:func:`partial_data_recovery`)."""
     with partial_data_recovery(config.recover_partial_data):
         if config.probe_read_bound is None:
-            return backend.open(source, params)
-        with probe_streams():
-            return backend.open(source, params)
+            stream = backend.open(source, params)
+        else:
+            with probe_streams():
+                stream = backend.open(source, params)
+    usage = config.usage
+    # A detection probe's decode is not the reader's: ``backends_used`` leaves it out
+    # even when a recorder reaches the probe.
+    if usage is not None and config.probe_read_bound is None:
+        sc = _BY_CODEC[backend.codec]
+        for kind, name in sc.backend_uses():
+            usage.note_backend(kind, name, sc.stream_name)
+    return stream
 
 
 def _prepared_backend(
