@@ -25,9 +25,9 @@ as a built-in the way ar and CPIO are.
 
 Not here, though a reader might look for it: signatures are not checked (only reported),
 the payload digests (`PAYLOADSHA256` and friends) and the MD5 over header and payload
-(signature tag 1004) are not checked, a symlink's target in the payload is not compared
-with `FILELINKTOS`, bytes after the payload's trailer are not read, `%ghost` files are
-not listed, and scriptlets, dependencies and the changelog are not exposed.
+(signature tag 1004) are not checked, bytes after the payload's trailer are not read,
+`%ghost` files are not listed, and scriptlets, dependencies and the changelog are not
+exposed.
 
 ## 1. Shape
 
@@ -98,7 +98,7 @@ header.
 Hard links: the set's earlier files are held (`ReaderContext.hold()`, counted toward
 the listing's limits), and the set's last file, which carries the data, is yielded as
 the `FILE` with the held ones as `HARDLINK` members to it after it. A symlink's target is
-the header's; its payload bytes are skipped when a read passes them.
+the header's; its payload copy is compared with it when a read passes the entry (§2.3).
 
 `ArchiveInfo`:
 
@@ -136,6 +136,11 @@ its own, as for any solid archive.
   does not list, a stripped index past the file list, an entry size other than the
   header's, which rpm reads by, a cut or a codec error) raises for the read that finds it
   and for every later read of that cursor: rpm would not get past it either.
+- **A symlink's payload target that differs from the header's** is reported, once per
+  reader, as `MEMBER_HEADER_AMBIGUOUS` with `ambiguity="copies_differ"` and
+  `field="FILELINKTOS"`, when a read of a later file passes the entry. The member keeps
+  the header's target. `STRICT` raises it, in the read that passed the entry. A
+  symlink whose entry no read passes is not compared.
 - **Nothing past the last file read is read.** Listing never reads the payload, and a
   pass stops after the last file's data, so the trailer, what follows it and the
   codec's own end check are not reached, and damage in the entries after the last file
@@ -232,6 +237,12 @@ surface is memory a header can ask for:
   and `list` costs two headers. What this gives up, accepted by the maintainer: a file
   the payload lacks (rpm's `RPMERR_MISSING_FILE`) or a damaged payload is found only when
   data is read, and fails that read (§2.3), not the listing.
+- **A symlink's two targets that differ are reported, not refused** (maintainer,
+  2026-11-12). The member keeps `FILELINKTOS`, which rpm installs and the header
+  digests cover; `rpm2cpio | cpio -i` makes the payload's. The report is
+  `MEMBER_HEADER_AMBIGUOUS` (a shape no writer produces, which tools resolve
+  differently), so `STRICT` raises it. It comes only when a read passes the entry,
+  after the link is listed: extraction never reads a symlink's entry.
 - **Members come in the order rpm writes the payload** (§1), so a pass reads it forward
   once. Header order would put a hard-link set's data before the files rpm writes ahead
   of it.
@@ -243,11 +254,6 @@ surface is memory a header can ask for:
   the compressed and the uncompressed payload as a whole, including bytes no member
   reads. Checking them needs a hook in `archivey.formats` for a check that spans the
   payload; tracked internally.
-- **The payload's copy of a symlink's target.** The target is `FILELINKTOS`, as rpm
-  installs it; `rpm2cpio | cpio -i` writes the payload's. A package where the two differ
-  is read without a report. Extraction never reads a symlink's entry, so the copy can
-  only be compared when a read of a later file passes it, after the link is listed or
-  made; how to report it then is not decided yet.
 - **A payload with no compressor tag that is gzip.** rpm opens such a payload with
   `gzdio`, which reads plain bytes too; only packages from rpm 3 and older have it. The
   walk cannot look at the payload's first bytes and then hand them to a codec, so it reads

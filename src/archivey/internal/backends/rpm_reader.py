@@ -62,6 +62,7 @@ from typing import Any
 
 from archivey.diagnostics import (
     DiagnosticCode,
+    HeaderAmbiguityContext,
     UnknownMemberTypeContext,
 )
 from archivey.exceptions import (
@@ -409,6 +410,9 @@ class RpmReader(SequentialReader):
         # Until the walk reads the header, which the open's first step does: solid,
         # the answer for a compressed payload.
         self._solid = True
+        # Symlinks whose payload target was reported as differing, by file index:
+        # once per reader, though each walk started over passes the entry again.
+        self._reported_targets: set[int] = set()
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:
@@ -876,7 +880,38 @@ class _Payload:
             self._pending = None
             if found is file:
                 return size
+            if found.mode & _S_IFMT == _S_IFLNK and not found.flags & RPMFILE_GHOST:
+                # Its size is the header's target length (checked above), so the read
+                # is no larger than a string the header already holds.
+                self._compare_target(found, payload.read_exact(size))
+                self._data_end = payload.offset
+                continue
             self._skip(size)
+
+    def _compare_target(self, file: _File, stored: bytes) -> None:
+        """Report a symlink whose payload entry stores another target than the
+        header, whose target the member keeps (``FILELINKTOS``, as rpm installs it)."""
+        reader = self._reader
+        targets = self._package.targets
+        assert targets is not None  # _files refuses a symlink with no target
+        listed = targets[file.index]
+        if stored == listed or file.index in reader._reported_targets:
+            return
+        reader._reported_targets.add(file.index)
+        context = reader._context
+        raw = file.raw_name
+        name = context.normalize_name(
+            context.decode_name(b"." + raw if raw.startswith(b"/") else raw),
+            MemberType.SYMLINK,
+        )
+        context.report(
+            DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
+            f"RPM symlink {_shown(raw)}: the payload stores the target "
+            f"{_shown(stored)}, the header {_shown(listed)}; the header's is used",
+            HeaderAmbiguityContext(
+                member_name=name, ambiguity="copies_differ", field="FILELINKTOS"
+            ),
+        )
 
     def _skip(self, size: int) -> None:
         self._pending = None

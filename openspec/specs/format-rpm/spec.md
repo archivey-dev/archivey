@@ -111,6 +111,7 @@ and a payload compressor archivey has no codec for SHALL raise `UnsupportedFeatu
 | `PAYLOADFORMAT` `drpm` | `UnsupportedFeatureError` naming a delta RPM |
 | `PAYLOADCOMPRESSOR` `lzip` | `UnsupportedFeatureError` |
 | Payload missing one non-ghost file | Listed; `CorruptionError` when its data is read; the other files read |
+| A symlink whose payload entry stores another target than `FILELINKTOS`, passed by a later file's read | The header's target kept; `MEMBER_HEADER_AMBIGUOUS` (`ambiguity="copies_differ"`) reported once per reader, raised under `STRICT` |
 | Bytes after the payload's trailer | Not read, not reported |
 | A header with more than 65 535 entries or more than 256 MiB of data (rpm's own bounds) | `CorruptionError` before the index is read |
 | A payload entry name longer than 4096 bytes (the longest rpm reads, `lib/cpio.c`) | `CorruptionError` |

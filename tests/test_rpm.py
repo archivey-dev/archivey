@@ -20,6 +20,7 @@ from archivey import (
     AccessCost,
     ArchiveyConfig,
     CorruptionError,
+    DiagnosticPolicy,
     ListingCost,
     ListingLimits,
     MemberType,
@@ -31,6 +32,7 @@ from archivey import (
 )
 from archivey.diagnostics import (
     DiagnosticCode,
+    HeaderAmbiguityContext,
     UnknownMemberTypeContext,
 )
 from archivey.formats import SequentialReader
@@ -1643,3 +1645,64 @@ def test_the_fixtures_list_in_the_order_rpm_wrote_them() -> None:
         "usr/share/at/zero.txt",
         "usr/share/at/dir/zero-hard.txt",
     ]
+
+
+def _differing_link() -> bytes:
+    """``_tree()`` with ``opt/t/link`` pointing at ``q.txt`` in the header and at
+    ``r.txt`` in its payload entry."""
+    files = _tree()
+    files[6].link = b"q.txt"
+    # In rpm's order, so reading the hard-link set's data passes the link's entry.
+    data = _build(_Package(files, compressor=None, order=[0, 1, 2, 6, 4, 5]))
+    at = data.rindex(b"q.txt")
+    return data[:at] + b"r.txt" + data[at + 5 :]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_symlink_whose_payload_target_differs_is_reported(pipe: bool) -> None:
+    """The header's target is kept, as rpm installs it; the payload's, which
+    ``rpm2cpio | cpio`` would make, is reported once a read passes the entry."""
+    data = _differing_link()
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+    with open_archive(source, format=RPM, streaming=pipe) as reader:
+        targets = {}
+        for member, stream in reader.stream_members():
+            targets[member.name] = member.link_target
+            if stream is not None:
+                stream.read()
+        if not pipe:
+            # Opened again, each read walks past the entry again: still one report.
+            for name in ("opt/t/h2", "opt/t/big.bin", "opt/t/h2"):
+                reader.read(name)
+        reports = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
+        ]
+    assert targets["opt/t/link"] == "q.txt"
+    (report,) = reports
+    context = report.context
+    assert isinstance(context, HeaderAmbiguityContext)
+    assert (context.member_name, context.ambiguity, context.field) == (
+        "opt/t/link",
+        "copies_differ",
+        "FILELINKTOS",
+    )
+    assert "'r.txt'" in report.message
+
+
+def test_a_symlink_whose_payload_target_differs_fails_the_read_under_strict() -> None:
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with _open(_differing_link(), config=config) as reader:
+        reader.members()
+        assert reader.read("opt/t/a.txt") == b"alpha\n"
+        with pytest.raises(archivey.ArchiveyError):
+            reader.read("opt/t/h2")
+
+
+def test_a_matching_payload_target_is_not_reported() -> None:
+    with _open(_build(_Package(_tree(), compressor=None))) as reader:
+        for member in reader.members():
+            if member.type is MemberType.FILE:
+                reader.read(member)
+        assert not reader.diagnostics.retained

@@ -1401,6 +1401,10 @@ ST and Japanese PCs, and from LHa for UNIX.
 - Each regular file's digest from the header (SHA-256 in current packages, MD5 in old ones)
   is checked as its data is read.
 - `%ghost` files are listed in the package but never stored, and are not members.
+- A symlink's target comes from the header, as `rpm` installs it. The payload stores the
+  target again; when a read of a later file passes that copy and it differs,
+  `MEMBER_HEADER_AMBIGUOUS` is reported for the link, which `STRICT` raises.
+  `rpm2cpio | cpio` would make the payload's target.
 - **Hard links.** Files that share an inode are one file. The package stores the data with
   the last of them, so archivey lists that one as the `FILE` and the others after it as
   `HARDLINK` members to it.
