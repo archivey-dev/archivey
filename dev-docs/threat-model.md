@@ -507,8 +507,8 @@ data its pass keeps for link targets beside it.
   `internal/listing_limits.py` `ListingDecodeCount` counts, on the listing's thread,
   every byte a listing decode stage produces (`BaseArchiveReader._budget_drawn` with
   `stage=True`: the archive's own codec stream, a `decompress()` layer, a stream
-  opened during listing work) while listing work runs (`_listing_work`): a walk step, the first header a reader
-  parses at open, a 7z encoded header, the link targets `_finalize_links` reads (a
+  opened during listing work) while listing work runs (`_listing_work`): a walk
+  step, the first header a reader parses at open, a 7z encoded header, the link targets `_finalize_links` reads (a
   solid 7z folder up to its last link). A caller's member reads between steps do not
   count. A compressed TAR, cpio or RPM payload is decoded whole to list; a ZIP read
   from a pipe decodes about 4 KiB of each compressed member it passes over. The
