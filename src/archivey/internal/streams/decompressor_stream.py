@@ -608,6 +608,39 @@ def probe_streams() -> Generator[None]:
         _PROBE_STREAM.reset(token)
 
 
+# Set to the caller's ``recover_partial_data`` while its codec stream opens
+# (:func:`partial_data_recovery`).
+_RECOVER_PARTIAL: ContextVar[bool] = ContextVar(
+    "archivey_recover_partial", default=True
+)
+
+
+@contextmanager
+def partial_data_recovery(recover: bool) -> Generator[None]:
+    """Streams built inside this block decode again to hand back the bytes before an
+    error only when ``recover`` is true (``ArchiveyConfig.recover_partial_data``).
+
+    Without it, a stream does no extra work for those bytes: on a source that can seek
+    it does not decode again to the failing byte (``_redecode_to_error``), and on a pipe
+    a deflate decoder does not copy its state before each call
+    (``keep_output_before_errors``). The read that meets the error raises, and the
+    bytes its decoder call would have returned are lost. Bytes a decoder hands back
+    before an error at no extra cost (the in-house decoders, bzip3) still come back.
+    """
+    token = _RECOVER_PARTIAL.set(recover)
+    try:
+        yield
+    finally:
+        _RECOVER_PARTIAL.reset(token)
+
+
+def recovers_partial_data() -> bool:
+    """Whether a stream built here would recover the bytes before an error: what a
+    stream built later, outside the :func:`partial_data_recovery` block, re-enters it
+    with (the accelerator's standard-library fallback)."""
+    return _RECOVER_PARTIAL.get()
+
+
 # The step of large bounded reads over a decompressed stream; this module does not
 # use it. ``verify._SIZED_DRAIN_CHUNK`` and ``tar_parser.DATA_READ_STEP`` follow it,
 # and the latter is TAR's stated allocation bound (``tar.md``, ``threat-model.md``
@@ -1009,6 +1042,7 @@ class DecompressorStream(ReadOnlyIOStream):
         self._owned_inner: BinaryIO | None = None
         # A probe's stream raises where it meets an error (probe_streams).
         self._probe = _PROBE_STREAM.get()
+        self._recover = _RECOVER_PARTIAL.get()
         # Used once, in place of the decoder's index scan (see _ensure_index_built).
         self._initial_index = initial_index
         self._refuse_input_after_end = refuse_input_after_end
@@ -1078,7 +1112,7 @@ class DecompressorStream(ReadOnlyIOStream):
             seekable = self._inner.seekable()
             # The most output one bounded decoder call asks for (see _FEED_OUTPUT).
             self._call_output = _SEEKABLE_FEED_OUTPUT if seekable else _FEED_OUTPUT
-            if not seekable and not self._probe:
+            if not seekable and not self._probe and self._recover:
                 # A pipe cannot be decoded again (_redecode_to_error): a decoder that
                 # can snapshot its state keeps the bytes before an error itself.
                 keep = getattr(self._decoder, "keep_output_before_errors", None)
@@ -1721,13 +1755,14 @@ class DecompressorStream(ReadOnlyIOStream):
         break it. The new decoder replaces the one that
         raised; the stream is spent either way, and a seek restarts it.
 
-        Only on a source that can seek back, and not in a probe's stream
-        (:func:`probe_streams`). It returns ``b""`` when it cannot run or
+        Only on a source that can seek back, not in a probe's stream
+        (:func:`probe_streams`), and not when the caller turned recovery off
+        (:func:`partial_data_recovery`). It returns ``b""`` when it cannot run or
         recovers nothing, and the error raises as it would have. The cost is a second
         decode from the seek point and one more per probe that raises, paid only on
         damaged data.
         """
-        if self._probe or not self._inner.seekable():
+        if self._probe or not self._recover or not self._inner.seekable():
             return b""
         point = self._find_best_seek_point(before)
         got = bytearray()

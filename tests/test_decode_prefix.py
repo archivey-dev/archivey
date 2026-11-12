@@ -479,3 +479,48 @@ def test_a_large_read_finds_the_failing_byte_in_few_calls(
     assert got % (1 << 20) > 100_000, "the damage must be far into the read"
     assert counts["restarts"] <= 8
     assert counts["calls"] <= 4096
+
+
+_NO_RECOVERY = replace(_CONFIG, recover_partial_data=False)
+
+
+@pytest.mark.parametrize("name", list(CODECS))
+def test_recovery_off_does_not_decode_again(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``recover_partial_data=False``: the read that meets the damage raises the same
+    error with no second decode, and the bytes the failing decoder call gave before
+    it are lost."""
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    codec, compress = CODECS[name]
+    damaged = _damage(compress(PAYLOAD), 0.5)
+    recovered = _prefix(io.BytesIO(damaged), codec, 1 << 20)
+    restarts = 0
+    real = DecompressorStream._redecode_restart
+
+    def counting(self: Any, *args: Any) -> Any:
+        nonlocal restarts
+        restarts += 1
+        return real(self, *args)
+
+    monkeypatch.setattr(DecompressorStream, "_redecode_restart", counting)
+    got, error = _prefix(io.BytesIO(damaged), codec, 1 << 20, _NO_RECOVERY)
+    assert restarts == 0
+    assert error == recovered[1]
+    # The calls before the failing one still come back; the failing call's are lost.
+    # bzip2 and zstd fail at a block or frame start, where that call gave nothing.
+    assert recovered[0] - (1 << 20) <= got <= recovered[0]
+    if name in ("gzip", "xz"):
+        assert got < recovered[0]
+
+
+def test_recovery_off_takes_no_deflate_copy_on_a_pipe() -> None:
+    """On a pipe the deflate decoder keeps the bytes before an error by copying its
+    state before each call; with recovery off it takes no copy, so the failing call's
+    bytes are lost there too."""
+    damaged = _damage(gzip.compress(PAYLOAD, mtime=0), 0.5)
+    kept = _prefix(NonSeekableBytesIO(damaged), Codec.GZIP, 1 << 20)
+    lost = _prefix(NonSeekableBytesIO(damaged), Codec.GZIP, 1 << 20, _NO_RECOVERY)
+    assert lost[1] == kept[1] is not None
+    assert lost[0] < kept[0]

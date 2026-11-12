@@ -4034,6 +4034,11 @@ class BaseArchiveReader(ArchiveReader):
                     usage=self._usage,
                 ),
                 report_trailing_data=True,
+                # The members are read through this stream, several small ones to
+                # one read (the TAR walk reads ahead): a failing call that lost its
+                # bytes would take whole members before the damage with it. So it
+                # recovers them whatever the caller set.
+                recover_partial_data=True,
             ),
             stamp=lambda exc: self._stamp_error_context(exc),
             collector=self._diagnostics_collector,
