@@ -771,9 +771,9 @@ def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
     reader stages such a caller path (:func:`unrar_needs_staged_name`) under a
     fixed name, in the system temp directory or one made in it. A long directory
     needs no staging: ``unrar`` opens the name relative to its working
-    directory, and the system resolves that with no length to cut. ``unrar`` finds the next volume of a
-    set beside that name. ``unrar p`` writes only to stdout, so the working
-    directory changes no output location.
+    directory, and the system resolves that with no length to cut. ``unrar``
+    finds the next volume of a set beside that name. ``unrar p`` writes only to
+    stdout, so the working directory changes no output location.
 
     Windows names cannot hold ``*`` or ``?``, so there only the length applies, and
     a working directory that long is past what ``CreateProcess`` takes, so Windows
