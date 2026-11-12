@@ -517,7 +517,13 @@ def check_universal(
     )
     target = member.link_target
     if target is not None and member.type == MemberType.SYMLINK:
-        _check_symlink_target(member, target, dest_root, link_target_on_disk)
+        _check_symlink_target(
+            member,
+            target,
+            dest_root,
+            link_target_on_disk,
+            rooted_link_targets=rooted_link_targets,
+        )
 
 
 def _resolve_parent_within(
@@ -573,6 +579,8 @@ def _check_symlink_target(
     target: str,
     dest_root: Path,
     link_target_on_disk: Callable[[str], str] | None,
+    *,
+    rooted_link_targets: bool = False,
 ) -> None:
     """Refuse symlink ``member``, whose target is ``target``, when the target escapes
     ``dest_root`` (the resolved destination).
