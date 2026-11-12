@@ -95,9 +95,9 @@ the bytes would be read as the next entry's header and the package fails in rpm.
 size that disagrees with that 0 is `CorruptionError`, as any size that disagrees with the
 header.
 
-Hard links: the set's earlier files are held (`ReaderContext.hold()`, counted toward
-the listing's limits), and the set's last file, which carries the data, is yielded as
-the `FILE` with the held ones as `HARDLINK` members to it after it. A symlink's target is
+Hard links: the set's earlier files are held (`ReaderContext.hold()`, counted toward the
+listing's limits), and the set's last file, which carries the data, is yielded as the
+`FILE` with the held ones as `HARDLINK` members to it after it. A symlink's target is
 the header's; its payload copy is compared with it when a read passes the entry (§2.3).
 
 `ArchiveInfo`:
@@ -119,14 +119,14 @@ the header's; its payload copy is compared with it when a read passes the entry 
 
 Each walk has one cursor in the payload (`_Payload`), shared by the data streams of the
 members it yields, which moves forward only. A file's data stream, read for the first
-time, moves the cursor to the file's entry: it skips the entries on the way (directories,
-symlinks, the empty entries of earlier hard links, files nobody read, ghosts rpm < 4.11
-stored, a second entry for a file already passed), maps each entry to its file as `rpm`
-does (`lib/rpmfi.c`: a newc entry by its name, a stripped one by its index), and checks
-each entry's size against the header's. archivey reads a pass's members in the walk's
-order, which is the payload's, so `stream_members()` and `extract_all` decode the payload
-once. `open()` of one member walks again from the start of the archive with a cursor of
-its own, as for any solid archive.
+time, moves the cursor to the file's entry: it skips the entries on the way
+(directories, symlinks, the empty entries of earlier hard links, files nobody read,
+ghosts rpm < 4.11 stored, a second entry for a file already passed), maps each entry to
+its file as `rpm` does (`lib/rpmfi.c`: a newc entry by its name, a stripped one by its
+index), and checks each entry's size against the header's. archivey reads a pass's
+members in the walk's order, which is the payload's, so `stream_members()` and
+`extract_all` decode the payload once. `open()` of one member walks again from the start
+of the archive with a cursor of its own, as for any solid archive.
 
 - **A file the payload lacks fails alone.** The search for it stops at the next entry
   that carries a later file's data (by rpm's order, §1), leaves that entry for that
@@ -134,8 +134,8 @@ its own, as for any solid archive.
   data entries are in another order than rpm's: the file found out of place fails.
 - **Damage to the payload's structure** (an entry that does not parse, a name the header
   does not list, a stripped index past the file list, an entry size other than the
-  header's, which rpm reads by, a cut or a codec error) raises for the read that finds it
-  and for every later read of that cursor: rpm would not get past it either.
+  header's, which rpm reads by, a cut or a codec error) raises for the read that finds
+  it and for every later read of that cursor: rpm would not get past it either.
 - **A symlink's payload target that differs from the header's** is reported, once per
   reader, as `MEMBER_HEADER_AMBIGUOUS` with `ambiguity="copies_differ"` and
   `field="FILELINKTOS"`, when a read of a later file passes the entry. The member keeps
@@ -232,10 +232,10 @@ surface is memory a header can ask for:
   damage, not tampering: whoever changes the header can change them too. The
   member list comes from the header, so without this check a changed link target, mode
   or owner passed `archivey test`.
-- **The listing is the header's; the payload is read only for data.** The header is
-  what rpm installs and what the header digests cover, so listing needs nothing else,
-  and `list` costs two headers. What this gives up, accepted by the maintainer: a file
-  the payload lacks (rpm's `RPMERR_MISSING_FILE`) or a damaged payload is found only when
+- **The listing is the header's; the payload is read only for data.** The header is what
+  rpm installs and what the header digests cover, so listing needs nothing else, and
+  `list` costs two headers. What this gives up, accepted by the maintainer: a file the
+  payload lacks (rpm's `RPMERR_MISSING_FILE`) or a damaged payload is found only when
   data is read, and fails that read (§2.3), not the listing.
 - **A symlink's two targets that differ are reported, not refused** (maintainer,
   2026-11-12). The member keeps `FILELINKTOS`, which rpm installs and the header
