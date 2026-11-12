@@ -21,13 +21,13 @@ refused with `UnsupportedFeatureError`.
 
 The levels of one nest SHALL share one budget for each limit, not one each. What an
 inner reader keeps beyond the members it hands out (a member it holds back, bytes it
-charges with `charge_metadata`, an archive comment, a link target) SHALL count against `max_metadata_bytes` together with the
-outermost listing, until the inner reader closes. The decoders of the levels SHALL share
-`max_decoder_memory`: an inner reader's decoders SHALL get the cap less the largest
-working set each enclosing level declared by the time the inner archive's first byte was
-decoded. Every level's decoded bytes
-SHALL be held to `max_ratio` of the outermost archive's compressed size, or of the
-compressed bytes taken from it so far when that size is unknown.
+charges with `charge_metadata`, an archive comment, a link target) SHALL count against
+`max_metadata_bytes` together with the outermost listing, until the inner reader closes.
+The decoders of the levels SHALL share `max_decoder_memory`: an inner reader's decoders
+SHALL get the cap less the largest working set each enclosing level declared by the time
+the inner archive's first byte was decoded. Every level's decoded bytes SHALL be held to
+`max_ratio` of the outermost archive's compressed size, or of the compressed bytes taken
+from it so far when that size is unknown.
 
 #### Scenario: nested reads
 
