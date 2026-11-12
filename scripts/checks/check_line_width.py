@@ -35,7 +35,10 @@ committing.
 
 `.github/` is skipped: GitHub renders a newline in an issue or pull request body as a
 line break, so its templates are not wrapped. So are `review/` (generated review
-reports), `dev-docs/history/` and the OpenSpec archive.
+reports), `dev-docs/history/`, the OpenSpec archive and
+`dev-docs/tar-minefield-results.md`, which
+`scripts/fixtures/gen_tar_minefield_expected.py` writes whole, one line per paragraph,
+so a hand rewrap would be undone by the next run.
 
 Stdlib only.
 """
@@ -68,6 +71,7 @@ SKIPPED_PREFIXES = (
     "review/",
     "openspec/changes/archive/",
     "dev-docs/history/",
+    "dev-docs/tar-minefield-results.md",
 )
 #: Python lives here; `ruff` checks the same folders.
 PYTHON_PREFIXES = ("src/", "tests/", "scripts/", "benchmarks/")

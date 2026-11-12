@@ -475,7 +475,8 @@ hard link to a file under it is refused with its source, and a member that lands
 link's own name replaces the link or is refused by `overwrite`, never written through
 it. A target that leads back into `dest` is followed there, as any symlink is. The
 `archivey://` tree under `TRUSTED` lists such a link as `"other"` and follows nothing
-through it, since it has no destination path: a member under it is left out. Tests: `tests/test_rooted_symlinks.py`.
+through it, since it has no destination path: a member under it is left out. Tests:
+`tests/test_rooted_symlinks.py`.
 
 #### Scenario: symlink revalidation matrix
 

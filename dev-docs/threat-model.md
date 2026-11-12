@@ -100,11 +100,11 @@ destination is followed there, as any symlink is.
   the escape check for a target that starts with `/` (`filters.is_rooted_link_target`),
   and the link is not tracked for recheck: it may point out already, and it stays even
   when a later member changes where its target resolves (the exception in "A later
-  member cannot make an extracted symlink escape"). Its creation is still reported as a change
-  (`LinkWatch.note_change`), so a link made before it whose walk runs through its path
-  is rechecked, and removed if it now leads out. A drive or UNC target is still refused,
-  and a single `\` target is a relative name on POSIX. The `archivey://` tree lists such
-  a link and walks nothing through it.
+  member cannot make an extracted symlink escape"). Its creation is still reported as a
+  change (`LinkWatch.note_change`), so a link made before it whose walk runs through its
+  path is rechecked, and removed if it now leads out. A drive or UNC target is still
+  refused, and a single `\` target is a relative name on POSIX. The `archivey://` tree
+  lists such a link and walks nothing through it.
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical
