@@ -263,6 +263,34 @@ def test_raw_ranges_cover_whole_sectors() -> None:
     assert layout.raw_range(4096, 4096) == (4704, 4704)
 
 
+def test_a_cooked_view_releases_its_views_of_the_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``RawIOBase.read`` resizes the buffer after ``readinto`` returns. PyPy frees a
+    dropped view only at a collection, so a view still alive makes the resize raise
+    ``BufferError``. Holding every view here shows that on CPython too."""
+    from archivey.internal.backends import cd_sectors
+
+    held: list[memoryview] = []
+
+    def holding(obj: bytearray) -> memoryview:
+        view = memoryview(obj)
+        held.append(view)
+        return view
+
+    monkeypatch.setattr(cd_sectors, "memoryview", holding, raising=False)
+    data = bytes(range(256)) * 8
+    view = cd_sectors._CookedView(
+        lambda first, end: data[first * 2048 : end * 2048], len(data), 2040, None
+    )
+    for want in (data[2040:], b""):
+        buffer = bytearray(16)
+        n = view.readinto(buffer)
+        del buffer[n:]  # BufferError while a view of it is alive
+        assert buffer == want
+    assert held
+
+
 @requires("pycdlib")
 def test_a_cut_image_names_sectors_not_user_data_bytes(tmp_path: Path) -> None:
     raw = to_raw(_plain_iso())

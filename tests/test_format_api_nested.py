@@ -50,6 +50,7 @@ from archivey.formats import (
     SequentialReader,
     register_format,
 )
+from archivey.internal import format_adapter
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.format_adapter import (
     MAX_NESTED_DEPTH,
@@ -59,7 +60,7 @@ from archivey.internal.format_adapter import (
     registration_scope,
 )
 from archivey.internal.listing_limits import ListingLimitTracker
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, lzma_alone_with_filter
 
 _KINDS = {
     b"T": ArchiveFormat.TAR,
@@ -735,7 +736,9 @@ def test_xz_levels_count_against_one_decoder_memory_budget(
     filters = [{"id": lzma.FILTER_LZMA2, "dict_size": 2**20}]
 
     def xz(data: bytes) -> bytes:
-        return lzma.compress(data, filters=filters)
+        # The check is named: PyPy's lzma passes the default -1 on to liblzma with a
+        # filter chain, which refuses it ("Internal error").
+        return lzma.compress(data, check=lzma.CHECK_CRC64, filters=filters)
 
     level4 = xz(_tar([("a", b"a")]))
     level3 = xz(_boxes((b"X", level4)))
@@ -796,15 +799,18 @@ def test_member_decoders_liblzma_checks_count_against_one_budget(
     ``ReaderContext.decompress`` and reads an archive from it. The decoder declares
     its dictionary only once it reads its data, after ``open_nested`` is called."""
     monkeypatch.setitem(_KINDS, b"C", CodecBoxesHandler.format)
-    if codec == b"x":
-        filters = [{"id": lzma.FILTER_LZMA2, "dict_size": 2**20}]
-        options = {"format": lzma.FORMAT_XZ, "filters": filters}
-    else:
-        filters = [{"id": lzma.FILTER_LZMA1, "dict_size": 2**20}]
-        options = {"format": lzma.FORMAT_ALONE, "filters": filters}
+
+    def pack(inner: bytes) -> bytes:
+        if codec == b"x":
+            # The check is named: PyPy's lzma passes the default -1 on to liblzma with a
+            # filter chain, which refuses it ("Internal error").
+            filters = [{"id": lzma.FILTER_LZMA2, "dict_size": 2**20}]
+            return lzma.compress(inner, check=lzma.CHECK_CRC64, filters=filters)
+        lzma1 = {"id": lzma.FILTER_LZMA1, "dict_size": 2**20}
+        return lzma_alone_with_filter(inner, lzma1)
 
     def box(kind: bytes, inner: bytes) -> bytes:
-        packed = lzma.compress(inner, **options)  # type: ignore[arg-type]
+        packed = pack(inner)
         return b"BOXES%08d" % len(packed) + kind + codec + packed + b"00000000"
 
     data = box(b"C", box(b"C", box(b"T", _tar([("a", b"a")]))))
@@ -824,6 +830,29 @@ def test_a_primed_stream_gives_its_head_then_the_rest() -> None:
     assert primed.read(3) == b"b"
     assert primed.read() == b"cdef"
     assert primed.read() == b""
+
+
+def test_a_primed_stream_releases_its_views_of_the_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``RawIOBase.read`` resizes the buffer after ``readinto`` returns. PyPy frees a
+    dropped view only at a collection, so a view still alive makes the resize raise
+    ``BufferError``. Holding every view here shows that on CPython too."""
+    held: list[memoryview] = []
+
+    def holding(obj: bytearray) -> memoryview:
+        view = memoryview(obj)
+        held.append(view)
+        return view
+
+    monkeypatch.setattr(format_adapter, "memoryview", holding, raising=False)
+    primed = _Primed(b"ab", io.BytesIO(b"cdef"))
+    for want in (b"ab", b"cdef", b""):
+        buffer = bytearray(8)
+        n = primed.readinto(buffer)
+        del buffer[n:]  # BufferError while a view of it is alive
+        assert buffer == want
+    assert held
 
 
 class PaddedBoxesContainer(PluginContainer):
