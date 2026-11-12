@@ -969,16 +969,17 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   directories of the archive path too (measured on 7.00: `t*p/a.rar` also read
   `t!p/a.rar`, first, in directory order). The staged files sit in the system temp
   directory or a directory made in it, so a `TMPDIR` holding a wildcard brought the
-  problem back, and a long one brought back the 6.x cut (§4). So on POSIX `unrar` is
-  always started in the archive's directory and given its name alone
-  (`_unrar_archive_argument`), for every read: one path, not a branch taken only for a
-  rare temp directory (maintainer, 2026-11-12). So on POSIX only the name decides
-  staging: a long or wildcard directory needs no copy, and an archive deep in a long
-  directory is read in place (maintainer, 2026-11-12). `unrar` opens the name relative
-  to its working directory, and the system resolves that with no length to cut. A name
-  that would be expanded is staged first, under a name that is fixed or made by
-  `mkstemp`, and `unrar` finds a set's next volume beside it. `unrar p` writes only to
-  stdout, so the working directory moves no output. Windows names cannot hold a
+  problem back, and a long one brought back the 6.x cut (§4). So on POSIX `unrar` always
+  starts in the archive's directory with the name alone, for every read, and only the
+  name decides staging: a long or wildcard directory is read in place
+  (`_unrar_archive_argument`, `unrar_needs_staged_name`; maintainer, 2026-11-12). A bare
+  relative name sets no working directory: the child inherits it, and a `chdir` to it
+  could fail past `PATH_MAX`. The path is split as given, never normalised, so
+  `link/../a.rar` through a symlink names the file the system opens. `unrar` opens the
+  name relative to its working directory, and the system resolves that with no length to
+  cut. A name that would be expanded is staged first, under a name that is fixed or made
+  by `mkstemp`, and `unrar` finds a set's next volume beside it. `unrar p` writes only
+  to stdout, so the working directory moves no output. Windows names cannot hold a
   wildcard, and a directory long enough to be cut is past what `CreateProcess` takes as
   a working directory, so there the staged path goes over whole, with no working
   directory, while 6.x keeps it (2047 UTF-16 units less 16 for the longest staged volume

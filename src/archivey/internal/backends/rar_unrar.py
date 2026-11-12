@@ -802,14 +802,15 @@ def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
     # through a symlinked directory ``link/../a.rar`` names another file than the
     # one the system opens, the one archivey parsed.
     directory, name = os.path.split(path)
-    directory = directory or os.getcwd()
     if not name or unrar_expands_wildcards(name):
         # The reader stages every such name; reaching here is a bug upstream.
         raise ReadError(
             f"the archive {display_path(path)} cannot be handed to unrar: its name "
             "holds a wildcard character"
         )
-    return name, directory
+    # A bare name is already in this process's working directory, which the child
+    # inherits: no cwd, so no chdir that a path past PATH_MAX would fail.
+    return name, directory or None
 
 
 def unrar_member_refusal(member: str) -> str | None:

@@ -465,9 +465,11 @@ def test_the_archive_argument_on_posix_is_always_the_name_alone(
     plain = tmp_path / "archive.rar"
     assert rar_unrar._unrar_archive_argument(plain) == ("archive.rar", str(tmp_path))
     monkeypatch.chdir(tmp_path)
-    assert rar_unrar._unrar_archive_argument("archive.rar") == (
+    # A bare name: the child inherits this working directory, so none is set.
+    assert rar_unrar._unrar_archive_argument("archive.rar") == ("archive.rar", None)
+    assert rar_unrar._unrar_archive_argument("sub/archive.rar") == (
         "archive.rar",
-        str(tmp_path),
+        "sub",
     )
     starred = tmp_path / "t*p" / "archive.part1.rar"
     assert rar_unrar._unrar_archive_argument(starred) == (
@@ -483,6 +485,7 @@ def test_the_archive_argument_on_posix_is_always_the_name_alone(
         rar_unrar._unrar_archive_argument(tmp_path / "rep*.rar")
 
 
+@requires_binary("unrar")
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks and paths")
 def test_the_archive_directory_keeps_a_dotdot_through_a_symlink(
     tmp_path: Path,
