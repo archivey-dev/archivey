@@ -31,9 +31,10 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 
 - **A crash in native code can take your process with it.** Decoders written in C, such as the
   standard library's zlib, bz2 and lzma, run inside your process. Archivey runs the decoders known
-  to crash in a child process: rapidgzip, pyppmd for every member compressed with PPMd, a
-  method some 7z and ZIP archives use, and libbzip3 for every `.bz3` file. A crash nobody has
-  found yet in another decoder would still abort yours, unless you [run every decoder in a child process](#decoders-in-a-child-process).
+  to crash in a child process: rapidgzip, pyppmd for every member compressed with PPMd, a method
+  some 7z and ZIP archives use, and libbzip3 for every `.bz3` file. A crash nobody has found yet in
+  another decoder would still abort yours, unless you [run every decoder in a child
+  process](#decoders-in-a-child-process).
 
     ??? note "Why every PPMd member?"
         pyppmd, the PPMd decoder, has a known issue that can crash it on damaged or crafted
@@ -150,17 +151,18 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
     is a `.zz` file holding several zlib streams whose last checksum covers them all, opened with
     `use_rapidgzip=ON`: reading it to the end, or seeking there, returns every stream, where the
     standard library returns the first and reports the rest as trailing data. The third is a cut
-    `.gz` file, or a cut bare zlib or DEFLATE stream, whose last eight bytes are made to match the
-    end of the data: it can read short with no error, where the standard library raises
-    `CorruptionError`. ZIP and 7z members aren't affected, since their stored size and CRC catch
-    short data. Turn rapidgzip off if your code must refuse the first or third shape, or read only
-    the first stream of the second (add `DiagnosticPolicy.STRICT` to refuse the second).
+    `.gz` file whose last eight bytes are made the CRC-32 and length of the data before the cut: it
+    can read short with no error, where the standard library raises `CorruptionError`. ZIP and 7z
+    members aren't affected, since their stored size and CRC catch short data. Turn rapidgzip off if
+    your code must refuse the first or third shape, or read only the first stream of the second (add
+    `DiagnosticPolicy.STRICT` to refuse the second).
 
     ??? note "Why not check for it?"
         rapidgzip doesn't say where a DEFLATE stream ends. Archivey checks the end of the data
         from the last place rapidgzip can restart from, which catches a cut stream (unless it's
         crafted as the third shape is) and any bytes after the last one. Finding where an earlier
-        stream ended would mean decompressing the member again from the start, which costs as much as reading it without rapidgzip.
+        stream ended would mean decompressing the member again from the start, which costs as much
+        as reading it without rapidgzip.
 
     ??? note "Why a separate process, and why those sizes?"
         The crashes seen so far are in rapidgzip's DEFLATE decoder. Its bzip2 decoder hasn't been
@@ -332,10 +334,9 @@ that your program doesn't depend on. If you'd rather a package didn't parse your
 example because of a bug reported against it, list it in the policy's
 [`exclude_libraries=`](opening.md#configuration). archivey then decodes nothing with it in calls
 made with that config. It doesn't import `brotli`, `pyppmd`, `inflate64`, `rapidgzip`, `lzo`
-(python-lzo), `bz3` or `cryptography` for them;
-`lz4`, `zstd` and `pycdlib` are imported when archivey loads, but not used. The standard library's
-`zlib`, `bz2` and `lzma` can't be excluded; refuse the formats that carry them with `only=` or
-`exclude=` instead.
+(python-lzo), `bz3` or `cryptography` for them; `lz4`, `zstd` and `pycdlib` are imported when
+archivey loads, but not used. The standard library's `zlib`, `bz2` and `lzma` can't be excluded;
+refuse the formats that carry them with `only=` or `exclude=` instead.
 
 Opening one part of a multi-volume set by path, such as `x.part1.rar` or `x.7z.001`, also reads
 the other parts in the same folder. A part found that way that is a symbolic link is refused with

@@ -2,8 +2,8 @@
 
 ## Supported Versions
 
-Security fixes go into the latest minor release line of `archivey` on PyPI (0.3.x,
-from the 0.3.0 release) and into `main`. A fix ships as a new patch release of that line.
+Security fixes go into the latest minor release line of `archivey` on PyPI (0.3.x, from
+the 0.3.0 release) and into `main`. A fix ships as a new patch release of that line.
 
 | Version | Gets security fixes |
 | --- | --- |
@@ -69,8 +69,8 @@ The [known and accepted limits](https://archivey-dev.github.io/archivey/security
 (a crash inside an in-process native decoder, untranslated `MemoryError`, no CPU or
 time bound, accelerators on by default, a crafted `.xz`, `.lz`, seekable `.zst`, BGZF or
 mgzip `.gz`, or `.bz3` index after a seek, and the Windows directory-source gap) are
-documented trade-offs, not vulnerabilities. A report that one of them reaches further than
-the page says is in scope.
+documented trade-offs, not vulnerabilities. A report that one of them reaches further
+than the page says is in scope.
 
 Out of scope for private security reports (use ordinary GitHub issues):
 

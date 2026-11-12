@@ -48,7 +48,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 
 | Boundary | What crosses it | What holds there |
 | --- | --- | --- |
-| Source bytes to parsers | Archive structure | Pure-Python parsers for ZIP, 7z, RAR, TAR, SquashFS, XAR, CAB, ar, deb, CPIO and RPM headers, `pycdlib` for ISO; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
+| Source bytes to parsers | Archive structure | Pure-Python parsers for ZIP, 7z, RAR, TAR, SquashFS, XAR, CAB, LHA, ARJ, ar, deb, CPIO, RPM and makeself headers, `pycdlib` for ISO; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
 | Parsers to decoders | Compressed streams, declared decoder parameters; on POSIX, a read-only descriptor of the archive file for a rapidgzip child that reads a member's byte range itself (the child's copy outlives the parent's handle, so the parent checks before each call that its own source is still open) | `DecoderLimits` checked before allocation; crash-prone native decoders in a child process ([errors](#errors-are-typed-and-honest)) |
 | archivey to external programs | Archive path, member selection, password | RARLAB `unrar` / `rar`, or `unar` under `"auto"`; fixed argv; a member name only inside an include-mask switch, or an entry index ([external programs](#external-programs-get-a-fixed-command-line)) |
 | archivey to the destination | Names, link targets, modes, data | `check_universal` and the extraction coordinator ([extraction](#extraction-stays-in-the-destination), [names](#names-are-safe-on-the-target-filesystem)) |
@@ -335,8 +335,9 @@ decides.
 **Residual.** Directories are not in the collision map, because they merge structurally,
 so a file `Foo` against a directory `foo/` is OS-dependent (ADR 0013). The public
 [policy list](../docs/extracting.md#what-each-policy-does-with-unusual-members) covers
-two files whose names differ only in letter case, not a file against a directory. There is no public un-escape helper for the
-percent spelling; it can be added without breaking anything.
+two files whose names differ only in letter case, not a file against a directory. There
+is no public un-escape helper for the percent spelling; it can be added without breaking
+anything.
 
 **Tests.** `tests/test_extraction.py`: the `test_o2_*` collision tests,
 `test_o3_reserved_name_rejected`, `test_o3_reserved_name_written_under_trusted`,
@@ -519,8 +520,9 @@ one listing: its walk charges each path, and each symlink target it keeps, to
 a 9 KB image of one-byte names lists 1.75 M members with `max_members=None`
 ([formats/squashfs.md](formats/squashfs.md) §4). `max_members` bounds it too.
 
-The default is 262,144 (decided 2026-10-07, [DR-9](design-rules.md#dr-9-every-cost-is-bounded-by-a-public-raisable-limit),
-replacing the 2026-10-01 decision to keep 1,048,576), and it is not lower, for these reasons:
+The default is 262,144 (decided 2026-10-07,
+[DR-9](design-rules.md#dr-9-every-cost-is-bounded-by-a-public-raisable-limit), replacing
+the 2026-10-01 decision to keep 1,048,576), and it is not lower, for these reasons:
 
 - The cost per member is the same an honest archive of that many members pays, so a
   crafted header buys no amplification per member. Header compression makes the input
@@ -708,10 +710,11 @@ the caller gets the same bytes and no error.
 
 **Residual.** Detection's probes do not apply the caller's cap, but they do not reserve
 what the archive declares either: the LZMA family builds its decoder with a dictionary
-only as large as the probe's read, and a `MemoryError` in a probe is "can't tell", not an
-error from `open_archive` (`tests/test_probe_dictionary_clamp.py`). Two probes carry a fixed ceiling of their own instead
-of the caller's cap: zstd's window at 128 MiB, and a `.tar.bz3`'s block size at 16 MiB,
-about 163 MiB of libbzip3 state (`bzip3_codec.py` `_PROBE_BLOCK_SIZE_MAX`). The RAR counts rest on measurements of `unrar` 7.00
+only as large as the probe's read, and a `MemoryError` in a probe is "can't tell", not
+an error from `open_archive` (`tests/test_probe_dictionary_clamp.py`). Two probes carry
+a fixed ceiling of their own instead of the caller's cap: zstd's window at 128 MiB, and
+a `.tar.bz3`'s block size at 16 MiB, about 163 MiB of libbzip3 state (`bzip3_codec.py`
+`_PROBE_BLOCK_SIZE_MAX`). The RAR counts rest on measurements of `unrar` 7.00
 and `unar` 1.10.1; another version that allocates differently is not measured. The
 rapidgzip child's peak can pass the cap by what it allocates between two checks (about
 17 MB measured on four cores; a check delayed on a busy machine is caught by the one
@@ -981,20 +984,22 @@ writes itself) is exercised against mutated and coverage-guided input.
 1. `tests/test_mutation_fuzz.py` mutates every archive of the declarative test corpus
    (`tests/sample_archives.py` `CORPUS`: ZIP, 7z, RAR, TAR plain and compressed, ISO and
    the single-file compression formats) and committed solid, header-encrypted and
-   first-volume RAR fixtures (truncations, bit flips, zeroed blocks, garbage prefixes and
-   suffixes). The corpus has no SquashFS, XAR, CAB, ar, deb, CPIO or RPM archive; the
-   Atheris targets below cover those. It drives open, list, read, extract
-   and detection, asserting a typed error or success, no hang, and a destination that
-   is still a directory. `ARCHIVEY_FUZZ_MUTATIONS` deepens it; `ARCHIVEY_FUZZ=1` enables
+   first-volume RAR fixtures (truncations, bit flips, zeroed blocks, garbage prefixes
+   and suffixes). The corpus has no SquashFS, XAR, CAB, LHA, ARJ, ar, deb, CPIO, RPM or
+   makeself archive; the Atheris targets below cover all of those except deb, which has
+   no fuzz layer. It drives open, list, read, extract and detection, asserting a typed
+   error or success, no hang, and a destination that is still a directory.
+   `ARCHIVEY_FUZZ_MUTATIONS` deepens it; `ARCHIVEY_FUZZ=1` enables
    `tests/fuzz_sevenzip_parser.py` for local runs.
 2. `tests/test_property_safety.py` (Hypothesis) over the pure safety logic.
 3. `tests/atheris_fuzz/` (Atheris, coverage-guided) over 7z and RAR header parse with CRC
    fix-up, 7z/RAR/ISO open with a bounded member read, `detect_format` with a
    cost-within-budget assertion and the ZIP/RAR/7z hit validators, ZIP open and bounded
    member read on a seekable source and on a pipe, TAR open with header-checksum fix-up
-   and a bounded member read, SquashFS, XAR and CAB open with a bounded member read, ar,
-   CPIO and RPM walks (plain or inside a compression stream), auto-detect open (SFX payload offset, single-file readers,
-   compressed tar, UDIF refusal), the BCJ2/ARM64/RISC-V/Delta/branch-filter decoders, and the
+   and a bounded member read, SquashFS, XAR, CAB, LHA and ARJ open with a bounded member
+   read, ar, CPIO, RPM and makeself walks (plain or inside a compression stream),
+   auto-detect open (SFX payload offset, single-file readers, compressed tar, UDIF
+   refusal), the BCJ2/ARM64/RISC-V/Delta/branch-filter decoders, and the
    standalone codecs.
    Four accelerator targets (`gzip_accel`, `zlib_accel`, `deflate_accel`,
    `bzip2_accel`) decode each input with the accelerator on and off and fail when the
@@ -1054,10 +1059,7 @@ is the one exception to "other local processes are trusted" (§1).
 **Residual.** A same-size rewrite in place, or a change after the open, reads the
 listed file's new content inside the root. A same-size replacement of an identity-less
 member could read a same-size hardlink to a file elsewhere on that mount, on a
-filesystem with hard links but no stable inodes. A file listed at size 0 is exempt from
-the size check (procfs and sysfs list files that have content at size 0), so one that
-grows before it is opened is read in full, bytes the listing did not describe
-([`formats/directory.md`](formats/directory.md) §2.4). Windows is weaker and
+filesystem with hard links but no stable inodes. Windows is weaker and
 [accepted](#windows-directory-sources). Public:
 [what archivey relies on](../docs/security.md#what-archivey-relies-on).
 
@@ -1294,12 +1296,13 @@ archivey in a worker they can kill. Public:
 ### A native decoder crash or MemoryError
 
 Under the default `process_isolation` the stdlib `zlib`, `bz2` and `lzma`, zstd, lz4,
-brotli, inflate64 and python-lzo run in-process (`NATIVE_DECODERS` isolates them too; under `NONE`
-pyppmd decodes in-process as well and rapidgzip is not used). A crash nobody has found yet
-would abort the process. pyppmd runs in a child by default because of a known pyppmd issue
-([`known-issues.md`](known-issues.md) §`pyppmd` crashes on damaged or crafted PPMd data).
-libbzip3 runs in a child by default too, as a precaution: no crash is known, but it had
-seven memory-safety CVEs in 2023 (under `NONE` it decodes in-process). Both rapidgzip decoders run in a child process;
+brotli, inflate64 and python-lzo run in-process (`NATIVE_DECODERS` isolates them too;
+under `NONE` pyppmd decodes in-process as well and rapidgzip is not used). A crash
+nobody has found yet would abort the process. pyppmd runs in a child by default because
+of a known pyppmd issue ([`known-issues.md`](known-issues.md) §`pyppmd` crashes on
+damaged or crafted PPMd data). libbzip3 runs in a child by default too, as a precaution:
+no crash is known, but it had seven memory-safety CVEs in 2023 (under `NONE` it decodes
+in-process). Both rapidgzip decoders run in a child process;
 `scripts/investigations/accelerator_crash_search.py` tells whether they still need to.
 `MemoryError` is not translated, so running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
