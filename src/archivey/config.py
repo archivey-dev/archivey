@@ -563,7 +563,10 @@ class DecoderLimits:
     folder's ``main``, ``call`` and ``jump`` branches), so when it has more than one,
     their LZMA dictionaries, PPMd memory sizes and zstd windows count together against
     it. A zstd window counts as the first frame declares it, when the zstd coder reads a
-    packed stream directly.
+    packed stream directly. An LZMA Alone stream with a known size counts its dictionary
+    twice, because archivey reads it with two decoders at once: liblzma cannot be
+    trusted to read an end marker after a known size (before 5.2.6 never, and in every
+    version measured not when a read boundary falls just before the marker).
 
     That number is a policy choice, not a limit of the format, so here
     is what it was chosen against. Measured on 7-Zip 23.01, a writer
