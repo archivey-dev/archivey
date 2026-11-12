@@ -2081,8 +2081,9 @@ class RarReader(BaseArchiveReader):
         staged names are fixed and hold none. So is a path longer than unrar 6.x
         keeps (:func:`unrar_may_cut_archive_path`): it would open the file that the
         cut path names. The private directory sits in the system temp directory,
-        which can itself hold a wildcard or be long; ``open_unrar_p`` then starts
-        ``unrar`` in it and passes the fixed name alone.
+        which can itself hold a wildcard or be long; on POSIX ``open_unrar_p``
+        always starts ``unrar`` in the archive's directory and passes the name
+        alone, so no directory reaches unrar.
         """
         if self._archive_path is None or self._stage_volume_paths:
             return

@@ -747,34 +747,28 @@ def unrar_may_cut_archive_path(path: str | Path) -> bool:
 def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
     """The archive argument for ``unrar``, and the directory to start it in.
 
-    A path that ``unrar`` would expand (:func:`unrar_expands_wildcards`) or cut
-    (:func:`unrar_may_cut_archive_path`) reaches here only as a file archivey made:
-    the reader stages a caller's path of either kind under a fixed name. Its
-    directory, the system temp directory or one made in it, is what holds the
-    ``*``, ``?`` or the length, so ``unrar`` is started in that directory and given
-    the file's name alone. No part of the directory then reaches ``unrar``'s argv,
-    and ``unrar`` finds the next volume of a staged set beside that name. ``unrar p``
-    writes only to stdout, so the working directory changes no output location.
+    On POSIX ``unrar`` always starts in the archive's directory and gets the file's
+    name alone, so no directory reaches its argv: ``unrar`` expands ``*`` and ``?``
+    in every directory of the archive argument, and 6.x cuts a long one. A name
+    that ``unrar`` would expand (:func:`unrar_expands_wildcards`) or a path it
+    would cut (:func:`unrar_may_cut_archive_path`) reaches here only as a file
+    archivey made: the reader stages such a caller path under a fixed name, in the
+    system temp directory or one made in it. ``unrar`` finds the next volume of a
+    set beside that name. ``unrar p`` writes only to stdout, so the working
+    directory changes no output location.
 
     Windows names cannot hold ``*`` or ``?``, so there only the length applies, and
-    a working directory that long is past what ``CreateProcess`` takes. There the
-    absolute path is handed over whole while ``unrar`` keeps it whole, and refused
-    past that, never handed to ``unrar`` to cut. ``_UNRAR_ARCHIVE_PATH_MAX`` (1024)
-    is itself a margin under the 2047-unit cut, kept for a relative path or an
-    unknown next volume name; a staged path is absolute with a fixed name, so on
+    a working directory that long is past what ``CreateProcess`` takes, so Windows
+    never sets one. The path goes over whole while ``unrar`` keeps it whole, and is
+    refused past that, never handed to ``unrar`` to cut. ``_UNRAR_ARCHIVE_PATH_MAX``
+    (1024) is itself a margin under the 2047-unit cut, kept for a relative path or
+    an unknown next volume name; a staged path is absolute with a fixed name, so on
     Windows it is measured against ``_UNRAR_WINDOWS_ARCHIVE_PATH_KEPT`` instead.
     """
     path = str(archive_path)
-    if not (unrar_expands_wildcards(path) or unrar_may_cut_archive_path(path)):
-        return path, None
-    directory, name = os.path.split(os.path.abspath(path))
-    if not name or unrar_expands_wildcards(name):
-        # The reader stages every such name; reaching here is a bug upstream.
-        raise ReadError(
-            f"the archive {display_path(path)} cannot be handed to unrar: its name "
-            "holds a wildcard character"
-        )
     if sys.platform == "win32":
+        if not unrar_may_cut_archive_path(path):
+            return path, None
         whole = os.path.abspath(path)
         limit = _UNRAR_WINDOWS_ARCHIVE_PATH_KEPT
         if len(whole.encode("utf-16-le", "surrogatepass")) // 2 <= limit:
@@ -785,6 +779,13 @@ def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
             f"unrar cannot read {display_path(path)}: the path is longer than "
             f"{limit} characters, more than unrar keeps. Set TMP or TEMP to a "
             "shorter directory."
+        )
+    directory, name = os.path.split(os.path.abspath(path))
+    if not name or unrar_expands_wildcards(name):
+        # The reader stages every such name; reaching here is a bug upstream.
+        raise ReadError(
+            f"the archive {display_path(path)} cannot be handed to unrar: its name "
+            "holds a wildcard character"
         )
     return name, directory
 

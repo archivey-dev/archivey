@@ -1164,9 +1164,9 @@ backtracks exponentially on a hostile mask, never sees a glob (`unrar_member_ref
 refuses anything else before spawning). The password goes to stdin. `unrar` reads only
 the files archivey parsed: it expands `*` and `?` anywhere in the archive argument, `--`
 or not, and 6.x cuts a long one, so `_choose_unrar_volume_paths` stages a caller path of
-either kind under fixed names. When the staging directory is itself of either kind,
-`_unrar_archive_argument` starts `unrar` in that directory with the name alone, so no
-part of the directory reaches argv; the program is always an absolute path, so the
+either kind under fixed names. On POSIX `_unrar_archive_argument` always starts `unrar`
+in the archive's directory with the name alone, so no part of a directory, the staging
+directory included, reaches argv; the program is always an absolute path, so the
 working directory never chooses it. On Windows the staged path goes over whole while 6.x keeps it,
 and is refused past that before any process starts ([`formats/rar.md`](formats/rar.md)). `internal/external/unar.py` ends
 argv with `--` and the absolute archive path, names members by entry index, and puts the

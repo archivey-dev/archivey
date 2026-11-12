@@ -426,11 +426,16 @@ def test_a_long_staged_path_on_windows_is_passed_whole_until_unrar_would_cut_it(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX paths")
-def test_the_archive_argument_is_the_name_alone_for_a_path_unrar_would_misread(
-    tmp_path: Path,
+def test_the_archive_argument_on_posix_is_always_the_name_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plain = tmp_path / "archive.rar"
-    assert rar_unrar._unrar_archive_argument(plain) == (str(plain), None)
+    assert rar_unrar._unrar_archive_argument(plain) == ("archive.rar", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    assert rar_unrar._unrar_archive_argument("archive.rar") == (
+        "archive.rar",
+        str(tmp_path),
+    )
     starred = tmp_path / "t*p" / "archive.part1.rar"
     assert rar_unrar._unrar_archive_argument(starred) == (
         "archive.part1.rar",

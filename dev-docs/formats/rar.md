@@ -964,14 +964,16 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   reader stages such a path under fixed names in a private temp directory
   (`unrar_expands_wildcards`).
 
-- **A staged file's directory never reaches the argv when it would be misread.** `unrar`
-  expands `*` and `?` in the directories of the archive path too (measured on 7.00:
-  `t*p/a.rar` also read `t!p/a.rar`, first, in directory order). The staged files sit
-  in the system temp directory or a directory made in it, so a `TMPDIR` holding a
-  wildcard brought the problem back, and a long one brought back the 6.x cut (§4). When
-  the whole path would be expanded or cut, `unrar` is started in the file's directory
-  and given its name alone (`_unrar_archive_argument`). That name is fixed or made by
-  `mkstemp`, so it holds neither, and `unrar` finds a staged set's next volume beside
+- **On POSIX no directory reaches the argv.** `unrar` expands `*` and `?` in the
+  directories of the archive path too (measured on 7.00: `t*p/a.rar` also read
+  `t!p/a.rar`, first, in directory order). The staged files sit in the system temp
+  directory or a directory made in it, so a `TMPDIR` holding a wildcard brought the
+  problem back, and a long one brought back the 6.x cut (§4). So on POSIX `unrar` is
+  always started in the archive's directory and given its name alone
+  (`_unrar_archive_argument`), for every read: one path, not a branch taken only for a
+  rare temp directory (maintainer, 2026-11-12). A name that would be expanded or a
+  path that would be cut is staged first, under a name that is fixed or made by
+  `mkstemp`, so the name holds neither, and `unrar` finds a set's next volume beside
   it. `unrar p` writes only to stdout, so the working directory moves no output.
   Windows names cannot hold a wildcard, and a directory long enough to be cut is past
   what `CreateProcess` takes as a working directory, so there the staged path goes
