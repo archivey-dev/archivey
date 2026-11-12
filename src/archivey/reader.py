@@ -4,21 +4,19 @@
 :class:`ForwardArchiveReader` (one forward pass, from a pipe too), and member reads
 return an :class:`ArchiveStream`. The classes here are abstract: they fix the public
 methods and their docstrings, and archivey's implementations live under
-``archivey.internal``. Building an :class:`ArchiveStream` or :class:`MemberPass`
-directly, or through a subclass that leaves an abstract method unimplemented, still
-works with a ``DeprecationWarning`` until 0.4.0 (``_class_to_build``).
+``archivey.internal``. They are not built by callers: an :class:`ArchiveStream` or
+:class:`MemberPass` comes from a reader or :func:`~archivey.open_stream`.
 """
 
 from __future__ import annotations
 
 import contextlib
 import io
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self, TypeVar, cast
+from typing import Any, Self, TypeVar
 
 from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
@@ -37,6 +35,7 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    BackendUse,
     ExtractionPolicy,
     ExtractionPolicyStr,
     ExtractionProgress,
@@ -69,47 +68,16 @@ MemberSelector = MemberSelectorArg
 _T_co = TypeVar("_T_co", covariant=True)
 
 
-def _with_implementation(cls: type, implementation: type) -> type:
-    """``cls`` on top of archivey's own implementation, as a 0.2 subclass of the then
-    concrete class was: what ``cls`` defines wins, and the rest is archivey's. Kept
-    on ``cls`` itself, so it goes when ``cls`` goes."""
-    built = cls.__dict__.get("_archivey_with_implementation")
-    if built is None:
-        built = type(cls)(
-            cls.__name__,
-            (cls, implementation),
-            {"__module__": cls.__module__, "__qualname__": cls.__qualname__},
+def _refuse_abstract(cls: type, get: str) -> None:
+    """Raise ``TypeError`` for ``cls`` when it has an abstract method left: the public
+    base itself, or an incomplete subclass. The message says where to get one
+    instead."""
+    missing = getattr(cls, "__abstractmethods__", None)
+    if missing:
+        raise TypeError(
+            f"Can't instantiate abstract class {cls.__qualname__} with abstract "
+            f"methods {', '.join(sorted(missing))}; get one from {get}"
         )
-        type.__setattr__(cls, "_archivey_with_implementation", built)
-    return built
-
-
-def _class_to_build(cls: type, base: type, implementation: type, get: str) -> type:
-    """The class to build for ``cls``, which is ``base`` itself or a subclass with an
-    abstract method left: archivey's own implementation, after a deprecation
-    warning. Until 0.4.0 both still work, as in 0.2 (DR-12a)."""
-    if cls is base:
-        message = (
-            f"constructing {base.__name__} directly is deprecated and stops working "
-            f"in archivey 0.4.0; get one from {get}"
-        )
-        built = implementation
-    elif issubclass(cls, implementation):
-        # An abstract subclass of archivey's own class is not a 0.2 subclass: it
-        # gets the usual error for an abstract class, or none, as it would without
-        # this.
-        return cls
-    else:
-        missing = ", ".join(sorted(cls.__dict__.get("__abstractmethods__", ())))
-        message = (
-            f"{cls.__qualname__} subclasses {base.__name__} without implementing "
-            f"{missing}; this is deprecated and stops working in archivey 0.4.0. "
-            f"Implement them, or wrap the {base.__name__} archivey gives you "
-            "instead of subclassing it"
-        )
-        built = _with_implementation(cls, implementation)
-    warnings.warn(message, DeprecationWarning, stacklevel=3)
-    return built
 
 
 # How much ``ArchiveStream.verify()`` asks for per read: large enough that the call
@@ -125,25 +93,12 @@ class ArchiveStream(ReadOnlyIOStream):
     :meth:`~archivey.ArchiveReader.open`, :meth:`~archivey.ForwardArchiveReader.stream_members`
     and :func:`~archivey.open_stream` return one; there is no need to build one yourself.
     It is an ``io.RawIOBase``, and ``seekable()`` says whether it can seek.
-
-    Building one directly, or through a subclass that leaves an abstract method
-    unimplemented (as a subclass written for archivey 0.2 does), is deprecated: it
-    builds archivey's own stream, with a ``DeprecationWarning``, until 0.4.0.
     """
 
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
-        if cls is ArchiveStream or getattr(cls, "__abstractmethods__", None):
-            # Deprecated: build archivey's own stream (under the subclass, for a
-            # subclass), which then runs its ``__init__`` with these arguments.
-            from archivey.internal.streams.archive_stream import ArchiveStreamImpl
-
-            built = _class_to_build(
-                cls,
-                ArchiveStream,
-                ArchiveStreamImpl,
-                "ArchiveReader.open(), stream_members() or open_stream()",
-            )
-            return super().__new__(cast("type[Self]", built))
+        # ``io.RawIOBase`` builds an instance without the abstract-method check that
+        # ``object.__new__`` makes, so it is made here.
+        _refuse_abstract(cls, "ArchiveReader.open(), stream_members() or open_stream()")
         return super().__new__(cls)
 
     @property
@@ -444,27 +399,14 @@ class MemberPass(Iterator[_T_co]):
             for member, stream in members:
                 if member.is_file and stream is not None:
                     process(member, stream.read())
-
-    Building one directly, or through a subclass that leaves an abstract method
-    unimplemented (as a subclass written for archivey 0.2 does), is deprecated: it
-    builds archivey's own pass, with a ``DeprecationWarning``, until 0.4.0.
     """
 
     __slots__ = ()
 
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
-        if cls is MemberPass or getattr(cls, "__abstractmethods__", None):
-            # Deprecated: build archivey's own pass (under the subclass, for a
-            # subclass), which then runs its ``__init__`` with these arguments.
-            from archivey.internal.member_pass import MemberPassImpl
-
-            built = _class_to_build(
-                cls,
-                MemberPass,
-                MemberPassImpl,
-                "stream_members() or by iterating the reader",
-            )
-            return super().__new__(cast("type[Self]", built))
+        # Without this, a call with arguments fails on ``object.__new__``'s "takes no
+        # arguments" before its abstract-method check.
+        _refuse_abstract(cls, "stream_members() or by iterating the reader")
         return super().__new__(cls)
 
     @override
@@ -550,6 +492,26 @@ class ForwardArchiveReader(ABC):
     @abstractmethod
     def cost(self) -> CostReceipt:
         """The listing/access cost receipt for this archive (see ``access-mode-and-cost``)."""
+        ...
+
+    @property
+    @abstractmethod
+    def backends_used(self) -> tuple[BackendUse, ...]:
+        """The readers, packages and programs this reader has run so far, in the order
+        each was first used.
+
+        A snapshot: it grows as members are read. The format reader comes first
+        (``BackendUse("reader", "archivey", "ZIP")``, or the plugin that reads the
+        format), then each optional package the moment it decodes something (``pyppmd``
+        for a PPMd member, ``rapidgzip`` when the accelerator runs), each plugin codec
+        with the packages its ``requires`` names, and each external program with its
+        path (``unrar`` at ``/usr/bin/unrar``). An archive a plugin reads through
+        ``ReaderContext.open_nested`` adds its own reader and packages here. The
+        standard library's codecs are not listed, except zstd, which names the module in
+        use (``compression.zstd`` on Python 3.14 and later). Decodes made while
+        detecting the format are not listed either. Experimental, as
+        :class:`~archivey.BackendUse` is.
+        """
         ...
 
     @property

@@ -364,7 +364,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         ``NONE``), or ``PackageNotInstalledError`` when lz4 is missing, unused on this
         interpreter, or turned off by the caller's policy."""
         config = self._context.config
-        excluded = config.formats.exclude_libraries
+        excluded = config.formats._libraries_off
         if deps.lz4_block is None or OptionalLibrary.LZ4 in excluded:
             requirement = as_reported(LZ4_REQUIREMENT, excluded)
             raise PackageNotInstalledError(
@@ -416,6 +416,9 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             if refusal is not None:
                 raise UnsupportedFeatureError(f"{refusal}.")
             natives = self._lz4_natives()
+            usage = self._context._usage
+            if usage is not None:
+                usage.note_backend("library", OptionalLibrary.LZ4.value, "lz4")
             block_error = cast("Any", deps.lz4_block).LZ4BlockError
 
             def lz4_block(start: int, length: int, limit: int) -> bytes:

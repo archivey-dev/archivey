@@ -55,6 +55,7 @@ from archivey.internal.external.cli import (
     stat_identity,
     terminate_process,
 )
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.terminal import display_path, quoted
 from archivey.types import MissingComponent
 
@@ -629,11 +630,6 @@ def _unrar_env() -> dict[str, str] | None:
     return {**os.environ, "LC_ALL": name}
 
 
-_NUL_REFUSAL = (
-    "its stored name contains a NUL character, which cannot be passed to a subprocess"
-)
-
-
 def unrar_mask_carries_non_ascii() -> bool:
     """Whether a non-ASCII mask reaches ``unrar`` as the text it was built from.
 
@@ -938,10 +934,12 @@ def open_unrar_p(
     version_control: bool = False,
     rar5: bool = False,
     program: str | None = None,
+    usage: ResourceUsageRecorder | None = None,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Spawn ``<unrar|rar> p -inul -cfg- [-ver] [-p|-p-] [-n./member] -- archive``.
 
     ``program`` is ``ArchiveyConfig.unrar_path`` (see :func:`find_rarlab_unrar`).
+    ``usage`` records the binary that ran, for ``ArchiveReader.backends_used``.
 
     ``version_control`` adds ``-ver`` so the pipe includes WinRAR file-version history
     payloads (needed for solid demux when versioned FILE rows are present, and for a
@@ -976,6 +974,8 @@ def open_unrar_p(
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
     unrar = find_rarlab_unrar(program)
+    if usage is not None:
+        usage.note_backend("program", "unrar", "RAR", unrar)
     cmd: list[str | bytes] = [unrar, "p", "-inul", _RAR_DISABLE_CONFIG]
     if version_control:
         cmd.append("-ver")

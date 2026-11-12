@@ -12,11 +12,11 @@ archive. A RAR set with a volume missing still opens, as `unrar` would, but `mem
 `TruncatedError` naming the missing volume, and so does reading a member with data in it. A part
 archivey finds on its own that is a symbolic link is refused with `OpenError`; pass the parts as a
 list to read it. If listing the folder fails with an `OSError`, such as no permission to list it,
-or a server refuses the listing for a remote file (an HTTP 4xx status), archivey finds no other
-volumes: the path opens alone, and a missing part is reported as above. Any other error from the
-listing is raised as is.
+archivey finds no other volumes: the path opens alone, and a missing part is reported as above.
+Any other error from the listing is raised as is.
 `ArchiveyConfig(discover_volumes=False)` turns the search off, so a path opens only the file it
-names ([Security](security.md#hardening) says when that is worth it).
+names ([Security](security.md#hardening) says when that is worth it). A remote archive is never
+searched: pass its volumes as a list ([Remote archives](remote.md#archives-in-several-volumes)).
 
 A file object is read from its current position to its end, so an archive that starts partway
 through a larger file opens as is. Bytes after the archive don't stop it opening. Any that aren't
@@ -221,7 +221,21 @@ and any other name is refused, so a typo can't leave a package on. The setting o
 made with that config: other calls in the same program, on any thread, still use the package.
 `format_availability(fmt, config=...)` and `list_supported_formats(config=...)` answer with the
 excluded packages counted as missing. A plugin reader that imports a package itself honours the setting
-only if it checks `config.formats.exclude_libraries` itself.
+only if it checks `config.formats.allows_library(name)` itself.
+
+`only_libraries=` is the allowlist form, as `only=` is of `exclude=`: every optional package it
+doesn't list is turned off, including any that a later archivey release adds. `only_libraries=set()`
+runs with no optional package. On Python 3.14 that also turns off the standard library's
+`compression.zstd`, which is listed as an optional package; list it to keep zstd:
+
+```python
+STDLIB_ONLY = ArchiveyConfig(formats=FormatPolicy(only_libraries=set()))
+WITH_AES = ArchiveyConfig(formats=FormatPolicy(only_libraries={L.CRYPTOGRAPHY}))
+```
+
+It covers archivey's own optional packages, not a plugin's own modules: `plugins=False` turns
+plugins off. Zstandard comes from `compression.zstd` on Python 3.14 and `backports.zstd` before
+that, so list both to keep zstd on every version.
 
 `only=` and `exclude=` check the file you open, not what's inside it. `S.XZ` there means a file
 compressed with xz as a whole, such as a `.xz` or `.tar.xz` file, not the xz codec: a ZIP member
@@ -233,7 +247,7 @@ xz-compressed ZIP member, but opening, reading or extracting that member raises
 `UnsupportedFeatureError` before anything is decoded. A format that compresses data inside itself
 without naming the method on each member, such as a `.deb` with a `data.tar.xz`, an RPM package or
 a SquashFS image, doesn't open at all when you exclude that method. `only=` takes no methods.
-`plugins=False` and `exclude_libraries=` are different, since they turn off the code that
-decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format runs in the
-call, even for a member or an archive inside an archive: reading a member that needs one raises
+`plugins=False`, `exclude_libraries=` and `only_libraries=` are different, since they turn off the
+code that decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format runs in
+the call, even for a member or an archive inside an archive: reading a member that needs one raises
 `UnsupportedFeatureError`.

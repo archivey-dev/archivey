@@ -441,11 +441,13 @@ def _dest_named_links(dest: Path) -> list[tuple[str, str, object]]:
         ("sub", "dir", None),
         ("abs-dir", "sym", f"{dest}/sub"),
         ("abs-dir/f", "file", 0),
-        # Absolute, outside dest: refused by a real extraction too.
+        # Absolute, outside dest: refused by a real extraction too, but under
+        # TRUSTED, which writes it as stored.
         ("abs-out", "sym", "/archivey-dry-run-test-elsewhere"),
         # Relative, out of dest by name and back in.
         ("up", "sym", f"../{dest.name}/data"),
-        # O22 on an absolute target: inside when made, outside once "a" is dest.
+        # O22 on an absolute target: inside when made, outside once "a" is dest
+        # (kept under TRUSTED, as ``abs-out`` is).
         ("later", "sym", f"{dest}/a/b/../../data"),
         ("a", "sym", "."),
         # A hardlink whose (archive-relative) target is absolute.
@@ -477,7 +479,14 @@ def test_link_targets_that_name_dest_match(streaming: bool, tmp_path: Path) -> N
         assert statuses["up"] is ExtractionStatus.EXTRACTED
         assert statuses["abs-gone"] is ExtractionStatus.EXTRACTED
         assert statuses["abs-dir/f"] is ExtractionStatus.EXTRACTED
-        assert statuses["later"] is ExtractionStatus.BLOCKED
+        # TRUSTED writes a target from ``/`` as stored, wherever it leads.
+        rooted = policy is ExtractionPolicy.TRUSTED
+        assert statuses["abs-out"] is (
+            ExtractionStatus.EXTRACTED if rooted else ExtractionStatus.BLOCKED
+        )
+        assert statuses["later"] is (
+            ExtractionStatus.EXTRACTED if rooted else ExtractionStatus.BLOCKED
+        )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")

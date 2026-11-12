@@ -79,7 +79,6 @@ from archivey.internal.birth_time import set_birth_time
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     BombTracker,
-    ratio_limits,
 )
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.dry_run import DryRun, scratch_for
@@ -91,6 +90,7 @@ from archivey.internal.filters import (
     check_universal,
     collision_key,
     disk_spelled,
+    is_rooted_link_target,
     policy_transform,
     resolve_or_raise_on_loop,
 )
@@ -847,11 +847,8 @@ class ExtractionCoordinator:
         self._selector = selector
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
-        # The ratio fields this extraction applies (``ratio_limits``): the reader's
-        # ``DecoderLimits``, or what a deprecated ``ExtractionLimits`` field sets.
-        self._ratio = ratio_limits(
-            ratio if ratio is not None else DecoderLimits(), self._limits
-        )
+        # The ratio fields this extraction applies: the reader's ``DecoderLimits``.
+        self._ratio = ratio if ratio is not None else DecoderLimits()
         # Built by each ``run()``. A test that drives a helper directly installs its
         # own.
         self._state: _RunState
@@ -952,6 +949,14 @@ class ExtractionCoordinator:
         """``check_universal``'s ``link_target_on_disk``: set on a dry run only."""
         return self._dry.target_on_disk if self._dry is not None else None
 
+    def _keeps_rooted_target(self, target: str) -> bool:
+        """Whether a symlink to ``target`` (as stored) is written wherever it points:
+        a target from the filesystem root, under ``TRUSTED`` only
+        (``is_rooted_link_target``)."""
+        return self._policy is ExtractionPolicy.TRUSTED and is_rooted_link_target(
+            target
+        )
+
     def _link_target_on_disk(self, target: str) -> str:
         """The target a link is created with (see ``DryRun.target_on_disk``).
 
@@ -975,11 +980,6 @@ class ExtractionCoordinator:
         _plain_os_error(exc)
         if self._dry is not None:
             self._dry.rebase_os_error(exc)
-
-    @property
-    def ratio(self) -> DecoderLimits:
-        """The ratio fields this extraction applies."""
-        return self._ratio
 
     def _rebase_resolved_os_error(self, exc: OSError) -> None:
         """``_rebase_os_error`` for an error that names a path built from
@@ -2095,6 +2095,7 @@ class ExtractionCoordinator:
                 show_os_error=self._rebase_resolved_os_error,
                 # The run resolved it once, at its start (``_RunState.dest_root``).
                 dest_resolved=True,
+                rooted_link_targets=self._policy is ExtractionPolicy.TRUSTED,
             )
         except ExtractionError as exc:
             if on_disk is not member:
@@ -2265,7 +2266,16 @@ class ExtractionCoordinator:
                 and transformed.link_target is not None
             ):
                 on_disk = self._link_target_on_disk(transformed.link_target)
-                self._state.links.track(result.path, on_disk, result_index)
+                if not self._keeps_rooted_target(transformed.link_target):
+                    self._state.links.track(result.path, on_disk, result_index)
+                else:
+                    # A link kept as stored may lead out already, so it is not
+                    # rechecked: it stays wherever a later member makes it resolve
+                    # (threat model, O22's exception). Its creation is
+                    # still a change, so a link made before it whose walk passes
+                    # through its path is rechecked, and removed if it now leads out.
+                    # A link made after it is checked through it when it is made.
+                    self._state.links.note_change(result.path)
                 if on_disk != transformed.link_target:
                     # An error names the target as stored, not with the separators
                     # or dry-run path written to disk.
@@ -3191,7 +3201,14 @@ class ExtractionCoordinator:
         # spec's "Symlink Escape Re-Validated at Extraction Time".
         # A later member can still change what this link resolves to; the caller
         # records the link in ``links`` for that.
-        problem = _symlink_problem(dest_path, on_disk, self._state.dest_root)
+        # Under TRUSTED a target from the filesystem root is written as stored and
+        # may lead out (``is_rooted_link_target``); the parent check keeps every write
+        # through it inside the destination.
+        problem = (
+            None
+            if self._keeps_rooted_target(target)
+            else _symlink_problem(dest_path, on_disk, self._state.dest_root)
+        )
         if problem is not None:
             refusal = FilterRejectionError(
                 problem,

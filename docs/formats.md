@@ -398,6 +398,12 @@ sending side when the ZIP is done.
   directory's name is used and `MEMBER_LOCAL_NAME_DIFFERS` is reported, which `STRICT` refuses. The
   data is checked against the local CRC-32 and `MEMBER_LOCAL_CRC_USED` is reported, which `STRICT`
   reads: Adobe AIR packages store `META-INF/AIR/hash` this way.
+- **Bytes missing from the middle of the archive** (or added there) move the central directory, and
+  the offsets it gives with it. The members after the damage are where the directory says; each
+  member before it is read from the offset it stores, when a local header with its name, method,
+  CRC-32 and sizes is there. `MEMBER_LOCAL_OFFSET_SHIFTED` is reported for each, which `STRICT`
+  refuses, since the archive has lost or gained bytes. A member the damage cut through fails its
+  CRC-32 check.
 - **The local header names another compression method than the directory:** the member is
   decoded by the local header's method, from a file and a pipe alike. The local header sits next to
   the data and is all a pipe has, so both reads give the same bytes, still checked against the
@@ -1253,6 +1259,16 @@ what `makecab` and `gcab` write.
 - **Reading members:** a cabinet groups its files into folders, and each folder is one
   compressed stream, so a compressed folder is solid: reaching a file decodes the folder from
   its start. Files read in order decode each folder once. A stored folder is direct.
+- **Member order:** the order of the cabinet's file table, which writers keep in the order
+  the files' bytes are stored. When reading the files in table order would decode part of a
+  folder twice (a table that is crafted or edited, for example reversed), the files are
+  listed by folder and by position in the folder instead, so each folder is decoded once,
+  unless a name is listed twice: then the table's order is kept, because the entry listed
+  last is the one that counts, and reading can be much slower.
+- **A name listed twice** is reported with `MEMBER_NAME_DUPLICATE_UNEXPECTED` as well as
+  `MEMBER_NAME_DUPLICATE`: a cabinet has no way to add or update a file, so no writer repeats a
+  name. `STRICT` refuses such a cabinet; the default policy lists it, and the entry listed last
+  is the one that counts.
 - **From a pipe:** no; the file table points at folders anywhere in the file, so the cabinet
   needs a source that can seek.
 - `ArchiveInfo.format_version` is the cabinet's version, `"1.3"` for every current writer.
@@ -1341,8 +1357,13 @@ ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Lin
   Windows name's `\` separators become `/`.
 - Garbled (password-protected) members are listed with `is_encrypted` and raise
   `UnsupportedFeatureError` when read, as do members split across the volumes of a
-  multi-volume set. Self-extracting ARJ programs are not read yet. An archive without the
-  end header reports `ARCHIVE_EOF_MARKER_MISSING`, after listing every member.
+  multi-volume set. An archive without the end header reports
+  `ARCHIVE_EOF_MARKER_MISSING`, after listing every member.
+- Self-extracting ARJ programs (ARJ's DOS `.EXE` modules, or an ELF program from ARJ for
+  Unix) are read: detection finds the main header behind the program by its CRC-32, and
+  so does `format=ARJ`.
+- An archive signed by a registered ARJ carries an ARJ-SECURITY envelope after its end
+  header. The envelope is not checked, and is not reported as data after the archive.
 
 ## CPIO
 
@@ -1802,7 +1823,7 @@ they open at once. Close the sending side when the file is done.
   (Windows `MZ`/PE, Linux ELF, or a macOS Mach-O header that parses) or a `#!` launcher line (a
   zipapp `.pyz`, a Spring Boot jar). The 2 MiB scan behind the stub reports where the archive starts
   as `payload_offset`, and sets `prefixed`. For a code-signed Windows program, `payload_end` is
-  where its signature starts: the ZIP, 7z, RAR and LHA readers stop there, so the signature is not
+  where its signature starts: the ZIP, 7z, RAR, LHA and ARJ readers stop there, so the signature is not
   reported as data after the archive. Some installers (Squirrel's, used by GitHub Desktop, Slack
   and Discord) store the archive as a resource inside the program instead of after it. When the
   archive ends inside a resource, the ZIP, 7z and RAR readers stop the trailing-data check at the
@@ -1810,7 +1831,7 @@ they open at once. Close the sending side when the file is done.
   Bytes inside the resource after the archive still are. A ZIP further into a Windows installer than the scan
   reaches is found from its end, when the program's header shows that something was
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
-  (ZIP, 7z, RAR, LHA) are searched for. Behind a Windows, Linux or macOS program whose header says
+  (ZIP, 7z, RAR, LHA, ARJ) are searched for. Behind a Windows, Linux or macOS program whose header says
   where its own image ends, an archive that starts exactly there is taken first, ahead of
   anything else in the window. That holds under every detection budget: a smaller one, such as
   `FAST`, still looks there, with a seek. Read from a pipe, under a budget whose window ends before
@@ -1821,14 +1842,15 @@ they open at once. Close the sending side when the file is done.
   the file is preferred over an earlier one that ends short of it.
 - **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`
   and `unzip` find it: when no other step matched, the same 2 MiB scan runs without an executable
-  cue, for ZIP, 7z, RAR and LHA, each with its structural check (LHA's is its header sum or
-  CRC; a DOS `.COM`, Amiga or Atari self-extractor has no executable header to cue on). It is the last content step, so a file
+  cue, for ZIP, 7z, RAR, LHA and ARJ, each with its structural check (LHA's is its header sum or
+  CRC, ARJ's its main header's CRC-32; a DOS `.COM`, Amiga or Atari self-extractor has no
+  executable header to cue on). It is the last content step, so a file
   archivey recognizes pays nothing for it; a file it does not recognize pays a read of up to 2 MiB.
   On a source that cannot seek and whose length is not known yet, such as a pipe, the scan covers
   only the bytes detection has already read, and `sfx_scan` is listed in `unavailable_tiers` as
   `CAPABILITY_UNAVAILABLE`.
   A file whose name has a known extension skips it and gets the extension's guess; the ZIP, 7z,
-  RAR and LHA readers find an archive behind leading bytes themselves.
+  RAR, LHA and ARJ readers find an archive behind leading bytes themselves.
 - **Ties go to the earlier step, then to registration order.** Detection stops at the first step
   that matches, and within a step the first backend registered wins. A file that is two formats at
   once (a polyglot) gets one fixed answer; pass `format=` to read it as the other.

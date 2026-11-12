@@ -3468,7 +3468,8 @@ def test_rewind_report_gives_the_policy_when_rapidgzip_is_excluded(
     for message in messages:
         assert message.endswith(
             "The 'rapidgzip' accelerator is not available: "
-            "ArchiveyConfig.formats.exclude_libraries turns it off."
+            "ArchiveyConfig.formats turns it off (exclude_libraries= lists it, "
+            "or only_libraries= does not)."
         ), message
 
 
@@ -3915,3 +3916,31 @@ def test_open_codec_raw_raises_what_open_codec_stream_raises(
             return stream.read()
 
     assert _outcome(via_raw) == _outcome(via_stream)
+
+
+@pytest.mark.parametrize(
+    ("listing", "reads"),
+    [
+        ("Formats:\n ...  Rar  rar r00\n ...  Rar5  rar r00\n ...  7z  7z", True),
+        ("Formats:\n ...  Rar5  rar r00\n ...  7z  7z", True),
+        # Fedora's 7zip, built without the unRAR code, lists neither.
+        ("Formats:\n ...  7z  7z\n ...  zip  zip  RarHash", False),
+    ],
+)
+def test_sevenzip_reads_rar_reads_the_format_list(
+    monkeypatch: pytest.MonkeyPatch, listing: str, reads: bool
+) -> None:
+    """Whether the 7z comparison of a RAR archive runs."""
+    from tests import conftest
+
+    monkeypatch.setattr(conftest.shutil, "which", lambda _name: "7z")
+    monkeypatch.setattr(
+        conftest,
+        "run_7z",
+        lambda *_a, **_k: subprocess.CompletedProcess(["7z", "i"], 0, listing),
+    )
+    conftest.sevenzip_reads_rar.cache_clear()
+    try:
+        assert conftest.sevenzip_reads_rar() is reads
+    finally:
+        conftest.sevenzip_reads_rar.cache_clear()

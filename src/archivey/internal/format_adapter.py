@@ -97,12 +97,14 @@ from archivey.internal.format_args import (
 )
 from archivey.internal.logs import detection as detection_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.nesting import reading_inside
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
+from archivey.internal.resource_usage import handler_name
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
@@ -216,6 +218,11 @@ class _PluginAdapter(BaseArchiveReader):
 
     _reader: FormatReader
 
+    @override
+    def _note_reader_backend(self, format: ArchiveFormat) -> None:
+        # Recorded once ``_plugin`` is set: the plugin, not archivey, reads the format.
+        pass
+
     def __init__(
         self,
         plugin: FormatHandler,
@@ -243,6 +250,7 @@ class _PluginAdapter(BaseArchiveReader):
         )
         self._source = source
         self._plugin = plugin
+        self._usage.note_backend("reader", handler_name(plugin), format.display_name)
         # The caller's ``encoding=``, for a nested reader (``_open_nested``).
         self._encoding = encoding
         # Iterators ReaderContext.open_nested() returned, closed with the archive at the
@@ -299,6 +307,7 @@ class _PluginAdapter(BaseArchiveReader):
             open_nested=self._open_nested,
             usage=self._usage,
         )
+        context._usage = self._usage
         context._spanning_check = self._new_spanning_check
         context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)
@@ -561,17 +570,13 @@ class _PluginAdapter(BaseArchiveReader):
             raise held
 
     def _name_member(self, member: ArchiveMember, index: int) -> None:
-        """Give a listed member the names callers see, and send what was reported on
-        it before: the name normalized, and a hard link's target the same way, since
-        a link names another member by its listed name."""
+        """Give a listed member the name callers see, and send what was reported on
+        it before. A hard link's target is normalized at registration, as for every
+        reader (``BaseReader._register_member``)."""
         presented = member.name
         member.name = normalize_member_name(
             presented, member.type, backslash_is_separator=False
         )
-        if member.type is MemberType.HARDLINK and member.link_target:
-            member.link_target = normalize_member_name(
-                member.link_target, MemberType.FILE, backslash_is_separator=False
-            )
         self._send_held_reports(member)
         self._report_listed(member, presented, index)
 
@@ -695,7 +700,7 @@ class _PluginAdapter(BaseArchiveReader):
         backend_cls = registry.reader_for_format(
             fmt,
             replacement=policy._replacement_for(fmt),
-            excluded=policy.exclude_libraries,
+            excluded=policy._libraries_off,
         )
         if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
             raise UnsupportedFeatureError(
@@ -724,17 +729,28 @@ class _PluginAdapter(BaseArchiveReader):
         """The spans of the inner archive ``data``: its members, numbered from
         ``first`` in what it reports, and their decoded data."""
         collector = self._diagnostics_collector
+        # The decoder that gives ``data`` may not have read its header yet (an xz,
+        # zstd or LZMA Alone member from ``ReaderContext.decompress``): the first
+        # byte makes it declare its working set, so the inner cap counts it.
         with collector.member_ids_from(first):
+            head = data.read(1) or b""
+        config = self._nested_config()
+        with collector.member_ids_from(first), reading_inside(self):
             reader = backend_cls().open_read(
-                ArchiveSource.for_stream(data),
+                ArchiveSource.for_stream(
+                    cast(BinaryIO, _Primed(head, data)) if head else data
+                ),
                 format=fmt,
                 streaming=True,
                 passwords=None,
                 encoding=self._encoding,
                 archive_name=self._archive_name,
-                config=self._config,
+                config=config,
                 collector=collector,
             )
+        # The inner archive's reader and packages are listed in the outer reader's
+        # ``backends_used``, which is the only one the caller holds.
+        reader._usage.report_backends_to(self._usage)
         try:
             pairs = iter(reader.stream_members())
             while True:
@@ -755,6 +771,33 @@ class _PluginAdapter(BaseArchiveReader):
         finally:
             with collector.member_ids_from(first):
                 reader.close()
+
+    def _nested_config(self) -> ArchiveyConfig:
+        """The configuration of a reader inside this one: this one's, with
+        ``max_decoder_memory`` less the largest working set a decoder of this archive
+        has declared so far (``_nested_spans`` reads the inner archive's first byte
+        first, so the decoder that gives it has declared too).
+
+        The decoders of a nest's levels run at once: an inner archive's bytes come
+        out of the outer archive's decoder while the inner one decodes them. So the
+        levels share one ``max_decoder_memory`` (maintainer ruling, 2026-11-08:
+        "charge across the nesting"), and each level counts as one decoder holding
+        the largest working set it declared before the inner reader was built. That
+        counts a decoder that has ended too, which can only refuse more, never less.
+        Within one level the cap stays one decoder's, as it is for an archive that
+        is not nested. The inner reader's codecs, those that hand the cap to their
+        library (xz, LZMA Alone, zstd) too, see what is left.
+        """
+        config = self._config
+        limits = config.decoder_limits
+        cap = limits.max_decoder_memory
+        held = self._usage.snapshot().decoder_memory
+        if cap is None or not held:
+            return config
+        return replace(
+            config,
+            decoder_limits=replace(limits, max_decoder_memory=max(cap - held, 0)),
+        )
 
     def _link_target_unavailable(
         self,
@@ -1171,6 +1214,41 @@ def _outer_copy(member: ArchiveMember) -> ArchiveMember:
     # listing does not look for it in the data, nor report it again.
     copy._link_target_resolved = member._link_target_resolved
     return copy
+
+
+class _Primed(io.RawIOBase):
+    """``data`` with ``head``, its first bytes, read already, in front of it.
+
+    Closing it leaves ``data`` open, as ``ArchiveSource.for_stream`` leaves a stream
+    it did not open."""
+
+    def __init__(self, head: bytes, data: BinaryIO) -> None:
+        super().__init__()
+        self._head = head
+        self._data = data
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, buffer: Any) -> int:
+        # Both views are released before the return: ``RawIOBase.read`` resizes
+        # ``buffer`` next, which PyPy refuses while a dropped view waits for a collection.
+        with memoryview(buffer) as outer, outer.cast("B") as view:
+            head = self._head
+            if head:
+                n = min(len(view), len(head))
+                view[:n] = head[:n]
+                self._head = head[n:]
+                return n
+            # One read of the source's own, as a raw stream does it: a buffered
+            # ``read(n)`` loops until ``n`` bytes or the end, and so reaches a cut
+            # payload's missing end before the bytes ahead of it have been handed on.
+            read = getattr(self._data, "read1", self._data.read)
+            got = read(len(view)) or b""
+            view[: len(got)] = got
+            return len(got)
 
 
 class SpanningCheck:
@@ -1990,8 +2068,7 @@ class SequentialReaderAdapter(_PluginAdapter):
     ) -> BinaryIO:
         """``stream``, bytes the walk decodes, held to ``decoder_limits.max_ratio`` of
         the archive's size in every use, listing included, as
-        ``_open_outer_codec_stream`` holds an outer compression stream (an
-        ``extract_all`` call's ratio governing its own decodes). Its bytes count
+        ``_open_outer_codec_stream`` holds an outer compression stream. Its bytes count
         toward ``tally`` as ``key``'s."""
         limits = self._ratio_limits()
         if limits.max_ratio is None:
@@ -2003,7 +2080,6 @@ class SequentialReaderAdapter(_PluginAdapter):
             consumed=self._live_consumed(),
             tally=tally,
             key=key,
-            run_limits=self._run_ratio_limits,
         )
 
     @override
@@ -2079,7 +2155,28 @@ class SequentialReaderAdapter(_PluginAdapter):
                 if left:
                     forward.skip(left)
                 span = self._walk_next(walk)
+        with boundary, guard:
+            self._read_codec_end()
         self._raise_members_the_codec_checked()
+
+    def _read_codec_end(self) -> None:
+        """Run the outer codec's end checks when the walk stopped at its last byte.
+
+        A codec that read its decoded size from an index (an xz index, a zstd seek
+        table, lzip trailers: random access records restart points, which reads them)
+        stops a read at that size without decoding what follows the data. The walk's
+        views are clamped to the same size, so they never ask past it, and the check
+        after the data would not run. One read at the end decodes the rest, as a
+        codec that does not know its size does on its last read. A TAR walk reaches
+        the same bytes through its end-of-archive checks.
+        """
+        codec = self._codec_stream
+        shared = self._shared
+        if codec is None or shared is None:
+            return
+        size = shared.size
+        if size is not None and codec.tell() == size:
+            codec.read(1)
 
     def _raise_members_the_codec_checked(self) -> None:
         """Raise every listed file to ``CHECKSUM`` once the walk ends at the end of an
@@ -2800,20 +2897,27 @@ class _PluginBackend(ReadBackend):
             "member_streams": member_streams,
             "open_site": open_site,
         }
+        reader: _PluginAdapter
         if issubclass(self.PLUGIN, SequentialFormatHandler):
             reject_start_offset(
                 start_offset, format, archive_name, end_offset, program_resources
             )
-            return SequentialReaderAdapter(*common, **options)
-        # Only a built-in format that declares SFX magic is handed a region, which its
-        # reader reads as the whole source (``IndexedReaderAdapter``).
-        if not self.SFX_MAGIC:
-            reject_start_offset(
-                start_offset, format, archive_name, end_offset, program_resources
+            reader = SequentialReaderAdapter(*common, **options)
+        else:
+            # Only a built-in format that declares SFX magic is handed a region, which
+            # its reader reads as the whole source (``IndexedReaderAdapter``).
+            if not self.SFX_MAGIC:
+                reject_start_offset(
+                    start_offset, format, archive_name, end_offset, program_resources
+                )
+            reader = IndexedReaderAdapter(
+                *common, region=(start_offset, end_offset), **options
             )
-        return IndexedReaderAdapter(
-            *common, region=(start_offset, end_offset), **options
-        )
+        # The packages the handler reads with: pycdlib for ISO, a plugin's ``requires``.
+        for library in (self.OPTIONAL_DEPENDENCY, *self.REQUIRED_MODULES):
+            if library is not None:
+                reader._usage.note_backend("library", str(library), format.display_name)
+        return reader
 
 
 def prefix_probe(probe: object) -> ContentProbe:

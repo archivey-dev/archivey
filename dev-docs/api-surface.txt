@@ -13,7 +13,9 @@ item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPE
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LINK_DATA_IGNORED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_BIDI_CONTROL
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_NORMALIZED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER
@@ -139,6 +141,7 @@ method archivey.ArchiveMember.replace(self, **kwargs: object) -> ArchiveMember
 property archivey.ArchiveMember.verifiable: Verification
 property archivey.ArchiveMember.verified: Verification
 class archivey.ArchiveReader(ForwardArchiveReader)
+property archivey.ArchiveReader.backends_used: tuple[BackendUse, ...]
 method archivey.ArchiveReader.close(self) -> None
 property archivey.ArchiveReader.cost: CostReceipt
 property archivey.ArchiveReader.diagnostics: DiagnosticSummary
@@ -203,6 +206,13 @@ class archivey.ArchiveyError(Exception)
 init archivey.ArchiveyError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.ArchiveyUsageError(Exception)
 init archivey.ArchiveyUsageError(message: str, *, refused_member_type: MemberType | None = None) -> None
+alias archivey.BackendKindStr = Literal['reader', 'codec', 'library', 'program']
+class archivey.BackendUse()
+init archivey.BackendUse(kind: BackendKindStr, name: str, used_for: str, path: str | None = None) -> None
+field archivey.BackendUse.kind: BackendKindStr
+field archivey.BackendUse.name: str
+field archivey.BackendUse.path: str | None = None
+field archivey.BackendUse.used_for: str
 class archivey.Budget()
 init archivey.Budget(*, max_decoded_bytes: int | None = None, max_members: int | None = None) -> None
 property archivey.Budget.decoded_bytes: int
@@ -352,14 +362,16 @@ value archivey.DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA = 'member_special_fil
 value archivey.DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS = 'member_local_name_differs'
 value archivey.DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS = 'member_local_method_differs'
 value archivey.DiagnosticCode.MEMBER_LOCAL_CRC_USED = 'member_local_crc_used'
+value archivey.DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED = 'member_local_offset_shifted'
 value archivey.DiagnosticCode.ARCHIVE_OFFSET_WRAPPED = 'archive_offset_wrapped'
 value archivey.DiagnosticCode.MEMBER_SIZE_WRAPPED = 'member_size_wrapped'
 value archivey.DiagnosticCode.MEMBER_TYPE_UNKNOWN = 'member_type_unknown'
 value archivey.DiagnosticCode.MEMBER_NAME_DUPLICATE = 'member_name_duplicate'
+value archivey.DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED = 'member_name_duplicate_unexpected'
 value archivey.DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE = 'source_change_undetectable'
 value archivey.DiagnosticCode.MEMBER_PATH_REFUSED = 'member_path_refused'
 value archivey.DiagnosticCode.MEMBER_READERS_DISAGREE = 'member_readers_disagree'
-alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | ReaderDisagreementContext
+alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | UnexpectedNameDuplicateContext | ReaderDisagreementContext
 class archivey.DiagnosticPolicy()
 init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
 field archivey.DiagnosticPolicy.ignore: frozenset[DiagnosticCode]
@@ -380,12 +392,9 @@ init archivey.EncryptionError(message: str, *, source_format: ArchiveFormat | No
 class archivey.ExtractionError(ArchiveyError)
 init archivey.ExtractionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.ExtractionLimits()
-init archivey.ExtractionLimits(max_extracted_bytes: int | None = 2147483648, max_ratio: float | None = 800.0, ratio_activation_threshold: int = 5242880, max_entries: int | None = 262144, live_ratio_activation_threshold: int = 268435456) -> None
-field archivey.ExtractionLimits.live_ratio_activation_threshold: int = 268435456
+init archivey.ExtractionLimits(max_extracted_bytes: int | None = 2147483648, *, max_entries: int | None = 262144) -> None
 field archivey.ExtractionLimits.max_entries: int | None = 262144
 field archivey.ExtractionLimits.max_extracted_bytes: int | None = 2147483648
-field archivey.ExtractionLimits.max_ratio: float | None = 800.0
-field archivey.ExtractionLimits.ratio_activation_threshold: int = 5242880
 attribute archivey.ExtractionLimits.UNLIMITED = ExtractionLimits(...)
 class archivey.ExtractionPolicy(Enum)
 enum archivey.ExtractionPolicy
@@ -454,20 +463,23 @@ field archivey.FormatInfo.prefixed: bool = False
 field archivey.FormatInfo.unavailable_tiers: tuple[TierSkip, ...] = ()
 property archivey.FormatInfo.from_plugin: bool
 class archivey.FormatPolicy()
-init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream | CompressionAlgorithm] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[IndexedFormatHandler]] | None = None, exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = ()) -> None
+init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream | CompressionAlgorithm] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[IndexedFormatHandler]] | None = None, exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = (), only_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] | None = None) -> None
 field archivey.FormatPolicy.exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream | CompressionAlgorithm]
 field archivey.FormatPolicy.exclude_libraries: frozenset[OptionalLibrary]
 field archivey.FormatPolicy.only: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None
+field archivey.FormatPolicy.only_libraries: frozenset[OptionalLibrary] | None
 field archivey.FormatPolicy.plugins: bool
 field archivey.FormatPolicy.replace: Mapping[ContainerFormat, type[IndexedFormatHandler]]
 attribute archivey.FormatPolicy.COMMON = FormatPolicy(...)
 method archivey.FormatPolicy.allows(self, fmt: ArchiveFormat) -> bool
+method archivey.FormatPolicy.allows_library(self, module: OptionalLibrary | str) -> bool
 class archivey.FormatSupport(Enum)
 enum archivey.FormatSupport
 value archivey.FormatSupport.FULL = 'full'
 value archivey.FormatSupport.PARTIAL = 'partial'
 value archivey.FormatSupport.NONE = 'none'
 class archivey.ForwardArchiveReader(ABC)
+property archivey.ForwardArchiveReader.backends_used: tuple[BackendUse, ...]
 method archivey.ForwardArchiveReader.close(self) -> None
 property archivey.ForwardArchiveReader.cost: CostReceipt
 property archivey.ForwardArchiveReader.diagnostics: DiagnosticSummary
@@ -779,6 +791,8 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'member_link_data_ignored'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-link-data-ignored'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_header_ambiguous'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-header-ambiguous'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_offset_shifted'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-offset-shifted'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_offset_wrapped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-offset-wrapped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_size_wrapped'
@@ -787,6 +801,8 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'member_type_unknown'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-type-unknown'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_duplicate'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-duplicate'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_duplicate_unexpected'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-duplicate-unexpected'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_readers_disagree'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-readers-disagree'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'source_change_undetectable'
@@ -859,13 +875,15 @@ field archivey.diagnostics.LinkDataContext.member_name: str = ''
 field archivey.diagnostics.LinkDataContext.size: int = 0
 method archivey.diagnostics.LinkDataContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.LocalHeaderContext(_JsonSafeContext)
-init archivey.diagnostics.LocalHeaderContext(kind: Literal['local_header'] = 'local_header', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, field: Literal['name', 'method', 'crc32'] = 'name', local_raw_name_base64: str | None = None, local_crc32: int | None = None, local_method: int | None = None, central_method: int | None = None) -> None
+init archivey.diagnostics.LocalHeaderContext(kind: Literal['local_header'] = 'local_header', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, field: Literal['name', 'method', 'crc32', 'offset'] = 'name', local_raw_name_base64: str | None = None, local_crc32: int | None = None, local_method: int | None = None, central_method: int | None = None, local_offset: int | None = None, central_offset: int | None = None) -> None
 field archivey.diagnostics.LocalHeaderContext.archive_name: str | None = None
 field archivey.diagnostics.LocalHeaderContext.central_method: int | None = None
-field archivey.diagnostics.LocalHeaderContext.field: Literal['name', 'method', 'crc32'] = 'name'
+field archivey.diagnostics.LocalHeaderContext.central_offset: int | None = None
+field archivey.diagnostics.LocalHeaderContext.field: Literal['name', 'method', 'crc32', 'offset'] = 'name'
 field archivey.diagnostics.LocalHeaderContext.kind: Literal['local_header'] = 'local_header'
 field archivey.diagnostics.LocalHeaderContext.local_crc32: int | None = None
 field archivey.diagnostics.LocalHeaderContext.local_method: int | None = None
+field archivey.diagnostics.LocalHeaderContext.local_offset: int | None = None
 field archivey.diagnostics.LocalHeaderContext.local_raw_name_base64: str | None = None
 field archivey.diagnostics.LocalHeaderContext.member_id: int | None = None
 field archivey.diagnostics.LocalHeaderContext.member_name: str = ''
@@ -1049,6 +1067,14 @@ field archivey.diagnostics.UnconfirmedFormatContext.detected_format: str | None 
 field archivey.diagnostics.UnconfirmedFormatContext.format: str = ''
 field archivey.diagnostics.UnconfirmedFormatContext.kind: Literal['unconfirmed_format'] = 'unconfirmed_format'
 method archivey.diagnostics.UnconfirmedFormatContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.UnexpectedNameDuplicateContext(_JsonSafeContext)
+init archivey.diagnostics.UnexpectedNameDuplicateContext(kind: Literal['name_duplicate_unexpected'] = 'name_duplicate_unexpected', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, format: str = '') -> None
+field archivey.diagnostics.UnexpectedNameDuplicateContext.archive_name: str | None = None
+field archivey.diagnostics.UnexpectedNameDuplicateContext.format: str = ''
+field archivey.diagnostics.UnexpectedNameDuplicateContext.kind: Literal['name_duplicate_unexpected'] = 'name_duplicate_unexpected'
+field archivey.diagnostics.UnexpectedNameDuplicateContext.member_id: int | None = None
+field archivey.diagnostics.UnexpectedNameDuplicateContext.member_name: str = ''
+method archivey.diagnostics.UnexpectedNameDuplicateContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.UnknownMemberTypeContext(_JsonSafeContext)
 init archivey.diagnostics.UnknownMemberTypeContext(kind: Literal['unknown_member_type'] = 'unknown_member_type', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, stored_type: str = '', size: int | None = None) -> None
 field archivey.diagnostics.UnknownMemberTypeContext.archive_name: str | None = None

@@ -555,6 +555,7 @@ def FramedDecompressorStream(
     report_trailing_data: bool = False,
     refuse_input_after_end: bool = False,
     frame_check: FrameCheck | None = None,
+    file_index: bool = True,
 ) -> DecompressorStream:
     """Decode a one-stream library decompressor's codec.
 
@@ -574,4 +575,5 @@ def FramedDecompressorStream(
         codec_name=codec_name,
         report_trailing_data=report_trailing_data,
         refuse_input_after_end=refuse_input_after_end,
+        file_index=file_index,
     )

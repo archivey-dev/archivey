@@ -616,8 +616,8 @@ directory archive or extract into it.
 | `ArchiveyConfig(on_diagnostic=0)` | `ArchiveyUsageError` at construction, not when the first diagnostic fires |
 | `ArchiveyConfig(rar_allow_glob_member_concatenation="false")` | `ArchiveyUsageError` at construction; the refusal is never switched off by a truthy string |
 | `ListingLimits(max_members="x")` | `ArchiveyUsageError` at construction, not `TypeError` mid-listing |
-| `DecoderLimits(max_ratio=float("nan"))`, or the deprecated `ExtractionLimits` field | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
-| `DecoderLimits(ratio_activation_threshold=None)` or `DecoderLimits(live_ratio_activation_threshold=None)`, or the deprecated `ExtractionLimits` fields | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
+| `DecoderLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
+| `DecoderLimits(ratio_activation_threshold=None)` or `DecoderLimits(live_ratio_activation_threshold=None)` | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
 | `ExtractionLimits(max_extracted_bytes=True)` | `ArchiveyUsageError`; `bool` is an `int` subclass and would cap at one byte |
 | `DetectionBudget(..., max_far_bytes=None)` or a negative or `float` field | `ArchiveyUsageError` at construction naming the field; not a `TypeError` or `ValueError` mid-detection, and not a tier silently switched off |
 | `open_archive(src, encoding="rot13")` | `ArchiveyUsageError` naming the argument; not a `LookupError` during a member-name decode |
@@ -714,7 +714,7 @@ only when the program is found but cannot start, where no component is missing; 
 refusal for no usable `unar` SHALL name `unar`. A
 component that the caller's `FormatPolicy` excludes SHALL have the policy as its
 `reason`, so a caller tells a policy refusal from a missing install by checking
-whether a component's `name` is in its own `exclude_libraries`.
+whether its own policy's `allows_library(name)` is false.
 
 The message SHALL still name the package and its install hint, as the format
 requirements ask. The rule that a structured name is not also interpolated into the

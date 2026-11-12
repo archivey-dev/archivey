@@ -95,6 +95,7 @@ from archivey.internal.backends.rar_parser import (
     _RAR3_M0,
     _RAR5_XENC_AES256,
     _RAR5_XREDIR_REPARSE_POINTS,
+    NEED_FIRST_VOLUME_MSG,
     RAR3_UOW_NAME,
     RAR5_ID,
     RAR5_QO_UNMATCHED_COPIES,
@@ -200,6 +201,7 @@ from archivey.internal.password_confirm import (
 )
 from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
 from archivey.internal.streams.archive_stream import (
@@ -214,6 +216,7 @@ from archivey.internal.streams.crypto import (
     AesParams,
     _crypto_available,
     crypto_missing,
+    note_crypto_use,
     open_aes_decrypt_stage,
     open_aes_decrypt_stream,
 )
@@ -230,6 +233,7 @@ from archivey.internal.streams.streamtools.binaryio import ask_resume_offset
 from archivey.internal.streams.verify import build_member_verifier
 from archivey.internal.unix_mode import special_file_type
 from archivey.internal.volumes import (
+    REMOTE_VOLUMES_AS_LIST,
     ConcatenatedFile,
     JoinedViews,
     discover_volume_siblings,
@@ -1659,10 +1663,14 @@ class _ClosesSyntheticFile(DelegatingStream):
 
 
 def _open_unar_blob_pipe(
-    path: Path, program: str | None = None
+    path: Path,
+    program: str | None = None,
+    usage: ResourceUsageRecorder | None = None,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """``unar`` for the one-entry archive :func:`decompress_rar3_blob` builds."""
-    return open_unar_stdout(path, [0], purpose=UNAR_PURPOSE, program=program)
+    return open_unar_stdout(
+        path, [0], purpose=UNAR_PURPOSE, program=program, usage=usage
+    )
 
 
 # What a service header's payload would have answered, for the diagnostic that
@@ -1745,9 +1753,9 @@ class RarReader(BaseArchiveReader):
         kdf_budget = KeyDerivationBudget(self._config.decoder_limits)
         self._usage.watch_key_derivation(kdf_budget)
         self._kdf_cache = RarKdfCache(budget=kdf_budget)
-        # The call's ``FormatPolicy.exclude_libraries``: ``cryptography`` there reads
+        # The call's ``FormatPolicy._libraries_off``: ``cryptography`` there reads
         # as not installed for this reader.
-        self._excluded = self._config.formats.exclude_libraries
+        self._excluded = self._config.formats._libraries_off
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False
@@ -1864,6 +1872,9 @@ class RarReader(BaseArchiveReader):
         self._archive_has_encryption = self._archive.has_header_encryption or any(
             info.is_encrypted for info in self._archive.members
         )
+        if self._archive.has_header_encryption:
+            # The headers were decrypted to list the archive (``rar_parser``).
+            note_crypto_use(self._usage)
         self._behind_encryption = self._members_behind_encryption()
         if self._in_set:
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
@@ -2423,8 +2434,15 @@ class RarReader(BaseArchiveReader):
         """Parse the headers, trying the password candidates when they are encrypted.
 
         Returns the listing and the password to hand ``unrar`` (see the comment at
-        the return).
+        the return). For a lone ``OpenFile``, which is never searched for the other
+        volumes, a missing volume's message ends with the remedy: pass the parts as
+        a list (``REMOTE_VOLUMES_AS_LIST``).
         """
+        remedy = (
+            REMOTE_VOLUMES_AS_LIST
+            if self._source is not None and self._source.is_lone_remote
+            else None
+        )
         try:
             try:
                 archive = self._parse_headers(None)
@@ -2441,6 +2459,7 @@ class RarReader(BaseArchiveReader):
                     if self._volume_numbers
                     else max(self._volume_set_size(), 1)
                 ),
+                remedy=remedy,
             )
             # _first_candidate_str is the first configured candidate when
             # headers parsed without a password (data-only encryption; a wrong
@@ -2457,6 +2476,14 @@ class RarReader(BaseArchiveReader):
                 else "Password required to decrypt RAR headers"
             )
             raise EncryptionError(message) from exc
+        except UnsupportedFeatureError as exc:
+            if remedy is None or exc.raw_message != NEED_FIRST_VOLUME_MSG:
+                raise
+            raise UnsupportedFeatureError(
+                f"{NEED_FIRST_VOLUME_MSG}. {remedy}",
+                source_format=exc.source_format,
+                archive_name=exc.archive_name,
+            ) from exc
 
     def _parse_headers(self, password: bytes | None) -> RarArchive:
         """Run the header parser over the source, in the shape the source has.
@@ -2586,9 +2613,11 @@ class RarReader(BaseArchiveReader):
                 # first member that continues an earlier one. Only a RAR 1.5 /
                 # 2.x later volume whose first member starts on its boundary
                 # records neither, and lists as volume 1 of an incomplete set.
-                raise TruncatedError(
-                    "Incomplete RAR multi-volume set: additional volumes required"
-                )
+                message = "Incomplete RAR multi-volume set: additional volumes required"
+                if self._source is not None and self._source.is_lone_remote:
+                    # A lone OpenFile is never searched for the other volumes.
+                    message += f". {REMOTE_VOLUMES_AS_LIST}"
+                raise TruncatedError(message)
             return archive
         finally:
             view.close()
@@ -2950,7 +2979,7 @@ class RarReader(BaseArchiveReader):
 
     def _crypto_usable(self) -> bool:
         """Whether ``cryptography`` can decrypt here: installed, and not turned off by
-        the call's ``FormatPolicy.exclude_libraries``."""
+        the call's ``FormatPolicy._libraries_off``."""
         return CRYPTO_PACKAGE not in self._excluded and _crypto_available()
 
     def _natively_decryptable(self, raw: RarMemberInfo) -> bool:
@@ -3057,6 +3086,7 @@ class RarReader(BaseArchiveReader):
         stage = open_aes_decrypt_stage(
             self._stored_data_cipher(raw, password), excluded=self._excluded
         )
+        note_crypto_use(self._usage)
         view = self._direct_view(raw, raw.compress_size)
         crc = 0
         remaining = raw.file_size
@@ -3533,10 +3563,14 @@ class RarReader(BaseArchiveReader):
         try:
             unpacked = decompress_rar3_blob(
                 open_pipe=(
-                    functools.partial(open_unrar_p, program=self._unrar_program)
+                    functools.partial(
+                        open_unrar_p, program=self._unrar_program, usage=self._usage
+                    )
                     if self._unar_policy is None
                     else functools.partial(
-                        _open_unar_blob_pipe, program=self._unar_program
+                        _open_unar_blob_pipe,
+                        program=self._unar_program,
+                        usage=self._usage,
                     )
                 ),
                 extract_version=comment.extract_version,
@@ -3942,6 +3976,7 @@ class RarReader(BaseArchiveReader):
                 version_control=version_control,
                 rar5=self._archive.version == 5,
                 program=self._unrar_program,
+                usage=self._usage,
             )
             # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
             # and declared length via fused ArchiveStream verify), so the pipe-level
@@ -4138,6 +4173,7 @@ class RarReader(BaseArchiveReader):
                 version_control=True,
                 rar5=version == 5,
                 program=self._unrar_program,
+                usage=self._usage,
             )
         except BaseException:
             cleanup()
@@ -4356,6 +4392,7 @@ class RarReader(BaseArchiveReader):
                     version_control=True,
                     rar5=version == 5,
                     program=self._unrar_program,
+                    usage=self._usage,
                 )
             except BaseException:
                 cleanup()
@@ -5510,6 +5547,7 @@ class RarReader(BaseArchiveReader):
             plain = open_aes_decrypt_stream(
                 view, params, owns_inner=True, excluded=self._excluded
             )
+        note_crypto_use(self._usage)
         with _close_on_error(plain):
             # The ciphertext is padded to whole blocks; the member ends at its
             # unpacked size, and the padding after it is not content.
@@ -5707,6 +5745,7 @@ class RarReader(BaseArchiveReader):
                 version_control=version_control,
                 rar5=self._archive.version == 5,
                 program=self._unrar_program,
+                usage=self._usage,
             )
             owned = _UnrarOwnedStream(
                 stdout,
@@ -5999,6 +6038,7 @@ class RarReader(BaseArchiveReader):
                 version_control=True,
                 rar5=self._archive.version == 5,
                 program=self._unrar_program,
+                usage=self._usage,
             )
             owned = _UnrarOwnedStream(
                 stdout,
@@ -6236,6 +6276,7 @@ class RarReader(BaseArchiveReader):
                 purpose=UNAR_PURPOSE,
                 password=data_password,
                 program=self._unar_program,
+                usage=self._usage,
             )
             owned = UnarOutputStream(
                 stdout,
@@ -6278,6 +6319,7 @@ class RarReader(BaseArchiveReader):
                 purpose=UNAR_PURPOSE,
                 password=password,
                 program=self._unar_program,
+                usage=self._usage,
             )
             # Every member read from this pipe is checked against its declared
             # size and its stored CRC32 or BLAKE2sp; a member without one is read

@@ -65,17 +65,17 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
-from archivey.internal.bomb_tracker import ratio_limits
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.internal.sfx import (
-    SFX_MAX,
     VALIDATOR_PEEK_MAX,
     HitOutcome,
+    PeekSource,
     ScanNeedle,
-    describe_scan_miss,
-    overlay_start_of,
-    scan_for_magic,
+    ShortPeek,
+    rebased_source,
+    scan_miss_error,
+    scan_reader_source,
 )
 from archivey.internal.streams.codecs.lharc_decoder import DECODERS as _OLD_DECODERS
 from archivey.internal.streams.codecs.lzh_decoder import (
@@ -295,7 +295,7 @@ def _method(raw: bytes) -> str:
 
 class _HeaderSource(Protocol):
     """What reading headers needs of a source: a :class:`ReaderSource`, or the bytes
-    the self-extracting scan peeks at a candidate (:class:`_PeekSource`)."""
+    the self-extracting scan peeks at a candidate (:class:`~archivey.internal.sfx.PeekSource`)."""
 
     @property
     def size(self) -> int | None: ...
@@ -807,8 +807,7 @@ class LhaReader(_Headers, IndexedReader[_Location]):
         decoders stop at the header's size, so that size bounds the decode; the check
         is the one archivey makes from recorded sizes before an extraction."""
         config = self._context.config
-        # The deprecated ExtractionLimits ratio fields still count, as for every guard.
-        limits = ratio_limits(config.decoder_limits, config.extraction_limits)
+        limits = config.decoder_limits
         if limits.max_ratio is None or not locator.stored:
             return
         floor = max(
@@ -1015,46 +1014,6 @@ class _MacBinaryStream(io.RawIOBase):
 _SFX_NEEDLES = tuple(ScanNeedle(m.encode("ascii"), 2) for m in _KNOWN_METHODS)
 
 
-class _ShortPeek(Exception):
-    """The scan's peek ends before the header does: the candidate was not checked."""
-
-
-class _PeekSource:
-    """A candidate's bytes, as the self-extracting scan peeks them.
-
-    The peek grows by doubling and is kept, so walking a candidate's headers copies
-    its prefix a few times in all, not once per header read.
-    """
-
-    _FIRST_PEEK = 4096
-
-    def __init__(self, peek_more: Callable[[int], bytes], remaining: int | None):
-        self._peek_more = peek_more
-        self.size = remaining
-        self._peeked = b""
-        self._ended = False  # the peek returned fewer bytes than asked: no more exist
-
-    def read_at(self, offset: int, n: int) -> bytes:
-        end = offset + n
-        if end > VALIDATOR_PEEK_MAX:
-            raise _ShortPeek
-        if end > len(self._peeked) and not self._ended:
-            want = min(
-                max(end, 2 * len(self._peeked), self._FIRST_PEEK), VALIDATOR_PEEK_MAX
-            )
-            self._peeked = self._peek_more(want)
-            self._ended = len(self._peeked) < want
-        return self._peeked[offset:end]
-
-    def read_exact(self, offset: int, n: int) -> bytes:
-        data = self.read_at(offset, n)
-        if len(data) < n:
-            if self.size is None or offset + n <= self.size:
-                raise _ShortPeek
-            raise TruncatedError("the candidate ends inside its header")
-        return data
-
-
 # How many members past the first the validator walks looking for the end byte. The
 # decoy it looks for (the usage text Amiga LhASFX carries inside its stub) is one
 # member; a few more cover a small decoy of several. The bound keeps each candidate's
@@ -1074,11 +1033,11 @@ def _validate_header(
     archive of its own (its usage text) inside the stub, ahead of the real one, which
     ends the file. lhasa skips it by the stub's name; the walk needs no name.
     """
-    source = _PeekSource(peek_more, remaining)
+    source = PeekSource(peek_more, remaining)
     headers = _Headers(source, probe_cut=False)
     try:
         header = headers._read_header(0)
-    except _ShortPeek:
+    except ShortPeek:
         return HitOutcome.NOT_THIS_FORMAT
     except TruncatedError:
         return HitOutcome.DAMAGED
@@ -1099,7 +1058,7 @@ def _validate_header(
     for _ in range(_WALK_MAX):
         try:
             header = headers._read_header(end)
-        except _ShortPeek:
+        except ShortPeek:
             return HitOutcome.VALID
         except ArchiveyError:
             return HitOutcome.DAMAGED
@@ -1122,30 +1081,12 @@ def _payload(source: ReaderSource) -> ReaderSource:
     head = source.read_at(0, 7)
     if len(head) < 7 or head[2:7] in _METHOD_BYTES:
         return source
-    view = source.view(0)
-    try:
-        scan = scan_for_magic(
-            view,
-            _SFX_NEEDLES,
-            validator=_validate_header,
-            first_at=overlay_start_of(view),
-        )
-    finally:
-        view.close()
+    scan = scan_reader_source(source, _SFX_NEEDLES, _validate_header)
     if scan.hit is None:
         if head[:1] == b"\0":
             return source  # an empty archive; listing says it has no members
-        raise CorruptionError(
-            "Not an LHA archive: " + describe_scan_miss(scan, limit=SFX_MAX)
-        )
-    origin = scan.hit.candidate_origin
-    size = source.size
-    return ReaderSource(
-        lambda start, length: source.view(origin + start, length),
-        None if size is None else size - origin,
-        source.path,
-        lambda offset, n: source.read_at(origin + offset, n),
-    )
+        raise scan_miss_error("LHA", scan)
+    return rebased_source(source, scan.hit.candidate_origin)
 
 
 class LhaHandler(IndexedFormatHandler):

@@ -198,7 +198,7 @@ def test_fixture_members_read_in_full_counts(
     # Committed images whose members are larger than one of their 4 KiB blocks.
     # ``large-sparse.sqfs`` holds a sparse file whose ratio is over the default limit.
     config = archivey.ArchiveyConfig(
-        extraction_limits=archivey.ExtractionLimits(max_ratio=None)
+        decoder_limits=archivey.DecoderLimits(max_ratio=None)
     )
     try:
         with archivey.open_archive(

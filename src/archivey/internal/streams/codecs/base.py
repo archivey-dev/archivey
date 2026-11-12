@@ -55,6 +55,7 @@ from archivey.internal.streams.decompressor_stream import truncated_message
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
+    BackendKindStr,
     ContainerFormat,
     MagicSignature,
     MissingComponent,
@@ -472,6 +473,9 @@ class StreamCodec:
             report_trailing_data=config.report_trailing_data,
             refuse_input_after_end=config.refuse_input_after_end,
             frame_check=self.frame_check(),
+            # The file's own index (a zstd seek table, a bzip3 header walk) only on
+            # declared seek demand; restart points alone keep the points a decode finds.
+            file_index=config.seekable,
         )
 
     def frame_check(self) -> FrameCheck | None:
@@ -628,7 +632,7 @@ class StreamCodec:
 
     def available(self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS) -> bool:
         """Whether this codec's decompression backend is importable right now, and
-        ``excluded`` (a call's ``FormatPolicy.exclude_libraries``) does not turn it
+        ``excluded`` (a call's ``FormatPolicy._libraries_off``) does not turn it
         off."""
         return self.requirement is None or (
             not self.excluded_by(excluded) and self._backend_present()
@@ -644,8 +648,15 @@ class StreamCodec:
         ``requirement``, which is also what an absent package's error names."""
         return None
 
+    def backend_uses(self) -> tuple[tuple[BackendKindStr, str], ...]:
+        """What :attr:`~archivey.ArchiveReader.backends_used` lists for a decode, as
+        ``(kind, name)`` pairs: the optional package in use, or nothing for the
+        standard library (zstd names its module, ``compression.zstd`` on 3.14+)."""
+        library = self._excludable()
+        return () if library is None else (("library", str(library)),)
+
     def _excludable(self) -> OptionalLibrary | str | None:
-        """The package ``exclude_libraries`` turns off: the one in use, or
+        """The package ``FormatPolicy._libraries_off`` turns off: the one in use, or
         ``requirement``'s when none is installed, so an excluded package that is
         absent is reported as excluded, not as one to install."""
         if self.requirement is None:

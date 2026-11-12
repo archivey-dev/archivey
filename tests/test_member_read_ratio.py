@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import bz2
-import dataclasses
 import functools
 import gzip
 import io
@@ -348,44 +347,19 @@ def test_the_default_ratio_is_below_deflates_ceiling() -> None:
     # Deflate tops out near 1032:1, and zeros land between about 1003 and 1032:1:
     # under a limit of 800, gzip of zeros is refused every time, not by chance.
     assert DecoderLimits().max_ratio == 800.0
-    assert ExtractionLimits().max_ratio == 800.0
 
 
-def test_a_deprecated_extraction_ratio_warns_and_still_applies(tmp_path: Path) -> None:
+def test_extraction_limits_unlimited_keeps_the_readers_ratio(tmp_path: Path) -> None:
+    # The ratio fields left ExtractionLimits in 0.4.0, so UNLIMITED lifts only the
+    # byte and entry caps: the reader's DecoderLimits still holds the extraction.
     path = _zip(tmp_path / "bomb.zip", [("zeros", bytes(24 * _MIB))])
-    with pytest.warns(DeprecationWarning, match="DecoderLimits"):
-        off = ExtractionLimits(max_ratio=1e9)
-    # In the reader's config it holds every decode, as decoder_limits would.
-    with pytest.warns(DeprecationWarning):
-        config = ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=1e9))
-    with open_archive(path, config=config) as reader:
+    with open_archive(path) as reader, pytest.raises(ResourceLimitError):
+        reader.extract_all(tmp_path / "out", limits=ExtractionLimits.UNLIMITED)
+    off = ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=None))
+    with open_archive(path, config=off) as reader:
+        reader.extract_all(tmp_path / "out2")
         assert len(reader.read("zeros")) == 24 * _MIB
-    # Per call, it governs that extraction only.
-    with open_archive(path) as reader:
-        reader.extract_all(tmp_path / "out", limits=off)
-        with pytest.raises(ResourceLimitError):
-            reader.read("zeros")
-    assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB
-
-
-def test_extraction_limits_left_unset_do_not_warn(
-    recwarn: pytest.WarningsRecorder,
-) -> None:
-    ExtractionLimits()
-    ExtractionLimits(max_extracted_bytes=1)
-    _ = ExtractionLimits.UNLIMITED
-    assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
-
-
-def test_a_copy_of_unlimited_does_not_warn_and_keeps_the_ratio_off(
-    tmp_path: Path, recwarn: pytest.WarningsRecorder
-) -> None:
-    capped = dataclasses.replace(ExtractionLimits.UNLIMITED, max_entries=5)
-    assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
-    path = _zip(tmp_path / "bomb.zip", [("zeros", bytes(24 * _MIB))])
-    with open_archive(path) as reader:
-        reader.extract_all(tmp_path / "out", limits=capped)
-    assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB
+    assert (tmp_path / "out2" / "zeros").stat().st_size == 24 * _MIB
 
 
 class _Decoder(io.RawIOBase):
@@ -476,19 +450,6 @@ def test_a_relative_seek_in_steps_lands_where_it_was_asked() -> None:
     assert guard.read(4) == b"MARK"
     assert guard.seek(-4, io.SEEK_CUR) == 6 * _MIB
     assert guard.read(4) == b"MARK"
-
-
-def test_call_limits_without_a_ratio_keep_the_configs_deprecated_one(
-    tmp_path: Path,
-) -> None:
-    path = _zip(tmp_path / "bomb.zip", [("zeros", bytes(24 * _MIB))])
-    with pytest.warns(DeprecationWarning):
-        config = ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=1e9))
-    with open_archive(path, config=config) as reader:
-        reader.extract_all(
-            tmp_path / "out", limits=ExtractionLimits(max_extracted_bytes=10**12)
-        )
-    assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB
 
 
 def _tar_member(name: str, data: bytes) -> bytes:
@@ -646,92 +607,30 @@ def _tar_gz_of_zeros(path: Path, size: int) -> Path:
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_unlimited_lifts_a_compressed_tars_decode_ratio_for_that_extraction(
+def test_the_readers_ratio_holds_a_compressed_tars_extraction(
     tmp_path: Path, streaming: bool
 ) -> None:
     # The ratio guard on a .tar.gz's decoded stream is built at open, from the
-    # reader's config. The limits an extract_all call is given still govern the
-    # decodes that call makes, as they do for a ZIP.
-    path = _tar_gz_of_zeros(tmp_path / "bomb.tar.gz", 24 * _MIB)
-    with open_archive(path, streaming=streaming) as reader:
-        reader.extract_all(tmp_path / "out", limits=ExtractionLimits.UNLIMITED)
-    assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB
-
-
-def test_a_deprecated_call_ratio_governs_a_compressed_tars_extraction_only(
-    tmp_path: Path,
-) -> None:
-    path = _tar_gz_of_zeros(tmp_path / "bomb.tar.gz", 24 * _MIB)
-    with pytest.warns(DeprecationWarning):
-        off = ExtractionLimits(max_ratio=1e9)
-    with open_archive(path) as reader:
-        reader.extract_all(tmp_path / "out", limits=off)
-        # The reader's own reads are still held, though the extraction decoded the
-        # whole stream past the limit already.
-        for _ in range(3):
-            with pytest.raises(ResourceLimitError, match="max_ratio=800:1"):
-                reader.read("zeros")
-        # A read of the member reaches the refused offset again each time, and is
-        # refused before it returns a byte past the ratio.
-        got = 0
-        with (
-            pytest.raises(ResourceLimitError, match="max_ratio=800:1"),
-            reader.open("zeros") as stream,
-        ):
-            while chunk := stream.read(_MIB):
-                got += len(chunk)
-        assert got <= 800 * path.stat().st_size
-    assert (tmp_path / "out" / "zeros").stat().st_size == 24 * _MIB
-
-
-def test_a_call_ratio_tighter_than_the_config_holds_a_compressed_tar(
-    tmp_path: Path,
-) -> None:
+    # reader's config, and it holds extract_all's decodes as it holds reads.
     path = _tar_gz_of_zeros(tmp_path / "zeros.tar.gz", 4 * _MIB)
-    with pytest.warns(DeprecationWarning):
-        tight = ExtractionLimits(max_ratio=10.0, ratio_activation_threshold=1024)
+    tight = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_ratio=10.0, ratio_activation_threshold=1024)
+    )
     with (
-        open_archive(path) as reader,
+        open_archive(path, streaming=streaming, config=tight) as reader,
         pytest.raises(ResourceLimitError, match="max_ratio=10:1"),
     ):
-        reader.extract_all(tmp_path / "out", limits=tight)
-
-
-@pytest.mark.parametrize("hook", ["on_progress", "filter", "members"])
-def test_a_callers_read_inside_an_unlimited_extraction_keeps_the_readers_ratio(
-    tmp_path: Path, hook: str
-) -> None:
-    # The call's limits govern its own decodes, not the caller's code it runs: a read
-    # from a callback is held to the reader's limits, on a .tar.gz as on a ZIP.
-    targz = _tar_gz_of_zeros(tmp_path / "bomb.tar.gz", 24 * _MIB)
-    zipped = _zip(tmp_path / "bomb.zip", [("zeros", bytes(24 * _MIB))])
-    for path in (targz, zipped):
-        with open_archive(path) as reader:
-            refused: list[bool] = []
-
-            def read_it(_arg: object, reader=reader, refused=refused) -> object:
-                if not refused:
-                    try:
-                        reader.read("zeros")
-                    except ResourceLimitError:
-                        refused.append(True)
-                    else:
-                        refused.append(False)
-                return _arg if hook == "filter" else True
-
-            reader.extract_all(
-                tmp_path / f"out-{path.name}",
-                limits=ExtractionLimits.UNLIMITED,
-                **{hook: read_it},
-            )
-        assert refused == [True], path.name
+        reader.extract_all(tmp_path / "out")
+    off = ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=None))
+    with open_archive(path, streaming=streaming, config=off) as reader:
+        reader.extract_all(tmp_path / "out2")
+    assert (tmp_path / "out2" / "zeros").stat().st_size == 4 * _MIB
 
 
 def test_a_members_list_still_reports_an_unmatched_entry_under_unlimited(
     tmp_path: Path,
 ) -> None:
-    # The caller's predicate runs outside the call's ratio; a members= list is
-    # archivey's own selector and keeps what it reports.
+    # A members= list is archivey's own selector and keeps what it reports.
     from archivey import DiagnosticCode
 
     path = _tar_gz_of_zeros(tmp_path / "bomb.tar.gz", 1024)

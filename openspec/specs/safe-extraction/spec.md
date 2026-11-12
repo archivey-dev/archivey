@@ -65,8 +65,9 @@ extract (ADR 0019).
 
 `ArchiveReader.extract_all()` SHALL accept `limits: ExtractionLimits | None`. Per-call
 `limits` takes precedence over the reader's `config.extraction_limits`, then the
-library default. `ExtractionLimits.UNLIMITED` disables byte, ratio,
-archive-wide ratio/live-ratio, and entry-count guards. Policy, overwrite,
+library default. `ExtractionLimits.UNLIMITED` disables the byte and entry-count
+guards. The ratio guards (per-member, archive-wide and live) take their fields from
+the reader's `config.decoder_limits`, which no per-call argument changes. Policy, overwrite,
 `on_error`, progress, and member-selection/filter arguments remain operational
 arguments outside config.
 
@@ -80,7 +81,8 @@ tuple on success; there is no no-tracking mode.
 | `extract_all(limits=...)` on an existing reader | Limits apply to this extraction; the report holds only this call's own diagnostics, from the existing collector |
 | `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_extracted_bytes=10 * 2**30)))` then `extract_all(dest)` | Cumulative byte limit is 10 GiB |
 | Reader config has limits, call passes `limits=ExtractionLimits(max_extracted_bytes=50 * 2**20)` | 50 MiB governs this run; later calls without `limits` revert to reader config |
-| `limits=ExtractionLimits.UNLIMITED` | Archives that would trip default guards complete without bomb-guard error |
+| `limits=ExtractionLimits.UNLIMITED` | Archives that would trip only the byte or entry guards complete; the ratio guards still apply |
+| `ExtractionLimits.UNLIMITED` and `DecoderLimits(max_ratio=None)` in the reader's config | Archives that would trip default guards complete without bomb-guard error |
 | Reader opened with custom config and `extract_all(dest)` | Reader config, including extraction limits, governs the run |
 
 ### Requirement: Non-Bypassable Universal Path-Safety Constraints
@@ -139,7 +141,7 @@ string checks SHALL raise `FilterRejectionError`, never a raw
 | Null byte | `FilterRejectionError` | `member.name` contains `\x00` |
 | Unrepresentable name | `FilterRejectionError` | `member.name` cannot be encoded by the platform filesystem encoding |
 | Link-target NUL / unrepresentable | `FilterRejectionError` | SYMLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
-| Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest` |
+| Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest`. Under `TRUSTED` only, a target that starts with `/` is exempt (see "Symlink Escape Re-Validated at Extraction Time") |
 | Link-target Windows root | `FilterRejectionError` | SYMLINK whose `link_target` starts with a drive letter (`C:`, `C:/x`, `C:x`) or a UNC root (two separators, `//server/share`), on every OS. Named exception: a target rooted by a single `\` (`\foo`) |
 | Refused hardlink source | `FilterRejectionError` | HARDLINK whose source (`link_target_member`, the end of its chain) was refused (see "Hardlink Two-Pass Extraction") |
 | Special file | `FilterRejectionError` | `MemberType.OTHER` device/FIFO/socket/etc. |
@@ -460,11 +462,32 @@ NOT be refused. Rechecks count against `max_entries`; once it is spent, the link
 waiting are removed unresolved and the run stops with `ResourceLimitError`. Tests:
 `tests/test_symlink_recheck.py`; rationale: `dev-docs/threat-model.md` O22.
 
+Under `TRUSTED` only, a SYMLINK whose stored target starts with `/` SHALL be written as
+stored, wherever it resolves, and is neither refused at creation nor rechecked, as GNU
+tar, cpio and unsquashfs write it: a root filesystem or initramfs image holds hundreds
+(`usr/bin/pwsh -> /opt/microsoft/powershell/7/pwsh`). `STRICT` and `STANDARD` SHALL keep
+refusing one that escapes. A drive or UNC target stays refused under every policy, and a
+target that starts with a single `\` is not one of these. Such a link is not rechecked:
+when a later member changes where its target resolves, it stays. No member SHALL be
+written outside `dest` through such a link under any policy: a later member whose parent
+resolves through it to outside is refused by the parent check, a link whose own
+resolution runs through it to outside is refused as an escape (one made after it when it
+is made, one made before it by the recheck that the rooted link's creation starts), a
+hard link to a file under it is refused with its source, and a member that lands on the
+link's own name replaces the link or is refused by `overwrite`, never written through
+it. A target that leads back into `dest` is followed there, as any symlink is. The
+`archivey://` tree under `TRUSTED` lists such a link as `"other"` and follows nothing
+through it, since it has no destination path: a member under it is left out. Tests:
+`tests/test_rooted_symlinks.py`.
+
 #### Scenario: symlink revalidation matrix
 
 | Case | Expected |
 | --- | --- |
 | Created symlink resolves outside `dest` | Link is unlinked; `FilterRejectionError`; no later data written through it |
+| `TRUSTED`; SYMLINK `etc -> /etc` (or any target from `/`), then `etc/passwd`, `etc/x/`, HARDLINK `h -> etc/passwd`, SYMLINK `r -> etc/passwd` | `etc` `EXTRACTED`, pointing at `/etc`; the four others `BLOCKED`; nothing outside `dest` changes |
+| `TRUSTED`; SYMLINK `r -> x/passwd`, then SYMLINK `x -> /etc` | `x` `EXTRACTED`; `r` `BLOCKED` by the recheck and removed |
+| `STRICT` or `STANDARD`; SYMLINK `etc -> /etc` | `BLOCKED`, as any escape |
 | Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `FilterRejectionError` |
 | Cyclic links (`d -> d`; `a -> b`, `b -> a`; longer loops) | The link that closes the loop is unlinked; `FilterRejectionError` with the message "Symlink target is part of a symlink loop", not the escape message; no uncaught OS/runtime error; same on every Python version |
 
@@ -606,6 +629,7 @@ non-bypassable safety checks.
 | Behavior | `STRICT` default | `STANDARD` | `TRUSTED` |
 | --- | --- | --- | --- |
 | Path, absolute-path, link-escape, special-file rejection | Always | Always | Always |
+| SYMLINK whose target starts with `/` and leads out of `dest` | Refused | Refused | Written as stored; nothing written outside `dest` through it |
 | Missing file/dir mode | File `0o644`, dir `0o755` | File `0o644`, dir `0o755` | Apply as stored |
 | Permission normalization | Files masked with `0o755` (execute kept when the owner has it; without owner execute, group/other execute are cleared too; group/other write stripped); dirs `0o755` | Preserve ordinary execute bits | Apply as stored |
 | setuid/setgid/sticky | Strip all | Strip all | Preserve |
@@ -990,7 +1014,6 @@ turns it off.
 | Archive of many members under 5 MiB each, together past the ratio of the archive's size | The read that crosses the archive-wide ratio raises the always-stop error |
 | The same member read twice | Counted once toward the archive-wide total |
 | `DecoderLimits(max_ratio=None)` in the reader's config | Reads, lists and extracts unchanged |
-| Deprecated `extract_all(limits=ExtractionLimits(max_ratio=None))` | Extracts; reads of the same reader stay held |
 
 ### Requirement: A shared budget holds many readers to one total
 
@@ -1549,12 +1572,8 @@ does not count again. Reads and forward seeks, a seek to the end included, reach
 decoder in steps of at most 1 MiB, so the decode stops within a step of the limit. A
 decoder error after a read already returned bytes in the same call is held for the
 next read, so the prefix of a cut stream is kept; a seek, even a refused one, drops
-it. `max_ratio=None` turns it off. An `extract_all` call's own decodes SHALL be held to the
-ratio fields that call applies instead, so `ExtractionLimits.UNLIMITED` or a deprecated
-ratio field passed in `limits=` lifts or tightens it for that call alone, as for a
-ZIP. A read after the call, or from the caller's own code the call runs (`filter`,
-a `members=` predicate, `on_progress`), SHALL still be held to the reader's limits,
-though the call decoded past them.
+it. `max_ratio=None` turns it off. An `extract_all` call's decodes SHALL be held to the
+same reader limits: `limits=` holds no ratio field, so no call lifts or tightens it.
 
 #### Scenario: compressed container decode matrix
 
@@ -1564,9 +1583,8 @@ though the call decoded past them.
 | The same archive from a pipe | Refused once 256 MiB are decoded (the live floor) |
 | The same archive with `DecoderLimits(max_ratio=None)` | Lists, as before |
 | A `.tar.gz` under the ratio | Lists, reads and extracts unchanged |
-| A `.tar.gz` of 24 MiB of zeros, `extract_all(limits=ExtractionLimits.UNLIMITED)` | Extracts, from a seekable source and in streaming mode |
-| The same, with a deprecated `ExtractionLimits(max_ratio=1e9)` in `limits=`, then `read()` | Extracts; the read raises `ResourceLimitError` |
-| The same `.tar.gz` or a ZIP of it under `UNLIMITED`, with an `on_progress`, `filter` or `members=` callback that calls `read()` | The callback's read raises `ResourceLimitError` |
+| A `.tar.gz` of 4 MiB of zeros, `DecoderLimits(max_ratio=10)` in the reader's config, `extract_all()` | `ResourceLimitError`, from a seekable source and in streaming mode |
+| The same with `DecoderLimits(max_ratio=None)` | Extracts, from a seekable source and in streaming mode |
 
 ### Requirement: Enforce Maximum Entry Count
 

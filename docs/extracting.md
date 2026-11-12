@@ -81,7 +81,7 @@ permissions gets written as it is:
 |---|---|---|
 | `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible or another system would read the name differently | Files keep their stored permissions without setuid, setgid, sticky or group and other write, so at most `rwxr-xr-x`; a file the owner can't execute is executable by nobody; folders always `rwxr-xr-x` |
 | `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, absolute paths are placed inside the destination, and a backslash, a control character or bytes that aren't UTF-8 are rewritten instead of refused | As stored, without setuid, setgid and sticky bits. Files are `rw-r--r--` and folders `rwxr-xr-x` when the archive stores no permissions |
-| `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root. When the archive stores no permissions, whatever your system gives a new file |
+| `"trusted"` | As stored, but absolute paths are placed inside the destination. A link whose target starts at `/` is written as stored, wherever it points | As stored, and the owner too when running as root. When the archive stores no permissions, whatever your system gives a new file |
 
 Under every policy, files and folders get the member's modification time, and on Windows and
 macOS its birth time too (`member.created`), as 7-Zip does. Linux has no way to set a birth time,
@@ -176,7 +176,9 @@ as it would for real, and is skipped, replaced or renamed under the other polici
 These are refused under every policy:
 
 - `../evil.txt` or `a/../../evil.txt`.
-- A link to `../../outside` or `/etc/passwd`.
+- A link to `../../outside`.
+- A member written through a link that leads out of the destination, such as `etc/passwd`
+  after a link `etc -> /etc`.
 - A device file or a named pipe.
 
 These are written as is under every policy, and noted:
@@ -187,6 +189,12 @@ These are written as is under every policy, and noted:
   `MEMBER_NAME_INVISIBLE_CHARACTER`.
 
 The rest depend on the policy:
+
+- **A link to `/etc/passwd` or `/opt/app/bin/tool`, with a target that starts at `/`:** `"strict"`
+  and `"standard"` refuse it. `"trusted"` writes it as stored, as GNU tar, cpio and unsquashfs do,
+  so a root filesystem or an initramfs image extracts in full. Nothing is written outside the
+  destination through such a link under any policy: a member under it is written only when the
+  link leads back into the destination.
 
 - **`/etc/evil.txt` or `C:/evil.txt`:** `"strict"` refuses it. `"standard"` and `"trusted"` write it
   as `etc/evil.txt` or `evil.txt`.
@@ -246,7 +254,7 @@ the filter does, and a link pointing outside is refused unless the filter also c
 `archivey.sanitize_names` is a ready-made filter for this, passed as `filter=` to `extract_all`. It
 drops a leading `/` or drive letter, resolves or drops `..`, removes those reordering characters,
 and adds `_` to names Windows reserves, such as `CON`. In a symlink's target it makes only the
-character and reserved-name fixes, and it leaves a hard link's target as stored. It does not
+character and reserved-name fixes, and it leaves a hard link's target unchanged. It does not
 rewrite a `\`, a control character or bytes that are not UTF-8, which `STRICT` refuses: extract
 with `policy="standard"` to have those written under a portable spelling.
 

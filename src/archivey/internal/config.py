@@ -72,6 +72,12 @@ class StreamConfig:
     """Declared seek demand (``MemberStreams.SEEKABLE``): accelerator ``AUTO``
     resolution and index construction key off it."""
 
+    restart_points: bool = False
+    """Record restart points (the decoder's seek index) without declaring seek demand:
+    accelerator ``AUTO`` resolves as for a stream read once. A compressed TAR opened for
+    random access sets it, because a member read after the listing seeks back into the
+    decoded stream. See :attr:`records_restart_points`."""
+
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     """The caller's ``ArchiveyConfig.use_rapidgzip``: whether a gzip stream may go
     through rapidgzip (``AUTO`` applies the gates the size fields below feed)."""
@@ -170,7 +176,8 @@ class StreamConfig:
     lost decoder call would take with it."""
 
     excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS
-    """The caller's ``FormatPolicy.exclude_libraries``: a codec whose package it names
+    """The packages the caller's ``FormatPolicy`` turns off (``FormatPolicy._libraries_off``,
+    from ``exclude_libraries`` and ``only_libraries``): a codec whose package it names
     opens as if the package were not installed."""
 
     @property
@@ -181,6 +188,12 @@ class StreamConfig:
         from archivey.internal.streams.codecs.isolated import natives_for
 
         return natives_for(self.process_isolation)
+
+    @property
+    def records_restart_points(self) -> bool:
+        """Whether the decoder records restart points: on declared seek demand
+        (:attr:`seekable`) or when asked for them alone (:attr:`restart_points`)."""
+        return self.seekable or self.restart_points
 
 
 def stream_config_from_archivey(
@@ -202,7 +215,7 @@ def stream_config_from_archivey(
         decoder_limits=config.decoder_limits,
         process_isolation=config.process_isolation,
         recover_partial_data=config.recover_partial_data,
-        excluded_libraries=config.formats.exclude_libraries,
+        excluded_libraries=config.formats._libraries_off,
     )
 
 

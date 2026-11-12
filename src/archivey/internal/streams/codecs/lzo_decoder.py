@@ -25,7 +25,7 @@ from __future__ import annotations
 import struct
 import zlib
 from collections.abc import Callable
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import (
     CorruptionError,
@@ -42,6 +42,9 @@ from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
 )
 from archivey.types import OptionalLibrary
+
+if TYPE_CHECKING:
+    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 
 class LzoError(ValueError):
@@ -84,11 +87,17 @@ def _python_lzo(
 def lzo1x_decompressor(
     excluded: frozenset[OptionalLibrary] = frozenset(),
     natives: Natives = IN_PROCESS,
+    usage: ResourceUsageRecorder | None = None,
 ) -> Callable[[bytes, int], bytes]:
     """The LZO1X block decoder to use: ``python-lzo`` when present and allowed, else
     :func:`lzo1x_decompress_python`, which is Python and so runs in this process
-    whatever ``natives`` says."""
-    return _python_lzo(excluded, natives) or lzo1x_decompress_python
+    whatever ``natives`` says. ``usage`` records ``python-lzo`` when it is chosen."""
+    package = _python_lzo(excluded, natives)
+    if package is None:
+        return lzo1x_decompress_python
+    if usage is not None:
+        usage.note_backend("library", OptionalLibrary.LZO.value, "lzo")
+    return package
 
 
 def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:

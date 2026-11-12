@@ -170,6 +170,19 @@ synthetic stream header, checks the decoded size against the index, and hands of
 stream state machine at the next stream. Blocks of zero decoded size are skipped, because
 they share an offset with the next block.
 
+Without seek demand but with restart points (the codec stream of a random-access
+`.tar.xz` or `.cpio.xz`), the file's index is not read. `_XzBlockWalker` instead follows
+the bytes fed to liblzma: a block header's first byte gives its size, and each LZMA2
+chunk header gives the chunk's compressed and decompressed size, up to the 0x00 end
+marker; block padding and the check follow. When the walk reaches the index it hashes
+the index's records and compares them with the records of the blocks it walked. The
+stream's block points are kept only once liblzma has decoded the stream to its end
+(so it has checked the same index against the blocks it decoded), the hashes match, and
+the walk's decoded size and stream length agree with liblzma's. A crafted index then
+cannot place a point: liblzma refuses an index that disagrees with the blocks. A stream
+not yet decoded to its end has no block points, so a seek back inside the stream being
+read resumes at an earlier stream or the start.
+
 The index parser follows liblzma: the index must fill its declared length exactly, its
 variable-length integers must be minimally encoded, its CRC-32 must match, and the header
 and footer must name the same check. Stream padding is found by scanning backwards in
@@ -201,10 +214,27 @@ nearest member. A forward read records a point only for a member with output, by
 on `DecodeOut` (`decompressor_stream.py`): an empty member's output offset is the next
 member's, or the end of the output, as for a zero-size xz block.
 
-**LZMA Alone.** `FramedDecompressorStream` over `lzma.LZMADecompressor(FORMAT_ALONE)`,
-one decompressor per stream ([`single-file.md`](single-file.md) §2.3). Zero bytes are
-padding only where they run to the end of the file; a stream after them is trailing data
-(§6). A backward seek decodes again from the start.
+**LZMA Alone.** `FramedDecompressorStream` over `_AloneDecompressor` (`lzma_codec.py`),
+one per stream, which wraps liblzma's `FORMAT_ALONE` decoder
+([`single-file.md`](single-file.md) §2.3). Zero bytes are padding only where they run to
+the end of the file; a stream after them is trailing data (§6). A backward seek decodes
+again from the start.
+
+A stream may declare its size and also end with an end marker (mksquashfs writes this
+for every SquashFS LZMA block, and so does the LZMA SDK's `lzma_alone -eos`). liblzma
+before 5.2.6 refuses such a stream at the marker, and the python.org builds for macOS
+and Windows bundle one (5.2.3 on macOS, 5.2.5 on Windows, 3.11 to 3.14). Every version
+measured since (5.4.5, 5.8.1) refuses it too when the marker is not yet in the input of
+the call that writes the last declared byte, so a read boundary just before the marker
+fails a valid file. `_AloneDecompressor` tests the liblzma once per process by feeding a
+one-byte stream one byte at a time; every liblzma measured fails that test. Where it
+fails, a stream with a known size gets a second decoder that reads the size as
+"unknown" and so stops at the marker. The first decoder fails in the call that writes
+the last declared byte; the second decoder takes over there if it has written exactly
+the declared size, and must then reach the marker without writing another byte. A
+stream without a marker still needs the first decoder, because a decode without the
+size cannot tell where such a stream ends. The cost is a second decode of a known-size
+stream, and twice its dictionary against the cap.
 
 **Dictionary caps.** Each format's declared dictionary is compared with
 `DecoderLimits.max_decoder_memory` before the dictionary is allocated: inside liblzma for
@@ -222,7 +252,9 @@ xz and LZMA Alone, before the decoder is built for lzip:
   stamp is attached after open, so a file whose header bytes read as a 2.5 GiB
   dictionary would otherwise tell the caller to raise the cap for a file that is not
   LZMA at all. A second stream of a concatenated `.lzma` is refused the same way, when
-  its decoder starts.
+  its decoder starts. Where a known-size stream gets the second decoder of §2.3, both
+  dictionaries are held at once, so twice the declared dictionary is compared with the
+  cap first (`check_decoder_memory`), as a 7z folder counts its coders together.
 - **lzip**: the exponent in the member header, before the decoder is built. The format's
   own ceiling, 512 MiB, is below the default cap.
 
@@ -290,7 +322,9 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   index or the lzip trailer chain says. A crafted file whose index agrees with itself but
   not with its data can return another block's bytes for the offset asked, with no error.
   A forward read always verifies: xz checks each block against its index record and lzip
-  each member against its trailer. Callers who need certainty read forward.
+  each member against its trailer. Callers who need certainty read forward. Block points
+  a forward decode found (§2.3) are not index-trusting: they exist only after that
+  verification.
 - **An index can declare millions of units.** The seek table is capped and thinned; the
   reader walks the xz index record by record and never reserves it at its declared count,
   and the lzip trailer walk keeps no per-member state. A 16.8 MB lzip file of 645 277

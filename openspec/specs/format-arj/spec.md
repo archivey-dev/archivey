@@ -14,7 +14,7 @@ decoded by archivey's own decoders, in Python. The format handbook is
 | --- | --- |
 | `archive-reading` | Reader API and member metadata |
 | `access-mode-and-cost` | Listing header by header, direct access, seekable source required |
-| `format-detection` | `60 EA` at offset 0 |
+| `format-detection` | `60 EA` at offset 0, and behind a self-extracting stub |
 | `format-plugins` | The handler and reader API the backend is written against; `FormatPolicy(replace=)` accepts `ContainerFormat.ARJ` |
 | `archive-data-model` | `CompressionAlgorithm.LZH` and `ARJ_FAST` |
 | `diagnostics` | `ARCHIVE_EOF_MARKER_MISSING` with `expected_marker="end_of_archive_header"` |
@@ -49,6 +49,29 @@ pipe SHALL be refused with `StreamNotSeekableError`.
 | No end header after the last member | Every member listed; `ARCHIVE_EOF_MARKER_MISSING` |
 | `0x00` or `0x1A` padding after the end header | No diagnostic |
 | Other bytes within 64 KiB after the end header | `ARCHIVE_TRAILING_DATA` |
+| An ARJ-SECURITY envelope right after the end header, as the main header places it | No diagnostic; the envelope is not checked |
+| Bytes after that envelope | `ARCHIVE_TRAILING_DATA` |
+
+### Requirement: Read an ARJ archive behind a self-extracting stub
+
+The ARJ backend SHALL declare `60 EA` at offset 0 as SFX magic, with a validator that
+reads the header at the candidate and accepts it only when its size, CRC-32, layout and
+extended headers hold and its file type is the main header's (2). A main header the
+source ends inside SHALL be graded `DAMAGED`. When the source does not start with
+`60 EA`, the reader SHALL run the same scan over the shared SFX window, so a forced
+`format=ARJ` opens the archive detection would.
+
+#### Scenario: ARJ self-extractors
+
+| Source | Result |
+| --- | --- |
+| ARJ for Unix's `arj a -je1` (an ELF stub) | Detected as ARJ by the SFX scan, `payload_offset` at the main header; members read |
+| A DOS `MZ`, PE or ELF stub, then an archive | The same |
+| Bytes with no executable cue, then an archive | Found by the leading-bytes scan; members read |
+| The same, with `format=ARJ` | The reader's own scan finds the same archive |
+| `60 EA` in the stub, bare or with a header whose CRC-32 fails | The candidate is passed over |
+| A stub and no `60 EA`, with `format=ARJ` | `CorruptionError` ("Not an ARJ archive") |
+| A stub cut inside the main header, with `format=ARJ` | `TruncatedError` |
 
 ### Requirement: Refuse what the ARJ reader cannot read
 

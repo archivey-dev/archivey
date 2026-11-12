@@ -453,8 +453,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
 
     # The two activation thresholds are the limit fields that are not ``| None``, so
     # None belongs in their bad set: it disables nothing, it breaks the comparison.
-    # The deprecated ExtractionLimits fields are checked as the DecoderLimits ones are.
-    for cls in (DecoderLimits, ExtractionLimits):
+    for cls in (DecoderLimits,):
         for bad in ("x", -1, True, 1.5, None):
             rows.append(
                 _case(
@@ -916,7 +915,7 @@ def test_valid_arguments_still_work(archive: Path, tmp_path: Path) -> None:
         assert len(report.results) == 1
 
     assert ListingLimits(max_members=None) == ListingLimits(max_members=None)
-    assert ExtractionLimits(max_ratio=2.5).max_ratio == 2.5
+    assert DecoderLimits(max_ratio=2.5).max_ratio == 2.5
 
 
 def test_unknown_member_name_still_raises_keyerror(archive: Path) -> None:
@@ -1084,8 +1083,8 @@ _BUILTIN_CASES: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] =
         ValueError,
     ),
     (
-        "ExtractionLimits(max_ratio=nan)",
-        lambda a, t: ExtractionLimits(max_ratio=float("nan")),
+        "DecoderLimits(max_ratio=nan)",
+        lambda a, t: DecoderLimits(max_ratio=float("nan")),
         ValueError,
     ),
     (

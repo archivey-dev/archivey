@@ -5,9 +5,10 @@ Three users share one archive-wide ratio rule (:func:`archive_ratio_refusal`).
 :class:`BombTracker` and :class:`MemberRatioGuard` also check a per-member ratio, each
 with its own code:
 
-- :class:`BombTracker`: the byte, ratio and entry-count limits one extraction enforces
-  as it writes (``ExtractionLimits``). The extraction coordinator builds one per call
-  and counts every chunk through it before writing.
+- :class:`BombTracker`: the byte and entry-count limits one extraction enforces as it
+  writes (``ExtractionLimits``), and the ratio it holds them to (``DecoderLimits``).
+  The extraction coordinator builds one per call and counts every chunk through it
+  before writing.
 - :class:`DecodeRatioGuard`: the archive-wide ratio a compressed container's decode
   (a ``.tar.gz``) is held to in every use, listing included. The reader wraps the
   decoded stream in it.
@@ -20,13 +21,11 @@ from __future__ import annotations
 import io
 import math
 import threading
-from dataclasses import replace
 from typing import TYPE_CHECKING, BinaryIO, cast
 
 from archivey.config import (
     DecoderLimits,
     ExtractionLimits,
-    ratio_field_is_set,
 )
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.overrides import override
@@ -43,37 +42,6 @@ if TYPE_CHECKING:
     from archivey.internal.base_reader import BaseArchiveReader
     from archivey.internal.streams.streamtools.readahead import _ReadsAhead
     from archivey.types import ArchiveMember
-
-
-def ratio_limits(
-    decoder: DecoderLimits, *overrides: ExtractionLimits | None
-) -> DecoderLimits:
-    """``decoder``, with each ratio field a deprecated ``ExtractionLimits`` sets in its
-    place (a later override wins). The guards read the ratio fields from the result."""
-    max_ratio = decoder.max_ratio
-    floor = decoder.ratio_activation_threshold
-    live_floor = decoder.live_ratio_activation_threshold
-    for limits in overrides:
-        if limits is None:
-            continue
-        if ratio_field_is_set(limits.max_ratio):
-            max_ratio = limits.max_ratio
-        if ratio_field_is_set(limits.ratio_activation_threshold):
-            floor = limits.ratio_activation_threshold
-        if ratio_field_is_set(limits.live_ratio_activation_threshold):
-            live_floor = limits.live_ratio_activation_threshold
-    if (max_ratio, floor, live_floor) == (
-        decoder.max_ratio,
-        decoder.ratio_activation_threshold,
-        decoder.live_ratio_activation_threshold,
-    ):
-        return decoder
-    return replace(
-        decoder,
-        max_ratio=max_ratio,
-        ratio_activation_threshold=floor,
-        live_ratio_activation_threshold=live_floor,
-    )
 
 
 def archive_ratio_refusal(
@@ -139,13 +107,13 @@ class BombTracker:
         self,
         max_bytes: int | None,
         max_ratio: float | None,
-        # The defaults come from ExtractionLimits, the one place the limits are set.
-        ratio_activation_threshold: int = ExtractionLimits.ratio_activation_threshold,
+        # The defaults come from the limit classes, the one place the limits are set.
+        ratio_activation_threshold: int = DecoderLimits.ratio_activation_threshold,
         max_entries: int | None = ExtractionLimits.max_entries,
         *,
         source: BaseArchiveReader | None = None,
         live_ratio_activation_threshold: int = (
-            ExtractionLimits.live_ratio_activation_threshold
+            DecoderLimits.live_ratio_activation_threshold
         ),
     ) -> None:
         self._max_bytes = max_bytes
@@ -519,9 +487,7 @@ class DecodeRatioGuard(_RatioGuard):
     Listing such an archive decodes all of it, member data included, before
     extraction counts a byte, so a few hundred bytes of bzip2 could keep ``members()``
     decoding for minutes. This refuses it while listing, reading or extracting, at
-    the reader's ratio, except that an ``extract_all`` call holds its own decodes to
-    the ratio fields it applies (``run_limits``) for the length of the call, on its
-    thread. A read after the call is judged again under the reader's limits.
+    the reader's ratio.
 
     With a ``tally``, the guard is one of several whose decoded bytes count toward one
     total, each under its own ``key`` (as member reads count, :class:`ReadRatioTally`):
@@ -537,7 +503,6 @@ class DecodeRatioGuard(_RatioGuard):
         consumed: Callable[[], int | None] | None,
         tally: ReadRatioTally | None = None,
         key: int = 0,
-        run_limits: Callable[[], DecoderLimits | None] = lambda: None,
     ) -> None:
         super().__init__(inner, max_ratio=limits.max_ratio)
         self._limits = limits
@@ -545,32 +510,13 @@ class DecodeRatioGuard(_RatioGuard):
         self._consumed = consumed
         self._tally = tally
         self._key = key
-        # The limits an ``extract_all`` call running on this thread applies to its own
-        # decodes, in place of ``limits`` (``None``: no such call).
-        self._run_limits = run_limits
-        # The limits the furthest offset decoded was judged under.
-        self._judged_under = limits
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
 
-    def _current_limits(self) -> DecoderLimits:
-        run = self._run_limits()
-        return self._limits if run is None else run
-
-    @override
-    def _check(self, position: int) -> None:
-        limits = self._current_limits()
-        if limits is not self._judged_under and limits != self._judged_under:
-            # An extraction that lifted the ratio may have decoded past what these
-            # limits allow: what it decoded is judged again, under these.
-            self._judged_under = limits
-            self._decoded = 0
-        super()._check(position)
-
     @override
     def _judge(self, position: int) -> None:
-        limits = self._current_limits()
+        limits = self._limits
         if self._tally is not None:
             position = self._tally.advance(self._key, position)
         refusal = archive_ratio_refusal(

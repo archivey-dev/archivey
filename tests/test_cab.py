@@ -22,6 +22,7 @@ from archivey import (
     CorruptionError,
     DecoderLimits,
     DiagnosticCode,
+    DiagnosticPolicy,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -29,6 +30,8 @@ from archivey import (
     detect_format,
     open_archive,
 )
+from archivey.diagnostics import UnexpectedNameDuplicateContext
+from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.backends import cab_reader
 from archivey.internal.streams.codecs import lzx_decoder
 from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
@@ -991,6 +994,269 @@ def test_lzx_a_stored_block_may_read_the_two_zero_bytes(
         assert _decoder(stream).decode_frame(8) == expected
 
 
+def _with_table_order(raw: bytes, order: list[int]) -> bytes:
+    """``raw`` with its CFFILE records rewritten in ``order`` (indices in the table)."""
+    (count,) = struct.unpack_from("<H", raw, 28)
+    pos = start = _file_record(raw)
+    records = []
+    for _ in range(count):
+        end = raw.index(b"\0", pos + 16) + 1
+        records.append(raw[pos:end])
+        pos = end
+    return raw[:start] + b"".join(records[i] for i in order) + raw[pos:]
+
+
+def _spans(folders: int, per_folder: int) -> list[CabFile]:
+    """Files of 9000 bytes, so most cross a block edge, ``per_folder`` per folder."""
+    return [
+        CabFile(f"f{folder}-{i}", BLOB[i * 9000 : (i + 1) * 9000], folder=folder)
+        for folder in range(folders)
+        for i in range(per_folder)
+    ]
+
+
+def _count_block_reads(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """Each (folder, block) whose stored bytes a member stream reads, as it reads them."""
+    reads: list[tuple[int, int]] = []
+    real = cab_reader._FolderStream._payload
+
+    def recording(self: cab_reader._FolderStream, number: int) -> bytes:
+        reads.append((self.index, number))
+        return real(self, number)
+
+    monkeypatch.setattr(cab_reader._FolderStream, "_payload", recording)
+    return reads
+
+
+@pytest.mark.parametrize("method", ["mszip", "lzx"])
+@pytest.mark.parametrize("shape", ["reversed", "folders interleaved"])
+def test_a_table_out_of_data_order_decodes_each_block_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, method: str, shape: str
+) -> None:
+    files = _spans(2, 6)
+    raw = write_cab(files, [CabFolder(method), CabFolder(method)])
+    order = (
+        list(range(len(files)))[::-1]
+        if shape == "reversed"
+        else [i + 6 * folder for i in range(6) for folder in range(2)]
+    )
+    raw = _with_table_order(raw, order)
+    data = {f.name: f.data for f in files}
+    reads = _count_block_reads(monkeypatch)
+    with open_archive(io.BytesIO(raw)) as reader:
+        # The members come in data order: by folder, then offset.
+        assert [m.name for m in reader.members()] == [f.name for f in files]
+        streamed = {}
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            streamed[member.name] = stream.read()
+        assert streamed == data
+        assert len(reads) == len(set(reads))
+        reads.clear()
+        reader.extract_all(tmp_path)
+        assert len(reads) == len(set(reads))
+    for name, content in data.items():
+        assert (tmp_path / name).read_bytes() == content
+
+
+@pytest.mark.parametrize(
+    ("method", "order"),
+    [
+        ("lzx", list(range(12))),
+        ("mszip", list(range(12))),
+        # Each folder still reads in one pass: no block decodes twice.
+        ("lzx", [*range(6, 12), *range(6)]),
+        # Stored blocks are read where a member starts; nothing decodes.
+        ("none", list(range(12))[::-1]),
+    ],
+    ids=["lzx", "mszip", "folders-swapped", "stored-reversed"],
+)
+def test_a_table_that_decodes_each_block_once_keeps_its_order(
+    method: str, order: list[int]
+) -> None:
+    files = _spans(2, 6)
+    raw = _with_table_order(
+        write_cab(files, [CabFolder(method), CabFolder(method)]), order
+    )
+    data = {f.name: f.data for f in files}
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert [m.name for m in reader.members()] == [files[i].name for i in order]
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.read() == data[member.name]
+
+
+def _name_twice() -> tuple[list[CabFile], bytes]:
+    """Four files of one LZX folder, then ``f0-0`` again, in reverse table order: an
+    order that would decode a block twice, so the sort is on but for the name."""
+    files = [*_spans(1, 4), CabFile("f0-0", b"second")]
+    return files, _with_table_order(
+        write_cab(files, [CabFolder("lzx")]), [4, 3, 2, 1, 0]
+    )
+
+
+def test_a_name_listed_twice_keeps_table_order() -> None:
+    # The entry listed last is the current one, so the order that says which stays.
+    files, raw = _name_twice()
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert [m.name for m in reader.members()] == [
+            "f0-0",
+            "f0-3",
+            "f0-2",
+            "f0-1",
+            "f0-0",
+        ]
+        assert reader.read("f0-0") == files[0].data
+
+
+def test_a_name_listed_twice_is_reported_as_unexpected() -> None:
+    # A cabinet has no way to repeat a name, so the later entry reports the
+    # CAB-specific code, as well as the generic one every format reports.
+    _, raw = _name_twice()
+    with open_archive(io.BytesIO(raw)) as reader:
+        members = reader.members()
+    codes = [sorted(d.code for d in m.diagnostics) for m in members]
+    assert codes == [
+        [],
+        [],
+        [],
+        [],
+        [
+            DiagnosticCode.MEMBER_NAME_DUPLICATE,
+            DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED,
+        ],
+    ]
+    (report,) = (
+        d
+        for d in members[4].diagnostics
+        if d.code is DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
+    )
+    assert report.context == UnexpectedNameDuplicateContext(
+        member_name="f0-0", member_id=4, format="cab"
+    )
+
+
+def test_a_name_listed_twice_after_normalization_is_reported() -> None:
+    # Names are compared as the listing presents them: "a\\b" and "a/b" are one.
+    raw = write_cab(
+        [CabFile("a\\b", b"one"), CabFile("a/b", b"two")], [CabFolder("none")]
+    )
+    with open_archive(io.BytesIO(raw)) as reader:
+        (_, later) = reader.members()
+    assert DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED in [
+        d.code for d in later.diagnostics
+    ]
+
+
+def test_strict_refuses_a_cabinet_that_lists_a_name_twice() -> None:
+    _, raw = _name_twice()
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with (
+        open_archive(io.BytesIO(raw), config=strict) as reader,
+        pytest.raises(DiagnosticRaisedError) as raised,
+    ):
+        reader.members()
+    assert raised.value.diagnostic.code is (
+        DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
+    )
+
+
+def test_strict_reads_a_cabinet_with_distinct_names() -> None:
+    files = _spans(1, 4)
+    raw = write_cab(files, [CabFolder("lzx")])
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with open_archive(io.BytesIO(raw), config=strict) as reader:
+        assert [m.name for m in reader.members()] == [f.name for f in files]
+
+
+def test_a_damaged_table_out_of_data_order_sorts_up_to_the_damage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One bad record at the end of a crafted table must not turn the sort off: the
+    # members before it come in data order, each block read once, then the error.
+    files = _spans(1, 4)
+    raw = bytearray(
+        _with_table_order(write_cab(files, [CabFolder("lzx")]), [3, 2, 1, 0])
+    )
+    # The third record names a folder the cabinet does not have.
+    pos = _file_record(raw)
+    for _ in range(2):
+        pos = raw.index(b"\0", pos + 16) + 1
+    struct.pack_into("<H", raw, pos + 8, 5)
+    reads = _count_block_reads(monkeypatch)
+    with open_archive(io.BytesIO(bytes(raw))) as reader:
+        names = []
+        with pytest.raises(CorruptionError, match="folder 5"):
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                assert stream.read() == files[int(member.name[3:])].data
+                names.append(member.name)
+        assert names == ["f0-2", "f0-3"]
+        assert len(reads) == len(set(reads))
+
+
+def _set_offset(raw: bytes, record: int, offset: int) -> bytes:
+    """``raw`` with the ``record``-th CFFILE record's folder offset set to ``offset``."""
+    out = bytearray(raw)
+    pos = _file_record(out)
+    for _ in range(record):
+        pos = out.index(b"\0", pos + 16) + 1
+    struct.pack_into("<I", out, pos + 4, offset)
+    return bytes(out)
+
+
+def test_an_empty_member_does_not_count_in_the_order_replay() -> None:
+    # An empty member opens no folder stream, so one listed last at offset 0 leaves
+    # the table in an order that decodes each block once.
+    files = [*_spans(1, 2), CabFile("empty", b"")]
+    raw = _set_offset(write_cab(files, [CabFolder("lzx")]), 2, 0)
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert [m.name for m in reader.members()] == ["f0-0", "f0-1", "empty"]
+
+
+def test_a_folder_that_opens_no_stream_does_not_count_in_the_order_replay() -> None:
+    # Quantum members are refused before a folder stream is made, so their order
+    # does not count; the LZX folder beside them reads in one pass.
+    quantum = [
+        CabFile(f"q{i}", BLOB[i * 9000 : (i + 1) * 9000], folder=0) for i in range(3)
+    ]
+    lzx = [
+        CabFile(f"z{i}", TEXT[i * 9000 : (i + 1) * 9000], folder=1) for i in range(3)
+    ]
+    raw = _with_table_order(
+        write_cab([*quantum, *lzx], [CabFolder("quantum", 10), CabFolder("lzx")]),
+        [2, 1, 0, 3, 4, 5],
+    )
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert [m.name for m in reader.members()] == [
+            "q2",
+            "q1",
+            "q0",
+            "z0",
+            "z1",
+            "z2",
+        ]
+        assert reader.read("z2") == lzx[2].data
+
+
+@pytest.mark.parametrize(
+    ("second", "twice"),
+    [(9000, False), (4000, True), (0, True)],
+    ids=["after", "inside", "at-start"],
+)
+def test_the_order_replay_goes_on_from_where_a_member_ends(
+    second: int, twice: bool
+) -> None:
+    # A member read to its end leaves the decoder there, so the next member goes on
+    # from it only when it starts at or after that end.
+    folders = (cab_reader._Folder(0, 1, cab_reader._LZX, 16),)
+    records = [
+        cab_reader._Record(9000, 0, 0, 0, 0, b"a"),
+        cab_reader._Record(9000, second, 0, 0, 0, b"b"),
+    ]
+    assert cab_reader._decodes_twice(folders, records, [0, 1]) is twice
+
+
 def test_format_is_listed() -> None:
     assert ArchiveFormat.CAB in archivey.list_supported_formats()
 
@@ -1251,10 +1517,11 @@ def test_a_last_file_that_stops_short_of_its_folder_is_refused() -> None:
 
 
 def test_files_listed_out_of_offset_order_still_tile() -> None:
-    """Order in the table is the writer's choice; only the layout counts."""
+    """Order in the table is the writer's choice; only the layout counts. A reversed
+    table over a compressed folder lists in data order, so no block decodes twice."""
     raw = _reversed_table(_case("mszip"))
     with open_archive(io.BytesIO(raw)) as reader:
-        assert [m.name for m in reader.members()] == NAMES[::-1]
+        assert [m.name for m in reader.members()] == NAMES
         assert reader.read("blob.bin") == BLOB
         assert reader.verify_all().failures == ()
 

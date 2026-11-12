@@ -58,8 +58,20 @@ the data does not match. A line that is not an MD5 and a name SHALL be skipped.
 The deb backend SHALL raise `UnsupportedFeatureError` for a format version whose major
 number is not 2, `CorruptionError` when `debian-binary` is not the first member, when the
 control tar does not follow it, or when a member whose name does not start with `_` sits
-before the data tar. It SHALL skip `_` members and read nothing after the data tar.
-`debian-binary`, the control file and `md5sums`, held whole, SHALL together count against
+before the data tar. It SHALL raise `CorruptionError`, with the member's name in
+`member_name`, for a data-tar member whose path, with its root dropped, its `..`
+resolved and `/` and `\` both read as separators, has a first segment that equals
+`DEBIAN` once both are folded as the extraction collision key folds a name (NFC,
+case-folded, a trailing dot or space trimmed), and for a data-tar hard link whose target
+does by the same test. It SHALL raise `CorruptionError` in the same way for a
+control-tar member, or hard link target, whose `DEBIAN/`-prefixed path, read the same
+way but not folded, does not have exactly `DEBIAN` as its first segment. `dpkg-deb -R`
+refuses these packages: it will not unpack the control tar into a `DEBIAN` path that the
+data tar made, and GNU tar refuses a `..` name. Reading `\` as a separator, dropping a
+drive root and folding the data side are stricter than `dpkg-deb -R`, so that no
+extraction rewrite and no filesystem moves a member from one tar's tree into the
+other's. It SHALL skip `_` members and read nothing after the data tar. `debian-binary`,
+the control file and `md5sums`, held whole, SHALL together count against
 `ListingLimits.max_metadata_bytes`, each checked by its declared size before it is read.
 
 #### Scenario: refusals
@@ -71,4 +83,11 @@ before the data tar. It SHALL skip `_` members and read nothing after the data t
 | An `extra` member between the tars | `CorruptionError` |
 | `max_metadata_bytes` smaller than the control file and md5sums | `ResourceLimitError` naming the bytes held in all |
 | A `debian-binary` header declaring 9 999 999 999 bytes | `ResourceLimitError` before the member is read |
+| A data tar holding `./DEBIAN/control`, `/DEBIAN/x`, `./DEBIAN/` or a `DEBIAN` symlink | `CorruptionError` naming that member, when the listing reaches it |
+| A data hard link to `DEBIAN/control` | `CorruptionError` naming the link and its target |
+| A data tar holding `usr\..\DEBIAN/postinst`, `C:/DEBIAN/control`, `DEBIAN./postinst`, `DEBIAN /postinst` or `debian/postinst` | `CorruptionError`, stricter than `dpkg-deb -R` |
+| A control tar holding `../usr/x` | `CorruptionError` naming `DEBIAN/../usr/x` |
+| A control hard link to `../usr/a` | `CorruptionError` naming the link and its target |
+| A control tar holding `../debian/x` or `../DEBIAN./x` | `CorruptionError`: the control side is not folded |
+| A data tar holding `debianx/x`, `usr/DEBIAN/x`, or a symlink to `../DEBIAN/control` | Listed and read |
 

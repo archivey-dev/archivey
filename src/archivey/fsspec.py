@@ -37,6 +37,7 @@ from archivey.internal.filters import (
     check_universal,
     collision_key,
     extraction_view,
+    is_rooted_link_target,
     resolve_or_raise_on_loop,
 )
 from archivey.internal.overrides import override
@@ -61,9 +62,20 @@ _Kind = Literal["dir", "file", "link"]
 @dataclass(frozen=True)
 class _Refusal:
     reason: str
+    # The tree cannot tell whether extraction writes the member: it is left out,
+    # and the diagnostic does not claim that extraction would refuse it.
+    unmodelled: bool = False
 
 
 _LOOP = _Refusal("it resolves through a symlink loop")
+# A walk through a symlink whose target starts at ``/`` (kept as stored under
+# TRUSTED). The tree has no destination path, so it cannot tell a target that leads
+# back into the destination, which extraction follows, from one that leads out.
+_ROOTED = _Refusal(
+    "it resolves through a symlink whose target starts at /, which the tree does not "
+    "follow; extraction writes it only if that target leads back into the destination",
+    unmodelled=True,
+)
 
 
 class _Node:
@@ -214,7 +226,13 @@ class _Tree:
                 "a symlink's target can be"
             )
         node = self._add(parent, last, kind)
-        if kind == "link":
+        if kind == "link" and is_rooted_link_target(target):
+            # Kept as stored under TRUSTED (``check_universal`` refused it under the
+            # other policies). Where it leads depends on the destination's path,
+            # which the tree does not have, so no walk goes through it (``_ROOTED``).
+            # Its ``target`` stays ``None``.
+            self.links.append(node)
+        elif kind == "link":
             node.target = [part for part in target.split("/") if part not in ("", ".")]
             # A link that leads out through a link made before it is refused before
             # anything is written. One that loops is found only once it is made, so
@@ -311,10 +329,12 @@ class _Tree:
     def link_destination(self, link: _Node) -> _Spot | None:
         """Where ``link`` leads once every member is written, as the destination
         resolves its target text, or ``None`` for a loop or a way out."""
+        if link.target is None:
+            return None  # a target from the filesystem root, kept as stored
         parent = cast("_Node", link.parent)
         walked = self._walk(
             parent,
-            cast("list[str]", link.target),
+            link.target,
             final=True,
             from_link=True,
             hops=0,
@@ -385,9 +405,12 @@ class _Tree:
                 missing.append(part)
                 continue
             if child.kind == "link":
+                if child.target is None:
+                    # A target from the filesystem root, kept as stored under TRUSTED.
+                    return _ROOTED
                 # The target is relative to the link's parent, which ``node`` is.
-                # ``check_universal`` refuses an absolute target under every policy,
-                # so no target starts at the root.
+                # ``check_universal`` refuses an absolute target under every policy
+                # but TRUSTED, and the tree never walks one (above).
                 followed = self._follow(child, node, final=final, hops=hops, deps=deps)
                 if isinstance(followed, _Refusal):
                     return followed
@@ -516,22 +539,25 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     ``reader.extract_all(dest, policy=policy)`` gives the member, into an empty
     ``dest``, and the tree leaves out what that extraction would not write: a member
     the policy refuses (a ``..`` segment, an absolute name under ``STRICT``, a name the
-    policy will not write, a symlink whose target leaves the destination), a hard link
-    to a refused member, a member whose name collides with one before it (the
+    policy will not write, a symlink whose target leaves the destination, except one
+    whose target starts at ``/`` under ``TRUSTED``, which is listed as ``"other"``), a
+    hard link to a refused member, a member whose name collides with one before it (the
     policy's collision key: ``README`` and ``readme`` collide under ``STRICT`` and
     ``STANDARD``), a path under a file, a symlink that loops or leads out through
     another link, and a symlink whose target is over 4096 bytes, which ``symlink()``
-    refuses on Linux and readers refuse when the target is stored as member data.
-    Each is a ``MEMBER_PATH_REFUSED`` diagnostic on
-    ``fs.reader.diagnostics``. A duplicate name shows its current entry. A member
-    under one of the archive's own symlinks is listed where extraction writes it,
-    through the link: ``l/y`` under ``l -> d`` is ``d/y``, and a path under a link that
-    leads to no directory is refused. Paths are compared as on a case-sensitive
-    disk; only files and links collide by the policy's key. Not modelled: what a
-    non-empty destination decides (``overwrite=``, existing files), what the
-    destination's file system cannot hold (a reserved name under ``TRUSTED`` on
-    Windows, case folded by the disk, a link Windows keeps because it collapses
-    ``..`` before following links), a link that a later member makes lead out, and
+    refuses on Linux and readers refuse when the target is stored as member data. Each
+    is a ``MEMBER_PATH_REFUSED`` diagnostic on ``fs.reader.diagnostics``. A duplicate
+    name shows its current entry. A member under one of the archive's own symlinks is
+    listed where extraction writes it, through the link: ``l/y`` under ``l -> d`` is
+    ``d/y``, and a path under a link that leads to no directory is refused. Paths are
+    compared as on a case-sensitive disk; only files and links collide by the policy's
+    key. Not modelled: what a non-empty destination decides (``overwrite=``, existing
+    files), what the destination's file system cannot hold (a reserved name under
+    ``TRUSTED`` on Windows, case folded by the disk, a link Windows keeps because it
+    collapses ``..`` before following links), where a symlink whose target starts at
+    ``/`` leads (the tree has no destination path, so it follows no such link and leaves
+    out a member whose path or target runs through one, even when extraction would
+    follow it back into the destination), a link that a later member makes lead out, and
     ``filter=``. A hard link to a symlink is that
     symlink, with its target read from the hard link's own directory, as
     extraction (and GNU tar) write it.
@@ -822,7 +848,7 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
                     # Not a refused source: extraction refuses a hard link only for
                     # a source the policy refused, and makes one whose source lost
                     # its name to a member before it from that source's bytes.
-                    self._report_refused(member, placed.reason)
+                    self._report_refused(member, placed.reason, placed.unmodelled)
                     continue
                 placed.entry = self._entry(member, view)
         self._resolve_links(tree)
@@ -881,7 +907,12 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         if view.type is MemberType.SYMLINK:
             # Where its target points: a target that leaves the destination is refused
             # whatever the destination is.
-            check_universal(view, root, dest_resolved=True)
+            check_universal(
+                view,
+                root,
+                dest_resolved=True,
+                rooted_link_targets=self.policy is ExtractionPolicy.TRUSTED,
+            )
         elif view.type is MemberType.HARDLINK:
             # Extraction links to the file an earlier member was written to: with no
             # such member (none of that name, or only a later one, as hard links point
@@ -932,14 +963,19 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         entry["member"] = member
         return entry
 
-    def _report_refused(self, member: ArchiveMember, reason: str) -> None:
+    def _report_refused(
+        self, member: ArchiveMember, reason: str, unmodelled: bool = False
+    ) -> None:
         reader = cast("BaseArchiveReader", self.reader)
+        why = (
+            reason
+            if unmodelled
+            else f"extraction under the {self.policy.value} policy would not write "
+            f"it ({reason})"
+        )
         reader._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_PATH_REFUSED,
-            message=(
-                f"{quoted(member.name)} is not in the archivey:// tree: extraction "
-                f"under the {self.policy.value} policy would not write it ({reason})"
-            ),
+            message=f"{quoted(member.name)} is not in the archivey:// tree: {why}",
             context=PathRefusedContext(
                 archive_name=reader._archive_name,
                 member_name=member.name,
