@@ -33,6 +33,7 @@ from typing import BinaryIO
 
 from archivey.exceptions import (
     PackageNotInstalledError,
+    ReadError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_parser import (
@@ -685,6 +686,13 @@ def unrar_expands_wildcards(path: str | Path) -> bool:
 # absolute or derives a next volume name from.
 _UNRAR_ARCHIVE_PATH_MAX = 1024
 
+# The longest absolute archive path, in UTF-16 units, that Windows hands to ``unrar``
+# with no working directory: 6.x keeps NM - 1 = 2047 units of ``ArcName`` (above),
+# less room for a next volume name. A staged name is ``archive.part1.rar`` or
+# ``archive.rar``, and the longest it grows to is ``archive.part999999.rar`` (the
+# reader caps volumes at 999 999): 16 units cover that.
+_UNRAR_WINDOWS_ARCHIVE_PATH_KEPT = 2047 - 16
+
 
 # The longest member name, in UTF-16 code units, that ``unrar`` keeps whole when it
 # compares it with a ``-n`` mask. ``unrar`` cuts a stored name to a fixed buffer, but
@@ -734,6 +742,75 @@ def unrar_may_cut_archive_path(path: str | Path) -> bool:
     if sys.platform != "win32":
         size = max(size, len(os.fsencode(text)))
     return size > _UNRAR_ARCHIVE_PATH_MAX
+
+
+def unrar_needs_staged_name(path: str | Path) -> bool:
+    """Whether ``path`` must be staged under a fixed name before ``unrar`` reads it.
+
+    On POSIX ``unrar`` gets the file's name alone, started in its directory
+    (:func:`_unrar_archive_argument`), so only the name counts: one ``unrar``
+    would expand (:func:`unrar_expands_wildcards`), or one too long to keep. On
+    Windows it gets the whole path, so a wildcard or a cut anywhere in it counts
+    (:func:`unrar_may_cut_archive_path`).
+    """
+    if sys.platform == "win32":
+        return unrar_expands_wildcards(path) or unrar_may_cut_archive_path(path)
+    name = os.path.basename(path)
+    return unrar_expands_wildcards(name) or len(os.fsencode(name)) > (
+        _UNRAR_ARCHIVE_PATH_MAX
+    )
+
+
+def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
+    """The archive argument for ``unrar``, and the directory to start it in.
+
+    On POSIX ``unrar`` always starts in the archive's directory and gets the file's
+    name alone, so no directory reaches its argv: ``unrar`` expands ``*`` and ``?``
+    in every directory of the archive argument, and 6.x cuts a long one. A name
+    that ``unrar`` would expand reaches here only as a file archivey made: the
+    reader stages such a caller path (:func:`unrar_needs_staged_name`) under a
+    fixed name, in the system temp directory or one made in it. A long directory
+    needs no staging: ``unrar`` opens the name relative to its working
+    directory, and the system resolves that with no length to cut. ``unrar``
+    finds the next volume of a set beside that name. ``unrar p`` writes only to
+    stdout, so the working directory changes no output location.
+
+    Windows names cannot hold ``*`` or ``?``, so there only the length applies, and
+    a working directory that long is past what ``CreateProcess`` takes, so Windows
+    never sets one. The path goes over whole while ``unrar`` keeps it whole, and is
+    refused past that, never handed to ``unrar`` to cut. ``_UNRAR_ARCHIVE_PATH_MAX``
+    (1024) is itself a margin under the 2047-unit cut, kept for a relative path or
+    an unknown next volume name; a staged path is absolute with a fixed name, so on
+    Windows it is measured against ``_UNRAR_WINDOWS_ARCHIVE_PATH_KEPT`` instead.
+    """
+    path = str(archive_path)
+    if sys.platform == "win32":
+        if not unrar_may_cut_archive_path(path):
+            return path, None
+        whole = os.path.abspath(path)
+        limit = _UNRAR_WINDOWS_ARCHIVE_PATH_KEPT
+        if len(whole.encode("utf-16-le", "surrogatepass")) // 2 <= limit:
+            return whole, None
+        # ReadError, like a command line the system refuses (_start_error): a
+        # configuration fact, not a shortage a retry could clear.
+        raise ReadError(
+            f"unrar cannot read {display_path(path)}: the path is longer than "
+            f"{limit} characters, more than unrar keeps. Set TMP or TEMP to a "
+            "shorter directory."
+        )
+    # A plain split, never abspath or normpath: those drop ``..`` by text, and
+    # through a symlinked directory ``link/../a.rar`` names another file than the
+    # one the system opens, the one archivey parsed.
+    directory, name = os.path.split(path)
+    if not name or unrar_expands_wildcards(name):
+        # The reader stages every such name; reaching here is a bug upstream.
+        raise ReadError(
+            f"the archive {display_path(path)} cannot be handed to unrar: its name "
+            "holds a wildcard character"
+        )
+    # A bare name is already in this process's working directory, which the child
+    # inherits: no cwd, so no chdir that a path past PATH_MAX would fail.
+    return name, directory or None
 
 
 def unrar_member_refusal(member: str) -> str | None:
@@ -884,9 +961,10 @@ def open_unrar_p(
     the part before it, and a longer one is cut to the 127 UTF-16 units RAR hashes —
     see :func:`_password_stdin_bytes`, which also needs ``rar5`` (true for a RAR5
     archive) to tell a wrong password from one ``unrar``'s stdin cannot carry; the
-    default gives the refusal, which claims nothing about the password. That bound is what lets the whole password be
-    written before stdout is read: it always fits in the pipe buffer, so the write
-    cannot block on a child that is itself blocked writing a full stdout.
+    default gives the refusal, which claims nothing about the password. That bound is
+    what lets the whole password be written before stdout is read: it always fits in the
+    pipe buffer, so the write cannot block on a child that is itself blocked writing a
+    full stdout.
 
     Reading ``stdout`` has no time bound. A read waits for as long as the child
     takes to produce bytes, and nothing here stops a child that stalls. A solid
@@ -916,7 +994,11 @@ def open_unrar_p(
     # ``@`` prefix needs no guard: unrar reads the first non-switch argument as
     # the archive, and only later file-name arguments as listfiles.
     cmd.append("--")
-    cmd.append(str(archive_path))
+    archive_arg, cwd = _unrar_archive_argument(archive_path)
+    # With a cwd, a relative program would resolve against the temp directory.
+    # find_rarlab_unrar returns an absolute path; keep it that way.
+    assert cwd is None or os.path.isabs(unrar), unrar
+    cmd.append(archive_arg)
     feed_password = pass_arg == "-p"
     # Encode before spawning: _password_stdin_bytes refuses a password unrar would
     # silently cut, and raising after Popen would leave the child and its pipes behind.
@@ -930,6 +1012,7 @@ def open_unrar_p(
         not_started=_NOT_INSTALLED_MSG,
         stdin=subprocess.PIPE if feed_password else subprocess.DEVNULL,
         env=_unrar_env(),
+        cwd=cwd,
     )
     if stdin_bytes is not None:
         assert proc.stdin is not None

@@ -896,7 +896,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
     ("7z-bcj2", "no corpus builder for 7z BCJ2 (py7zr cannot write it)"),
     (
         "7z-compressed-nonsolid",
-        "py7zr multi-file writes are solid (LZMA2, or PPMd in sevenzip-ppmd); sevenzip-stored is a single COPY file (non-solid stored)",
+        (
+            "py7zr multi-file writes are solid (LZMA2, or PPMd in sevenzip-ppmd); "
+            "sevenzip-stored is a single COPY file (non-solid stored)"
+        ),
     ),
     (
         "rar4",
@@ -960,6 +963,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "no corpus builder (needs an LHA writer); tests/test_lha.py seeks inside members",
     ),
     (
+        "arj",
+        "no corpus builder (needs an ARJ writer); tests/test_arj.py reads in small pieces",
+    ),
+    (
         "rpm",
         "no corpus builder (needs rpmbuild); tests/test_rpm.py seeks inside members",
     ),
@@ -993,6 +1000,7 @@ _UNTESTED_FORMATS = {
     ArchiveFormat.XAR: "xar",
     ArchiveFormat.CAB: "cab",
     ArchiveFormat.LHA: "lha",
+    ArchiveFormat.ARJ: "arj",
     **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},
     **{ArchiveFormat(ContainerFormat.MAKESELF, s): "makeself" for s in StreamFormat},
 }

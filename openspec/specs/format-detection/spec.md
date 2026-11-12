@@ -44,10 +44,33 @@ class FormatInfo:
     diagnostics: DiagnosticSummary = DiagnosticSummary.empty()
     cost_receipt: DetectionCostReceipt | None = None   # compare=False; see detection-cost
     unavailable_tiers: tuple[TierSkip, ...] = ()       # compare=False; see detection-cost
+    prefixed: bool = False
+    payload_end: int | None = None
 ```
 
 `config=None` → library default. `confidence` = magic / structural probe /
-extension-guess. `payload_offset > 0` marks an SFX payload start. `cost_receipt` and
+extension-guess. `prefixed` SHALL be `True` when detection found and skipped leading
+bytes before the archive's own structures (an executable stub, a `#!` launcher, any other
+prefix), whether or not the archive's stored offsets count those bytes in. It reports what
+detection found, and `False` does not prove the archive starts at byte 0: detection
+searches for a prefix only behind an executable or `#!` cue, or when nothing else matched
+and the name has no known extension. An answer taken from the name
+(`detected_by="extension"`) SHALL be `False`; it did no search on a file without a cue, and
+on an executable it follows a search that was off or missed. `payload_offset` is where to
+start reading the archive: never after its first member, and exactly that member when the
+detection step saw it. The two are separate facts: a ZIP whose stored offsets count from
+the start of the file starts at byte 0 by its own numbers, so it SHALL report
+`payload_offset` 0 and `prefixed=True` when detection found it behind a stub.
+`payload_end` is where the archive's region of the source ends
+when detection identified something after it: today the start of a PE's Authenticode
+certificate table (*Self-extracting (SFX) archives are detected behind an executable
+stub*), whatever tier found the archive. It needs the PE layout from the prefix and a
+known remaining length, because the table counts only when it runs to the end of the
+source; a source whose remaining length is unknown reports `None`. That includes a
+non-seekable source that states a size: the size counts from the object's offset 0, and
+detection cannot tell where such a stream starts in it. `None`,
+the common case, means the region runs to the end of the source. `open_archive` passes both bounds to the reader
+(`archive-reading`). `cost_receipt` and
 `unavailable_tiers` are part of this contract; `detection-cost` defines what they hold.
 `FormatInfo` also carries a provisional `corroborated: bool` for `open_archive`'s own use,
 which SHALL NOT be part of this contract: its `False` cannot tell an uncorroborated probe
@@ -82,7 +105,12 @@ format its bytes show; `open_archive` refuses it as an incomplete set.
 | --- | --- |
 | Standalone detect with magic/extension conflict | `FormatInfo.diagnostics` has exact conflict count + retained detail under default budget |
 | Auto-detect inside `open_archive` retains conflict, open succeeds | Reader continues same collector/order/budget; no copied aggregate |
-| Magic match | `confidence=CERTAIN`, `detected_by="magic"` |
+| Magic match | `confidence=CERTAIN`, `detected_by="magic"`, `prefixed=False` |
+| RAR, 7z or ZIP found by the SFX scan at offset N | `detected_by="sfx_scan"`, `prefixed=True`, `payload_offset == N` |
+| ZIP found from its end record behind a PE stub, offsets counted from the ZIP's start | `prefixed=True`, `payload_offset` = the ZIP's first byte |
+| The same, offsets counted from the start of the file | `prefixed=True`, `payload_offset` 0 |
+| Signed PE SFX, any tier, remaining length known (a path or a seekable stream) | `payload_end` = the certificate table's start |
+| Unsigned PE SFX, no PE layout, or remaining length unknown (a non-seekable stream, sized or not) | `payload_end` is `None` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
 | Empty string `""` | `ValueError`; the current directory is not detected |
@@ -486,15 +514,23 @@ accelerators that reject bounded non-seekable views). Missing decompressor → b
 compressor format; open may refine. No TAR header within the bound → bare
 compressor.
 
-A detection decode (this probe and the content probes) SHALL NOT reserve decoder memory
-the source declares beyond what its bounded read needs. An LZMA-family decoder (`.xz`,
+A detection decode (this probe and the content probes) SHALL be held to the caller's
+`DecoderLimits.max_decoder_memory`, and SHALL NOT reserve decoder memory the source
+declares beyond what its bounded read needs. Where the read needs less than the source
+declares, the cap SHALL be checked against what the decoder reserves, so a probe the
+read that follows would refuse still finds the format. An LZMA-family decoder (`.xz`,
 `.lzma`, `.lz`) SHALL be built with a dictionary no larger than the read's output plus a
 small allowance for a filter ahead of LZMA2 (64 bytes), and at least 4 KiB; that decodes
 those bytes identically. The xz probe SHALL follow the file through stream padding into
 later streams, as the reader does. An xz block whose filter chain cannot be decoded that
 way is "can't tell" and its inner TAR is not claimed. A zstd frame whose window is over
-2^27 bytes (libzstd's default limit) is "can't tell". A `MemoryError` from a probe's
-decoder is "can't tell"; it SHALL NOT escape detection. In the inner-TAR probe, "can't
+2^27 bytes (libzstd's default limit) or over the cap is "can't tell", and so is any
+decoder the cap refuses (`ResourceLimitError`); detection SHALL report that refusal as
+`DETECTION_DECODER_LIMITED` (`diagnostics`) with the limit and its value, and the open
+that follows reads the source as the bare compressed stream. A content probe the cap
+refuses is "can't tell" too: it SHALL record `content_probe` as `CAPABILITY_UNAVAILABLE`
+and SHALL NOT answer "not this format". A `MemoryError` from a probe's decoder is "can't
+tell"; it SHALL NOT escape detection. In the inner-TAR probe, "can't
 tell" (an absent backend, or a decoder the probe cannot build) SHALL record `inner_tar`
 in `unavailable_tiers` as `CAPABILITY_UNAVAILABLE`; a corrupt or truncated stream records
 nothing, since it answers "no TAR". The probe SHALL record one reason, in this order: a
@@ -504,6 +540,9 @@ a budget too small for the probe; then a budget too small for the probe records
 `BUDGET_EXHAUSTED`.
 
 #### Scenario: inner-TAR matrix
+
+- **WHEN** a compressed source is detected
+- **THEN** the inner-TAR probe answers as below
 
 | Case | Expected |
 | --- | --- |
@@ -518,6 +557,9 @@ a budget too small for the probe; then a budget too small for the probe records
 | `.tar.xz` whose block chain has a filter Python's `lzma` cannot build raw (ARM64) | `XZ`; `inner_tar` skipped as `CAPABILITY_UNAVAILABLE` |
 | Multi-stream `.tar.xz` whose first stream decodes to under 262 bytes (or is empty, with or without stream padding) | `TAR_XZ` |
 | `.tar.zst` whose frame declares a window over 128 MiB (`zstd --long=28` and up) | `ZST`; `inner_tar` skipped as `CAPABILITY_UNAVAILABLE` |
+| `.tar.zst` with an 8 MiB window, `max_decoder_memory=4 MiB` | `ZST`; `inner_tar` skipped as `CAPABILITY_UNAVAILABLE`; `DETECTION_DECODER_LIMITED` names `max_decoder_memory=4194304`; reading it raises `ResourceLimitError` |
+| `.tar.xz` declaring a 64 MiB dictionary, `max_decoder_memory=32 MiB` | `TAR_XZ` (the probe reserves 4 KiB); opening it raises `ResourceLimitError` |
+| `.tar.gz`, any cap | `TAR_GZ` (no cap applies to a 32 KiB window) |
 
 ### Requirement: Keep `.tlz` as TAR × LZIP; Alone content still wins
 
@@ -575,6 +617,38 @@ Native RAR/7z parsers SHALL accept a start offset (read in place, no copy). ZIP
 already locates the EOCD from the tail, so a leading stub is tolerated without a
 separate parser scan; detection still SHALL return `ZIP` with `payload_offset`
 rather than a stream codec when the ZIP needle matches.
+
+**Overlay start first.** When the source starts with a PE whose section table the
+detection prefix holds, its *overlay start* is the end of the furthest section's raw data,
+and its *payload end* is the start of an Authenticode certificate table that runs to the
+end of the source, or the end of the source when there is none. An ELF or Mach-O program
+whose headers the prefix holds has an overlay start too, and no payload end: for ELF the
+furthest end of its header, program header table, segments and section header table,
+and of each section's file bytes when that table lies in the prefix (the Go linker puts
+it there, and its symbol table past the last segment); for a thin Mach-O the furthest
+end of its load commands and segments; for a fat Mach-O the end of its last slice. When
+the overlay start's magic ends inside `SFX_MAX`, the candidate there SHALL be judged first,
+with the same validators, whatever window `max_scan_bytes` leaves: a smaller budget may
+make detection give up, but SHALL NOT make it answer with an archive the default budget
+and a forced `format=` pass over. Past the window, a source with a cheap seek reads the
+candidate by seeking to it, within the validator allowance: one read of its first 512
+bytes, and one more read for each further peek of a longer header. When the source cannot seek
+cheaply (a pipe, or a stream whose backward seek re-decodes), or the allowance cut the
+validator's view short and it declined the candidate, the scan SHALL NOT answer: it records
+`sfx_scan` as cut short and detection goes on to its later steps. So on such a source a
+smaller budget can fail to detect what the default budget detects; that difference is
+accepted (maintainer ruling, 2026-11-08), and the budget never changes which archive is
+found. A hit there that its validator returns as `VALID` or
+`VALID_SHORT` SHALL be the answer, ahead of any needle before or after it in the window:
+the exact-end preference below is a tie-break between needles of unknown standing, and
+the program's own layout outranks it. When nothing at the overlay start is accepted, the scan below runs
+unchanged. Every other scan bounded by `SFX_MAX` SHALL apply the same rule — the RAR, 7z
+and LHA parsers' scans and the forward ZIP walk that reads a non-seekable source — so forced
+`format=`, seekable or not, opens the same payload. No scan SHALL accept a candidate that
+starts at or past a known payload end: the certificate table is not parsed, and a needle
+inside it would give a payload that starts where the archive's region has already ended.
+So `payload_offset` is always before `payload_end`. A PE whose layout does not parse SHALL
+be scanned as today.
 
 The scan takes the **earliest** matching needle in the window that its format's hit
 validator accepts, and resumes past one it rejects. A 7z hit whose declared end falls
@@ -637,6 +711,29 @@ judged, and SHALL record `sfx_scan` as *budget exhausted*, whether or not it ans
 | Strong cue, no archive in the stub, exactly one of `vol.exe.001` / `vol.7z.001` / `vol.zip.001` beside it | `detect_format` reports that volume's format; `open_archive` (including with `format=` matching that container) opens the set |
 | Same stub, but it *does* contain archive magic | The embedded archive; sibling volumes are ignored |
 | Two of those first-volume names beside the stub | `UnsupportedFeatureError` naming both |
+
+#### Scenario: overlay start
+
+| Case | Expected |
+| --- | --- |
+| PE, RAR or 7z starting exactly at the overlay start | That archive, `payload_offset` = overlay start; forced `format=` opens the same offset |
+| PE with a valid ZIP local header in a section, a valid RAR at the overlay start | `RAR` at the overlay start, not the earlier ZIP |
+| PE with a valid ZIP local header in a section, a valid ZIP at the overlay start, read through forced `format=ZIP` from a pipe | The forward walk lists the ZIP at the overlay start, as detection reports |
+| Signed PE, 7z at the overlay start ending where the certificate starts | That 7z (`VALID_SHORT`), accepted at once; the scan does not read on to the window end |
+| Unsigned PE, 7z at the overlay start ending 1 KiB before end of source, a second 7z later in the window that ends at end of source | The 7z at the overlay start, through detection and forced `format=SEVEN_Z` alike |
+| Bare `MZ` stub with no PE header (no layout) and a 7z followed by trailing data | Unchanged: the short hit is a fallback and the scan reads the window |
+| PE with a config block between the last section and the 7z (`7zS.sfx` style) | Nothing accepted at the overlay start; the forward scan finds the 7z as today |
+| PE whose ZIP is inside `.rsrc` (Squirrel) | Nothing at the overlay start; the forward scan finds the ZIP as today |
+| PE whose section table lies past the detection prefix, or does not parse | No layout; scanned as today |
+| Signed PE, nothing at the overlay start, a validator-accepted 7z or ZIP inside the certificate table | Not accepted: it starts past the payload end; through detection and forced `format=` alike |
+| ELF (GNU ld or Go layout) or thin Mach-O, RAR or 7z at the overlay start, a valid ZIP header inside the image | That archive at the overlay start, through detection and forced `format=` alike; `payload_end` is `None` |
+| ELF or thin Mach-O, ZIP at the overlay start, read through forced `format=ZIP` from a pipe | The forward walk lists the ZIP at the overlay start |
+| Fat Mach-O, 7z after its last slice | That 7z, `payload_offset` = the end of the last slice |
+| PE with a 7z at the start of a 300 KiB section and another 7z at the overlay start, under the `FAST` budget (256 KiB window), from a seekable source | The 7z at the overlay start, read with one seek; the default budget and forced `format=SEVEN_Z` list the same members |
+| The same shape with ZIPs, from a pipe, under `FAST` | No answer from the section: `sfx_scan` cut short, `FormatDetectionError` for an unnamed stream; the default budget and forced `format=ZIP` list the ZIP at the overlay start |
+| A budget whose validator allowance cannot hold the header at an overlay start past the window | No answer from the image: `sfx_scan` cut short |
+| Overlay start past `SFX_MAX` | Not judged, by detection or by the parsers' scans; the window is scanned as today |
+| ELF with extended section numbering, or program headers past the prefix; Mach-O whose load commands run past the prefix; a Java class file (`ca fe ba be`) | No layout; scanned as today |
 
 ### Requirement: Executable-looking prefixes must not silently become a wrong stream format
 
@@ -755,8 +852,15 @@ Detection SHALL perform **one forward-only pass** over the prefix from the detec
 origin. Bytes already in the prefix buffer SHALL NOT be fetched again. The trailer tier,
 when it runs, SHALL add one seek towards the end, one read of its block, and one seek
 back to the end of the prefix. Those bytes are not kept, so a later tier that reads
-them as part of the prefix fetches them again. No other backward seek re-reads the
-prefix. The exit restore of a seekable caller stream is the non-consumption contract.
+them as part of the prefix fetches them again. The PE tail probe (*A ZIP in a PE's overlay
+is found from its end record*), when it runs, SHALL add one seek towards the end, one
+read of its span and one seek back to the end of the prefix, then at most two reads of
+fixed record parts the span does not already hold (the first central header and the local
+header it names), each a seek to the record and one back to the end of the prefix, as
+every read off the prefix restores the handle. The probe runs before far magic, so a probe hit ends detection before the
+trailer tier: the two tails are both read only when the probe declines. No other backward
+seek re-reads the prefix. The exit restore of a seekable caller stream is the
+non-consumption contract.
 
 This holds for every source kind. A network range reader pays for the prefix pass and,
 when the trailer runs, one range for that block; a member stream (`ArchiveStream`) is
@@ -771,7 +875,8 @@ from an expensive one.
 
 Resolving an exact `payload_offset` through a central-directory walk does not fit this
 shape — the directory is reached backwards from the end and points backwards again. Offset
-resolution is therefore separable from identification, and no tier does it today.
+resolution is therefore separable from identification, and no tier does it. A ZIP found
+from its end record reports the EOCD-derived base, which needs no walk.
 
 #### Scenario: access-shape matrix
 
@@ -781,6 +886,10 @@ resolution is therefore separable from identification, and no tier does it today
 | ISO far magic, seekable stream | 1 pass | 0 | **0** |
 | Seekable bzip2 or xz larger than the prefix, no `koly` block | 1 pass, then the rest of the file for the inner-TAR probe, which fetches the trailer bytes again | 1 | 1, back to the end of the prefix |
 | `koly` hit on a seekable image larger than the prefix | 1 prefix pass; the trailer bytes are fetched once | 1 | 1, back to the end of the prefix |
+| Gated PE, ZIP found from its end record, directory and local header inside the span | 1 prefix pass, the span | 1 | 1, back to the end of the prefix |
+| Gated PE, local header before the span | 1 prefix pass, the span, one fixed record part | 2 | 2, back to the end of the prefix after each read |
+| Gated PE, directory and local header both before the span | 1 prefix pass, the span, two fixed record parts | 3 | 3, back to the end of the prefix after each read |
+| Gated PE, probe declines, then the trailer step runs | 1 prefix pass, the span, up to two fixed record parts, the trailer block | Up to 4 | Up to 4, back to the end of the prefix after each read |
 | Non-seekable source, any tier | 1 pass | 0 | **0** |
 | Member stream (`ArchiveStream`), bare, buffered, through `open_archive`, or one volume of a list, any tier | 1 pass | 0 | **0** |
 
@@ -1156,3 +1265,56 @@ The cases are pinned in `tests/test_audit_backup_scan.py`: an OLE header over ze
 named `x.br` is `BROTLI` / `GUESS` / `extension`; a ZIP inside an OLE file is not
 reported; and a signature whose bytes raise an executable cue does not start the SFX
 scan. The measurement is in `dev-docs/investigations/2026-10-backup-scan.md` §3.2.
+
+### Requirement: A ZIP in a PE's overlay is found from its end record
+
+When the forward scan of *Self-extracting (SFX) archives are detected behind an executable
+stub* finds nothing, detection SHALL look for a ZIP end-of-central-directory record before
+the payload end, but only when all of these hold: the source starts with a PE whose layout
+parses (same definitions as that requirement); the source length is known; the payload end
+lies past both the overlay start and the end of the scan window; and the source allows the
+read the trailer magic step makes, a cheap seek that restores the handle and does not grow
+the prefix. The search SHALL cover the 65 558 bytes ending at the payload end, the same
+span the ZIP reader searches, with the same locator. That span ends at the payload end, not
+necessarily at end of source, and the part of it the prefix already holds SHALL be taken
+from the prefix. A source that does not allow the read SHALL be recorded under `sfx_tail`,
+never under `trailer`, so the two tiers' records cannot be confused. So SHALL a source of
+unknown length whose bytes already run past both the overlay start and the scan window:
+only reading all of it would find its end.
+
+A record found there SHALL be accepted only when all of these hold: both disk numbers are
+0 and its two entry counts are equal and above 0; `cd_start = eocd − cd_size` and
+`base = cd_start − cd_offset` are not negative; the four bytes at `cd_start` are a central
+header signature; and the first central header's local-header offset plus `base` is at or
+past the overlay start and holds a local header signature. A record declaring no entries
+SHALL be declined: with no central header and no local header nothing corroborates it, and
+22 bytes of `PK\x05\x06` followed by zeros would pass the remaining checks. An empty ZIP
+behind a multi-megabyte overlay is not a payload worth finding, and declining it leaves
+detection where it is today. A record with ZIP64 placeholder values SHALL be declined. Accepted →
+`ZIP` / `PROBABLE` / `detected_by="sfx_scan"`, with `payload_offset` = `base`. No read is
+made to refine it. `base` is never after any member's local header, so `open_archive`
+reads every member from it. It is the ZIP's first byte when the ZIP's offsets count from
+its own start, and 0 when they count from the start of the file; `prefixed` is `True`
+either way. The reader searches for the end record before the same payload end the probe
+used (`format-zip`), so it finds every record the probe accepts. Declined → detection
+continues with far magic, as after a scan miss today.
+
+#### Scenario: tail probe matrix
+
+| Case | Expected |
+| --- | --- |
+| Signed PE, 3 MiB of overlay filler, then a ZIP, then zero padding and a certificate | `ZIP`, `payload_offset` = the ZIP's first byte (its first local header); `open_archive` lists every member |
+| Same, unsigned (ZIP ends at end of file) | `ZIP`, as above |
+| Same, ZIP written in place (offsets counted from byte 0) | `ZIP`, `payload_offset` 0; `open_archive` lists every member |
+| Same, ZIP's central directory not in file order | `ZIP`, `payload_offset` = the ZIP's first byte, before every member; `open_archive` lists every member |
+| Same, ZIP followed by a certificate larger than 64 KiB | `ZIP`: the probe's and the reader's searches both end at the payload end; `open_archive` lists every member |
+| ZIP written in place, followed by a certificate larger than 64 KiB | `ZIP`, `payload_offset` 0; `open_archive` lists every member |
+| PE whose overlay holds only a certificate (an ordinary signed program) | No tail read |
+| PE no larger than the scan window | No tail read: the scan covered the file |
+| PE carrying `PK\x05\x06` as a string constant near its end (counts or offsets that point nowhere) | Declined |
+| PE whose end record is valid but whose first local header lies inside the sections | Declined |
+| End record with ZIP64 placeholders | Declined |
+| End record declaring no entries (`PK\x05\x06` and 18 zero bytes, or a real empty ZIP) | Declined |
+| ELF or Mach-O stub with an appended ZIP past the window | Not found, as today |
+| Pipe running past the window, or member stream | No tail read; `sfx_tail` recorded *capability unavailable* |
+| `max_scan_bytes` 0 | No tail read; `sfx_tail` recorded *not enabled by policy* |

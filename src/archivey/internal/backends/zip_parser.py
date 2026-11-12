@@ -165,9 +165,9 @@ def find_end_record(
 
     The search is stdlib's older one: a comment-less record ending at end of file, then
     the last ``PK\\x05\\x06`` in the final 65 558 bytes. Newer stdlib's window (3.13,
-    later 3.12 releases) is one byte shorter; the wider one finds the same record whenever the shorter one finds
-    any. A decoy signature earlier in the file, in the comment or in the record's own
-    fields therefore cannot make the two disagree.
+    later 3.12 releases) is one byte shorter; the wider one finds the same record
+    whenever the shorter one finds any. A decoy signature earlier in the file, in the
+    comment or in the record's own fields therefore cannot make the two disagree.
 
     When the search finds none (more trailing bytes than the window holds),
     ``members_end`` is called for where the members end, which the caller knows from a

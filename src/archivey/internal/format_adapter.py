@@ -44,7 +44,7 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext, supp
 from dataclasses import fields, replace
 from typing import Any, BinaryIO, ClassVar, NoReturn, TypeVar, cast
 
-from archivey.config import ArchiveyConfig, ProcessIsolation
+from archivey.config import ArchiveyConfig, DecoderLimits, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -100,6 +100,7 @@ from archivey.internal.naming import emit_member_name_normalized, normalize_memb
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.source import ArchiveSource
@@ -335,8 +336,8 @@ class _PluginAdapter(BaseArchiveReader):
         self, data: BinaryIO, stream_format: StreamFormat, size: int | None
     ) -> BinaryIO:
         """``ReaderContext._decompress_coder``: ``stream_format`` data that is a
-        container coder's whole data, refusing a byte after the end of what the
-        format defines (further bzip2, LZMA Alone or xz streams still read)."""
+        container coder's whole data, decoded as a member's method is: bzip2 and LZMA
+        Alone end at their first stream, and a byte after the end is refused."""
         return self._decompress(data, stream_format, size, None, whole_file=False)
 
     def _decompress(
@@ -369,7 +370,7 @@ class _PluginAdapter(BaseArchiveReader):
                 archive_name=self._archive_name,
             )
         params = self._codec_params(
-            codec, method, size, properties, is_stream=is_stream
+            codec, method, size, properties, is_stream=is_stream and whole_file
         )
         # Per call, as ZIP fills them per member (``_member_decoder_config``): the
         # output size, and the input size while ``data`` is at its start. The
@@ -409,14 +410,19 @@ class _PluginAdapter(BaseArchiveReader):
     ) -> CodecParams:
         """The codec parameters for one ``decompress`` call: what ``codec`` needs
         beyond the bytes, read from the call's ``size`` and ``properties``.
-        ``is_stream`` says ``method`` is a whole stream format, not a member's
-        compression method."""
-        # Only a bzip2 member is one stream, as in ZIP and 7z: a further stream after
-        # its end is refused. Zstd and LZ4 data may be several frames, read together
-        # (RFC 8878, the LZ4 frame format), and the other codecs read no flag. A
-        # stream format is read as a file of that format is, so a ``.bz2`` stream may
-        # hold several, as bzip2 itself decodes them.
-        params = CodecParams(single_stream=codec is Codec.BZIP2 and not is_stream)
+        ``is_stream`` says ``method`` is a stream format read as a whole file
+        (``decompress``), not a member's method or a container coder's data
+        (``_decompress_coder``)."""
+        # A bzip2 member is one stream, as in ZIP and 7z: a further stream after its
+        # end is refused. So is LZMA Alone, which has no further streams of its own,
+        # in a container coder (``_decompress_coder``, a XAR member). Zstd and LZ4 data
+        # may be several frames, read together (RFC 8878, the LZ4 frame format), and xz
+        # several streams with their padding, as a ZIP xz member may. A stream format
+        # read as a file (``decompress``) is read as a file of that format is, so a
+        # ``.bz2`` stream may hold several, as bzip2 itself decodes them.
+        params = CodecParams(
+            single_stream=not is_stream and codec in (Codec.BZIP2, Codec.LZMA_ALONE)
+        )
         if isinstance(method, PluginStream):
             # A registered codec parses its own properties (``CodecCall``).
             params = CodecParams(unpack_size=size, properties=properties)
@@ -861,7 +867,7 @@ class _PluginAdapter(BaseArchiveReader):
         with self._translated_errors(), self._handle_guard():
             info = self._reader.archive_info()
         cost = self._cost(info)
-        # A plugin's keys are its own, namespaced by its format (``"arj.method"``), so
+        # A plugin's keys are its own, namespaced by its format (``"zoo.method"``), so
         # they are not in the inventory of built-in keys and are copied in as data. A
         # built-in format-API reader's keys (``"cpio.variant"``) are in that inventory.
         extra = ArchiveInfoExtra()
@@ -1295,13 +1301,18 @@ class _Layer:
     ``forward`` is the walk's stream over it. ``stream`` is what ``forward`` reads: the
     streaming buffer, or a random-access walk's own view. ``shared`` (random access
     only) gives member data views of it, at the offsets ``forward`` counts.
+    ``drawn`` says a decode stage under ``stream`` draws every byte it decodes from
+    the config's budget, skipped members' bytes too, so its members draw nothing more.
     """
 
-    __slots__ = ("forward", "shared", "stream")
+    __slots__ = ("drawn", "forward", "shared", "stream")
 
-    def __init__(self, stream: BinaryIO, shared: SharedSource | None) -> None:
+    def __init__(
+        self, stream: BinaryIO, shared: SharedSource | None, *, drawn: bool
+    ) -> None:
         self.stream = stream
         self.shared = shared
+        self.drawn = drawn
         self.forward: ForwardStream
 
 
@@ -1790,7 +1801,9 @@ class SequentialReaderAdapter(_PluginAdapter):
         if self._streaming:
             stream = self._owned_stream
             assert stream is not None
-            layer = _Layer(stream, None)
+            # A compressed archive's codec stream draws from the budget
+            # (``_open_outer_codec_stream``).
+            layer = _Layer(stream, None, drawn=self._compressed)
             # Read forward only: the source may not start at offset 0 of its handle.
             walk.layer = self._layer_forward(walk, layer, seekable=False)
         else:
@@ -1819,7 +1832,11 @@ class SequentialReaderAdapter(_PluginAdapter):
             shared.view(0, None), _WALK_BUFFER, rewind_oversize=not compressed
         )
         walk.views.append(view)
-        return self._layer_forward(walk, _Layer(view, shared), seekable=not compressed)
+        # A codec under ``shared`` draws from the budget: an outer one
+        # (``_open_outer_codec_stream``) or a ``decompress()`` layer's.
+        return self._layer_forward(
+            walk, _Layer(view, shared, drawn=compressed), seekable=not compressed
+        )
 
     def _layer_forward(self, walk: _Walk, layer: _Layer, *, seekable: bool) -> _Layer:
         """Give ``layer`` the walk's ``ForwardStream`` over its stream."""
@@ -1904,6 +1921,10 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._decoder_config,
             refuse_input_after_end=False,
             report_trailing_data=True,
+            # The container's members are read through this stream, several small
+            # ones to one read: a failing call that lost its bytes would take whole
+            # members with it. So it recovers them whatever the caller set.
+            recover_partial_data=True,
         )
         if self._streaming:
             # The parent is done (the ForwardStream that called this refuses reads
@@ -1919,13 +1940,15 @@ class SequentialReaderAdapter(_PluginAdapter):
                 collector=self._diagnostics_collector,
             )
             self._layer_streams.append(decoded)
-            decoded = self._guarded_layer(decoded)
+            decoded = self._guarded_layer(self._budget_drawn(decoded))
             assert self._source is not None
             buffered = ReadAheadStream(
                 decoded, _WALK_BUFFER, fill_arrived=not self._source.seekable()
             )
             self._layer_streams.append(buffered)
-            layer = self._layer_forward(walk, _Layer(buffered, None), seekable=False)
+            layer = self._layer_forward(
+                walk, _Layer(buffered, None, drawn=True), seekable=False
+            )
         else:
             assert parent.shared is not None
             # The parent's source is held for the reader's life (``self._shared``, or
@@ -1946,7 +1969,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 )
                 self._layer_streams.append(decoded)
                 shared = self._layer_sources[key] = SharedSource(
-                    self._guarded_layer(decoded)
+                    self._guarded_layer(self._budget_drawn(decoded))
                 )
             layer = self._random_access_layer(walk, shared, compressed=True)
         walk.layer = layer
@@ -2590,6 +2613,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             # A window and a view both stop at the data's end.
             bounded=True,
             custom_digests=record.custom,
+            # A layer a codec decodes draws there, members skipped on the way too.
+            draw_budget=not record.layer.drawn,
         )
 
     @override
@@ -2755,6 +2780,7 @@ class _PluginBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> _PluginAdapter:
         common = (
             self.PLUGIN(),
@@ -2771,12 +2797,16 @@ class _PluginBackend(ReadBackend):
             "open_site": open_site,
         }
         if issubclass(self.PLUGIN, SequentialFormatHandler):
-            reject_start_offset(start_offset, format, archive_name, end_offset)
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
             return SequentialReaderAdapter(*common, **options)
         # Only a built-in format that declares SFX magic is handed a region, which its
         # reader reads as the whole source (``IndexedReaderAdapter``).
         if not self.SFX_MAGIC:
-            reject_start_offset(start_offset, format, archive_name, end_offset)
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
         return IndexedReaderAdapter(
             *common, region=(start_offset, end_offset), **options
         )
@@ -2800,6 +2830,7 @@ def prefix_probe(probe: object) -> ContentProbe:
         read_at: Callable[[int, int], bytes | None] | None = None,
         charge_decode: Callable[[int], bool] | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
         nonlocal warned
         # A probe that raises (a struct.unpack past a short prefix, say) is no match:
@@ -2969,6 +3000,7 @@ REPLACEABLE_CONTAINERS = frozenset(
         ContainerFormat.XAR,
         ContainerFormat.CAB,
         ContainerFormat.LHA,
+        ContainerFormat.ARJ,
     }
 )
 

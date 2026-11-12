@@ -376,6 +376,10 @@ data its pass keeps for link targets beside it.
   `max_metadata_bytes` both the decoded table's size (from the header, before
   decoding) and every full path it builds there, since nested directories make the
   paths grow with the square of the depth before any member exists (`xar_reader.py`).
+  Before parsing, it refuses a table of contents that holds a NUL byte (so not UTF-8,
+  such as UTF-16, which expat would read in a way the scan cannot see) and a tag of
+  more than 65 536 pieces (characters outside quotes, or whole quoted values), since
+  expat builds a tag's attributes before any handler can weigh them.
   makeself weighs its shell header against `max_metadata_bytes` as it reads it, parses
   it in one pass and keeps only the variables it uses; the header is parsed, never run
   (`makeself_reader.py`).
@@ -688,15 +692,24 @@ grown by more than the cap since the source was opened. The cap travels in the c
 data: the standard library reads the rest of the stream from the last index point, so
 the caller gets the same bytes and no error.
 
-**Residual.** Detection decodes an LZMA or compressed-tar sample uncapped, so under a
-memory cap an oversized declaration can surface as `MemoryError` from `open_archive`
-(public in extracting.md §Limits). Two probes carry a fixed ceiling of their own instead
-of the caller's cap: zstd's window at 128 MiB, and a `.tar.bz3`'s block size at 16 MiB,
-about 163 MiB of libbzip3 state (`bzip3_codec.py` `_PROBE_BLOCK_SIZE_MAX`). The RAR counts rest on measurements of `unrar` 7.00
-and `unar` 1.10.1; another version that allocates differently is not measured. The
-rapidgzip child's peak can pass the cap by what it allocates between two checks (about
-17 MB measured on four cores; a check delayed on a busy machine is caught by the one
-before the next read). Where the platform does not report a process's peak memory
+Detection decodes under the same cap. Its probes reserve only what their bounded read
+needs where the codec allows it (an LZMA dictionary of 4 to 64 KiB), and the cap is
+checked against that reservation; a decoder that cannot shrink (a zstd window, a bzip3
+block) and is over the cap is "can't tell", recorded as `CAPABILITY_UNAVAILABLE` and
+reported as `DETECTION_DECODER_LIMITED` with the limit (`internal/detection.py`
+`_report_probe_refused`; a probe's own ceiling is an INFO log instead). A
+`.tar.zst` is then reported as a bare `.zst`, and the read refuses the same window. Two
+probes also carry a fixed ceiling of their own under the cap: zstd's window at 128 MiB,
+and a `.tar.bz3`'s block size at 16 MiB, about 163 MiB of libbzip3 state
+(`bzip3_codec.py` `_PROBE_BLOCK_SIZE_MAX`).
+
+**Residual.** Codecs whose memory their format bounds at 16 MiB or less (gzip, bzip2,
+Brotli, LZ4 frames) are not checked against the cap, in detection or on read. The RAR
+counts rest on measurements of `unrar` 7.00 and `unar` 1.10.1; another version that
+allocates differently is not measured. The rapidgzip child's peak can pass the cap by
+what it allocates between two checks (about 17 MB measured on four cores; a check
+delayed on a busy machine is caught by the one before the next read). Where the platform
+does not report a process's peak memory
 (`VmHWM` on Linux, `getrusage` on macOS and the BSDs, `GetProcessMemoryInfo` on
 Windows), the child is not capped.
 
@@ -1021,7 +1034,8 @@ is the one exception to "other local processes are trusted" (§1).
   parent's descriptor and the file with `O_NOFOLLOW | O_NONBLOCK`, so a symlink on the
   path fails with `ELOOP` and a FIFO does not block. It then `fstat`s the handle and
   raises `OSError(ESTALE)` (`_changed_since_listing`) for anything that is not a regular
-  file with the listed identity and size. A listed size of 0 is exempt (procfs, sysfs).
+  file with the listed identity and size, 0 included. A procfs or sysfs file lists with no
+  size, so it reads to the end, bounded by `max_extracted_bytes` when extracted.
 - A member with no identity (`st_ino` 0: some FUSE and network mounts, or a Windows
   path the identity stat could not reach) is checked on type and size, plus, on Windows,
   a reparse-point check on its final component.
@@ -1156,7 +1170,16 @@ setting, never replaced by one from `PATH`. `internal/backends/rar_unrar.py` pas
 `-n./<name>` include-mask switch, so a leading `-` cannot become an option. The name is a
 placeholder or a plain name with no `*` or `?`, so `unrar`'s matcher, which
 backtracks exponentially on a hostile mask, never sees a glob (`unrar_member_refusal`
-refuses anything else before spawning). The password goes to stdin. `internal/external/unar.py` ends
+refuses anything else before spawning). The password goes to stdin. `unrar` reads only
+the files archivey parsed: it expands `*` and `?` anywhere in the archive argument, `--`
+or not, and 6.x cuts a long one. On POSIX `_unrar_archive_argument` always starts
+`unrar` in the archive's directory with the name alone, so no part of a directory, the
+staging directory included, reaches argv, and `_choose_unrar_volume_paths` stages only a
+file whose name `unrar` would misread (`unrar_needs_staged_name`). The program is
+always an absolute path, so the working directory never chooses it. On Windows `unrar`
+gets the whole path: a path holding a wildcard or too long anywhere is staged, and the
+staged path goes over whole while 6.x keeps it and is refused past that before any
+process starts ([`formats/rar.md`](formats/rar.md)). `internal/external/unar.py` ends
 argv with `--` and the absolute archive path, names members by entry index, and puts the
 password as its own item after `-p`. ADR
 [0002](decisions/0002-native-rar-metadata-unrar-data.md),
@@ -1474,7 +1497,9 @@ file system raises propagates unchanged
 ([DR-15a](design-rules.md#dr-15a-translate-archive-problems-let-io-problems-through)), so
 a missing object's `FileNotFoundError` can carry the URL as given, secrets included.
 Contract: `openspec/changes/fsspec-integration/specs/archive-reading/spec.md`
-§"OpenFile facts".
+§"OpenFile facts". Accepted by the maintainer (2026-11-11): rewriting another library's
+exceptions loses information. Public:
+[remote.md §Credentials in URLs](../docs/remote.md#credentials-in-urls).
 
 ## 5. Open design gaps
 
