@@ -86,6 +86,10 @@ RELEASE_GATE_WORKFLOWS = (
     # `test-daily` legs (Linux 3.12-3.14, macOS and Windows 3.11) run nowhere else
     # before a release, and the minimum versions only when the dependencies change.
     "ci.yml",
+    # The library on python.org, Ubuntu, Fedora and conda-forge Pythons, whose codec
+    # libraries differ from uv's. It runs daily, on a dispatch, and on a pull request
+    # that changes it, never in the merge queue, so the release dispatches it.
+    "python-distributions.yml",
 )
 
 

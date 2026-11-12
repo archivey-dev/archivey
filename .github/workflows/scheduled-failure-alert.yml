@@ -27,6 +27,7 @@ on:
       - fsspec consumers
       - Benchmark wall-time
       - Review tally
+      - Python distributions
     types: [completed]
 
 permissions:
