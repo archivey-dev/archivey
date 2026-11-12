@@ -85,8 +85,7 @@ def _emit_name_controls(
     Bidi controls and the zero-width characters are Unicode category Cf too; each goes
     to its own code only, so the invisible set is every other Cf character. Each code is
     emitted at most once, naming every character of its set in order. ASCII text
-    contains none of them, so it skips the per-character scan (listing hot path; perf
-    review H3 / Q1).
+    contains none of them, so it skips the per-character scan (listing hot path).
     """
     if text.isascii():
         return
@@ -282,12 +281,13 @@ def infer_member_name_from_archive(
       its replacement to the stem (``.tgz`` → ``.tar``).
     - Otherwise → ``basename + \".uncompressed\"``.
 
-    A stem of only dots and spaces (``\"..gz\"`` → ``\".\"``) is not a name: extraction
-    refuses it and the caller gets an empty directory for an intact payload. Those fall
-    through to the ``.uncompressed`` spelling, which the length guard already gives
-    ``\".gz\"``. That also renames the cases the looser policies used to extract:
-    ``\"....gz\"`` presented ``\"...\"`` and extracted under ``STANDARD`` / ``TRUSTED``,
-    and now presents ``\"....gz.uncompressed\"`` under every policy.
+    A stem of only dots and spaces (``\"..gz\"`` → ``\".\"``) is not a usable name (see
+    :func:`_is_usable_stem` for which policies refuse which stems): a policy that
+    refuses it would leave the destination empty for an intact payload. Those fall
+    through to the ``.uncompressed`` spelling, which ``\".gz\"`` also gets, because the
+    length guard keeps the suffix there (``\".gz.uncompressed\"``). The rule does not
+    depend on the policy: ``\"....gz\"`` presents ``\"....gz.uncompressed\"`` under
+    every policy, even though ``TRUSTED`` would write ``\"...\"``.
     """
     if archive_name is None:
         return "data"
@@ -309,11 +309,15 @@ def infer_member_name_from_archive(
     for suffix, tail in candidates:
         if not suffix:
             continue
-        suf = suffix if suffix.startswith(".") else f".{suffix}"
-        if lower.endswith(suf.lower()) and len(suf) > best_len and len(base) > len(suf):
-            best = base[: -len(suf)]
+        dotted = suffix if suffix.startswith(".") else f".{suffix}"
+        if (
+            lower.endswith(dotted.lower())
+            and len(dotted) > best_len
+            and len(base) > len(dotted)
+        ):
+            best = base[: -len(dotted)]
             best_tail = tail
-            best_len = len(suf)
+            best_len = len(dotted)
     if best is not None and _is_usable_stem(best):
         return best + best_tail
 
@@ -420,7 +424,7 @@ def emit_member_name_normalized(
     Suppresses the no-op case where a DIRECTORY member only gained the canonical
     trailing slash (Python's ``tarfile`` strips it on read) — that is not an
     observable override, and warning once per directory on every ordinary tar is
-    noise (R3 / Brief 4).
+    noise.
 
     ``link_stored_as_directory`` is the mirror of that case, and the caller must say
     so rather than leaving it to be inferred here: a ZIP directory reparse point (a
