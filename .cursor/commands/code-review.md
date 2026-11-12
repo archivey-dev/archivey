@@ -22,6 +22,9 @@ unless the user explicitly asks for them.
 
 - **Your finding-ID prefix is `C`** — `C1`, `C2`, … The rule those IDs follow, and what
   happens to them across rounds, is `SKILL.md` §6.
+- **Use only Cursor's included models: Grok 4.7 or later**, for the review and for every
+  subagent it starts. Where the skill says Sonnet (or any Claude, GPT or Gemini model),
+  use Grok instead: third-party models bill to paid credit, not the included usage.
 - **Cursor posts under its own `cursor[bot]` identity**; still end what you post with
   your own attribution footer (`AGENTS.md` §Review workflow).
 

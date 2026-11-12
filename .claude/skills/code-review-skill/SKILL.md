@@ -13,7 +13,7 @@ allowed-tools:
   - Glob
   - Bash      # reproduce a finding or check a runtime claim — not to re-run the gates (§6)
   - WebFetch  # look up current docs and best practices
-  - Task      # subagents on Sonnet for reading outside the diff (§How to spend turns)
+  - Task      # subagents for reading outside the diff (§How to spend turns; model per host)
 ---
 
 # Code Review Skill
@@ -73,10 +73,10 @@ arm (`dev-docs/review-eval/results.md`):
   next to it that a new helper may duplicate, the tests of a touched function), the
   lines a finding cites, and the review's own instructions and contracts (this skill,
   the §1 reference doc, `CONTRIBUTING.md`, the deep-tier docs, what pass 2 opens).
-  Send the wider searches to subagents on Sonnet (the `Task` tool, called `Agent` in
-  newer versions): callers across the tree, sibling formats and codecs, shared state
-  in other modules, history. `reference/code-pr.md` §Reading outside the diff says
-  how.
+  Send the wider searches to subagents (the `Task` tool, called `Agent` in newer
+  versions), on Sonnet in Claude Code and on Grok 4.7 or later in Cursor: callers across
+  the tree, sibling formats and codecs, shared state in other modules, history.
+  `reference/code-pr.md` §Reading outside the diff says how.
 
 ## 1. What are you reviewing?
 

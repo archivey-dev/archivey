@@ -285,7 +285,9 @@ the three `risk:` labels.
   secret: a fine-grained personal token limited to pull request comments on this
   repository. Cursor drops comments from bots and GitHub Apps, so the request posted
   as `github-actions[bot]` went unanswered on five pull requests. Without the secret
-  the step skips and says so in the job summary; ask Cursor by hand then.
+  the step skips and says so in the job summary; ask Cursor by hand then. Every request,
+  by hand or not, names Cursor's included models (Grok 4.7 or later) for the review and
+  its subagents: third-party models such as Sonnet bill to paid credit.
 
 ## What this replaced
 
