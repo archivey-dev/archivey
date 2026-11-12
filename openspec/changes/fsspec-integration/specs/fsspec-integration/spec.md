@@ -143,7 +143,8 @@ archive SHALL be opened once per instance, with `seekable_members=True` and
 
 The class SHALL set `cachable = False`, and the instance SHALL own its reader: `close()`,
 and leaving `with ArchiveyFileSystem(...)`, SHALL close it, and collecting an instance
-with no open member streams SHALL close it too.
+with no open member streams SHALL close it too. After `close()`, listing and opening
+SHALL raise `ArchiveyUsageError`, also when the tree was listed before the close.
 
 The tree SHALL be the name view of `extract_all(dest, policy=policy)`: each path SHALL be
 the relative path that policy's name transform gives the member, a duplicate name SHALL
@@ -151,14 +152,17 @@ show its current entry (`ArchiveMember.is_current`), and directories implied by 
 paths SHALL exist. A member the policy refuses SHALL be absent, with the refusal recorded
 on `fs.reader.diagnostics`, and so SHALL a member extraction does not write because of the
 members before it: a name that collides by the policy's collision key (the first member
-keeps it), a path under a file, a hard link to a refused member, and a symlink that loops
-or leads out through another link. A member under one of the archive's own symlinks SHALL
-be listed where extraction writes it, through the link, and SHALL be absent when the link
-leads to no directory. Paths SHALL compare as on a case-sensitive disk, with only files
-and links colliding by the policy's collision key. Behaviour that depends on a destination
-(`overwrite=`, existing files, names its file system cannot hold, a disk that folds case, a link Windows keeps because it collapses `..` first),
-a link a later member makes lead out, and `filter=` are outside the tree. A hard link to a symlink SHALL be listed as that
-symlink, with its target read from the hard link's own directory, as extraction writes it.
+keeps it), a path under a file, a hard link to a refused member, a symlink that loops or
+leads out through another link, and a symlink whose target is over 4096 bytes (`symlink()`
+refuses it on Linux, after the parents are made, which stay). A member under one of the
+archive's own symlinks SHALL be listed where extraction writes it, through the link, and
+SHALL be absent when the link leads to no directory. Paths SHALL compare as on a
+case-sensitive disk, with only files and links colliding by the policy's collision key.
+Behaviour that depends on a destination (`overwrite=`, existing files, names its file
+system cannot hold, a disk that folds case, a link Windows keeps because it collapses `..`
+first), a link a later member makes lead out, and `filter=` are outside the tree. A hard
+link to a symlink SHALL be listed as that symlink, with its target read from the hard
+link's own directory, as extraction writes it.
 
 | Operation | Behaviour |
 | --- | --- |
@@ -190,3 +194,7 @@ pickle. A file-object `fo` SHALL raise `TypeError` on pickling, naming the reaso
 | 1 000 distinct `archivey://m::memory://a{n}.zip` URLs opened and every reference dropped | No reader stays open |
 | `pickle.loads(pickle.dumps(fs))` with a URL `fo` | A working file system over the same archive |
 | Two threads read two members at once | Both read their members' bytes |
+| A TAR with one name 8000 components deep, listed | The tree's memory grows with the name's length, not with its square: under 32 MB |
+| A symlink whose target is 60 000 `./` components | Absent, with a diagnostic, and refused before its target is walked |
+| 2000 names under a link and 2000 links through it, the link's walk 2400 components long, kept or ending on a missing name or a file | The link's walk is done again only after a member makes a name it found missing, not once per path through it |
+| `fs.ls("")`, then `fs.close()`, then `fs.ls("")` | `ArchiveyUsageError` |

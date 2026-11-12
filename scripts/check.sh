@@ -12,7 +12,8 @@
 # self-inflicted CI failure in this repo.
 #
 #   ./scripts/check.sh          check only, writes nothing — what CI does
-#   ./scripts/check.sh --fix    apply ruff format + autofix first, then check
+#   ./scripts/check.sh --fix    rewrap the prose this branch touched, apply ruff format +
+#                               autofix, then check
 #
 # Runs every gate even after one fails, then lists what failed. A single run should tell
 # you everything that is wrong, not just the first thing.
@@ -59,6 +60,10 @@ run() {
 }
 
 if [ "$FIX" -eq 1 ]; then
+  # First, so ruff formats what it rewraps. It touches only the paragraphs (Markdown,
+  # comments, docstrings) that hold a line this branch adds.
+  printf '\n\033[1m=== rewrapping the prose this branch touched\033[0m\n'
+  python3 scripts/checks/check_line_width.py --fix || true
   printf '\n\033[1m=== applying ruff format + autofix\033[0m\n'
   uv run --no-sync ruff format "${PATHS[@]}"
   uv run --no-sync ruff check --fix "${PATHS[@]}"
@@ -90,6 +95,10 @@ fi
 
 # --- CI job: No tracker URLs (docs-checks.yml) ------------------------------------
 run "tracker URLs" python3 scripts/checks/check_tracker_urls.py
+
+# --- CI job: Line width (docs-checks.yml) ------------------------------------------
+# Markdown lines this branch adds, against origin/main; ruff's E501 covers Python.
+run "line width" python3 scripts/checks/check_line_width.py
 
 # --- CI job: docs ------------------------------------------------------------------
 # Needs the `docs` group (mkdocs, markdown) rather than the everyday env, so this leg

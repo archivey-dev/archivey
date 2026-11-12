@@ -226,7 +226,10 @@ class LzwState:
             # while padding is still owed was cut inside it. The one exception: padding
             # at a width bump is written only when another code follows, so a stream
             # may end there with none of it.
-            self._truncation = f"it ends {self._pending_skip} byte(s) short of the padding {self._skip_reason}"
+            self._truncation = (
+                f"it ends {self._pending_skip} byte(s) short of the padding "
+                f"{self._skip_reason}"
+            )
         # Finished compressors zero-pad the last incomplete code slot. Nonzero leftover
         # bits are a best-effort truncation / corrupt-padding signal (exact mid-code
         # cuts that leave only zero bits remain undetectable — no length trailer).

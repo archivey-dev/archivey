@@ -25,6 +25,8 @@ Formats:
   links whose data, in newc and crc, comes with the last name.
 - [`ar.md`](ar.md) — static libraries and `.deb`, a built-in written against
   `archivey.formats`.
+- [`arj.md`](arj.md) — ARJ archives: methods 0 to 4 (1 to 3 share LHA's decoder),
+  Unix links, garbled and split members refused.
 - [`lha.md`](lha.md) — LHA and LZH archives: header levels 0 to 3, stored members and
   the static-Huffman LZ77 methods, with archivey's own decoder.
 - [`cab.md`](cab.md) — Microsoft cabinets: stored, MSZIP and LZX folders, with

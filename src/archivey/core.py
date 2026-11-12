@@ -94,6 +94,7 @@ from archivey.internal.format_args import (
 from archivey.internal.format_provenance import FormatProvenance, stamp_error_context
 from archivey.internal.open_site import OpenSite, capture_open_site
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import (
     format_availability,
     get_registry,
@@ -184,6 +185,24 @@ def _forced_payload_end(
     if not backend_cls.SFX_MAGIC or not archive_source.seekable():
         return None
     return read_payload_end(archive_source, archive_source.size)
+
+
+def _program_resources(
+    archive_source: ArchiveSource, backend_cls: type[ReadBackend]
+) -> ProgramResources | None:
+    """The resources of a PE program at the start of the source, for a backend that
+    can carry a stub (``SFX_MAGIC``) on a seekable source of known size.
+
+    Built for detected and forced opens alike, so an archive stored as a program
+    resource gets the same trailing-data answer either way. Reads nothing here: the
+    backend's trailing-data check reads the headers when it found a non-zero byte.
+    """
+    if not backend_cls.SFX_MAGIC or not archive_source.seekable():
+        return None
+    size = archive_source.size
+    if size is None:
+        return None
+    return ProgramResources(archive_source, size)
 
 
 def _name_makeself(
@@ -443,16 +462,17 @@ def open_archive(
 
     ``encoding`` names the codec for member names whose encoding the archive does not
     declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO, RAR 1.5-4, CPIO, ar,
-    RPM, makeself, SquashFS, CAB, XAR and LHA). A name whose bytes are valid UTF-8 is decoded as UTF-8 in every format,
-    with or without ``encoding``, and ``encoding`` replaces only the format's fallback
-    (cp437 or ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code
-    page for RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar, RPM, makeself, SquashFS, CAB, XAR and LHA).
-    ``member.raw_name`` keeps the stored bytes. A ZIP comment without the UTF-8 flag
-    (the archive comment always) and an 8-bit RAR 1.5-4 comment decode the same way as
-    a name without a declared encoding, and a byte the codec does not define survives
-    as a lone surrogate. The one difference is that a RAR comment's last fallback is
-    always windows-1252. 7z, directory and single-file sources decode names another way,
-    ignore it, and record ``ENCODING_ARGUMENT_UNUSED``.
+    RPM, makeself, SquashFS, CAB, XAR, LHA and ARJ). A name whose bytes are valid UTF-8
+    is decoded as UTF-8 in every format, with or without ``encoding``, and ``encoding``
+    replaces only the format's fallback (cp437 or
+    ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code page for
+    RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar, RPM, makeself, SquashFS, CAB,
+    XAR, LHA and ARJ). ``member.raw_name`` keeps the stored bytes. A ZIP comment without
+    the UTF-8 flag (the archive comment always) and an 8-bit RAR 1.5-4 comment decode the
+    same way as a name without a declared encoding, and a byte the codec does not define
+    survives as a lone surrogate. The one difference is that a RAR comment's last
+    fallback is always windows-1252. 7z, directory and single-file sources decode names
+    another way, ignore it, and record ``ENCODING_ARGUMENT_UNUSED``.
 
     ``source`` may be an ordered sequence of paths or binary streams that together form
     a multi-volume archive (7z concatenates volumes; RAR opens volume 1 and lets
@@ -1139,6 +1159,7 @@ def _open_resolved(
                 open_site=open_site,
                 start_offset=payload_offset,
                 end_offset=payload_end,
+                program_resources=_program_resources(archive_source, backend_cls),
             )
             reader._format_provenance = provenance
             reader._format_info = decision.format_info

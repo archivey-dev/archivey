@@ -56,6 +56,7 @@ from archivey.internal.streams.streamtools import (
     readinto_via_read,
 )
 from archivey.internal.streams.verification import (
+    NO_PROOFS,
     VerificationProofs,
     ask_verification_proofs,
     find_frame_watch,
@@ -1092,20 +1093,32 @@ class ArchiveStreamImpl(ArchiveStream):
     def _proofs_over(
         self, below: VerificationProofs, *, frames: bool = True
     ) -> VerificationProofs:
-        """This stream's proofs on top of ``below``, the layers' answer under it."""
+        """This stream's proofs on top of ``below``, the layers' answer under it.
+
+        The stream's own proofs, the verifier's and ``below`` are joined in one record
+        (the same as ``combine`` twice): this runs on every member-level sync.
+        """
         ended = self._ended_from_start
         frames_content, frames_possible = (
             self._frame_verdict(below) if frames else (False, False)
         )
-        own = VerificationProofs(
-            ended=ended,
-            content=(self._checks_content and ended) or frames_content,
-            content_possible=self._checks_content or frames_possible,
-        )
         verifier = self._verifier
-        if verifier is not None:
-            own = own.combine(verifier.proofs())
-        return own.combine(below)
+        v = verifier.proofs() if verifier is not None else NO_PROOFS
+        return VerificationProofs(
+            key_in_doubt=v.key_in_doubt or below.key_in_doubt,
+            ended=ended or v.ended or below.ended,
+            content=(self._checks_content and ended)
+            or frames_content
+            or v.content
+            or below.content,
+            content_possible=self._checks_content
+            or frames_possible
+            or v.content_possible
+            or below.content_possible,
+            per_frame=v.per_frame or below.per_frame,
+            frames_checked=v.frames_checked or below.frames_checked,
+            frame_unchecked=v.frame_unchecked or below.frame_unchecked,
+        )
 
     def _frame_verdict(self, below: VerificationProofs) -> tuple[bool, bool]:
         """What a codec whose check is optional per frame (``per_frame``) proves: whether

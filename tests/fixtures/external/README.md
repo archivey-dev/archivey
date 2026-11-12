@@ -243,6 +243,25 @@ lhasa is under the ISC license:
 > IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 > CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
+## `arj_310/`
+
+ARJ archives written 2026-11-09 by ARJ 3.10 for Linux (`arj` 3.10.22 in Ubuntu), the
+open-source continuation of Robert Jung's ARJ. Nothing on the CI image writes ARJ.
+
+- `method1.arj` to `method4.arj`: the same four files (`words.txt`, 15 995 bytes of
+  random words; `runs.bin`, 37 353 bytes of repeated random runs and zeros; `small.txt`;
+  `empty`) with `arj a -m1` to `-m4`. ARJ stores `small.txt` and `empty` with method 0.
+  `tests/test_arj.py` pins their sizes and SHA-256.
+- `stored.arj`: `small.txt` with `-m0`.
+- `links.arj`: `arj a -a1 -r` of a file, a symlink to it, a hard link to it, a FIFO and a
+  directory, which ARJ for Unix stores as type-6 members with `U` extended headers.
+- `garbled.arj`: `small.txt` garbled with `-gsecret`.
+- `cc_bla_dos.arj` and `cc_bla_unix.arj`: Commons Compress's `bla.arj` (ARJ for Windows,
+  host 11) and `bla.unix.arj` (Apache-2.0, github.com/apache/commons-compress
+  `src/test/resources`), fetched 2026-11-09.
+
+See [`dev-docs/formats/arj.md`](../../../dev-docs/formats/arj.md).
+
 ## `reduce_pkzip092/`
 
 Two raw ZIP Reduce streams (method 5, compression factor 4) that PKZIP 0.92 wrote under
