@@ -250,12 +250,13 @@ def test_archive_path_with_a_wildcard_does_not_open_a_fifo_beside_it(
     ],
     ids=["ascii", "cjk"],
 )
-def test_archive_path_unrar_6_would_cut_is_staged(
+def test_archive_in_a_directory_unrar_6_would_cut_is_read_in_place(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, component: str
 ) -> None:
     """unrar 6.x keeps 2047 bytes of the archive path on POSIX and opens the file
-    that the cut path names. A path over the bound is linked into a private
-    directory, so ``unrar`` gets a short one."""
+    that the cut path names. On POSIX unrar gets the name alone, started in the
+    archive's directory, so a long directory needs no staged copy: the file is
+    read in place, and the argv holds only its short name."""
     source = _fixture("basic_solid__.rar")
     expected = _read_all(source)
     deep = tmp_path.joinpath(*[component] * 6)
@@ -264,14 +265,46 @@ def test_archive_path_unrar_6_would_cut_is_staged(
     shutil.copyfile(source, path)
     bound = rar_unrar._UNRAR_ARCHIVE_PATH_MAX
     assert len(os.fsencode(path)) > bound
+    assert rar_unrar.unrar_may_cut_archive_path(path)
+    assert not rar_unrar.unrar_needs_staged_name(path)
     monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
     seen = _record_unrar_archive_paths(monkeypatch)
+    spawned: list[tuple[list[object], object]] = []
+    real_spawn = rar_unrar.spawn_for_stdout
+
+    def spy(cmd: list[object], *args: object, **kwargs: object) -> object:
+        spawned.append((list(cmd), kwargs.get("cwd")))
+        return real_spawn(cmd, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_unrar, "spawn_for_stdout", spy)
     assert _read_all(path) == expected
     assert seen
-    assert all(len(os.fsencode(os.path.abspath(name))) <= bound for name in seen), [
-        len(os.fsencode(name)) for name in seen
-    ]
-    assert rar_unrar.unrar_may_cut_archive_path(path)
+    assert set(seen) == {str(path)}
+    assert spawned
+    for cmd, cwd in spawned:
+        assert cmd[-1] == "long.rar", cmd[-1]
+        assert cwd == str(deep)
+
+
+@pytest.mark.parametrize(
+    ("platform", "path", "staged"),
+    [
+        ("linux", "/data/rep.rar", False),
+        ("linux", "/data/rep*.rar", True),
+        ("linux", "/da?a/rep.rar", False),
+        ("linux", "/" + "d" * 2000 + "/rep.rar", False),
+        ("win32", "C:\\data\\rep.rar", False),
+        ("win32", "C:\\" + "d" * 2000 + "\\rep.rar", True),
+    ],
+    ids=["plain", "wildcard-name", "wildcard-dir", "long-dir", "win-plain", "win-long"],
+)
+def test_only_the_name_decides_staging_on_posix(
+    monkeypatch: pytest.MonkeyPatch, platform: str, path: str, staged: bool
+) -> None:
+    """On POSIX unrar sees only the name, so a long or wildcard directory needs no
+    staged copy. On Windows it sees the whole path."""
+    monkeypatch.setattr(sys, "platform", platform)
+    assert rar_unrar.unrar_needs_staged_name(path) is staged
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
@@ -448,6 +481,26 @@ def test_the_archive_argument_on_posix_is_always_the_name_alone(
     )
     with pytest.raises(ReadError, match="wildcard"):
         rar_unrar._unrar_archive_argument(tmp_path / "rep*.rar")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks and paths")
+def test_the_archive_directory_keeps_a_dotdot_through_a_symlink(
+    tmp_path: Path,
+) -> None:
+    """``link/../a.rar`` through a symlinked ``link`` opens ``real/a.rar``; dropping
+    the ``..`` by text would name ``tmp/a.rar``, another file. The split keeps the
+    path as the system resolves it, so unrar reads the file archivey parsed."""
+    real = tmp_path / "real"
+    (real / "sub").mkdir(parents=True)
+    shutil.copyfile(_fixture("basic_solid__.rar"), real / "a.rar")
+    (tmp_path / "a.rar").write_bytes(b"decoy")
+    (tmp_path / "link").symlink_to(real / "sub")
+    path = str(tmp_path / "link" / ".." / "a.rar")
+    name, directory = rar_unrar._unrar_archive_argument(path)
+    assert directory is not None
+    assert name == "a.rar"
+    assert os.path.samefile(os.path.join(directory, name), real / "a.rar")
+    assert _read_all(Path(path)) == _read_all(_fixture("basic_solid__.rar"))
 
 
 @pytest.mark.skipif(

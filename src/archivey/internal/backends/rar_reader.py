@@ -149,10 +149,9 @@ from archivey.internal.backends.rar_unrar import (
     find_rarlab_unrar,
     open_unrar_p,
     rarlab_unrar_missing,
-    unrar_expands_wildcards,
     unrar_mask_carries_non_ascii,
     unrar_matches_names_as_windows,
-    unrar_may_cut_archive_path,
+    unrar_needs_staged_name,
     unrar_plain_name_max,
 )
 from archivey.internal.base_reader import (
@@ -2075,23 +2074,21 @@ class RarReader(BaseArchiveReader):
         unrar), so it cannot read a file this reader never parsed, or miss one it
         did.
 
-        A path holding a wildcard character is staged too: unrar expands one in
-        the archive name (:func:`unrar_expands_wildcards`), so ``rep*.rar`` would
-        also open a planted ``rep-a.rar``, or block on a FIFO of that name. The
-        staged names are fixed and hold none. So is a path longer than unrar 6.x
-        keeps (:func:`unrar_may_cut_archive_path`): it would open the file that the
-        cut path names. The private directory sits in the system temp directory,
-        which can itself hold a wildcard or be long; on POSIX ``open_unrar_p``
-        always starts ``unrar`` in the archive's directory and passes the name
-        alone, so no directory reaches unrar.
+        A file whose name unrar would misread is staged too
+        (:func:`unrar_needs_staged_name`): unrar expands a wildcard in the archive
+        name, so ``rep*.rar`` would also open a planted ``rep-a.rar``, or block on
+        a FIFO of that name, and 6.x cuts a long one and opens the file the cut
+        path names. The staged names are fixed and hold none. On POSIX
+        ``open_unrar_p`` always starts ``unrar`` in the archive's directory and
+        passes the name alone, so only the name counts there: a long or wildcard
+        directory, the caller's or the private one in the system temp directory,
+        never reaches unrar. On Windows unrar gets the whole path, so the whole
+        path counts.
         """
         if self._archive_path is None or self._stage_volume_paths:
             return
         if (
-            not any(
-                unrar_expands_wildcards(path) or unrar_may_cut_archive_path(path)
-                for path in self._volume_paths
-            )
+            not any(unrar_needs_staged_name(path) for path in self._volume_paths)
             and self._volume_numbers is None
             and _unrar_finds_exactly(
                 self._volume_paths,

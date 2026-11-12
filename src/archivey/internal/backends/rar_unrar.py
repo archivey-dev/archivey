@@ -744,16 +744,34 @@ def unrar_may_cut_archive_path(path: str | Path) -> bool:
     return size > _UNRAR_ARCHIVE_PATH_MAX
 
 
+def unrar_needs_staged_name(path: str | Path) -> bool:
+    """Whether ``path`` must be staged under a fixed name before ``unrar`` reads it.
+
+    On POSIX ``unrar`` gets the file's name alone, started in its directory
+    (:func:`_unrar_archive_argument`), so only the name counts: one ``unrar``
+    would expand (:func:`unrar_expands_wildcards`), or one too long to keep. On
+    Windows it gets the whole path, so a wildcard or a cut anywhere in it counts
+    (:func:`unrar_may_cut_archive_path`).
+    """
+    if sys.platform == "win32":
+        return unrar_expands_wildcards(path) or unrar_may_cut_archive_path(path)
+    name = os.path.basename(path)
+    return unrar_expands_wildcards(name) or len(os.fsencode(name)) > (
+        _UNRAR_ARCHIVE_PATH_MAX
+    )
+
+
 def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
     """The archive argument for ``unrar``, and the directory to start it in.
 
     On POSIX ``unrar`` always starts in the archive's directory and gets the file's
     name alone, so no directory reaches its argv: ``unrar`` expands ``*`` and ``?``
     in every directory of the archive argument, and 6.x cuts a long one. A name
-    that ``unrar`` would expand (:func:`unrar_expands_wildcards`) or a path it
-    would cut (:func:`unrar_may_cut_archive_path`) reaches here only as a file
-    archivey made: the reader stages such a caller path under a fixed name, in the
-    system temp directory or one made in it. ``unrar`` finds the next volume of a
+    that ``unrar`` would expand reaches here only as a file archivey made: the
+    reader stages such a caller path (:func:`unrar_needs_staged_name`) under a
+    fixed name, in the system temp directory or one made in it. A long directory
+    needs no staging: ``unrar`` opens the name relative to its working
+    directory, and the system resolves that with no length to cut. ``unrar`` finds the next volume of a
     set beside that name. ``unrar p`` writes only to stdout, so the working
     directory changes no output location.
 
@@ -780,7 +798,11 @@ def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
             f"{limit} characters, more than unrar keeps. Set TMP or TEMP to a "
             "shorter directory."
         )
-    directory, name = os.path.split(os.path.abspath(path))
+    # A plain split, never abspath or normpath: those drop ``..`` by text, and
+    # through a symlinked directory ``link/../a.rar`` names another file than the
+    # one the system opens, the one archivey parsed.
+    directory, name = os.path.split(path)
+    directory = directory or os.getcwd()
     if not name or unrar_expands_wildcards(name):
         # The reader stages every such name; reaching here is a bug upstream.
         raise ReadError(

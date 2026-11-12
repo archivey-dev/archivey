@@ -961,8 +961,9 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   two; `[` and `{` are literal on 7.00, and Windows skips a `\\?\` prefix first). In
   place, `rep*.rar` also opened a planted `rep-a.rar` beside it, mixing that archive's
   members into the output, and blocked forever on a FIFO of a matching name. So the
-  reader stages such a path under fixed names in a private temp directory
-  (`unrar_expands_wildcards`).
+  reader stages such a name under fixed names in a private temp directory
+  (`unrar_needs_staged_name`; on Windows, where `unrar` gets the whole path, any
+  wildcard or over-long path counts).
 
 - **On POSIX no directory reaches the argv.** `unrar` expands `*` and `?` in the
   directories of the archive path too (measured on 7.00: `t*p/a.rar` also read
@@ -971,10 +972,12 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   problem back, and a long one brought back the 6.x cut (§4). So on POSIX `unrar` is
   always started in the archive's directory and given its name alone
   (`_unrar_archive_argument`), for every read: one path, not a branch taken only for a
-  rare temp directory (maintainer, 2026-11-12). A name that would be expanded or a
-  path that would be cut is staged first, under a name that is fixed or made by
-  `mkstemp`, so the name holds neither, and `unrar` finds a set's next volume beside
-  it. `unrar p` writes only to stdout, so the working directory moves no output.
+  rare temp directory (maintainer, 2026-11-12). So on POSIX only the name decides
+  staging: a long or wildcard directory needs no copy, and an archive deep in a long
+  directory is read in place (maintainer, 2026-11-12). `unrar` opens the name
+  relative to its working directory, and the system resolves that with no length to
+  cut. A name that would be expanded is staged first, under a name that is fixed or
+  made by `mkstemp`, and `unrar` finds a set's next volume beside it. `unrar p` writes only to stdout, so the working directory moves no output.
   Windows names cannot hold a wildcard, and a directory long enough to be cut is past
   what `CreateProcess` takes as a working directory, so there the staged path goes
   over whole, with no working directory, while 6.x keeps it (2047 UTF-16 units less
@@ -1380,7 +1383,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | A RAR on a pipe or socket cannot be opened at all, in either access mode | **format** | Block headers are chained forward but the walk still seeks; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | A RAR 1.5-4 name stored only as 8-bit bytes can list in the wrong code page | **format** | The header records none. Archivey guesses strict UTF-8, then cp437 for a DOS or Windows host and windows-1252 otherwise; `encoding=` overrides the guess, as in ZIP. Reading is unaffected (§2.2) |
 | A member whose name is not plain raises `UnsupportedFeatureError` on the `unrar` path, and reads with `rar_decompressor='unar'` | **archivey** | Only when no synthetic archive can hold it: a RAR 1.5-4 member split past 4 GiB with no 64-bit sizes, or a solid chain with data out of reach. The original archive is then read through a mask, which is trusted only for a plain name (§2.3) |
-| `unrar` given an archive path in place can open a file other than the one archivey parsed | **library** / **archivey** | Two causes. `unrar` 6.x keeps only a prefix of a long archive path and opens the file that prefix names: on POSIX it cuts at 2047 bytes of the multibyte name (`File::Open`; measured on 6.24), on Windows at 2047 wide units (from the 6.2.12 source, not run). And every version expands `*` and `?` in the archive name, even after `--`, so `rep*.rar` also opens a `rep-a.rar` beside it, or blocks forever on a FIFO of that name. Archivey's answer is staging (`_choose_unrar_volume_paths`): when a volume path holds `*` or `?`, or is longer than 1024 UTF-16 units or, on POSIX, 1024 bytes, the volumes are linked under fixed names in a private directory. When that directory's own path holds a wildcard or is that long (a `TMPDIR` of that kind), `unrar` is started in it and given the fixed name alone; on Windows such a path is refused (§2.2) |
+| `unrar` given an archive path in place can open a file other than the one archivey parsed | **library** / **archivey** | Two causes. `unrar` 6.x keeps only a prefix of a long archive path and opens the file that prefix names: on POSIX it cuts at 2047 bytes of the multibyte name (`File::Open`; measured on 6.24), on Windows at 2047 wide units (from the 6.2.12 source, not run). And every version expands `*` and `?` in the archive name, even after `--`, so `rep*.rar` also opens a `rep-a.rar` beside it, or blocks forever on a FIFO of that name. Archivey's answer: on POSIX `unrar` is always started in the archive's directory and given the name alone, so no directory reaches it, and a volume whose name holds `*` or `?` is linked under a fixed name in a private directory (`unrar_needs_staged_name`, `_choose_unrar_volume_paths`). On Windows `unrar` gets the whole path, so a volume path holding a wildcard or longer than 1024 UTF-16 units is staged, and a staged path past what 6.x keeps is refused (§2.2) |
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
 | Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_operations=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ArchiveyUsageError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
 | A compressed RAR 1.5 / 2.x old-style comment is `None` without RARLAB `unrar` | **archivey** | Listing and stored old-style comments stay native; the proprietary compressed blob is decoded only when the optional binary is available (§2.2) |
