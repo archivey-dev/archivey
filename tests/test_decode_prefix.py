@@ -567,3 +567,21 @@ def test_a_decoder_that_holds_back_errors_is_not_decoded_again(
             "CorruptionError",
         ), size
     assert restarts == 0
+
+
+@pytest.mark.parametrize("size", [4096, 1 << 20])
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_damaged_second_stream_start_keeps_the_first_stream(
+    size: int, pipe: bool
+) -> None:
+    """A second lzop stream whose magic is damaged raises only after the first
+    stream's bytes are handed out, from a file and from a pipe: the decoder holds that
+    error back too, so nothing decodes the file again for them."""
+    first = _lzop(_text(200_000, 4))
+    second = bytearray(_lzop(_text(200_000, 5)))
+    second[8] ^= 0xFF  # the last byte of the 9-byte magic
+    damaged = first + bytes(second)
+    expected = _exact_prefix(damaged, Codec.LZOP)
+    assert expected == 200_000
+    source = NonSeekableBytesIO(damaged) if pipe else io.BytesIO(damaged)
+    assert _prefix(source, Codec.LZOP, size) == (expected, "CorruptionError")
