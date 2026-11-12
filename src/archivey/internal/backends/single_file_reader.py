@@ -56,6 +56,7 @@ from archivey.internal.naming import (
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource, seeks_to_end_are_cheap
 from archivey.internal.streams.archive_stream import MemberStreamParts
@@ -199,7 +200,8 @@ class SingleFileReader(BaseArchiveReader):
     A seekable source is validated by :meth:`_validate_at_open`, which ``open_archive``
     calls after setting format provenance: it decodes one byte, so a source that is not
     the claimed codec raises from ``open_archive`` rather than the first ``read``. A
-    non-seekable source is not validated until that read.
+    non-seekable source is validated the same way, on a copy, when detection's peek
+    already holds all of it; otherwise not until that read.
     """
 
     _MEMBER_LIST_UPFRONT = True
@@ -293,7 +295,8 @@ class SingleFileReader(BaseArchiveReader):
             # only under measurement, so the source's seeks are visible.
             self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         if not self._seekable:
-            # Non-seekable: validation waits for the first read (see _validate_at_open).
+            # Non-seekable: validation probes a copy when detection's peek holds the
+            # whole source, else waits for the first read (see _validate_at_open).
             self._pending_parts = self._open_codec_parts()
 
     @override
@@ -307,8 +310,11 @@ class SingleFileReader(BaseArchiveReader):
         ``_open_member`` builds a fresh one. The error names no member, since nobody asked
         for one yet.
 
-        A non-seekable source is not probed: the read would consume a byte of the one
-        pass the first ``open_member`` hands out, so it still fails on that read.
+        A non-seekable source is probed only when detection's peek already holds all of
+        it (``ArchiveSource.held_rest``): the probe then decodes a copy, and the pass
+        the first ``open_member`` hands out reads nothing less. So a short damaged
+        stream from a pipe fails at open as it does from a file. Otherwise the read
+        would consume a byte of the one pass, so the stream still fails on that read.
 
         The probe decodes with the standard library: rapidgzip runs in a child process,
         and one byte does not pay for starting one (about 30 ms) that the member read then
@@ -317,15 +323,23 @@ class SingleFileReader(BaseArchiveReader):
         process possible fails at open. ``AUTO`` is left to the read, which resolves it
         against the config the registry prepares.
         """
+        held: bytes | None = None
         if not self._seekable:
-            return
+            assert self._source is not None  # always set in __init__
+            held = self._source.held_rest()
+            if held is None:
+                return
         # Inside probe_streams an error raises where the decoder meets it: no bytes
         # handed back before it and no second decode to find them, so damage at the
         # start fails the open here. The one-byte read asks the decoder for one byte.
         with (
             probe_streams(),
             self._member_stream(
-                self._open_codec_parts(attribute_member=False, accelerated=False)
+                self._open_codec_parts(
+                    attribute_member=False,
+                    accelerated=False,
+                    held=None if held is None else io.BytesIO(held),
+                )
             ) as probe,
         ):
             probe.read(1)
@@ -634,7 +648,11 @@ class SingleFileReader(BaseArchiveReader):
         yield self._member
 
     def _open_codec_parts(
-        self, *, attribute_member: bool = True, accelerated: bool = True
+        self,
+        *,
+        attribute_member: bool = True,
+        accelerated: bool = True,
+        held: BinaryIO | None = None,
     ) -> MemberStreamParts:
         """Open a fresh decompression stream over the source, as the member's parts.
 
@@ -647,7 +665,8 @@ class SingleFileReader(BaseArchiveReader):
         source is passed through as a path (the codec opens an independent handle — the
         same concurrent-open shape as ZIP path-source), except under measurement, where it
         shares one handle too so its seeks stay visible. A non-seekable source is read
-        once, forward-only.
+        once, forward-only. ``held`` replaces the source with a copy of the bytes the
+        source still holds, for the open-time probe of a non-seekable source.
         """
         member_name = self._member.name if attribute_member else None
 
@@ -661,7 +680,9 @@ class SingleFileReader(BaseArchiveReader):
         # source has no trusted size (``_trusted_source_size``), so the live ratio guard
         # has a denominator. A path
         # source always has a cheap ``stat`` size, so the path branch needs none.
-        if self._shared is not None:
+        if held is not None:
+            codec_source = held
+        elif self._shared is not None:
             # Whole-source view + fresh codec per open (no per-member byte range for a
             # single-file archive). The view is non-owning; the SharedSource outlives it.
             codec_source = self._wrap_compressed_input(self._shared.view(0))
@@ -792,8 +813,11 @@ class SingleFileBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> SingleFileReader:
-        reject_start_offset(start_offset, format, archive_name, end_offset)
+        reject_start_offset(
+            start_offset, format, archive_name, end_offset, program_resources
+        )
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.
         return SingleFileReader(

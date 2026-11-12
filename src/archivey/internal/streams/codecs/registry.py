@@ -72,7 +72,10 @@ from archivey.internal.streams.codecs.zlib_codec import (
     ZlibCodec,
 )
 from archivey.internal.streams.codecs.zstd_codec import ZstdCodec
-from archivey.internal.streams.decompressor_stream import probe_streams
+from archivey.internal.streams.decompressor_stream import (
+    partial_data_recovery,
+    probe_streams,
+)
 from archivey.internal.streams.streamtools import (
     fix_stream_start_position,
     is_seekable,
@@ -378,11 +381,14 @@ def _open_backend(
     config: StreamConfig,
 ) -> BinaryIO:
     """``backend.open``; a detection probe's streams (``probe_read_bound``) ask their
-    decoder for exactly what each read asks (:func:`probe_streams`)."""
-    if config.probe_read_bound is None:
-        return backend.open(source, params)
-    with probe_streams():
-        return backend.open(source, params)
+    decoder for exactly what each read asks (:func:`probe_streams`), and the streams
+    of a caller that turned ``recover_partial_data`` off do not decode again
+    (:func:`partial_data_recovery`)."""
+    with partial_data_recovery(config.recover_partial_data):
+        if config.probe_read_bound is None:
+            return backend.open(source, params)
+        with probe_streams():
+            return backend.open(source, params)
 
 
 def _prepared_backend(

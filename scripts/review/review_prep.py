@@ -6,8 +6,8 @@ by three shapes that a script can find faster than a reviewer:
 
 - a symbol or an exception type changed in `src/` and is still described the old way in a
   spec or a handbook page (``sweep``; the CHANGELOG is left out, since the release writes it);
-- a paragraph edited in place and not rewrapped, leaving a line far wider than the rest of
-  its file (``width``);
+- an added Markdown prose line over 100 columns (``width``, the same rule CI runs in
+  ``scripts/checks/check_line_width.py``; Python lines are ruff's E501);
 - a new test the PR body says fails on `main`, which passes there (``red-on-base``).
 
 It also prints the review tier the changed paths put the pull request in (``tier``): how
@@ -23,8 +23,8 @@ same checks apply to the fix commits before the label goes on again.
     uv run python scripts/review/review_prep.py tier            # light, standard or deep, and why
 
 ``sweep`` only reports: whether a hit is stale needs reading. ``width`` exits 1 when an
-added line is wider than its file allows. ``red-on-base`` prints a table to paste into the
-PR body in place of a prose "fails on main" claim.
+added Markdown line is over 100 columns. ``red-on-base`` prints a table to paste into
+the PR body in place of a prose "fails on main" claim.
 
 ``sweep``, ``width`` and ``tier`` are stdlib only and run under any Python 3.10+, so a
 reviewer without the project environment runs ``python3 scripts/review/review_prep.py tier``;
@@ -35,6 +35,7 @@ without one.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import re
 import shutil
@@ -63,15 +64,6 @@ DOC_SUFFIXES = {".md", ".yml", ".yaml"}
 # An archived change records what was true when it landed; it is not stale when code moves.
 DOC_EXCLUDE = ("openspec/changes/archive/", "dev-docs/history/")
 
-PY_WIDTH = 88
-# How far past its file's width an added line may run before it is reported. Comments of
-# 89-95 columns are common in the tree and nobody has flagged one; the findings were a
-# paragraph edited in place and never rewrapped, which lands at 105-150.
-SLACK = 10
-# A markdown file counts as hard-wrapped when nearly all of its prose lines fit this width.
-MD_WRAPPED_BELOW = 100
-MD_WRAPPED_SHARE = 0.98
-
 _DEF_RE = re.compile(r"^\s*(?:async\s+def|def|class)\s+([A-Za-z_]\w*)")
 _CONST_RE = re.compile(r"^([A-Z][A-Z0-9_]{2,})\s*(?::[^=]+)?=")
 _RAISE_RE = re.compile(r"\braise\s+([A-Z]\w*(?:Error|Exception|Warning))\b")
@@ -79,7 +71,6 @@ _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@\s?(.*)$")
 # `.gitattributes` sets `*.py diff=python`, so a hunk header names the enclosing def, not
 # the last column-0 line (the class).
 _HUNK_DEF_RE = re.compile(r"(?:def|class)\s+([A-Za-z_]\w*)")
-_URL_RE = re.compile(r"https?://")
 
 
 def git(*args: str) -> str:
@@ -271,39 +262,18 @@ def sweep(moved: list[Moved], docs: list[Path]) -> list[str]:
     return report
 
 
-# --- width: added lines wider than their file ------------------------------------------
+# --- width: added Markdown prose lines over 100 columns -------------------------------
 
 
-def _md_prose(text: str) -> dict[int, str]:
-    """Lines a rewrap would touch, by line number: outside code fences, not tables, not
-    bare URLs. Needs the whole file: fence state cannot be read from a fragment."""
-    out: dict[int, str] = {}
-    fenced = False
-    for n, line in enumerate(text.splitlines(), 1):
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-            continue
-        if fenced or line.lstrip().startswith("|") or _URL_RE.search(line):
-            continue
-        out[n] = line
-    return out
-
-
-def md_limit(base_text: str | None) -> int | None:
-    """The width a markdown file is wrapped at, or None when it is not hard-wrapped.
-
-    Judged from the file as it was before this change, so an edit cannot widen its own
-    limit. Some docs here are wrapped at 88, some at 91, and some not at all.
-    """
-    if base_text is None:
-        return None
-    prose = [line for line in _md_prose(base_text).values() if line.strip()]
-    if len(prose) < 10:
-        return None
-    fitting = sorted(len(line) for line in prose if len(line) <= MD_WRAPPED_BELOW)
-    if len(fitting) / len(prose) < MD_WRAPPED_SHARE:
-        return None
-    return max(PY_WIDTH, fitting[-1])
+def _line_width_module():
+    """`scripts/checks/check_line_width.py`, loaded by path: `scripts/` is not a package."""
+    script = Path(__file__).resolve().parents[1] / "checks" / "check_line_width.py"
+    spec = importlib.util.spec_from_file_location("check_line_width", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("check_line_width", module)
+    spec.loader.exec_module(module)
+    return module
 
 
 def base_text(base: str, path: str) -> str | None:
@@ -314,41 +284,28 @@ def base_text(base: str, path: str) -> str | None:
         return None
 
 
-def width(files: Iterable[FileDiff], base: str, head: str = "HEAD") -> list[str]:
+def width(files: Iterable[FileDiff], head: str = "HEAD") -> list[str]:
+    """The same rule CI runs, so the two never disagree.
+
+    Markdown is `check_line_width.problems`: an added prose line over 100 columns that
+    ``check_line_width.py --fix`` can break. Python lines are ruff's (E501 at 100),
+    which ``check.sh`` and CI already run, so they are not checked twice here.
+    """
+    line_width = _line_width_module()
     report: list[str] = []
     for f in files:
-        if f.path.endswith(".py"):
-            # Tests are left out: nobody has flagged a long line in one, and their
-            # literal fixtures make the check noisy.
-            limit: int | None = (
-                PY_WIDTH
-                if f.path.startswith(("src/", "scripts/"))
-                and not f.path.startswith(SCRIPT_TESTS)
-                else None
-            )
-            candidates = f.added
-        elif f.path.endswith(".md"):
-            limit = md_limit(base_text(base, f.path))
-            prose = _md_prose(base_text(head, f.path) or "")
-            candidates = [(n, text) for n, text in f.added if n in prose]
-        else:
+        if not f.path.endswith(".md"):
             continue
-        if limit is None:
-            continue
-        for n, text in candidates:
-            if (
-                len(text) > limit + SLACK
-                and not _URL_RE.search(text)
-                and "noqa: E501" not in text
-            ):
-                report.append(f"{f.path}:{n}: {len(text)} > {limit} columns")
+        text = base_text(head, f.path)
+        if text is not None:
+            report += line_width.problems(f.path, text, {n for n, _ in f.added})
     return report
 
 
 # --- tier: how deep the review goes ----------------------------------------------------
 
 # The tests of the scripts (CONTRIBUTING.md §Testing standards): tests like `tests/`,
-# for the tier and the width check alike.
+# for the tier.
 SCRIPT_TESTS = "scripts/tests/"
 
 # A pull request is light only when every path it changes is here: maintainer prose,
@@ -1209,8 +1166,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         print("\n".join(found) if found else "nothing found")
     if args.command in ("all", "width"):
-        found = width(files, args.base, args.head)
-        print("=== width: added lines wider than their file (rewrap the paragraph)")
+        found = width(files, args.head)
+        print(
+            "=== width: added Markdown lines over 100 columns (run check_line_width.py --fix)"
+        )
         print("\n".join(found) if found else "nothing found")
         status = 1 if found else 0
     if args.command == "all":

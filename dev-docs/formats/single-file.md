@@ -152,8 +152,10 @@ decompressor at construction, handed to the first open; a second open raises
 **`open_archive` decodes one byte** of a seekable source (`_validate_at_open`), so a file
 that is not the codec its name or its detection claims fails at open rather than at the
 first read. It checks nothing further in: damage past the first byte still fails on the
-read. A valid empty stream opens and reads as `b""`. A pipe is not checked, because the
-byte would come out of its one pass. The cost is one decoded block, which matters only
+read. A valid empty stream opens and reads as `b""`. A pipe is checked only when
+detection's peek already holds all of it (`ArchiveSource.held_rest`): the byte is then
+decoded from a copy. Otherwise it is not checked, because the byte would come out of its
+one pass. The cost is one decoded block, which matters only
 for bzip2 ([`bzip2.md`](bzip2.md) §2.2). The byte is decoded with the standard library
 whatever `use_rapidgzip` / `use_indexed_bzip2` say, so no rapidgzip child starts at open.
 An `ON` accelerator is still resolved there (`StreamCodec.check_accelerator`), so rapidgzip
@@ -512,7 +514,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Cost and archive info |
 | Size from the xz index and lzip trailers on any seekable source whose end is cheap to reach: not a pipe or a deflated member stream |
 | Only lzip reports a digest |
-| Validation at open, one byte deep, deferred on a pipe |
+| Validation at open, one byte deep; on a pipe only when detection read all of it, else deferred to the first read |
 | A pipe needs `streaming=True` and gives one pass |
 | Concurrent and re-entrant opens are independent |
 | `password=` accepted and unused |

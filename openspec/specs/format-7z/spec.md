@@ -133,9 +133,11 @@ byte there SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="7z"`,
 offset of that byte past the end. It is a warning by default and raises under
 `DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. A
 non-zero byte at 1 MiB or more past the end goes unseen: the bound is an effort limit,
-as for the TAR trailer scan. A self-extractor's tail (the certificate table of a
-code-signed one) is reported the same way, measured from the archive's own end, not the
-file's. 7-Zip 23.01 warns "There are data after the end of archive" for any tail, zeros
+as for the TAR trailer scan. The scan SHALL stop at the payload end (`archive-reading`,
+*Honour detection payload_offset at open*): a code-signed self-extractor's certificate
+table is identified, not data after the archive, and SHALL raise no diagnostic. Any
+other tail of a self-extractor is reported the same way as above, measured from the
+archive's own end, not the file's. 7-Zip 23.01 warns "There are data after the end of archive" for any tail, zeros
 included; archivey keeps an all-zero tail silent, the DR-3 rule shared with TAR.
 
 #### Scenario: 7z trailing bytes
@@ -149,6 +151,9 @@ included; archivey keeps an all-zero tail silent, the DR-3 rule shared with TAR.
 | `b"JUNK"` at 1 MiB or more past the end | Nothing (past the scan bound) | Opens |
 | Packed stream after the next header, nothing after it | Nothing | Opens |
 | Empty archive (`NextHeaderSize` 0) followed by `b"JUNK"` | `ARCHIVE_TRAILING_DATA` at 0 | `DiagnosticRaisedError` |
+| Signed PE SFX: 7z, certificate (`payload_end` known) | Nothing | Opens |
+| Signed PE SFX: 7z, `b"JUNK"`, certificate | `ARCHIVE_TRAILING_DATA` for `JUNK`; nothing for the certificate | `DiagnosticRaisedError` |
+| Unsigned 7z SFX with a tail | `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
 
 ### Requirement: Bound 7z header count fields before allocation
 

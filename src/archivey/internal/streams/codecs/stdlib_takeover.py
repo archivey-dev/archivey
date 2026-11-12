@@ -34,6 +34,8 @@ from archivey.internal.streams.codecs.rapidgzip_select import _translate_rapidgz
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
+    partial_data_recovery,
+    recovers_partial_data,
 )
 from archivey.internal.streams.resume import ResumeReachedStreamEnd, ask_resume_offset
 from archivey.internal.streams.streamtools import (
@@ -243,6 +245,9 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         super().__init__(inner)
         self._views = views
         self._open_stdlib = open_stdlib
+        # The fallback is built at a later read or seek, after the codec registry's
+        # ``partial_data_recovery`` block ended: it re-enters the caller's setting.
+        self._recover = recovers_partial_data()
         self._label = label
         self._limit = limit
         self._is_data_error = takes_over
@@ -370,7 +375,8 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         """The standard-library decoder at the position delivered so far, resuming from
         the newest of ``points``, in ascending order, at or before it. A point past it
         would only serve a later seek: the seek here ignores it."""
-        stdlib = self._open_stdlib(self._views.for_stdlib())
+        with partial_data_recovery(self._recover):
+            stdlib = self._open_stdlib(self._views.for_stdlib())
         # A view of a seekable source gives a seekable decoder. The wrappers above this
         # stream cached seekable() from the accelerator, and the seek below needs it.
         assert is_seekable(stdlib), "a standard-library fallback must be seekable"

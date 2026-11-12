@@ -23,9 +23,10 @@ reads it.
 
 Triage (2026-10-28, CC master ``0c20ded``, 1.29.0-SNAPSHOT), in the report's groups:
 
-* **MISSING FORMAT** CC reads dump, ARJ and Snappy, which Archivey does not
-  implement. ZIP Implode and Shrink, once on this list, now read and match CC on all
-  five of CC's archives (140 members), and LHA on all fifteen of CC's LHA archives.
+* **MISSING FORMAT** CC reads dump and Snappy, which Archivey does not implement.
+  ZIP Implode and Shrink, once on this list, now read and match CC on all five of
+  CC's archives (140 members), LHA on all fifteen of CC's LHA archives, and ARJ on
+  all three of CC's ARJ archives.
 * **POLICY** Archivey refuses, as the format's own tool does: a TAR header with a wrong
   checksum, bytes after a member's Deflate stream (DR-3), and two 7z headers 7-Zip
   calls Headers Error.
@@ -85,10 +86,6 @@ _TRIAGE: dict[str, str] = {
             "org/apache/commons/compress/dump/looping_inodes-fail.dump",
         ),
         "MISSING FORMAT: dump",
-    ),
-    **dict.fromkeys(
-        ("bla.arj", "bla.unix.arj", "synthetic/long-name/long-name.arj"),
-        "MISSING FORMAT: ARJ",
     ),
     **dict.fromkeys(
         ("bla.tar.sz", "lorem-ipsum.txt.sz", "mixed.txt.sz"),
@@ -184,7 +181,8 @@ _PIPE_TRIAGE: dict[str, str] = {
             "org/apache/commons/compress/COMPRESS-649/some-900kb-text.txt",
             "COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip_zip64.z02",
         ),
-        "BROTLI PROBE: accepted from a pipe, which has no length for the probe's completion check, then fails on read",
+        "BROTLI PROBE: accepted from a pipe, which has no length for the probe's "
+        "completion check, then fails on read",
     ),
     **dict.fromkeys(
         (
@@ -194,7 +192,8 @@ _PIPE_TRIAGE: dict[str, str] = {
             "COMPRESS-490/ArrayIndexOutOfBoundsException2.lz4",
             "org/apache/commons/compress/bzip2/hbCreateDecodeTables.bin",
         ),
-        "WHOLE SOURCE: a damaged compressed stream refused at open from a path; from a pipe it opens and fails on read",
+        "WHOLE SOURCE: a damaged compressed stream refused at open from a path; "
+        "from a pipe it opens and fails on read",
     ),
     **dict.fromkeys(
         (
@@ -203,7 +202,8 @@ _PIPE_TRIAGE: dict[str, str] = {
             "COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip_zip64.z01",
             "apache-maven-2.2.1.zip.001",
         ),
-        "SPLIT ZIP: one piece; a path refuses it at the directory, a pipe lists members until the data runs out",
+        "SPLIT ZIP: one piece; a path refuses it at the directory, a pipe lists "
+        "members until the data runs out",
     ),
     **dict.fromkeys(
         (
@@ -215,7 +215,8 @@ _PIPE_TRIAGE: dict[str, str] = {
             "org/apache/commons/compress/fuzz/crash-f2efd9eaeb86cda597d07b5e3c3d81363633c2da",
             "org/apache/commons/compress/zip/createBoundedInputStream.bin",
         ),
-        "ONE PASS: a damaged ZIP read by its local headers, without the directory a path reads first, fails at a different point",
+        "ONE PASS: a damaged ZIP read by its local headers, without the directory "
+        "a path reads first, fails at a different point",
     ),
     "COMPRESS-621.zip": "PREFIX: a ZIP behind a prefix is found by its directory",
     "bla-multi.7z.002": "NO NAME: the second part of a split 7z, joined only by its name",
@@ -271,8 +272,8 @@ def list_with_archivey(path: Path, *, pipe: bool) -> dict[str, Any]:
 
     Name and type are taken when the pass ends, not when the member is yielded: a pipe
     pass over a ZIP learns them from the central directory and updates the members in
-    place, and leaves out a local entry the directory does not list. Only a file's bytes are compared, since CC reads a symlink's target as its
-    data and Archivey does not.
+    place, and leaves out a local entry the directory does not list. Only a file's bytes
+    are compared, since CC reads a symlink's target as its data and Archivey does not.
     """
     source: Any = io.BufferedReader(_Pipe(path)) if pipe else path
     seen: list[tuple[Any, list[Any]]] = []

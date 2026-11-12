@@ -167,17 +167,16 @@ class CodecParams:
     - ``reduce_factor`` — ZIP Reduce's compression factor, 1 to 4 (methods 2 to 5).
       Reduce also needs ``unpack_size``: its data has no end marker.
     - ``single_stream`` — the coder's data is one stream of its codec: a bzip2 ZIP
-      member or 7z coder. The decoder ends at the first stream's end rather than
-      reading a further stream as a concatenated file's, so a further stream is
-      input after the end, which a
-      ``refuse_input_after_end`` stream refuses. Under the bzip2 accelerator, which
-      reads on into a further stream, the read hands over to the standard library
-      where one starts (``bzip2_codec._Bzip2Layout``). A Zstd ZIP member and a 7z
-      Zstd or LZ4 coder do not set it: there concatenated frames count together
-      against the declared size, as RFC 8878 defines Zstd data as one or more frames
-      and the LZ4 frame format lets frames be appended.
-      Raw LZMA1/LZMA2 needs no flag: it is container-only and always ends at its first
-      end marker, refusing any input after it.
+      member or 7z coder, or a bzip2 or LZMA Alone XAR member. The decoder ends at the
+      first stream's end rather than reading a further stream as a concatenated file's,
+      so a further stream is input after the end, which a ``refuse_input_after_end``
+      stream refuses. Under the bzip2 accelerator, which reads on into a further stream,
+      the read hands over to the standard library where one starts
+      (``bzip2_codec._Bzip2Layout``). A Zstd ZIP member and a 7z Zstd or LZ4 coder do
+      not set it: there concatenated frames count together against the declared size, as
+      RFC 8878 defines Zstd data as one or more frames and the LZ4 frame format lets
+      frames be appended. Raw LZMA1/LZMA2 needs no flag: it is container-only and always
+      ends at its first end marker, refusing any input after it.
     - ``input_runs_on`` — the source does not end where the coder's data does: a ZIP
       member read from a stream that cannot seek, its sizes in a data descriptor after
       its data, is followed by the rest of the archive. A codec must then not wait for
