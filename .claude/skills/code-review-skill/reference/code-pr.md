@@ -82,8 +82,9 @@ modules and history go through the subagent tool (`Task`, called `Agent` in newe
 versions):
 
 - Pass `subagent_type: "Explore"`, which cannot edit files, and the model: `"sonnet"`
-  in Claude Code; in Cursor, Grok 4.7 or later, never a third-party model (Claude, GPT,
-  Gemini and the rest bill to paid credit, not the plan's included usage). When
+  in Claude Code; in Cursor, Composer 2.5 or later, never a Fast variant and never a
+  third-party model (Claude, GPT, Gemini and the rest bill to paid credit, not the plan's
+  included usage). When
   the question needs a command run, use `general-purpose` and say in its task text not
   to edit files, run the gates or post anything: a subagent sees only the text you give
   it, not this review's rules. One narrow question per agent; send independent

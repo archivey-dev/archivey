@@ -74,7 +74,7 @@ arm (`dev-docs/review-eval/results.md`):
   lines a finding cites, and the review's own instructions and contracts (this skill,
   the §1 reference doc, `CONTRIBUTING.md`, the deep-tier docs, what pass 2 opens).
   Send the wider searches to subagents (the `Task` tool, called `Agent` in newer
-  versions), on Sonnet in Claude Code and on Grok 4.7 or later in Cursor: callers across
+  versions), on Sonnet in Claude Code and on Composer 2.5 or later in Cursor: callers across
   the tree, sibling formats and codecs, shared state in other modules, history.
   `reference/code-pr.md` §Reading outside the diff says how.
 

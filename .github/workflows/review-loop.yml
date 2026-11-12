@@ -225,7 +225,7 @@ jobs:
             echo "No CURSOR_TRIGGER_TOKEN secret; Cursor is not asked." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@cursoragent please do a full code review of this pull request with this repository's \`code-review-skill\`: the whole diff against its base, as a first look. Use only Cursor's included models, Grok 4.7 or later, for the review and every subagent; where the skill says Sonnet, use Grok. Post the findings as review comments; do not push.
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@cursoragent please do a full code review of this pull request with this repository's \`code-review-skill\`: the whole diff against its base, as a first look. Use only Cursor's included models and never a Fast variant: Grok 4.7 or later for the review, Composer 2.5 or later for every subagent (where the skill says Sonnet). Never a Claude, GPT or Gemini model. Post the findings as review comments; do not push.
 
           ---
           _Posted by the review workflow for the Opus round._"
