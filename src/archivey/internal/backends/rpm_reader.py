@@ -898,14 +898,13 @@ class _Payload:
             # ``FILESIZES`` gives another length than the target: the copies differ,
             # and the entry is skipped unread, as it may be of any size.
             self._skip(size)
-            shown = f"a target of {size} bytes"
+            stored = None
         else:
             # No larger than a string the header already holds.
             stored = self._payload.read_exact(size)
             self._data_end = self._payload.offset
             if stored == listed:
                 return
-            shown = f"the target {_shown(stored)}"
         if file.index in reader._reported_targets:
             return
         context = reader._context
@@ -916,8 +915,9 @@ class _Payload:
         )
         context.report(
             DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
-            f"RPM symlink {_shown(raw)}: the payload stores {shown}, the header "
-            f"{_shown(listed)}; the header's is used",
+            f"RPM symlink {_shown(raw)}: the payload stores "
+            f"{_shown_target(stored, size)}, the header "
+            f"{_shown_target(listed, len(listed))}; the header's is used",
             HeaderAmbiguityContext(
                 member_name=name, ambiguity="copies_differ", field="FILELINKTOS"
             ),
@@ -1034,6 +1034,19 @@ def _shown(raw: bytes) -> str:
     have them escaped twice (``archivey.terminal.quoted``, for bytes).
     """
     return "'" + raw.decode("utf-8", "backslashreplace") + "'"
+
+
+# rpm's cap on a payload name (``lib/cpio.c``): no real symlink target is longer, so
+# a longer one is shown by its length, which keeps the message short.
+_SHOWN_TARGET_MAX = 4096
+
+
+def _shown_target(target: bytes | None, size: int) -> str:
+    """A symlink target for a message: quoted, or by its length when it is long or
+    was skipped unread (``None``)."""
+    if target is None or size > _SHOWN_TARGET_MAX:
+        return f"a target of {size} bytes"
+    return f"the target {_shown(target)}"
 
 
 def _hex(raw: bytes, what: str, offset: int) -> int:

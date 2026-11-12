@@ -1703,18 +1703,24 @@ def test_a_symlink_whose_payload_target_differs_fails_the_read_under_strict() ->
             reader.read("opt/t/h2")
 
 
-def test_a_long_payload_target_is_skipped_not_read() -> None:
+@pytest.mark.parametrize(
+    "listed", [b"z" * 5, b"y" * 5_000_000], ids=["short", "same_length"]
+)
+def test_a_long_payload_target_keeps_the_message_short(listed: bytes) -> None:
     """The entry's size comes from FILESIZES, which need not be the length of
-    FILELINKTOS: a target of another length is reported without reading it."""
+    FILELINKTOS: a target of another length is reported without reading it. One of
+    the same length is read, but a long target is shown by its length."""
     import tracemalloc
 
     files = _tree()
     files[6].link = b"z" * 5_000_000
+    links = [f.link or b"" for f in files]
+    links[6] = listed
     data = _build(
         _Package(
             files,
             order=[0, 1, 2, 6, 4, 5],
-            extra_tags={1036: (_STRING_ARRAY, [f.link[:5] or b"" for f in files])},
+            extra_tags={1036: (_STRING_ARRAY, links)},
         )
     )
     tracemalloc.start()
@@ -1726,9 +1732,13 @@ def test_a_long_payload_target_is_skipped_not_read() -> None:
     finally:
         tracemalloc.stop()
     assert report.code is DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
-    assert "a target of 5000000 bytes" in report.message
+    assert "the payload stores a target of 5000000 bytes" in report.message
     assert len(report.message) < 200
-    assert peak < 2 * 2**20
+    if len(listed) == 5:
+        assert "the header the target 'zzzzz'" in report.message
+        assert peak < 2 * 2**20  # skipped unread
+    else:
+        assert "the header a target of 5000000 bytes" in report.message
 
 
 def test_a_matching_payload_target_is_not_reported() -> None:
