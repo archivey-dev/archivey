@@ -423,6 +423,10 @@ class FramedDecoder(BaseDecoder):
         return DecodeOut(bytes(output), points)
 
     def flush(self) -> DecodeOut:
+        # An error held back behind earlier output raises here too, should the input end
+        # before the next feed.
+        if self._raise_next is not None:
+            raise self._raise_next
         if self._done:
             return DecodeOut(b"")
         if self._between:
