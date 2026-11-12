@@ -58,8 +58,13 @@ the data does not match. A line that is not an MD5 and a name SHALL be skipped.
 The deb backend SHALL raise `UnsupportedFeatureError` for a format version whose major
 number is not 2, `CorruptionError` when `debian-binary` is not the first member, when the
 control tar does not follow it, or when a member whose name does not start with `_` sits
-before the data tar. It SHALL skip `_` members and read nothing after the data tar.
-`debian-binary`, the control file and `md5sums`, held whole, SHALL together count against
+before the data tar. It SHALL raise `CorruptionError`, with the member's name in
+`member_name`, for a data-tar member whose path, its root dropped and its `..` resolved,
+has `DEBIAN` as its first segment (case-sensitive), and for a data-tar hard link whose
+target has `DEBIAN` as its first segment by the same test. `dpkg-deb -R` refuses both:
+it will not unpack the control tar into a `DEBIAN` path that the data tar made. It SHALL
+skip `_` members and read nothing after the data tar. `debian-binary`, the control file
+and `md5sums`, held whole, SHALL together count against
 `ListingLimits.max_metadata_bytes`, each checked by its declared size before it is read.
 
 #### Scenario: refusals
@@ -71,4 +76,7 @@ before the data tar. It SHALL skip `_` members and read nothing after the data t
 | An `extra` member between the tars | `CorruptionError` |
 | `max_metadata_bytes` smaller than the control file and md5sums | `ResourceLimitError` naming the bytes held in all |
 | A `debian-binary` header declaring 9 999 999 999 bytes | `ResourceLimitError` before the member is read |
+| A data tar holding `./DEBIAN/control`, `/DEBIAN/x`, `./DEBIAN/` or a `DEBIAN` symlink | `CorruptionError` naming that member, when the listing reaches it |
+| A data hard link to `DEBIAN/control` | `CorruptionError` naming the link and its target |
+| A data tar holding `debian/x`, `usr/DEBIAN/x`, or a symlink to `../DEBIAN/control` | Listed and read |
 

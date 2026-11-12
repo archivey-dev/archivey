@@ -61,7 +61,9 @@ FIXTURES = [
 
 def _tar(members: list[tuple[str, bytes | None]], compress: str = "") -> bytes:
     """A tar of (name, data) pairs, ``data`` None for a directory, compressed with
-    ``compress`` (``""``, ``gz``, ``xz``, ``bz2`` or ``lzma``)."""
+    ``compress`` (``""``, ``gz``, ``xz``, ``bz2`` or ``lzma``). A name ending in
+    ``@link`` is a hard link and one ending in ``@symlink`` a symlink, ``data`` its
+    target."""
     out = io.BytesIO()
     with tarfile.open(fileobj=out, mode="w", format=tarfile.GNU_FORMAT) as tar:
         for name, data in members:
@@ -73,6 +75,11 @@ def _tar(members: list[tuple[str, bytes | None]], compress: str = "") -> bytes:
             elif name.endswith("@link"):
                 info.name = name.removesuffix("@link")
                 info.type = tarfile.LNKTYPE
+                info.linkname = data.decode()
+                tar.addfile(info)
+            elif name.endswith("@symlink"):
+                info.name = name.removesuffix("@symlink")
+                info.type = tarfile.SYMTYPE
                 info.linkname = data.decode()
                 tar.addfile(info)
             else:
@@ -320,6 +327,84 @@ def test_the_control_tar_must_come_before_the_data_tar() -> None:
     raw = _ar((b"debian-binary", b"2.0\n"), (b"data.tar", _tar([("a", b"a")])))
     with pytest.raises(CorruptionError, match="no control.tar"):
         open_archive(io.BytesIO(raw), format=DEB)
+
+
+# Data-tar members that make the DEBIAN path, each of which dpkg-deb -R 1.22 refuses
+# with "unexpected pre-existing pathname .../DEBIAN" (GNU tar drops the root and refuses
+# a ".." name first). The listed name each refusal reports is the second item.
+_DATA_IN_DEBIAN = [
+    pytest.param("./DEBIAN/control", "DEBIAN/control", b"Package: fake\n", id="dot"),
+    pytest.param("DEBIAN/postinst", "DEBIAN/postinst", b"echo evil\n", id="plain"),
+    pytest.param("/DEBIAN/control", "/DEBIAN/control", b"x", id="rooted"),
+    pytest.param(".//DEBIAN/control", "DEBIAN/control", b"x", id="double-slash"),
+    pytest.param("./usr/../DEBIAN/x", "usr/../DEBIAN/x", b"x", id="dotdot"),
+    pytest.param("./DEBIAN/", "DEBIAN/", None, id="directory"),
+    pytest.param("./DEBIAN", "DEBIAN", b"x", id="file"),
+    pytest.param("./DEBIAN@symlink", "DEBIAN", b"usr", id="symlink"),
+]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(("stored", "listed", "content"), _DATA_IN_DEBIAN)
+def test_a_data_member_in_debian_is_refused(
+    stored: str, listed: str, content: bytes | None, pipe: bool
+) -> None:
+    """dpkg-deb -R unpacks the data tar, then refuses to unpack the control tar into the
+    DEBIAN it finds there. Listing the data copy would replace the real control file."""
+    data = [("./", None), ("./usr/", None), ("./usr/a", b"alpha"), (stored, content)]
+    raw = _deb(data=data)
+    seen = []
+    with (
+        pytest.raises(CorruptionError, match="DEBIAN/") as caught,
+        open_archive(_source(raw, pipe), streaming=pipe) as reader,
+    ):
+        for member, _stream in reader.stream_members():
+            seen.append(member.name)
+    assert caught.value.member_name == listed
+    assert repr(listed) in str(caught.value)
+    # The members before it are delivered, the real control file among them.
+    assert seen[:3] == ["DEBIAN/", "DEBIAN/control", "DEBIAN/md5sums"]
+    assert seen[-1] == "usr/a"
+
+
+def test_extracting_a_package_with_data_in_debian_raises(tmp_path: Path) -> None:
+    data = [("./usr/", None), ("./usr/a", b"alpha"), ("./DEBIAN/control", b"fake\n")]
+    with (
+        pytest.raises(CorruptionError, match="DEBIAN/"),
+        open_archive(io.BytesIO(_deb(data=data))) as reader,
+    ):
+        reader.extract_all(tmp_path)
+    assert (tmp_path / "DEBIAN" / "control").read_bytes() == CONTROL
+
+
+def test_a_data_hard_link_to_a_control_file_is_refused() -> None:
+    """GNU tar under dpkg-deb -R finds no DEBIAN/control in the data tar to link to."""
+    data = [("./usr/", None), ("./usr/a@link", b"DEBIAN/control")]
+    with (
+        pytest.raises(CorruptionError, match="hard link") as caught,
+        open_archive(io.BytesIO(_deb(data=data))) as reader,
+    ):
+        reader.members()
+    assert caught.value.member_name == "usr/a"
+    assert caught.value.link_target == "DEBIAN/control"
+
+
+def test_debian_elsewhere_in_the_data_tar_is_an_ordinary_name() -> None:
+    """dpkg-deb -R accepts each of these: the name is case-sensitive, only the first
+    segment counts, and a symlink's target is a path, not a member."""
+    data = [
+        ("./debian/", None),
+        ("./debian/x", b"lower"),
+        ("./usr/", None),
+        ("./usr/DEBIAN/", None),
+        ("./usr/DEBIAN/x", b"nested"),
+        ("./usr/c@symlink", b"../DEBIAN/control"),
+    ]
+    with open_archive(io.BytesIO(_deb(data=data))) as reader:
+        assert reader.read("debian/x") == b"lower"
+        assert reader.read("usr/DEBIAN/x") == b"nested"
+        assert reader.get("usr/c").link_target == "../DEBIAN/control"
+        assert reader.read("DEBIAN/control") == CONTROL
 
 
 def test_held_control_files_count_against_max_metadata_bytes() -> None:
