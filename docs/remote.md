@@ -106,8 +106,9 @@ because some formats keep an index and others have to be walked from the start
   so reading a member near its end fetches everything before it
   ([Solid archives](reading.md#solid-archives)). Compressed TARs are solid this way, but
   listing one keeps restart points, so a read after the listing fetches only from the nearest
-  point before the member. A `.tar.gz` has one about every MiB, and a `.tar.xz` written in
-  several blocks one per block. Other compressed TARs restart only where the stream starts a
+  point before the member. A `.tar.gz` has one about every MiB of the decompressed TAR, further
+  apart once the TAR passes about 800 MiB, and a `.tar.xz` written in several blocks has one per
+  block. Other compressed TARs restart only where the stream starts a
   new part, and most have just one, so a read there fetches the stream again from its start.
 - **A pass over every member**, with `stream_members()` or `extract_all()`, reads the archive
   from start to end. Archivey makes each request larger as the reads stay in order, up to 8 MiB,

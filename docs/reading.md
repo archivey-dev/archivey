@@ -11,8 +11,9 @@ trust](extracting.md#archives-you-trust) explains how to raise.
 A ZIP compresses each member on its own, so archivey can jump straight to any of them. A
 `.tar.gz` compresses the whole archive as one stream, so reaching a member in the middle means
 decompressing everything before it. Listing does that once. While it lists a `.tar.gz`, archivey
-keeps a restart point about every MiB, so a member read afterwards starts at most about 1 MiB
-before the member. Other compressed TARs restart only where the stream itself starts a new part
+keeps a restart point about every MiB of decompressed data, so a member read afterwards starts at
+most about 1 MiB before the member. Past about 800 MiB the points are spaced further apart, to keep
+their memory bounded. Other compressed TARs restart only where the stream itself starts a new part
 (a new xz block, lzip member, zstd frame or bzip3 block). Multi-threaded `xz` (`-T0`) writes
 a block about every 24 MiB at its default level, but most tools write just one part, so there
 a read usually starts again from the beginning.
