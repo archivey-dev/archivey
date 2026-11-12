@@ -1013,11 +1013,6 @@ class TarReader(BaseArchiveReader):
             if member.is_file and self._member_data_is_stream_bytes(member):
                 raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
 
-    def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
-        """Forward-only member walk. Yields bare members; the base's shared progressive
-        pass stamps ids and resolves backward links."""
-        return self._iter_members()
-
     @override
     def _pass_reads_through_walk(self) -> bool:
         """A random-access pass reads through the walk until it ends, so a compressed

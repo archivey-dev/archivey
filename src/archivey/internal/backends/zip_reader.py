@@ -876,7 +876,7 @@ def _zip_timestamps(
     if ut_field is not None:
         flags = ut_field[0]
         cursor = 1
-        for bit, ut_name in ((0x01, "mtime"), (0x02, "atime"), (0x04, "ctime")):
+        for bit in (0x01, 0x02, 0x04):
             if flags & bit and cursor + 4 <= len(ut_field):
                 ts = int.from_bytes(
                     ut_field[cursor : cursor + 4], "little", signed=True

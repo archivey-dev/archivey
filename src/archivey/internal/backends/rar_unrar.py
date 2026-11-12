@@ -630,11 +630,6 @@ def _unrar_env() -> dict[str, str] | None:
     return {**os.environ, "LC_ALL": name}
 
 
-_NUL_REFUSAL = (
-    "its stored name contains a NUL character, which cannot be passed to a subprocess"
-)
-
-
 def unrar_mask_carries_non_ascii() -> bool:
     """Whether a non-ASCII mask reaches ``unrar`` as the text it was built from.
 

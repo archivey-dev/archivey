@@ -108,7 +108,6 @@ _METHODS = {
     _LZX: CompressionAlgorithm.LZX,
 }
 _READABLE = frozenset({_STORED, _MSZIP, _LZX})
-_METHOD_NAMES = {_STORED: "stored", _MSZIP: "MSZIP", _QUANTUM: "Quantum", _LZX: "LZX"}
 
 # Read the file table this many bytes at a time.
 _TABLE_CHUNK = 65536
