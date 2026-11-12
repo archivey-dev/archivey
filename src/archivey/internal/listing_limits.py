@@ -370,7 +370,7 @@ class ListingDecodeCount:
         return self._thread is not None and self._thread == threading.get_ident()
 
     def room(self) -> int | None:
-        """Bytes left in this pass, or ``None`` when no walk step runs here."""
+        """Bytes left in this pass, or ``None`` when no listing work runs on this thread."""
         if not self._active():
             return None
         return max(0, self._cap - self._drawn)
