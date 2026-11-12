@@ -6012,6 +6012,27 @@ class RarReader(BaseArchiveReader):
 
         return _spawn
 
+    def _drawing_solid_prefix(
+        self, member: ArchiveMember, spawn: Callable[[], BinaryIO]
+    ) -> Callable[[], BinaryIO]:
+        """``spawn``, drawing from the config's budget the solid prefix each run
+        decodes and does not emit (:meth:`_solid_run`), before the process starts:
+        the pipe's own bytes are drawn as they are read, the prefix is not. A prefix
+        that does not fit is refused, drawing nothing, before any process runs."""
+        budget = self._config.budget
+        run = self._solid_run(member) if budget is not None else None
+        if budget is None or run is None or run.offset <= 0:
+            return spawn
+        prefix = run.offset
+
+        def drawing_spawn() -> BinaryIO:
+            budget._draw_whole(
+                prefix, "the solid prefix its decompressor decodes first"
+            )
+            return spawn()
+
+        return drawing_spawn
+
     def _open_spawned_member(
         self,
         member: ArchiveMember,
@@ -6031,6 +6052,7 @@ class RarReader(BaseArchiveReader):
         # corruption still map on the completing read — the exit status is only
         # known after the process ends. The boundary maps a stream source closed
         # before its first spool to disk, as every format's member open does.
+        spawn = self._drawing_solid_prefix(member, spawn)
         with self._translated_errors(member.name):
             inner = spawn()
         try:

@@ -1301,13 +1301,18 @@ class _Layer:
     ``forward`` is the walk's stream over it. ``stream`` is what ``forward`` reads: the
     streaming buffer, or a random-access walk's own view. ``shared`` (random access
     only) gives member data views of it, at the offsets ``forward`` counts.
+    ``drawn`` says a decode stage under ``stream`` draws every byte it decodes from
+    the config's budget, skipped members' bytes too, so its members draw nothing more.
     """
 
-    __slots__ = ("forward", "shared", "stream")
+    __slots__ = ("drawn", "forward", "shared", "stream")
 
-    def __init__(self, stream: BinaryIO, shared: SharedSource | None) -> None:
+    def __init__(
+        self, stream: BinaryIO, shared: SharedSource | None, *, drawn: bool
+    ) -> None:
         self.stream = stream
         self.shared = shared
+        self.drawn = drawn
         self.forward: ForwardStream
 
 
@@ -1796,7 +1801,9 @@ class SequentialReaderAdapter(_PluginAdapter):
         if self._streaming:
             stream = self._owned_stream
             assert stream is not None
-            layer = _Layer(stream, None)
+            # A compressed archive's codec stream draws from the budget
+            # (``_open_outer_codec_stream``).
+            layer = _Layer(stream, None, drawn=self._compressed)
             # Read forward only: the source may not start at offset 0 of its handle.
             walk.layer = self._layer_forward(walk, layer, seekable=False)
         else:
@@ -1825,7 +1832,11 @@ class SequentialReaderAdapter(_PluginAdapter):
             shared.view(0, None), _WALK_BUFFER, rewind_oversize=not compressed
         )
         walk.views.append(view)
-        return self._layer_forward(walk, _Layer(view, shared), seekable=not compressed)
+        # A codec under ``shared`` draws from the budget: an outer one
+        # (``_open_outer_codec_stream``) or a ``decompress()`` layer's.
+        return self._layer_forward(
+            walk, _Layer(view, shared, drawn=compressed), seekable=not compressed
+        )
 
     def _layer_forward(self, walk: _Walk, layer: _Layer, *, seekable: bool) -> _Layer:
         """Give ``layer`` the walk's ``ForwardStream`` over its stream."""
@@ -1929,13 +1940,15 @@ class SequentialReaderAdapter(_PluginAdapter):
                 collector=self._diagnostics_collector,
             )
             self._layer_streams.append(decoded)
-            decoded = self._guarded_layer(decoded)
+            decoded = self._guarded_layer(self._budget_drawn(decoded))
             assert self._source is not None
             buffered = ReadAheadStream(
                 decoded, _WALK_BUFFER, fill_arrived=not self._source.seekable()
             )
             self._layer_streams.append(buffered)
-            layer = self._layer_forward(walk, _Layer(buffered, None), seekable=False)
+            layer = self._layer_forward(
+                walk, _Layer(buffered, None, drawn=True), seekable=False
+            )
         else:
             assert parent.shared is not None
             # The parent's source is held for the reader's life (``self._shared``, or
@@ -1956,7 +1969,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 )
                 self._layer_streams.append(decoded)
                 shared = self._layer_sources[key] = SharedSource(
-                    self._guarded_layer(decoded)
+                    self._guarded_layer(self._budget_drawn(decoded))
                 )
             layer = self._random_access_layer(walk, shared, compressed=True)
         walk.layer = layer
@@ -2600,6 +2613,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             # A window and a view both stop at the data's end.
             bounded=True,
             custom_digests=record.custom,
+            # A layer a codec decodes draws there, members skipped on the way too.
+            draw_budget=not record.layer.drawn,
         )
 
     @override
