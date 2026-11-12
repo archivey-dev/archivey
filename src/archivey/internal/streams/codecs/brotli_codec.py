@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import BinaryIO
 
-from archivey.config import ProcessIsolation
+from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -108,6 +108,7 @@ class BrotliCodec(StreamCodec):
         read_at: ProbeReadAt | None = None,
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
         """Recognize a raw Brotli stream — which has no magic — by decoding a bounded prefix.
 
@@ -128,7 +129,10 @@ class BrotliCodec(StreamCodec):
                 return False
             compressed_at = walk.compressed_at
         if not self._decodes_sample(
-            prefix, source_length=source_length, isolation=isolation
+            prefix,
+            source_length=source_length,
+            isolation=isolation,
+            decoder_limits=decoder_limits,
         ):
             return False
         if compressed_at is None or source_length is None:
@@ -140,6 +144,7 @@ class BrotliCodec(StreamCodec):
             read_at=read_at,
             charge_decode=charge_decode,
             isolation=isolation,
+            decoder_limits=decoder_limits,
         )
 
     def _decodes_through(
@@ -151,6 +156,7 @@ class BrotliCodec(StreamCodec):
         read_at: ProbeReadAt | None,
         charge_decode: ProbeChargeDecode | None,
         isolation: ProcessIsolation,
+        decoder_limits: DecoderLimits,
     ) -> bool:
         """Whether the source decodes to ``CHAIN_DECODE_MARGIN`` past ``compressed_at``.
 
@@ -187,4 +193,9 @@ class BrotliCodec(StreamCodec):
         # ``source_length`` is left out on purpose: a sample that ends at EOF would
         # otherwise get the 64 KiB completeness drain, which the uncompressed copy alone
         # can fill before the decoder reaches the compressed block.
-        return self._decodes_sample(data, sample_bytes=len(data), isolation=isolation)
+        return self._decodes_sample(
+            data,
+            sample_bytes=len(data),
+            isolation=isolation,
+            decoder_limits=decoder_limits,
+        )

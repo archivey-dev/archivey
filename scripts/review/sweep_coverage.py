@@ -28,17 +28,18 @@ as unswept and the next batch brief sends an agent over code someone has already
 Without `gh` — a Claude Code session has none — page explicitly, and raise the range
 until the last page prints nothing:
 
+    url=https://api.github.com/repos/archivey-dev/archivey/issues/315/comments
     for p in 1 2 3; do \
-      curl -s "https://api.github.com/repos/archivey-dev/archivey/issues/315/comments?per_page=100&page=$p" \
+      curl -s "$url?per_page=100&page=$p" \
       | python3 -c 'import json,sys; [print(c["body"]) for c in json.load(sys.stdin)]'; \
     done | python3 scripts/review/sweep_coverage.py
 
 Any other route to the comment bodies works too — the script only cares about the marker
 lines — as long as it reaches the last page.
 
-    python3 scripts/review/sweep_coverage.py --markers markers.txt   # from a file
-    python3 scripts/review/sweep_coverage.py --unswept               # list what is left, biggest first
-    python3 scripts/review/sweep_coverage.py --by-pass               # per-batch breakdown
+    python3 scripts/review/sweep_coverage.py --markers markers.txt  # from a file
+    python3 scripts/review/sweep_coverage.py --unswept  # what is left, biggest first
+    python3 scripts/review/sweep_coverage.py --by-pass  # per-batch breakdown
 
 Counting rules, deliberately narrow:
 

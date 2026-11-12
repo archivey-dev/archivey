@@ -34,6 +34,7 @@ flags calls to them. The object is still an `ArchiveReader` at run time, and tho
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
 ::: archivey.Verification
+::: archivey.VerifyReport
 ::: archivey.MemberPass
 ::: archivey.MemberSelector
 ::: archivey.MemberListReport
@@ -100,6 +101,7 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 ::: archivey.ListingLimits
 ::: archivey.DecoderLimits
 ::: archivey.SpoolLimits
+::: archivey.Budget
 ::: archivey.AcceleratorMode
 ::: archivey.ProcessIsolation
 ::: archivey.RarDecompressor

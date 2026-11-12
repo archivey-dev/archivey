@@ -106,12 +106,17 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   not run.
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
-  files it wrote before then on disk. 7z, RAR and ISO archives check the limits before they give you
-  any member, with or without `streaming=True`. A ZIP read from a file checks the member count its
-  end record declares before any member, and the rest as it reads its index, so an index holding
-  more members than its end record says gives you members up to the limit before the error, as a TAR
-  does. A ZIP read from a pipe is checked like a TAR as its members arrive, and again on its index
-  at the end.
+  files it wrote before then on disk. 7z, RAR, ISO and XAR archives check the limits before they
+  give you any member, with or without `streaming=True`. A SquashFS image checks the member count
+  and its paths before any member, and weighs the rest of each member's text as it lists it, so with
+  `streaming=True`, text that crosses `max_metadata_bytes` gives you members up to that point before
+  the error. ar and CPIO archives check the limits as they go, like a TAR. An RPM checks the member
+  count and the size its headers declare before any member, and weighs the names as it lists them,
+  so names that cross `max_metadata_bytes` give you members up to that point before the error. A ZIP
+  read from a file checks the member count its end record declares before any member, and the rest
+  as it reads its index, so an index holding more members than its end record says gives you members
+  up to the limit before the error, as a TAR does. A ZIP read from a pipe is checked like a TAR as
+  its members arrive, and again on its index at the end.
 - **A ZIP extracted from a pipe is checked on what it stages before its index arrives.** The pass
   writes each member's data into a private `.archivey-tmp-` folder in the destination, and only the
   index at the end says which members the extraction keeps. The extraction limits count what's
@@ -269,7 +274,9 @@ in the repository measures what each limit costs in time and memory on your mach
   at the default, and up to 64 MiB more for a ZIP read from a pipe.
 - **`decoder_limits.max_decoder_memory`**, default 2 GiB, caps the memory an archive can ask a
   decoder for, and the memory of rapidgzip's process for gzip, zlib and DEFLATE. It costs the memory
-  itself.
+  itself. Detection's trial decodes are held to the same cap. A stream whose decoder is over it is
+  reported as the bare compressed format (a `.tar.zst` as `.zst`), with the diagnostic
+  `DETECTION_DECODER_LIMITED`, and the read refuses the same decoder.
 - **`decoder_limits.max_key_derivation_rounds`**, default 2^25, caps the password-hashing work per
   open archive. It costs 0.2-0.7 µs per round, 7-25 s at the default.
 - **`decoder_limits.max_ppmd_held_input`**, default 16 MiB, caps the largest PPMd member
@@ -304,6 +311,37 @@ The costs were measured on one 2.8 GHz core.
     member already goes over it. Each password you try costs the same work again.
 
 Going over a limit raises `ResourceLimitError`.
+
+These limits hold for one reader. To hold a whole job to one total, such as an upload with archives
+inside it, or a batch of archives read on several threads, put an `archivey.Budget` in the config:
+
+```python
+budget = archivey.Budget(max_decoded_bytes=1 * 2**30, max_members=100_000)
+config = archivey.ArchiveyConfig(budget=budget)
+```
+
+Every reader opened with that config, or with a copy of it, draws the bytes it decodes and the
+members it lists from the one budget, so the total is shared across readers, nested archives and
+threads. Bytes decoded only to get past a member count too: skipping members of a `.tar.gz` or a
+CAB folder to reach a later one is not free. A read that would go past the budget raises
+`ResourceLimitError`, and an extraction stops there.
+
+A budget is the total for one job, and it is meant for processing each archive once. It counts the
+work archivey does, so a byte counts again each time it is decoded again: reading a member twice,
+opening the same archive again, or seeking back in a compressed member and reading on all use more
+of it. Listing a `.tar.gz` decodes it all, so its members count once for the listing and again when
+you read them. Listing again is free: the reader keeps its member list. It never refills, so make a
+new `Budget` for each upload or request rather than keeping one on a long-lived config. The
+per-reader limits still apply. Decoder memory stays a per-decoder limit, and time and memory use are
+bounded by running the job in a process you can stop. See the [archives inside the
+upload](recipes.md#archives-inside-the-upload) recipe.
+
+For files you didn't make, `ArchiveyConfig(formats=FormatPolicy.COMMON)` opens only the formats
+people send today (ZIP, TAR, RAR, 7z, and gzip, bzip2, xz and zstd) and refuses ZIP members in the
+methods only PKZIP 1.x and earlier wrote, so the readers and pure-Python decoders for everything
+else never run on them ([Configuration](opening.md#configuration)). It narrows which code runs,
+not how long it runs: a 7z member's BCJ2 filter and ZipCrypto still decode in Python, so a time
+bound still needs a worker you can stop.
 
 If you know which formats you accept, a [`FormatPolicy`](opening.md#configuration) with an
 `only=` list refuses the rest before any reader runs on them, including formats a later archivey

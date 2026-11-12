@@ -12,20 +12,19 @@ as a built-in, as CAB, XAR and ar are.
 | --- | --- |
 | Read | Yes. `internal/backends/lha_reader.py`, a `LhaHandler` (`IndexedFormatHandler`) and a `LhaReader` (`IndexedReader`), registered with `register_builtin_format` |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
-| Source | A file or a stream that can seek. Not a pipe, for now: the listing seeks past each member's data to the next header |
+| Source | A file or a stream that can seek, from its start or behind a self-extracting stub (§2.6). Not a pipe, for now: the listing seeks past each member's data to the next header |
 | Listing cost | Header by header, one read per header and a seek past the data |
 | Access cost | `DIRECT`: each member is its own stream |
-| Core dependencies | None. The LZH methods through `internal/streams/codecs/lzh_decoder.py`, archivey's own, in Python |
+| Core dependencies | None. The LZH methods through `internal/streams/codecs/lzh_decoder.py` and `lharc_decoder.py`, archivey's own, in Python |
 | Encryption | None in the format |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
 | Checksums | A CRC-16/ARC of each member's data, checked by the read; an 8-bit header sum (levels 0 and 1) or a header CRC-16 (the common record, levels 1 to 3), checked when the header is read |
 | Refuses | Methods it does not decode, when read; a header level past 3; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-lha/spec.md` |
 
-Not here, though a reader might look for it: self-extracting archives (the archive after
-a DOS, Windows, Amiga or X68000 stub) are not searched for; MacLHA's MacBinary members
-read with the MacBinary wrapper still around their data; the `-lh1-`, `-lzs-`, `-lz5-`,
-`-pm1-` and `-pm2-` methods are not decoded; multi-volume archives (a `0x39` record) are
+Not here, though a reader might look for it: PMarc's `-pm1-` and `-pm2-`
+methods are not decoded; MacLHA's resource fork, when the member has a data fork too, is
+dropped as lhasa drops it; multi-volume archives (a `0x39` record) are
 not joined; OS/2 extended attributes and MorphOS LhA's comment record (`0x71`) are not
 read, as lhasa does not read them.
 
@@ -110,11 +109,33 @@ The end: no zero byte after the last member reports `ARCHIVE_EOF_MARKER_MISSING`
 Macintosh, `w` VFAT, `W` NTFS, `C` CP/M, `a` Atari ST, `' '` LHARK on DOS; others
 `UNKNOWN`).
 
+MacBinary: MacLHA (OS id `m`) stores a Mac file as a MacBinary file, a 128-byte header
+(name, Finder type and creator, fork lengths, Mac times) and then the data and resource
+forks, padded to 128 bytes. The header has no magic, so the listing follows lhasa's
+`macbinary.c`: for a `FILE` member with OS id `m` and a size of 128 or more, it decodes
+the first 128 bytes and accepts them only when the version and reserved bytes are zero,
+the name is the member's own name (its last part, zero-padded to 63 bytes), the fork
+lengths plus 128, rounded up to 128, are the member's size, and the modification time is
+within 14 hours (a time zone) of the header's (a DOS time is read as UTC here). A
+member that passes reads as its data fork, or its resource fork when the data fork is
+empty: `size` is that fork's length, and `lha.mac_type` and `lha.mac_creator` (4 bytes
+each) join `extra`. A member that fails reads whole, so an archived MacBinary file, which
+rarely matches the name and the time, keeps its wrapper. Level 0 has no OS id, so its
+members keep their wrapper, as in lhasa. The check costs one decode of 128 bytes per
+such member at listing; a member that fails to decode is left as it is, and its read
+fails as before.
+
 ### 2.3 Read
 
 A stored member is a view of its data. An LZH member is decoded by `LzhDecoder`, which
 reads the data 64 KiB at a time. Both check the CRC-16 as the read reaches the end, so a
-member read whole is `Verification.CHECKSUM`. A method archivey does not decode raises
+member read whole is `Verification.CHECKSUM`. A MacBinary member is read through
+`_MacBinaryStream`: it drops the 128-byte header, returns the fork, and with the fork's
+last byte decodes the rest and checks the CRC-16 itself (`checked=True`), since the CRC
+covers bytes the caller never sees. The member handle's ratio guard never sees those bytes either,
+so `open_member` refuses the member first when the header's whole size breaks
+`max_ratio` against its stored size (the recorded-sizes check), as the unwrapped bytes
+would be refused. A method archivey does not decode raises
 `UnsupportedFeatureError` when read; it is listed like any other member, with
 `compression` `LZH` for any `-lh?-` method and `UNKNOWN` for the rest.
 
@@ -138,21 +159,72 @@ LZX: with the fullest tables the format allows, about 2.2 µs an input byte (CPy
 The hot loop keeps the bit buffer and both tables in locals and reads a whole command
 without a call: about 8 MB/s on text, 4 to 5 on random data (CPython 3.11).
 
+### 2.5 The older methods
+
+`lharc_decoder.py` holds `-lh1-` (LHarc's LZHUF: one adaptive Huffman tree of 314
+symbols, rebuilt with halved counts when its root reaches 32 768, and a fixed code for
+the high part of each distance), and LArc's `-lzs-` (a 2 KiB ring, bit commands) and
+`-lz5-` (a 4 KiB ring that starts with a fixed pattern, flag bytes). They follow lhasa's
+`lh1_decoder.c`, `lzs_decoder.c` and `lz5_decoder.c`. None of their codes can name a byte
+outside its window, so the only damage they see before the CRC is input that ends
+early. They share `LzhDecoder`'s input and output (`LhaBitDecoder` in
+`lzh_decoder.py`): past the input they read zeros, at most 32 bytes, and refuse output
+that needed them (`TruncatedError`). On lhasa's fixtures (the 18 092-byte GPL text,
+CPython 3.11), `-lzs-` and `-lz5-` decode about 4.7 MB/s and `-lh1-` about 1.8 MB/s,
+against 7 for `-lh5-` on the same text: `-lh1-` updates its tree after every symbol.
+
+### 2.6 Self-extracting archives
+
+An LHA self-extractor is a program with the archive after it: DOS `.COM` and `.EXE`
+stubs (LHarc, LHA, LArc, PMarc), Windows (LHMelt's WinSFX, ExpLzh's DECLHA), the Amiga
+(LhASFX), the Atari ST and the X68000. The archive is found by its first header, as
+lhasa finds it, but with the shared SFX scan (`internal/sfx.py`): the method at offset 2
+of a header is the needle (`SFX_MAGIC`, offset 2), and `_validate_header` reads the
+header there and checks its sum or CRC, so a stub that names the methods in its code is
+passed over. Detection runs it behind an executable cue, and as the leading-bytes scan
+when nothing else matched: a `.COM`, Amiga hunk or Atari TOS stub has no cue.
+`LhaReader` runs the same scan itself when byte 2 is not a method, so a forced
+`format=LHA` reads what detection finds (`SFX_PARSER_SCANS`).
+
+Where lhasa skips the first header after the names `LHA-SFX` and `LhASFX V1.2,`, the
+validator walks the members after the first instead: an archive that ends, with more
+than padding after its end byte, before the file does is `VALID_SHORT`, and the scan
+looks on. Amiga LhASFX keeps its usage text as such an archive inside the stub. The walk
+stops after `_WALK_MAX` (8) members and then grades the candidate `VALID`, so a decoy of
+nine or more members is taken: a window of valid headers makes each one a candidate,
+and an unbounded walk from each costs time quadratic in the window. A next header that
+does not read grades the candidate `DAMAGED`, so a stub header that passes its 8-bit sum
+by chance loses to the real archive; opening still falls back to it. ExpLzh's
+DECLHA stubs carry no decoy, and lhasa's skip passes over their real archive (it lists
+nothing); archivey reads it.
+
+The format API gives a reader no start offset, so `register_builtin_format` sets
+`SFX_MAGIC` for LHA and `IndexedReaderAdapter` reads detection's `[payload_offset,
+payload_end)` as the reader's whole source (`ReadBackend.open_read`'s promise). A plugin
+cannot declare `SFX_MAGIC`, and still refuses an offset.
+
+Measured once (2026-11-09) on lhasa's 15 self-extractors: the 12 lhasa extracts read the
+same, auto-detected and forced; PMarc's is listed and its `-pm2-` member refused; the two
+DECLHA ones read the GPL text lhasa does not reach.
+
 ## 3. Tests
 
 `tests/test_lha.py`. Archives are written at test time by `tests/lha_util.py`, which
 writes headers of every level and holds an `-lh4-` to `-lh7-` encoder (no Linux tool
 here writes LHA; lhasa only extracts). lhasa reads every archive the tests write (checked
 whenever it is installed), so the decoder is not checked only against its own reading.
-Eighteen archives from lhasa's test suite, written by ten tools, are in
+Twenty-two archives from lhasa's test suite, written by eleven tools and by hand, are in
 `tests/fixtures/external/lha_lhasa/`: every decoded method, every header level, Unix and
-OS-9 modes, symlinks, directories, LHARK and a refused `-lh1-`. Commons Compress's fifteen
+OS-9 modes, symlinks, directories, LHARK, `-lh1-`, `-lzs-` and `-lz5-` (one crafted to
+copy the whole starting ring). Commons Compress's fifteen
 LHA archives match its listing (`tests/test_commons_compress_corpus.py`).
 
 Measured once (2026-11-09) against lhasa 0.4.0 on lhasa's whole test suite and
 libarchive's LHA tests, 247 files: every member lhasa extracts with a method archivey
 decodes read byte for byte the same. The differences were the methods not decoded yet,
-self-extracting programs, MacBinary members, and a few damaged archives: where lhasa
+self-extracting programs, MacBinary members (read with their wrapper then; since
+stripped, and lhasa's sixteen MacLHA 2.24 archives match its CRCs), and a few damaged
+archives: where lhasa
 stops quietly (a name past its header, a 4 GB level-3 header), archivey raises
 `CorruptionError`, and where lhasa stops at an empty name, archivey lists the members
 after it.

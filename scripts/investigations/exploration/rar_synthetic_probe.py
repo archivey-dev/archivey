@@ -23,7 +23,8 @@ header decryption reuses archivey's KDF helpers (``-hp`` rows need
 ``cryptography``):
 
     uv run python scripts/investigations/exploration/rar_synthetic_probe.py
-    uv run python scripts/investigations/exploration/rar_synthetic_probe.py --files 5000 --json /tmp/s.json
+    uv run python scripts/investigations/exploration/rar_synthetic_probe.py \\
+        --files 5000 --json /tmp/s.json
 """
 
 from __future__ import annotations

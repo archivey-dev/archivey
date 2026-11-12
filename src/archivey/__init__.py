@@ -33,6 +33,7 @@ from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
     AcceleratorMode,
     ArchiveyConfig,
+    Budget,
     DecoderLimits,
     ExtractionLimits,
     ListingLimits,
@@ -68,6 +69,7 @@ from archivey.diagnostics import (
     ExtractionReport,
     MemberListReport,
     OnDiagnostic,
+    VerifyReport,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -148,6 +150,7 @@ __all__ = [
     "ArchiveyConfig",
     "ArchiveyError",
     "ArchiveyUsageError",
+    "Budget",
     "CompressionAlgorithm",
     "CompressionMethod",
     "ContainerFormat",
@@ -217,6 +220,7 @@ __all__ = [
     "TruncatedError",
     "UnsupportedFeatureError",
     "Verification",
+    "VerifyReport",
     "__version__",
     "detect_format",
     "format_availability",

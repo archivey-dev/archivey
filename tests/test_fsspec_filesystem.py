@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import threading
+import time
 import warnings
 import weakref
 import zipfile
@@ -35,6 +36,7 @@ from archivey import (  # noqa: E402
 )
 from archivey.fsspec import ArchiveyFileSystem  # noqa: E402
 from tests.conftest import case_sensitive  # noqa: E402
+from tests.memory_util import traced_peak  # noqa: E402
 
 
 @pytest.fixture
@@ -293,6 +295,19 @@ def _listed(fs: ArchiveyFileSystem) -> dict[str, tuple[Any, ...]]:
     return out
 
 
+def _tree_paths(fs: ArchiveyFileSystem) -> set[str]:
+    """Every path in the file system's tree, each one ``info`` answers by its exact
+    name: a node's path is its parents' components."""
+    out: set[str] = set()
+    stack = [("", fs._get_tree().root)]
+    while stack:
+        prefix, node = stack.pop()
+        for part, child in (node.children or {}).items():
+            out.add(prefix + part)
+            stack.append((f"{prefix}{part}/", child))
+    return out
+
+
 def test_a_hard_link_to_a_symlink_reads_its_target_from_its_own_directory(
     memfs: Any, tmp_path: Path
 ) -> None:
@@ -461,8 +476,7 @@ def test_tree_matches_extraction_on_links_and_collisions(
     with ArchiveyFileSystem("memory://d/lc.tar", policy=policy) as fs:
         written = _written(dest)
         listed = _listed(fs)
-        assert fs.dir_cache is not None
-        cached = set(fs.dir_cache)
+        cached = _tree_paths(fs)
         folded: list[str] = []
         if not case_sensitive(tmp_path):
             # A disk that folds case (Windows, macOS) cannot hold these beside the
@@ -506,9 +520,168 @@ def test_a_name_nested_far_past_the_recursion_limit_is_listed(memfs: Any) -> Non
         assert fs.du("") == 4
 
 
+def test_the_tree_grows_with_the_names_not_with_their_depth() -> None:
+    """The tree holds one node per component, never a path string per directory, so
+    a name 8000 components deep in a 20 KB TAR costs memory in proportion to its
+    length: 132 MB with a full path for every ancestor (S48-K4)."""
+    data = _tar_entries([("file", "a/" * 8000 + "f", b"deep")])
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        fs.reader.members()  # the reader's own listing is not the tree's
+        peak = traced_peak(lambda: fs.ls(""))
+        start = time.perf_counter()
+        assert fs.find("") == ["a/" * 8000 + "f"]
+        elapsed = time.perf_counter() - start
+    # Measured: under 6 MB, and under 0.05 s for the walk, which lists each
+    # directory from its node, not from its path.
+    assert peak < 32 * 2**20
+    assert elapsed < 2.0
+
+
+def test_a_target_longer_than_a_symlink_can_hold_is_refused_unwalked() -> None:
+    """A target over 4096 bytes is refused before it is walked, as ``symlink()``
+    refuses it once extraction has made the parents: a target of 60 000 ``./``
+    components took 8 s to list, and was listed (S48-K5)."""
+    data = _tar_entries(
+        [("dir", "d", ""), ("sym", "p/s", "./" * 60_000 + "d"), ("sym", "t", "d")]
+    )
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        fs.reader.members()
+        start = time.perf_counter()
+        assert fs.find("", withdirs=True) == ["d", "p", "t"]
+        elapsed = time.perf_counter() - start
+        (refusal,) = [
+            d
+            for d in fs.reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_PATH_REFUSED
+        ]
+        assert refusal.context.member_name == "p/s"
+        assert "longer than 4096 bytes" in refusal.context.reason
+    # Measured: under 0.01 s. The bound is loose for slow CI runners.
+    assert elapsed < 2.0
+
+
+def test_a_target_of_4096_bytes_resolves() -> None:
+    target = "./" * 2047 + "d"  # 4095 bytes, as long as Linux writes
+    data = _tar_entries([("dir", "d", ""), ("sym", "s", target), ("file", "d/f", b"F")])
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        assert fs.info("s")["type"] == "directory"
+        assert fs.cat("s/f") == b"F"
+
+
+@pytest.mark.parametrize("end", ["nope", "f"], ids=["missing", "file"])
+def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(end: str) -> None:
+    """A walk that ends on a missing name or on a file, or is refused, is held until
+    a member makes a name it found missing. Here 2000 names and 2000 links go
+    through a chain of 20 links, each 2400 components long (``d/..`` cannot be
+    skipped unwalked: ``d`` could be a link), which ends on ``end``."""
+    entries: list[tuple[str, str, bytes | str]] = [
+        ("dir", "d", ""),
+        ("file", "f", b"F"),
+    ]
+    entries += [("sym", f"l{n}", "d/../" * 800 + f"l{n + 1}") for n in range(19)]
+    entries.append(("sym", "l19", "d/../" * 800 + end))
+    entries += [("file", f"l0/{n}", b"") for n in range(2000)]
+    entries += [("sym", f"x{n}", "l0") for n in range(2000)]
+    data = _tar_entries(entries)
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        fs.reader.members()
+        start = time.perf_counter()
+        assert fs.info("x1999")["type"] == ("file" if end == "f" else "other")
+        elapsed = time.perf_counter() - start
+        assert not fs.exists("l0/0")
+    # Measured: under 0.3 s, and 4.4 s to 12.7 s with every walk done again.
+    assert elapsed < 2.0
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        # A's check holds K's walk, which finds p missing; p/z then makes p.
+        [("sym", "K", "p"), ("sym", "A", "K/z"), ("file", "p/z", b"Z")],
+        # J's held walk follows K's: making p drops both.
+        [
+            ("sym", "K", "p"),
+            ("sym", "J", "K"),
+            ("sym", "A", "J/z"),
+            ("file", "p/z", b"Z"),
+        ],
+        # K/a is refused while p is missing; K/b is written once p/z made p.
+        [("sym", "K", "p"), ("file", "K/a", b""), ("file", "p/z", b"Z")],
+    ],
+    ids=["made-later", "through-a-held-link", "names-under-it"],
+)
+def test_a_held_walk_is_dropped_when_its_missing_name_is_made(
+    entries: list[tuple[str, str, bytes | str]],
+) -> None:
+    data = _tar_entries([*entries, ("sym", "M", "K/z"), ("file", "K/b", b"B")])
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        assert fs.cat("M") == b"Z"
+        assert fs.cat("p/b") == b"B"
+        if any(name == "A" for _, name, _ in entries):
+            assert fs.cat("A") == b"Z"
+
+
+def test_a_link_that_many_paths_go_through_is_walked_once() -> None:
+    """A link's walk is kept once it met no missing component: 2000 names under a
+    link to a directory 400 deep, and 2000 links through it, took 5 s to list when
+    each walked the target again.
+
+    400 deep, not deeper: the strict check resolves the link's target as a path,
+    and on macOS (``PATH_MAX`` 1024) a longer one cannot be looked up, so
+    extraction there refuses the link."""
+    deep = "d/" * 400
+    entries: list[tuple[str, str, bytes | str]] = [
+        ("dir", deep, ""),
+        ("sym", "l", deep),
+    ]
+    entries += [("file", f"l/{n}", b"%d" % n) for n in range(2000)]
+    entries += [("sym", f"x{n}", "l") for n in range(2000)]
+    data = _tar_entries(entries)
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        fs.reader.members()
+        start = time.perf_counter()
+        assert fs.info("x1999")["type"] == "directory"
+        elapsed = time.perf_counter() - start
+        assert fs.cat("x7/7") == b"7"
+        assert fs.cat(deep + "1999") == b"1999"
+    # Measured: under 0.15 s.
+    assert elapsed < 2.0
+
+
+def test_a_walk_kept_for_a_refused_link_is_dropped() -> None:
+    """``p/n`` is refused (``d/L`` leads it out), and the directory ``p`` made for it
+    is removed. Its target went through ``K -> p``, which then reached that ``p``:
+    a walk kept from there would make ``M -> K/z`` miss the ``p`` made later."""
+    data = _tar_entries(
+        [
+            ("dir", "d", ""),
+            ("sym", "d/L", ".."),
+            ("sym", "K", "p"),
+            ("sym", "p/n", "../K/../d/L/.."),
+            ("file", "p/z", b"Z"),
+            ("sym", "M", "K/z"),
+        ]
+    )
+    with ArchiveyFileSystem(io.BytesIO(data)) as fs:
+        assert fs.find("", withdirs=True) == ["K", "M", "d", "d/L", "p", "p/z"]
+        assert fs.cat("M") == b"Z"
+
+
+def test_a_closed_file_system_lists_nothing(hostile: str) -> None:
+    """``close`` drops the tree, so a listing made before it is not served after it
+    (S48-K6): ``ls`` and ``info`` raise as they do when nothing listed first."""
+    fs = ArchiveyFileSystem(hostile)
+    assert fs.ls("", detail=False)
+    fs.close()
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+    with pytest.raises(ArchiveyUsageError):
+        fs.info("c.txt")
+    assert fs._tree is None
+
+
 def test_walk_matches_fsspecs_own(memfs: Any) -> None:
     """The stack-based ``walk`` yields what fsspec's recursive one does."""
-    from fsspec.archive import AbstractArchiveFileSystem
     from fsspec.spec import AbstractFileSystem
 
     names = {"a/b/c.txt": b"1", "a/d.txt": b"2", "e/f/g/h.txt": b"3", "i.txt": b"4"}
@@ -526,12 +699,16 @@ def test_walk_matches_fsspecs_own(memfs: Any) -> None:
             theirs = list(AbstractFileSystem.walk(fs, "", **kwargs))
             assert ours == theirs, kwargs
         assert list(fs.walk("a")) == list(AbstractFileSystem.walk(fs, "a"))
-        # ``ls`` from the index matches fsspec's scan of the whole cache.
-        for path in ("", "a", "a/", "a/b", "e/f"):
-            for detail in (True, False):
-                assert fs.ls(path, detail=detail) == AbstractArchiveFileSystem.ls(
-                    fs, path, detail=detail
-                )
+        # ``ls`` lists one directory's entries, sorted, each as ``info`` gives it.
+        for path, expected in (
+            ("", ["a", "e", "i.txt"]),
+            ("a", ["a/b", "a/d.txt"]),
+            ("a/", ["a/b", "a/d.txt"]),
+            ("a/b", ["a/b/c.txt"]),
+            ("e/f", ["e/f/g"]),
+        ):
+            assert fs.ls(path, detail=False) == expected
+            assert fs.ls(path, detail=True) == [fs.info(name) for name in expected]
         # A file lists as itself, as current fsspec's ``ls`` does; the oldest
         # fsspec CI installs lists nothing, so this is not compared with it.
         for path in ("a/b/c.txt", "i.txt"):
@@ -761,3 +938,58 @@ def test_dask_bag_reads_members(tmp_path: Path) -> None:
     archive.write_bytes(_zip_bytes([("a.txt", b"1\n2\n"), ("b.txt", b"3\n")]))
     bag = db.read_text(f"archivey://*.txt::{archive.as_posix()}")
     assert sorted(bag.compute(scheduler="threads")) == ["1\n", "2\n", "3\n"]
+
+
+_DASK_IN_PROCESSES = """
+import multiprocessing, sys
+from concurrent.futures import ProcessPoolExecutor
+
+import dask.bag as db
+import dask.dataframe as dd
+
+outer, flat = sys.argv[1:]
+# spawn starts each worker from nothing, so a task reaches it only pickled, as on a
+# dask cluster.
+with ProcessPoolExecutor(2, mp_context=multiprocessing.get_context("spawn")) as pool:
+    bag = db.read_text(f"archivey://*.txt::archivey://inner.zip::{outer}")
+    lines = sorted(bag.compute(scheduler="processes", pool=pool))
+    assert lines == ["1\\n", "2\\n", "3\\n"], lines
+    frame = dd.read_csv(f"archivey://p/*.csv::{flat}")
+    assert frame.npartitions == 2, frame.npartitions
+    total = frame["n"].sum().compute(scheduler="processes", pool=pool)
+    assert total == 6, total
+print("ok")
+"""
+
+
+def test_pandas_reads_through_a_nested_chain(memfs: Any) -> None:
+    pd = pytest.importorskip("pandas")
+    inner = _zip_bytes([("t.csv", b"x\n5\n6\n")])
+    memfs.pipe("/d/outer.tar", _tar_bytes({"inner.zip": inner}))
+    frame = pd.read_csv("archivey://t.csv::archivey://inner.zip::memory://d/outer.tar")
+    assert frame["x"].tolist() == [5, 6]
+
+
+def test_dask_worker_processes_read_through_the_file_system(tmp_path: Path) -> None:
+    """dask's process scheduler pickles each task's file system into a worker.
+
+    It runs in its own interpreter: the pool's resource tracker would otherwise stay a
+    child of the test process for the rest of the session. ``memory://`` is per
+    process, so the archives are local files.
+    """
+    pytest.importorskip("dask.bag")
+    pytest.importorskip("dask.dataframe")
+    outer = tmp_path / "outer.tar"
+    inner = _zip_bytes([("a.txt", b"1\n2\n"), ("b.txt", b"3\n")])
+    outer.write_bytes(_tar_bytes({"inner.zip": inner}))
+    flat = tmp_path / "t.zip"
+    flat.write_bytes(_zip_bytes([("p/a.csv", b"n\n1\n2\n"), ("p/b.csv", b"n\n3\n")]))
+    done = subprocess.run(
+        [sys.executable, "-c", _DASK_IN_PROCESSES, outer.as_posix(), flat.as_posix()],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "ok"

@@ -1,5 +1,5 @@
 """LHA's static-Huffman LZ77 methods (``-lh4-`` to ``-lh7-``, ``-lhx-``, ``-lk7-``),
-decoded in Python.
+and ARJ's methods 1 to 3, which are the same format, decoded in Python.
 
 LHA 2 replaced LHarc's ``-lh1-`` with these methods, and later tools added larger
 windows. They share one bit stream layout: blocks of up to 65 535 commands, each block
@@ -9,7 +9,7 @@ bit stream is read most significant bit first. A member is one stream, decoded o
 own: LHA is not solid.
 
 The decoder follows lhasa's ``lh_new_decoder.c`` (the tool Debian ships as ``lha``),
-and so agrees with it on every stream lhasa reads:
+and so agrees with it on every LHA stream lhasa reads:
 
 - the window starts filled with spaces, so a match that reaches back before the first
   byte of output copies spaces;
@@ -19,7 +19,12 @@ and so agrees with it on every stream lhasa reads:
   another distance coding, after Jason Summers' notes on LHARK;
 - a table with a zero count is a single symbol coded with no bits;
 - a count over the table's size is cut to its size, as lhasa does;
-- decoding stops at the member's size, and input left after it is ignored.
+- decoding stops at the member's size, and input left after it is ignored;
+- ARJ methods 1 to 3 (the ``"arj"`` entry) are ``-lh6-``'s layout with ARJ's 26 624-byte
+  dictionary. A match before the first byte of output copies the window's spaces there
+  too: ARJ's own decoder reads an uninitialised buffer instead, ARJ writers never make
+  such a match, and the member's CRC-32 refuses the result. That is archivey's choice;
+  ``arj_fast_decoder`` (method 4) refuses the same match as ``CorruptionError``.
 
 Where lhasa decodes damage into bytes the CRC then refuses, this decoder raises
 ``CorruptionError`` at once: a code length over 16 bits, a table that overfills or
@@ -32,6 +37,7 @@ from collections.abc import Callable
 from typing import NamedTuple
 
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.huffman_table import MAX_CODE, Tree, build_table
 
 
@@ -54,6 +60,9 @@ METHODS: dict[str, LzhMethod] = {
     # UNLHA32's extension: a 512 KiB dictionary, which lhasa decodes in a 1 MiB ring.
     "-lhx-": LzhMethod(20, 5, 510),
     "-lk7-": LzhMethod(16, 6, 289, lhark=True),
+    # ARJ methods 1 to 3: the same stream, from the same ar002 code, with a 26 624-byte
+    # dictionary (unarj's DDICSIZ) and offset codes up to 16 (NP 17, PBIT 5).
+    "arj": LzhMethod(15, 5, 510),
 }
 
 _TEMP_COUNT_BITS = 5
@@ -77,37 +86,42 @@ def _single(symbol: int) -> Tree:
     return [symbol << 5], 0
 
 
-class LzhDecoder:
-    """Decodes one member's stream, ``size`` bytes of output.
+class LhaBitDecoder:
+    """The input and output every LHA method's decoder shares.
 
-    ``more`` returns the next run of the member's stored bytes, or ``None`` at their
-    end. :meth:`read` returns the output in order, and ``b""`` once ``size`` bytes
-    have been returned.
+    ``size`` bytes are decoded from the runs of input ``more`` returns (``None`` at
+    their end); :meth:`read` returns them in order, and ``b""`` once all have been
+    returned. The output buffer starts with ``history``, the window as it stands
+    before the first byte, and keeps that many bytes behind the output it hands over.
+    Input bits are read most significant first. Subclasses decode in
+    :meth:`_decode`.
     """
 
     def __init__(
-        self, method: str, size: int, more: Callable[[], bytes | None]
+        self,
+        method: str,
+        size: int,
+        more: Callable[[], bytes | None],
+        history: bytes = b"",
     ) -> None:
-        params = METHODS[method]
         self._method = method
-        self._params = params
-        self._ring = 1 << params.window_bits
         self._more = more
         self._left = size  # output bytes not yet decoded
         # History, then output not yet handed over from ``_start``.
-        self._out = bytearray(b" " * self._ring)
-        self._start = self._ring
+        self._history = len(history)
+        self._out = bytearray(history)
+        self._start = len(history)
         # Input: unread bytes from ``_pos``, and a bit buffer of ``_nbits`` bits.
         self._buf = b""
         self._pos = 0
         self._bits = 0
         self._nbits = 0
         self._padding = 0  # zero bytes appended past the end of the input
-        self._block_left = 0
-        self._commands: Tree = _EMPTY
-        self._offsets: Tree = _EMPTY
 
-    # ── Input ────────────────────────────────────────────────────────────────────────
+    def _truncated(self) -> TruncatedError:
+        return TruncatedError(
+            f"the {self._method} stream ends before the member's data"
+        )
 
     def _refill(self, need: int = 24) -> None:
         """Make at least ``need`` bits available. Past the end of the input come zero
@@ -120,9 +134,7 @@ class LzhDecoder:
                 if data is None:
                     # A real stream reads at most a few bytes ahead of its last code.
                     if self._padding >= _MAX_PADDING:
-                        raise TruncatedError(
-                            f"the {self._method} stream ends before the member's data"
-                        )
+                        raise self._truncated()
                     self._padding += 16
                     data = bytes(16)
                 elif not data:
@@ -136,12 +148,51 @@ class LzhDecoder:
         self._bits, self._nbits = bits & ((1 << nbits) - 1), nbits
 
     def _check_overread(self) -> None:
-        if self._padding and self._padding * 8 > (len(self._buf) - self._pos) * 8 + (
-            self._nbits
-        ):
-            raise TruncatedError(
-                f"the {self._method} stream ends before the member's data"
-            )
+        """Refuse output that needed the zero bytes past the input."""
+        if self._padding * 8 > (len(self._buf) - self._pos) * 8 + self._nbits:
+            raise self._truncated()
+
+    def _finish(self) -> None:
+        """Cut what the last command wrote past the member's end, then refuse output
+        that needed the zero bytes past the input."""
+        if self._left < 0:
+            del self._out[len(self._out) + self._left :]
+            self._left = 0
+        self._check_overread()
+
+    def _decode(self, want: int) -> None:
+        """Decode at least ``want`` more bytes, or to the member's end."""
+        raise NotImplementedError
+
+    def read(self, n: int) -> bytes:
+        if n <= 0:
+            return b""
+        out = self._out
+        if len(out) - self._start < n and self._left > 0:
+            self._decode(max(n, _CHUNK))
+        data = bytes(out[self._start : self._start + n])
+        self._start += len(data)
+        # Drop handed-over output beyond the history.
+        if self._start > self._history + 4 * _CHUNK:
+            cut = self._start - self._history
+            del out[:cut]
+            self._start -= cut
+        return data
+
+
+class LzhDecoder(LhaBitDecoder):
+    """Decodes one ``-lh4-`` to ``-lh7-``, ``-lhx-`` or ``-lk7-`` stream."""
+
+    def __init__(
+        self, method: str, size: int, more: Callable[[], bytes | None]
+    ) -> None:
+        params = METHODS[method]
+        self._params = params
+        self._ring = 1 << params.window_bits
+        super().__init__(method, size, more, b" " * self._ring)
+        self._block_left = 0
+        self._commands: Tree = _EMPTY
+        self._offsets: Tree = _EMPTY
 
     def _read(self, n: int) -> int:
         if n == 0:
@@ -246,6 +297,7 @@ class LzhDecoder:
 
     # ── Commands ─────────────────────────────────────────────────────────────────────
 
+    @override
     def _decode(self, want: int) -> None:
         """Decode until ``want`` bytes wait from ``_start``, or the member ends."""
         out = self._out
@@ -354,22 +406,4 @@ class LzhDecoder:
             self._bits, self._nbits = bits, nbits
             self._block_left = left
             self._left -= len(out) - before
-        if self._left < 0:  # the last match ran past the member's end
-            del out[len(out) + self._left :]
-            self._left = 0
-        self._check_overread()
-
-    def read(self, n: int) -> bytes:
-        if n <= 0:
-            return b""
-        out = self._out
-        if len(out) - self._start < n:
-            self._decode(max(n, _CHUNK))
-        data = bytes(out[self._start : self._start + n])
-        self._start += len(data)
-        # Drop handed-over output beyond the window.
-        if self._start > self._ring + 4 * _CHUNK:
-            cut = self._start - self._ring
-            del out[:cut]
-            self._start -= cut
-        return data
+        self._finish()

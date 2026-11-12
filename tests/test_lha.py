@@ -30,6 +30,7 @@ from archivey import (
     open_archive,
 )
 from archivey.internal.backends import lha_reader
+from archivey.internal.streams.codecs.lharc_decoder import DECODERS
 from archivey.internal.streams.codecs.lzh_decoder import LzhDecoder
 from tests.lha_util import (
     BitWriter,
@@ -40,6 +41,7 @@ from tests.lha_util import (
     member_bytes,
     write_block,
 )
+from tests.pe_build import pe_file
 from tests.streams_util import ShortReadBytesIO
 
 LHASA = Path(__file__).parent / "fixtures" / "external" / "lha_lhasa"
@@ -177,7 +179,11 @@ _LHASA_EXPECTED: dict[str, dict[str, str]] = {
         "hello.txt": "0d74c782a0fd7503",
         "Apply-Ea.Cmd": "a4c66230678086f4",
     },
-    "lha_amiga_122_lh1.lzh": {"gpl-2": "UnsupportedFeatureError"},
+    "generated_lzs.lzs": {"GPL-2": "8177f97513213526"},
+    "larc333_initial.lzs": {"initial.bin": "9ca4f11d7f7f42b5"},
+    "larc333_lz5.lzs": {"GPL-2": "8177f97513213526"},
+    "lha_amiga_122_lh1.lzh": {"gpl-2": "8177f97513213526"},
+    "lharc113_lh1.lzh": {"GPL-2": "8177f97513213526"},
     "lha_amiga_122_lh4.lzh": {"gpl-2": "8177f97513213526"},
     "lha_amiga_122_subdir.lzh": {"subdir/subdir2/hello.txt": "a948904f2f0f479b"},
     "lha_os2_208_h3_lh5.lzh": {"GPL-2": "8177f97513213526"},
@@ -197,6 +203,17 @@ _LHASA_EXPECTED: dict[str, dict[str, str]] = {
         "subdir/subdir2/hello.txt": "a948904f2f0f479b",
     },
     "lha_unix114i_h2_symlink2.lzh": {"symlink": "-> path/to/target"},
+    # MacLHA 2.24: the MacBinary wrapper stripped, except at level 0, which has no
+    # OS id (lhasa keeps it there too).
+    "maclha_224_l0_lh5.lzh": {"gpl-2": "08b05120143644fa"},
+    "maclha_224_l1_lh0.lzh": {"gpl-2.gz": "5c423e9bdf915d23"},
+    "maclha_224_l1_lh1.lzh": {"gpl-2": "8177f97513213526"},
+    "maclha_224_l1_nm_lh5.lzh": {"gpl-2": "8177f97513213526"},
+    "maclha_224_l1_subdir.lzh": {"subdir/subdir2/hello.txt": "b94d27b9934d3e08"},
+    "maclha_224_l2_full_subdir.lzh": {
+        "/Untitled/subdir/subdir2/hello.txt": "b94d27b9934d3e08"
+    },
+    "maclha_224_l2_lh5.lzh": {"gpl-2": "8177f97513213526"},
     "lhark04d_lh7.lzh": {"GPL-2": "8177f97513213526"},
     "morphos_lha_2717_h2_metadata.lzh": {"metadata.txt": "23b17d47b897a5d8"},
     "pmarc2_pm0.pma": {"GPL-2.GZ": "0cb1a4b3dbb909a8"},
@@ -204,6 +221,9 @@ _LHASA_EXPECTED: dict[str, dict[str, str]] = {
 }
 """Each fixture's members: a file's SHA-256 prefix (what lhasa extracts), a symlink's
 target, or the member type."""
+
+# Hand-made by lhasa's author, without the end byte.
+_NO_END_BYTE = frozenset({"generated_lzs.lzs", "larc333_initial.lzs"})
 
 
 @pytest.mark.parametrize("fixture", sorted(_LHASA_EXPECTED))
@@ -224,7 +244,10 @@ def test_lhasa_fixtures(fixture: str) -> None:
                 got[member.name] = f"-> {member.link_target}"
             else:
                 got[member.name] = member.type.name.lower()
-        assert not reader.diagnostics.retained
+        codes = [d.code for d in reader.diagnostics.retained]
+    assert codes == (
+        [DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] if fixture in _NO_END_BYTE else []
+    )
     assert got == _LHASA_EXPECTED[fixture]
 
 
@@ -258,6 +281,190 @@ def test_lhark_reads_as_its_own_method() -> None:
     with open_archive(LHASA / "lhark04d_lh7.lzh") as reader:
         (member,) = reader.members()
     assert member.extra["lha.method"] == "-lk7-"
+
+
+# ── MacBinary ─────────────────────────────────────────────────────────────────────
+
+_MAC_EPOCH = 2082844800
+_HELLO = b"Hello, Mac!\n" * 30
+
+
+def _macbinary(
+    name: bytes = b"hello.txt",
+    data: bytes = _HELLO,
+    resource: bytes = b"",
+    modified: int = 1_600_000_000,
+) -> bytes:
+    """A MacBinary file as MacLHA stores it: the header, then the forks, the whole
+    padded to 128 bytes."""
+    head = bytearray(128)
+    head[1] = len(name)
+    head[2 : 2 + len(name)] = name
+    head[0x41:0x49] = b"TEXTttxt"
+    struct.pack_into(
+        ">IIII",
+        head,
+        0x53,
+        len(data),
+        len(resource),
+        modified + _MAC_EPOCH,
+        modified + _MAC_EPOCH,
+    )
+    body = bytes(head) + data + resource
+    return body + bytes(-len(body) % 128)
+
+
+def _mac_member(wrapped: bytes, **fields: object) -> Member:
+    fields.setdefault("os_id", b"m")
+    return Member(b"hello.txt", wrapped, **fields)  # type: ignore[arg-type]
+
+
+def test_a_maclha_member_reads_as_its_data_fork() -> None:
+    with open_archive(LHASA / "maclha_224_l1_subdir.lzh") as reader:
+        (member,) = reader.members()
+        assert member.size == 11
+        assert member.compressed_size == 256
+        assert reader.read(member) == b"hello world"
+        assert member.verified is Verification.CHECKSUM
+    assert member.create_system is CreateSystem.MACINTOSH
+    assert (member.extra["lha.mac_type"], member.extra["lha.mac_creator"]) == (
+        b"TEXT",
+        b"ttxt",
+    )
+
+
+def test_a_level_0_maclha_member_keeps_its_wrapper() -> None:
+    # Level 0 has no OS id, so nothing marks the member as MacLHA's; lhasa keeps
+    # the wrapper too.
+    with open_archive(LHASA / "maclha_224_l0_lh5.lzh") as reader:
+        (member,) = reader.members()
+        assert member.size == 18304
+        assert reader.read(member)[2:7] == b"gpl-2"
+    assert "lha.mac_type" not in member.extra
+
+
+@pytest.mark.parametrize("method", ["-lh0-", "-lh5-"])
+@pytest.mark.parametrize("level", [1, 2])
+def test_the_macbinary_wrapper_is_stripped(method: str, level: int) -> None:
+    raw = archive([_mac_member(_macbinary(), method=method, level=level)])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert member.size == len(_HELLO)
+        assert reader.read(member) == _HELLO
+        assert member.verified is Verification.CHECKSUM
+        # Small reads cross the end of the fork the same way.
+        with reader.open(member) as stream:
+            assert b"".join(iter(lambda: stream.read(7), b"")) == _HELLO
+
+
+def test_an_empty_data_fork_reads_the_resource_fork() -> None:
+    raw = archive([_mac_member(_macbinary(data=b"", resource=b"rsrc" * 50))])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == b"rsrc" * 50
+
+
+def test_a_macbinary_time_a_time_zone_away_still_matches() -> None:
+    raw = archive([_mac_member(_macbinary(modified=1_600_000_000 + 14 * 3600))])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == _HELLO
+
+
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        pytest.param(_macbinary(name=b"other.txt"), id="another-name"),
+        pytest.param(_macbinary(modified=1_600_000_000 + 15 * 3600), id="time"),
+        pytest.param(b"\1" + _macbinary()[1:], id="version"),
+        pytest.param(_macbinary() + bytes(128), id="size"),
+        pytest.param(_macbinary()[:127], id="short"),
+    ],
+)
+def test_a_wrapper_that_does_not_match_is_kept(wrapped: bytes) -> None:
+    # An archived MacBinary file, or bytes that only look like one, read whole.
+    raw = archive([_mac_member(wrapped)])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert member.size == len(wrapped)
+        assert reader.read(member) == wrapped
+    assert "lha.mac_type" not in member.extra
+
+
+def test_a_wrapper_from_another_os_is_kept() -> None:
+    raw = archive([_mac_member(_macbinary(), os_id=b"U")])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert reader.read(member) == _macbinary()
+
+
+@pytest.mark.parametrize("method", ["-lh0-", "-lh5-"])
+def test_the_crc_covers_the_whole_wrapper(method: str) -> None:
+    wrapped = _macbinary()
+    # A damaged byte in the padding after the fork, which the read drops.
+    damaged = wrapped[:-1] + b"\1"
+    raw = archive([_mac_member(damaged, method=method, crc=crc16(wrapped))])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        assert member.size == len(_HELLO)
+        with pytest.raises(CorruptionError, match="crc16"):
+            reader.read(member)
+
+
+def _cut_stream(cut: int) -> io.RawIOBase:
+    wrapped = _macbinary()
+    locator = lha_reader._Location(
+        0, len(wrapped), "-lh0-", crc16(wrapped), len(wrapped), len(_HELLO)
+    )
+    return lha_reader._MacBinaryStream(io.BytesIO(wrapped[:cut]), locator)
+
+
+@pytest.mark.parametrize(
+    ("cut", "message"),
+    [
+        (100, "inside its MacBinary header"),
+        (128 + len(_HELLO) + 4, "inside its MacBinary wrapper"),
+    ],
+)
+def test_a_wrapper_cut_outside_the_fork_raises(cut: int, message: str) -> None:
+    # The listing refuses a cut archive first, so the stream is cut by hand.
+    stream = _cut_stream(cut)
+    with pytest.raises(TruncatedError, match=message):
+        while stream.read(len(_HELLO)):
+            pass
+
+
+def test_a_wrapper_cut_inside_the_fork_ends_short() -> None:
+    # The member handle turns the short fork into TruncatedError.
+    stream = _cut_stream(128 + len(_HELLO) - 1)
+    assert stream.read(len(_HELLO)) == _HELLO[:-1]
+    assert stream.read(len(_HELLO)) == b""
+
+
+@pytest.mark.parametrize("os_id", [b"U", b"m"])
+def test_the_dropped_fork_counts_against_the_ratio_limit(os_id: bytes) -> None:
+    # A one-byte data fork and 20 MB of zeros in the resource fork: the dropped bytes
+    # are decoded too, so the member is refused as the same bytes unwrapped are.
+    zeros = bytes(20_000_000)
+    wrapped = _macbinary(data=b"x", resource=zeros)
+    raw = archive([_mac_member(wrapped, os_id=os_id, method="-lh5-")])
+    with open_archive(io.BytesIO(raw)) as reader:
+        (member,) = reader.members()
+        with pytest.raises(archivey.ResourceLimitError, match="max_ratio"):
+            reader.read(member)
+
+
+@pytest.mark.parametrize("os_id", [b"U", b"m"])
+def test_the_dropped_fork_honours_the_deprecated_ratio_fields(os_id: bytes) -> None:
+    wrapped = _macbinary(data=b"x", resource=bytes(2_000_000))
+    raw = archive([_mac_member(wrapped, os_id=os_id, method="-lh5-")])
+    with pytest.warns(DeprecationWarning):
+        limits = archivey.ExtractionLimits(max_ratio=10, ratio_activation_threshold=0)
+    config = archivey.ArchiveyConfig(extraction_limits=limits)
+    with open_archive(io.BytesIO(raw), config=config) as reader:
+        (member,) = reader.members()
+        with pytest.raises(archivey.ResourceLimitError, match="max_ratio"):
+            reader.read(member)
 
 
 def test_an_amiga_directory_is_an_empty_nameless_member() -> None:
@@ -412,6 +619,111 @@ def test_a_pipe_is_refused() -> None:
         open_archive(Pipe(archive(_members("-lh5-", 2))), format=ArchiveFormat.LHA)
 
 
+# ── Self-extracting archives ───────────────────────────────────────────────────────
+
+# Stubs with no executable cue, as DOS .COM, Atari TOS and Amiga hunk files start:
+# detection finds the archive by the scan it runs when every other step declined.
+_STUBS = {
+    "pe": pe_file(0x1000),
+    "com": b"\xe9\x10\x02" + bytes(range(256)) * 4,
+    "tos": b"\x60\x1a" + b"\x4e\x75" * 300,
+    "amiga": b"\x00\x00\x03\xf3" + b"\x4e\x71" * 300,
+}
+
+
+def _sfx_archive() -> bytes:
+    return archive(_members("-lh5-", 1))
+
+
+@pytest.mark.parametrize("stub", sorted(_STUBS))
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_an_archive_behind_a_stub(stub: str, forced: bool) -> None:
+    head = _STUBS[stub]
+    data = head + _sfx_archive()
+    if not forced:
+        info = detect_format(io.BytesIO(data))
+        assert info.format == ArchiveFormat.LHA
+        assert info.payload_offset == len(head)
+    fmt = ArchiveFormat.LHA if forced else None
+    with open_archive(io.BytesIO(data), format=fmt) as reader:
+        assert {m.name: reader.read(m) for m in reader.members()} == FILES
+        assert not reader.diagnostics.retained
+
+
+def test_method_text_in_the_stub_is_skipped() -> None:
+    # A stub that names the methods, as a DOS self-extractor's code does, with no
+    # header around them: the header sum turns each one down.
+    head = b"MZ" + b"stub -lh5- -lh0- -lhd- stub" * 20
+    data = head + _sfx_archive()
+    assert detect_format(io.BytesIO(data)).payload_offset == len(head)
+    with _open(data) as reader:
+        assert len(reader.members()) == len(FILES)
+
+
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_an_archive_inside_the_stub_is_passed_over(forced: bool) -> None:
+    # Amiga LhASFX carries its usage text as a small archive inside the stub. It ends
+    # before the file does, so the scan looks on and takes the one that ends it.
+    inner = archive([Member(b"usage.txt", b"usage", method="-lh0-", level=0)])
+    head = b"\x00\x00\x03\xf3" + b"\x4e\x71" * 50 + inner + b"\x4e\x71" * 50
+    data = head + _sfx_archive()
+    if not forced:
+        assert detect_format(io.BytesIO(data)).payload_offset == len(head)
+    fmt = ArchiveFormat.LHA if forced else None
+    with open_archive(io.BytesIO(data), format=fmt) as reader:
+        assert [m.name for m in reader.members()] == list(FILES)
+
+
+def test_an_archive_inside_the_stub_is_read_when_it_is_the_only_one() -> None:
+    inner = archive([Member(b"usage.txt", b"usage", method="-lh0-", level=0)])
+    data = b"\x00\x00\x03\xf3" + inner + b"\x4e\x71" * 50
+    with _open(data) as reader:
+        assert [m.name for m in reader.members()] == ["usage.txt"]
+        (diagnostic,) = reader.diagnostics.retained
+    assert diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+
+
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_a_header_whose_next_header_does_not_read_is_passed_over(forced: bool) -> None:
+    # A level-0 header in stub code can pass its 8-bit sum by chance; the header after
+    # it almost never reads. That grades the candidate damaged, so the scan looks on.
+    lone = archive([Member(b"a", b"x", method="-lh0-", level=0)], end=b"")
+    head = b"\x00\x00\x03\xf3" + lone + b"\x4e\x71" * 50
+    data = head + _sfx_archive()
+    if not forced:
+        assert detect_format(io.BytesIO(data)).payload_offset == len(head)
+    fmt = ArchiveFormat.LHA if forced else None
+    with open_archive(io.BytesIO(data), format=fmt) as reader:
+        assert [m.name for m in reader.members()] == list(FILES)
+
+
+def test_a_window_of_headers_costs_a_bounded_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every header in a chain is a candidate. Walking each to the chain's end costs
+    # time quadratic in the window; the validator stops after a few members.
+    chain = archive(
+        [Member(b"%d" % i, b"", method="-lh0-", level=0) for i in range(5000)]
+    )
+    data = b"X" * 16 + chain + b"text " * 100
+    calls = 0
+    read_header = lha_reader._Headers._read_header
+
+    def counted(self: lha_reader._Headers, offset: int) -> object:
+        nonlocal calls
+        calls += 1
+        return read_header(self, offset)
+
+    monkeypatch.setattr(lha_reader._Headers, "_read_header", counted)
+    assert detect_format(io.BytesIO(data)).payload_offset == 16
+    assert calls <= 2 * (lha_reader._WALK_MAX + 1)
+
+
+def test_a_stub_with_no_archive_is_refused() -> None:
+    with pytest.raises(CorruptionError, match="Not an LHA archive"):
+        _open(b"MZ" + b"\x90" * 5000)
+
+
 # ── The end of the archive ──────────────────────────────────────────────────────────
 
 
@@ -441,12 +753,18 @@ def test_data_after_the_end_byte_is_reported() -> None:
 # ── Refusals ────────────────────────────────────────────────────────────────────────
 
 
-def test_an_unknown_method_lists_but_does_not_read() -> None:
-    member = Member(b"f", b"x", method="-lh1-", stored=b"\0" * 4)
+@pytest.mark.parametrize(
+    ("method", "algo"),
+    [("-lh2-", CompressionAlgorithm.LZH), ("-pm1-", CompressionAlgorithm.UNKNOWN)],
+)
+def test_an_unknown_method_lists_but_does_not_read(
+    method: str, algo: CompressionAlgorithm
+) -> None:
+    member = Member(b"f", b"x", method=method, stored=b"\0" * 4)
     with _open(archive([member])) as reader:
         (got,) = reader.members()
-        assert got.compression[0].algo is CompressionAlgorithm.LZH
-        with pytest.raises(UnsupportedFeatureError, match="-lh1-"):
+        assert got.compression[0].algo is algo
+        with pytest.raises(UnsupportedFeatureError, match=method):
             reader.read(got)
 
 
@@ -677,3 +995,79 @@ def test_decoder_stops_at_the_size() -> None:
     # A match that runs past the member's size is cut; input after it is ignored.
     stored = compress(b"abc" * 100, "-lh5-")
     assert _decode(stored + b"\xff" * 10, 10) == b"abcabcabca"
+
+
+# ── -lh1-, -lzs- and -lz5- ─────────────────────────────────────────────────────────
+
+
+def _old(method: str, stored: bytes, size: int) -> bytes:
+    chunks = iter([stored])
+    return DECODERS[method](size, lambda: next(chunks, None)).read(size)
+
+
+def _stored(fixture: str) -> tuple[bytes, int]:
+    """The one member's stored bytes and size, from a level-0 header."""
+    with open_archive(LHASA / fixture) as reader:
+        (member,) = reader.members()
+    assert member.extra["lha.header_level"] == 0
+    raw = (LHASA / fixture).read_bytes()
+    start = raw[0] + 2
+    return raw[start : start + (member.compressed_size or 0)], member.size or 0
+
+
+@pytest.mark.parametrize(
+    ("fixture", "method"),
+    [
+        ("lharc113_lh1.lzh", "-lh1-"),
+        ("generated_lzs.lzs", "-lzs-"),
+        ("larc333_lz5.lzs", "-lz5-"),
+    ],
+)
+@pytest.mark.parametrize("cut", [1, 2, 3, "half"])
+def test_old_methods_cut_streams_are_truncated(
+    fixture: str, method: str, cut: int | str
+) -> None:
+    """A stream a few bytes short decodes into the zero padding before it runs out;
+    only the over-read check refuses it (a no-op ``_check_overread`` fails the short
+    cuts). A stream cut in half runs out of padding first."""
+    stored, size = _stored(fixture)
+    assert hashlib.sha256(_old(method, stored, size)).hexdigest()[:16] == (
+        "8177f97513213526"
+    )
+    keep = len(stored) // 2 if cut == "half" else len(stored) - int(cut)
+    with pytest.raises(TruncatedError):
+        _old(method, stored[:keep], size)
+
+
+@pytest.mark.parametrize("seed", range(20))
+@pytest.mark.parametrize(
+    "fixture", ["lharc113_lh1.lzh", "generated_lzs.lzs", "larc333_lz5.lzs"]
+)
+def test_damaged_old_methods_raise_an_archivey_error(fixture: str, seed: int) -> None:
+    rng = random.Random(seed)
+    raw = bytearray((LHASA / fixture).read_bytes())
+    for _ in range(1 + seed % 4):
+        raw[rng.randrange(60, len(raw) - 1)] ^= 1 << rng.randrange(8)
+    with open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.LHA) as reader:
+        try:
+            reader.read(reader.members()[0])
+        except ArchiveyError:
+            pass
+
+
+def test_lzs_copies_from_a_ring_of_spaces() -> None:
+    bits = BitWriter()
+    bits.write(1, 1)
+    bits.write(ord("x"), 8)
+    bits.write(0, 1)
+    bits.write(0, 11)  # ring position 0: still spaces
+    bits.write(1, 4)  # three bytes
+    bits.write(0, 7)
+    assert _old("-lzs-", bits.getvalue(), 4) == b"x   "
+
+
+def test_lz5_copies_from_its_starting_pattern() -> None:
+    # Position 13 * 65 holds thirteen "A" bytes in the starting ring.
+    pos = 13 * 65
+    stream = bytes([0b10, pos & 0xFF, (pos >> 4) & 0xF0 | 2, ord("!")])
+    assert _old("-lz5-", stream, 6) == b"AAAAA!"

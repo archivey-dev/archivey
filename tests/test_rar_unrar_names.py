@@ -22,7 +22,8 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
-from archivey.internal.backends import rar_reader
+from archivey.exceptions import PackageNotInstalledError
+from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_reader import RarReader
 from tests.conftest import requires_binary
 from tests.test_audit_rar_iso_dir import (
@@ -281,6 +282,125 @@ def test_a_large_member_without_a_plain_name_is_copied(
     assert spawned == [None, "aXb", "plain.txt"]
 
 
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    ("names", "unrar6"),
+    [
+        # Longer than unrar 7.00 keeps (65 536): no mask matched it.
+        (["a" * 66001], False),
+        # Both cut to the same 65 536 characters: the first one's mask matched both.
+        (["a" * 65536, "a" * 65536 + "zz"], False),
+        # Past what unrar 6.x keeps (2047), the same two ways, under the 6.x bound.
+        (["b" * 3000], True),
+        (["b" * 2047, "b" * 2047 + "zz"], True),
+    ],
+    ids=["cut-7x", "collide-7x", "cut-6x", "collide-6x"],
+)
+def test_a_large_member_with_a_name_unrar_cuts_reads_its_own_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, names: list[str], unrar6: bool
+) -> None:
+    """``unrar`` keeps only a prefix of a long stored name, and compares that with the
+    whole ``-n`` mask. Such a name is not plain, so the read goes through a
+    synthetic archive, whose placeholder names are short."""
+    if unrar6:
+        monkeypatch.setattr(
+            rar_reader, "unrar_plain_name_max", lambda _program=None: 2045
+        )
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    for build in (_nocrc_rar5, _build_rar5):
+        path = build(tmp_path, [(name.encode(), 1) for name in names])
+        with open_archive(path, config=_UNRAR_ONLY) as reader:
+            assert isinstance(reader, RarReader)
+            members = list(reader.members())
+            assert [m.name for m in members] == names
+            assert [reader._plain_mask(m) for m in members] == [None] * len(names)
+            got = [reader.read(member) for member in members]
+        assert got == [_payload(i) for i in range(len(names))], build.__name__
+
+
+def test_a_long_name_is_not_plain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bound counts UTF-16 units, as Windows ``unrar`` stores a name: a character
+    outside the BMP counts twice."""
+    monkeypatch.setattr(rar_reader, "unrar_mask_carries_non_ascii", lambda: True)
+    bound = 1024
+    monkeypatch.setattr(rar_reader, "unrar_plain_name_max", lambda _program=None: bound)
+    for names, plain in [
+        (["a" * bound], True),
+        (["a" * (bound + 1)], False),
+        (["\U0001f600" * (bound // 2)], True),
+        (["\U0001f600" * (bound // 2) + "a"], False),
+        # One long name leaves no mask trusted for the archive.
+        (["a" * (bound + 1), "plain.txt"], False),
+    ]:
+        path = _nocrc_rar5(tmp_path, [(name.encode(), 1) for name in names])
+        with open_archive(path, config=_UNRAR_ONLY) as reader:
+            assert isinstance(reader, RarReader)
+            masks = [reader._plain_mask(m) for m in reader.members()]
+        assert masks == (names if plain else [None] * len(names)), names[0][:3]
+
+
+@pytest.mark.parametrize(
+    ("version", "bound"),
+    [
+        ((6, 24), 2045),
+        ((7, 0), 16384),
+        (None, 2045),
+    ],
+    ids=["6.x", "7.x", "unparsed"],
+)
+def test_the_name_bound_follows_the_unrar_version(
+    monkeypatch: pytest.MonkeyPatch, version: tuple[int, int] | None, bound: int
+) -> None:
+    """6.x keeps 2047 wide units of a name and of a mask, less the mask's ``./``;
+    7.x keeps more, and argv limits cap it at 16 384."""
+    probe = rar_unrar._UnrarProbe(
+        unrar_path="/stub/unrar",
+        is_rarlab=True,
+        version=version,
+        st_dev=0,
+        st_ino=0,
+        st_mtime_ns=0,
+        st_size=0,
+    )
+    monkeypatch.setattr(
+        rar_unrar, "find_rarlab_unrar", lambda _program=None: "/stub/unrar"
+    )
+    monkeypatch.setitem(rar_unrar._cached_unrar, "/stub/unrar", probe)
+    assert rar_unrar.unrar_plain_name_max() == bound
+
+
+def test_the_name_bound_without_unrar_is_the_smaller_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing(_program: str | None = None) -> str:
+        raise PackageNotInstalledError("no unrar")
+
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", missing)
+    assert rar_unrar.unrar_plain_name_max() == 2045
+
+
+@requires_binary("unrar")
+def test_a_name_at_the_bound_reads_its_own_bytes_through_a_mask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The installed ``unrar`` keeps a name of the bound whole: a mask selects it
+    alone even beside a longer name that shares it as a prefix. Fails if the bound
+    is past what this ``unrar`` keeps (both reads would return both payloads)."""
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    bound = rar_unrar.unrar_plain_name_max()
+    names = ["a" * (bound - 2), "a" * (bound - 2) + "zz"]
+    path = _nocrc_rar5(tmp_path, [(name.encode(), 1) for name in names])
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        assert isinstance(reader, RarReader)
+        members = list(reader.members())
+        assert [reader._plain_mask(m) for m in members] == names
+        assert [reader.read(m) for m in members] == [_payload(0), _payload(1)]
+
+
 def test_a_rar4_history_row_keeps_the_suffix_its_name_stores() -> None:
     """A RAR 1.5-4 history row stores ``;n`` in its name; the mask must not add a
     second one (``file.txt;1;1`` selects nothing)."""
@@ -362,11 +482,16 @@ def test_a_rar4_unicode_name_with_a_lone_surrogate_is_not_plain(
     with open_archive(path, config=_UNRAR_ONLY) as reader:
         assert isinstance(reader, RarReader)
         raw = reader.members()[0]._raw
-        assert rar_reader._plain_unrar_text(raw, rar5=False) == "plain.txt"
+        assert (
+            rar_reader._plain_unrar_text(raw, rar5=False, name_max=1024) == "plain.txt"
+        )
         lone = dataclasses.replace(raw, rar3_unicode_name="hi\ud800.txt")
-        assert rar_reader._plain_unrar_text(lone, rar5=False) is None
+        assert rar_reader._plain_unrar_text(lone, rar5=False, name_max=1024) is None
         pair = dataclasses.replace(raw, rar3_unicode_name="hi\U0001f600.txt")
-        assert rar_reader._plain_unrar_text(pair, rar5=False) == "hi\U0001f600.txt"
+        assert (
+            rar_reader._plain_unrar_text(pair, rar5=False, name_max=1024)
+            == "hi\U0001f600.txt"
+        )
 
 
 def test_a_damaged_listing_reads_no_member_in_place(tmp_path: Path) -> None:
