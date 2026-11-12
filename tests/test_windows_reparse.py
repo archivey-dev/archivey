@@ -1352,11 +1352,11 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
 ) -> None:
     """A link whose target is unreadable has to say so, whatever put it out of reach.
 
-    `ExtractionStatus.LINK_TARGET_UNAVAILABLE` carries no reason of its own — it says only that nothing
-    was written — so the reason travels on the diagnostics channel instead, and
-    `SYMLINK_TARGET_UNAVAILABLE` being in `ARCHIVE_INTEGRITY_CODES` is what lets a
-    strict policy refuse such an archive outright. A backend that returns quietly turns
-    an unreadable link into a silent omission, which is the one outcome
+    `ExtractionStatus.LINK_TARGET_UNAVAILABLE` carries no reason of its own — it says
+    only that nothing was written — so the reason travels on the diagnostics channel
+    instead, and `SYMLINK_TARGET_UNAVAILABLE` being in `ARCHIVE_INTEGRITY_CODES` is what
+    lets a strict policy refuse such an archive outright. A backend that returns quietly
+    turns an unreadable link into a silent omission, which is the one outcome
     `safe-extraction` rules out. Listing without a password still has to work, so this
     is a diagnostic and not a raise.
 

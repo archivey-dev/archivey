@@ -130,6 +130,10 @@ class Bzip3Decompressor:
     Every check runs inside :meth:`decompress`, so the properties never raise.
     """
 
+    # A failed block raises only once the blocks before it are handed out
+    # (``_raise_after``): see ``Decoder.holds_back_errors``.
+    holds_back_errors = True
+
     def __init__(
         self,
         check_block_size: Callable[[int], None],
@@ -416,10 +420,11 @@ class Bzip3Codec(StreamCodec):
         self, params: CodecParams, config: StreamConfig
     ) -> StreamIndex | None:
         del params
-        if not config.seekable:
+        if not config.records_restart_points:
             return None
-        # Declared seek demand only, as zstd (``seekable-decompressor-streams``): no
-        # stream follows the last block, so the points are the blocks.
+        # Declared seek demand or restart points only, as zstd
+        # (``seekable-decompressor-streams``): no stream follows the last block, so the
+        # points are the blocks.
         collector = config.collector
         return StreamIndex(
             resumes_at=lambda data: False,

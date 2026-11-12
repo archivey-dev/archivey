@@ -62,6 +62,8 @@ Key = tuple[str, ...]
 
 
 def _key(name: str) -> str:
+    """One path component as the dependency index keys it: NFC, case-folded (see the
+    module docstring)."""
     return unicodedata.normalize("NFC", name).casefold()
 
 
@@ -104,11 +106,16 @@ class WatchedLink:
 
 @dataclass
 class RecheckOutcome:
+    """The links :meth:`LinkWatch.recheck` stopped watching and tried to unlink, for
+    the caller to report as blocked."""
+
     escaped: list[WatchedLink] = field(default_factory=list)
-    """Links that now resolve outside the destination, removed."""
+    """Links that now resolve outside the destination, unlinked where the filesystem
+    allowed it."""
 
     unchecked: list[WatchedLink] = field(default_factory=list)
-    """Links removed without being resolved, because the budget ran out."""
+    """Links unlinked where the filesystem allowed it, without being resolved,
+    because the budget ran out."""
 
     unremoved: list[tuple[WatchedLink, OSError]] = field(default_factory=list)
     """Links of ``escaped`` or ``unchecked`` that the filesystem refused to unlink,
@@ -213,6 +220,8 @@ class LinkWatch:
         return outcome
 
     def _enqueue_dependents(self, path: Path, queue: dict[WatchedLink, None]) -> None:
+        """Queue every link whose last walk visited ``path``, the changed path, and
+        forget the link recorded at ``path`` if the change replaced or removed it."""
         key = self._folded_key(path)
         if key is None:
             return
@@ -345,6 +354,8 @@ class LinkWatch:
         return list(visited.values())
 
     def _nodes_for(self, parts: list[str]) -> list[_Node] | None:
+        """The index nodes from the root down to the path ``parts``, created where
+        missing, or ``None`` when that path is not inside the destination."""
         n = len(self._root_parts)
         if not self._under_root(parts):
             return None

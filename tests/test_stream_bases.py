@@ -337,10 +337,15 @@ def test_verifying_stream_forwards_resume_offset() -> None:
     assert s.nearest_resume_offset(1) == 7
 
 
+# A module that exists to plug archivey into another package, and the package it needs.
+_PLUGS_INTO = {"archivey.fsspec": "fsspec"}
+
+
 def _import_all_archivey_modules() -> None:
     """Import every archivey module so ``__subclasses__()`` is not collection-order-blind.
 
-    ``archivey.__main__`` calls ``main()`` at import, so it is skipped.
+    ``archivey.__main__`` calls ``main()`` at import, so it is skipped, and
+    ``archivey.fsspec`` is skipped when fsspec is not installed (``_PLUGS_INTO``).
 
     This walk also proves every ``archivey.*`` module imports with no extras
     (the ``[core-only]`` lazy-optional-import boundary). A top-level extra
@@ -356,6 +361,16 @@ def _import_all_archivey_modules() -> None:
             continue
         try:
             importlib.import_module(module.name)
+        except ModuleNotFoundError as exc:
+            # The one module that exists to plug into another package: it imports
+            # that package, and no archivey extra installs it.
+            if _PLUGS_INTO.get(module.name) != exc.name:
+                raise ImportError(
+                    f"{module.name} failed to import while walking archivey modules "
+                    "for the ReadOnlyIOStream resume-offset inventory. This walk also "
+                    "proves every archivey module imports with no extras "
+                    "([core-only]); a top-level extra import fails here."
+                ) from exc
         except Exception as exc:  # any import-time failure is this check
             raise ImportError(
                 f"{module.name} failed to import while walking archivey modules "
@@ -461,6 +476,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
         counting.OutputCountingStream,
+        counting.BudgetDrawStream,  # the decoded stream's offsets
         bomb_tracker.DecodeRatioGuard,  # the codec's offsets
         bomb_tracker.MemberRatioGuard,  # the member stream's offsets
         readahead.ReadAheadStream,  # the inner's offsets
@@ -712,6 +728,7 @@ def test_delegating_stream_close_inventory() -> None:
         fullcount.FullCountStream,
         counting.CountingReader,
         counting.OutputCountingStream,
+        counting.BudgetDrawStream,
         counting.SeekCountingStream,
         bomb_tracker._RatioGuard,
         bomb_tracker.DecodeRatioGuard,

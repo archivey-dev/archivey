@@ -334,8 +334,9 @@ def test_a_cut_member_with_no_digest_raises_at_the_cut(
     toys: ArchiveFormat, tmp_path: Path, pipe: bool
 ) -> None:
     """With no digest there is no verifier to compare the bytes read with the size:
-    the member's data window (``_SpanWindow``) raises at the cut itself. A sized read returns the bytes
-    before the cut and the next read raises (ADR 0014); a read with no size raises.
+    the member's data window (``_SpanWindow``) raises at the cut itself. A sized read
+    returns the bytes before the cut and the next read raises (ADR 0014); a read with no
+    size raises.
 
     Fails when the window returns a short read as a clean end."""
     fmt = _variant(_NoDigestReader, ToysContainer.NO_DIGEST)
@@ -1734,7 +1735,7 @@ def test_decompress_misuse_is_not_offered_to_the_plugin_translator(
         open_archive(path, format=_variant(Reuses, ToysContainer.SUM16))
 
 
-# A format whose library decodes each member itself (as LHA's or a libarchive
+# A format whose library decodes each member itself (as ACE's or a libarchive
 # wrapper's does): the reader hands each member's data over as MemberSpan.data, a
 # stream that reads the walk's own stream, good until the walk moves on.
 _ZHEADER = struct.Struct(

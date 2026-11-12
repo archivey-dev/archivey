@@ -64,6 +64,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.listing_limits import TEXT_ENTRY_BYTES
 from archivey.internal.overrides import override
 from archivey.internal.streams.decompressor_stream import _LARGE_READ_STEP
 from archivey.internal.streams.streamtools import read_within_reach
@@ -81,6 +82,15 @@ MAX_OFFSET = 2**63 - 1
 # encoding (two 12-byte numbers in an old GNU header), whatever encoding the map came
 # in. The archive-reading spec sets this weight. A SparseMap holds 16 bytes per entry.
 SPARSE_ENTRY_BYTES = 24
+
+# What each distinct keyword of a PAX header is charged against the member's budget
+# while the header is parsed, beyond the header's own bytes. The archive-reading spec
+# sets this weight. Each distinct keyword keeps a dict entry, a set entry, a PaxValue
+# and its decoded text, 270 bytes at the peak against 9 stored (CPython 3.11), so by
+# its bytes alone a header of millions of short keywords under the default cap would
+# keep about 30 times its size. Honest headers hold a handful of keywords, so this
+# costs them a few kilobytes of budget.
+PAX_KEYWORD_BYTES = 256
 
 # The most significant digits a PAX number may have: 20, the width of the largest
 # ``uintmax_t``. GNU tar reads PAX numbers with ``strtoumax``, so a longer one is out of
@@ -188,7 +198,8 @@ class SparseFormat(Enum):
 
 
 # Not frozen, as no caller writes to it: a frozen init costs a microsecond per header
-# on the listing's hot path.
+# on the listing's hot path. Built positionally by parse_header_block, for the same
+# cost; test_hot_path_constructors pins this field order.
 @dataclass(slots=True)
 class HeaderBlock:
     """One decoded 512-byte header block. Strings are the stored bytes, cut at the
@@ -458,27 +469,29 @@ def parse_header_block(
         # never joins them; tarfile joins the prefix for any magic but its GNU types,
         # and names the member after the time (N11).
         prefix_shape = "gnu_prefix_bytes"
+    # Positional, in field order: a keyword call of twenty fields costs about half a
+    # microsecond more per header. test_hot_path_constructors pins the order.
     return HeaderBlock(
-        offset=offset,
-        format=header_format,
-        name=name,
-        typeflag=typeflag,
-        linkname=_cut_nul(block[157:257]),
-        uname=uname,
-        gname=gname,
-        devmajor=devmajor,
-        devminor=devminor,
-        device_number_fault=device_number_fault,
-        sparse_slots=sparse_slots,
-        sparse_extended=sparse_extended,
-        sparse_realsize=sparse_realsize,
-        signed_checksum=checksum == "signed",
-        prefix_shape=prefix_shape,
-        mode=mode,
-        uid=uid,
-        gid=gid,
-        size=size,
-        mtime=mtime,
+        offset,  # offset
+        header_format,  # format
+        name,  # name
+        mode,  # mode
+        uid,  # uid
+        gid,  # gid
+        size,  # size
+        mtime,  # mtime
+        typeflag,  # typeflag
+        _cut_nul(block[157:257]),  # linkname
+        uname,  # uname
+        gname,  # gname
+        devmajor,  # devmajor
+        devminor,  # devminor
+        sparse_slots,  # sparse_slots
+        sparse_extended,  # sparse_extended
+        sparse_realsize,  # sparse_realsize
+        device_number_fault,  # device_number_fault
+        checksum == "signed",  # signed_checksum
+        prefix_shape,  # prefix_shape
     )
 
 
@@ -527,8 +540,8 @@ def starts_with_header(prefix: bytes) -> bool:
     Detection's check for a TAR without magic: a v7 header, or one an old writer filled
     in without ``ustar``. The block must parse as :func:`parse_header_block` parses it,
     so its checksum matches the block's byte sum (the field itself counted as eight
-    spaces) and every numeric field is a number. Its name must also be non-empty. A zero block is not a header: an empty TAR has no header to
-    check.
+    spaces) and every numeric field is a number. Its name must also be non-empty. A zero
+    block is not a header: an empty TAR has no header to check.
 
     Text and binary data pass only when built to. It is the test ``tarfile.is_tarfile``
     and Commons Compress make, and GNU tar's own reading of the first block.
@@ -734,7 +747,11 @@ def _record_ambiguities(
 
 
 def parse_pax_records(
-    data: bytes, *, binary_default: bool, first_wins: bool = False
+    data: bytes,
+    *,
+    binary_default: bool,
+    first_wins: bool = False,
+    charge: Charge | None = None,
 ) -> PaxRecords:
     """Parse ``"<length> <key>=<value>\\n"`` records.
 
@@ -757,6 +774,9 @@ def parse_pax_records(
     kept. The keywords in ``_C_STRING_KEYS`` are cut at their first NUL before
     that rule applies. ``hdrcharset`` is kept by the same rule as any key, and the one
     kept decides whether the block's names are binary.
+
+    ``charge``, when given, is called with ``PAX_KEYWORD_BYTES`` for each distinct
+    keyword as it is first read, before the parse keeps anything for it.
     """
     raw: dict[bytes, bytes] = {}
     offsets: list[bytes] = []
@@ -787,6 +807,8 @@ def parse_pax_records(
             raise CorruptionError(
                 f"TAR PAX header has a record at byte {pos} with no key"
             )
+        if charge is not None and key not in seen:
+            charge(PAX_KEYWORD_BYTES, "a PAX keyword")
         # A newline in the keyword is the same smuggled record one byte earlier: a
         # reader that splits on lines reads what follows it as another record. The
         # allow-list is for values only; no keyword holds one.
@@ -1728,7 +1750,10 @@ class TarWalker:
         is_global = typeflag == PAX_GLOBAL_TYPE
         try:
             records = parse_pax_records(
-                data, binary_default=self._global_binary, first_wins=is_global
+                data,
+                binary_default=self._global_binary,
+                first_wins=is_global,
+                charge=charge,
             )
         except CorruptionError as exc:
             # Records that do not parse make a header that does not parse, which the
@@ -1950,6 +1975,16 @@ class TarWalker:
         """
         own = chain.own
         if own:
+            if self._global:
+                # The member gets a copy of the global records, here and as text in
+                # its extra["tar.pax_headers"]. Registration weighs that text only
+                # once both copies are built, so the copy is charged here first: a
+                # global header copied into each member with a record of its own is
+                # then refused before the copy that crosses the cap is made.
+                charge(
+                    TEXT_ENTRY_BYTES * len(self._global),
+                    "a copy of the PAX global records",
+                )
             merged: Mapping[bytes, PaxValue] = _ReadOnly({**self._global, **own})
         else:
             merged = self._global_view

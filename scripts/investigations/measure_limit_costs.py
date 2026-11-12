@@ -1,6 +1,7 @@
 """Measure what each configurable limit costs per unit, to size limits for a deployment.
 
-    uv run python scripts/investigations/measure_limit_costs.py [--members 100000] [--extract-mib 256]
+    uv run python scripts/investigations/measure_limit_costs.py \\
+        [--members 100000] [--extract-mib 256]
 
 Builds synthetic archives in a temporary directory, times archivey on them, and prints
 one row per limit: the cost of one unit (one member, one byte of names, one key

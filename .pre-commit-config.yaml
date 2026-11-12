@@ -14,3 +14,12 @@ repos:
         files: ^(src|tests|scripts|benchmarks)/
       - id: ruff-format
         files: ^(src|tests|scripts|benchmarks)/
+  # Markdown lines a commit adds stay within 100 columns (scripts/checks/check_line_width.py).
+  - repo: local
+    hooks:
+      - id: line-width
+        name: line width (added Markdown lines)
+        entry: python3 scripts/checks/check_line_width.py --staged
+        language: system
+        pass_filenames: false
+        files: \.md$

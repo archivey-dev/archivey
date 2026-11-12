@@ -233,21 +233,23 @@ class _CookedView(io.RawIOBase):
 
     @override
     def readinto(self, buffer: WriteableBuffer, /) -> int:
-        target = memoryview(buffer).cast("B")
-        want = min(len(target), self._length - self._pos)
-        if want <= 0:
-            return 0
-        at = self._start + self._pos
-        if not self._cache_at <= at < self._cache_at + len(self._cache):
-            self._load(at // USER_DATA_SIZE)
-        inner = at - self._cache_at
-        chunk = self._cache[inner : inner + want]
-        if not chunk:
-            return 0
-        n = len(chunk)
-        target[:n] = chunk
-        self._pos += n
-        return n
+        # Released before the return: the caller may resize ``buffer`` next, which PyPy
+        # refuses while a dropped view waits for a collection.
+        with memoryview(buffer) as outer, outer.cast("B") as target:
+            want = min(len(target), self._length - self._pos)
+            if want <= 0:
+                return 0
+            at = self._start + self._pos
+            if not self._cache_at <= at < self._cache_at + len(self._cache):
+                self._load(at // USER_DATA_SIZE)
+            inner = at - self._cache_at
+            chunk = self._cache[inner : inner + want]
+            if not chunk:
+                return 0
+            n = len(chunk)
+            target[:n] = chunk
+            self._pos += n
+            return n
 
 
 class CookedSource(ReaderSource):

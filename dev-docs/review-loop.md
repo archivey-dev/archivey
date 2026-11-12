@@ -92,30 +92,37 @@ reports too: a fork's pull request gets none, a cancelled run leaves it stale, a
 label can be removed by hand, so the merging agent runs the base branch's script itself
 (`address-review-findings` §7).
 
-**Opus reads a pull request once, first; Sonnet re-reads the fixes.** The round
-installs the project at the pull request's own lockfile (`uv sync --frozen --group dev
---extra all`, what `scripts/setup-dev-env.sh` installs), so the reviewer can measure with
-the optional accelerators and codecs a change is about. The first round that reaches a
-verdict on a `standard` or `deep` pull request runs `claude-opus-5-5`: a full first look,
-and its closing comment's marker carries `pass=opus`, which is how later rounds know it
-ran. Every other round runs `claude-sonnet-5-5`: the rounds that re-read fixes, and
-every round of a `light` pull request. User docs (`docs/`, the README, the CHANGELOG,
-SECURITY.md) are never light, so Opus reads them first
-([DR-22b](design-rules.md#dr-22b-user-docs-are-written-and-reviewed-by-opus)). An
-Opus round that dies before its verdict is not counted, so the next round is Opus again.
-The tier comes from the base branch's `review_prep.py`, as for the risk label, before
-the gate runs; a failure to compute it makes the round Sonnet's. `OPUS_PASS_TIERS` in
-the gate holds the rule.
+**Opus reviews standard and deep pull requests, first look and fixes; Sonnet reviews
+light ones.** The round installs the project at the pull request's own lockfile (`uv
+sync --frozen --group dev --extra all`, what `scripts/setup-dev-env.sh` installs), so
+the reviewer can measure with the optional accelerators and codecs a change is about.
+The first round that reaches a verdict on a `standard` or `deep` pull request runs
+`claude-opus-5-5`: a full first look, and its closing comment's marker carries
+`pass=opus`, which is how later rounds know it ran. The rounds after it, which re-read
+the fixes, run `claude-opus-5-5` too. Every round of a `light` pull request runs
+`claude-sonnet-5-5`. User docs (`docs/`, the README, the CHANGELOG, SECURITY.md) are
+never light, so Opus reads them first
+([DR-22b](design-rules.md#dr-22b-user-docs-are-written-and-reviewed-by-opus)). An Opus
+round that dies before its verdict is not counted, so the next round is Opus again. The
+tier comes from the base branch's `review_prep.py`, as for the risk label, before the
+gate runs; a failure to compute it makes the round Sonnet's. `OPUS_PASS_TIERS` in the
+gate holds the rule.
+
+Why Opus re-reads fixes (davitf, 2026-11-11): a Sonnet fix round approved #1348's fix
+for its K1 finding, and that fix recorded a failed solid open as decoded. A later Fable
+read of the code found it (#1393). Fix rounds read small diffs, so Opus costs less there
+than on a first look.
 
 Why this order (davitf, 2026-10-30): for one day Sonnet reviewed first and Opus read the
 pull request once Sonnet approved. On the ten pull requests that ran that way, Sonnet's
 first rounds took about two minutes and raised 1 blocking and 7 important findings; the
 Opus pass after them raised 4 blocking and about 30 important, nearly all fixed. Sonnet
-in front only delayed Opus by a round. Sonnet re-reading fixes did catch a regression
-that one fix introduced, at about a twentieth of an Opus round's cost. Before that, Opus
-reviewed every round until 2026-10-29, and on the [review-eval](review-eval/README.md)
-set Sonnet caught as many of the bugs the loop had missed, at about an eighth of the
-cost; the day of live rounds showed that it reads far less deeply on a first look.
+in front only delayed Opus by a round. (Sonnet then re-read the fixes until 2026-11-11;
+it did catch a regression one fix introduced, at about a twentieth of an Opus round's
+cost.) Before that, Opus reviewed every round until 2026-10-29, and on the
+[review-eval](review-eval/README.md) set Sonnet caught as many of the bugs the loop had
+missed, at about an eighth of the cost; the day of live rounds showed that it reads far
+less deeply on a first look.
 
 The prompt every round gets is
 [`.github/review-loop-prompt.md`](../.github/review-loop-prompt.md), filled in by
@@ -228,7 +235,7 @@ assistant, answers only people.
   and add the score to its results.
 - **Counting what it found.** `review-tally.yml` runs `scripts/review/review_tally.py` each
   Monday over the week's merged pull requests: rounds per pull request, findings by
-  severity and by who raised them (the Opus round or a Sonnet round), each finding's
+  severity and by who raised them (the Opus pass or a later round), each finding's
   disposition, findings an earlier fix caused, and rounds whose posts missed the posting
   shape. The report is the run's job summary.
   Run the script by hand for any window (`--since`, `--pr`).
@@ -278,7 +285,10 @@ the three `risk:` labels.
   secret: a fine-grained personal token limited to pull request comments on this
   repository. Cursor drops comments from bots and GitHub Apps, so the request posted
   as `github-actions[bot]` went unanswered on five pull requests. Without the secret
-  the step skips and says so in the job summary; ask Cursor by hand then.
+  the step skips and says so in the job summary; ask Cursor by hand then. Every request,
+  by hand or not, names Cursor's included models, not Fast variants (Grok 4.7 or later for the
+  review, Composer 2.5 or later for its subagents): third-party models such as Sonnet
+  bill to paid credit, and Fast variants cost more.
 
 ## What this replaced
 

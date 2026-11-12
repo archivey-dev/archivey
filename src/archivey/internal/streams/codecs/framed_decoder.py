@@ -383,24 +383,25 @@ class FramedDecoder(BaseDecoder):
             if max_length >= 0 and len(output) >= max_length:
                 self._held = data
                 break
-            if self._between:
-                data = self._next_stream(data)
-                if self._between or self._done:
-                    break
-                self._stream_comp = self._fed_end - len(data)
-                self._stream_dec = self._produced + len(output)
-                if self._index is not None and self._index.resumes_at(data):
-                    self._pending_point = SeekPoint(
-                        self._produced + len(output), self._fed_end - len(data)
-                    )
             limit = max_length - len(output) if max_length >= 0 else -1
-            if self._head_pending and data:
-                self._take_head(data)
             try:
+                if self._between:
+                    data = self._next_stream(data)
+                    if self._between or self._done:
+                        break
+                    self._stream_comp = self._fed_end - len(data)
+                    self._stream_dec = self._produced + len(output)
+                    if self._index is not None and self._index.resumes_at(data):
+                        self._pending_point = SeekPoint(
+                            self._produced + len(output), self._fed_end - len(data)
+                        )
+                if self._head_pending and data:
+                    self._take_head(data)
                 produced = self._decomp.decompress(data, limit)
             except Exception as exc:
                 # Bytes decoded before an error are handed back, not lost with it
-                # (spec ``compressed-streams``): the next feed raises.
+                # (spec ``compressed-streams``): the next feed raises. That covers a
+                # damaged next stream's start too, after an earlier stream's output.
                 if not output:
                     raise
                 self._raise_next = exc
@@ -422,6 +423,10 @@ class FramedDecoder(BaseDecoder):
         return DecodeOut(bytes(output), points)
 
     def flush(self) -> DecodeOut:
+        # An error held back behind earlier output raises here too, should the input end
+        # before the next feed.
+        if self._raise_next is not None:
+            raise self._raise_next
         if self._done:
             return DecodeOut(b"")
         if self._between:
@@ -507,6 +512,14 @@ class FramedDecoder(BaseDecoder):
         return self._draining
 
     @property
+    @override
+    def holds_back_errors(self) -> bool:
+        # A raise here comes only after the bytes earlier calls gave (``_raise_next``),
+        # a damaged next stream's start included, so the decoder holds back errors
+        # when its decompressor does.
+        return bool(getattr(self._decomp, "holds_back_errors", False))
+
+    @property
     def finished(self) -> bool:
         return self._done
 
@@ -542,6 +555,7 @@ def FramedDecompressorStream(
     report_trailing_data: bool = False,
     refuse_input_after_end: bool = False,
     frame_check: FrameCheck | None = None,
+    file_index: bool = True,
 ) -> DecompressorStream:
     """Decode a one-stream library decompressor's codec.
 
@@ -561,4 +575,5 @@ def FramedDecompressorStream(
         codec_name=codec_name,
         report_trailing_data=report_trailing_data,
         refuse_input_after_end=refuse_input_after_end,
+        file_index=file_index,
     )

@@ -10,7 +10,11 @@ trust](extracting.md#archives-you-trust) explains how to raise.
 
 A ZIP compresses each member on its own, so archivey can jump straight to any of them. A
 `.tar.gz` compresses the whole archive as one stream, so reaching a member in the middle means
-decompressing everything before it.
+decompressing everything before it. Listing does that once. While it lists a `.tar.gz`, archivey
+keeps a restart point about every MiB, so a member read afterwards starts at most about 1 MiB
+before the member. Other compressed TARs restart only where the stream itself starts a new part
+(a new lzip member, zstd frame or bzip3 block), and most tools write just one, so there a read
+usually starts again from the beginning.
 
 An archive whose members are compressed together like this is called *solid*. Every
 compressed TAR is solid, and so are most 7z archives, since 7-Zip creates solid archives by
@@ -88,6 +92,14 @@ A compressed file or a compressed tar from a pipe that the sender keeps open is 
 what has arrived. A short one can still wait at open, and a read past its last byte waits for the
 sender to close the pipe ([Single-file compressors](formats.md#single-file-compressors) says
 where).
+
+Damaged compressed data can raise sooner from a pipe than from a file. From a file, a read with a
+size that meets the damage first gives you every byte before it: archivey goes back and
+decompresses that part again. (`read()` with no size raises and gives you nothing.) A pipe can't be
+read twice, so the read that meets the damage raises, and up to 64 KiB before the damage can be
+lost (none for gzip and other deflate data). On a compressed tar the decompressor reads ahead of the members, so
+damage near the start of a `.tar.xz` from a pipe can make the open fail with no members listed,
+where the same bytes in a file list the members before the damage first.
 
 ??? note "Why can't the others come from a pipe?"
     7z keeps its index at the end of the file, and reading an ISO means jumping between places in

@@ -14,7 +14,12 @@ are read through :meth:`ReaderContext.open_nested`, in the one forward pass, so 
 
 As ``dpkg-deb`` does, the walk refuses a version other than ``2.x``, skips members
 whose name starts with ``_`` before the data tar, refuses any other member there, and
-stops after the data tar. ``DEBIAN/md5sums`` lists an MD5 per installed file: the walk
+stops after the data tar. It also keeps the two tars apart, as ``dpkg-deb -R`` does: a
+data-tar member that can extract to ``DEBIAN`` or under it, in any spelling, is refused,
+and so is a control-tar member that extracts outside ``DEBIAN/`` and a hard link in
+either tar whose target crosses to the other. ``dpkg-deb -R`` unpacks the data tar
+first, then fails on a ``DEBIAN`` path the data tar made, and GNU tar refuses a ``..``
+name. ``DEBIAN/md5sums`` lists an MD5 per installed file: the walk
 holds it (it is part of the control tar, so it arrives first) and gives each data file
 its digest in ``ArchiveMember.hashes``, which a read then checks. A line that is not an
 MD5 and a name is skipped, as ``dpkg --verify`` skips it.
@@ -42,6 +47,7 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.filters import extracted_top_key, extracted_top_segment
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.types import (
@@ -62,6 +68,10 @@ MAGIC = (
     AR_MAGIC + (VERSION_MEMBER + b"/").ljust(16),
 )
 CONTROL_DIR = "DEBIAN/"
+# The first path segment of CONTROL_DIR. A control member must extract under exactly
+# this segment; a data member must not extract under any spelling of it (_CONTROL_KEY).
+_CONTROL_TOP = CONTROL_DIR.rstrip("/")
+_CONTROL_KEY = extracted_top_key(_CONTROL_TOP)
 # dpkg-deb accepts these compressions for each tar.
 _CONTROL_STREAMS = {
     b"": StreamFormat.UNCOMPRESSED,
@@ -77,6 +87,32 @@ _DATA_STREAMS = {
 # The control file's fields the archive info carries (as deb.package and so on).
 _FIELDS = (b"package", b"version", b"architecture")
 _HEX = frozenset(b"0123456789abcdefABCDEF")
+# The digits of an unsupported major version an error message shows.
+_VERSION_SHOWN = 20
+# What one md5sums entry holds beyond its name's characters (_str_bytes), as 64-bit
+# CPython measures it: the name's str header (40 to 56 bytes), the 16-byte digest object
+# (49) and the entry's share of the dict, a 24-byte slot, its index and the spare room a
+# dict keeps (31 bytes an entry over 500 000 entries, up to 60 just after the dict
+# grows). A constant, not sys.getsizeof(), which PyPy does not implement.
+_MD5_ENTRY = 56 + 49 + 48
+
+
+def _str_bytes(text: str) -> int:
+    """The bytes CPython stores for ``text``'s characters: 1, 2 or 4 a character, as
+    its widest character needs. One emoji makes a long name 4 bytes a character, and
+    one undecodable byte (a lone surrogate) 2."""
+    if text.isascii():
+        return len(text)
+    try:
+        text.encode("latin-1")
+    except UnicodeEncodeError:
+        pass
+    else:
+        return len(text)
+    # In UTF-16 a character above U+FFFF takes 4 bytes, and every other one 2.
+    if len(text.encode("utf-16-le", "surrogatepass")) > 2 * len(text):
+        return 4 * len(text)
+    return 2 * len(text)
 
 
 def _tar_format(
@@ -183,9 +219,15 @@ class DebReader(SequentialReader):
         major, dot, _minor = version.partition(b".")
         if not (major.isdigit() and dot):
             raise CorruptionError("Debian package has no format version")
-        if int(major) != 2:
+        # The digits are compared as bytes: int() refuses more than 4300 digits with
+        # a ValueError, and the member may hold millions.
+        digits = major.lstrip(b"0") or b"0"
+        if digits != b"2":
+            shown = digits[:_VERSION_SHOWN].decode("ascii")
+            if len(digits) > _VERSION_SHOWN:
+                shown += f"... ({len(digits)} digits)"
             raise UnsupportedFeatureError(
-                f"Debian package format version {int(major)}: archivey reads 2.x, "
+                f"Debian package format version {shown}: archivey reads 2.x, "
                 "as dpkg-deb does"
             )
         self._version = version.decode("ascii", "replace")
@@ -194,16 +236,31 @@ class DebReader(SequentialReader):
         """The control tar's members, under ``DEBIAN/``.
 
         ``control`` and ``md5sums`` are read whole on the way, for the archive info and
-        the data files' digests, so their spans are served from those held bytes.
+        the data files' digests, so their spans are served from those held bytes. A
+        member whose prefixed name extracts outside ``DEBIAN/`` (``../usr/x``) is
+        refused, and so is a hard link whose prefixed target does.
         """
         context = self._context
         for span in context.open_nested(data, fmt):
             member = span.member
             inner = member.name
             member.name = CONTROL_DIR if inner == "." else CONTROL_DIR + inner
+            if extracted_top_segment(member.name) != _CONTROL_TOP:
+                raise CorruptionError(
+                    "Debian package control tar has a member outside DEBIAN/, the "
+                    "directory of the control files; dpkg-deb refuses the package",
+                    member_name=member.name,
+                )
             if member.type is MemberType.HARDLINK and member.link_target:
                 # archivey normalizes the prefixed target as it does names.
                 member.link_target = CONTROL_DIR + member.link_target
+                if extracted_top_segment(member.link_target) != _CONTROL_TOP:
+                    raise CorruptionError(
+                        "Debian package control tar has a hard link to a path outside "
+                        "DEBIAN/; dpkg-deb refuses the package",
+                        member_name=member.name,
+                        link_target=member.link_target,
+                    )
             if member.type is MemberType.FILE and inner in ("control", "md5sums"):
                 held = self._hold(span, inner)
                 if inner == "control":
@@ -214,10 +271,42 @@ class DebReader(SequentialReader):
             yield span
 
     def _data(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
-        """The data tar's members, each file with its digest from ``md5sums``."""
+        """The data tar's members, each file with its digest from ``md5sums``.
+
+        A member that can extract to ``DEBIAN`` or under it, under any spelling that
+        extraction or the filesystem makes one with it, is refused, and so is a hard
+        link whose target can. The test is stricter than ``dpkg-deb -R``, which GNU
+        tar on Linux reads byte for byte: ``usr\\..\\DEBIAN/x`` (``sanitize_names``
+        and Windows read the backslashes as separators), ``C:/DEBIAN/x`` (extraction
+        drops a drive root on every OS), ``DEBIAN./x`` and ``DEBIAN /x`` (``STRICT``
+        and Win32 trim the dot or space) and ``debian/x`` (one directory with
+        ``DEBIAN/`` on a case-insensitive filesystem). The control side stays exact:
+        folding there would accept ``../debian/x``, which is data on Linux.
+
+        The control files are listed under ``DEBIAN/``, so a data copy of
+        ``DEBIAN/control`` would replace the real control file in the listing and in
+        extraction, and a hard link would read a control file's bytes.
+        """
         context = self._context
         for span in context.open_nested(data, fmt):
             member = span.member
+            if extracted_top_key(member.name) == _CONTROL_KEY:
+                raise CorruptionError(
+                    "Debian package data tar has a member that extracts into DEBIAN/, "
+                    "the directory of the control files",
+                    member_name=member.name,
+                )
+            if (
+                member.type is MemberType.HARDLINK
+                and member.link_target
+                and extracted_top_key(member.link_target) == _CONTROL_KEY
+            ):
+                raise CorruptionError(
+                    "Debian package data tar has a hard link to a path in DEBIAN/, "
+                    "the directory of the control files",
+                    member_name=member.name,
+                    link_target=member.link_target,
+                )
             if member.type is MemberType.FILE:
                 digest = self._md5.get(member.name)
                 if digest is not None:
@@ -233,8 +322,9 @@ class DebReader(SequentialReader):
     def _count(self, size: int, what: str) -> None:
         """Charge ``size`` more held bytes to the listing, refusing before they are
         read. ``debian-binary``, ``control`` and ``md5sums`` are held whole, and
-        their sizes come from the package. A walk started over to reach member data
-        charges nothing: the listing walk did."""
+        their sizes come from the package. Each entry of the digest map is charged
+        too, as it is added, at an estimate of what it holds. A walk started over to
+        reach member data charges nothing: the listing walk did."""
         self._context.charge_metadata(size, what=f"the Debian package {what}")
 
     def _read_control(self, data: bytes) -> None:
@@ -248,16 +338,24 @@ class DebReader(SequentialReader):
                 self._fields[key] = value.strip().decode("utf-8", "replace")
 
     def _read_md5sums(self, data: bytes) -> None:
-        """``<32 hex digits> <name>`` per line, the name relative to the root."""
+        """``<32 hex digits> <name>`` per line, the name relative to the root.
+
+        The lines are read one at a time, not split into a list, and each entry the
+        map keeps is charged to ``max_metadata_bytes`` before it is added: the file's
+        own bytes were charged when it was held, and the map holds about three times
+        as much again for short ASCII names, more for names stored wider."""
         context = self._context
-        for line in data.split(b"\n"):
-            digest, _space, name = line.partition(b" ")
+        md5 = self._md5
+        for line in io.BytesIO(data):
+            digest, _space, name = line.removesuffix(b"\n").partition(b" ")
             # md5sum writes two spaces, the second a " " (text) or "*" (binary) mark.
             name = name[1:] if name[:1] in (b" ", b"*") else name
             if len(digest) != 32 or not set(digest) <= _HEX or not name:
                 continue
             path = context.normalize_name(context.decode_name(name), MemberType.FILE)
-            self._md5[path] = bytes.fromhex(digest.decode("ascii"))
+            if path not in md5:
+                self._count(_str_bytes(path) + _MD5_ENTRY, "md5sums entries")
+            md5[path] = bytes.fromhex(digest.decode("ascii"))
 
 
 class DebHandler(SequentialFormatHandler):

@@ -48,24 +48,19 @@ def _block_check(config: StreamConfig) -> Callable[[int], None]:
 
     A read checks it against ``DecoderLimits.max_decoder_memory``, as other codecs
     check a declared dictionary or window. A detection probe reads a few hundred bytes
-    (``probe_read_bound``) and decodes uncapped (``codecs/base.py``), so it allows the
-    block size lzop writes, 256 KiB, and a block over that is "can't tell".
+    (``probe_read_bound``), so it also refuses a block over the size lzop writes,
+    256 KiB, as "can't tell"; the cap still applies under that.
     """
-    bound = config.probe_read_bound
-    if bound is not None:
-        ceiling = max(bound, LZOP_BLOCK_SIZE)
-
-        def check_probe(size: int) -> None:
-            if size > ceiling:
-                raise ResourceLimitError(
-                    f"an lzop block or extra field declares {size} bytes, over the {ceiling} a "
-                    "detection probe decodes"
-                )
-
-        return check_probe
     limits, usage = config.decoder_limits, config.usage
+    bound = config.probe_read_bound
+    ceiling = None if bound is None else max(bound, LZOP_BLOCK_SIZE)
 
     def check(size: int) -> None:
+        if ceiling is not None and size > ceiling:
+            raise ResourceLimitError(
+                f"an lzop block or extra field declares {size} bytes, over the "
+                f"{ceiling} a detection probe decodes"
+            )
         check_decoder_memory(
             size, limits=limits, what="an lzop block or extra field", usage=usage
         )
@@ -89,7 +84,7 @@ class LzopCodec(StreamCodec):
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         return LzopDecompressor(
-            lzo1x_decompressor(config.excluded_libraries, config.natives),
+            lzo1x_decompressor(config.excluded_libraries, config.natives, config.usage),
             _block_check(config),
         )
 
@@ -151,7 +146,9 @@ class Lzo1xCodec(StreamCodec):
             what="a raw LZO1X block's size",
             usage=config.usage,
         )
-        decode_block = lzo1x_decompressor(config.excluded_libraries, config.natives)
+        decode_block = lzo1x_decompressor(
+            config.excluded_libraries, config.natives, config.usage
+        )
         return DecompressorStream(
             source,
             make_decoder=lambda _p, _i: Lzo1xDecoder(decode_block, size),

@@ -44,8 +44,10 @@ out on purpose ([`gzip.md`](gzip.md) §6). Bytes after the last stream are neith
 nor ignored: the payload reads in full and the bytes are reported as
 `ARCHIVE_TRAILING_DATA`, although `xz` and `zstd` refuse such a file (§2.3, §3). A
 backward seek decodes again from the start of the stream unless the codec has resume
-points in front of the target. Most formats record none; on declared seek demand, gzip,
-zlib and raw DEFLATE get a zlib snapshot about every MiB a read passes (§2.3). And the gzip header's stored
+points in front of the target. Most formats record none; on declared seek demand, or on
+restart points (which the codec stream of a compressed TAR opened for random access asks
+for, [`tar.md`](tar.md) §2.3), gzip, zlib and raw DEFLATE get a zlib snapshot about
+every MiB a read passes (§2.3). And the gzip header's stored
 filename is reported, never used: the member's name comes from the name of the file
 archivey was given (§2.2).
 
@@ -86,9 +88,10 @@ last member's size, which is why archivey never reports it as the file's size.
 reaches offset N by decoding everything before it, unless the stream has places where
 decoding can restart: xz blocks and streams, lzip members, `.Z` CLEAR codes, and the
 index `rapidgzip` builds as it reads gzip or bzip2. For DEFLATE (gzip, zlib, raw), the
-standard library engine also keeps its own on declared seek demand: a copy of zlib's
-decoder state about every MiB a read passes ([`gzip.md`](gzip.md) §2.3). Where there are none, and for most
-files there are none (default `xz` writes one block, `lzip` one member, and `plzip` one member for a small file), a backward seek
+standard library engine also keeps its own on declared seek demand or restart points: a
+copy of zlib's decoder state about every MiB a read passes ([`gzip.md`](gzip.md) §2.3).
+Where there are none, and for most files there are none (default `xz` writes one block,
+`lzip` one member, and `plzip` one member for a small file), a backward seek
 decodes again from byte zero. The decode engine (§2.3) keeps the points it finds and
 reports a backward seek that costs more than a megabyte.
 
@@ -112,13 +115,15 @@ only when the source's extension names its format; `always_probe_content=True` a
 ([`topics/detection.md`](../topics/detection.md) §2.6).
 [`topics/detection.md`](../topics/detection.md) has the order and why.
 
-What is codec-specific about a probe: it runs with accelerators off and decoder memory
-limits lifted, because a probe decodes a bounded sample and a capped probe would call a
-stream with a large dictionary "not this format" for a caller who opened it with
-`DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG`). The open that follows applies the
-caller's limits. Lifting the cap does not mean reserving what the header declares: a probe
-sets `StreamConfig.probe_read_bound`, and the decoder is sized to that read (§4). The shared machinery around the probes (the sample size, the
-whole-source re-check, the decode allowance, and the `format_unconfirmed` stamp on a
+What is codec-specific about a probe: it runs with accelerators off and under the
+caller's `DecoderLimits` (`StreamCodec._decodes_sample`). It does not reserve what the
+header declares: a probe sets `StreamConfig.probe_read_bound`, the decoder is sized to
+that read (§4), and the cap is checked against that size, so a stream whose declared
+dictionary is over the cap is still recognised and then refused on open. A probe the cap
+refuses raises `ResourceLimitError`, which detection reads as "can't tell", not "not
+this format": it records `content_probe` as `CAPABILITY_UNAVAILABLE` and reports
+`DETECTION_DECODER_LIMITED`. The shared machinery around the probes (the sample size,
+the whole-source re-check, the decode allowance, and the `format_unconfirmed` stamp on a
 probe-only result) is on [`topics/detection.md`](../topics/detection.md) §2.4 and §4.1.
 
 Every match is then offered to the **inner-TAR probe** (`_probe_inner_tar`; its bounds are
@@ -150,8 +155,10 @@ decompressor at construction, handed to the first open; a second open raises
 **`open_archive` decodes one byte** of a seekable source (`_validate_at_open`), so a file
 that is not the codec its name or its detection claims fails at open rather than at the
 first read. It checks nothing further in: damage past the first byte still fails on the
-read. A valid empty stream opens and reads as `b""`. A pipe is not checked, because the
-byte would come out of its one pass. The cost is one decoded block, which matters only
+read. A valid empty stream opens and reads as `b""`. A pipe is checked only when
+detection's peek already holds all of it (`ArchiveSource.held_rest`): the byte is then
+decoded from a copy. Otherwise it is not checked, because the byte would come out of its
+one pass. The cost is one decoded block, which matters only
 for bzip2 ([`bzip2.md`](bzip2.md) §2.2). The byte is decoded with the standard library
 whatever `use_rapidgzip` / `use_indexed_bzip2` say, so no rapidgzip child starts at open.
 An `ON` accelerator is still resolved there (`StreamCodec.check_accelerator`), so rapidgzip
@@ -274,11 +281,11 @@ Where resume points come from, per codec:
 | xz | Every block, and every stream in a multi-stream file. Default `xz` writes one block; `xz -T0` and `--block-size` write many |
 | lzip | Every member from the trailer walk; every member with output from a forward read (an empty member's output offset is the next member's, or the end of the output). Default `lzip` writes one; `plzip` one per data block, many with a small `-B` |
 | `.Z` | Every CLEAR code, which `compress` emits when the dictionary stops paying |
-| gzip | On declared seek demand: every member after the first, recorded as a forward read reaches it, and every BGZF member, walked without decoding, and a zlib snapshot about every MiB inside a member ([`gzip.md`](gzip.md) §2.3). With `rapidgzip` engaged, its own index, built as it decodes |
-| zlib, raw DEFLATE | None natively. With `rapidgzip` engaged, its own index, built as it decodes; without it, on declared seek demand, zlib snapshots a read has passed (`gzip.md` §2.3) |
+| gzip | On declared seek demand or restart points: every member after the first, recorded as a forward read reaches it, and a zlib snapshot about every MiB inside a member; on declared seek demand only, every BGZF member, walked without decoding ([`gzip.md`](gzip.md) §2.3). With `rapidgzip` engaged, its own index, built as it decodes |
+| zlib, raw DEFLATE | None natively. With `rapidgzip` engaged, its own index, built as it decodes; without it, on declared seek demand or restart points, zlib snapshots a read has passed (`gzip.md` §2.3) |
 | bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
-| zstd | On declared seek demand: every regular frame after the first, recorded as a forward read reaches it, and every frame the seekable format's seek table lists ([`zstd-lz4.md`](zstd-lz4.md) §2.3) |
-| bzip3 | On declared seek demand: every block after the first, recorded as a forward read reaches it, and every block from a walk of the block headers, without decoding ([`bzip3.md`](bzip3.md) §2.1) |
+| zstd | On declared seek demand or restart points: every regular frame after the first, recorded as a forward read reaches it; on declared seek demand only, every frame the seekable format's seek table lists ([`zstd-lz4.md`](zstd-lz4.md) §2.3) |
+| bzip3 | On declared seek demand or restart points: every block after the first, recorded as a forward read reaches it; on declared seek demand only, every block from a walk of the block headers, without decoding ([`bzip3.md`](bzip3.md) §2.1) |
 | LZMA Alone, LZ4, Brotli | None |
 
 **The rewind report.** A backward seek emits `STREAM_REWIND_REDECOMPRESSES`, once per
@@ -510,7 +517,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Cost and archive info |
 | Size from the xz index and lzip trailers on any seekable source whose end is cheap to reach: not a pipe or a deflated member stream |
 | Only lzip reports a digest |
-| Validation at open, one byte deep, deferred on a pipe |
+| Validation at open, one byte deep; on a pipe only when detection read all of it, else deferred to the first read |
 | A pipe needs `streaming=True` and gives one pass |
 | Concurrent and re-entrant opens are independent |
 | `password=` accepted and unused |

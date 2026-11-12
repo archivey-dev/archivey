@@ -77,12 +77,19 @@ RELEASE_GATE_WORKFLOWS = (
     # Nothing else fuzzes before a release: the nightly skips when main has been quiet
     # for three days, and neither pull requests nor the merge queue run it.
     "atheris-fuzz.yml",
+    # pandas, pyarrow and dask are installed nowhere else, so their archivey:// tests
+    # skip in ci.yml.
+    "fsspec-consumers.yml",
     "rapidgzip-resume-stress.yml",
     # Pull requests run a reduced set of jobs and the merge queue skips PyPy's core-only
     # suite; a dispatched run includes everything, as the daily run on main does. The
     # `test-daily` legs (Linux 3.12-3.14, macOS and Windows 3.11) run nowhere else
     # before a release, and the minimum versions only when the dependencies change.
     "ci.yml",
+    # The library on python.org, Ubuntu, Fedora and conda-forge Pythons, whose codec
+    # libraries differ from uv's. It runs daily, on a dispatch, and on a pull request
+    # that changes it, never in the merge queue, so the release dispatches it.
+    "python-distributions.yml",
 )
 
 

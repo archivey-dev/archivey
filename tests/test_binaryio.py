@@ -1,4 +1,4 @@
-"""Unit tests for ``streams/streamtools/binaryio.py``: the classify/coerce helpers and BinaryIOWrapper.
+"""Unit tests for ``streams/streamtools/binaryio.py``: classify/coerce and BinaryIOWrapper.
 
 These adapt arbitrary caller objects to a uniform ``BinaryIO``, so they are tested hard as
 units (per CONTRIBUTING's narrow exception for stream primitives). The cross-library

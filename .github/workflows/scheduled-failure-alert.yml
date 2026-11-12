@@ -4,9 +4,13 @@ name: Scheduled failure alert
 # line. When a merge-queue merge made that change, the email goes to the merge-queue bot
 # and nobody sees it. This workflow turns each watched workflow's scheduled run on `main`
 # into an issue instead: a failure opens one issue per workflow (or comments on the open
-# one), and the next green scheduled run comments and closes it. Cancelled and skipped
-# runs change nothing. Dispatched and pull request runs are ignored; the person who
-# started them is already looking.
+# one), and the next green scheduled run comments and closes it. A failed run that a
+# merge to `main` started (`push`, for the workflows that no longer run on pull
+# requests) opens or comments the same way, since nobody watches it either; a green one
+# closes nothing, because some of them (the accelerator crash search and fuzz soak) run
+# a much shorter budget than the scheduled run. Cancelled and skipped runs change
+# nothing. Dispatched and pull request runs are ignored; the person who started them is
+# already looking.
 #
 # `workflows` matches each workflow's `name:`. A new scheduled workflow goes in this list
 # or in the exclusions of `test_every_scheduled_workflow_is_alerted` in
@@ -20,8 +24,10 @@ on:
       - Accelerator crash search
       - rapidgzip resume stress
       - PPMd native stress
+      - fsspec consumers
       - Benchmark wall-time
       - Review tally
+      - Python distributions
     types: [completed]
 
 permissions:
@@ -34,7 +40,7 @@ concurrency:
 jobs:
   alert:
     if: >-
-      github.event.workflow_run.event == 'schedule'
+      contains(fromJSON('["schedule","push"]'), github.event.workflow_run.event)
       && github.event.workflow_run.head_branch == github.event.repository.default_branch
       && contains(fromJSON('["success","failure","timed_out","startup_failure"]'), github.event.workflow_run.conclusion)
     runs-on: ubuntu-latest
@@ -48,6 +54,7 @@ jobs:
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT: ${{ github.event.workflow_run.event }}
           # Assigned so the alert reaches a person even with repository watching off.
           ASSIGNEE: davitf
         run: |
@@ -57,7 +64,9 @@ jobs:
             --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
           line="\`$CONCLUSION\` on ${SHA:0:12}: $RUN_URL"
           if [ "$CONCLUSION" = "success" ]; then
-            if [ -n "$number" ]; then
+            # Only a scheduled run proves the workflow green again: a post-merge run
+            # may have searched for a minute where the scheduled one searches for many.
+            if [ -n "$number" ] && [ "$EVENT" = "schedule" ]; then
               gh issue close "$number" --reason completed \
                 --comment "Green again, $line"
             fi
@@ -65,10 +74,10 @@ jobs:
             gh issue comment "$number" --body "Still failing, $line"
           else
             gh issue create --title "$title" --assignee "$ASSIGNEE" --body "$(cat <<BODY
-          The scheduled \`$WORKFLOW\` run on \`main\` failed, $line
+          The \`$EVENT\` run of \`$WORKFLOW\` on \`main\` failed, $line
 
-          This issue gets a comment on each further failed scheduled run and closes on
-          the next green one. See dev-docs/maintenance.md for what a red run of each
+          This issue gets a comment on each further failed scheduled or post-merge run
+          and closes on the next green scheduled run. See dev-docs/maintenance.md for what a red run of each
           workflow means.
 
           Opened by \`.github/workflows/scheduled-failure-alert.yml\`.

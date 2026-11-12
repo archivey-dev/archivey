@@ -1,4 +1,16 @@
-"""Internal password candidate resolution for encrypted archive units."""
+"""Internal password candidate resolution for encrypted archive units.
+
+The caller's ``password=`` (a value, a list, or a provider callable) becomes one
+:class:`_PasswordCandidates` per reader. A backend that meets an encrypted unit (a
+member, a 7z folder, an encrypted header) calls :meth:`_PasswordCandidates.attempt`
+with a ``decrypt`` callable; ``attempt`` tries the passwords in order, promotes the one
+that works so later units try it first (unless a confirmation probe keeps an
+unconfirmed one out), and raises one ``EncryptionError`` when none does. The module
+also holds the marks a backend puts on an ``EncryptionError``: the wrong-password mark
+keeps a confirmed wrong-password message when the candidates run out, and the
+unverified-data mark tells the link-target report that a wrong password and damaged
+data are both still possible.
+"""
 
 from __future__ import annotations
 
@@ -145,8 +157,8 @@ class _PasswordCandidates:
     """Per-archive password state: known-good list, remaining candidates, optional provider.
 
     Under ``MemberStreams.CONCURRENT`` the known-good snapshot/promotion and provider
-    callback are synchronized (D10): the provider is invoked with **no** Archivey lock
-    held, one call at a time per reader; a second thread waits for the first call to
+    callback are synchronized: the provider is invoked with **no** Archivey lock held,
+    one call at a time per reader; a second thread waits for the first call to
     return. Reentry from inside the provider raises ``ArchiveyUsageError`` when it
     comes from the provider's own thread or from a thread carrying its context; a
     helper thread with neither cannot be told apart from an independent worker, so it
@@ -184,6 +196,7 @@ class _PasswordCandidates:
 
     @classmethod
     def from_input(cls, password: PasswordInput) -> _PasswordCandidates:
+        """Validate the caller's ``password=`` and build the reader's state from it."""
         if password is None:
             return cls()
         if isinstance(password, (str, bytes)):
@@ -207,11 +220,10 @@ class _PasswordCandidates:
                 candidates_list.append(_to_bytes(item))
             return cls(candidates=candidates_list)
         if not callable(password):
-            # Anything not matched above used to be cast to a provider and stored. The
-            # cast is a promise, not a check, so `password=0` survived open() and
-            # surfaced at the first encrypted member as `'int' object is not callable` —
-            # a raw TypeError, from a call the caller never wrote, about an argument
-            # they passed several operations earlier.
+            # Refused here, at open(), rather than stored as a provider: `password=0`
+            # would otherwise surface at the first encrypted member as `'int' object
+            # is not callable` — a raw TypeError, from a call the caller never wrote,
+            # about an argument they passed several operations earlier.
             raise _UsageTypeError(
                 f"password= takes a str, bytes, a sequence of those, a provider "
                 f"callable, or None, but got {_describe_type(password)}."
@@ -313,7 +325,7 @@ class _PasswordCandidates:
             self._provider_owner = (me, token)
         context_token = _PROVIDER_CALL.set(token)
         try:
-            # Provider runs with no Archivey lock held (D10).
+            # Provider runs with no Archivey lock held.
             raw = self._provider(PasswordRequest(member=member, attempt=attempt))
         finally:
             _PROVIDER_CALL.reset(context_token)
@@ -324,8 +336,8 @@ class _PasswordCandidates:
             return None
         if not isinstance(raw, (str, bytes)):
             # Checked here because the provider is the caller's code running inside
-            # ours: without this, its return value reached the cipher and failed as
-            # `TypeError: a bytes-like object is required`, naming neither the
+            # ours: without this, its return value would reach the cipher and fail
+            # as `TypeError: a bytes-like object is required`, naming neither the
             # provider nor the password.
             raise _UsageTypeError(
                 f"The password provider returned {_describe_type(raw)}; it must "
@@ -334,6 +346,8 @@ class _PasswordCandidates:
         return _to_bytes(raw)
 
     def record_success(self, password: bytes) -> None:
+        """Move ``password`` to the front of the known-good list, so the next unit
+        tries it first."""
         with self._state_lock:
             if password in self._known_good:
                 self._known_good.remove(password)
@@ -442,19 +456,14 @@ class _PasswordCandidates:
             if result is not None:
                 return accept(password, result)
 
-        message = (
-            (
-                last_error.message
-                if is_wrong_password(last_error)
-                else "Password(s) rejected for this encrypted member"
-            )
-            if tried
-            else (
-                last_error.message
-                if last_error is not None
-                else "Password required to read this encrypted member"
-            )
-        )
+        # ``last_error`` is set only for a password that was tried, so with nothing
+        # tried (no candidate, no provider answer) the message asks for a password.
+        if not tried:
+            message = "Password required to read this encrypted member"
+        elif is_wrong_password(last_error):
+            message = last_error.message
+        else:
+            message = "Password(s) rejected for this encrypted member"
         exhausted = _PasswordCandidatesExhausted(message, last_error=last_error)
         if last_error is not None:
             raise exhausted from last_error

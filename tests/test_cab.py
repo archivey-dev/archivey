@@ -22,6 +22,7 @@ from archivey import (
     CorruptionError,
     DecoderLimits,
     DiagnosticCode,
+    DiagnosticPolicy,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -29,6 +30,8 @@ from archivey import (
     detect_format,
     open_archive,
 )
+from archivey.diagnostics import UnexpectedNameDuplicateContext
+from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.backends import cab_reader
 from archivey.internal.streams.codecs import lzx_decoder
 from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
@@ -171,7 +174,7 @@ def test_makecab_cabinets(fixture: str, method: CompressionAlgorithm) -> None:
         assert reader.read("empty") == b""
         if "zero" in members:
             assert reader.read("zero") == bytes(33000)
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
 
 
 def test_a_code_page_name_decodes_with_encoding() -> None:
@@ -595,12 +598,12 @@ def test_lzx_frames_are_whole() -> None:
 
 
 def _shared_blocks(folders: int, blocks: int) -> bytes:
-    """A cabinet whose folders all name one run of one-byte stored blocks, with a
-    one-byte file in each. (A block of no output is refused, and an empty file
-    reads no table.)"""
+    """A cabinet whose folders all name one run of one-byte stored blocks, with one
+    file in each that covers its folder. (A block of no output is refused, an empty
+    file reads no table, and files must cover their folder to its end.)"""
     files_at = 36 + 8 * folders
     files = b"".join(
-        struct.pack("<IIHHHH", 1, 0, i, 0x5A21, 0x6000, 0x20) + b"f%d\0" % i
+        struct.pack("<IIHHHH", blocks, 0, i, 0x5A21, 0x6000, 0x20) + b"f%d\0" % i
         for i in range(folders)
     )
     data_at = files_at + len(files)
@@ -637,8 +640,10 @@ def test_kept_block_tables_are_weighed_against_max_metadata_bytes() -> None:
     with open_archive(io.BytesIO(raw), config=config) as reader:
         members = reader.members()
         for member in members[:3]:
-            assert reader.read(member) == b"x"
-        assert reader.read(members[0]) == b"x"  # a kept table is not weighed again
+            assert reader.read(member) == b"x" * 100
+        assert (
+            reader.read(members[0]) == b"x" * 100
+        )  # a kept table is not weighed again
         with pytest.raises(
             archivey.ResourceLimitError,
             match=f"max_metadata_bytes={3 * weight} .*{3 * weight} bytes, and folder 3's "
@@ -734,6 +739,48 @@ def test_lzx_a_tree_that_does_not_fill_its_code_space_is_damage(
 ) -> None:
     with pytest.raises(CorruptionError, match=f"LZX main tree {message}"):
         lzx_decoder._build_table(lengths, len(lengths), "main")
+
+
+def _zero_lengths(w: BitWriter, count: int, codes: dict[int, int]) -> None:
+    """``count`` lengths of 0 as pretree runs, through 2-bit ``codes``."""
+    while count >= 20:
+        run = min(count, 51)
+        w.bits(codes[18], 2)
+        w.bits(run - 20, 5)
+        count -= run
+    if count >= 4:
+        w.bits(codes[17], 2)
+        w.bits(count - 4, 4)
+        count = 0
+    for _ in range(count):
+        w.bits(codes[0], 2)
+
+
+def test_lzx_a_tree_with_an_unreachable_long_code_is_damage() -> None:
+    """A pretree whose four 2-bit codes fill the code space, plus an 8-bit code for
+    symbol 1. cabextract decodes on (lzxd.c stops at its 6-bit first table level and
+    never sees the 8-bit code), but no encoder writes such a tree: it comes from
+    damage, and the bytes after it are wrong. archivey refuses it, on purpose."""
+    pre = [0] * 20
+    pre[0] = pre[16] = pre[17] = pre[18] = 2
+    pre[1] = 8
+    codes = {0: 0b00, 16: 0b01, 17: 0b10, 18: 0b11}
+    size = 100
+    w = BitWriter()
+    w.bits(0, 1)
+    w.bits(1, 3)  # a verbatim block
+    w.bits(size >> 8, 16)
+    w.bits(size & 0xFF, 8)
+    for first, last, ones in ((0, 256, 2), (256, 496, 0), (0, 249, 0)):
+        for n in pre:
+            w.bits(n, 4)
+        for _ in range(ones):
+            w.bits(codes[16], 2)  # length (0 - 16) % 17 = 1
+        _zero_lengths(w, last - first - ones, codes)
+    for i in range(size):
+        w.bits(i & 1, 1)
+    with pytest.raises(CorruptionError, match="pretree tree overfills"):
+        _decoder(_end(w)).decode_frame(size)
 
 
 def test_lzx_long_codes_decode_through_sub_tables() -> None:
@@ -875,6 +922,339 @@ def test_lzx_a_stream_that_reads_past_its_end_is_truncated() -> None:
     # lzxd.c reads before it refuses the stream.
     with pytest.raises(TruncatedError, match="ends before its output"):
         _decoder(whole[:-4]).decode_frame(800)
+
+
+@pytest.mark.parametrize("size", [800, 801], ids=["word-end", "mid-word-end"])
+def test_lzx_a_frame_lzxd_reads_past_the_two_zero_bytes_for_is_truncated(
+    size: int,
+) -> None:
+    """lzxd.c reads 16 bits ahead of each symbol, and one more word at the end of a
+    frame whose last word it has not used up. With the last word cut, the zeros
+    after the input still decode to the right bytes here, but lzxd.c needs more
+    than its two zero bytes to read them, so it refuses the stream (cabextract:
+    "error in CAB data format"). Checking only the bits used accepted it.
+    """
+    w = _raw_lzx(size, {0: 1, 1: 1})
+    w.bits(0, size)
+    whole = _end(w, pad=0)
+    assert _decoder(whole).decode_frame(size) == bytes(size)
+    with pytest.raises(TruncatedError, match="ends before its output"):
+        _decoder(whole[:-2]).decode_frame(size)
+
+
+def test_lzx_a_frame_with_nothing_read_ahead_may_end_in_the_zero_bytes() -> None:
+    """When the last field of a frame ends on a word boundary and fills what
+    lzxd.c read for the symbol before it, lzxd.c holds no bits ahead, and the
+    two zero bytes after the input may be the frame's last word."""
+    # A 2**17 window, with the match symbol for slot 32 (15 extra bits) as the code
+    # "0": the code and its extra bits are one word. Two frames of 'A' first, so
+    # the match (distance 65 534, all extra bits zero) reaches back into them.
+    match = 256 + 32 * 8  # slot 32, a match of 2
+    size = 2 * FRAME + 10
+    w = BitWriter()
+    w.bits(0, 1)
+    w.bits(1, 3)  # a verbatim block
+    w.bits(size >> 8, 16)
+    w.bits(size & 0xFF, 8)
+    lengths = [0] * (256 + 34 * 8)
+    lengths[match], lengths[65], lengths[66] = 1, 2, 2  # "0", "10", "11"
+    _lengths(w, lengths, 0, 256, 0)
+    _lengths(w, lengths, 256, len(lengths), 0)
+    _lengths(w, [0] * 249, 0, 249, 0)
+    for frame_symbols in (FRAME, FRAME, 8):
+        for _ in range(frame_symbols):
+            w.bits(0b10, 2)  # 'A'
+        w.align()
+    w.bits(0, 16)  # the match: code "0" and 15 zero extra bits
+    data = w.take()
+    expected = [b"A" * FRAME, b"A" * FRAME, b"A" * 10]
+    for stream in (data, data[:-2]):
+        chunks = iter([stream])
+        decoder = LzxDecoder(17, lambda chunks=chunks: next(chunks, None))
+        assert [decoder.decode_frame(len(f)) for f in expected] == expected
+
+
+@pytest.mark.parametrize(
+    ("cut", "expected"), [(2, b"abcdef\0\0"), (3, None)], ids=["two", "three"]
+)
+def test_lzx_a_stored_block_may_read_the_two_zero_bytes(
+    cut: int, expected: bytes | None
+) -> None:
+    """lzxd.c reads stored bytes from its two zero bytes past the input too, and
+    refuses the stream only past them: cabextract reads a stored block cut by two
+    bytes, with zeros for them, and refuses one cut by three."""
+    w = BitWriter()
+    w.bits(0, 1)
+    _uncompressed_block(w, b"abcdefgh", (1, 1, 1))
+    stream = _end(w, pad=0)[:-cut]
+    if expected is None:
+        with pytest.raises(TruncatedError, match="inside an uncompressed block"):
+            _decoder(stream).decode_frame(8)
+    else:
+        assert _decoder(stream).decode_frame(8) == expected
+
+
+def _with_table_order(raw: bytes, order: list[int]) -> bytes:
+    """``raw`` with its CFFILE records rewritten in ``order`` (indices in the table)."""
+    (count,) = struct.unpack_from("<H", raw, 28)
+    pos = start = _file_record(raw)
+    records = []
+    for _ in range(count):
+        end = raw.index(b"\0", pos + 16) + 1
+        records.append(raw[pos:end])
+        pos = end
+    return raw[:start] + b"".join(records[i] for i in order) + raw[pos:]
+
+
+def _spans(folders: int, per_folder: int) -> list[CabFile]:
+    """Files of 9000 bytes, so most cross a block edge, ``per_folder`` per folder."""
+    return [
+        CabFile(f"f{folder}-{i}", BLOB[i * 9000 : (i + 1) * 9000], folder=folder)
+        for folder in range(folders)
+        for i in range(per_folder)
+    ]
+
+
+def _count_block_reads(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """Each (folder, block) whose stored bytes a member stream reads, as it reads them."""
+    reads: list[tuple[int, int]] = []
+    real = cab_reader._FolderStream._payload
+
+    def recording(self: cab_reader._FolderStream, number: int) -> bytes:
+        reads.append((self.index, number))
+        return real(self, number)
+
+    monkeypatch.setattr(cab_reader._FolderStream, "_payload", recording)
+    return reads
+
+
+@pytest.mark.parametrize("method", ["mszip", "lzx"])
+@pytest.mark.parametrize("shape", ["reversed", "folders interleaved"])
+def test_a_table_out_of_data_order_decodes_each_block_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, method: str, shape: str
+) -> None:
+    files = _spans(2, 6)
+    raw = write_cab(files, [CabFolder(method), CabFolder(method)])
+    order = (
+        list(range(len(files)))[::-1]
+        if shape == "reversed"
+        else [i + 6 * folder for i in range(6) for folder in range(2)]
+    )
+    raw = _with_table_order(raw, order)
+    data = {f.name: f.data for f in files}
+    reads = _count_block_reads(monkeypatch)
+    with open_archive(io.BytesIO(raw)) as reader:
+        # The members come in data order: by folder, then offset.
+        assert [m.name for m in reader.members()] == [f.name for f in files]
+        streamed = {}
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            streamed[member.name] = stream.read()
+        assert streamed == data
+        assert len(reads) == len(set(reads))
+        reads.clear()
+        reader.extract_all(tmp_path)
+        assert len(reads) == len(set(reads))
+    for name, content in data.items():
+        assert (tmp_path / name).read_bytes() == content
+
+
+@pytest.mark.parametrize(
+    ("method", "order"),
+    [
+        ("lzx", list(range(12))),
+        ("mszip", list(range(12))),
+        # Each folder still reads in one pass: no block decodes twice.
+        ("lzx", [*range(6, 12), *range(6)]),
+        # Stored blocks are read where a member starts; nothing decodes.
+        ("none", list(range(12))[::-1]),
+    ],
+    ids=["lzx", "mszip", "folders-swapped", "stored-reversed"],
+)
+def test_a_table_that_decodes_each_block_once_keeps_its_order(
+    method: str, order: list[int]
+) -> None:
+    files = _spans(2, 6)
+    raw = _with_table_order(
+        write_cab(files, [CabFolder(method), CabFolder(method)]), order
+    )
+    data = {f.name: f.data for f in files}
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert [m.name for m in reader.members()] == [files[i].name for i in order]
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.read() == data[member.name]
+
+
+def _name_twice() -> tuple[list[CabFile], bytes]:
+    """Four files of one LZX folder, then ``f0-0`` again, in reverse table order: an
+    order that would decode a block twice, so the sort is on but for the name."""
+    files = [*_spans(1, 4), CabFile("f0-0", b"second")]
+    return files, _with_table_order(
+        write_cab(files, [CabFolder("lzx")]), [4, 3, 2, 1, 0]
+    )
+
+
+def test_a_name_listed_twice_keeps_table_order() -> None:
+    # The entry listed last is the current one, so the order that says which stays.
+    files, raw = _name_twice()
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert [m.name for m in reader.members()] == [
+            "f0-0",
+            "f0-3",
+            "f0-2",
+            "f0-1",
+            "f0-0",
+        ]
+        assert reader.read("f0-0") == files[0].data
+
+
+def test_a_name_listed_twice_is_reported_as_unexpected() -> None:
+    # A cabinet has no way to repeat a name, so the later entry reports the
+    # CAB-specific code, as well as the generic one every format reports.
+    _, raw = _name_twice()
+    with open_archive(io.BytesIO(raw)) as reader:
+        members = reader.members()
+    codes = [sorted(d.code for d in m.diagnostics) for m in members]
+    assert codes == [
+        [],
+        [],
+        [],
+        [],
+        [
+            DiagnosticCode.MEMBER_NAME_DUPLICATE,
+            DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED,
+        ],
+    ]
+    (report,) = (
+        d
+        for d in members[4].diagnostics
+        if d.code is DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
+    )
+    assert report.context == UnexpectedNameDuplicateContext(
+        member_name="f0-0", member_id=4, format="cab"
+    )
+
+
+def test_a_name_listed_twice_after_normalization_is_reported() -> None:
+    # Names are compared as the listing presents them: "a\\b" and "a/b" are one.
+    raw = write_cab(
+        [CabFile("a\\b", b"one"), CabFile("a/b", b"two")], [CabFolder("none")]
+    )
+    with open_archive(io.BytesIO(raw)) as reader:
+        (_, later) = reader.members()
+    assert DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED in [
+        d.code for d in later.diagnostics
+    ]
+
+
+def test_strict_refuses_a_cabinet_that_lists_a_name_twice() -> None:
+    _, raw = _name_twice()
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with (
+        open_archive(io.BytesIO(raw), config=strict) as reader,
+        pytest.raises(DiagnosticRaisedError) as raised,
+    ):
+        reader.members()
+    assert raised.value.diagnostic.code is (
+        DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
+    )
+
+
+def test_strict_reads_a_cabinet_with_distinct_names() -> None:
+    files = _spans(1, 4)
+    raw = write_cab(files, [CabFolder("lzx")])
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with open_archive(io.BytesIO(raw), config=strict) as reader:
+        assert [m.name for m in reader.members()] == [f.name for f in files]
+
+
+def test_a_damaged_table_out_of_data_order_sorts_up_to_the_damage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One bad record at the end of a crafted table must not turn the sort off: the
+    # members before it come in data order, each block read once, then the error.
+    files = _spans(1, 4)
+    raw = bytearray(
+        _with_table_order(write_cab(files, [CabFolder("lzx")]), [3, 2, 1, 0])
+    )
+    # The third record names a folder the cabinet does not have.
+    pos = _file_record(raw)
+    for _ in range(2):
+        pos = raw.index(b"\0", pos + 16) + 1
+    struct.pack_into("<H", raw, pos + 8, 5)
+    reads = _count_block_reads(monkeypatch)
+    with open_archive(io.BytesIO(bytes(raw))) as reader:
+        names = []
+        with pytest.raises(CorruptionError, match="folder 5"):
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                assert stream.read() == files[int(member.name[3:])].data
+                names.append(member.name)
+        assert names == ["f0-2", "f0-3"]
+        assert len(reads) == len(set(reads))
+
+
+def _set_offset(raw: bytes, record: int, offset: int) -> bytes:
+    """``raw`` with the ``record``-th CFFILE record's folder offset set to ``offset``."""
+    out = bytearray(raw)
+    pos = _file_record(out)
+    for _ in range(record):
+        pos = out.index(b"\0", pos + 16) + 1
+    struct.pack_into("<I", out, pos + 4, offset)
+    return bytes(out)
+
+
+def test_an_empty_member_does_not_count_in_the_order_replay() -> None:
+    # An empty member opens no folder stream, so one listed last at offset 0 leaves
+    # the table in an order that decodes each block once.
+    files = [*_spans(1, 2), CabFile("empty", b"")]
+    raw = _set_offset(write_cab(files, [CabFolder("lzx")]), 2, 0)
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert [m.name for m in reader.members()] == ["f0-0", "f0-1", "empty"]
+
+
+def test_a_folder_that_opens_no_stream_does_not_count_in_the_order_replay() -> None:
+    # Quantum members are refused before a folder stream is made, so their order
+    # does not count; the LZX folder beside them reads in one pass.
+    quantum = [
+        CabFile(f"q{i}", BLOB[i * 9000 : (i + 1) * 9000], folder=0) for i in range(3)
+    ]
+    lzx = [
+        CabFile(f"z{i}", TEXT[i * 9000 : (i + 1) * 9000], folder=1) for i in range(3)
+    ]
+    raw = _with_table_order(
+        write_cab([*quantum, *lzx], [CabFolder("quantum", 10), CabFolder("lzx")]),
+        [2, 1, 0, 3, 4, 5],
+    )
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert [m.name for m in reader.members()] == [
+            "q2",
+            "q1",
+            "q0",
+            "z0",
+            "z1",
+            "z2",
+        ]
+        assert reader.read("z2") == lzx[2].data
+
+
+@pytest.mark.parametrize(
+    ("second", "twice"),
+    [(9000, False), (4000, True), (0, True)],
+    ids=["after", "inside", "at-start"],
+)
+def test_the_order_replay_goes_on_from_where_a_member_ends(
+    second: int, twice: bool
+) -> None:
+    # A member read to its end leaves the decoder there, so the next member goes on
+    # from it only when it starts at or after that end.
+    folders = (cab_reader._Folder(0, 1, cab_reader._LZX, 16),)
+    records = [
+        cab_reader._Record(9000, 0, 0, 0, 0, b"a"),
+        cab_reader._Record(9000, second, 0, 0, 0, b"b"),
+    ]
+    assert cab_reader._decodes_twice(folders, records, [0, 1]) is twice
 
 
 def test_format_is_listed() -> None:
@@ -1065,3 +1445,144 @@ def test_lzx_length_codes_longer_than_the_lookup_table() -> None:
     freqs = counts + [0] * (249 - len(counts))
     assert max(code_lengths(freqs, 16)) > lzx_decoder._ROOT_BITS
     assert _decode(_lzx_stream(tokens, len(expected)), len(expected)) == expected
+
+
+# ── The file table's layout ───────────────────────────────────────────────────
+#
+# No checksum covers a CFFILE record, so a damaged offset or size would read other,
+# correctly checksummed bytes of the folder. Files must tile their folder.
+
+
+def _file_records(raw: bytes) -> list[tuple[int, bytes]]:
+    """``(where, record with its name)`` for each CFFILE record, in table order."""
+    (files_at,) = struct.unpack_from("<I", raw, 16)
+    (count,) = struct.unpack_from("<H", raw, 28)
+    records = []
+    pos = files_at
+    for _ in range(count):
+        end = raw.index(b"\0", pos + 16) + 1
+        records.append((pos, raw[pos:end]))
+        pos = end
+    return records
+
+
+def _patch_file(
+    raw: bytes, index: int, *, size: int | None = None, offset: int | None = None
+) -> bytes:
+    out = bytearray(raw)
+    where, _record = _file_records(raw)[index]
+    if size is not None:
+        struct.pack_into("<I", out, where, size)
+    if offset is not None:
+        struct.pack_into("<I", out, where + 4, offset)
+    return bytes(out)
+
+
+def _reversed_table(raw: bytes) -> bytes:
+    """The same cabinet with its file records in reverse order."""
+    records = _file_records(raw)
+    start = records[0][0]
+    end = records[-1][0] + len(records[-1][1])
+    return raw[:start] + b"".join(r for _, r in reversed(records)) + raw[end:]
+
+
+@pytest.mark.parametrize("case", ["stored", "mszip", "lzx-16"])
+@pytest.mark.parametrize(
+    ("index", "shift", "word"),
+    [(1, -10, "overlaps"), (1, 10, "leaves a gap"), (0, 1, "leaves a gap")],
+    ids=["overlap", "gap", "first-not-at-0"],
+)
+def test_a_file_table_that_does_not_tile_its_folder_is_refused(
+    case: str, index: int, shift: int, word: str
+) -> None:
+    """The fuzzer's shape: a moved offset reads other checksummed bytes and passed
+    ``verify_all()``. Which record is wrong cannot be told, so the open fails."""
+    raw = _case(case)
+    _where, record = _file_records(raw)[index]
+    (offset,) = struct.unpack_from("<I", record, 4)
+    damaged = _patch_file(raw, index, offset=offset + shift)
+    with pytest.raises(CorruptionError, match=f"{word} .*file table is damaged"):
+        open_archive(io.BytesIO(damaged))
+
+
+def test_a_last_file_that_stops_short_of_its_folder_is_refused() -> None:
+    """A smaller size on the last file leaves no gap between files, but stops before
+    the folder does: the read refuses it rather than return a cut file as checked."""
+    raw = _case("mszip")
+    damaged = _patch_file(raw, 2, size=len(CODE) - 1)
+    with open_archive(io.BytesIO(damaged)) as reader:
+        assert [m.name for m in reader.members()] == NAMES
+        with pytest.raises(CorruptionError, match="decodes to .*file table is damaged"):
+            reader.read("bin/code.exe")
+
+
+def test_files_listed_out_of_offset_order_still_tile() -> None:
+    """Order in the table is the writer's choice; only the layout counts. A reversed
+    table over a compressed folder lists in data order, so no block decodes twice."""
+    raw = _reversed_table(_case("mszip"))
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert [m.name for m in reader.members()] == NAMES
+        assert reader.read("blob.bin") == BLOB
+        assert reader.verify_all().failures == ()
+
+
+def test_an_empty_file_anywhere_in_the_folder_is_accepted() -> None:
+    """An empty file reads no bytes, so its offset is not checked."""
+    files = [*FILES, CabFile("empty", b"")]
+    raw = _patch_file(_cab(CabFolder("mszip"), files), 3, offset=12345)
+    with open_archive(io.BytesIO(raw)) as reader:
+        assert reader.read("empty") == b""
+        assert reader.read("blob.bin") == BLOB
+
+
+def test_the_listing_estimates_checksum_and_the_read_agrees() -> None:
+    """The listing used to say ``LENGTH`` while a read reached ``CHECKSUM``."""
+    with open_archive(io.BytesIO(_case("lzx-16"))) as reader:
+        members = reader.members()
+        assert [m.verifiable for m in members] == [Verification.CHECKSUM] * 3
+        assert reader.verify_all().failures == ()
+        assert [m.verified for m in members] == [Verification.CHECKSUM] * 3
+
+
+def test_a_folder_without_checksums_settles_at_length_on_open() -> None:
+    raw = _cab(CabFolder("mszip", checksums=False))
+    with open_archive(io.BytesIO(raw)) as reader:
+        member = reader.get("blob.bin")
+        assert member.verifiable is Verification.CHECKSUM  # the listing's estimate
+        assert reader.read(member) == BLOB
+        assert member.verifiable is Verification.LENGTH
+        assert member.verified is Verification.LENGTH
+
+
+def _bad_last_name(raw: bytes) -> bytes:
+    """``raw`` with the last file record's name made empty, which the listing refuses."""
+    out = bytearray(raw)
+    where, _record = _file_records(raw)[-1]
+    out[where + 16] = 0
+    return bytes(out)
+
+
+def test_an_overlap_before_a_bad_record_is_still_refused_at_open() -> None:
+    """A later bad record stops the layout check early, but an overlap among the
+    records before it is damage whatever follows."""
+    raw = _case("mszip")
+    (offset,) = struct.unpack_from("<I", _file_records(raw)[1][1], 4)
+    damaged = _bad_last_name(_patch_file(raw, 1, offset=offset - 10))
+    with pytest.raises(CorruptionError, match="overlaps .*file table is damaged"):
+        open_archive(io.BytesIO(damaged))
+
+
+def test_members_before_a_bad_record_read_unchecked() -> None:
+    """A gap before a bad record might be filled by a record past it, so it is not
+    refused; nothing vouched for the offsets, so the members read at ``LENGTH``."""
+    raw = _case("mszip")
+    (offset,) = struct.unpack_from("<I", _file_records(raw)[1][1], 4)
+    damaged = _bad_last_name(_patch_file(raw, 1, offset=offset + 10))
+    seen = []
+    with open_archive(io.BytesIO(damaged)) as reader, pytest.raises(CorruptionError):
+        for member, stream in reader.stream_members():
+            assert member.verifiable is Verification.LENGTH
+            assert stream is not None
+            stream.read()
+            seen.append((member.name, member.verified))
+    assert seen == [(NAMES[0], Verification.LENGTH), (NAMES[1], Verification.LENGTH)]

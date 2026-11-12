@@ -57,6 +57,7 @@ from archivey import (
     ArchiveFormat,
     ArchiveReader,
     ArchiveyConfig,
+    Budget,
     DecoderLimits,
     DiagnosticPolicy,
     ExtractionLimits,
@@ -534,6 +535,15 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _with_config(archive, out(), formats=b),
             )
         )
+    for bad in ("x", 10, Budget, frozenset()):
+        rows.append(
+            _case(
+                "ArchiveyConfig",
+                "budget",
+                bad,
+                lambda b=bad: _with_config(archive, out(), budget=b),
+            )
+        )
     for bad in ("x", -1, True, 1.5, None):
         rows.append(
             _case(
@@ -569,6 +579,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         "read_link_targets",
         "always_probe_content",
         "discover_volumes",
+        "recover_partial_data",
     ):
         for bad in ("false", 0, 1, None):
             rows.append(

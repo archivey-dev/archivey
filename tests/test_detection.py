@@ -849,7 +849,11 @@ def test_lzma_alone_zero_output_gate_costs_no_real_stream(tmp_path: Path) -> Non
     payload = b"payload data " * 8
     known = bytearray(lzma.compress(payload, format=lzma.FORMAT_ALONE))
     known[5:13] = len(payload).to_bytes(8, "little")
-    assert lzma.decompress(bytes(known), format=lzma.FORMAT_ALONE) == payload
+    # Known size plus end marker: the stdlib decoder refuses this on liblzma before
+    # 5.2.6, and on any version when a read boundary falls before the marker; archivey
+    # reads it.
+    with open_archive(io.BytesIO(bytes(known)), format=ArchiveFormat.LZMA_ALONE) as ar:
+        assert ar.read(ar.members()[0]) == payload
     info = detect_format(io.BytesIO(bytes(known)), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.detected_by == "content_probe"
@@ -1716,7 +1720,8 @@ def test_empty_listing_rescan_detects_under_the_config_budget(
 
 def test_empty_listing_rescan_stays_internal(tmp_path: Path) -> None:
     """Under a policy that raises on the conflict, the rescan's own findings neither
-    reach the caller nor raise inside it: an empty ZIP named ``x.tar.gz`` opened with ``format=ZIP`` reports the
+    reach the caller nor raise inside it: an empty ZIP named ``x.tar.gz`` opened with
+    ``format=ZIP`` reports the
     empty archive and nothing else, because detection does identify it as ZIP."""
     from archivey import open_archive
     from archivey.diagnostics import Diagnostic, DiagnosticCode, DiagnosticPolicy

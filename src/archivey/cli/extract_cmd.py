@@ -817,17 +817,17 @@ def maybe_hoist_single_root(
     Recovers unar-style single-root reuse (and filter-aware D1 for streaming) after an
     always-wrap extract, without a pre-extract metadata pass. When the merge runs,
     directories merge into existing ones, and under ``rename`` the final layout
-    matches extracting directly into the wrapper's parent (:func:`_merge_move`). The hoist is a convenience, not a
-    promise: it never replaces or deletes anything in the cwd, so when the merge would
-    meet a collision that ``rename`` does not settle (any collision under ``error``,
-    ``skip`` or ``replace``, :func:`_policy_resolves`), nothing is moved, a ``kept in``
-    line names the first such path, and the run still succeeds with the content in the
-    wrapper. A destination that is the wrapper itself (``FILE`` in ``file/`` on a
-    case-insensitive filesystem) is not a collision, because the wrapper moves aside
-    before the merge. When the sole root shares the wrapper's own name, spelled the same
-    (``src.tar.gz`` containing ``src/``), the child is flattened in place — the wrapper
-    *becomes* the root, so no collision logic applies to it. A root whose name differs
-    only in case is merged like any other.
+    matches extracting directly into the wrapper's parent (:func:`_merge_move`). The
+    hoist is a convenience, not a promise: it never replaces or deletes anything in the
+    cwd, so when the merge would meet a collision that ``rename`` does not settle (any
+    collision under ``error``, ``skip`` or ``replace``, :func:`_policy_resolves`),
+    nothing is moved, a ``kept in`` line names the first such path, and the run still
+    succeeds with the content in the wrapper. A destination that is the wrapper itself
+    (``FILE`` in ``file/`` on a case-insensitive filesystem) is not a collision, because
+    the wrapper moves aside before the merge. When the sole root shares the wrapper's
+    own name, spelled the same (``src.tar.gz`` containing ``src/``), the child is
+    flattened in place — the wrapper *becomes* the root, so no collision logic applies
+    to it. A root whose name differs only in case is merged like any other.
     """
     if wrapper == Path(".") or wrapper.is_symlink() or not wrapper.is_dir():
         return _HoistResult(wrapper)
@@ -1184,7 +1184,7 @@ def _report_extraction(
     extraction decided, and the summary says that nothing was written. Its destination
     is the target as named: the disk cannot say more, because nothing landed there.
 
-    Returns ``(blocked_count, failed_count)`` for exit-code selection (Q1).
+    Returns ``(blocked_count, failed_count)`` for exit-code selection.
     """
     extracted = 0
     renamed = extra_renamed

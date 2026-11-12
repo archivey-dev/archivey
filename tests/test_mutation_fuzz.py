@@ -6,9 +6,10 @@ header/trailer-biased random cuts, bit flips, zeroed blocks, garbage prefixes/su
 **invariant**: archivey either succeeds or raises a typed ``ArchiveyError``; it never
 raises a raw third-party/codec exception, never hangs (each parametrized case carries its
 own ``pytest-timeout`` budget), never aborts the process, and a successful extraction must
-leave the destination root a directory (replacing it with a file is a path-safety failure). This is the pre-native-parser
-layer of the fuzzing program (``dev-docs/threat-model.md`` O5): the corpus doubles as the seed
-set, and the same seeds feed the Phase-6 Atheris harnesses later.
+leave the destination root a directory (replacing it with a file is a path-safety
+failure). This is the pre-native-parser layer of the fuzzing program
+(``dev-docs/threat-model.md`` O5): the corpus doubles as the seed set, and the same
+seeds feed the Phase-6 Atheris harnesses later.
 
 Tests are parametrized by ``(archive, format, mutation kind)`` so a hang or failure names a
 single slice (e.g. ``adversarial-tar-tar.gz-bitflip``) and ``-k`` can target it without

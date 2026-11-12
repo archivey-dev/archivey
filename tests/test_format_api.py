@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import bz2
 import dataclasses
+import gzip
 import hashlib
 import io
 import logging
@@ -1207,6 +1208,32 @@ def test_decompress_reads_every_frame(
     register_format(_compressed_plugin(method))
     with open_archive(_compressed_archive(tmp_path, stored)) as reader:
         assert reader.read("m.bin") == _PLAIN
+
+
+@pytest.mark.parametrize(
+    "method", [CompressionAlgorithm.DEFLATE, StreamFormat.GZIP], ids=lambda m: m.name
+)
+def test_decompress_refuses_a_method_the_policy_excludes(
+    clean_registry: None, tmp_path: Path, method: CompressionAlgorithm | StreamFormat
+) -> None:
+    """A method in ``FormatPolicy(exclude=)`` refuses a plugin's decompress call for
+    it, or for a stream format that decodes with it, before the codec runs."""
+    stored = (
+        _raw_deflate(_PLAIN)
+        if method is CompressionAlgorithm.DEFLATE
+        else gzip.compress(_PLAIN)
+    )
+    register_format(_compressed_plugin(method))
+    config = archivey.ArchiveyConfig(
+        formats=archivey.FormatPolicy(exclude={CompressionAlgorithm.DEFLATE})
+    )
+    with (
+        open_archive(_compressed_archive(tmp_path, stored), config=config) as reader,
+        pytest.raises(
+            archivey.UnsupportedFeatureError, match=r"CompressionAlgorithm\.DEFLATE"
+        ),
+    ):
+        reader.read("m.bin")
 
 
 def test_decompress_second_bzip2_stream_is_corrupt(
@@ -2447,6 +2474,32 @@ def test_a_hard_link_target_is_normalized_as_names_are(
         link = reader.get("link")
         assert link.link_target == "a/b.txt"
         assert reader.read("link") == b"b"
+
+
+def test_a_hard_link_target_ending_in_slash_keeps_naming_a_directory(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """A plugin's ``./a/b.txt/`` target lists as ``a/b.txt/`` and does not resolve to
+    the file ``a/b.txt``, as in a built-in format."""
+
+    class Linking(ToyReader):
+        def iter_members(self) -> Iterator[MemberRecord[tuple[int, int]]]:
+            for record in super().iter_members():
+                member = record.member
+                if member.name == "link":
+                    member.type = MemberType.HARDLINK
+                    member.link_target = "./a/b.txt/"
+                    member.size = None
+                yield record
+
+    _plugin_with("hardlinks", reader=Linking)
+    data = build_toya(
+        [("a/b.txt", MemberType.FILE, b"b"), ("link", MemberType.FILE, b"")]
+    )
+    with open_archive(_write(tmp_path, data, "t.hardlinks")) as reader:
+        link = reader.get("link")
+        assert link.link_target == "a/b.txt/"
+        assert link.link_target_member is None
 
 
 def test_a_directory_with_data_is_reported(

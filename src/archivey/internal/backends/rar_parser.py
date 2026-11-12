@@ -181,6 +181,10 @@ _RAR3_FILE_PASSWORD = 0x0004
 _RAR3_FILE_COMMENT = 0x0008
 _RAR3_FILE_SOLID = 0x0010
 _RAR3_FILE_DIRECTORY = 0x00E0
+# The DOS directory attribute, which RAR 1.3-1.5 headers use in place of the
+# dictionary bits; the first UNP_VER whose dictionary bits mark a directory.
+_RAR3_DOS_DIRECTORY_ATTRIBUTE = 0x10
+_RAR3_UNP_VER_DIRECTORY_BITS = 20
 _RAR3_FILE_LARGE = 0x0100
 _RAR3_FILE_UNICODE = 0x0200
 
@@ -260,7 +264,6 @@ _RAR3_UNP_VER_NEWEST = 29
 
 _RAR5_ENC_HAS_CHECKVAL = 0x01
 _RAR5_XENC_CHECKVAL = 0x01
-_RAR5_XENC_TWEAKED = 0x02
 _RAR5_XENC_AES256 = 0
 
 _RAR5_XFILE_ENCRYPTION = 1
@@ -337,7 +340,6 @@ _RAR3_ENDARC_VOLNUMBER = 0x0008
 _RAR3_ENDARC_MAX_HEADER = 7 + 4 + 2 + 7
 
 _RAR5_OS_WINDOWS = 0
-_RAR5_OS_UNIX = 1
 
 _S_BLK_HDR = struct.Struct("<HBHH")
 _S_FILE_HDR = struct.Struct("<LLBLLBBHL")
@@ -634,6 +636,16 @@ class DamagedServiceHeader:
     header_walk_stop_reason: str | None
 
 
+class TrailingData(NamedTuple):
+    """A non-zero byte after a volume's end-of-archive block."""
+
+    #: Where the end block's bytes stop, in the volume's own offsets (the parser's
+    #: read positions).
+    archive_end: int
+    #: How far past ``archive_end`` the byte lies.
+    offset: int
+
+
 @dataclass(slots=True)
 class RarArchive:
     version: int  # 4 = RAR3-on-disk family (1.5/2/3); 5 = RAR5 (not "RAR 4.x")
@@ -718,13 +730,13 @@ class RarArchive:
     #: unproven: there a CRC mismatch reads the same as a wrong key, so the walk raises
     #: the wrong-password ``EncryptionError`` instead.
     end_block_damaged_volumes: dict[int, int] = field(default_factory=dict)
-    #: 0-based volume index -> offset, counted from the end of that volume's
-    #: end-of-archive block, of the first non-zero byte within
-    #: :data:`~archivey.internal.trailing_scan.MAX_TRAILING_SCAN` bytes after it.
-    #: Only for a volume whose end block was read intact: a damaged one is taken for
-    #: the end block only when nothing but zeros follows it. The reader reports each as
+    #: 0-based volume index -> the first non-zero byte within
+    #: :data:`~archivey.internal.trailing_scan.MAX_TRAILING_SCAN` bytes after that
+    #: volume's end-of-archive block (:class:`TrailingData`). Only for a volume whose
+    #: end block was read intact: a damaged one is taken for the end block only when
+    #: nothing but zeros follows it. The reader reports each as
     #: ``ARCHIVE_TRAILING_DATA`` after the members. Zero padding is not recorded.
-    trailing_data_volumes: dict[int, int] = field(default_factory=dict)
+    trailing_data_volumes: dict[int, TrailingData] = field(default_factory=dict)
     #: RAR 1.5-4 only: an encrypted header of this volume, or of an earlier volume
     #: of the set, decrypted with a matching CRC16, which proves the header password.
     #: :func:`parse_rar_volumes` passes it to the next volume's walk, since a set has
@@ -1017,8 +1029,17 @@ def _settle_rar15_solid(archive: RarArchive) -> None:
         seen_file = True
 
 
+# The refusal of a later volume read as the first. The reader matches it to add the
+# remedy for a lone remote part (``REMOTE_VOLUMES_AS_LIST``).
+NEED_FIRST_VOLUME_MSG = "Need first volume of multi-volume RAR archive"
+
+
 def mark_missing_next_volume(
-    archive: RarArchive, *, volumes_read: int, missing: Sequence[int] = ()
+    archive: RarArchive,
+    *,
+    volumes_read: int,
+    missing: Sequence[int] = (),
+    remedy: str | None = None,
 ) -> None:
     """Record the volumes a set is missing as a truncation.
 
@@ -1030,7 +1051,7 @@ def mark_missing_next_volume(
     fails only on the ones that run into a missing volume. Those keep
     ``split_after`` or ``split_before``, which is what the reader refuses their
     data on. A cut the walk already recorded is the earlier fault and keeps its
-    own message.
+    own message. ``remedy``, when given, ends the message.
     """
     if archive.truncated is not None:
         return
@@ -1048,6 +1069,8 @@ def mark_missing_next_volume(
         )
     if reasons:
         archive.truncated = "Incomplete RAR multi-volume set: " + "; ".join(reasons)
+        if remedy is not None:
+            archive.truncated += f". {remedy}"
 
 
 def _append_damaged_service_header(
@@ -1106,13 +1129,18 @@ def _rar5_redirect_target(file_redir: tuple[int, int, str]) -> str:
     (``dev-docs/formats/rar.md``): it refuses the prefixed spellings too, by a
     different route, and it creates a stored, unprefixed ``C:\\abs\\y`` as the
     relative link ``C:/abs/y``, which archivey refuses. It also refuses ``..\\up\\x``,
-    which archivey refuses only when the target leaves the destination. A Unix
-    symlink, a hard link and a file copy keep the stored string: in those a backslash
-    can be part of a name.
+    which archivey refuses only when the target leaves the destination.
+
+    A hard link names another member, so its ``\\`` becomes ``/`` as in the member's
+    own name (``backslash_is_separator=True`` in ``RarReader._to_member``); archivey
+    then normalizes the target as a name at registration. A Unix symlink and a file
+    copy keep the stored string: in those a backslash can be part of a name.
     """
     redir_type, _flags, target = file_redir
     if redir_type in _RAR5_XREDIR_REPARSE_POINTS:
         return normalize_windows_link_target(target)
+    if redir_type == _RAR5_XREDIR_HARD_LINK:
+        return target.replace("\\", "/")
     return target
 
 
@@ -1273,7 +1301,7 @@ def _parse_rar_volume(
     # The emit rule appends a split_before member only to an empty list, so
     # members[0] is the only place a continuation can show on volume 1.
     if volume_index == 0 and archive.members and archive.members[0].split_before:
-        raise UnsupportedFeatureError("Need first volume of multi-volume RAR archive")
+        raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
     return archive
 
 
@@ -1394,8 +1422,8 @@ def _seek_to(source: BinaryIO, pos: int) -> None:
         raise CorruptionError(f"RAR packed-data seek failed at offset {pos}") from exc
 
 
-def _scan_after_end_block(source: BinaryIO, end: int) -> int | None:
-    """Where the first non-zero byte after an end block at ``end`` lies, if any.
+def _scan_after_end_block(source: BinaryIO, end: int) -> TrailingData | None:
+    """The first non-zero byte after an end block at ``end``, if any.
 
     ``end`` is where the block's bytes stop in the volume: past any data area it
     declares, as every other block ends, and past its AES padding when headers are
@@ -1404,9 +1432,10 @@ def _scan_after_end_block(source: BinaryIO, end: int) -> int | None:
     """
     _seek_to(source, end)
     try:
-        return first_nonzero_offset(source)
+        found = first_nonzero_offset(source)
     finally:
         source.seek(end)
+    return None if found is None else TrailingData(end, found)
 
 
 def _only_zeros_after(source: BinaryIO, pos: int) -> bool:
@@ -1764,7 +1793,8 @@ def _load_vstr(buf: bytes | bytearray | memoryview, pos: int) -> tuple[bytes, in
 
 
 def _dos_time_issue(stamp: int, field: str, filename: str) -> TimestampIssue:
-    """The report for a nonzero DOS word :func:`~archivey.internal.timestamps.dos_to_datetime` could not use."""
+    """The report for a nonzero DOS word that
+    :func:`~archivey.internal.timestamps.dos_to_datetime` could not use."""
     return TimestampIssue(
         field=field,
         source="dos",
@@ -1954,12 +1984,16 @@ def _settle_unknown_stored_size(member: RarMemberInfo) -> None:
     is in. A part before the last would give the size so far, and an unmerged
     continuation (``split_before``) only its own share. Only for plaintext, which
     packs exactly its own bytes; ciphertext is padded to the AES block, and a member
-    whose encryption is unknown may be ciphertext. Any other member keeps its
-    declared value, which no known writer leaves unresolved on the last part.
+    whose encryption is unknown may be ciphertext. Not for a hard link or a file
+    copy: it packs no bytes of its own, so its packed size says nothing of the
+    file's. Any other member keeps the flag, and the reader lists it with no size
+    (``rar_reader._size_left_unknown``); no known writer leaves one unresolved on
+    the last part.
     """
     if (
         member.size_unknown
         and member.is_stored
+        and not member.is_hardlink_or_copy
         and not member.split_after
         and not member.split_before
         and not member.is_encrypted
@@ -2056,9 +2090,9 @@ class _HeaderDecryptStream:
     Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`: folding
     this class into it would take three header-only behaviours (refusing
     ``read(-1)``, flagging a cut instead of ``finalize``, and not seeking the
-    shared archive handle), and each would be a flag on that class. The decrypt *stage* is shared; the pull stream is not. The
-    measurement is the "Keep ``_HeaderDecryptStream``" row in
-    ``dev-docs/formats/rar.md``.
+    shared archive handle), and each would be a flag on that class. The decrypt *stage*
+    is shared; the pull stream is not. The measurement is the "Keep
+    ``_HeaderDecryptStream``" row in ``dev-docs/formats/rar.md``.
 
     ``read`` rejects unbounded ``n < 0``. It has no per-read size cap: the
     caller already bounds the ask. RAR5 refuses ``hdrlen > _RAR5_MAX_HEADER``
@@ -2653,7 +2687,7 @@ class _Rar3Walk:
         self.damaged: str | None = None
         self.main_seen = False
         self.end_block_damaged_at: int | None = None
-        self.trailing_at: int | None = None
+        self.trailing_at: TrailingData | None = None
 
     def run(self) -> RarArchive:
         """Walk the blocks after the signature and return what they describe."""
@@ -2835,9 +2869,7 @@ class _Rar3Walk:
             # A later volume whose first member starts on its boundary: no
             # member continues from an earlier volume, so only this number
             # tells it from volume 1 (RAR5 reads MAIN's instead).
-            raise UnsupportedFeatureError(
-                "Need first volume of multi-volume RAR archive"
-            )
+            raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
         self.trailing_at = _scan_after_end_block(
             source, _packed_span_end(block.data_offset, block.add_size)
         )
@@ -3164,6 +3196,17 @@ def _parse_rar3_file_header(
         and mode is not None
         and (mode & 0xF000) == 0xA000
     )
+    # RAR 1.5 writers marked a directory with the DOS directory attribute only, not
+    # the all-ones dictionary bits; unrar (arcread.cpp) reads it as one for any host.
+    # A Unix symlink's mode has the bit too (group write), so it stays a symlink.
+    if (
+        not is_service
+        and not is_symlink
+        and extract_version < _RAR3_UNP_VER_DIRECTORY_BITS
+        and mode is not None
+        and mode & _RAR3_DOS_DIRECTORY_ATTRIBUTE
+    ):
+        is_directory = True
     file_version: int | None = None
     if flags & _RAR3_FILE_VERSION:
         filename, file_version = _rar3_split_file_version(filename)
@@ -3872,7 +3915,7 @@ class _Rar5Walk:
         self.main_seen = False
         self.end_block_seen = False
         self.end_block_damaged_at: int | None = None
-        self.trailing_at: int | None = None
+        self.trailing_at: TrailingData | None = None
         # Only the first MAIN of a volume is asked for the quick-open table. unrar
         # accepts a repeated MAIN, and each try reads a QO payload of up to
         # _RAR5_QO_PAYLOAD_MAX, so trying on every MAIN would let a 17-byte header buy
@@ -4000,9 +4043,7 @@ class _Rar5Walk:
             # RAR5: first volume omits the field (implicit 0); later volumes
             # store 1 for the second volume, 2 for the third, …
             if volume_index == 0 and volnr != 0:
-                raise UnsupportedFeatureError(
-                    "Need first volume of multi-volume RAR archive"
-                )
+                raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
             if volume_index > 0 and volnr != volume_index:
                 raise TruncatedError(
                     f"Out-of-order RAR volume: expected volume index "

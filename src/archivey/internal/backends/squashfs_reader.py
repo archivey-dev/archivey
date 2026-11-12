@@ -364,7 +364,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         ``NONE``), or ``PackageNotInstalledError`` when lz4 is missing, unused on this
         interpreter, or turned off by the caller's policy."""
         config = self._context.config
-        excluded = config.formats.exclude_libraries
+        excluded = config.formats._libraries_off
         if deps.lz4_block is None or OptionalLibrary.LZ4 in excluded:
             requirement = as_reported(LZ4_REQUIREMENT, excluded)
             raise PackageNotInstalledError(
@@ -408,7 +408,17 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
             return through_archivey
         if compressor == "lz4":
+            # Decoded here, not through ``ReaderContext.decompress``, so the policy's
+            # method entry is asked here as that call would ask it.
+            refusal = self._context.config.formats._codec_refusal(
+                CompressionAlgorithm.LZ4
+            )
+            if refusal is not None:
+                raise UnsupportedFeatureError(f"{refusal}.")
             natives = self._lz4_natives()
+            usage = self._context._usage
+            if usage is not None:
+                usage.note_backend("library", OptionalLibrary.LZ4.value, "lz4")
             block_error = cast("Any", deps.lz4_block).LZ4BlockError
 
             def lz4_block(start: int, length: int, limit: int) -> bytes:
@@ -757,6 +767,15 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             if budget is not None and self._charged > budget:
                 raise  # ``_charge`` refused: making the members would hold more
             failure, complete = exc, False
+        limit = limits.max_members
+        if limit is not None and len(entries) > limit:
+            # The walk found more entries than ``max_members`` (it stops one past, or
+            # failed on damage after it): refuse before any member, as without
+            # ``streaming=True``, rather than yield the first ones.
+            raise ResourceLimitError(
+                f"Listing limit reached: max_members={limit} (the SquashFS tree "
+                f"holds more than {limit} entries)"
+            )
         files = self._file_inodes(entries)
         first = _first_with_inode(entries)
         # The members a hard link names: only their names are kept past their record.
@@ -781,8 +800,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
     def _walk(self, entries: list[_Entry], limit: int | None) -> bool:
         """Append every entry of the tree to ``entries``, in listing order, reading only
-        the directories' inodes. ``False`` when it stopped past ``limit`` entries, where
-        archivey refuses the listing anyway. Each entry's path is charged
+        the directories' inodes. ``False`` when it stopped past ``limit`` entries, which
+        the caller refuses before making any member. Each entry's path is charged
         (``_charge``) as the walk finds it."""
         budget = self._context.config.listing_limits.max_metadata_bytes
         charged = self._charged

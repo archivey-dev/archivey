@@ -26,10 +26,15 @@ from functools import partial
 
 import pytest
 
-from archivey import open_archive
+from archivey import ArchiveReader, open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import ListingCost
-from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, DiagnosticPolicy
+from archivey.diagnostics import (
+    ArchiveEofContext,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    LocalHeaderContext,
+)
 from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
@@ -385,6 +390,111 @@ def test_a_zip_missing_its_first_bytes_says_so(tmp_path: object) -> None:
             caught.value
         )
         assert reader.read(c) == b"c.txtc.txtc.txt"
+
+
+def _local_headers(data: bytes) -> list[int]:
+    found, at = [], data.find(b"PK\x03\x04")
+    while at >= 0:
+        found.append(at)
+        at = data.find(b"PK\x03\x04", at + 1)
+    return found
+
+
+def _shifts(reader: ArchiveReader) -> list[LocalHeaderContext]:
+    found = [
+        d.context
+        for d in reader.diagnostics.retained
+        if d.code is DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
+    ]
+    contexts = [c for c in found if isinstance(c, LocalHeaderContext)]
+    assert contexts == found
+    return contexts
+
+
+def test_a_zip_missing_bytes_in_its_middle_reads_the_members_before_them(
+    tmp_path: object,
+) -> None:
+    """Seven bytes gone from inside the second member's data move the directory, so
+    every offset the directory gives is seven bytes short of where it was written. The
+    third member sits there, but the first two sit at their stored offsets: each is
+    read from there, where a local header with its name, method, CRC-32 and sizes
+    is, and reported. The second member's data is short, so its CRC-32 fails."""
+    from pathlib import Path
+
+    data = _zip()
+    _a_at, b_at, _c_at = _local_headers(data)
+    cut = b_at + 30 + len("b.txt") + 4
+    path = Path(str(tmp_path)) / "gap.zip"
+    path.write_bytes(data[:cut] + data[cut + 7 :])
+    with open_archive(path) as reader:
+        report = reader.members_report()
+        assert report.error is None
+        a, b, c = report.members
+        assert reader.read(a) == b"a.txta.txta.txt"
+        assert reader.read(c) == b"c.txtc.txtc.txt"
+        with raises_corruption_not_truncation():
+            reader.read(b)
+        assert _shifts(reader) == [
+            LocalHeaderContext(
+                archive_name=str(path),
+                member_name=name,
+                member_id=index,
+                field="offset",
+                local_offset=at,
+                central_offset=at - 7,
+            )
+            for index, name, at in ((0, "a.txt", 0), (1, "b.txt", b_at))
+        ]
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with open_archive(path, config=strict) as reader:
+        with pytest.raises(DiagnosticRaisedError) as ei:
+            reader.read("a.txt")
+        assert ei.value.diagnostic.code is DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
+        assert reader.read("c.txt") == b"c.txtc.txtc.txt"
+
+
+def test_a_zip_missing_a_whole_member_reads_the_others(tmp_path: object) -> None:
+    """The second member's local header and data are gone. The first member reads from
+    its stored offset; the directory puts the second member's header where the first
+    one's is, which names another member, and its stored offset holds the third
+    member's header, so nothing confirms it: it is read where the directory puts it,
+    and fails. The third member reads where the directory puts it."""
+    from pathlib import Path
+
+    data = _zip()
+    _a_at, b_at, c_at = _local_headers(data)
+    path = Path(str(tmp_path)) / "lost-member.zip"
+    path.write_bytes(data[:b_at] + data[c_at:])
+    with open_archive(path) as reader:
+        a, b, c = reader.members()
+        assert reader.read(a) == b"a.txta.txta.txt"
+        assert reader.read(c) == b"c.txtc.txtc.txt"
+        with pytest.raises(CorruptionError):
+            reader.read(b)
+        assert [s.member_name for s in _shifts(reader)] == ["a.txt"]
+
+
+def test_a_shifted_header_that_disagrees_with_the_directory_is_not_used(
+    tmp_path: object,
+) -> None:
+    """The first member's stored offset holds a local header with its name but another
+    CRC-32: nothing confirms it, so the read raises what the directory's own offset
+    gives, the front cut it seems to be."""
+    from pathlib import Path
+
+    data = bytearray(_zip())
+    _a_at, b_at, _c_at = _local_headers(bytes(data))
+    data[14] ^= 0xFF  # the first local header's CRC-32
+    cut = b_at + 30 + len("b.txt") + 4
+    path = Path(str(tmp_path)) / "gap-decoy.zip"
+    path.write_bytes(bytes(data[:cut] + data[cut + 7 :]))
+    with open_archive(path) as reader:
+        with raises_corruption_not_truncation(
+            match="missing at least its first 7 bytes"
+        ):
+            reader.read("a.txt")
+        assert reader.read("c.txt") == b"c.txtc.txtc.txt"
+        assert [s.member_name for s in _shifts(reader)] == []
 
 
 def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> bytes:

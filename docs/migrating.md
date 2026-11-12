@@ -103,7 +103,9 @@ ones code using `ZipInfo` or `TarInfo` reads most map like this:
   `info.isfile()`, `info.issym()` in tarfile; `info.is_directory`, `info.is_file`,
   `info.is_symlink` in py7zr; `info.is_dir()`, `info.is_file()`, `info.is_symlink()` in rarfile.
 - `member.created` or `member.ctime`: `info.ctime` in rarfile.
-- `member.link_target`: `info.linkname` in tarfile.
+- `member.link_target`: `info.linkname` in tarfile. A symlink's target is kept as stored. A hard
+  link's target is cleaned up as names are, so it equals the `name` of the member it links to:
+  tarfile's `./b` is `b`.
 
 zipfile doesn't recognize symbolic links: a ZIP entry that records one is a plain file to it, and
 `extractall` writes the target's path as the file's contents. Archivey reports it as a link, with
@@ -152,10 +154,11 @@ the names to one `extract` call. rarfile has no way to avoid it. With archivey, 
 member once, in order, in every format ([Solid archives](reading.md#solid-archives)). `read` and
 `open` cost more. In a `.tar.gz`, the first one lists the whole archive, which takes a pass of its
 own, and reading members in the archive's order after that takes one more pass. Going back to an
-earlier member starts again from the beginning. In 7z and RAR, each read decompresses again
-everything before its member. If you want to make sure your code avoids these costs, open the
-archive with `streaming=True`: `read` and `open` then always raise, and `stream_members()` is the
-only way to read members.
+earlier member starts from the restart point archivey kept nearest to it while listing: about 1 MiB
+before it in a `.tar.gz`, and usually the beginning in a `.tar.bz2` or `.tar.xz`. In 7z and RAR,
+each read decompresses again everything before its member. If you want to make sure your code avoids
+these costs, open the archive with `streaming=True`: `read` and `open` then always raise, and
+`stream_members()` is the only way to read members.
 
 ## Extracting
 

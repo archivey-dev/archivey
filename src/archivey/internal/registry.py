@@ -33,7 +33,12 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import TYPE_CHECKING, Protocol
 
-from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ProcessIsolation
+from archivey.config import (
+    DEFAULT_ARCHIVEY_CONFIG,
+    ArchiveyConfig,
+    DecoderLimits,
+    ProcessIsolation,
+)
 from archivey.cost import StreamCapability
 from archivey.exceptions import (
     PackageNotInstalledError,
@@ -88,7 +93,9 @@ class ContentProbe(Protocol):
     sample (Brotli's chain decode), before it reads them; ``False`` means not covered,
     and the probe keeps its verdict.
     ``isolation`` is the caller's ``process_isolation``: where the probe's trial decode
-    runs.
+    runs. ``decoder_limits`` is the caller's :class:`~archivey.DecoderLimits`: a trial
+    decode whose decoder is over its ``max_decoder_memory`` raises
+    ``ResourceLimitError``, which detection reads as "can't tell".
     """
 
     def __call__(
@@ -100,6 +107,7 @@ class ContentProbe(Protocol):
         read_at: Callable[[int, int], bytes | None] | None = None,
         charge_decode: Callable[[int], bool] | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool: ...
 
 
@@ -327,11 +335,18 @@ class BackendRegistry:
 
         ``check(prefix)`` answers "does the source open with my header?" for a format
         with no magic but a self-checking header (``ReadBackend.HEADER_CHECKS``; today
-        TAR, by its header checksum). Built-in backends first, then plugins.
+        TAR, by its header checksum). Built-in backends first, then plugins, then the
+        stream codecs that declare a :meth:`StreamCodec.header_check` (uuencode and
+        base64, whose first lines prove the format without a magic).
         """
         checks: list[tuple[ArchiveFormat, Callable[[bytes], bool]]] = []
         for cls in (*self._reader_classes, *self._plugin_classes):
             checks.extend(cls.HEADER_CHECKS)
+        checks.extend(
+            (codec.single_file_format, codec.header_check)
+            for codec in single_file_codecs()
+            if codec.checks_header and codec.single_file_format is not None
+        )
         return checks
 
     def sfx_magic_entries(self) -> list[MagicSignature]:
@@ -680,7 +695,7 @@ class BackendRegistry:
         backend cannot read here: ``UnsupportedFeatureError`` for no backend or a
         recognised-only format, ``PackageNotInstalledError`` for a missing package, a
         replacement plugin's ``requires`` included, and one in ``excluded`` (the
-        caller's ``FormatPolicy.exclude_libraries``). The caller has already refused a
+        caller's ``FormatPolicy._libraries_off``). The caller has already refused a
         format the policy does not allow.
         """
         if replacement is not None:
@@ -745,7 +760,7 @@ class BackendRegistry:
             for fmt in self._known_formats()
             if self.format_availability(
                 fmt,
-                excluded=policy.exclude_libraries,
+                excluded=policy._libraries_off,
                 replacement=policy._replacement_for(fmt),
             ).support
             is not FormatSupport.NONE
@@ -791,11 +806,12 @@ def format_availability(
     ``check_programs=False`` runs no program: missing programs are then not counted,
     and RAR reports as it would with ``unrar`` installed.
 
-    Without ``config`` the answer is what this environment provides. With it, two
-    fields of ``config.formats`` change it, and no other: a package in
-    ``exclude_libraries`` counts as absent, listed in ``missing`` with the policy as its
-    ``reason``, and a container in ``replace`` is answered for the plugin that reads it,
-    whose ``requires`` count as a registered plugin's do. Whether the format may open is
+    Without ``config`` the answer is what this environment provides. With it, three
+    fields of ``config.formats`` change it, and no other: a package that
+    ``exclude_libraries`` lists or ``only_libraries`` leaves out counts as absent,
+    listed in ``missing`` with the policy as its ``reason``, and a container in
+    ``replace`` is answered for the plugin that reads it, whose ``requires`` count as a
+    registered plugin's do. Whether the format may open is
     another question, answered by ``config.formats.allows(fmt)``; a caller needs both.
     """
     # Anything that is not a format is refused here: a StreamFormat, a ContainerFormat
@@ -814,7 +830,7 @@ def format_availability(
     return _registry.format_availability(
         resolved,
         check_programs=check_programs,
-        excluded=policy.exclude_libraries,
+        excluded=policy._libraries_off,
         replacement=policy._replacement_for(resolved),
         config=config,
     )
