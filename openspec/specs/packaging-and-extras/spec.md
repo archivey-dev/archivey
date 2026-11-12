@@ -508,6 +508,25 @@ file only that probe recognises is then not detected. A `requires` entry names a
 and one inside an excluded package (`lz4.block` when `lz4` is excluded) counts as
 excluded.
 
+`FormatPolicy.only_libraries` SHALL be the allowlist form: `None` (the default) allows
+every package, and a set SHALL turn off every `OptionalLibrary` it does not list,
+exactly as if `exclude_libraries` named it, including a member a later release adds.
+It SHALL take the same spellings and refuse the same names as `exclude_libraries`, and
+a package in both SHALL be refused at construction. It SHALL NOT affect a module that is
+not an `OptionalLibrary` (a plugin's own modules): `plugins` governs those.
+`FormatPolicy.allows_library(module)` SHALL answer whether a module, or the package it
+is part of, may run under the policy, combining both fields, and every check archivey
+makes SHALL agree with it.
+
+#### Scenario: only_libraries turns off every package it does not list
+
+- **WHEN** a caller opens a 7z archive with a PPMd member under
+  `FormatPolicy(only_libraries=set())`, with `pyppmd` installed
+- **THEN** reading the PPMd member raises `PackageNotInstalledError` naming `pyppmd`
+  with the policy as its `reason`
+- **AND** under `FormatPolicy(only_libraries={"pyppmd"})` it reads
+- **AND** `FormatPolicy(only_libraries={"lz4"}, exclude_libraries={"lz4"})` is refused
+
 #### Scenario: An excluded pyppmd refuses only the PPMd member
 
 - **WHEN** a caller opens a 7z archive that holds a PPMd member and a LZMA2 member with

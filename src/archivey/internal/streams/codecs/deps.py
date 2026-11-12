@@ -119,7 +119,7 @@ class LazyOptional:
         return self._module
 
 
-# One zstd module per process: excluding it (``FormatPolicy.exclude_libraries``) turns
+# One zstd module per process: turning it off (``FormatPolicy._libraries_off``) turns
 # zstd off, and excluding the other name changes nothing. backports.zstd does not
 # install on 3.14 and later, so the two are not found together.
 zstd, zstd_library = _optional_zstd()

@@ -628,7 +628,7 @@ class StreamCodec:
 
     def available(self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS) -> bool:
         """Whether this codec's decompression backend is importable right now, and
-        ``excluded`` (a call's ``FormatPolicy.exclude_libraries``) does not turn it
+        ``excluded`` (a call's ``FormatPolicy._libraries_off``) does not turn it
         off."""
         return self.requirement is None or (
             not self.excluded_by(excluded) and self._backend_present()
@@ -645,7 +645,7 @@ class StreamCodec:
         return None
 
     def _excludable(self) -> OptionalLibrary | str | None:
-        """The package ``exclude_libraries`` turns off: the one in use, or
+        """The package ``FormatPolicy._libraries_off`` turns off: the one in use, or
         ``requirement``'s when none is installed, so an excluded package that is
         absent is reported as excluded, not as one to install."""
         if self.requirement is None:

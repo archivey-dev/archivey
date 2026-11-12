@@ -318,6 +318,30 @@ The costs were measured on one 2.8 GHz core.
 
 Going over a limit raises `ResourceLimitError`.
 
+These limits hold for one reader. To hold a whole job to one total, such as an upload with archives
+inside it, or a batch of archives read on several threads, put an `archivey.Budget` in the config:
+
+```python
+budget = archivey.Budget(max_decoded_bytes=1 * 2**30, max_members=100_000)
+config = archivey.ArchiveyConfig(budget=budget)
+```
+
+Every reader opened with that config, or with a copy of it, draws the bytes it decodes and the
+members it lists from the one budget, so the total is shared across readers, nested archives and
+threads. Bytes decoded only to get past a member count too: skipping members of a `.tar.gz` or a
+CAB folder to reach a later one is not free. A read that would go past the budget raises
+`ResourceLimitError`, and an extraction stops there.
+
+A budget is the total for one job, and it is meant for processing each archive once. It counts the
+work archivey does, so a byte counts again each time it is decoded again: reading a member twice,
+opening the same archive again, or seeking back in a compressed member and reading on all use more
+of it. Listing a `.tar.gz` decodes it all, so its members count once for the listing and again when
+you read them. Listing again is free: the reader keeps its member list. It never refills, so make a
+new `Budget` for each upload or request rather than keeping one on a long-lived config. The
+per-reader limits still apply. Decoder memory stays a per-decoder limit, and time and memory use are
+bounded by running the job in a process you can stop. See the [archives inside the
+upload](recipes.md#archives-inside-the-upload) recipe.
+
 For files you didn't make, `ArchiveyConfig(formats=FormatPolicy.COMMON)` opens only the formats
 people send today (ZIP, TAR, RAR, 7z, and gzip, bzip2, xz and zstd) and refuses ZIP members in the
 methods only PKZIP 1.x and earlier wrote, so the readers and pure-Python decoders for everything
@@ -335,10 +359,11 @@ An optional package that's installed is used whenever a file needs it, even one 
 that your program doesn't depend on. If you'd rather a package didn't parse your input, for
 example because of a bug reported against it, list it in the policy's
 [`exclude_libraries=`](opening.md#configuration). archivey then decodes nothing with it in calls
-made with that config. It doesn't import `brotli`, `pyppmd`, `inflate64`, `rapidgzip`, `lzo`
-(python-lzo), `bz3` or `cryptography` for them; `lz4`, `zstd` and `pycdlib` are imported when
-archivey loads, but not used. The standard library's `zlib`, `bz2` and `lzma` can't be excluded;
-refuse the formats that carry them with `only=` or `exclude=` instead.
+made with that config. To allow only the packages you chose, and none that a later archivey release
+adds, list them in `only_libraries=` instead. It doesn't import `brotli`, `pyppmd`, `inflate64`,
+`rapidgzip`, `lzo` (python-lzo), `bz3` or `cryptography` for them; `lz4`, `zstd` and `pycdlib` are
+imported when archivey loads, but not used. The standard library's `zlib`, `bz2` and `lzma` can't be
+excluded; refuse the formats that carry them with `only=` or `exclude=` instead.
 
 Opening one part of a multi-volume set by path, such as `x.part1.rar` or `x.7z.001`, also reads
 the other parts in the same folder. A part found that way that is a symbolic link is refused with
