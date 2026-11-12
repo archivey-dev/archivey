@@ -345,9 +345,14 @@ would be. The error SHALL NOT name a member, since none was requested.
 
 A genuinely valid empty stream SHALL still open and read as empty.
 
-Non-seekable sources are out of scope: the opened stream is handed to the first
-`open_member`, so a probe read there would consume a byte the caller expects. The
-obligation applies to seekable sources, and the reader SHALL say so where it is stated.
+A non-seekable source SHALL be validated the same way when detection's peek already
+holds every byte of it (the peek met the end of the source; a caller that passes
+`format=` skips detection, so nothing is peeked): the probe decodes a copy of
+those bytes, so the pass handed to the first `open_member` reads nothing less, and a pipe
+gives the verdict a file of the same bytes gives at open. Any other non-seekable source is
+out of scope: the opened stream is handed to the first `open_member`, so a probe read
+there would consume a byte the caller expects, and it fails on that read instead. The
+reader SHALL say so where it is stated.
 
 #### Scenario: open-time validation matrix
 
@@ -358,7 +363,8 @@ obligation applies to seekable sources, and the reader SHALL say so where it is 
 | 40 000 zero bytes | `open_archive` raises `CorruptionError`, except LZMA Alone, whose first 18 zero bytes are a complete empty stream: it opens, reads `b""`, and the rest is padding with no diagnostic |
 | Zero-byte source, codec whose decoder rejects it | `open_archive` raises the translated error |
 | Zero-byte source, `unix-compress` | `open_archive` raises `TruncatedError` (the decoder rejects a source shorter than its header) |
-| Non-seekable source | Validation deferred to the first read |
+| A `.tar.bz2` of 60 KB cut to two thirds, from a pipe with `streaming=True` and from a file | `open_archive` raises `TruncatedError` from both |
+| Non-seekable source that detection did not read to its end (a longer pipe, or `format=` given) | Validation deferred to the first read |
 
 #### Scenario: the failure carries honest provenance
 

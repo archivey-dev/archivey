@@ -159,3 +159,18 @@ arrives, not the archive, so `DiagnosticPolicy.STRICT` doesn't turn it into an e
 ([Diagnostics](errors-and-diagnostics.md#diagnostics)). If you need the guarantee, read from a
 store or a URL that can't change under you, such as an object version, or copy the file before
 opening it.
+
+## Credentials in URLs
+
+A URL can carry a secret: a `user:password@` part, or the signature in the query of a signed
+HTTP URL. Wherever archivey turns the URL into text itself, in the archive's name, its own error
+messages, the `SOURCE_CHANGE_UNDETECTABLE` diagnostic and its log warnings, it removes the
+`user:password@` part and, for `http` and `https`, the query and the fragment. For other
+protocols the query stays, because there a `?` can be part of the object's name, as in an S3 key.
+The requests still use the URL as given.
+
+Errors that fsspec, or the library behind it such as `aiohttp`, raise themselves pass through
+archivey unchanged, so a missing object's `FileNotFoundError` or an HTTP 401 can carry the full
+URL, credentials included. Don't log those errors as they are. Remove the credentials first, or
+keep them out of the URL by passing them as options to `fsspec.open`, where your store's library
+accepts them.

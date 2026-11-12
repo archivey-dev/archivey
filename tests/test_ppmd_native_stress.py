@@ -1,8 +1,9 @@
 """Subprocess stress for PPMd native flakes (non-required CI / local investigation).
 
-These tests deliberately re-run scenarios from ``scripts/investigations/ppmd_native_stress.py`` so they
-have a pytest entry point. They are **excluded from the default suite** via the
-``ppmd_native_stress`` marker (selected only by the non-blocking stress workflow).
+These tests deliberately re-run scenarios from
+``scripts/investigations/ppmd_native_stress.py`` so they have a pytest entry point. They
+are **excluded from the default suite** via the ``ppmd_native_stress`` marker (selected
+only by the non-blocking stress workflow).
 
 See ``dev-docs/known-issues.md``.
 """

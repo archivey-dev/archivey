@@ -9,9 +9,9 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
 - **One interface for every format:** ZIP, TAR (plain or compressed with any of the
   single-file formats below), 7z, RAR, ISO 9660, SquashFS, CPIO, ar (static libraries,
   `.deb`), RPM packages, makeself `.run` installers, Microsoft cabinets, XAR (macOS
-  `.pkg`), LHA (`.lzh`), plain directories, and single-file streams (gzip, bzip2, bzip3,
-  xz, lzip, LZMA, zstd, lz4, Firefox's mozlz4, LZO, zlib, Brotli, Unix compress). List
-  members, read one, or stream them all in one pass, the same way for each.
+  `.pkg`), LHA (`.lzh`), ARJ, plain directories, and single-file streams (gzip, bzip2,
+  bzip3, xz, lzip, LZMA, zstd, lz4, Firefox's mozlz4, LZO, zlib, Brotli, Unix compress).
+  List members, read one, or stream them all in one pass, the same way for each.
 - **Automatic format detection** from the file's content, so a misnamed file still opens.
 - **Safe extraction by default:** path traversal, symlink and hardlink escapes, special
   files and archive bombs are blocked unless you opt out.

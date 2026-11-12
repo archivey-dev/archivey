@@ -56,6 +56,7 @@ from tests.atheris_fuzz.seeds import (
     accel_gzip_seeds,
     accel_zlib_seeds,
     ar_seeds,
+    arj_seeds,
     brotli_seeds,
     bzip2_seeds,
     cab_seeds,
@@ -313,6 +314,20 @@ def lha_open_one(data: bytes) -> None:
     try:
         with open_archive(
             io.BytesIO(data), format=ArchiveFormat.LHA, config=_FUZZ_CONFIG
+        ) as arc:
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
+    except ArchiveyError:
+        return
+
+
+def arj_open_one(data: bytes) -> None:
+    """List an ARJ archive and read the first members: the headers and their CRC-32s,
+    the Unix special headers, then stored, LZH or method-4 data and its CRC-32."""
+    try:
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.ARJ, config=_FUZZ_CONFIG
         ) as arc:
             _sample_seekable(
                 arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
@@ -966,6 +981,13 @@ def iter_target_specs() -> list[dict]:
             "name": "lha",
             "fn": lha_open_one,
             "seeds": lha_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "arj",
+            "fn": arj_open_one,
+            "seeds": arj_seeds,
             "fixup": None,
             "per_input_timeout": stream_timeout,
         },

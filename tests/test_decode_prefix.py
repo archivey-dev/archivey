@@ -23,10 +23,12 @@ from typing import Any
 
 import pytest
 
+from archivey import ProcessIsolation
 from archivey.exceptions import ArchiveyError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import (
     Codec,
+    CodecParams,
     deflate_decoder,
     deps,
     open_codec_stream,
@@ -371,3 +373,109 @@ def test_an_interrupt_during_the_second_decode_reaches_the_caller(
         while stream.read(5 << 20):
             pass
     assert calls == 3
+
+
+def _bzip3(data: bytes) -> bytes:
+    from bz3.backends import BZ3Compressor
+
+    compressor = BZ3Compressor(65 << 10)
+    return compressor.compress(data) + compressor.flush()
+
+
+def _ppmd8(data: bytes) -> bytes:
+    import pyppmd
+
+    encoder = pyppmd.Ppmd8Encoder(6, 1 << 20, 0)
+    return encoder.encode(data) + encoder.flush(True)
+
+
+_PROBED: dict[str, tuple[Codec, Callable[[bytes], bytes]]] = {
+    **CODECS,
+    "bzip3": (Codec.BZIP3, _bzip3),
+    "ppmd": (Codec.PPMD, _ppmd8),
+}
+
+
+def _probed_prefix(
+    data: bytes, codec: Codec, size: int, config: StreamConfig
+) -> tuple[int, str | None]:
+    params = CodecParams()
+    if codec is Codec.PPMD:
+        params = CodecParams(ppmd_order=6, ppmd_mem_size=1 << 20, pack_size=len(data))
+    got = 0
+    with open_codec_stream(
+        codec, io.BytesIO(data), config=config, params=params
+    ) as stream:
+        try:
+            while chunk := stream.read(size):
+                got += len(chunk)
+        except ArchiveyError as exc:
+            return got, type(exc).__name__
+    return got, None
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        *CODECS,
+        pytest.param("bzip3", marks=requires("bz3")),
+        pytest.param("ppmd", marks=requires("pyppmd")),
+    ],
+)
+def test_probes_find_the_byte_one_byte_calls_find(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-decode searches for the failing byte with probes of many bytes; it hands
+    back exactly the bytes a decode asking for one byte per call hands back, wherever
+    the damage falls in the read."""
+    from archivey.internal.streams import decompressor_stream
+
+    codec, compress = _PROBED[name]
+    # In process: one-byte calls to a child process take about 2 ms each.
+    config = replace(_CONFIG, process_isolation=ProcessIsolation.NONE)
+    packed = compress(PAYLOAD[:400_000])
+    rng = random.Random(name)
+    real_probe = decompressor_stream._redecode_probe
+    for _ in range(4):
+        at = rng.randrange(len(packed) // 10, len(packed) - 100)
+        damaged = packed[:at] + rng.randbytes(16) + packed[at + 16 :]
+        for size in (4096, 65536):
+            monkeypatch.setattr(decompressor_stream, "_redecode_probe", real_probe)
+            probed = _probed_prefix(damaged, codec, size, config)
+            assert probed[1] is not None, "the damage must surface as an error"
+            monkeypatch.setattr(decompressor_stream, "_redecode_probe", lambda *_: 1)
+            assert probed == _probed_prefix(damaged, codec, size, config), (at, size)
+
+
+def test_a_large_read_finds_the_failing_byte_in_few_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 1 MiB read that meets damage far into the read does not ask for one byte per
+    call up to it: the probes take a few restarts and a few thousand calls. One byte
+    per call cost about 1 µs each in process and 0.1 to 2 ms each to a child process
+    (PPMd, bzip3)."""
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    counts = {"restarts": 0, "calls": 0}
+    restart, step = (
+        DecompressorStream._redecode_restart,
+        DecompressorStream._redecode_step,
+    )
+
+    def counting_restart(self: Any, *args: Any) -> Any:
+        counts["restarts"] += 1
+        return restart(self, *args)
+
+    def counting_step(self: Any, *args: Any) -> Any:
+        counts["calls"] += 1
+        return step(self, *args)
+
+    monkeypatch.setattr(DecompressorStream, "_redecode_restart", counting_restart)
+    monkeypatch.setattr(DecompressorStream, "_redecode_step", counting_step)
+    codec, compress = CODECS["xz"]
+    damaged = _damage(compress(PAYLOAD), 0.5)
+    got, error = _prefix(io.BytesIO(damaged), codec, 1 << 20)
+    assert error is not None
+    assert got % (1 << 20) > 100_000, "the damage must be far into the read"
+    assert counts["restarts"] <= 8
+    assert counts["calls"] <= 4096

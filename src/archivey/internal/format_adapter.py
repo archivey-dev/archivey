@@ -100,6 +100,7 @@ from archivey.internal.naming import emit_member_name_normalized, normalize_memb
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.source import ArchiveSource
@@ -335,8 +336,8 @@ class _PluginAdapter(BaseArchiveReader):
         self, data: BinaryIO, stream_format: StreamFormat, size: int | None
     ) -> BinaryIO:
         """``ReaderContext._decompress_coder``: ``stream_format`` data that is a
-        container coder's whole data, refusing a byte after the end of what the
-        format defines (further bzip2, LZMA Alone or xz streams still read)."""
+        container coder's whole data, decoded as a member's method is: bzip2 and LZMA
+        Alone end at their first stream, and a byte after the end is refused."""
         return self._decompress(data, stream_format, size, None, whole_file=False)
 
     def _decompress(
@@ -369,7 +370,7 @@ class _PluginAdapter(BaseArchiveReader):
                 archive_name=self._archive_name,
             )
         params = self._codec_params(
-            codec, method, size, properties, is_stream=is_stream
+            codec, method, size, properties, is_stream=is_stream and whole_file
         )
         # Per call, as ZIP fills them per member (``_member_decoder_config``): the
         # output size, and the input size while ``data`` is at its start. The
@@ -409,14 +410,19 @@ class _PluginAdapter(BaseArchiveReader):
     ) -> CodecParams:
         """The codec parameters for one ``decompress`` call: what ``codec`` needs
         beyond the bytes, read from the call's ``size`` and ``properties``.
-        ``is_stream`` says ``method`` is a whole stream format, not a member's
-        compression method."""
-        # Only a bzip2 member is one stream, as in ZIP and 7z: a further stream after
-        # its end is refused. Zstd and LZ4 data may be several frames, read together
-        # (RFC 8878, the LZ4 frame format), and the other codecs read no flag. A
-        # stream format is read as a file of that format is, so a ``.bz2`` stream may
-        # hold several, as bzip2 itself decodes them.
-        params = CodecParams(single_stream=codec is Codec.BZIP2 and not is_stream)
+        ``is_stream`` says ``method`` is a stream format read as a whole file
+        (``decompress``), not a member's method or a container coder's data
+        (``_decompress_coder``)."""
+        # A bzip2 member is one stream, as in ZIP and 7z: a further stream after its
+        # end is refused. So is LZMA Alone, which has no further streams of its own,
+        # in a container coder (``_decompress_coder``, a XAR member). Zstd and LZ4 data
+        # may be several frames, read together (RFC 8878, the LZ4 frame format), and xz
+        # several streams with their padding, as a ZIP xz member may. A stream format
+        # read as a file (``decompress``) is read as a file of that format is, so a
+        # ``.bz2`` stream may hold several, as bzip2 itself decodes them.
+        params = CodecParams(
+            single_stream=not is_stream and codec in (Codec.BZIP2, Codec.LZMA_ALONE)
+        )
         if isinstance(method, PluginStream):
             # A registered codec parses its own properties (``CodecCall``).
             params = CodecParams(unpack_size=size, properties=properties)
@@ -867,7 +873,7 @@ class _PluginAdapter(BaseArchiveReader):
         with self._translated_errors(), self._handle_guard():
             info = self._reader.archive_info()
         cost = self._cost(info)
-        # A plugin's keys are its own, namespaced by its format (``"arj.method"``), so
+        # A plugin's keys are its own, namespaced by its format (``"zoo.method"``), so
         # they are not in the inventory of built-in keys and are copied in as data. A
         # built-in format-API reader's keys (``"cpio.variant"``) are in that inventory.
         extra = ArchiveInfoExtra()
@@ -2777,6 +2783,7 @@ class _PluginBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> _PluginAdapter:
         common = (
             self.PLUGIN(),
@@ -2793,12 +2800,16 @@ class _PluginBackend(ReadBackend):
             "open_site": open_site,
         }
         if issubclass(self.PLUGIN, SequentialFormatHandler):
-            reject_start_offset(start_offset, format, archive_name, end_offset)
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
             return SequentialReaderAdapter(*common, **options)
         # Only a built-in format that declares SFX magic is handed a region, which its
         # reader reads as the whole source (``IndexedReaderAdapter``).
         if not self.SFX_MAGIC:
-            reject_start_offset(start_offset, format, archive_name, end_offset)
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
         return IndexedReaderAdapter(
             *common, region=(start_offset, end_offset), **options
         )
@@ -2991,6 +3002,7 @@ REPLACEABLE_CONTAINERS = frozenset(
         ContainerFormat.XAR,
         ContainerFormat.CAB,
         ContainerFormat.LHA,
+        ContainerFormat.ARJ,
     }
 )
 
