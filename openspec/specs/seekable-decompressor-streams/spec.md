@@ -96,20 +96,20 @@ it, because every backward seek restarts decryption from the member's start.
 
 ### Requirement: XZ and lzip use format-native indexes
 
-The system SHALL support random access in XZ and lzip by reading their embedded
-index structures. XZ SHALL use the footer and block index to map uncompressed
-offsets to compressed block positions. Lzip SHALL scan trailers to locate block
-boundaries. A forward read SHALL record a member start as a seek point only for a member
-that has output. A seek SHALL decompress only the block range needed for the requested
-uncompressed offset.
+On declared seek demand, the system SHALL support random access in XZ and lzip by
+reading their embedded index structures. XZ SHALL use the footer and block index to map
+uncompressed offsets to compressed block positions. Lzip SHALL scan trailers to locate
+block boundaries. A forward read SHALL record a member start as a seek point only for a
+member that has output. A seek SHALL decompress only the block range needed for the
+requested uncompressed offset.
 
 #### Scenario: native index matrix
 
 | Case | Expected |
 | --- | --- |
-| Seekable XZ source opens | Footer/block index maps uncompressed offsets to compressed positions |
+| Seekable XZ source opens with declared seek demand | Footer/block index maps uncompressed offsets to compressed positions |
 | Seek within XZ | Only containing block range is decompressed |
-| Seekable lzip source opens | Trailer scan locates block boundaries |
+| Seekable lzip source opens with declared seek demand | Trailer scan locates block boundaries |
 | Seek within lzip | Only required block range is decompressed |
 
 #### Scenario: XZ blocks found by a forward decode
@@ -658,13 +658,14 @@ points SHALL keep no points. A ZIP or 7z zstd coder keeps them as a `.zst` file 
 
 ### Requirement: zstd reads the Seekable Zstandard seek table
 
-A forward seek past the known points, a `SEEK_END`, or a size query SHALL read the
-*Seekable Zstandard* seek table when the source ends with one (skippable magic
-`0x184D2A5E`, footer magic `0x8F92EAB1`). Its frame sizes SHALL give the seek points and
-the total size, with no decoding. The table is trusted like the xz and lzip indexes
-(threat-model O17) until a decode contradicts it, which drops it (§"Recoverable
-seek-index degradation is diagnostic data"); its per-frame XXH64 checksums SHALL NOT be
-checked. A table over the seek-table cap SHALL be thinned and keep the exact total.
+On declared seek demand only, a forward seek past the known points, a `SEEK_END`, or a
+size query SHALL read the *Seekable Zstandard* seek table when the source ends with one
+(skippable magic `0x184D2A5E`, footer magic `0x8F92EAB1`). Its frame sizes SHALL give
+the seek points and the total size, with no decoding. The table is trusted like the xz
+and lzip indexes (threat-model O17) until a decode contradicts it, which drops it
+(§"Recoverable seek-index degradation is diagnostic data"); its per-frame XXH64
+checksums SHALL NOT be checked. A table over the seek-table cap SHALL be thinned and
+keep the exact total.
 
 #### Scenario: seek table matrix
 
@@ -693,14 +694,14 @@ demand nor restart points SHALL keep no points.
 
 ### Requirement: BGZF members are walked without decoding
 
-A forward seek past the known points or a `SEEK_END` SHALL walk a BGZF file's members
-from the start, reading the file once front to back and inflating nothing: each member's
-`BC` extra subfield gives its size and its ISIZE its output. The walk SHALL stop quietly
-at the first member without one, keeping the points before it; the size is known only
-when it reaches the end of the file. The sizes are trusted like the xz and lzip indexes
-(threat-model O17) until a decode contradicts them, which drops the walk's points and
-size. A file whose first member is not BGZF SHALL cost one read buffer's worth before the
-walk stops. A `.gzi` file is not read.
+On declared seek demand only, a forward seek past the known points or a `SEEK_END` SHALL
+walk a BGZF file's members from the start, reading the file once front to back and
+inflating nothing: each member's `BC` extra subfield gives its size and its ISIZE its
+output. The walk SHALL stop quietly at the first member without one, keeping the points
+before it; the size is known only when it reaches the end of the file. The sizes are
+trusted like the xz and lzip indexes (threat-model O17) until a decode contradicts them,
+which drops the walk's points and size. A file whose first member is not BGZF SHALL cost
+one read buffer's worth before the walk stops. A `.gzi` file is not read.
 
 A size query (`try_get_size()`, `ArchiveStream.size`) SHALL NOT walk the file, because
 the walk reads all of it and a size query must be cheap. Before a walk or a read to the
@@ -750,16 +751,16 @@ decode contradicts them. A walk over the seek-table cap SHALL report scan `mgzip
 On declared seek demand or restart points every bzip3 block with output after the first
 SHALL be a seek point, recorded when a forward read reaches it, with the file's block
 size as its resume state: every block decodes on its own, and its 8-byte header gives
-its compressed and decoded size. A forward seek past the known points, a `SEEK_END` or a
-size query SHALL walk the block headers from the start of the file, jumping from header
-to header and decoding nothing, for every point and the total size. The walk SHALL stop
-quietly at a header whose sizes the decoder would refuse or at a block that runs past
-the end of the file, keeping the points before it; the size is known only when the last
-block ends exactly at the end of the file. The sizes are trusted like the xz and lzip
-indexes (threat-model O17); a block that is decoded is still checked against its header
-and its CRC-32. A stream opened with neither seek demand nor restart points SHALL keep
-no points and SHALL NOT walk. A walk over the seek-table cap SHALL report scan
-`bzip3_blocks`.
+its compressed and decoded size. On declared seek demand only, a forward seek past the
+known points, a `SEEK_END` or a size query SHALL walk the block headers from the start
+of the file, jumping from header to header and decoding nothing, for every point and the
+total size. The walk SHALL stop quietly at a header whose sizes the decoder would refuse
+or at a block that runs past the end of the file, keeping the points before it; the size
+is known only when the last block ends exactly at the end of the file. The sizes are
+trusted like the xz and lzip indexes (threat-model O17); a block that is decoded is
+still checked against its header and its CRC-32. A stream opened with neither seek
+demand nor restart points SHALL keep no points and SHALL NOT walk. A walk over the
+seek-table cap SHALL report scan `bzip3_blocks`.
 
 #### Scenario: bzip3 block matrix
 
