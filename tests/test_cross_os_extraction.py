@@ -27,7 +27,8 @@ from typing import cast
 import pytest
 
 from archivey import (
-    ExtractionLimits,
+    ArchiveyConfig,
+    DecoderLimits,
     ExtractionPolicy,
     ExtractionStatus,
     OnError,
@@ -903,8 +904,10 @@ def test_link_limit_copies_trip_the_archive_wide_ratio(
     specs: list[tuple[str, str, bytes | str | None]] = [("file", "f", payload)]
     specs += [("hard", f"h{i}", "f") for i in range(40)]
     data = _tar(specs)
-    limits = ExtractionLimits(
-        max_ratio=len(payload) * 20 / len(data), ratio_activation_threshold=0
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(
+            max_ratio=len(payload) * 20 / len(data), ratio_activation_threshold=0
+        )
     )
     monkeypatch.setattr(os, "link", link)
     with pytest.raises(
@@ -912,7 +915,7 @@ def test_link_limit_copies_trip_the_archive_wide_ratio(
         match=r"Archive-wide decompression ratio .* bytes copied for hard links past "
         "the filesystem's link-count limit",
     ):
-        open_and_extract(io.BytesIO(data), tmp_path / "out", limits=limits)
+        open_and_extract(io.BytesIO(data), tmp_path / "out", config=config)
 
     def cross_device(src: str | Path, dst: str | Path, **kwargs: bool) -> None:
         if _is_landing(src):
@@ -921,7 +924,7 @@ def test_link_limit_copies_trip_the_archive_wide_ratio(
         raise OSError(errno.EXDEV, "Invalid cross-device link")
 
     monkeypatch.setattr(os, "link", cross_device)
-    report = open_and_extract(io.BytesIO(data), tmp_path / "out2", limits=limits)
+    report = open_and_extract(io.BytesIO(data), tmp_path / "out2", config=config)
     assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 41
 
 

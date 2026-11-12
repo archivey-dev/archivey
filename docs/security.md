@@ -279,8 +279,8 @@ in the repository measures what each limit costs in time and memory on your mach
   archive read from a pipe, aren't checked. It has no cost of its own. A compressed tar is held to it
   whenever archivey decodes it, listing included, since listing one decodes all of it. The default
   sits below DEFLATE's ceiling of about 1032:1, so a gzip of zeros (1003 to 1032:1) is refused every
-  time rather than by a few bytes. It used to be `extraction_limits.max_ratio`; that field still
-  works, deprecated, and set there it overrides this one.
+  time rather than by a few bytes. It used to be `extraction_limits.max_ratio`, which 0.4.0
+  removed.
 - **`listing_limits.max_members`**, default 262,144, caps the members an archive can list. It costs
   about 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default.
 - **`listing_limits.max_metadata_bytes`**, default 64 MiB, caps the text kept for names, comments

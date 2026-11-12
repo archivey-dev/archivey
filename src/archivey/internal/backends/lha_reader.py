@@ -65,7 +65,6 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
-from archivey.internal.bomb_tracker import ratio_limits
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.internal.sfx import (
@@ -808,8 +807,7 @@ class LhaReader(_Headers, IndexedReader[_Location]):
         decoders stop at the header's size, so that size bounds the decode; the check
         is the one archivey makes from recorded sizes before an extraction."""
         config = self._context.config
-        # The deprecated ExtractionLimits ratio fields still count, as for every guard.
-        limits = ratio_limits(config.decoder_limits, config.extraction_limits)
+        limits = config.decoder_limits
         if limits.max_ratio is None or not locator.stored:
             return
         floor = max(

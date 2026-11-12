@@ -1380,7 +1380,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | --- | --- |
 | `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
 | `open_archive(..., config=ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=100)))` then `extract_all(dest)` | 100:1 per-member ratio enforced (`safe-extraction`), and on member reads |
-| `ExtractionLimits(max_ratio=100)` | `DeprecationWarning`; in `extraction_limits` it overrides `decoder_limits.max_ratio` for the reader, in `extract_all(limits=...)` for that extraction; an `<unset>` ratio field reads as the `DecoderLimits` default and warns nothing |
+| `ExtractionLimits(max_ratio=100)` | `TypeError`: `ExtractionLimits` holds no ratio field; `decoder_limits` holds them |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 | `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
@@ -1840,16 +1840,17 @@ that link its target and not the listing, and opening the link SHALL read it aga
 `ArchiveStream` and `MemberPass` SHALL stay public types for annotations and
 `isinstance`, as base classes with no public constructor: every stream and pass
 archivey hands out SHALL be an instance of an internal subclass, so how one is built
-can change in any release. Until archivey 0.4.0, calling either base directly SHALL
-still work, building that internal subclass, and SHALL emit a `DeprecationWarning`
-(DR-12a).
+can change in any release. Calling either base directly, or a subclass that leaves an
+abstract method unimplemented, SHALL raise
+`TypeError` naming where to get one.
 
 #### Scenario: construction matrix
 
 | Call | Result |
 |---|---|
-| `ArchiveStream(open_fn, translate=…)` | Working stream; `DeprecationWarning` naming `ArchiveReader.open()` |
-| `MemberPass(generator)` | Working pass; `DeprecationWarning` naming `stream_members()` |
+| `ArchiveStream(open_fn, translate=…)` | `TypeError` naming `ArchiveReader.open()` |
+| `MemberPass(generator)` | `TypeError` naming `stream_members()` |
+| A subclass of either that implements every abstract method | Builds as written |
 | `reader.open()`, `reader.read()`, `stream_members()`, iterating a reader, `open_stream()` | No `DeprecationWarning` |
 
 #### Scenario: internal subclasses

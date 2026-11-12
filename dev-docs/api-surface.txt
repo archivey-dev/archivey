@@ -392,12 +392,9 @@ init archivey.EncryptionError(message: str, *, source_format: ArchiveFormat | No
 class archivey.ExtractionError(ArchiveyError)
 init archivey.ExtractionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.ExtractionLimits()
-init archivey.ExtractionLimits(max_extracted_bytes: int | None = 2147483648, max_ratio: float | None = 800.0, ratio_activation_threshold: int = 5242880, max_entries: int | None = 262144, live_ratio_activation_threshold: int = 268435456) -> None
-field archivey.ExtractionLimits.live_ratio_activation_threshold: int = 268435456
+init archivey.ExtractionLimits(max_extracted_bytes: int | None = 2147483648, *, max_entries: int | None = 262144) -> None
 field archivey.ExtractionLimits.max_entries: int | None = 262144
 field archivey.ExtractionLimits.max_extracted_bytes: int | None = 2147483648
-field archivey.ExtractionLimits.max_ratio: float | None = 800.0
-field archivey.ExtractionLimits.ratio_activation_threshold: int = 5242880
 attribute archivey.ExtractionLimits.UNLIMITED = ExtractionLimits(...)
 class archivey.ExtractionPolicy(Enum)
 enum archivey.ExtractionPolicy

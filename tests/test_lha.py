@@ -455,12 +455,11 @@ def test_the_dropped_fork_counts_against_the_ratio_limit(os_id: bytes) -> None:
 
 
 @pytest.mark.parametrize("os_id", [b"U", b"m"])
-def test_the_dropped_fork_honours_the_deprecated_ratio_fields(os_id: bytes) -> None:
+def test_the_dropped_fork_honours_the_reader_ratio_limit(os_id: bytes) -> None:
     wrapped = _macbinary(data=b"x", resource=bytes(2_000_000))
     raw = archive([_mac_member(wrapped, os_id=os_id, method="-lh5-")])
-    with pytest.warns(DeprecationWarning):
-        limits = archivey.ExtractionLimits(max_ratio=10, ratio_activation_threshold=0)
-    config = archivey.ArchiveyConfig(extraction_limits=limits)
+    limits = archivey.DecoderLimits(max_ratio=10, ratio_activation_threshold=0)
+    config = archivey.ArchiveyConfig(decoder_limits=limits)
     with open_archive(io.BytesIO(raw), config=config) as reader:
         (member,) = reader.members()
         with pytest.raises(archivey.ResourceLimitError, match="max_ratio"):

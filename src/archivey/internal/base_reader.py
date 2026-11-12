@@ -86,7 +86,6 @@ from typing import (
     NamedTuple,
     NoReturn,
     Self,
-    TypeVar,
     cast,
 )
 
@@ -320,9 +319,6 @@ _DRAIN_BATCH = 256
 
 # The read size verify_all() uses to read a member again for a spanning check.
 _VERIFY_ALL_CHUNK = 1 << 20
-
-_ArgT = TypeVar("_ArgT")
-_RetT = TypeVar("_RetT")
 
 
 def _closer_of(source: Iterator[object]) -> Callable[[], None] | None:
@@ -976,10 +972,6 @@ class BaseArchiveReader(ArchiveReader):
         # What open() and stream_members() streams have decoded, for the archive-wide
         # ratio they are held to.
         self._read_ratio_tally = _new_read_ratio_tally()
-        # The ratio fields an ``extract_all`` call applies, set on its thread for the
-        # length of the call: a compressed container's decode guard, built at open,
-        # holds that call's decodes to them (``_run_ratio_limits``).
-        self._extraction_ratio = threading.local()
 
         # --- Measurement ---------------------------------------------------------
         # Opt-in benchmark counters (see archivey.internal.measurement). When measurement
@@ -1499,35 +1491,8 @@ class BaseArchiveReader(ArchiveReader):
     # --- Decompression-ratio limits on the streams the caller reads -------------------
 
     def _ratio_limits(self) -> DecoderLimits:
-        """The ratio fields this reader's decodes are held to: ``decoder_limits``, or
-        what a deprecated ``extraction_limits`` ratio field sets."""
-        from archivey.internal.bomb_tracker import ratio_limits
-
-        config = self._config
-        return ratio_limits(config.decoder_limits, config.extraction_limits)
-
-    def _run_ratio_limits(self) -> DecoderLimits | None:
-        """The ratio fields of the ``extract_all`` call running on this thread, or
-        ``None`` outside one."""
-        return getattr(self._extraction_ratio, "limits", None)
-
-    def _outside_extraction_ratio(
-        self, callback: Callable[[_ArgT], _RetT]
-    ) -> Callable[[_ArgT], _RetT]:
-        """``callback``, run with no ``extract_all`` ratio in force on its thread
-        (``_run_ratio_limits``): a caller's ``filter``, selector or ``on_progress``
-        that reads the reader is held to the reader's limits, not the call's."""
-        run_ratio = self._extraction_ratio
-
-        def call(arg: _ArgT, /) -> _RetT:
-            outer = getattr(run_ratio, "limits", None)
-            run_ratio.limits = None
-            try:
-                return callback(arg)
-            finally:
-                run_ratio.limits = outer
-
-        return call
+        """The ratio fields this reader's decodes are held to."""
+        return self._config.decoder_limits
 
     def _hold_to_ratio(self, stream: ArchiveStreamImpl, member: ArchiveMember) -> None:
         """Hold a member stream ``open()`` or ``stream_members()`` gives the caller to
@@ -4083,10 +4048,7 @@ class BaseArchiveReader(ArchiveReader):
 
         Listing such an archive decodes all of it, so the decoded stream is held to
         ``decoder_limits.max_ratio`` of the archive's size (:class:`DecodeRatioGuard`)
-        in every use, not only in ``extract_all``. An ``extract_all`` call on this
-        thread holds its own decodes to the ratio fields it applies instead, for the
-        length of the call (``_run_ratio_limits``); a read after it is judged again
-        under the reader's limits.
+        in every use, not only in ``extract_all``.
         """
         # Imported here: the codec layer imports reader-side modules at load.
         from archivey.internal.bomb_tracker import DecodeRatioGuard
@@ -4144,7 +4106,6 @@ class BaseArchiveReader(ArchiveReader):
             limits=limits,
             static_size=self._trusted_source_size(),
             consumed=self._live_consumed(),
-            run_limits=self._run_ratio_limits,
         )
 
     # --- Public API: listing ----------------------------------------------------------
@@ -5143,7 +5104,6 @@ class BaseArchiveReader(ArchiveReader):
         # Imported here (not at module top) to keep the import graph tidy: extraction.py
         # type-checks against BaseArchiveReader.
         from archivey.internal.extraction import ExtractionCoordinator
-        from archivey.internal.selection import CollectionSelector
 
         # The reader's open config applies to the whole reader lifetime; only the
         # extraction limits have a per-call override (see archive-reading).
@@ -5151,27 +5111,15 @@ class BaseArchiveReader(ArchiveReader):
             limits if limits is not None else self._config.extraction_limits
         )
         collector = self._diagnostics_collector
-        # The caller's code the call runs is not one of its decodes: a read it makes is
-        # held to the reader's limits, as on a ZIP.
-        outside = self._outside_extraction_ratio
         coordinator = ExtractionCoordinator(
             policy=policy,
             overwrite=overwrite,
             on_error=on_error,
             abort_on=abort_on,
-            on_progress=None if on_progress is None else outside(on_progress),
-            # A members= collection is archivey's own code, and the coordinator asks
-            # it for more than a verdict: only the caller's predicate is wrapped.
-            selector=(
-                selector
-                if selector is None or isinstance(selector, CollectionSelector)
-                else outside(selector)
-            ),
-            filter=None if filter is None else outside(filter),
+            on_progress=on_progress,
+            selector=selector,
+            filter=filter,
             limits=effective_limits,
-            # The reader's ratio, a deprecated field of its config's extraction limits
-            # included, under the call's: a per-call ``limits=`` that sets no ratio
-            # field keeps it.
             ratio=self._ratio_limits(),
             dry_run=dry_run,
         )
@@ -5181,15 +5129,8 @@ class BaseArchiveReader(ArchiveReader):
             # The report covers only the emits this call makes, on its own thread:
             # open-phase diagnostics stay on reader.diagnostics, and on a CONCURRENT
             # reader other threads emit into the same collector meanwhile.
-            run_ratio = self._extraction_ratio
-            outer = getattr(run_ratio, "limits", None)
-            # The call's limits govern its decodes, the container's decode included.
-            run_ratio.limits = coordinator.ratio
-            try:
-                with self._internal_member_opens(), collector.scoped() as scope:
-                    results = coordinator.run(self, dest_path)
-            finally:
-                run_ratio.limits = outer
+            with self._internal_member_opens(), collector.scoped() as scope:
+                results = coordinator.run(self, dest_path)
         finally:
             self._state.release_pass(token)
         report = ExtractionReport(
