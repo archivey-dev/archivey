@@ -1910,6 +1910,9 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._decoder_config,
             refuse_input_after_end=False,
             report_trailing_data=True,
+            # The container's members are read through this stream, so its bytes
+            # before damage are recovered whatever the caller set.
+            recover_partial_data=True,
         )
         if self._streaming:
             # The parent is done (the ForwardStream that called this refuses reads

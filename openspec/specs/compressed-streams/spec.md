@@ -1057,6 +1057,12 @@ clean read costs about what it did before fixed feeding. A read after an index s
 return a different prefix from a linear read (DR-4a). An accelerator SHALL give the
 prefix of the decoder it replaces.
 
+With `ArchiveyConfig.recover_partial_data=False` a stream SHALL NOT decode again: the
+read that meets the error raises the same error, and MAY lose the bytes the failing
+decoder call gave before it. On a pipe a deflate decoder SHALL NOT copy its state for
+them either. A compressed TAR's own stream SHALL recover its bytes whatever the setting,
+so every member that ends before the damage reads whole under both settings.
+
 #### Scenario: read sizes
 
 - **GIVEN** a `.gz`, `.xz`, `.bz2` or `.zst` file of 3 MB of text with 64 bytes damaged

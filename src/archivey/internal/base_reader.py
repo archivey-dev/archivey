@@ -4034,6 +4034,9 @@ class BaseArchiveReader(ArchiveReader):
                     usage=self._usage,
                 ),
                 report_trailing_data=True,
+                # The members are read through this stream: recovering its bytes
+                # before damage is what keeps every whole member before it readable.
+                recover_partial_data=True,
             ),
             stamp=lambda exc: self._stamp_error_context(exc),
             collector=self._diagnostics_collector,

@@ -175,7 +175,7 @@ method archivey.ArchiveStream.verify(self, *, password_only: bool = False) -> Ve
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
-init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO, process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None) -> None
+init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO, process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: bool = True) -> None
 field archivey.ArchiveyConfig.always_probe_content: bool = False
 field archivey.ArchiveyConfig.decoder_limits: DecoderLimits = DecoderLimits(...)
 field archivey.ArchiveyConfig.detection_budget: DetectionBudget = DetectionBudget(...)
@@ -191,6 +191,7 @@ field archivey.ArchiveyConfig.process_isolation: ProcessIsolation = ProcessIsola
 field archivey.ArchiveyConfig.rar_allow_glob_member_concatenation: bool = False
 field archivey.ArchiveyConfig.rar_decompressor: RarDecompressor = RarDecompressor.AUTO
 field archivey.ArchiveyConfig.read_link_targets: bool = True
+field archivey.ArchiveyConfig.recover_partial_data: bool = True
 field archivey.ArchiveyConfig.spool_limits: SpoolLimits = SpoolLimits(...)
 field archivey.ArchiveyConfig.unar_path: str | os.PathLike[str] | None = None
 field archivey.ArchiveyConfig.unrar_path: str | os.PathLike[str] | None = None

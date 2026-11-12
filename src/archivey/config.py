@@ -997,6 +997,24 @@ class ArchiveyConfig:
     ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
     ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
 
+    recover_partial_data: bool = True
+    """Whether a read that meets damaged compressed data first hands back the bytes
+    before the damage.
+
+    ``True``: on a source that can seek, a read with a size that meets a decoder error
+    returns every byte the decoder gives before it, and the next read raises. Finding
+    those bytes means decompressing that part again, from the last point the stream can
+    restart at, so it costs a second decode on damaged data. ``False``: archivey does no
+    extra work for them. The read that meets the damage raises, and the bytes it would
+    have returned before the damage are lost. Use it when a damaged member is thrown
+    away whole anyway.
+
+    A compressed TAR's own stream recovers its bytes either way, so every member that
+    ends before the damage is still read whole; the member the damage cuts may still
+    hand back its first bytes. The same archive gives the same members and the same
+    error either way: only the partial bytes before an error differ.
+    """
+
     def __post_init__(self) -> None:
         """Check the fields at construction, and convert the ones that hold enums or
         program paths.
@@ -1084,6 +1102,7 @@ def _check_guard_switches(config: ArchiveyConfig) -> None:
     for field_name in (
         "rar_allow_glob_member_concatenation",
         "read_link_targets",
+        "recover_partial_data",
         "always_probe_content",
         "discover_volumes",
     ):
