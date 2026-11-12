@@ -100,14 +100,16 @@ DISPOSITIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "disproven",
         re.compile(
-            r"\b(disproven|not a bug|kept|keeping|(?:stays |left (?:it |this )?)as is|no change|declined|intentional|by design|won't fix)\b",
+            r"\b(disproven|not a bug|kept|keeping|(?:stays |left (?:it |this )?)as is|"
+            r"no change|declined|intentional|by design|won't fix)\b",
             re.IGNORECASE,
         ),
     ),
     (
         "fixed",
         re.compile(
-            r"(?<!partly )(?<!not )\b(fixed|fix(?:es)? in|done|taken|took|applied|now uses|removed|renamed|added|rewrapped|re-?wrote|rewritten|"
+            r"(?<!partly )(?<!not )\b(fixed|fix(?:es)? in|done|taken|took|applied|now uses|"
+            r"removed|renamed|added|rewrapped|re-?wrote|rewritten|"
             r"reworded|moved|changed|updated|dropped|replaced)\b",
             re.IGNORECASE,
         ),

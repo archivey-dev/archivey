@@ -29,10 +29,10 @@ Marking the reader closed does not close the archive. A lease is held by whateve
 reads through the source: the reader itself (one lease, from construction until
 ``close()``, kept as ``_reader_lease_held``), each live ``open()`` stream or reservation
 (counted in ``_lease_count``; a pass's streams take none, as the pass's token keeps the
-source open until the pass ends or is wound down), and a ``stream_members()`` pass that ``close()`` found
-suspended at a yield (one lease, ``_pass_wind_down_lease``, from the close transition
-until ``close()`` has wound the pass down and closed the streams; a flag for the same
-reason as the reader's). The underlying file handle or ``unrar`` /
+source open until the pass ends or is wound down), and a ``stream_members()`` pass that
+``close()`` found suspended at a yield (one lease, ``_pass_wind_down_lease``, from the
+close transition until ``close()`` has wound the pass down and closed the streams; a
+flag for the same reason as the reader's). The underlying file handle or ``unrar`` /
 ``7z`` process is torn down by whoever drops the **last** lease. ``close()`` drops the
 reader's lease first and then closes the still-open member streams, so with streams open
 the last lease usually goes with the last stream's close, not with the reader's. That is

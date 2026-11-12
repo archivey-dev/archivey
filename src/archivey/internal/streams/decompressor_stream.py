@@ -687,8 +687,8 @@ class SnapshotState(Protocol):
     two passes can offer them at different offsets (the :class:`DecodeOut` rule does
     not hold for them). The stream keeps them apart instead: one closer than
     ``min_gap`` to a point it holds is dropped, and one at an output offset the table
-    already has a point for yields to that point. ``held_bytes`` is what the snapshot holds in memory, counted
-    against :data:`MAX_SNAPSHOT_BYTES`.
+    already has a point for yields to that point. ``held_bytes`` is what the snapshot
+    holds in memory, counted against :data:`MAX_SNAPSHOT_BYTES`.
     """
 
     @property

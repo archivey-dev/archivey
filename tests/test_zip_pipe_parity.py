@@ -528,7 +528,8 @@ def test_damaged_end_records_read_from_a_file_as_from_a_pipe(
     """A classic end record that needs none of the ZIP64 fields stands in for them,
     reported; end records that cannot be used (a saturated classic record, no place
     that fits the directory's end, a directory before the file's start) list the
-    members the local headers hold, then raise. Either way the two reads list, read and write alike."""
+    members the local headers hold, then raise. Either way the two reads list, read and
+    write alike."""
     from_file = _report(data, piped=False)
     assert from_file == _report(data, piped=True)
     assert isinstance(from_file, tuple)

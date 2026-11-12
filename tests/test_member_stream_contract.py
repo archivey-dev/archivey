@@ -896,7 +896,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
     ("7z-bcj2", "no corpus builder for 7z BCJ2 (py7zr cannot write it)"),
     (
         "7z-compressed-nonsolid",
-        "py7zr multi-file writes are solid (LZMA2, or PPMd in sevenzip-ppmd); sevenzip-stored is a single COPY file (non-solid stored)",
+        (
+            "py7zr multi-file writes are solid (LZMA2, or PPMd in sevenzip-ppmd); "
+            "sevenzip-stored is a single COPY file (non-solid stored)"
+        ),
     ),
     (
         "rar4",

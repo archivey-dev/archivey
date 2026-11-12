@@ -4759,8 +4759,8 @@ class RarReader(BaseArchiveReader):
                     f"{stop_reason}; it is listed from what was read before that."
                     if member is not None
                     else f"This archive's {name} service header was not read to "
-                    f"the end because {stop_reason}, so {_SERVICE_PAYLOAD_LOST.get(name, 'its payload')} "
-                    f"was not used."
+                    f"the end because {stop_reason}, so "
+                    f"{_SERVICE_PAYLOAD_LOST.get(name, 'its payload')} was not used."
                 ),
                 context=MemberHeaderRecordContext(
                     archive_name=self._archive_name,
@@ -5247,9 +5247,9 @@ class RarReader(BaseArchiveReader):
         the member-stream ``tell()`` is the whole re-decode cost.
 
         History rows are counted even without ``-ver``: ``-ver`` controls what
-        unrar *emits*, not what it *decodes*, and a solid chain must decompress history to reach later
-        members. This value is a ``RewindWarning.min_redecode_bytes`` floor, not
-        a pipe offset.
+        unrar *emits*, not what it *decodes*, and a solid chain must decompress history
+        to reach later members. This value is a ``RewindWarning.min_redecode_bytes``
+        floor, not a pipe offset.
         """
         if not self._archive.is_solid:
             return 0

@@ -38,10 +38,10 @@ from archivey.internal.streams.decompressor_stream import (
 # ``unpack_size``.
 _PPMD_UNSIZED_DECODE_CHUNK = 65536
 
-# Per-call ceiling for extra-NUL recovery and post-NUL empty drains. When the container pack is known-complete, empty ``decode(b"", 64)``
-# drains may still finish a large tail (including past premature ``eof``); when the
-# pack is known-incomplete, we refuse those post-eof drains (near-EOF MemoryError
-# otherwise).
+# Per-call ceiling for extra-NUL recovery and post-NUL empty drains. When the container
+# pack is known-complete, empty ``decode(b"", 64)`` drains may still finish a large tail
+# (including past premature ``eof``); when the pack is known-incomplete, we refuse those
+# post-eof drains (near-EOF MemoryError otherwise).
 _PPMD_EXTRA_NUL_MAX_OUTPUT = 64
 
 # Bounded number of single-symbol NUL decodes used to quiesce a parked native

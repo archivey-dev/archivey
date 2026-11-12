@@ -15,8 +15,9 @@ index: list the members first, then open any one of them); a
 data, header, data, read in one forward pass, from a pipe too). The reader hands
 archivey members and bytes; archivey does the rest the same way for every format: name
 normalization and the name checks, listing limits, link resolution, safe extraction and
-its limits, and the size and digest checks on member data. Formats that do not fit, or need special features or more speed, are
-written against archivey's internal reader classes instead.
+its limits, and the size and digest checks on member data. Formats that do not fit, or
+need special features or more speed, are written against archivey's internal reader
+classes instead.
 
 A program registers a format with :func:`register_format`. Nothing is loaded
 automatically. Plugin code runs in the caller's process as trusted code: archivey's

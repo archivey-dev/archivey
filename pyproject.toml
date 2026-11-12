@@ -249,7 +249,17 @@ extend-select = [
     "I", "F", "C4", "ISC", "RET", "BLE", "UP",
     "E401", "E402", "E701", "E702", "E703", "E711", "E712", "E713", "E714", "E721",
     "E731", "E741", "E742", "E743",
+    "E501",
 ]
+
+[tool.ruff.lint.pycodestyle]
+# E501 reports a line over 100 columns, code, comment or docstring. `ruff format` keeps
+# wrapping code at 88 (the default `line-length`), and prose is wrapped at 88 too, so the
+# 12 columns between are slack: an edit that runs a little long passes, and one that
+# runs a sentence long fails. `scripts/checks/check_line_width.py --fix` rewraps the
+# comment or docstring paragraphs a change touched; the same script holds Markdown to
+# the same 100.
+max-line-length = 100
 
 [tool.ruff.lint.isort]
 # One `from m import (...)` per module, aliases included (`Set as AbstractSet`).
