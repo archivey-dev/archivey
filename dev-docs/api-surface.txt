@@ -13,6 +13,7 @@ item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPE
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LINK_DATA_IGNORED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_BIDI_CONTROL
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
@@ -361,6 +362,7 @@ value archivey.DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA = 'member_special_fil
 value archivey.DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS = 'member_local_name_differs'
 value archivey.DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS = 'member_local_method_differs'
 value archivey.DiagnosticCode.MEMBER_LOCAL_CRC_USED = 'member_local_crc_used'
+value archivey.DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED = 'member_local_offset_shifted'
 value archivey.DiagnosticCode.ARCHIVE_OFFSET_WRAPPED = 'archive_offset_wrapped'
 value archivey.DiagnosticCode.MEMBER_SIZE_WRAPPED = 'member_size_wrapped'
 value archivey.DiagnosticCode.MEMBER_TYPE_UNKNOWN = 'member_type_unknown'
@@ -791,6 +793,8 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'member_link_data_ignored'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-link-data-ignored'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_header_ambiguous'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-header-ambiguous'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_offset_shifted'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-offset-shifted'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_offset_wrapped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-offset-wrapped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_size_wrapped'
@@ -873,13 +877,15 @@ field archivey.diagnostics.LinkDataContext.member_name: str = ''
 field archivey.diagnostics.LinkDataContext.size: int = 0
 method archivey.diagnostics.LinkDataContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.LocalHeaderContext(_JsonSafeContext)
-init archivey.diagnostics.LocalHeaderContext(kind: Literal['local_header'] = 'local_header', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, field: Literal['name', 'method', 'crc32'] = 'name', local_raw_name_base64: str | None = None, local_crc32: int | None = None, local_method: int | None = None, central_method: int | None = None) -> None
+init archivey.diagnostics.LocalHeaderContext(kind: Literal['local_header'] = 'local_header', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, field: Literal['name', 'method', 'crc32', 'offset'] = 'name', local_raw_name_base64: str | None = None, local_crc32: int | None = None, local_method: int | None = None, central_method: int | None = None, local_offset: int | None = None, central_offset: int | None = None) -> None
 field archivey.diagnostics.LocalHeaderContext.archive_name: str | None = None
 field archivey.diagnostics.LocalHeaderContext.central_method: int | None = None
-field archivey.diagnostics.LocalHeaderContext.field: Literal['name', 'method', 'crc32'] = 'name'
+field archivey.diagnostics.LocalHeaderContext.central_offset: int | None = None
+field archivey.diagnostics.LocalHeaderContext.field: Literal['name', 'method', 'crc32', 'offset'] = 'name'
 field archivey.diagnostics.LocalHeaderContext.kind: Literal['local_header'] = 'local_header'
 field archivey.diagnostics.LocalHeaderContext.local_crc32: int | None = None
 field archivey.diagnostics.LocalHeaderContext.local_method: int | None = None
+field archivey.diagnostics.LocalHeaderContext.local_offset: int | None = None
 field archivey.diagnostics.LocalHeaderContext.local_raw_name_base64: str | None = None
 field archivey.diagnostics.LocalHeaderContext.member_id: int | None = None
 field archivey.diagnostics.LocalHeaderContext.member_name: str = ''
