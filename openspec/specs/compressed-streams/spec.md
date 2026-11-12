@@ -1055,7 +1055,9 @@ before it, whatever `n` is, found by decoding again from the last seek point to 
 failing byte. Each decoder call SHALL ask for what the read asks, at most 1 MiB, so a
 clean read costs about what it did before fixed feeding. A read after an index seek MAY
 return a different prefix from a linear read (DR-4a). An accelerator SHALL give the
-prefix of the decoder it replaces.
+prefix of the decoder it replaces. A decoder that hands out every byte before an error
+before it raises it ("In-house decoders hand back their bytes before an error") already
+gives that prefix, and SHALL NOT be decoded again for it.
 
 With `ArchiveyConfig.recover_partial_data=False` a stream SHALL NOT decode again: the
 read that meets the error raises the same error, and MAY lose the bytes the failing

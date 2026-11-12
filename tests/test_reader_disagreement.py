@@ -180,6 +180,21 @@ def test_strict_reads_the_shape_and_pedantic_refuses_it(label: str) -> None:
         ar.members()
 
 
+def test_strict_reads_a_tar_that_repeats_a_name() -> None:
+    """``tar -r`` appends a file under a name the archive already holds, so TAR reports
+    only the generic code, not ``MEMBER_NAME_DUPLICATE_UNEXPECTED``, which ``STRICT``
+    refuses in a format with no way to repeat a name."""
+    archive, _ = _TAR_SHAPES["duplicate file"]
+    with open_archive(
+        io.BytesIO(archive),
+        format=ArchiveFormat.TAR,
+        config=_policy(DiagnosticPolicy.STRICT),
+    ) as ar:
+        _, later = ar.members()
+        assert ar.read("a") == b"two"
+    assert [d.code for d in later.diagnostics] == [DiagnosticCode.MEMBER_NAME_DUPLICATE]
+
+
 def test_a_caller_can_refuse_only_these_two_codes() -> None:
     archive, _ = _TAR_SHAPES["duplicate file"]
     policy = DiagnosticPolicy(

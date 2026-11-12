@@ -907,16 +907,23 @@ inherent to a single pass.
 **Target-name resolution:** hardlink targets are archive-root relative and in
 the member-name namespace: `.` and empty segments are dropped and `..` is
 **retained**, exactly as `normalize_member_name` treats a name, so `a/../b` names
-the member stored as `a/../b` and never the member `b`. Symlink targets are
-filesystem paths: they join to the link's directory first and `..` is collapsed.
+the member stored as `a/../b` and never the member `b`. Every format, built-in or
+plugin, SHALL list a hardlink's `link_target` in that normalized form, so it equals
+the `name` of the member it links to (`./b` lists as `b`, in TAR as in CPIO). A
+hardlink target that ends in `/` SHALL keep the `/`: it names a directory and SHALL
+NOT resolve to a non-directory member of the same name. A target that names only the
+archive root (`./`, `/`, `//`) lists as `.`, as a root-only member name does, and
+names no member. A symlink's `link_target` SHALL stay as stored; to look it up, the
+target is a filesystem path that joins to the link's directory first, and `..` is
+collapsed.
 A hardlink target's leading `/` is kept, as in a member name, so `/a` names the member
 stored as `/a` (`tar -P` writes both), and so is a `..` that climbs out of the root:
 `../a` names the member stored as `../a` (extraction refuses that member, and every
 link to it; `safe-extraction`). Absolute and `..`-escaping symlink targets stay
 unresolved (`None`; open → `LinkTargetNotFoundError`); the escape test runs on the
 collapsed form. A RAR file copy's source lookup keeps that escape test for its
-hardlink-style target (`format-rar`). Directory lookup tries bare and `/`-suffixed
-forms.
+hardlink-style target (`format-rar`). A target without a final `/` is looked up
+under its bare and its `/`-suffixed spelling, since a directory's name ends in `/`.
 
 Follow chains recursively; detect cycles by **member id** (not name); no arbitrary
 depth limit. Missing target and cycle → `LinkTargetNotFoundError` (a `ReadError`).

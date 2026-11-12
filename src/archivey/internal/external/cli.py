@@ -328,14 +328,20 @@ class _SpawnFailed(Exception):
     """``spawn`` failed in :func:`spawn_for_stdout`; the ``OSError`` is the cause."""
 
 
-def _start_error(exc: OSError, *, name: str, not_started: str) -> ArchiveyError:
+def _start_error(
+    exc: OSError, *, name: str, not_started: str, cwd: str | None = None
+) -> ArchiveyError:
     """The error for ``exc``, the ``OSError`` that kept ``name`` from starting.
 
     Only a program that cannot run is :class:`PackageNotInstalledError`. A command
-    line the system will not take, or a system short of resources, says nothing about
-    the program, and a message that says to install it would send the caller the
-    wrong way.
+    line the system will not take, a working directory ``cwd`` the child could not
+    enter, or a system short of resources, says nothing about the program, and a
+    message that says to install it would send the caller the wrong way.
     """
+    if cwd is not None and exc.filename == cwd:
+        return ReadError(
+            f"{name} could not be started in the directory {cwd!r} ({exc})."
+        )
     if exc.errno == errno.E2BIG or (
         getattr(exc, "winerror", None) == ERROR_FILENAME_EXCED_RANGE
     ):
@@ -361,6 +367,7 @@ def spawn_for_stdout(
     not_started: str,
     stdin: int | IO[bytes] = subprocess.DEVNULL,
     env: Mapping[str, str] | None = None,
+    cwd: str | None = None,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Start ``cmd`` with stdout on a pipe and stderr discarded; return ``(proc, stdout)``.
 
@@ -368,8 +375,11 @@ def spawn_for_stdout(
     other start failure raises the error :func:`_start_error` gives for it. The
     caller owns the process until a :class:`ProcessOutputStream` takes it: nothing
     reaps it if the caller raises before that constructor's ``try`` is reached.
-    ``env`` replaces the child's environment; ``None`` inherits this process's. An
-    argument may be ``bytes`` on POSIX, where argv is bytes.
+    ``env`` replaces the child's environment; ``None`` inherits this process's.
+    ``cwd`` is the child's working directory; ``None`` inherits this process's. On
+    POSIX a relative ``cmd[0]`` resolves against ``cwd``, so a caller that passes
+    ``cwd`` passes an absolute program. An argument may be ``bytes`` on POSIX,
+    where argv is bytes.
     """
     try:
         proc = spawn(
@@ -379,11 +389,14 @@ def spawn_for_stdout(
             stderr=subprocess.DEVNULL,
             bufsize=1024 * 1024,
             env=env,
+            cwd=cwd,
         )
     except _SpawnFailed as failed:
         cause = failed.__cause__
         assert isinstance(cause, OSError)
-        raise _start_error(cause, name=name, not_started=not_started) from cause
+        raise _start_error(
+            cause, name=name, not_started=not_started, cwd=cwd
+        ) from cause
     if proc.stdout is None:
         terminate_process(proc)
         # Defensive: stdout=PIPE was asked for, so this should be unreachable. Typed

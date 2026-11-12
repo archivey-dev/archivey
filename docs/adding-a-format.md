@@ -192,8 +192,8 @@ your format stores: at least `type`, `name` and, for a file, `size`. The name is
 but not cleaned up. archivey normalizes it (`./a//b` becomes `a/b`) and reports
 `MEMBER_NAME_NORMALIZED` when that changes it, as for a built-in format. A leading `./`
 alone, or a directory's added `/`, is not reported. A hard link's `link_target` names
-another member, so archivey normalizes it the same way: give it as the archive stores
-it too.
+another member, so archivey normalizes it the same way, as in every format: give it as
+the archive stores it too.
 `ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
 UTF-8 wins, then the caller's `encoding=`, then UTF-8 with no byte lost.
 
@@ -575,17 +575,20 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
   own bytes can be made to reach. Under `FormatPolicy(plugins=False)` a plugin format
   inside raises it too. Call it from `walk()` only. Stop early by closing the
   iterator it returns; archivey closes one left open when the archive closes.
-- **One archive to the caller.** The inner reader works for the outer one: its listing
-  limits and decoder limits are the caller's, and what it reports (a TAR header it had
-  to guess at, bytes after its end) goes into the outer reader's diagnostics, naming
+- **One archive to the caller.** The inner reader works for the outer one: it shares the
+  outer archive's limits rather than getting its own. What it keeps counts toward the
+  same `max_metadata_bytes`, its decoders get the `max_decoder_memory` the outer levels
+  left, and its `max_ratio` is to the outer archive's compressed size. What it reports
+  (a TAR header it had to guess at, bytes after its end) goes into the outer reader's
+  diagnostics, naming
   the member as the caller sees it, and reaches that member's `diagnostics`, while the
   data is read too. Its errors raise from the walk. Names are checked once, by the
   outer listing, after the walk renames them.
 - **Yield every span, in order.** The inner reader numbers its members as the outer
   listing will, so yield each span before taking the next. The walk may change the
-  member first: rename it (and a hard link's `link_target` with it, as the inner
-  archive stores it; archivey normalizes both), or add `MemberSpan.digests` from a
-  checksum list the outer archive keeps.
+  member first: rename it (and a hard link's `link_target` with it: the inner listing
+  has normalized it already, and archivey normalizes the renamed one again), or add
+  `MemberSpan.digests` from a checksum list the outer archive keeps.
 - **Cost.** Inner members are decoded data, so the rules of the next section hold: a
   pass reads them once, and `open()` of one afterwards walks the archive again to it.
   Have `archive_info()` return `ReaderArchiveInfo(is_solid=True)`.
@@ -757,7 +760,8 @@ members, and the call raises `ResourceLimitError` when they would cross it. The 
 lasts until the walk ends. Like `hold()`, it is called from `walk()` or
 `iter_members()` only. A name read only to put on the member it yields needs no
 charge, since archivey counts the member. A table kept to look names up in is
-charged, though its entries become names.
+charged, though its entries become names. In a reader that `open_nested` built, the
+charge counts toward the outer archive's total too.
 
 ## Archive details
 
@@ -807,12 +811,13 @@ When a module is missing, `format_availability()` reports the format as
 `FormatSupport.NONE` with the hint, and opening a file of that format raises
 `PackageNotInstalledError`, as for a built-in format whose extra is not installed.
 
-A caller can turn an optional package off with `FormatPolicy(exclude_libraries=)`.
+A caller can turn an optional package off with `FormatPolicy(exclude_libraries=)`, or
+allow only some with `FormatPolicy(only_libraries=)`.
 archivey checks `requires` against it, so a plugin that names the package there needs
 nothing more: the format is reported as not available, and its content probe does not run. A
 probe is not handed the policy, so it must not import anything `requires` does not
 name. A plugin that imports an optional package only for some files, outside
-`requires`, checks `context.config.formats.exclude_libraries` itself before it imports
+`requires`, checks `context.config.formats.allows_library("pyppmd")` itself before it imports
 the package, and raises `PackageNotInstalledError` with a `MissingComponent` whose
 `reason` says the policy turned it off. The helper the built-in readers use for that
 reason is internal, so a plugin writes its own.

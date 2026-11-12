@@ -37,6 +37,7 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    BackendUse,
     ExtractionPolicy,
     ExtractionPolicyStr,
     ExtractionProgress,
@@ -550,6 +551,26 @@ class ForwardArchiveReader(ABC):
     @abstractmethod
     def cost(self) -> CostReceipt:
         """The listing/access cost receipt for this archive (see ``access-mode-and-cost``)."""
+        ...
+
+    @property
+    @abstractmethod
+    def backends_used(self) -> tuple[BackendUse, ...]:
+        """The readers, packages and programs this reader has run so far, in the order
+        each was first used.
+
+        A snapshot: it grows as members are read. The format reader comes first
+        (``BackendUse("reader", "archivey", "ZIP")``, or the plugin that reads the
+        format), then each optional package the moment it decodes something (``pyppmd``
+        for a PPMd member, ``rapidgzip`` when the accelerator runs), each plugin codec
+        with the packages its ``requires`` names, and each external program with its
+        path (``unrar`` at ``/usr/bin/unrar``). An archive a plugin reads through
+        ``ReaderContext.open_nested`` adds its own reader and packages here. The
+        standard library's codecs are not listed, except zstd, which names the module in
+        use (``compression.zstd`` on Python 3.14 and later). Decodes made while
+        detecting the format are not listed either. Experimental, as
+        :class:`~archivey.BackendUse` is.
+        """
         ...
 
     @property

@@ -293,10 +293,14 @@ def _refuse_unjoined_volume_names(
     # must be honoured or refused as a format conflict, not rewritten as a
     # missing-volume error. With discovery off nothing looked for the other parts,
     # so the part is read as the one file it is, and its reader says what it finds.
+    # A lone ``OpenFile`` is never searched, but with discovery on its name is read
+    # as a local part's is: refused as a part, with the message naming the list.
     if discover_volumes and (
         format is None or format in (ArchiveFormat.ZIP, ArchiveFormat.SEVEN_Z)
     ):
-        error = incomplete_lone_numbered_volume_error(archive_name)
+        error = incomplete_lone_numbered_volume_error(
+            archive_name, remote=resolved.source.is_lone_remote
+        )
         if error is not None:
             raise error
     if is_zip_split_segment_name(archive_name) and (
@@ -1026,7 +1030,7 @@ def _backend_for_source(
     backend_cls = registry.reader_for_format(
         resolved_format,
         replacement=replacement,
-        excluded=config.formats.exclude_libraries,
+        excluded=config.formats._libraries_off,
     )
 
     # The capability half above emits these too, so either refusal half reports them.

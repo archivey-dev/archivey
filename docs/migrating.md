@@ -103,7 +103,9 @@ ones code using `ZipInfo` or `TarInfo` reads most map like this:
   `info.isfile()`, `info.issym()` in tarfile; `info.is_directory`, `info.is_file`,
   `info.is_symlink` in py7zr; `info.is_dir()`, `info.is_file()`, `info.is_symlink()` in rarfile.
 - `member.created` or `member.ctime`: `info.ctime` in rarfile.
-- `member.link_target`: `info.linkname` in tarfile.
+- `member.link_target`: `info.linkname` in tarfile. A symlink's target is kept as stored. A hard
+  link's target is cleaned up as names are, so it equals the `name` of the member it links to:
+  tarfile's `./b` is `b`.
 
 zipfile doesn't recognize symbolic links: a ZIP entry that records one is a plain file to it, and
 `extractall` writes the target's path as the file's contents. Archivey reports it as a link, with

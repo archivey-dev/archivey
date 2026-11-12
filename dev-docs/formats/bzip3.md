@@ -98,6 +98,9 @@ The inner-TAR probe does not build a decoder for blocks over 16 MiB (the tool's 
 does not wait for a first block over 1 MiB compressed: past either it records
 `CAPABILITY_UNAVAILABLE` for the inner TAR test, and the file opens as a bare `.bz3`, as an
 xz with an ARM64 filter does. `format=ArchiveFormat(TAR, BZIP3)` reads such a file as a TAR.
+Under that ceiling the probe is held to `DecoderLimits.max_decoder_memory`, as a read
+is: a block size whose decoder is over the cap is "can't tell" too, reported as
+`DETECTION_DECODER_LIMITED`.
 
 ## 3. Packaging
 
