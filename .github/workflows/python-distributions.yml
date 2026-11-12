@@ -1,0 +1,233 @@
+name: Python distributions
+
+# The library on Pythons that other people built, daily and on a dispatch. The legs in
+# ci.yml use uv's managed Pythons (python-build-standalone), which bundle recent
+# liblzma, zlib, bzip2 and OpenSSL. Most users run a Python that links something else,
+# and archivey's stdlib codecs behave like the library underneath them: the python.org
+# builds bundle liblzma 5.2.3, which refuses an LZMA Alone stream that has both a size
+# and an end marker (#1420), and no ci.yml leg could see that. Each leg here is one such
+# distribution, chosen for the libraries it links, not for its Python version:
+#
+# - python.org on macOS (3.11): its own bundled, older zlib and liblzma. On Windows
+#   (3.14): its own bundled zlib-ng and liblzma.
+# - Python 3.11 on Ubuntu 22.04 (deadsnakes): the distribution's xz 5.2.5 (older than
+#   the 5.2.12 fix above), zlib and bzip2.
+# - Fedora's python3: zlib is zlib-ng in compatibility mode, a different deflate.
+# - conda-forge: its own builds of xz, zlib, bzip2 and OpenSSL.
+#
+# Every leg installs [all] and the dev group and runs the whole suite. Leg-specific tools
+# (unrar, 7z, unar) are not installed, so the tests that need them skip here; ci.yml
+# covers them. Fedora's dnf would pull in its 7zip as a weak dependency, so that leg
+# turns weak dependencies off. The one exception is the structural benchmark gate,
+# which fails rather than skips under CI when unrar is missing (so ci.yml cannot
+# silently drop its RAR cases); it is deselected here, since ci.yml's legs and
+# benchmark job run it.
+#
+# Not in the merge queue, and on a pull request only when it changes this workflow or
+# its script (maintainer, 2026-11-09): a scheduled failure opens an issue
+# (scheduled-failure-alert.yml), and the release gates dispatch this workflow, so a
+# release waits for it to be green.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/python-distributions.yml
+      - scripts/ci/print_codec_libraries.py
+  schedule:
+    # Offset from ci.yml's daily run (7 3) so the two do not start together.
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to a PR cancels that PR's previous run; each dispatch (a release gate)
+  # gets its own group, so another run never cancels it.
+  group: python-distributions-${{ github.event_name == 'schedule' && 'daily' || github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # uv must use the distribution's interpreter, never download its own.
+  UV_PYTHON_PREFERENCE: only-system
+  UV_PYTHON_DOWNLOADS: never
+
+jobs:
+  hosted:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "python.org 3.11 / macOS", os: macos-latest, source: python.org, python: "3.11" }
+          - { name: "python.org 3.14 / Windows", os: windows-latest, source: python.org, python: "3.14" }
+          - { name: "conda-forge 3.12 / Linux", os: ubuntu-latest, source: conda-forge, python: "3.12" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up python.org Python
+        id: python-org
+        if: matrix.source == 'python.org'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Set up conda-forge Python
+        if: matrix.source == 'conda-forge'
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          python-version: ${{ matrix.python }}
+          channels: conda-forge
+          conda-remove-defaults: "true"
+
+      # The interpreter under test: the one setup-python put on PATH, or the conda
+      # environment's (a login shell activates it, so $CONDA_PREFIX is set).
+      - name: Choose the interpreter
+        id: python
+        shell: bash -el {0}
+        env:
+          SOURCE: ${{ matrix.source }}
+          PYTHON_ORG: ${{ steps.python-org.outputs.python-path }}
+        run: |
+          case "$SOURCE" in
+            python.org) exe="$PYTHON_ORG" ;;
+            conda-forge) exe="$CONDA_PREFIX/bin/python" ;;
+          esac
+          "$exe" -c "import sys; print(sys.version)"
+          echo "exe=$exe" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install all extras + dev group
+        shell: bash
+        run: uv sync --python "${{ steps.python.outputs.exe }}" --group dev --extra all
+
+      - name: Assert the venv is on that interpreter, and print its libraries
+        shell: bash
+        env:
+          WANT: ${{ steps.python.outputs.exe }}
+        run: |
+          want=$("$WANT" -c "import sys; print(sys.base_prefix)")
+          got=$(uv run --no-sync python -c "import sys; print(sys.base_prefix)")
+          echo "chosen: $want"
+          echo "venv:   $got"
+          test "$want" = "$got"
+          uv run --no-sync python scripts/ci/print_codec_libraries.py
+
+      # The runner's default shell: PowerShell on Windows, as in ci.yml. Under Git Bash,
+      # Git's own `tar` comes first on PATH and the GNU tar comparison tests call it with
+      # Windows paths it cannot take.
+      # The same split as ci.yml's [all] legs: the native-heavy modules run in their
+      # own processes, and the PPMd one soft-passes pyppmd's known abort at exit
+      # (dev-docs/known-issues.md), so neither can fail the main run.
+      - name: Run tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: >-
+          uv run --no-sync pytest tests/ -q -n auto --no-cov
+          --deselect tests/test_benchmark_gate.py::test_benchmark_structural_gate
+          --ignore=tests/test_property_safety.py
+          --ignore=tests/test_rapidgzip_deflate_zlib.py
+          --ignore=tests/test_accelerator_shutdown.py
+          --ignore=tests/test_accelerator_corruption.py
+          --ignore=tests/test_ppmd_raw_streams.py
+
+      - name: Run accelerator stream tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: uv run --no-sync python scripts/ci/ci_run_native_modules.py
+
+      - name: Run PPMd raw stream tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: >-
+          uv run --no-sync python scripts/ci/ci_run_native_modules.py
+          --modules tests/test_ppmd_raw_streams.py --allow-exit-after-green
+
+      - name: Run property-safety tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: uv run --no-sync pytest tests/test_property_safety.py -q -n auto --no-cov
+
+  # Distribution Pythons, each in its own image: GitHub has no Fedora runner, and the
+  # Ubuntu runner images carry tools (p7zip 16.02, Git's tar) that the comparison tests
+  # would pick up instead of skipping. Ubuntu 22.04's own python3.11 package is a 3.11.0
+  # release candidate, so that leg takes 3.11 from the deadsnakes archive, which is how
+  # 22.04 users get it; it still links the system's xz 5.2.5, zlib and bzip2.
+  container:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: ${{ matrix.image }}
+    env:
+      # apt's tzdata otherwise waits for a time zone on stdin until the job times out.
+      DEBIAN_FRONTEND: noninteractive
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Fedora python3 / Linux"
+            image: "fedora:latest"
+            python: /usr/bin/python3
+            install: dnf install -y --setopt=install_weak_deps=False python3 python3-devel gcc gcc-c++ git
+          - name: "Ubuntu 22.04 python3.11 / Linux"
+            image: "ubuntu:22.04"
+            python: /usr/bin/python3.11
+            install: >-
+              apt-get update
+              && apt-get install -y software-properties-common git gcc g++ curl ca-certificates
+              && add-apt-repository -y ppa:deadsnakes/ppa
+              && apt-get install -y python3.11 python3.11-dev python3.11-venv
+    steps:
+      - name: Install the distribution's Python, git and a compiler
+        run: ${{ matrix.install }}
+
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install all extras + dev group
+        run: uv sync --python ${{ matrix.python }} --group dev --extra all
+
+      - name: Print the interpreter's libraries
+        run: |
+          head -n 2 /etc/os-release
+          uv run --no-sync python scripts/ci/print_codec_libraries.py
+
+      # The container runs as root. The tests that depend on file permissions check
+      # os.geteuid() and skip under root, as they do in a development container.
+      # The same split as ci.yml's [all] legs: the native-heavy modules run in their
+      # own processes, and the PPMd one soft-passes pyppmd's known abort at exit
+      # (dev-docs/known-issues.md), so neither can fail the main run.
+      - name: Run tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: >-
+          uv run --no-sync pytest tests/ -q -n auto --no-cov
+          --deselect tests/test_benchmark_gate.py::test_benchmark_structural_gate
+          --ignore=tests/test_property_safety.py
+          --ignore=tests/test_rapidgzip_deflate_zlib.py
+          --ignore=tests/test_accelerator_shutdown.py
+          --ignore=tests/test_accelerator_corruption.py
+          --ignore=tests/test_ppmd_raw_streams.py
+
+      - name: Run accelerator stream tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: uv run --no-sync python scripts/ci/ci_run_native_modules.py
+
+      - name: Run PPMd raw stream tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: >-
+          uv run --no-sync python scripts/ci/ci_run_native_modules.py
+          --modules tests/test_ppmd_raw_streams.py --allow-exit-after-green
+
+      - name: Run property-safety tests
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: uv run --no-sync pytest tests/test_property_safety.py -q -n auto --no-cov

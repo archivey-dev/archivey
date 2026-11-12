@@ -14,7 +14,12 @@ are read through :meth:`ReaderContext.open_nested`, in the one forward pass, so 
 
 As ``dpkg-deb`` does, the walk refuses a version other than ``2.x``, skips members
 whose name starts with ``_`` before the data tar, refuses any other member there, and
-stops after the data tar. ``DEBIAN/md5sums`` lists an MD5 per installed file: the walk
+stops after the data tar. It also keeps the two tars apart, as ``dpkg-deb -R`` does: a
+data-tar member that can extract to ``DEBIAN`` or under it, in any spelling, is refused,
+and so is a control-tar member that extracts outside ``DEBIAN/`` and a hard link in
+either tar whose target crosses to the other. ``dpkg-deb -R`` unpacks the data tar
+first, then fails on a ``DEBIAN`` path the data tar made, and GNU tar refuses a ``..``
+name. ``DEBIAN/md5sums`` lists an MD5 per installed file: the walk
 holds it (it is part of the control tar, so it arrives first) and gives each data file
 its digest in ``ArchiveMember.hashes``, which a read then checks. A line that is not an
 MD5 and a name is skipped, as ``dpkg --verify`` skips it.
@@ -42,6 +47,7 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.filters import extracted_top_key, extracted_top_segment
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.types import (
@@ -62,6 +68,10 @@ MAGIC = (
     AR_MAGIC + (VERSION_MEMBER + b"/").ljust(16),
 )
 CONTROL_DIR = "DEBIAN/"
+# The first path segment of CONTROL_DIR. A control member must extract under exactly
+# this segment; a data member must not extract under any spelling of it (_CONTROL_KEY).
+_CONTROL_TOP = CONTROL_DIR.rstrip("/")
+_CONTROL_KEY = extracted_top_key(_CONTROL_TOP)
 # dpkg-deb accepts these compressions for each tar.
 _CONTROL_STREAMS = {
     b"": StreamFormat.UNCOMPRESSED,
@@ -226,16 +236,31 @@ class DebReader(SequentialReader):
         """The control tar's members, under ``DEBIAN/``.
 
         ``control`` and ``md5sums`` are read whole on the way, for the archive info and
-        the data files' digests, so their spans are served from those held bytes.
+        the data files' digests, so their spans are served from those held bytes. A
+        member whose prefixed name extracts outside ``DEBIAN/`` (``../usr/x``) is
+        refused, and so is a hard link whose prefixed target does.
         """
         context = self._context
         for span in context.open_nested(data, fmt):
             member = span.member
             inner = member.name
             member.name = CONTROL_DIR if inner == "." else CONTROL_DIR + inner
+            if extracted_top_segment(member.name) != _CONTROL_TOP:
+                raise CorruptionError(
+                    "Debian package control tar has a member outside DEBIAN/, the "
+                    "directory of the control files; dpkg-deb refuses the package",
+                    member_name=member.name,
+                )
             if member.type is MemberType.HARDLINK and member.link_target:
                 # archivey normalizes the prefixed target as it does names.
                 member.link_target = CONTROL_DIR + member.link_target
+                if extracted_top_segment(member.link_target) != _CONTROL_TOP:
+                    raise CorruptionError(
+                        "Debian package control tar has a hard link to a path outside "
+                        "DEBIAN/; dpkg-deb refuses the package",
+                        member_name=member.name,
+                        link_target=member.link_target,
+                    )
             if member.type is MemberType.FILE and inner in ("control", "md5sums"):
                 held = self._hold(span, inner)
                 if inner == "control":
@@ -246,10 +271,42 @@ class DebReader(SequentialReader):
             yield span
 
     def _data(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
-        """The data tar's members, each file with its digest from ``md5sums``."""
+        """The data tar's members, each file with its digest from ``md5sums``.
+
+        A member that can extract to ``DEBIAN`` or under it, under any spelling that
+        extraction or the filesystem makes one with it, is refused, and so is a hard
+        link whose target can. The test is stricter than ``dpkg-deb -R``, which GNU
+        tar on Linux reads byte for byte: ``usr\\..\\DEBIAN/x`` (``sanitize_names``
+        and Windows read the backslashes as separators), ``C:/DEBIAN/x`` (extraction
+        drops a drive root on every OS), ``DEBIAN./x`` and ``DEBIAN /x`` (``STRICT``
+        and Win32 trim the dot or space) and ``debian/x`` (one directory with
+        ``DEBIAN/`` on a case-insensitive filesystem). The control side stays exact:
+        folding there would accept ``../debian/x``, which is data on Linux.
+
+        The control files are listed under ``DEBIAN/``, so a data copy of
+        ``DEBIAN/control`` would replace the real control file in the listing and in
+        extraction, and a hard link would read a control file's bytes.
+        """
         context = self._context
         for span in context.open_nested(data, fmt):
             member = span.member
+            if extracted_top_key(member.name) == _CONTROL_KEY:
+                raise CorruptionError(
+                    "Debian package data tar has a member that extracts into DEBIAN/, "
+                    "the directory of the control files",
+                    member_name=member.name,
+                )
+            if (
+                member.type is MemberType.HARDLINK
+                and member.link_target
+                and extracted_top_key(member.link_target) == _CONTROL_KEY
+            ):
+                raise CorruptionError(
+                    "Debian package data tar has a hard link to a path in DEBIAN/, "
+                    "the directory of the control files",
+                    member_name=member.name,
+                    link_target=member.link_target,
+                )
             if member.type is MemberType.FILE:
                 digest = self._md5.get(member.name)
                 if digest is not None:

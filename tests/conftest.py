@@ -371,6 +371,24 @@ def sevenzip_lists_arm64() -> bool:
 
 
 @functools.cache
+def sevenzip_reads_rar() -> bool:
+    """Whether ``7z i`` lists the RAR format, so ``7z x`` can extract a RAR archive.
+
+    Fedora's ``7zip`` package is built without the unRAR code (its licence), so its
+    ``7z`` lists no ``Rar`` format and exits 2 on a RAR archive. A missing ``7z``, or a
+    run that does not finish, is false; the latter is written to stderr once.
+    """
+    if shutil.which("7z") is None:
+        return False
+    try:
+        listing = run_7z(["i"], text=True).stdout
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"7z i did not finish: {exc}", file=sys.stderr)
+        return False
+    return re.search(r"\bRar5?\b", listing) is not None
+
+
+@functools.cache
 def sevenzip_version(program: str = "7z") -> tuple[int, int] | None:
     """The version ``program``'s ``7z i`` banner names, as (major, minor), or None.
 
