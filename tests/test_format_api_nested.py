@@ -60,7 +60,11 @@ from archivey.internal.format_adapter import (
     registration_scope,
 )
 from archivey.internal.listing_limits import ListingLimitTracker
-from tests.streams_util import NonSeekableBytesIO, lzma_alone_with_filter
+from tests.streams_util import (
+    NonSeekableBytesIO,
+    hold_views,
+    lzma_alone_with_filter,
+)
 
 _KINDS = {
     b"T": ArchiveFormat.TAR,
@@ -837,22 +841,16 @@ def test_a_primed_stream_releases_its_views_of_the_buffer(
 ) -> None:
     """``RawIOBase.read`` resizes the buffer after ``readinto`` returns. PyPy frees a
     dropped view only at a collection, so a view still alive makes the resize raise
-    ``BufferError``. Holding every view here shows that on CPython too."""
-    held: list[memoryview] = []
-
-    def holding(obj: bytearray) -> memoryview:
-        view = memoryview(obj)
-        held.append(view)
-        return view
-
-    monkeypatch.setattr(format_adapter, "memoryview", holding, raising=False)
+    ``BufferError``. ``hold_views`` keeps every view alive, the cast one included,
+    which shows that on CPython too."""
+    held = hold_views(monkeypatch, format_adapter)
     primed = _Primed(b"ab", io.BytesIO(b"cdef"))
     for want in (b"ab", b"cdef", b""):
         buffer = bytearray(8)
         n = primed.readinto(buffer)
         del buffer[n:]  # BufferError while a view of it is alive
         assert buffer == want
-    assert held
+    assert len(held) == 6  # the view and its cast, for each of the three calls
 
 
 class PaddedBoxesContainer(PluginContainer):
