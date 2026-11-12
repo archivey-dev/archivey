@@ -156,8 +156,4 @@ def test_a_default_open_never_trusts_the_files_own_index() -> None:
         # Last first: each read seeks back, where the index's points would be used.
         for member in reversed(report.members):
             if member.is_file:
-                try:
-                    data = reader.read(member)
-                except archivey.ArchiveyError:
-                    continue
-                assert data == contents[member.name]
+                assert reader.read(member) == contents[member.name]

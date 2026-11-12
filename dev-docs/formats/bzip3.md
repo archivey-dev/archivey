@@ -77,14 +77,13 @@ never a damaged archive.
 Every block decodes on its own: libbzip3 keeps nothing from one block to the next but the
 block size. So under declared seek demand (`seekable_members=True`) or restart points
 (the codec stream of a random-access compressed TAR), each block with output is a seek
-point, resumed by a new decoder told the block size
-(`Bzip3Decompressor.resume`, through `framed_decoder.BlockResumable`). A forward read
-records each block it reaches. On a source that can seek, a `SEEK_END`, a size query or a
-seek past the known points walks the block headers from the start
-(`build_bzip3_index`): one 8-byte read per block, nothing decoded. The walk stops quietly
-at a header the decoder would refuse or at a block that runs past the end of the file,
-keeping the points before it, and gives the size only when the last block ends at the end
-of the file.
+point, resumed by a new decoder told the block size (`Bzip3Decompressor.resume`, through
+`framed_decoder.BlockResumable`). A forward read records each block it reaches. With
+declared seek demand on a source that can seek, a `SEEK_END`, a size query or a seek
+past the known points walks the block headers from the start (`build_bzip3_index`): one
+8-byte read per block, nothing decoded. The walk stops quietly at a header the decoder
+would refuse or at a block that runs past the end of the file, keeping the points before
+it, and gives the size only when the last block ends at the end of the file.
 
 A seek then decodes at most one block: up to the block size, 16 MiB with the tool's
 default. The walk trusts the block sizes, as the xz and lzip indexes are trusted
