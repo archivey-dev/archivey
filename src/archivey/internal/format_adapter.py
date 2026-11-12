@@ -570,17 +570,13 @@ class _PluginAdapter(BaseArchiveReader):
             raise held
 
     def _name_member(self, member: ArchiveMember, index: int) -> None:
-        """Give a listed member the names callers see, and send what was reported on
-        it before: the name normalized, and a hard link's target the same way, since
-        a link names another member by its listed name."""
+        """Give a listed member the name callers see, and send what was reported on
+        it before. A hard link's target is normalized at registration, as for every
+        reader (``BaseReader._register_member``)."""
         presented = member.name
         member.name = normalize_member_name(
             presented, member.type, backslash_is_separator=False
         )
-        if member.type is MemberType.HARDLINK and member.link_target:
-            member.link_target = normalize_member_name(
-                member.link_target, MemberType.FILE, backslash_is_separator=False
-            )
         self._send_held_reports(member)
         self._report_listed(member, presented, index)
 
