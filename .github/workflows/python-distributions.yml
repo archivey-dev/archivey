@@ -16,10 +16,14 @@ name: Python distributions
 #
 # Every leg installs [all] and the dev group and runs the whole suite. Leg-specific tools
 # (unrar, 7z, unar) are not installed, so the tests that need them skip here; ci.yml
-# covers them. The one exception is the structural benchmark gate, which fails rather
-# than skips under CI when unrar is missing (so ci.yml cannot silently drop its RAR
-# cases); it is deselected here, since ci.yml's legs and benchmark job run it. Not in the merge queue, and on a pull request only when it changes this
-# workflow or its script (maintainer, 2026-11-09): a scheduled failure opens an issue
+# covers them. Fedora's dnf would pull in its 7zip as a weak dependency, so that leg
+# turns weak dependencies off. The one exception is the structural benchmark gate,
+# which fails rather than skips under CI when unrar is missing (so ci.yml cannot
+# silently drop its RAR cases); it is deselected here, since ci.yml's legs and
+# benchmark job run it.
+#
+# Not in the merge queue, and on a pull request only when it changes this workflow or
+# its script (maintainer, 2026-11-09): a scheduled failure opens an issue
 # (scheduled-failure-alert.yml), and the release gates dispatch this workflow, so a
 # release waits for it to be green.
 on:
@@ -36,7 +40,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: python-distributions-${{ github.event_name == 'schedule' && 'daily' || github.run_id }}
+  # A new push to a PR cancels that PR's previous run; each dispatch (a release gate)
+  # gets its own group, so another run never cancels it.
+  group: python-distributions-${{ github.event_name == 'schedule' && 'daily' || github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 env:
@@ -138,7 +144,7 @@ jobs:
           - name: "Fedora python3 / Linux"
             image: "fedora:latest"
             python: /usr/bin/python3
-            install: dnf install -y python3 python3-devel gcc gcc-c++ git
+            install: dnf install -y --setopt=install_weak_deps=False python3 python3-devel gcc gcc-c++ git
           - name: "Ubuntu 22.04 python3.11 / Linux"
             image: "ubuntu:22.04"
             python: /usr/bin/python3.11
