@@ -1591,12 +1591,13 @@ bytes of another file. A fetch that comes back shorter than its range raises
 `SourceChangedError`, so a shorter replacement is caught. A replacement of the same
 length, or a longer one, returns full ranges, and nothing in the requests shows it:
 `cat_file` reports no total size, and a size request per fetch would double the request
-count. Checksummed member data still fails its check; bytes with no checksum, such as an
-index, may come from the new file with no error. archivey records the advisory
-`SOURCE_CHANGE_UNDETECTABLE` at open, so silence never reads as "checked". Version
-pinning and `If-Match` would close this per file system; they are later work
-(`openspec/changes/fsspec-integration/design.md` §D7, tiers 1 and 2). Public:
-[remote.md §If the remote file changes](../docs/remote.md#if-the-remote-file-changes).
+count. Member data with a checksum is checked when it is read to the end, so a change
+there most often raises `CorruptionError`; other bytes, such as an index, a TAR member
+or a partly read member, may come from the new file with no error. archivey records the
+advisory `SOURCE_CHANGE_UNDETECTABLE` at open, so silence never reads as "checked".
+Version pinning and `If-Match` would close this per file system; they are later work
+(`openspec/changes/fsspec-integration/design.md` §D7, tiers 1 and 2). Public: [remote.md
+§If the remote file changes](../docs/remote.md#if-the-remote-file-changes).
 
 ### A file system's own error can carry a URL's credentials
 

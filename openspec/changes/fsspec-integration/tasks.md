@@ -85,13 +85,15 @@
       non-solid ZIP and 7z~~ (design D5). Dropped by the maintainer (2026-11-11), not
       parked.
 - [x] 3.6 Check the ceilings in `specs/fsspec-integration` against the baseline; update
-      the baseline. Every planner case is inside its row. The compressed TAR row now
-      counts the second decode a member read after a listing makes (restart points,
-      `seekable-decompressor-streams`): `tar_gz_read_first_planner` fetched more than
-      archive size + `F`. The refreshed baseline (2026-11-12) moves only ungated
-      cases: `tar_gz_file_system` (uncached, 18 requests and 2.51× → 15 and 1.64×, now
-      equal to `tar_gz_read_middle`), `zip_deflate_many_streams` (planner, 18 → 6
-      requests), and the `threads` cases, whose threads race.
+      the baseline. Every planner case is inside its row, and
+      `test_planner_baseline_stays_inside_the_spec_ceilings` now checks that on every
+      run. The compressed TAR row now counts the second decode a member read after a
+      listing makes (restart points, `seekable-decompressor-streams`):
+      `tar_gz_read_first_planner` fetched more than archive size + `F`. The refreshed
+      baseline (2026-11-12) moves only ungated cases: `tar_gz_file_system` (uncached, 18
+      requests and 2.51× → 15 and 1.64×, now equal to `tar_gz_read_middle`),
+      `zip_deflate_many_streams` (planner, 18 → 6 requests), and the `threads` cases,
+      whose threads race.
 
 ## 4. `ArchiveyFileSystem`
 
@@ -153,6 +155,7 @@
 
 ## 8. Verify
 
-- [x] 8.1 `openspec validate --strict fsspec-integration`. The change validates (`openspec
+- [x] 8.1 `openspec validate --strict fsspec-integration`. The change validates
+  (`openspec
       validate --all` in `scripts/check.sh`); `--strict` adds only warnings about long
       requirements and table scenarios with no WHEN/THEN, the repo's matrix style.

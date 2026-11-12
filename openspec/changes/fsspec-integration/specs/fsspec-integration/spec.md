@@ -42,8 +42,9 @@ the planner's rules.
 #### Scenario: ceilings that follow from the format
 
 Range requests exclude the size request. `F` is the maximum fetch in effect for the run.
-The remote benchmark axis (`testing-contract`) checks these on every case; counts not
-listed are held by its baseline.
+The remote benchmark axis (`testing-contract`) holds each gated case to its committed
+baseline, and `tests/test_remote_benchmark.py` checks every planner case in that
+baseline against its row here, gated or not. Counts not listed are held by the baseline.
 
 | Archive | List | List and read one member |
 | --- | --- | --- |
