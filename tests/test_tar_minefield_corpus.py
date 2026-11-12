@@ -197,11 +197,6 @@ TRIAGE: dict[str, str] = {
         f"{_AS_GNU}: the trailing slash is dropped, reported with "
         "MEMBER_NAME_NORMALIZED"
     ),
-    "N07-symlink-absolute": (
-        "Refused under every policy: an absolute symlink target leads outside the "
-        "destination, which no ExtractionPolicy writes (GNU tar writes the link as "
-        "stored). The corpus tolerates a refusal"
-    ),
     "N08-extended-pax-path-and-gnu-long-name": (
         f"{_AMBIGUOUS} (both_families): the PAX path wins, as in GNU tar"
     ),
@@ -282,6 +277,11 @@ DEFAULTS_TRIAGE: dict[str, str] = {
         "the later member win, so the defaults pass this reject case"
     ),
     "F13-pax-newline-in-path": f"{_STRICT_REFUSES}: it holds a newline",
+    "N07-symlink-absolute": (
+        "STRICT refuses a symlink whose target starts at / and leads outside the "
+        "destination; TRUSTED writes it as stored, as GNU tar does. The corpus "
+        "tolerates a refusal"
+    ),
     "N10-format-star": f"{_STRICT_NAMES}: the trailing blank is dropped",
     "N12-name-absolute": "STRICT refuses an absolute name (ADR 0013)",
     "N13-name-backslash": f"{_STRICT_REFUSES}: Windows reads the backslash as a separator",
