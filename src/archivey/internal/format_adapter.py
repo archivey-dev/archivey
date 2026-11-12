@@ -1910,8 +1910,9 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._decoder_config,
             refuse_input_after_end=False,
             report_trailing_data=True,
-            # A safeguard: the container's members are read through this stream, so
-            # it hands back its bytes before damage whatever the caller set.
+            # The container's members are read through this stream, several small
+            # ones to one read: a failing call that lost its bytes would take whole
+            # members with it. So it recovers them whatever the caller set.
             recover_partial_data=True,
         )
         if self._streaming:

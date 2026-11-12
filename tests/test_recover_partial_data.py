@@ -75,20 +75,25 @@ def test_a_bare_gz_loses_the_failing_call_and_raises_the_same_error() -> None:
     assert off[0] < on[0]
 
 
+@pytest.mark.parametrize(
+    ("count", "size"), [(80, 20), (12, 200_000)], ids=["small", "large"]
+)
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
-def test_a_damaged_tar_xz_reads_every_whole_member_either_way(pipe: bool) -> None:
-    """The outcome: the same members either way. It passes without the outer
-    stream's override too, as the TAR parser never reads past a member's end;
-    ``test_a_compressed_tar_stream_recovers_whatever_the_setting`` pins the
-    override."""
+def test_a_damaged_tar_xz_reads_every_whole_member_either_way(
+    pipe: bool, count: int, size: int
+) -> None:
+    """The same members either way. Small members fit several to one read of the
+    outer stream (the TAR walk reads ahead), so without the outer stream's override
+    the failing call would take whole members with it: the ``small`` cases fail
+    then. Large members only lose bytes of the member the damage cuts."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        for i in range(12):
-            data = _text(200_000, i)
+        for i in range(count):
+            data = _text(size, i)
             info = tarfile.TarInfo(f"m{i}.txt")
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
-    damaged = _damage(lzma.compress(buf.getvalue(), format=lzma.FORMAT_XZ), 0.6)
+    damaged = _damage(lzma.compress(buf.getvalue(), format=lzma.FORMAT_XZ), 0.55)
 
     def source() -> Any:
         return NonSeekableBytesIO(damaged) if pipe else io.BytesIO(damaged)
@@ -104,8 +109,8 @@ def test_a_damaged_tar_xz_reads_every_whole_member_either_way(pipe: bool) -> Non
 def test_a_compressed_tar_stream_recovers_whatever_the_setting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The TAR parser reads its members through the outer stream: that stream keeps
-    recovering the bytes before damage, so a read of it never loses a whole member."""
+    """Every stream a compressed TAR builds keeps recovering under ``False``: the
+    outer stream's override, checked directly."""
     from archivey.internal.streams.decompressor_stream import DecompressorStream
 
     built: list[DecompressorStream] = []
@@ -124,6 +129,30 @@ def test_a_compressed_tar_stream_recovers_whatever_the_setting(
     packed = lzma.compress(buf.getvalue(), format=lzma.FORMAT_XZ)
     with open_archive(io.BytesIO(packed), config=_OFF) as archive:
         assert [m.name for m in archive.members()] == ["a.txt"]
+    assert built
+    assert all(stream._recover for stream in built)
+
+
+def test_a_plugin_container_stream_recovers_whatever_the_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same override for a container a format adapter decompresses (an RPM's
+    payload): every stream it builds keeps recovering under ``False``."""
+    from pathlib import Path
+
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    built: list[DecompressorStream] = []
+    real = DecompressorStream.__init__
+
+    def recording(self: DecompressorStream, *args: Any, **kwargs: Any) -> None:
+        real(self, *args, **kwargs)
+        built.append(self)
+
+    monkeypatch.setattr(DecompressorStream, "__init__", recording)
+    rpm = Path(__file__).parent / "fixtures" / "rpm" / "payload-xz.rpm"
+    with open_archive(rpm, config=_OFF) as archive:
+        assert archive.members()
     assert built
     assert all(stream._recover for stream in built)
 
