@@ -519,7 +519,10 @@ class BaseDecoder:
 
     @property
     def holds_back_errors(self) -> bool:
-        """See :attr:`Decoder.holds_back_errors`: the in-house decoders and bzip3 do."""
+        """See :attr:`Decoder.holds_back_errors`: False here. Subclasses that hold
+        back their errors (such as ``.Z``) override it, and ``FramedDecoder`` asks its
+        decompressor (bzip3, lzop, legacy ZIP methods).
+        """
         return False
 
     @property
