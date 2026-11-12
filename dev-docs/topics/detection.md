@@ -17,9 +17,9 @@ Three other pages own parts of this, and this page links them rather than repeat
 - [`prefixed-archives.md`](prefixed-archives.md) owns the SFX scan: the cue, the window,
   the hit validators, and the PE-gated ZIP tail probe.
 - [`formats/single-file.md`](../formats/single-file.md) §2.1 owns the codec side of
-  content probing: what each probe checks, its lifted memory limits, and the inner-TAR
-  probe's per-codec detail. [`formats/brotli.md`](../formats/brotli.md) owns the Brotli
-  probe, which is the one with a false-positive history.
+  content probing: what each probe checks, how it is held to the memory cap, and the
+  inner-TAR probe's per-codec detail. [`formats/brotli.md`](../formats/brotli.md) owns
+  the Brotli probe, which is the one with a false-positive history.
 - Each format page's §2.1 owns that format's magic and what the magic cannot tell.
 
 ## At a glance

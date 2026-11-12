@@ -274,7 +274,9 @@ in the repository measures what each limit costs in time and memory on your mach
   at the default, and up to 64 MiB more for a ZIP read from a pipe.
 - **`decoder_limits.max_decoder_memory`**, default 2 GiB, caps the memory an archive can ask a
   decoder for, and the memory of rapidgzip's process for gzip, zlib and DEFLATE. It costs the memory
-  itself.
+  itself. Detection's trial decodes are held to the same cap. A stream whose decoder is over it is
+  reported as the bare compressed format (a `.tar.zst` as `.zst`), with the diagnostic
+  `DETECTION_DECODER_LIMITED`, and the read refuses the same decoder.
 - **`decoder_limits.max_key_derivation_rounds`**, default 2^25, caps the password-hashing work per
   open archive. It costs 0.2-0.7 µs per round, 7-25 s at the default.
 - **`decoder_limits.max_ppmd_held_input`**, default 16 MiB, caps the largest PPMd member
