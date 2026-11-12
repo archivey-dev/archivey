@@ -1237,20 +1237,22 @@ class _Primed(io.RawIOBase):
 
     @override
     def readinto(self, buffer: Any) -> int:
-        view = memoryview(buffer).cast("B")
-        head = self._head
-        if head:
-            n = min(len(view), len(head))
-            view[:n] = head[:n]
-            self._head = head[n:]
-            return n
-        # One read of the source's own, as a raw stream does it: a buffered ``read(n)``
-        # loops until ``n`` bytes or the end, and so reaches a cut payload's missing end
-        # before the bytes ahead of it have been handed on.
-        read = getattr(self._data, "read1", self._data.read)
-        got = read(len(view)) or b""
-        view[: len(got)] = got
-        return len(got)
+        # Both views are released before the return: ``RawIOBase.read`` resizes
+        # ``buffer`` next, which PyPy refuses while a dropped view waits for a collection.
+        with memoryview(buffer) as outer, outer.cast("B") as view:
+            head = self._head
+            if head:
+                n = min(len(view), len(head))
+                view[:n] = head[:n]
+                self._head = head[n:]
+                return n
+            # One read of the source's own, as a raw stream does it: a buffered
+            # ``read(n)`` loops until ``n`` bytes or the end, and so reaches a cut
+            # payload's missing end before the bytes ahead of it have been handed on.
+            read = getattr(self._data, "read1", self._data.read)
+            got = read(len(view)) or b""
+            view[: len(got)] = got
+            return len(got)
 
 
 class SpanningCheck:
