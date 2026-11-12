@@ -27,7 +27,8 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
   also be read straight from a pipe.
 - **Remote archives:** an archive on S3, an HTTP server or another store reached through
   [fsspec](https://filesystem-spec.readthedocs.io/) opens without a download. Listing a ZIP or 7z
-  archive there, or reading a member of a ZIP, fetches little more than the bytes it needs.
+  archive there, or reading a member of a ZIP, fetches little more than the bytes it needs. The
+  `archivey://` protocol shows an archive's members as files to any fsspec user, such as pandas.
 - **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z, and RAR encryption.
 - **Native 7z and RAR metadata readers.** 7z data decodes in-process; RAR data needs
   RARLAB `unrar` or `rar`, or `unar`.
