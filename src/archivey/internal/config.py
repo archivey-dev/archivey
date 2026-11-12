@@ -40,6 +40,8 @@ __all__ = [
     "ProcessIsolation",
     "StreamConfig",
     "check_decoder_memory",
+    "decoder_cap_error",
+    "decoder_cap_refusal",
     "probe_lzma_dictionary",
     "stream_config_from_archivey",
     "without_accelerators",
@@ -253,6 +255,45 @@ def probe_lzma_dictionary(declared: int, read_bound: int | None) -> int:
     return min(declared, max(read_bound + _LZMA_FILTER_LOOKAHEAD, _LZMA_DICT_MIN))
 
 
+def probe_dictionary_origin(declared: int) -> str:
+    """``check_decoder_memory``'s ``counted_from`` for a probe's clamped dictionary."""
+    return (
+        f"the {declared}-byte dictionary the header declares, cut to what the "
+        "detection probe reads"
+    )
+
+
+# The attribute a ``ResourceLimitError`` carries when the caller's
+# ``max_decoder_memory`` refused the decoder: ``(cap, needed)``. A private attribute
+# rather than a subclass, so the caller still sees the public type; it lives in the
+# instance ``__dict__``, which pickling keeps (``ArchiveyError.__reduce__``), so a
+# refusal from a decoder child arrives with it.
+_CAP_REFUSAL_ATTR = "_archivey_decoder_cap_refusal"
+
+
+def decoder_cap_error(
+    message: str, *, cap: int, needed: int | None
+) -> ResourceLimitError:
+    """A ``ResourceLimitError`` that says the caller's ``max_decoder_memory`` refused.
+
+    ``cap`` is the caller's ``max_decoder_memory``. ``needed`` is what the decoder
+    would have reserved, or ``None`` when the decoder only says it is over the cap (a
+    zstd window). Raised where the cap, and not a probe's own ceiling or a missing
+    resource, is what refused: :func:`check_decoder_memory`, and libzstd's window
+    refusal under the cap. Detection reads it back with :func:`decoder_cap_refusal`
+    to report ``DETECTION_DECODER_LIMITED`` with the numbers.
+    """
+    error = ResourceLimitError(message)
+    setattr(error, _CAP_REFUSAL_ATTR, (cap, needed))
+    return error
+
+
+def decoder_cap_refusal(exc: BaseException) -> tuple[int, int | None] | None:
+    """``(cap, needed)`` when ``exc`` came from :func:`decoder_cap_error`, else ``None``."""
+    refusal: tuple[int, int | None] | None = getattr(exc, _CAP_REFUSAL_ATTR, None)
+    return refusal
+
+
 def check_decoder_memory(
     declared: int,
     *,
@@ -302,10 +343,12 @@ def check_decoder_memory(
     else:
         detail = f"{what} is {declared} bytes, counted from {counted_from}"
         numbers = "these numbers"
-    raise ResourceLimitError(
+    raise decoder_cap_error(
         f"Decoder limit reached: max_decoder_memory={cap} "
         f"({detail}). The archive chose {numbers}; "
-        "raise DecoderLimits.max_decoder_memory if the archive is trusted."
+        "raise DecoderLimits.max_decoder_memory if the archive is trusted.",
+        cap=cap,
+        needed=declared,
     )
 
 

@@ -22,9 +22,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import BinaryIO, Protocol, Self
+from typing import TYPE_CHECKING, BinaryIO, Protocol, Self
 
-from archivey.config import ProcessIsolation
+from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.detection_cost import (
     DetectionBudget,
     DetectionCostReceipt,
@@ -44,6 +44,9 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
 )
 from archivey.types import OptionalLibrary
+
+if TYPE_CHECKING:
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 # Default amount detection peeks (``format-detection``'s DETECTION_LIMIT). A peek grows
 # past it on demand — 32 774 bytes when the ISO probe is triggered — so this is the
@@ -90,10 +93,22 @@ class PrefixWorkspace:
         *,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
+        decoder_limits: DecoderLimits = DecoderLimits(),
+        collector: DiagnosticCollector | None = None,
+        name: str | None = None,
     ) -> None:
         self._budget = budget
         # The caller's ``process_isolation``: where the probes' trial decodes run.
         self.isolation = isolation
+        # The caller's ``DecoderLimits``: what the probes' trial decoders may reserve.
+        self.decoder_limits = decoder_limits
+        # Where a probe the cap refused is reported (``DETECTION_DECODER_LIMITED``),
+        # and the source's display name for it. ``None``: only logged.
+        self.collector = collector
+        self.name = name
+        # The (tier, stream format) pairs already reported, so a step that refuses
+        # once per candidate reports once per pass.
+        self.cap_refusals_reported: set[tuple[str, str]] = set()
         # The caller's ``FormatPolicy._libraries_off``: a probe does not decode with
         # a package it names.
         self.excluded_libraries = excluded_libraries
