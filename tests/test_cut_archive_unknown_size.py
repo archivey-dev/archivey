@@ -45,9 +45,12 @@ def _outcomes(source: io.RawIOBase | io.BytesIO) -> list[tuple[str, str]]:
 
 
 def _cuts(data: bytes) -> list[int]:
-    # Every 7th length, plus the last 64: inside headers, data and the end.
+    # Every 7th length for a small seed, spread to about 80 cuts for a big one
+    # (each cut opens the archive four times, so every 7th of a 16 KiB seed ran for a
+    # minute under coverage), plus the last 64: inside headers, data and the end.
+    step = max(7, len(data) // 80)
     return sorted(
-        {*range(64, len(data), 7), *range(max(64, len(data) - 64), len(data))}
+        {*range(64, len(data), step), *range(max(64, len(data) - 64), len(data))}
     )
 
 
