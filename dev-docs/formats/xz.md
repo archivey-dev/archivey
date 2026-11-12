@@ -170,6 +170,19 @@ synthetic stream header, checks the decoded size against the index, and hands of
 stream state machine at the next stream. Blocks of zero decoded size are skipped, because
 they share an offset with the next block.
 
+Without seek demand but with restart points (the codec stream of a random-access
+`.tar.xz` or `.cpio.xz`), the file's index is not read. `_XzBlockWalker` instead follows
+the bytes fed to liblzma: a block header's first byte gives its size, and each LZMA2
+chunk header gives the chunk's compressed and decompressed size, up to the 0x00 end
+marker; block padding and the check follow. When the walk reaches the index it hashes
+the index's records and compares them with the records of the blocks it walked. The
+stream's block points are kept only once liblzma has decoded the stream to its end
+(so it has checked the same index against the blocks it decoded), the hashes match, and
+the walk's decoded size and stream length agree with liblzma's. A crafted index then
+cannot place a point: liblzma refuses an index that disagrees with the blocks. A stream
+not yet decoded to its end has no block points, so a seek back inside the stream being
+read resumes at an earlier stream or the start.
+
 The index parser follows liblzma: the index must fill its declared length exactly, its
 variable-length integers must be minimally encoded, its CRC-32 must match, and the header
 and footer must name the same check. Stream padding is found by scanning backwards in
@@ -309,7 +322,9 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   index or the lzip trailer chain says. A crafted file whose index agrees with itself but
   not with its data can return another block's bytes for the offset asked, with no error.
   A forward read always verifies: xz checks each block against its index record and lzip
-  each member against its trailer. Callers who need certainty read forward.
+  each member against its trailer. Callers who need certainty read forward. Block points
+  a forward decode found (§2.3) are not index-trusting: they exist only after that
+  verification.
 - **An index can declare millions of units.** The seek table is capped and thinned; the
   reader walks the xz index record by record and never reserves it at its declared count,
   and the lzip trailer walk keeps no per-member state. A 16.8 MB lzip file of 645 277

@@ -34,7 +34,8 @@ compressor such as `.cpio.xz`) opened for random access, because the reader itse
 seeks back in it for every member read after the listing (maintainer ruling
 2026-11-10). Such a stream SHALL keep the seek points a decode finds as it passes
 them (each requirement below that says "on declared seek demand or restart points"
-covers it), and SHALL NOT read the file's own index: it parses no XZ footer, scans no
+covers it, and XZ blocks a decode passes, §"XZ blocks found by a forward decode"), and
+SHALL NOT read the file's own index: it parses no XZ footer, scans no
 lzip trailers, reads no zstd seek table and walks no BGZF, mgzip or bzip3 headers, so
 a crafted index cannot change what a default read returns. Its accelerator `AUTO`
 SHALL still resolve as for an undeclared stream. A streaming open SHALL NOT ask for
@@ -110,6 +111,22 @@ requested uncompressed offset.
 | Seek within XZ | Only containing block range is decompressed |
 | Seekable lzip source opens with declared seek demand | Trailer scan locates block boundaries |
 | Seek within lzip | Only required block range is decompressed |
+
+#### Scenario: XZ blocks found by a forward decode
+
+With restart points and no seek demand, the XZ decoder SHALL find each stream's blocks
+from the bytes it decodes: a block header gives its own size, and the LZMA2 chunk
+headers give each chunk's compressed and decompressed size up to the end marker. It
+SHALL keep those block points only once the stream has decoded to its end (liblzma has
+then checked the stream's index against the blocks), and only when the stream's index
+lists the same blocks the walk found. Otherwise it SHALL keep none for that stream.
+
+| Case | Expected |
+| --- | --- |
+| Multi-block `.tar.xz` opened for random access | After the listing, every block with output is a point; a later member read resumes at the block before it |
+| Index that does not match the blocks | liblzma refuses the stream; no block points |
+| Stream not decoded to its end yet | No block points for it |
+| Stream opened with neither seek demand nor restart points | No walk, no points |
 
 ### Requirement: rapidgzip is the only gzip and bzip2 accelerator
 
@@ -571,6 +588,7 @@ decoded point is kept (an empty lzip member makes such a pair in an honest file)
 | Backward scan finds more units than the cap (lzip members, xz streams or blocks) | Kept units thinned by spacing, last one kept; `SEEK_INDEX_DEGRADED`; seeks read the right bytes |
 | A thinned xz index leaves out streams after block points a forward read recorded | A seek from those points reads every stream after them |
 | A forward read's per-stream xz scan finds more blocks than the cap | That stream's blocks thinned by spacing; `SEEK_INDEX_DEGRADED`; seeks read the right bytes |
+| A forward xz block walk (restart points, no seek demand) finds more blocks than the cap | That stream's blocks thinned by spacing; `SEEK_INDEX_DEGRADED` (scan `forward_walk`); seeks read the right bytes |
 | Forward read records more points than the cap | Table thinned by spacing; `SEEK_INDEX_DEGRADED`; later seeks read the right bytes |
 | XZ blocks after a resume point decode to a size other than the stream index declares | `CorruptionError` |
 | A forward read finds a frame or member start at another output offset than the zstd seek table or BGZF walk gave it | `SEEK_INDEX_DEGRADED` (scan `decode_check`, `SeekIndexContradicted`); index points and size dropped; later seeks and the size match a read from the start |
