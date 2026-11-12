@@ -584,15 +584,16 @@ from archivey import OptionalLibrary as L
 PINNED = archivey.ArchiveyConfig(
     formats=archivey.FormatPolicy(
         # The optional packages archivey may use. Any other one stays off, even one
-        # that a later archivey release starts using.
-        only_libraries={L.CRYPTOGRAPHY},
+        # that a later archivey release starts using. zstd counts as one, even on
+        # Python 3.14 where it's in the standard library.
+        only_libraries={L.CRYPTOGRAPHY, L.BACKPORTS_ZSTD, L.COMPRESSION_ZSTD},
         plugins=False,
     ),
     # The one RAR program to run. PATH isn't searched.
     unrar_path="/usr/bin/unrar",
     process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
 )
-ALLOWED = {"archivey", "cryptography", "unrar"}
+ALLOWED = {"archivey", "cryptography", "backports.zstd", "compression.zstd", "unrar"}
 
 
 def read_all(path):
@@ -620,11 +621,13 @@ compressed member adds `BackendUse(kind='program', name='unrar', used_for='RAR',
 path='/usr/bin/unrar')`.
 
 A member that needs a package left out of `only_libraries=` raises `PackageNotInstalledError` when
-it's read, and its `reason` says the config turned the package off. A 7z with a PPMd member fails
-this way, and the archive's other members can still be read. `unrar_path=` must be an absolute
-path, and a program there that isn't RARLAB's, or is older than 6.0, is refused as a missing one
-is. `format_availability(fmt, config=PINNED)` tells you before any upload arrives which formats
-this setup can read.
+it's read. The error's `missing` lists the package, and that entry's `reason` says the config turned
+it off. A 7z with a PPMd member fails this way, and the archive's other members can still be read.
+zstd is listed as two optional packages, `backports.zstd` before Python 3.14 and the standard
+library's `compression.zstd` from 3.14 on, so the config names both to keep zstd ZIP members and
+`.tar.zst` files readable. `unrar_path=` must be an absolute path, and a program there that isn't
+RARLAB's, or is older than 6.0, is refused as a missing one is. `format_availability(fmt,
+config=PINNED)` tells you before any upload arrives which formats this setup can read.
 
 `backends_used` grows as members are read, so check it after the last read. It lists each reader,
 optional package and program once, in the order each was first used. It doesn't list the standard
