@@ -53,7 +53,7 @@ import fsspec
 from archivey.fsspec import ArchiveyFileSystem
 
 with ArchiveyFileSystem(fsspec.open("s3://bucket/dataset.zip", anon=True)) as fs:
-    print(fs.find(""))                  # every file in the archive
+    print(fs.find(""))                  # every file extraction would write
     with fs.open("data/labels.csv") as f:
         header = f.readline()
 ```
@@ -62,18 +62,18 @@ The archive can be an `OpenFile`, a URL, a local path or a binary file object, a
 `password`, `encoding` and `config` are those of `open_archive`. The file system opens the
 archive once and reads it as the rest of this page describes. `fs.reader` is that
 `ArchiveReader`, and closing the file system, or leaving its `with` block, closes it. The file
-system is read-only: `fs.open` in any mode other than `"rb"` raises `NotImplementedError`. A
-member opened with `fs.open` can seek.
+system is read-only: `fs.open` in a write or append mode raises `NotImplementedError`, while
+`"r"` opens a member as text. A member opened either way can seek.
 
 The files listed are the ones `extract_all` would write into an empty folder, under the same
-names. `policy=` (default `"strict"`) is the extraction policy that decides this, and a member
-that extraction would refuse is left out. A member named
+names, in all but a few edge cases. `policy=` (default `"strict"`) is the extraction policy that
+decides this, and a member that extraction would refuse is left out. A member named
 `../notes.txt` isn't listed under any policy, and of `Readme` and `README` only the first is
 listed under `"strict"` and `"standard"`, which treat them as the same name. Each member left out
 logs a warning and adds a `MEMBER_PATH_REFUSED` diagnostic to `fs.reader.diagnostics`. [What
 each policy does with unusual members](extracting.md#what-each-policy-does-with-unusual-members)
 says which members those are, and the [API reference](api.md#fsspec-file-system) says how
-symlinks and hard links are listed.
+symlinks and hard links are listed and which edge cases the tree doesn't model.
 
 ??? note "Why not list every member, as `archive.members()` does?"
     A file system invites code that copies what it lists to disk by those names, with
