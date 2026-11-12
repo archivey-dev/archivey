@@ -531,8 +531,14 @@ def test_inventory_sees_bind_inside_block() -> None:
     probes = (
         "def f(x):\n    if x:\n        bag = MemberExtra()\n        bag['zip.nested'] = 1\n",
         "def f():\n    for _ in ():\n        bag = MemberExtra()\n        bag['zip.nested'] = 1\n",
-        "def f():\n    with open(__file__):\n        bag = MemberExtra()\n        bag['zip.nested'] = 1\n",
-        "def f():\n    try:\n        bag = MemberExtra()\n        bag['zip.nested'] = 1\n    except Exception:\n        pass\n",
+        (
+            "def f():\n    with open(__file__):\n        bag = MemberExtra()\n"
+            "        bag['zip.nested'] = 1\n"
+        ),
+        (
+            "def f():\n    try:\n        bag = MemberExtra()\n        bag['zip.nested'] = 1\n"
+            "    except Exception:\n        pass\n"
+        ),
         "if True:\n    def f():\n        bag = MemberExtra()\n        bag['zip.nested'] = 1\n",
         "if (bag := MemberExtra()):\n    bag['zip.nested'] = 1\n",
     )

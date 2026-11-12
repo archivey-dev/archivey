@@ -582,9 +582,11 @@ mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
 - `raw_name`: `len(raw_name)` when not `None` (stored archive bytes; already exact)
 - `extra`: lengths of `str` / `bytes` values under the same rules; for a one-level
   `dict` value, its `str` / `bytes` keys and values (archive-sized text such as TAR's
-  PAX keywords), and 72 bytes for each entry whose key is not text (a ZIP extra
-  field's tag in `zip.extra_fields`, whose count the archive sets and whose value may
-  be empty). Top-level `extra` keys are format-defined literals and are not counted
+  PAX keywords) with 96 bytes more for each such entry, and 72 bytes for each entry
+  whose key is not text (a ZIP extra field's tag in `zip.extra_fields`). The archive
+  sets how many entries there are, and each keeps objects that outweigh a short key
+  and value many times. Top-level `extra` keys are format-defined literals and are not
+  counted
 - Exclude: `_raw` (apart from a TAR sparse map, below), `hashes`, diagnostics, Python
   object overhead
 
@@ -631,7 +633,13 @@ and `streaming=True` included), SHALL raise `ResourceLimitError` naming
 `max_metadata_bytes` without reading its data. The headers ahead of one member form a
 chain the parser holds whole until the member is built, so each header of the chain, and
 the member's sparse map, SHALL be weighed against what the headers before it in the
-chain left, not against the member's whole share.
+chain left, not against the member's whole share. Each distinct keyword of a PAX
+header SHALL also be weighed 256 bytes as the header is parsed, before anything is kept
+for it; a keyword repeated in one header SHALL NOT be weighed again (a PAX sparse 0.0
+map repeats two keywords once per fragment). A member with PAX records of its own gets
+a copy of the global records in force, so that copy SHALL be weighed 96 bytes per
+global record before it is made. Either weight crossing what the chain left SHALL
+raise `ResourceLimitError` naming `max_metadata_bytes` in any walk.
 
 #### Scenario: metadata accounting matrix
 
@@ -641,6 +649,7 @@ chain left, not against the member's whole share.
 | Huge `ArchiveInfo.comment` alone | Counts toward the budget once |
 | `extra` holds opaque non-str/bytes object | Not counted, and neither is its top-level key |
 | `extra` holds a dict with a long key (PAX keyword) | The key counts, like its value |
+| `extra["tar.pax_headers"]` holds many short keywords with empty values | Each entry counts 96 bytes plus its key and value, so the budget bounds them |
 | `extra["zip.extra_fields"]` holds many empty fields | Each entry counts 72 bytes, so the budget bounds them |
 | ASCII-only name | Weight equals `len(name)` (exact UTF-8) |
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
@@ -648,6 +657,8 @@ chain left, not against the member's whole share.
 | RAR compressed comments whose declared (or larger packed) sizes sum past the cap | Refused at `open_archive` before any is decoded (`format-rar`) |
 | TAR chain of extended headers ahead of one member, each under the cap, together over it | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the member is built |
 | TAR sparse map whose entries weigh more than the member has left | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before its entries are parsed |
+| TAR PAX header of many distinct short keywords, its bytes under what is left | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the member is built |
+| TAR PAX global header of many records, then members that each have a PAX record of their own | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the copy that crosses the cap is made |
 
 ### Requirement: Name lookup and member identity
 
@@ -907,16 +918,23 @@ inherent to a single pass.
 **Target-name resolution:** hardlink targets are archive-root relative and in
 the member-name namespace: `.` and empty segments are dropped and `..` is
 **retained**, exactly as `normalize_member_name` treats a name, so `a/../b` names
-the member stored as `a/../b` and never the member `b`. Symlink targets are
-filesystem paths: they join to the link's directory first and `..` is collapsed.
+the member stored as `a/../b` and never the member `b`. Every format, built-in or
+plugin, SHALL list a hardlink's `link_target` in that normalized form, so it equals
+the `name` of the member it links to (`./b` lists as `b`, in TAR as in CPIO). A
+hardlink target that ends in `/` SHALL keep the `/`: it names a directory and SHALL
+NOT resolve to a non-directory member of the same name. A target that names only the
+archive root (`./`, `/`, `//`) lists as `.`, as a root-only member name does, and
+names no member. A symlink's `link_target` SHALL stay as stored; to look it up, the
+target is a filesystem path that joins to the link's directory first, and `..` is
+collapsed.
 A hardlink target's leading `/` is kept, as in a member name, so `/a` names the member
 stored as `/a` (`tar -P` writes both), and so is a `..` that climbs out of the root:
 `../a` names the member stored as `../a` (extraction refuses that member, and every
 link to it; `safe-extraction`). Absolute and `..`-escaping symlink targets stay
 unresolved (`None`; open → `LinkTargetNotFoundError`); the escape test runs on the
 collapsed form. A RAR file copy's source lookup keeps that escape test for its
-hardlink-style target (`format-rar`). Directory lookup tries bare and `/`-suffixed
-forms.
+hardlink-style target (`format-rar`). A target without a final `/` is looked up
+under its bare and its `/`-suffixed spelling, since a directory's name ends in `/`.
 
 Follow chains recursively; detect cycles by **member id** (not name); no arbitrary
 depth limit. Missing target and cycle → `LinkTargetNotFoundError` (a `ReadError`).

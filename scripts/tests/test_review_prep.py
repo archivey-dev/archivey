@@ -179,50 +179,13 @@ def test_sweep_only_reports_a_raise_where_the_doc_names_the_function(
     ]
 
 
-def _wrapped(width: int, lines: int = 20) -> str:
-    return "\n".join("w" * width for _ in range(lines)) + "\n"
-
-
-def test_md_limit_reads_the_files_own_width() -> None:
-    assert prep.md_limit(_wrapped(91)) == 91
-    assert prep.md_limit(_wrapped(70)) == 88  # never narrower than the code width
-    # One long line per paragraph: the file is not hard-wrapped, so there is no limit.
-    assert prep.md_limit(_wrapped(300)) is None
-    # Too little prose to tell, and a file this change creates.
-    assert prep.md_limit(_wrapped(80, lines=3)) is None
-    assert prep.md_limit(None) is None
-
-
-def test_md_limit_ignores_tables_code_and_urls() -> None:
-    text = _wrapped(88) + "| " + "x" * 200 + " |\n```\n" + "y" * 200 + "\n```\n"
-    assert prep.md_limit(text) == 88
-
-
-def test_width_flags_only_lines_far_past_their_file(monkeypatch) -> None:
-    monkeypatch.setattr(prep, "base_text", lambda rev, path: _wrapped(88))
-    limit = 88 + prep.SLACK
-    diff = prep.FileDiff("docs/x.md", added=[(1, "a" * limit), (2, "b" * (limit + 1))])
+def test_width_is_the_line_width_check(monkeypatch) -> None:
+    head = "Intro.\n" + "p " * 60 + "\n```\n" + "c" * 148 + "\n```\n"
+    monkeypatch.setattr(prep, "base_text", lambda rev, path: head)
+    # Line 2 is prose over 100; line 4 is inside a fence. Python is ruff's, not this.
+    diff = prep.FileDiff("docs/x.md", added=[(2, "p " * 60), (4, "c" * 148)])
     source = prep.FileDiff("src/archivey/x.py", added=[(7, "# " + "c" * 120)])
-    test = prep.FileDiff("tests/test_x.py", added=[(3, "d" * 150)])
-    script_test = prep.FileDiff("scripts/tests/test_x.py", added=[(3, "d" * 150)])
-    script = prep.FileDiff("scripts/x.py", added=[(4, "# " + "f" * 120)])
-    url = prep.FileDiff("src/archivey/y.py", added=[(1, "# https://" + "e" * 150)])
-    report = prep.width([diff, source, test, script_test, script, url], "base")
-    assert report == [
-        f"docs/x.md:2: {limit + 1} > 88 columns",
-        "src/archivey/x.py:7: 122 > 88 columns",
-        "scripts/x.py:4: 122 > 88 columns",
-    ]
-
-
-def test_width_leaves_lines_inside_an_existing_code_fence(monkeypatch) -> None:
-    base = _wrapped(88) + "```\nshort\n```\n"
-    head = _wrapped(88) + "```\n" + "c" * 148 + "\n```\n" + "p" * 148 + "\n"
-    texts = {"base": base, "HEAD": head}
-    monkeypatch.setattr(prep, "base_text", lambda rev, path: texts[rev])
-    # Line 22 is inside the fence, whose markers are not in the diff; 24 is prose after it.
-    diff = prep.FileDiff("docs/x.md", added=[(22, "c" * 148), (24, "p" * 148)])
-    assert prep.width([diff], "base") == ["docs/x.md:24: 148 > 88 columns"]
+    assert prep.width([diff, source]) == ["docs/x.md:2: 120 columns > 100"]
 
 
 def test_outcome_names_what_a_non_red_run_means() -> None:

@@ -264,7 +264,6 @@ _RAR3_UNP_VER_NEWEST = 29
 
 _RAR5_ENC_HAS_CHECKVAL = 0x01
 _RAR5_XENC_CHECKVAL = 0x01
-_RAR5_XENC_TWEAKED = 0x02
 _RAR5_XENC_AES256 = 0
 
 _RAR5_XFILE_ENCRYPTION = 1
@@ -341,7 +340,6 @@ _RAR3_ENDARC_VOLNUMBER = 0x0008
 _RAR3_ENDARC_MAX_HEADER = 7 + 4 + 2 + 7
 
 _RAR5_OS_WINDOWS = 0
-_RAR5_OS_UNIX = 1
 
 _S_BLK_HDR = struct.Struct("<HBHH")
 _S_FILE_HDR = struct.Struct("<LLBLLBBHL")
@@ -1031,8 +1029,17 @@ def _settle_rar15_solid(archive: RarArchive) -> None:
         seen_file = True
 
 
+# The refusal of a later volume read as the first. The reader matches it to add the
+# remedy for a lone remote part (``REMOTE_VOLUMES_AS_LIST``).
+NEED_FIRST_VOLUME_MSG = "Need first volume of multi-volume RAR archive"
+
+
 def mark_missing_next_volume(
-    archive: RarArchive, *, volumes_read: int, missing: Sequence[int] = ()
+    archive: RarArchive,
+    *,
+    volumes_read: int,
+    missing: Sequence[int] = (),
+    remedy: str | None = None,
 ) -> None:
     """Record the volumes a set is missing as a truncation.
 
@@ -1044,7 +1051,7 @@ def mark_missing_next_volume(
     fails only on the ones that run into a missing volume. Those keep
     ``split_after`` or ``split_before``, which is what the reader refuses their
     data on. A cut the walk already recorded is the earlier fault and keeps its
-    own message.
+    own message. ``remedy``, when given, ends the message.
     """
     if archive.truncated is not None:
         return
@@ -1062,6 +1069,8 @@ def mark_missing_next_volume(
         )
     if reasons:
         archive.truncated = "Incomplete RAR multi-volume set: " + "; ".join(reasons)
+        if remedy is not None:
+            archive.truncated += f". {remedy}"
 
 
 def _append_damaged_service_header(
@@ -1120,13 +1129,18 @@ def _rar5_redirect_target(file_redir: tuple[int, int, str]) -> str:
     (``dev-docs/formats/rar.md``): it refuses the prefixed spellings too, by a
     different route, and it creates a stored, unprefixed ``C:\\abs\\y`` as the
     relative link ``C:/abs/y``, which archivey refuses. It also refuses ``..\\up\\x``,
-    which archivey refuses only when the target leaves the destination. A Unix
-    symlink, a hard link and a file copy keep the stored string: in those a backslash
-    can be part of a name.
+    which archivey refuses only when the target leaves the destination.
+
+    A hard link names another member, so its ``\\`` becomes ``/`` as in the member's
+    own name (``backslash_is_separator=True`` in ``RarReader._to_member``); archivey
+    then normalizes the target as a name at registration. A Unix symlink and a file
+    copy keep the stored string: in those a backslash can be part of a name.
     """
     redir_type, _flags, target = file_redir
     if redir_type in _RAR5_XREDIR_REPARSE_POINTS:
         return normalize_windows_link_target(target)
+    if redir_type == _RAR5_XREDIR_HARD_LINK:
+        return target.replace("\\", "/")
     return target
 
 
@@ -1287,7 +1301,7 @@ def _parse_rar_volume(
     # The emit rule appends a split_before member only to an empty list, so
     # members[0] is the only place a continuation can show on volume 1.
     if volume_index == 0 and archive.members and archive.members[0].split_before:
-        raise UnsupportedFeatureError("Need first volume of multi-volume RAR archive")
+        raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
     return archive
 
 
@@ -1779,7 +1793,8 @@ def _load_vstr(buf: bytes | bytearray | memoryview, pos: int) -> tuple[bytes, in
 
 
 def _dos_time_issue(stamp: int, field: str, filename: str) -> TimestampIssue:
-    """The report for a nonzero DOS word :func:`~archivey.internal.timestamps.dos_to_datetime` could not use."""
+    """The report for a nonzero DOS word that
+    :func:`~archivey.internal.timestamps.dos_to_datetime` could not use."""
     return TimestampIssue(
         field=field,
         source="dos",
@@ -2075,9 +2090,9 @@ class _HeaderDecryptStream:
     Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`: folding
     this class into it would take three header-only behaviours (refusing
     ``read(-1)``, flagging a cut instead of ``finalize``, and not seeking the
-    shared archive handle), and each would be a flag on that class. The decrypt *stage* is shared; the pull stream is not. The
-    measurement is the "Keep ``_HeaderDecryptStream``" row in
-    ``dev-docs/formats/rar.md``.
+    shared archive handle), and each would be a flag on that class. The decrypt *stage*
+    is shared; the pull stream is not. The measurement is the "Keep
+    ``_HeaderDecryptStream``" row in ``dev-docs/formats/rar.md``.
 
     ``read`` rejects unbounded ``n < 0``. It has no per-read size cap: the
     caller already bounds the ask. RAR5 refuses ``hdrlen > _RAR5_MAX_HEADER``
@@ -2854,9 +2869,7 @@ class _Rar3Walk:
             # A later volume whose first member starts on its boundary: no
             # member continues from an earlier volume, so only this number
             # tells it from volume 1 (RAR5 reads MAIN's instead).
-            raise UnsupportedFeatureError(
-                "Need first volume of multi-volume RAR archive"
-            )
+            raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
         self.trailing_at = _scan_after_end_block(
             source, _packed_span_end(block.data_offset, block.add_size)
         )
@@ -4030,9 +4043,7 @@ class _Rar5Walk:
             # RAR5: first volume omits the field (implicit 0); later volumes
             # store 1 for the second volume, 2 for the third, …
             if volume_index == 0 and volnr != 0:
-                raise UnsupportedFeatureError(
-                    "Need first volume of multi-volume RAR archive"
-                )
+                raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
             if volume_index > 0 and volnr != volume_index:
                 raise TruncatedError(
                     f"Out-of-order RAR volume: expected volume index "

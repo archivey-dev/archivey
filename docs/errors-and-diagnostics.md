@@ -132,6 +132,15 @@ A cut-off member can also end early without an error. `stream.read(member.size)`
 bytes than the member should hold, and the next read raises `TruncatedError`. So code that reads a
 member in one call and then stops should check the length it got, or call `read()` once more.
 
+When a read with a size meets damaged compressed data in a file, it first gives you every byte
+before the damage, and the next read raises. To find those bytes, archivey decompresses that part
+of the member a second time. If you throw a damaged member away anyway, set
+`ArchiveyConfig(recover_partial_data=False)` to skip that work: the read that meets the damage then
+raises sooner, and some of the bytes just before the damage, at most one internal step's worth, are
+lost. Formats whose decoder already returns those bytes at no extra cost (`.Z`, lzop, bzip3 and the
+old ZIP methods) still return them. The error is the same either way. A compressed tar still gives
+you every member that ends before the damage.
+
 A member whose data is damaged doesn't end a `stream_members()` loop. Its own read raises, and the
 loop goes on to the next member, so one pass can find every damaged member in the archive. In a
 solid archive the members after the damage in the same solid block fail too, each from its own

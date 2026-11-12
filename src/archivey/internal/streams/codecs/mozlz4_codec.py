@@ -185,24 +185,18 @@ def _size_check(config: StreamConfig) -> Callable[[int, int], None]:
     A detection probe (``probe_read_bound``) decodes a block only when it reaches the
     end of the file, which happens for a small file; it refuses a declared size over
     ``max(probe_read_bound, 1 MiB)`` as ``ResourceLimitError``, which a probe reads as
-    "can't tell".
+    "can't tell". The cap still applies under that.
     """
-    bound = config.probe_read_bound
-    if bound is not None:
-        ceiling = max(bound, _PROBE_DECODED_MAX)
-
-        def check_probe(size: int, block: int) -> None:
-            del block  # the ceiling on the size also bounds the block
-            if size > ceiling:
-                raise ResourceLimitError(
-                    f"a mozlz4 header declares {size} decoded bytes, over the "
-                    f"{ceiling} a detection probe decodes"
-                )
-
-        return check_probe
     limits, usage = config.decoder_limits, config.usage
+    bound = config.probe_read_bound
+    ceiling = None if bound is None else max(bound, _PROBE_DECODED_MAX)
 
     def check(size: int, block: int) -> None:
+        if ceiling is not None and size > ceiling:
+            raise ResourceLimitError(
+                f"a mozlz4 header declares {size} decoded bytes, over the "
+                f"{ceiling} a detection probe decodes"
+            )
         counted_from = (
             f"twice the {size}-byte decoded size the header declares (the decode "
             "buffer and the copy returned)"

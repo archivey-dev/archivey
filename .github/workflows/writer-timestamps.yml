@@ -2,14 +2,10 @@ name: Writer timestamp probe
 
 # Runs scripts/investigations/exploration/probe_writer_timestamps.py on Linux, macOS and Windows to record which
 # file time each ZIP/7z writer stores in its creation-time slots. Results feed
-# dev-docs/investigations/writer-timestamp-slots.md. Runs on demand, and on PRs only
-# when the probe itself changes.
+# dev-docs/investigations/writer-timestamp-slots.md. Runs on demand only: dispatch it
+# from the Actions tab (on your branch) after changing the probe.
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - scripts/investigations/exploration/probe_writer_timestamps.py
-      - .github/workflows/writer-timestamps.yml
 
 permissions:
   contents: read

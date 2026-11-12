@@ -205,6 +205,7 @@ from archivey.internal.streams.codecs import (
     open_codec_stream,
 )
 from archivey.internal.streams.codecs.base import RAW_DEFLATE_WBITS
+from archivey.internal.streams.crypto import note_crypto_use
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     SharedView,
@@ -875,7 +876,7 @@ def _zip_timestamps(
     if ut_field is not None:
         flags = ut_field[0]
         cursor = 1
-        for bit, ut_name in ((0x01, "mtime"), (0x02, "atime"), (0x04, "ctime")):
+        for bit in (0x01, 0x02, 0x04):
             if flags & bit and cursor + 4 <= len(ut_field):
                 ts = int.from_bytes(
                     ut_field[cursor : cursor + 4], "little", signed=True
@@ -3938,7 +3939,7 @@ class ZipReader(BaseArchiveReader):
         def stage(password: bytes) -> BinaryIO:
             raw = self._open_raw_payload(loc, member)
             try:
-                return open_winzip_aes_member(
+                decrypted = open_winzip_aes_member(
                     raw,
                     aes=aes,
                     password=password,
@@ -3952,6 +3953,8 @@ class ZipReader(BaseArchiveReader):
             except BaseException:
                 raw.close()
                 raise
+            note_crypto_use(self._usage)
+            return decrypted
 
         return stage
 

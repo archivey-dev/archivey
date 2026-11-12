@@ -1013,6 +1013,66 @@ turns it off.
 | `DecoderLimits(max_ratio=None)` in the reader's config | Reads, lists and extracts unchanged |
 | Deprecated `extract_all(limits=ExtractionLimits(max_ratio=None))` | Extracts; reads of the same reader stay held |
 
+### Requirement: A shared budget holds many readers to one total
+
+`ArchiveyConfig.budget` SHALL take an `archivey.Budget(max_decoded_bytes=,
+max_members=)` or `None` (the default: no shared budget). Every reader opened with a
+config holding a budget SHALL draw from it, whether the readers run one after another,
+nest, or run on several threads; copies of the config (`copy`, `deepcopy`,
+`dataclasses.replace`) SHALL share the same budget, and a budget SHALL refuse to be
+pickled.
+
+- **Bytes.** Every byte a member stream delivers (a read, `stream_members()`, an
+  extraction's writes) SHALL be drawn, and so SHALL the gap a forward seek skips past
+  the furthest offset reached, and the byte a compressed single file's open-time check
+  decodes. A seek whose target is known SHALL be refused before the decoder moves,
+  drawing nothing, when the gap does not fit; a seek to an end the stream cannot size
+  SHALL read to it, drawn. A read that would cross `max_decoded_bytes` SHALL decode at
+  most one byte past what is left, then raise the always-stop `ResourceLimitError`, so
+  an extraction stops at that member. This holds for a buffer's read-ahead over a
+  source that cannot seek too. Readers on several threads MAY each overshoot by one
+  read, since each sizes its read against the same room. Once spent, a budget SHALL
+  refuse every later read before it decodes.
+- **Skipped bytes.** Bytes a decoder produces to get past a member nobody reads SHALL
+  be drawn too, in every format: a compressed TAR's, cpio's or RPM payload's skipped
+  members and headers (a compressed TAR's listing included), a CAB folder's output
+  before the member read, the part of a streaming ZIP member the pass decodes, the
+  solid prefix `unrar` or `unar` decodes and does not emit for a solid RAR member,
+  and a 7z header stored compressed. They SHALL be drawn where they are decoded, so a
+  member that is read SHALL be drawn once, not again as its stream delivers it. A step
+  that decodes all at once (a RAR prefix, a 7z header) SHALL be drawn before it runs,
+  and refused, drawing nothing, when it does not fit. A sparse TAR member's holes
+  SHALL be drawn as they are read. Other metadata a format decodes into memory
+  (SquashFS metadata blocks, XAR's table of contents) is held by the listing limits.
+- **Members.** Each member a reader lists SHALL be drawn once per reader. A member a
+  reader holds back before listing it (a cpio or RPM hard-link set) SHALL be drawn
+  when it is held. The listing that would pass `max_members` SHALL raise
+  `ResourceLimitError`, and the refused member SHALL NOT be counted.
+- The per-reader limits SHALL still apply. Decoder memory stays per decoder.
+
+#### Scenario: Two readers share one budget
+
+- **GIVEN** `Budget(max_decoded_bytes=350_000)` and a ZIP of five 100 000-byte members
+- **WHEN** one reader reads two members, closes, and a second reader with the same
+  config reads two more
+- **THEN** the second reader's second read raises `ResourceLimitError` naming
+  `max_decoded_bytes=350000`
+- **AND** the budget has drawn 350 001 bytes
+
+#### Scenario: Skipping members of a compressed TAR draws them
+
+- **GIVEN** an unlimited `Budget()` and a `.tar.gz` of three 100 000-byte members
+- **WHEN** `stream_members()` reads only the third member
+- **THEN** the budget has drawn at least 300 000 bytes
+- **AND** reading all three instead draws no more than the decoded tar's size
+
+#### Scenario: Extraction stops at a spent budget
+
+- **GIVEN** `Budget(max_decoded_bytes=2 * 100_000 + 10)` and the same ZIP
+- **WHEN** `extract_all` runs
+- **THEN** it raises `ResourceLimitError`, two members are written whole, and no later
+  member is opened
+
 ### Requirement: Progress Reporting via on_progress Callback
 
 The system SHALL accept optional `on_progress` callbacks on both extraction APIs

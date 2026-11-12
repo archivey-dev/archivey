@@ -29,8 +29,13 @@ TEST_READ = {
 
 def _pull_request_paths(text: str) -> list[str]:
     """The `- entry` lines under `on.pull_request.paths`, comments skipped, quotes off."""
+    return _trigger_paths(text, "pull_request")
+
+
+def _trigger_paths(text: str, trigger: str) -> list[str]:
+    """The `- entry` lines under `on.<trigger>.paths`, comments skipped, quotes off."""
     lines = text.splitlines()
-    start = lines.index("  pull_request:")
+    start = lines.index(f"  {trigger}:")
     entries: list[str] = []
     in_paths = False
     for line in lines[start + 1 :]:
@@ -66,6 +71,25 @@ def test_atheris_does_not_run_on_pull_requests() -> None:
     assert "\n  workflow_call:" not in text
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     assert "uses: ./.github/workflows/atheris-fuzz.yml" not in ci
+
+
+#: Side workflows: stress runs, soaks, probes and the fsspec consumers. They run on a
+#: schedule, on a dispatch, or after a merge to main, never on a pull request push,
+#: where their setup and runner wait cost more than they caught.
+NOT_ON_PULL_REQUESTS = (
+    "accelerator-crash-search.yml",
+    "accelerator-fuzz-soak.yml",
+    "fsspec-consumers.yml",
+    "ppmd-native-stress.yml",
+    "rapidgzip-truncation-sweep.yml",
+    "writer-timestamps.yml",
+)
+
+
+@pytest.mark.parametrize("name", NOT_ON_PULL_REQUESTS)
+def test_side_workflow_does_not_run_on_pull_requests(name: str) -> None:
+    text = (WORKFLOWS / name).read_text(encoding="utf-8")
+    assert "\n  pull_request:" not in text
 
 
 def test_test_read_docs_are_reincluded_after_every_exclusion(

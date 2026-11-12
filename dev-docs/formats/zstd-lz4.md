@@ -16,7 +16,7 @@ behaviour and links the row.
 | Read | zstd and LZ4 frames as one-member archives and inside `.tar.zst` / `.tar.lz4`, and the legacy LZ4 stream (`lz4 -l`) the same way; zstd as a ZIP method; LZ4 as a 7z coder |
 | Write | **Not shipped** |
 | Backends | zstd: the standard library's `compression.zstd` on Python 3.14 and later, `backports.zstd` from `[recommended]` before it. LZ4: `lz4.frame` from `[recommended]`, and `lz4.block` from the same package for the legacy stream |
-| Seeking | zstd, on declared seek demand: from the frame before the target, and the seekable format's seek table gives every frame and the size without decoding (§2.3). LZ4: a backward seek decodes again from the start |
+| Seeking | zstd, on declared seek demand or restart points: from the frame before the target that a read has passed; on declared seek demand only, the seekable format's seek table gives every frame and the size without decoding (§2.3). LZ4: a backward seek decodes again from the start |
 | Size | `None`, even when the frame header declares it |
 | Digests | None listed. A frame's content checksum, when present, is checked on read; the legacy LZ4 stream has none |
 | Metadata | None beyond the shared fields |
@@ -216,10 +216,11 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   `LZ4_COMPRESSBOUND(8 MiB)` ends the stream instead, so the input held for one block
   stays under about 8 MiB and each block decodes into an 8 MiB buffer. Both numbers are
   the format's, so `DecoderLimits` has nothing to cap here.
-- **Detection lifts the cap, not the window.** The inner-TAR probe decodes with
-  `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG` in `codecs/base.py`, the same rule as
-  liblzma's dictionary), but with `window_log_max` at libzstd's default 27 (128 MiB),
-  what `zstd -d` decodes without `--long`. libzstd reserves the declared window of a
+- **Detection keeps the cap and lowers the window.** The inner-TAR probe decodes under
+  the caller's `DecoderLimits`, with `window_log_max` at the smaller of the cap's and
+  libzstd's default 27 (128 MiB), what `zstd -d` decodes without `--long`. A frame over
+  the cap is "can't tell", reported as `DETECTION_DECODER_LIMITED`; the read of the bare
+  `.zst` that follows refuses the same window. libzstd reserves the declared window of a
   frame without a content size when it reads the header (measured: a 2 GiB window under
   a 256 MiB `RLIMIT_AS` fails with "Allocation error"), and a window cannot be shrunk to
   what the read needs the way an LZMA dictionary can. A frame over 128 MiB is "can't

@@ -21,9 +21,9 @@ system that holds it and its path, which nothing has opened yet. Pass it to `ope
 `open_stream` or `detect_format` as is, without a `with` block around it. Unless the `OpenFile`
 has a `compression` ([below](#what-archivey-takes-from-an-openfile)), archivey never opens it as a
 file. It asks the file system for the object's size once, at open, and then reads the bytes it
-needs as ranges, which most stores serve as one request each. A name that a part of a split
-archive could have, such as `.rar`, `.exe`, `.sfx` or `.001`, also lists the folder that holds
-it, once, to look for the other parts ([Archives in several volumes](#archives-in-several-volumes)).
+needs as ranges, which most stores serve as one request each. It doesn't list the folder that
+holds the file or look for other files beside it, even when the name is one that a part of a
+split archive could have ([Archives in several volumes](#archives-in-several-volumes)).
 
 Archivey doesn't depend on fsspec, and no extra installs it. The package for your store, such as
 `s3fs`, `gcsfs` or `adlfs`, installs it; HTTP needs `fsspec` and `aiohttp`. The URL and its
@@ -111,20 +111,32 @@ refuses or works around each one rather than drop it silently:
 ## Archives in several volumes
 
 A 7z or RAR archive split into several files, or a ZIP split by 7-Zip (`.zip.001`,
-`.zip.002`, …), opens from any one of its parts, as it does from a local path ([What you can open](opening.md#what-you-can-open)). Archivey lists the folder that
-holds the part once and finds the others by name, on the same store and with the same options:
+`.zip.002`, …), opens from a list of `OpenFile` objects, one per part, in order:
 
 ```python
-with archivey.open_archive(fsspec.open("s3://bucket/backup.7z.001")) as archive:
+parts = [fsspec.open(f"s3://bucket/backup.7z.{n:03d}") for n in (1, 2, 3)]
+with archivey.open_archive(parts) as archive:
     ...
 ```
 
-A list of `OpenFile` objects, in order, opens the parts it names, for a set whose names
-archivey can't match or a store that can't list a folder.
-`ArchiveyConfig(discover_volumes=False)` turns the search off, so an `OpenFile` opens only the
-file it names and no folder is listed. On a store where listing a folder is slow, such as an S3
-prefix holding many objects, that saves the listing for a `.rar` or `.exe` that is not part of a
-set.
+`fsspec.open_files("s3://bucket/backup.7z.*")` builds that list from a pattern, if the store
+lets you list the folder.
+
+Unlike a local path ([What you can open](opening.md#what-you-can-open)), a single `OpenFile`
+never makes archivey look for the other parts, whatever `ArchiveyConfig.discover_volumes` says:
+archivey lists no folder and asks for no other file. If the part you pass turns out to need the
+others, such as `backup.7z.001` or a RAR first volume whose header says more follow, opening it
+or listing its members raises an error that says to pass the parts as a list. A `.rar` or
+`.exe` that is a complete archive opens as usual. With `discover_volumes=False`, a numbered part
+such as `backup.7z.001` is read alone, as a local one is: the error is whatever its format
+reports for a cut archive, without that advice.
+
+??? note "Why not find the other parts, as for a local path?"
+    Listing a remote folder is unreliable. On S3 it depends on a permission that reading a file
+    doesn't need, and many HTTP servers have no index page, or one archivey would have to parse
+    from HTML. Nothing would bound what the search costs on a large folder either, and it would
+    run for every `.rar` or `.exe` opened. You know which parts there are, so a list is both
+    cheaper and certain.
 
 ## RAR archives
 
@@ -159,3 +171,18 @@ arrives, not the archive, so `DiagnosticPolicy.STRICT` doesn't turn it into an e
 ([Diagnostics](errors-and-diagnostics.md#diagnostics)). If you need the guarantee, read from a
 store or a URL that can't change under you, such as an object version, or copy the file before
 opening it.
+
+## Credentials in URLs
+
+A URL can carry a secret: a `user:password@` part, or the signature in the query of a signed
+HTTP URL. Wherever archivey turns the URL into text itself, in the archive's name, its own error
+messages, the `SOURCE_CHANGE_UNDETECTABLE` diagnostic and its log warnings, it removes the
+`user:password@` part and, for `http` and `https`, the query and the fragment. For other
+protocols the query stays, because there a `?` can be part of the object's name, as in an S3 key.
+The requests still use the URL as given.
+
+Errors that fsspec, or the library behind it such as `aiohttp`, raise themselves pass through
+archivey unchanged, so a missing object's `FileNotFoundError` or an HTTP 401 can carry the full
+URL, credentials included. Don't log those errors as they are. Remove the credentials first, or
+keep them out of the URL by passing them as options to `fsspec.open`, where your store's library
+accepts them.

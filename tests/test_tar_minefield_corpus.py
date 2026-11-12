@@ -15,12 +15,13 @@ Each case in ``suite/archives`` is a crafted ``.tar`` with a verdict (``accept``
 ``tolerate`` or ``reject``) and, unless it is to be rejected, the tree an extractor
 should write. Archivey extracts it three ways (``POLICIES``): ``TRUSTED`` with
 ``overwrite=REPLACE`` as ``tar -x`` does, the defaults (``STRICT``), and the safest
-settings, the defaults with ``DiagnosticPolicy.STRICT``, held to tar-codec's bar. Each goes into ``root/x/y/dest``,
-so that a write outside the destination is caught. The run is classified as the
-corpus's ``suite/check.py`` classifies one (the logic is re-implemented here: the test
-runs no code from the clone): ``expected`` (the expected tree), ``rejected`` (a member
-refused or the open failed), ``other`` (another tree) or ``outside``. GNU tar 1.35's
-and tar-codec's results are the corpus's own, ``contrib/matrix/matrix.json``.
+settings, the defaults with ``DiagnosticPolicy.STRICT``, held to tar-codec's bar. Each
+goes into ``root/x/y/dest``, so that a write outside the destination is caught. The run
+is classified as the corpus's ``suite/check.py`` classifies one (the logic is
+re-implemented here: the test runs no code from the clone): ``expected`` (the expected
+tree), ``rejected`` (a member refused or the open failed), ``other`` (another tree) or
+``outside``. GNU tar 1.35's and tar-codec's results are the corpus's own,
+``contrib/matrix/matrix.json``.
 
 The pins in ``tests/fixtures/tar_minefield/expected.json`` hold, per case and policy,
 Archivey's outcome, a digest of its tree, whether that tree is GNU tar's, and the

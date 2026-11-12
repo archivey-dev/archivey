@@ -46,6 +46,7 @@ from archivey.exceptions import (
 from archivey.internal.config import (
     DecoderLimits,
     check_decoder_memory,
+    probe_dictionary_origin,
     probe_lzma_dictionary,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -250,7 +251,8 @@ def _iter_trailers_backwards(
         if header[:4] != _MAGIC:
             raise CorruptionError(
                 f"Lzip magic not found at expected member start {compressed_start} "
-                f"(got {quoted(header[:4].decode('ascii', 'surrogateescape'))}); member_size in trailer may be corrupt"
+                f"(got {quoted(header[:4].decode('ascii', 'surrogateescape'))}); "
+                "member_size in trailer may be corrupt"
             )
         _check_version(header, compressed_start)
         yield compressed_start, int(data_size), int(member_size), int(crc32)
@@ -396,7 +398,8 @@ class _LzipState:
                 # trailing data is allowed only *after* a member (lzip spec §7).
                 if head != _MAGIC[: len(head)]:
                     raise CorruptionError(
-                        f"Not a valid lzip file: expected magic {_MAGIC!r}, got {quoted(head.decode('ascii', 'surrogateescape'))}"
+                        f"Not a valid lzip file: expected magic {_MAGIC!r}, "
+                        f"got {quoted(head.decode('ascii', 'surrogateescape'))}"
                     )
                 self.truncated = True
                 return b"", []
@@ -512,7 +515,8 @@ class _LzipState:
         if header[:4] != _MAGIC:
             if self._members_seen == 0:
                 raise CorruptionError(
-                    f"Not a valid lzip file: expected magic {_MAGIC!r}, got {quoted(header[:4].decode('ascii', 'surrogateescape'))}"
+                    f"Not a valid lzip file: expected magic {_MAGIC!r}, "
+                    f"got {quoted(header[:4].decode('ascii', 'surrogateescape'))}"
                 )
             if near_stream_magic(header, _MAGIC):
                 # lzip's own rule: "corrupt header in multimember file".
@@ -525,16 +529,23 @@ class _LzipState:
                 f"Invalid lzip dict_size exponent {exp}: valid range is 12-29"
             )
         dict_size = 1 << exp
+        # A detection probe decodes with only the dictionary its read needs, and that
+        # is what the cap is checked against: the dictionary liblzma reserves.
+        decode_dict = probe_lzma_dictionary(dict_size, self._read_bound)
         # The format's own ceiling is 512 MiB (exponent 29), under the default cap, so
         # this refuses only for a caller who set a smaller one.
+        probe = self._read_bound is not None
         check_decoder_memory(
-            dict_size,
+            decode_dict,
             limits=self._limits,
-            what="lzip dictionary size",
+            what=(
+                "the lzip dictionary a detection probe reserves"
+                if probe
+                else "lzip dictionary size"
+            ),
+            counted_from=probe_dictionary_origin(dict_size) if probe else None,
             usage=self._usage,
         )
-        # A detection probe decodes with only the dictionary its read needs.
-        decode_dict = probe_lzma_dictionary(dict_size, self._read_bound)
         lzma_alone_header = _PROPS_BYTE + struct.pack("<I", decode_dict) + _UNKNOWN_SIZE
         try:
             self._dec = self._natives.lzma_decompressor(format=lzma.FORMAT_ALONE)
@@ -674,6 +685,7 @@ def LzipDecompressorStream(
     probe_read_bound: int | None = None,
     natives: Natives = IN_PROCESS,
     usage: ResourceUsageRecorder | None = None,
+    file_index: bool = True,
 ) -> DecompressorStream:
     """Seekable lzip decompressor backed by stdlib ``lzma``.
 
@@ -709,4 +721,5 @@ def LzipDecompressorStream(
         codec_name="lzip",
         seekable=seekable,
         report_trailing_data=report_trailing_data,
+        file_index=file_index,
     )

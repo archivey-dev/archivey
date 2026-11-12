@@ -1,5 +1,5 @@
 """LHA's static-Huffman LZ77 methods (``-lh4-`` to ``-lh7-``, ``-lhx-``, ``-lk7-``),
-decoded in Python.
+and ARJ's methods 1 to 3, which are the same format, decoded in Python.
 
 LHA 2 replaced LHarc's ``-lh1-`` with these methods, and later tools added larger
 windows. They share one bit stream layout: blocks of up to 65 535 commands, each block
@@ -9,7 +9,7 @@ bit stream is read most significant bit first. A member is one stream, decoded o
 own: LHA is not solid.
 
 The decoder follows lhasa's ``lh_new_decoder.c`` (the tool Debian ships as ``lha``),
-and so agrees with it on every stream lhasa reads:
+and so agrees with it on every LHA stream lhasa reads:
 
 - the window starts filled with spaces, so a match that reaches back before the first
   byte of output copies spaces;
@@ -19,7 +19,12 @@ and so agrees with it on every stream lhasa reads:
   another distance coding, after Jason Summers' notes on LHARK;
 - a table with a zero count is a single symbol coded with no bits;
 - a count over the table's size is cut to its size, as lhasa does;
-- decoding stops at the member's size, and input left after it is ignored.
+- decoding stops at the member's size, and input left after it is ignored;
+- ARJ methods 1 to 3 (the ``"arj"`` entry) are ``-lh6-``'s layout with ARJ's 26 624-byte
+  dictionary. A match before the first byte of output copies the window's spaces there
+  too: ARJ's own decoder reads an uninitialised buffer instead, ARJ writers never make
+  such a match, and the member's CRC-32 refuses the result. That is archivey's choice;
+  ``arj_fast_decoder`` (method 4) refuses the same match as ``CorruptionError``.
 
 Where lhasa decodes damage into bytes the CRC then refuses, this decoder raises
 ``CorruptionError`` at once: a code length over 16 bits, a table that overfills or
@@ -55,6 +60,9 @@ METHODS: dict[str, LzhMethod] = {
     # UNLHA32's extension: a 512 KiB dictionary, which lhasa decodes in a 1 MiB ring.
     "-lhx-": LzhMethod(20, 5, 510),
     "-lk7-": LzhMethod(16, 6, 289, lhark=True),
+    # ARJ methods 1 to 3: the same stream, from the same ar002 code, with a 26 624-byte
+    # dictionary (unarj's DDICSIZ) and offset codes up to 16 (NP 17, PBIT 5).
+    "arj": LzhMethod(15, 5, 510),
 }
 
 _TEMP_COUNT_BITS = 5
