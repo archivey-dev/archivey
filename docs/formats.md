@@ -1602,10 +1602,11 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   `TruncatedError` from `open_archive` rather than from the first read. A valid empty stream still
   opens and is read as `b""`. The check goes one byte deep: damage further in still fails on the read.
   It costs one decoded block, which is noticeable only for `.bz2` (up to 900 KB of output; about
-  30 ms on incompressible data). A pipe is checked at open only when detection has already read
-  all of it (a short stream whose sender closed the pipe): the check then decodes a
-  copy, so it gives the same answer as a file. A longer pipe isn't, because the check would
-  consume bytes of its one pass; it fails on the first read instead.
+  30 ms on incompressible data). A pipe is checked at open only when archivey detected the
+  format and read all of it while doing so (a short stream whose sender closed the pipe, and no
+  `format=` given): the check then decodes a copy, so it gives the same answer as a file. Any
+  other pipe isn't, because the check would consume bytes of its one pass; it fails on the
+  first read instead.
 - **A header the format's own tool calls unsupported** raises `UnsupportedFeatureError`, not
   `CorruptionError`: a gzip member with a method other than Deflate or a reserved flag bit set, an
   LZ4 frame in a version other than `01`, a zstd frame that needs a dictionary, and a `.Z` file

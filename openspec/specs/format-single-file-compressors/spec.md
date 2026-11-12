@@ -346,7 +346,8 @@ would be. The error SHALL NOT name a member, since none was requested.
 A genuinely valid empty stream SHALL still open and read as empty.
 
 A non-seekable source SHALL be validated the same way when detection's peek already
-holds every byte of it (the peek met the end of the source): the probe decodes a copy of
+holds every byte of it (the peek met the end of the source; a caller that passes
+`format=` skips detection, so nothing is peeked): the probe decodes a copy of
 those bytes, so the pass handed to the first `open_member` reads nothing less, and a pipe
 gives the verdict a file of the same bytes gives at open. Any other non-seekable source is
 out of scope: the opened stream is handed to the first `open_member`, so a probe read
