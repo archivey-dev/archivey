@@ -7,6 +7,7 @@ import io
 import zlib
 from datetime import UTC, datetime
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 import pytest
 
@@ -25,7 +26,9 @@ from archivey import (
     detect_format,
     open_archive,
 )
+from archivey.config import AcceleratorMode
 from archivey.diagnostics import MemberTimestampContext, UnknownMemberTypeContext
+from tests.conftest import requires
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.xar_util import ENCODINGS, HEADER, XarFile, pack_xar, write_xar
@@ -175,6 +178,114 @@ def test_a_file_that_fails_its_checksum_is_reported() -> None:
         assert isinstance(error, CorruptionError)
     with _open(bytes(raw)) as reader, pytest.raises(CorruptionError):
         reader.read("a.txt")
+
+
+# --- bytes after a member's stream ---------------------------------------------------
+
+# Two zlib streams, A then B, in one member. libarchive fails on anything after a
+# member's stream ("XAR decompressor made no progress"), and so does archivey, with or
+# without rapidgzip: under it the Adler-32 at the end covers only B, and the second
+# decode that mismatch starts finds the first stream ending early.
+_FIRST = b"first stream " * 400
+_SECOND = b"second stream " * 300
+_ACCELERATOR_MODES = [
+    pytest.param(AcceleratorMode.OFF, id="off"),
+    pytest.param(AcceleratorMode.ON, id="rapidgzip", marks=requires("rapidgzip")),
+]
+
+
+def _member_stored_as(stored: bytes, data: bytes, encoding: str = "gzip") -> bytes:
+    """A XAR of one file ``a`` whose heap holds ``stored`` and whose TOC declares the
+    size and sha1 of ``data``."""
+    style = ENCODINGS[encoding][0]
+    digest = hashlib.sha1(data).hexdigest()
+    return _single(
+        f"<length>{len(stored)}</length><offset>0</offset><size>{len(data)}</size>"
+        f"<encoding style={quoteattr(style)}/>"
+        f'<extracted-checksum style="sha1">{digest}</extracted-checksum>',
+        heap=stored,
+    )
+
+
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+@pytest.mark.parametrize(
+    "declared", [_FIRST + _SECOND, _FIRST], ids=["declares-both", "declares-first"]
+)
+@pytest.mark.parametrize("chunk", [-1, 1024], ids=["whole", "bounded"])
+def test_a_second_zlib_stream_in_a_member_is_refused(
+    mode: AcceleratorMode, declared: bytes, chunk: int
+) -> None:
+    raw = _member_stored_as(zlib.compress(_FIRST) + zlib.compress(_SECOND), declared)
+    config = archivey.ArchiveyConfig(use_rapidgzip=mode)
+    with (
+        _open(raw, config=config) as reader,
+        reader.open("a") as stream,
+        pytest.raises(CorruptionError),
+    ):
+        while stream.read(chunk) and chunk > 0:
+            pass
+
+
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+def test_an_empty_second_zlib_stream_in_a_member_is_refused(
+    mode: AcceleratorMode,
+) -> None:
+    # rapidgzip's output is A, and the last trailer is the empty stream's Adler-32
+    # (1), so the check's second decode reaches the first stream's end exactly at
+    # the output's end, with input left (round 1 K1).
+    raw = _member_stored_as(zlib.compress(_FIRST) + zlib.compress(b""), _FIRST)
+    config = archivey.ArchiveyConfig(use_rapidgzip=mode)
+    with (
+        _open(raw, config=config) as reader,
+        pytest.raises(CorruptionError, match="after its end"),
+    ):
+        reader.read("a")
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param(AcceleratorMode.OFF, id="off"),
+        pytest.param(
+            AcceleratorMode.ON, id="indexed_bzip2", marks=requires("indexed_bzip2")
+        ),
+    ],
+)
+@pytest.mark.parametrize("encoding", ["bzip2", "lzma"])
+@pytest.mark.parametrize(
+    "declared", [_FIRST + _SECOND, _FIRST], ids=["declares-both", "declares-first"]
+)
+def test_a_second_bzip2_or_lzma_stream_in_a_member_is_refused(
+    mode: AcceleratorMode, encoding: str, declared: bytes
+) -> None:
+    # One stream per member, as Apple's xar writes and libarchive reads: a further
+    # stream is input after the end, where a .bz2 or .lzma file reads it on.
+    encode = ENCODINGS[encoding][1]
+    raw = _member_stored_as(encode(_FIRST) + encode(_SECOND), declared, encoding)
+    config = archivey.ArchiveyConfig(use_indexed_bzip2=mode)
+    with (
+        _open(raw, config=config) as reader,
+        pytest.raises(CorruptionError, match="after its end"),
+    ):
+        reader.read("a")
+
+
+def test_further_xz_streams_in_a_member_read_as_in_zip() -> None:
+    # xz data is one or more streams with their padding, in a ZIP xz member too.
+    encode = ENCODINGS["xz"][1]
+    raw = _member_stored_as(encode(_FIRST) + encode(_SECOND), _FIRST + _SECOND, "xz")
+    with _open(raw) as reader:
+        assert reader.read("a") == _FIRST + _SECOND
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "bzip2", "lzma", "xz"])
+@pytest.mark.parametrize("tail", [b"junk", b"\0\0\0\0"], ids=["junk", "zeros"])
+def test_bytes_after_a_member_stream_are_refused(encoding: str, tail: bytes) -> None:
+    if encoding == "xz" and tail[0] == 0:
+        pytest.skip("four zero bytes are xz stream padding, part of the format")
+    raw = _member_stored_as(ENCODINGS[encoding][1](TEXT) + tail, TEXT, encoding)
+    with _open(raw) as reader, pytest.raises(CorruptionError, match="after its end"):
+        reader.read("a")
 
 
 def test_nested_files_take_their_directory_path_in_document_order() -> None:
@@ -549,6 +660,61 @@ def test_text_of_many_lines_is_not_kept_one_piece_per_line() -> None:
     list_it()
     peak = traced_peak(list_it)
     assert peak < 7 * len(xml), peak
+
+
+def test_a_tag_of_millions_of_attributes_is_refused_before_expat_builds_it() -> None:
+    # expat builds a tag's whole attribute dict before any handler runs: a 13 MB TOC
+    # of one <file> with a million attributes took 1.67 GB. A scan refuses the tag
+    # first, so the peak stays near the TOC.
+    attrs = b"".join(b' a%d="%d"' % (i, i) for i in range(200_000))
+    xml = b'<xar><toc><file id="1"' + attrs + b"><name>a</name></file></toc></xar>"
+    raw = pack_xar(xml, b"", algorithm=0)
+
+    def open_it() -> None:
+        with pytest.raises(CorruptionError, match="tag of more than 65536"):
+            _open(raw, format=ArchiveFormat.XAR)
+
+    open_it()
+    peak = traced_peak(open_it)
+    assert peak < 4 * len(xml), peak
+
+
+def test_the_tag_scan_counts_attributes_not_value_bytes() -> None:
+    # A long value is one piece: it costs its own bytes and nothing more. A ">" in a
+    # value does not end the tag, so it cannot split a long tag into short ones.
+    name = "n" * 200_000
+    xml = (
+        b'<xar><toc><file id="1" note="'
+        + b"x" * 100_000
+        + b'"><name>'
+        + name.encode()
+        + b"</name><type>file</type></file></toc></xar>"
+    )
+    with _open(pack_xar(xml, b"", algorithm=0), format=ArchiveFormat.XAR) as reader:
+        assert [m.name for m in reader.members()] == [name]
+    split = b"".join(b' a%d=">"' % i for i in range(20_000))
+    xml = b'<xar><toc><file id="1"' + split + b"><name>a</name></file></toc></xar>"
+    with pytest.raises(CorruptionError, match="tag of more than"):
+        _open(pack_xar(xml, b"", algorithm=0), format=ArchiveFormat.XAR)
+
+
+def test_a_utf16_toc_is_refused_so_the_tag_scan_sees_what_expat_parses() -> None:
+    # In UTF-16-LE, U+4E3E is the bytes 3E 4E: a byte scan would see a ">" after
+    # each attribute name and count many short tags, while expat parses one tag
+    # and builds all its attributes. A NUL byte marks every UTF-16 TOC.
+    attrs = "".join(f' \u4e3e{i}="{i}"' for i in range(200_000))
+    xml = (
+        '<xar><toc><file id="1"' + attrs + "><name>a</name></file></toc></xar>"
+    ).encode("utf-16")
+    raw = pack_xar(xml, b"", algorithm=0)
+
+    def open_it() -> None:
+        with pytest.raises(CorruptionError, match="NUL byte"):
+            _open(raw, format=ArchiveFormat.XAR)
+
+    open_it()
+    peak = traced_peak(open_it)
+    assert peak < 4 * len(xml), peak
 
 
 def test_the_toc_size_must_match_its_header() -> None:

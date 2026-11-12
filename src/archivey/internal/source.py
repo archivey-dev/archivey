@@ -382,6 +382,9 @@ class ArchiveSource(ReadOnlyIOStream):
         self._seek_target = position
         # Only a non-seekable source replays a prefix; a seekable one is rewound instead.
         self._replay = None if seekable else bytearray()
+        # Whether a peek met the end of a non-seekable source: the replay prefix then
+        # holds every byte not yet read (:meth:`held_rest`).
+        self._peek_met_end = False
         # Set for a non-seekable raw source, whose full-count reads all go through it.
         # ``_reader`` is then the caller's object. Only ``read_arrived`` and
         # ``peek_arrived`` read it directly, because a gatherer waits for a full count.
@@ -942,6 +945,8 @@ class ArchiveSource(ReadOnlyIOStream):
             chunk = self._full_count_reader().read(missing)
             if chunk:
                 replay.extend(chunk)
+            if len(chunk) < missing:
+                self._peek_met_end = True
         return bytes(replay[start:n])
 
     def read_arrived(self, n: int) -> bytes:
@@ -1002,8 +1007,22 @@ class ArchiveSource(ReadOnlyIOStream):
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
         missing = n - len(replay)
         if missing > 0:
-            replay.extend(read_arrived(self._stream(), missing))
+            chunk = read_arrived(self._stream(), missing)
+            if not chunk:
+                self._peek_met_end = True
+            replay.extend(chunk)
         return bytes(replay[start:n])
+
+    def held_rest(self) -> bytes | None:
+        """Every byte of a non-seekable source not yet read, when a peek already holds them.
+
+        That is when a peek met the end of the source: the replay prefix is then the
+        rest of the stream, and this copies it without reading the source. ``None``
+        otherwise, and on a seekable source.
+        """
+        if self._replay is None or not self._peek_met_end:
+            return None
+        return bytes(self._replay)
 
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:

@@ -1232,3 +1232,28 @@ def test_lz4_under_pypy_gives_the_reason_not_install_advice(
     assert component.name is OptionalLibrary.LZ4
     assert component.reason == reason
     assert "pip install" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_more_members_than_max_members_is_refused_before_any_is_yielded(
+    streaming: bool,
+) -> None:
+    """The walk counts the tree before the first member, so a streaming pass is
+    refused as a random-access one is, not after yielding up to the limit."""
+    path = DATA / "xz.sqfs"
+    count = len(TYPES)
+
+    def config(limit: int) -> ArchiveyConfig:
+        return ArchiveyConfig(listing_limits=ListingLimits(max_members=limit))
+
+    with open_archive(path, config=config(count), streaming=streaming) as reader:
+        assert sum(1 for _ in reader.stream_members()) == count
+    for limit in (count - 1, 2):
+        yielded = []
+        with (
+            open_archive(path, config=config(limit), streaming=streaming) as reader,
+            pytest.raises(ResourceLimitError, match=f"max_members={limit}"),
+        ):
+            for member, _stream in reader.stream_members():
+                yielded.append(member.name)
+        assert yielded == []

@@ -4,10 +4,11 @@
 the backend's ``open_read`` builds a reader: a :class:`BaseArchiveReader` subclass for
 one format. The reader subclass supplies four hooks: list the members
 (``_iter_members``), open one member's data (``_open_member``), describe the archive
-(``_get_archive_info``) and release what it built (``_close_archive``). The base class turns those into the public
-:class:`~archivey.ArchiveReader` surface and owns everything that does not depend on
-the format: who may call when, the member list, links, limits, verification and
-diagnostics. The class docstring of :class:`BaseArchiveReader` is the full contract.
+(``_get_archive_info``) and release what it built (``_close_archive``). The base class
+turns those into the public :class:`~archivey.ArchiveReader` surface and owns everything
+that does not depend on the format: who may call when, the member list, links, limits,
+verification and diagnostics. The class docstring of :class:`BaseArchiveReader` is the
+full contract.
 
 How a call flows. ``members()``, ``get()`` and ``open()`` first build the member list
 once (``_materialize_members``). The list comes from the reader's single *member walk*
@@ -90,6 +91,7 @@ from typing import (
 )
 
 from archivey.internal.overrides import override
+from archivey.internal.pe_resources import ProgramResources
 
 if TYPE_CHECKING:
     from archivey.internal.bomb_tracker import ReadRatioTally
@@ -456,9 +458,10 @@ def reject_start_offset(
     fmt: ArchiveFormat,
     archive_name: str | None,
     end_offset: int | None = None,
+    program_resources: ProgramResources | None = None,
 ) -> None:
-    """Refuse a nonzero ``open_read(start_offset=…)``, or any ``end_offset``, for a
-    format that cannot honour it.
+    """Refuse a nonzero ``open_read(start_offset=…)``, or any ``end_offset`` or
+    ``program_resources``, for a format that cannot honour it.
 
     Only the self-extracting formats (RAR / 7z / ZIP / LHA) are ever handed a nonzero
     offset, because only they can carry an executable stub and only they are scanned for
@@ -476,6 +479,13 @@ def reject_start_offset(
         raise UnsupportedFeatureError(
             f"{fmt.display_name} cannot be opened with an end offset "
             f"({end_offset}): the format carries no self-extracting stub.",
+            source_format=fmt,
+            archive_name=archive_name,
+        )
+    if program_resources is not None:
+        raise UnsupportedFeatureError(
+            f"{fmt.display_name} cannot be opened with a program's resources: the "
+            "format carries no self-extracting stub.",
             source_format=fmt,
             archive_name=archive_name,
         )
@@ -624,6 +634,7 @@ class ReadBackend(ABC):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> BaseArchiveReader:
         """Open ``source`` as ``format`` (the resolved format the registry selected this
         backend for — either detected by ``open_archive`` or supplied by the caller).
@@ -654,6 +665,16 @@ class ReadBackend(ABC):
         read, and it is not reported as data after the archive. A backend never looks
         for an end itself. Backends whose formats never carry a stub (no
         ``SFX_MAGIC``) are never passed one, and reject it.
+
+        ``program_resources`` is where the resources of a PE program at the start of
+        ``source`` sit, read lazily (:class:`~archivey.internal.pe_resources.\
+ProgramResources`). ``open_archive`` passes one to every backend with ``SFX_MAGIC``
+        on a seekable source of known size, detected or forced alike. A backend may
+        consult it only to decide that a non-zero byte after its archive belongs to
+        the program: the archive is stored as a resource, and the byte follows that
+        resource. It never changes what the archive holds, and it is the one place a
+        backend learns about bytes before ``start_offset``. Backends without
+        ``SFX_MAGIC`` are never passed one, and reject it.
         """
         ...
 
@@ -2559,8 +2580,9 @@ class BaseArchiveReader(ArchiveReader):
         the default lists every member first, with the limits enforced, so nothing is
         written from an archive over them. A backend whose listing is itself a scan of
         the data may instead list as members arrive during the pass (TAR, a sequential
-        format: :meth:`_pass_reads_through_walk`), and not decode the archive twice. A streaming reader always does that: its one pass is
-        the listing. Every pass enforces the limits as it registers members.
+        format: :meth:`_pass_reads_through_walk`), and not decode the archive twice. A
+        streaming reader always does that: its one pass is the listing. Every pass
+        enforces the limits as it registers members.
 
         A listing that ends in damage does not raise here: the pass writes the
         members listed before it and then raises the damage, as a TAR pass does.
@@ -3018,7 +3040,7 @@ class BaseArchiveReader(ArchiveReader):
         stream: BinaryIO,
         member: ArchiveMember,
         *,
-        size: int,
+        size: int | None,
         check: Literal[
             "weak_open_check", "confirm_budget_exhausted", "no_password_check"
         ]
@@ -3588,11 +3610,11 @@ class BaseArchiveReader(ArchiveReader):
         A hard link is always bounded by its own id, so a caller passes no other
         ``before_id`` for one. It takes the latest entry listed before itself, across
         both spellings, and never one listed after it, in any format or mode: a hard
-        link names a file already archived. ``tar(1)`` and ``unrar`` extract one by linking to what they
-        have already written, and ``unrar`` fails a link whose target comes later ("You
-        need to unpack the link target first"). The other formats store no hard-link
-        record. A backward answer also never changes as a streaming walk lists more
-        members, so it can be memoized.
+        link names a file already archived. ``tar(1)`` and ``unrar`` extract one by
+        linking to what they have already written, and ``unrar`` fails a link whose
+        target comes later ("You need to unpack the link target first"). The other
+        formats store no hard-link record. A backward answer also never changes as a
+        streaming walk lists more members, so it can be memoized.
         """
         if not member.link_target:
             return None
@@ -4017,6 +4039,11 @@ class BaseArchiveReader(ArchiveReader):
                 # the member and not decode again from the start. A streaming walk
                 # never seeks back, so it keeps none.
                 restart_points=not streaming,
+                # The members are read through this stream, several small ones to
+                # one read (the TAR walk reads ahead): a failing call that lost its
+                # bytes would take whole members before the damage with it. So it
+                # recovers them whatever the caller set.
+                recover_partial_data=True,
             ),
             stamp=lambda exc: self._stamp_error_context(exc),
             collector=self._diagnostics_collector,

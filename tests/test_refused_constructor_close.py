@@ -311,7 +311,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.codecs.stdlib_takeover._StdlibOnAcceleratorError": (
         "plain assignments only"
     ),
-    "archivey.internal.streams.codecs.rapidgzip_select._StdlibSeekContract": "plain assignments only",
+    "archivey.internal.streams.codecs.rapidgzip_select._StdlibSeekContract": (
+        "plain assignments only"
+    ),
     "archivey.internal.volumes.JoinedViews": (
         "assigns _views, then ConcatenatedFile.__init__, which sets its close state "
         "first; its views come from SharedSource.view, which has already checked them"

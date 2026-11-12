@@ -8,7 +8,8 @@ Notes:
 - In-process PPMd7 create/destroy loops are skipped on Windows (have aborted CI);
   that axis lives in the stress job.
 - PPMd7 streams require ``unpack_size`` (7z always passes the folder size): the format
-  has no end mark, and the exact remaining size (py7zr-style) is the safe contract. Unsized PPMd8 is allowed (end-marked) and never passes ``-1`` (bounded
+  has no end mark, and the exact remaining size (py7zr-style) is the safe contract.
+  Unsized PPMd8 is allowed (end-marked) and never passes ``-1`` (bounded
   drain loop).
 """
 
