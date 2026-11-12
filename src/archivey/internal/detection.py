@@ -485,7 +485,8 @@ def _probe_inner_container(
     window is over the cap, or over libzstd's default 128 MiB, is "can't tell", and so
     is any other decoder the cap refuses. The open that follows then reads the source
     as the bare compressed stream, and ``DETECTION_DECODER_LIMITED`` names the limit
-    (``_report_probe_refused``). A ``MemoryError`` from a decoder no bound shrinks is "can't tell" too.
+    (``_report_probe_refused``). A ``MemoryError`` from a decoder no bound shrinks is
+    "can't tell" too.
 
     With a workspace, the compressed input is bounded by what is left of the budget's
     ``max_decode_input`` (and the workspace's read ceiling) as well as by

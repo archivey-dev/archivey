@@ -780,7 +780,8 @@ not the caller's setting, and SHALL stay an INFO log on `archivey.detection`.
 #### Scenario: a probe ceiling is not the caller's cap
 
 - **WHEN** a `.tar.zst` whose window is over 128 MiB is detected with no cap
-- **THEN** it is `ZST` with `inner_tar` recorded as `CAPABILITY_UNAVAILABLE`, and no `DETECTION_DECODER_LIMITED` is emitted
+- **THEN** it is `ZST` with `inner_tar` recorded as `CAPABILITY_UNAVAILABLE`, and no
+  `DETECTION_DECODER_LIMITED` is emitted
 
 ### Requirement: Detection limit context
 
@@ -794,7 +795,9 @@ receipt's name for the step), `stream_format` (the codec's `StreamFormat` name),
 #### Scenario: detection limit context fields
 
 - **WHEN** the `.tar.zst` with an 8 MiB window is detected under a 4 MiB cap
-- **THEN** the context is `tier="inner_tar"`, `stream_format="ZSTD"`, `max_decoder_memory=4194304`, `needed=None`, and the message names `max_decoder_memory=4194304`
+- **THEN** the context is `tier="inner_tar"`, `stream_format="ZSTD"`,
+  `max_decoder_memory=4194304`, `needed=None`, and the message names
+  `max_decoder_memory=4194304`
 
 ### Requirement: The detection limit code is advisory
 

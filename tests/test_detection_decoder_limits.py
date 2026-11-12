@@ -15,7 +15,9 @@ from __future__ import annotations
 import io
 import logging
 import lzma
+import struct
 import tarfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -188,14 +190,25 @@ def test_a_zstd_window_over_libzstd_s_default_says_no_cap(
     assert _limited(info.diagnostics) == []
 
 
+def _declare_xz_dictionary(data: bytes, code: int) -> bytes:
+    """Rewrite the first block's LZMA2 dictionary byte (``28``: 64 MiB) and its CRC."""
+    out = bytearray(data)
+    block = 12
+    header_size = (out[block] + 1) * 4
+    crc_at = block + header_size - 4
+    lzma2 = bytes(out[block:crc_at]).rfind(b"\x21\x01")
+    assert lzma2 > 0, "no LZMA2 filter in the first block header"
+    out[block + lzma2 + 2] = code
+    out[crc_at : crc_at + 4] = struct.pack("<L", zlib.crc32(bytes(out[block:crc_at])))
+    return bytes(out)
+
+
 def test_an_xz_dictionary_over_the_cap_is_still_found(tmp_path: Path) -> None:
     """The probe reserves a 4 KiB dictionary, under the cap: the format is found and
     the open refuses the declared one."""
-    data = lzma.compress(
-        _TARBALL,
-        format=lzma.FORMAT_XZ,
-        filters=[{"id": lzma.FILTER_LZMA2, "dict_size": 64 * _MIB}],
-    )
+    # Written with the default dictionary and the header's dictionary byte rewritten:
+    # PyPy's lzma refuses to compress with an explicit filter chain.
+    data = _declare_xz_dictionary(lzma.compress(_TARBALL, format=lzma.FORMAT_XZ), 28)
     path = tmp_path / "a.tar.xz"
     path.write_bytes(data)
     config = _capped(32 * _MIB)

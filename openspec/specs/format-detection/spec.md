@@ -525,12 +525,12 @@ those bytes identically. The xz probe SHALL follow the file through stream paddi
 later streams, as the reader does. An xz block whose filter chain cannot be decoded that
 way is "can't tell" and its inner TAR is not claimed. A zstd frame whose window is over
 2^27 bytes (libzstd's default limit) or over the cap is "can't tell", and so is any
-decoder the cap refuses (`ResourceLimitError`); detection SHALL report that refusal
-as `DETECTION_DECODER_LIMITED` (`diagnostics`) with the limit and its value, and the
-open that follows reads the source as the bare compressed stream. A content probe the cap refuses is
-"can't tell" too: it SHALL record `content_probe` as `CAPABILITY_UNAVAILABLE` and SHALL
-NOT answer "not this format". A `MemoryError` from a probe's decoder is "can't tell";
-it SHALL NOT escape detection. In the inner-TAR probe, "can't
+decoder the cap refuses (`ResourceLimitError`); detection SHALL report that refusal as
+`DETECTION_DECODER_LIMITED` (`diagnostics`) with the limit and its value, and the open
+that follows reads the source as the bare compressed stream. A content probe the cap
+refuses is "can't tell" too: it SHALL record `content_probe` as `CAPABILITY_UNAVAILABLE`
+and SHALL NOT answer "not this format". A `MemoryError` from a probe's decoder is "can't
+tell"; it SHALL NOT escape detection. In the inner-TAR probe, "can't
 tell" (an absent backend, or a decoder the probe cannot build) SHALL record `inner_tar`
 in `unavailable_tiers` as `CAPABILITY_UNAVAILABLE`; a corrupt or truncated stream records
 nothing, since it answers "no TAR". The probe SHALL record one reason, in this order: a
