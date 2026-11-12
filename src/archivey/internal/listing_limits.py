@@ -332,9 +332,9 @@ class ListingDecodeCount:
     :meth:`leave`, around ``BaseArchiveReader._pull_members_locked`` and
     ``BaseArchiveReader._listing_work``: a walk step, the steps taken at open, the
     listing's link targets), so the bytes a caller reads from a member, between steps
-    or on another thread, do not count. :meth:`start_pass` starts the count over for each later walk. Draws come
-    through :class:`StageDraws`, from the decode stages that also draw a
-    :class:`~archivey.Budget`.
+    or on another thread, do not count. :meth:`start_pass` starts the count over for
+    each later walk. Draws come through :class:`StageDraws`, from the decode stages
+    that also draw a :class:`~archivey.Budget`.
     """
 
     __slots__ = ("_cap", "_drawn", "_started", "_thread")
