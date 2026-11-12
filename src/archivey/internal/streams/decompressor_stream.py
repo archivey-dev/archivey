@@ -32,6 +32,7 @@ from __future__ import annotations
 import bisect
 import io
 import lzma
+import math
 import os
 import zlib
 from collections.abc import Callable, Container, Generator, Sequence
@@ -511,12 +512,15 @@ class BaseDecoder:
     # See Decoder.index_reads_whole_source. The xz, lzip and zstd scans read only
     # index/trailer structures, not the payload.
     index_reads_whole_source = False
-    # See Decoder.holds_back_errors. The in-house decoders and bzip3 set it.
-    holds_back_errors = False
 
     @property
     def pending_error(self) -> BaseException | None:
         return self._pending_error
+
+    @property
+    def holds_back_errors(self) -> bool:
+        """See :attr:`Decoder.holds_back_errors`: the in-house decoders and bzip3 do."""
+        return False
 
     @property
     def trailing_bytes(self) -> int | None:
@@ -667,32 +671,38 @@ _SEEK_OUTPUT_CHUNK = 65536
 # makes between outputs (a header, a block's input), and still a bounded loop over a
 # hostile stream. Giving up only hands back no bytes; the error still raises.
 _REDECODE_IDLE_LIMIT = 4096
-# How a re-decode searches for the failing byte (``_redecode_probe``). A probe of one
-# byte that raises names that byte; a larger probe that raises costs a restart and a
-# second decode from the seek point, while one that gives its bytes costs one call. So
-# the search asks for one byte per call over the first ``_REDECODE_ONE_BYTE_SPAN`` bytes
-# and over any bracket no larger, doubles the probe until one raises, and then splits
-# the bracket at ``1 / _REDECODE_SPLIT``: a split well below the midpoint mostly
-# succeeds, which trades restarts for calls. Measured on gzip, xz, PPMd and bzip3
-# (``dev-docs/investigations/redecode-probe-strategies.md``): halving cost four to seven
-# times as much, and one byte per call over a 1 MiB read two to eight times as much in
-# process and minutes for a decoder child.
-_REDECODE_ONE_BYTE_SPAN = 2048
-_REDECODE_SPLIT = 64
+# How a re-decode searches for the failing byte (``_redecode_probe``). A probe that
+# gives its bytes costs one call; one that raises costs a restart, a second decode from
+# the seek point to where the search stands, unless it asked for one byte, which names
+# the failing byte. So the probes follow the cost of a restart, counted in calls: about
+# ``_REDECODE_RESTART_CALLS`` plus one call per ``_REDECODE_BYTES_PER_CALL`` bytes it
+# decodes again. One byte per call while the search has covered less than that (the
+# error is usually near the start of the failing call's output: a call is fed at most
+# 64 KiB of compressed input) and over any bracket that small; otherwise probes of
+# about the square root of twice the bracket, so a probe that raises leaves a bracket
+# small enough to finish one byte per call. Measured on gzip, xz and PPMd with the
+# damage 3 MB to 100 MB deep (``dev-docs/investigations/redecode-probe-strategies.md``):
+# about half the extra time of the fixed 2 KiB stretch and 1/64 splits before it.
+_REDECODE_RESTART_CALLS = 128
+_REDECODE_BYTES_PER_CALL = 1024
 
 
-def _redecode_probe(done: int, hi: int, met: bool) -> int:
+def _redecode_probe(done: int, hi: int, met: bool, behind: int) -> int:
     """How many bytes the next probe of a re-decode asks for, from 1 to ``hi - done``.
 
-    ``done`` bytes past the restart point decoded; the error is at most ``hi`` bytes
-    past it, and ``met`` says whether a probe has raised yet (before that, ``hi`` is
-    only where the search gives up).
+    ``done`` bytes past the start of the failing call decoded; the error is at most
+    ``hi`` bytes past it, and ``met`` says whether a probe has raised yet (before that,
+    ``hi`` is only where the search gives up). ``behind`` is how far the seek point a
+    restart decodes from lies before the start of the failing call.
     """
-    if not met:
-        return 1 if done < _REDECODE_ONE_BYTE_SPAN else min(hi - done, done)
-    if hi - done <= _REDECODE_ONE_BYTE_SPAN:
+    left = hi - done
+    if done == 0 or left <= 1:
+        # A decoder that fails a whole block fails at the first byte: one call finds it.
         return 1
-    return (hi - done) // _REDECODE_SPLIT
+    restart = _REDECODE_RESTART_CALLS + (behind + done) // _REDECODE_BYTES_PER_CALL
+    if (not met and done < restart) or left <= restart + math.isqrt(2 * restart):
+        return 1
+    return max(2, min(left - 1, math.isqrt(2 * left)))
 
 
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
@@ -1783,6 +1793,7 @@ class DecompressorStream(ReadOnlyIOStream):
         ):
             return b""
         point = self._find_best_seek_point(before)
+        behind = before - point.decompressed_offset
         got = bytearray()
         # The error is at an offset from ``before`` of at most ``hi``; ``hi`` stays
         # ``limit`` until a probe raises (``met``). Past ``_call_output`` bytes the
@@ -1801,7 +1812,7 @@ class DecompressorStream(ReadOnlyIOStream):
                     idle = 0
                     while len(got) < hi:
                         p = len(got)
-                        want = p + _redecode_probe(p, hi, met)
+                        want = p + _redecode_probe(p, hi, met, behind)
                         while len(got) < want and idle < _REDECODE_IDLE_LIMIT:
                             last_ask = want - len(got)
                             out = self._redecode_step(decoder, last_ask)
