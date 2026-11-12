@@ -517,12 +517,21 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Changed paths
         id: scope
+        # In the merge queue, compare with the branch the queue merges into, not with
+        # `merge_group.base_sha`. That SHA is the head of the group ahead in the queue, so
+        # it would leave out every pull request still queued ahead of this one. When a
+        # group passes, GitHub merges every entry ahead of it too, so this group's run
+        # is also the last check those entries get. On 2026-11-12, #1398 changed no
+        # `FULL` path, its group run skipped PyPy, and it merged #1346 and #1442 ahead
+        # of it, although their own runs had failed on PyPy.
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          BASE: ${{ github.event.merge_group.base_ref || github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          # The compare API takes a branch name: `refs/heads/main` becomes `main`.
+          BASE="${BASE#refs/heads/}"
           gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" > /tmp/compare.json
           # The compare API lists at most 300 files.
           truncated=$(jq '(.files | length) >= 300' /tmp/compare.json)
