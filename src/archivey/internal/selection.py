@@ -177,20 +177,21 @@ def normalize_member_selector(
     """
     if members is None:
         return None
-    if isinstance(members, (str, bytes)):
+    if isinstance(members, bytes):
+        # Like str below, bytes is iterable, so it must be refused before the
+        # collection arm. It gets no list-wrapping advice: [b'notes.txt'] is itself
+        # a usage error, because names are str.
+        raise _UsageTypeError(
+            f"members= takes names (str) or ArchiveMembers, but got "
+            f"{describe_value(members)}."
+        )
+    if isinstance(members, str):
         # A str is an iterable of one-character strings, so `members="notes.txt"`
         # would select the set {"n", "o", "t", "e", "s", ".", "x"}: no member would
         # match, and the call would report a clean extraction of nothing. Refused
         # rather than wrapped: guessing that a string meant [string] would make the
         # plural parameter accept a singular, and the caller is one bracket from
         # correct.
-        # bytes gets no list-wrapping advice: Pass [b'notes.txt'] is itself a
-        # usage error (names are str). The str branch is the common slip.
-        if isinstance(members, bytes):
-            raise _UsageTypeError(
-                f"members= takes names (str) or ArchiveMembers, but got "
-                f"{describe_value(members)}."
-            )
         raise _UsageTypeError(
             f"members= takes a collection of names or members, but got "
             f"{describe_value(members)}. Pass [{members!r}] to select one member."
