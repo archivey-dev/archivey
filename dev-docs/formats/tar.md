@@ -288,14 +288,20 @@ walker takes a budget for each member's headers: what is left of `max_metadata_b
 in every walk, streaming included. An extended header is charged its
 declared size before it is read, and the headers of one member's chain draw from one
 budget, so four 300 KB PAX headers under a 1 MiB cap raise `ResourceLimitError` before
-the fourth is read. A sparse map is charged 24 bytes per entry from its entry count
+the fourth is read. Each distinct keyword of a PAX header is charged 256 bytes more as
+it is parsed (`PAX_KEYWORD_BYTES`), since a short keyword keeps about 30 times its
+bytes in objects; a repeated keyword, such as a sparse 0.0 map's offset records, is
+not charged again. A sparse map is charged 24 bytes per entry from its entry count
 before its entries are parsed: a 0.0 map by its offset records, a 0.1 map by its commas,
 a 1.0 map by its count line and an old GNU map block by block. A few kilobytes of
 compressed map can hold millions of entries, so the member keeps the map in two arrays
 of 8-byte numbers, and registration counts it against `max_metadata_bytes` as listing
 text. PAX global records are held once per global header: members with no records of
 their own share one read-only snapshot, which is why `extra["tar.pax_headers"]` is
-read-only, and each member is still charged for them as if copied. When the walk raises
+read-only, and each member is still charged for them as if copied: 96 bytes per entry
+plus its keyword and value (`TEXT_ENTRY_BYTES` in `internal/listing_limits.py`). A
+member with records of its own does get a copy, so the walker charges that copy, 96
+bytes per global record, before it makes it. When the walk raises
 partway, the members already registered stay, so `members_report()` keeps its salvaged
 prefix. The walker keeps nothing behind the listing, so a pass holds one list of
 members. On a streaming reader, `members_report()` counts members against the cap as
