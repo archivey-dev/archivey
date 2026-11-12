@@ -1026,7 +1026,7 @@ def _backend_for_source(
     backend_cls = registry.reader_for_format(
         resolved_format,
         replacement=replacement,
-        excluded=config.formats.exclude_libraries,
+        excluded=config.formats._libraries_off,
     )
 
     # The capability half above emits these too, so either refusal half reports them.

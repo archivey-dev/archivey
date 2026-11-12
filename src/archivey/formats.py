@@ -491,7 +491,8 @@ class ForwardStream:
 
         The caller's ``FormatPolicy`` holds here as for a member: under
         ``plugins=False`` a ``PluginStream`` raises ``UnsupportedFeatureError``, and a
-        package ``exclude_libraries`` turns off reads as missing. ``only`` and the
+        package the policy turns off (``exclude_libraries`` or ``only_libraries``)
+        reads as missing. ``only`` and the
         format entries of ``exclude`` do not apply, since they check only the file the
         call opens. A :class:`~archivey.CompressionAlgorithm` in ``exclude`` does: a
         format whose method it lists (``StreamFormat.XZ`` under
@@ -765,7 +766,8 @@ class ReaderContext:
         closed when Python collects it, and at the latest when the archive is closed.
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
-        format is read by its replacement, ``exclude_libraries`` holds, and under
+        format is read by its replacement, ``exclude_libraries`` and ``only_libraries``
+        hold, and under
         ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``,
         and so does a format whose compression decodes with a
         :class:`~archivey.CompressionAlgorithm` ``exclude`` lists. ``only`` and the
@@ -910,7 +912,8 @@ class ReaderContext:
 
         The caller's ``FormatPolicy`` holds for each member: under ``plugins=False`` a
         ``PluginStream`` raises ``UnsupportedFeatureError`` before the codec runs, and
-        a package ``exclude_libraries`` turns off raises ``PackageNotInstalledError``.
+        a package the policy turns off (``exclude_libraries`` or ``only_libraries``)
+        raises ``PackageNotInstalledError``.
         ``only`` and the format entries of ``exclude`` do not apply: they check only the
         file the call opens, so a member stored with ``StreamFormat.XZ`` decodes under
         ``exclude={StreamFormat.XZ}``. A :class:`~archivey.CompressionAlgorithm` in

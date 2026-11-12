@@ -109,7 +109,7 @@ class PrefixWorkspace:
         # The (tier, stream format) pairs already reported, so a step that refuses
         # once per candidate reports once per pass.
         self.cap_refusals_reported: set[tuple[str, str]] = set()
-        # The caller's ``FormatPolicy.exclude_libraries``: a probe does not decode with
+        # The caller's ``FormatPolicy._libraries_off``: a probe does not decode with
         # a package it names.
         self.excluded_libraries = excluded_libraries
         # A caller-supplied receipt accumulates across workspaces: ``detect_format``

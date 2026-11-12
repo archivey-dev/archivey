@@ -170,7 +170,8 @@ class StreamConfig:
     lost decoder call would take with it."""
 
     excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS
-    """The caller's ``FormatPolicy.exclude_libraries``: a codec whose package it names
+    """The packages the caller's ``FormatPolicy`` turns off (``FormatPolicy._libraries_off``,
+    from ``exclude_libraries`` and ``only_libraries``): a codec whose package it names
     opens as if the package were not installed."""
 
     @property
@@ -202,7 +203,7 @@ def stream_config_from_archivey(
         decoder_limits=config.decoder_limits,
         process_isolation=config.process_isolation,
         recover_partial_data=config.recover_partial_data,
-        excluded_libraries=config.formats.exclude_libraries,
+        excluded_libraries=config.formats._libraries_off,
     )
 
 

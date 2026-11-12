@@ -1445,12 +1445,12 @@ def _refuse_unusable_forced_accelerator(config: ArchiveyConfig) -> None:
             "process_isolation=NONE: rapidgzip runs only in a child "
             "process. Use AUTO or OFF, or another process_isolation."
         )
-    if OptionalLibrary.RAPIDGZIP in config.formats.exclude_libraries:
+    if OptionalLibrary.RAPIDGZIP in config.formats._libraries_off:
         raise ArchiveyUsageError(
             f"ArchiveyConfig({forced}=ON) cannot be combined with "
-            "formats=FormatPolicy(exclude_libraries=) naming rapidgzip, "
-            "which turns that accelerator off. Use AUTO or OFF, or drop "
-            "the exclusion."
+            "a formats=FormatPolicy that turns rapidgzip off "
+            "(exclude_libraries= or only_libraries=), which turns that "
+            "accelerator off. Use AUTO or OFF, or let rapidgzip run."
         )
 
 
