@@ -81,11 +81,17 @@
       RAR5 archives, it turns the walk's read-through into one request per header
       (20 x 200 KB members: 7 requests and 4.0 MB become 21 and 1.3 MB; 200 x 2 KB: 4
       become 7), a loss under the design's cost model. The walk keeps rule 2.
-- [ ] 3.5 Batched span fetches for `extract_all()` and `stream_members()` over
-      non-solid ZIP and 7z: `merge_offset_ranges` then one `cat_ranges` per batch,
-      into the window pool (design D5).
-- [ ] 3.6 Check the ceilings in `specs/fsspec-integration` against the baseline; update
-      the baseline.
+- [x] 3.5 ~~Batched span fetches for `extract_all()` and `stream_members()` over
+      non-solid ZIP and 7z~~ (design D5). Dropped by the maintainer (2026-11-11), not
+      parked.
+- [x] 3.6 Check the ceilings in `specs/fsspec-integration` against the baseline; update
+      the baseline. Every planner case is inside its row. The compressed TAR row now
+      counts the second decode a member read after a listing makes (restart points,
+      `seekable-decompressor-streams`): `tar_gz_read_first_planner` fetched more than
+      archive size + `F`. The refreshed baseline (2026-11-12) moves only ungated
+      cases: `tar_gz_file_system` (uncached, 18 requests and 2.51× → 15 and 1.64×, now
+      equal to `tar_gz_read_middle`), `zip_deflate_many_streams` (planner, 18 → 6
+      requests), and the `threads` cases, whose threads race.
 
 ## 4. `ArchiveyFileSystem`
 
@@ -129,7 +135,7 @@
       extraction-view tree and `policy=`, the RAR download, and that an `archivey://`
       URL reaches the network where `open_archive(str)` never does (member names from a
       caller go to `fs.open()`, never into a URL).
-- [ ] 6.2 `dev-docs/threat-model.md`: a remote-source section with two lines: chained
+- [x] 6.2 `dev-docs/threat-model.md`: a remote-source section with two lines: chained
       URLs reach the protocol they name, and a same-length replacement of an unpinned
       remote object is not detected (design D7).
 - [x] 6.3 IDEAS.md: replace the fsspec entry with a pointer to this change, and add
@@ -147,4 +153,6 @@
 
 ## 8. Verify
 
-- [ ] 8.1 `openspec validate --strict fsspec-integration`
+- [x] 8.1 `openspec validate --strict fsspec-integration`. The change validates (`openspec
+      validate --all` in `scripts/check.sh`); `--strict` adds only warnings about long
+      requirements and table scenarios with no WHEN/THEN, the repo's matrix style.

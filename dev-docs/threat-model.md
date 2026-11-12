@@ -1583,6 +1583,21 @@ does not execute. Accepted by the maintainer (2026-11-08): reading the payload i
 job, and judging the program is a malware scanner's. Public:
 [security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
+### A remote object replaced at the same length is not detected
+
+An object can be replaced while archivey reads it through an fsspec range source, such
+as an upload under the same name during a long extraction. Later fetches then return
+bytes of another file. A fetch that comes back shorter than its range raises
+`SourceChangedError`, so a shorter replacement is caught. A replacement of the same
+length, or a longer one, returns full ranges, and nothing in the requests shows it:
+`cat_file` reports no total size, and a size request per fetch would double the request
+count. Checksummed member data still fails its check; bytes with no checksum, such as an
+index, may come from the new file with no error. archivey records the advisory
+`SOURCE_CHANGE_UNDETECTABLE` at open, so silence never reads as "checked". Version
+pinning and `If-Match` would close this per file system; they are later work
+(`openspec/changes/fsspec-integration/design.md` §D7, tiers 1 and 2). Public:
+[remote.md §If the remote file changes](../docs/remote.md#if-the-remote-file-changes).
+
 ### A file system's own error can carry a URL's credentials
 
 archivey removes a URL's `user:password@`, and an http(s) query, from the names and
