@@ -324,15 +324,15 @@ threads. Bytes decoded only to get past a member count too: skipping members of 
 CAB folder to reach a later one is not free. A read that would go past the budget raises
 `ResourceLimitError`, and an extraction stops there.
 
-A budget is the total for one job, and it is meant for processing each archive once. It counts
-the work archivey does, so a byte counts again each time it is decoded again: reading a member
-twice, opening the same archive again, or seeking back in a compressed member and reading on all
-use more of it. Listing a `.tar.gz` decodes it all, so its members count once for the listing and
-again when you read them. Listing again is free: the reader keeps its member list. It never refills, so make a new `Budget` for each
-upload or request rather than keeping one on a long-lived config. The per-reader limits still apply. Decoder
-memory stays a per-decoder limit, and time and memory use are bounded by running the job in a
-process you can stop. See the [archives inside the upload](recipes.md#archives-inside-the-upload)
-recipe.
+A budget is the total for one job, and it is meant for processing each archive once. It counts the
+work archivey does, so a byte counts again each time it is decoded again: reading a member twice,
+opening the same archive again, or seeking back in a compressed member and reading on all use more
+of it. Listing a `.tar.gz` decodes it all, so its members count once for the listing and again when
+you read them. Listing again is free: the reader keeps its member list. It never refills, so make a
+new `Budget` for each upload or request rather than keeping one on a long-lived config. The
+per-reader limits still apply. Decoder memory stays a per-decoder limit, and time and memory use are
+bounded by running the job in a process you can stop. See the [archives inside the
+upload](recipes.md#archives-inside-the-upload) recipe.
 
 For files you didn't make, `ArchiveyConfig(formats=FormatPolicy.COMMON)` opens only the formats
 people send today (ZIP, TAR, RAR, 7z, and gzip, bzip2, xz and zstd) and refuses ZIP members in the
