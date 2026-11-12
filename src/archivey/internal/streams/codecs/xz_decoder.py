@@ -933,8 +933,8 @@ class _XzState:
         more streams or the end of the data may follow, as after any stream here.
         ``on_check`` is given each stream's check ID once its header has decoded.
         ``start_offset`` is the source offset of the first byte fed, for errors.
-        ``walk_blocks``: find each stream's blocks as it decodes (:class:`_XzBlockWalker`)
-        and report them with the stream."""
+        ``walk_blocks``: find each stream's blocks as it decodes
+        (:class:`_XzBlockWalker`) and report them with the stream."""
         self._walk_blocks = walk_blocks
         self._walker: _XzBlockWalker | None = None
         self._limits = limits

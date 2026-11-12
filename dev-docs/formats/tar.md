@@ -574,16 +574,16 @@ zlib, and every gzip member, zstd frame, bzip3 block, xz block and lzip member s
 every `compress` CLEAR code a decode passes. The listing decodes the whole stream, so it
 passes them all. These are only points a decode found: the file's own index (the xz
 index, lzip trailers, a zstd seek table, a BGZF, mgzip or bzip3 walk) is read on
-declared seek demand only (maintainer ruling 2026-11-10, after a crafted xz index made
-a default read return another member's bytes). xz finds its blocks from the block and
-LZMA2 chunk headers as it decodes, and keeps them once liblzma has decoded the stream
-to its end and the stream's index lists the same blocks (`_XzBlockWalker`). The gzip
+declared seek demand only (maintainer ruling 2026-11-10, after a crafted xz index made a
+default read return another member's bytes). xz finds its blocks from the block and
+LZMA2 chunk headers as it decodes, and keeps them once liblzma has decoded the stream to
+its end and the stream's index lists the same blocks (`_XzBlockWalker`). The gzip
 snapshots cost about 40 KiB of memory per MiB of output, capped at `MAX_SNAPSHOT_BYTES`
 (32 MiB). In return a member read after the listing resumes near the member instead of
 decoding the archive again from its first byte. Accelerator `AUTO` still resolves as for
-a stream read once, since only `seekable_members=True` declares seek demand. Plain bzip2 has no restart point but the start, unless the `rapidgzip`
-accelerator is engaged and brings its own index. A streaming reader keeps none: its walk
-never seeks back. Each
+a stream read once, since only `seekable_members=True` declares seek demand. Plain bzip2
+has no restart point but the start, unless the `rapidgzip` accelerator is engaged and
+brings its own index. A streaming reader keeps none: its walk never seeks back. Each
 backward seek that discards 1 MiB or more reports `STREAM_REWIND_REDECOMPRESSES` with
 the byte count; the first on a stream logs, later ones only escalate, and a caller who
 wants a rewind to fail sets that code to `RAISE`. A listing ends at the far end of the

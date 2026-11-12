@@ -1043,10 +1043,10 @@ class DecompressorStream(ReadOnlyIOStream):
     ) -> None:
         super().__init__()
         self._owned_inner: BinaryIO | None = None
-        # Whether the file's own index may be read (``_ensure_index_built``): on declared
-        # seek demand only. Restart points alone (``StreamConfig.restart_points``) keep
-        # only the points a decode finds, so a crafted index cannot change what a
-        # default read returns (threat-model O17).
+        # Whether the file's own index may be read (``_ensure_index_built``): on
+        # declared seek demand only. Restart points alone
+        # (``StreamConfig.restart_points``) keep only the points a decode finds, so a
+        # crafted index cannot change what a default read returns (threat-model O17).
         self._file_index = seekable and file_index
         # A probe's stream raises where it meets an error (probe_streams).
         self._probe = _PROBE_STREAM.get()
