@@ -608,8 +608,8 @@ def probe_streams() -> Generator[None]:
         _PROBE_STREAM.reset(token)
 
 
-# Cleared while a caller that turned ``recover_partial_data`` off opens its codec
-# stream (:func:`partial_data_recovery`).
+# Set to the caller's ``recover_partial_data`` while its codec stream opens
+# (:func:`partial_data_recovery`).
 _RECOVER_PARTIAL: ContextVar[bool] = ContextVar(
     "archivey_recover_partial", default=True
 )

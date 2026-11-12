@@ -136,8 +136,10 @@ When a read with a size meets damaged compressed data in a file, it first gives 
 before the damage, and the next read raises. To find those bytes, archivey decompresses that part
 of the member a second time. If you throw a damaged member away anyway, set
 `ArchiveyConfig(recover_partial_data=False)` to skip that work: the read that meets the damage then
-raises straight away, and the bytes it would have returned before the damage are lost. The error is
-the same either way. A compressed tar still gives you every member that ends before the damage.
+raises sooner, and some of the bytes just before the damage, at most one internal step's worth, are
+lost. Formats whose decoder already returns those bytes at no extra cost (`.Z`, lzop, bzip3 and the
+old ZIP methods) still return them. The error is the same either way. A compressed tar still gives
+you every member that ends before the damage.
 
 A member whose data is damaged doesn't end a `stream_members()` loop. Its own read raises, and the
 loop goes on to the next member, so one pass can find every damaged member in the archive. In a

@@ -1004,10 +1004,15 @@ class ArchiveyConfig:
     ``True``: on a source that can seek, a read with a size that meets a decoder error
     returns every byte the decoder gives before it, and the next read raises. Finding
     those bytes means decompressing that part again, from the last point the stream can
-    restart at, so it costs a second decode on damaged data. ``False``: archivey does no
-    extra work for them. The read that meets the damage raises, and the bytes it would
-    have returned before the damage are lost. Use it when a damaged member is thrown
-    away whole anyway.
+    restart at, so it costs a second decode on damaged data. ``False``: archivey does not
+    decode again for them, and on a pipe a gzip, zlib or deflate decoder does not copy
+    its state before each step. The read that meets the damage raises, and the bytes the
+    failing decoder step gave before it are lost; the bytes the read's earlier steps
+    gave still come back, as do the bytes the in-house decoders (``.Z``, lzop, the old
+    ZIP methods) and bzip3 return before an error at no extra cost. Use it when a
+    damaged member is thrown away whole anyway. (Brotli still decodes again to tell
+    bytes after its stream from damage: that decides which error is raised, not which
+    bytes come back.)
 
     A compressed TAR's own stream recovers its bytes either way, so every member that
     ends before the damage is still read whole; the member the damage cuts may still
