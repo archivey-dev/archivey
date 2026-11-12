@@ -77,6 +77,10 @@ def test_a_bare_gz_loses_the_failing_call_and_raises_the_same_error() -> None:
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
 def test_a_damaged_tar_xz_reads_every_whole_member_either_way(pipe: bool) -> None:
+    """The outcome: the same members either way. It passes without the outer
+    stream's override too, as the TAR parser never reads past a member's end;
+    ``test_a_compressed_tar_stream_recovers_whatever_the_setting`` pins the
+    override."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
         for i in range(12):
@@ -122,3 +126,35 @@ def test_a_compressed_tar_stream_recovers_whatever_the_setting(
         assert [m.name for m in archive.members()] == ["a.txt"]
     assert built
     assert all(stream._recover for stream in built)
+
+
+def test_the_accelerator_fallback_keeps_the_setting(monkeypatch: Any) -> None:
+    """rapidgzip's standard-library fallback is built at the read that meets the
+    damage, after the stream was opened: it still does no second decode when the
+    setting is off."""
+    pytest.importorskip("rapidgzip")
+    from archivey import AcceleratorMode
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    built: list[DecompressorStream] = []
+    real_init = DecompressorStream.__init__
+
+    def record(self: DecompressorStream, *args: Any, **kwargs: Any) -> None:
+        real_init(self, *args, **kwargs)
+        built.append(self)
+
+    monkeypatch.setattr(DecompressorStream, "__init__", record)
+    damaged = _damage(gzip.compress(_text(3_000_000, 1), mtime=0), 0.5)
+    config = ArchiveyConfig(
+        use_rapidgzip=AcceleratorMode.ON, recover_partial_data=False
+    )
+    with open_archive(io.BytesIO(damaged), config=config) as archive:
+        stream = archive.open(archive.members()[0])
+        # Detection's probe streams and the first open are built under the setting;
+        # only what the reads build is the fallback.
+        built.clear()
+        with pytest.raises(ArchiveyError):
+            while stream.read(1 << 20):
+                pass
+    assert built, "the damage should reach the standard-library fallback"
+    assert not any(s._recover for s in built)

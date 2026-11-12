@@ -164,7 +164,8 @@ class StreamConfig:
     stream decodes again to hand back the bytes before a decoder error
     (:func:`~archivey.internal.streams.decompressor_stream.partial_data_recovery`). A
     container's own stream (a compressed TAR) sets it ``True`` whatever the caller
-    says, so every whole member before the damage stays readable."""
+    says, as a safeguard: the setting is about a member's partial bytes and never
+    reaches the container's own reads."""
 
     excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS
     """The caller's ``FormatPolicy.exclude_libraries``: a codec whose package it names

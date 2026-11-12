@@ -634,6 +634,13 @@ def partial_data_recovery(recover: bool) -> Generator[None]:
         _RECOVER_PARTIAL.reset(token)
 
 
+def recovers_partial_data() -> bool:
+    """Whether a stream built here would recover the bytes before an error: what a
+    stream built later, outside the :func:`partial_data_recovery` block, re-enters it
+    with (the accelerator's standard-library fallback)."""
+    return _RECOVER_PARTIAL.get()
+
+
 # The step of large bounded reads over a decompressed stream; this module does not
 # use it. ``verify._SIZED_DRAIN_CHUNK`` and ``tar_parser.DATA_READ_STEP`` follow it,
 # and the latter is TAR's stated allocation bound (``tar.md``, ``threat-model.md``

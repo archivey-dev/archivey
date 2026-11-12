@@ -4034,8 +4034,10 @@ class BaseArchiveReader(ArchiveReader):
                     usage=self._usage,
                 ),
                 report_trailing_data=True,
-                # The members are read through this stream: recovering its bytes
-                # before damage is what keeps every whole member before it readable.
+                # A safeguard: the members are read through this stream, so it hands
+                # back its bytes before damage whatever the caller set, and the
+                # setting never reaches the container's own reads. (The TAR parser
+                # reads per member, so no whole member is known to depend on it.)
                 recover_partial_data=True,
             ),
             stamp=lambda exc: self._stamp_error_context(exc),
