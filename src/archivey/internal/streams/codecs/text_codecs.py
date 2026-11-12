@@ -54,7 +54,7 @@ import stat
 from itertools import takewhile
 from typing import TYPE_CHECKING
 
-from archivey.config import ProcessIsolation
+from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.exceptions import CorruptionError
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.base import (
@@ -475,10 +475,11 @@ class UuCodec(StreamCodec):
         read_at: ProbeReadAt | None = None,
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
         """For a source named ``.uu``/``.uue``: a ``begin`` line anywhere in the
         sample, after mail or news text, followed by a valid first body line."""
-        del source_length, read_at, charge_decode, isolation
+        del source_length, read_at, charge_decode, isolation, decoder_limits
         header = _find_header(prefix, leading=True)
         return header is not None and _uu_body_starts(prefix, header)
 
@@ -534,10 +535,11 @@ class Base64Codec(StreamCodec):
         read_at: ProbeReadAt | None = None,
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
         """For a source named ``.b64``/``.base64``: base64 lines of one length, or one
         long line, with no magic needed."""
-        del read_at, charge_decode, isolation
+        del read_at, charge_decode, isolation, decoder_limits
         whole = source_length is not None and len(prefix) >= source_length
         lines = _lines(prefix + b"\n") if whole else _lines(prefix)
         lines = [line for line in lines if line]

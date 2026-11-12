@@ -33,7 +33,12 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import TYPE_CHECKING, Protocol
 
-from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ProcessIsolation
+from archivey.config import (
+    DEFAULT_ARCHIVEY_CONFIG,
+    ArchiveyConfig,
+    DecoderLimits,
+    ProcessIsolation,
+)
 from archivey.cost import StreamCapability
 from archivey.exceptions import (
     PackageNotInstalledError,
@@ -88,7 +93,9 @@ class ContentProbe(Protocol):
     sample (Brotli's chain decode), before it reads them; ``False`` means not covered,
     and the probe keeps its verdict.
     ``isolation`` is the caller's ``process_isolation``: where the probe's trial decode
-    runs.
+    runs. ``decoder_limits`` is the caller's :class:`~archivey.DecoderLimits`: a trial
+    decode whose decoder is over its ``max_decoder_memory`` raises
+    ``ResourceLimitError``, which detection reads as "can't tell".
     """
 
     def __call__(
@@ -100,6 +107,7 @@ class ContentProbe(Protocol):
         read_at: Callable[[int, int], bytes | None] | None = None,
         charge_decode: Callable[[int], bool] | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool: ...
 
 

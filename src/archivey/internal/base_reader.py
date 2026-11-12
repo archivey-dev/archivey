@@ -916,7 +916,9 @@ class BaseArchiveReader(ArchiveReader):
         self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
         # The published listing (``_publish_materialized``); ``None`` until then.
         self._materialized: _Materialized | None = None
-        self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
+        self._listing_tracker = ListingLimitTracker(
+            self._config.listing_limits, budget=self._config.budget
+        )
         # How close this reader came to each reader-lifetime limit (private; read by
         # the scan script and ``archivey extract --dry-run``).
         self._usage = ResourceUsageRecorder()
@@ -1569,17 +1571,47 @@ class BaseArchiveReader(ArchiveReader):
 
     # --- Measurement counters and source read hints -----------------------------------
 
-    def _track_decompressed(self, stream: BinaryIO) -> BinaryIO:
-        """Wrap ``stream`` to count decoded/output bytes when measurement is on.
+    def _track_decompressed(
+        self, stream: BinaryIO, *, draw_budget: bool = True
+    ) -> BinaryIO:
+        """Wrap ``stream`` to count decoded/output bytes when measurement is on, and to
+        draw them from the config's :class:`~archivey.Budget` when it holds one.
 
         Backends call this on the stream that *is* the decompressor (or stored-data)
         output: member streams for ZIP/TAR/single-file, folder/solid-block streams for
-        solid 7z/RAR. Identity when measurement is off.
+        solid 7z/RAR. Identity when measurement is off and there is no budget.
+
+        ``draw_budget=False`` counts without drawing, for member data a decode stage
+        below already draws (:meth:`_budget_drawn`): a compressed TAR's members, whose
+        archive stream draws every byte it decodes, skipped members and headers too, a
+        format adapter's compressed layer, a streaming ZIP's codec members.
         """
         counter = self._decompressed_counter
-        if counter is None:
+        if counter is not None:
+            stream = OutputCountingStream(stream, counter)
+        if draw_budget:
+            stream = self._budget_drawn(stream)
+        return stream
+
+    def _budget_drawn(self, stream: BinaryIO) -> BinaryIO:
+        """``stream``, drawing every byte it delivers from the config's
+        :class:`~archivey.Budget`, or ``stream`` itself when there is none.
+
+        Put on a decode stage, it draws what the decoder produces whoever reads it: a
+        member's reads, and the bytes of members skipped on the way to another.
+        """
+        budget = self._config.budget
+        if budget is None:
             return stream
-        return OutputCountingStream(stream, counter)
+        # Imported here, as the other wrappers built only on request.
+        from archivey.internal.streams.counting import BudgetDrawStream
+
+        if isinstance(stream, ArchiveStreamImpl):
+            # A codec's own handle stays one, so the member's handle collapses it
+            # and takes over its checks; the draw goes on its inner stream.
+            stream._hold_inner(lambda inner: BudgetDrawStream(inner, budget))
+            return stream
+        return BudgetDrawStream(stream, budget)
 
     def _seek_handle_wrapper(self) -> Callable[[BinaryIO], BinaryIO] | None:
         """Return a ``SharedSource(wrap_handle=…)`` callback when measurement is on."""
@@ -1742,6 +1774,7 @@ class BaseArchiveReader(ArchiveReader):
         checks_content: bool = False,
         custom_digests: CustomDigests | None = None,
         bounded: bool = False,
+        draw_budget: bool = True,
     ) -> MemberStreamParts:
         """A raw member stream and how to serve it: what ``_open_member`` returns.
 
@@ -1782,13 +1815,17 @@ class BaseArchiveReader(ArchiveReader):
         records none, or records one that cannot be trusted (a macOS ZIP's size
         modulo 2³²).
 
+        ``draw_budget=False`` leaves the config's :class:`~archivey.Budget` to a decode
+        stage below ``inner`` that draws every byte it produces (``_budget_drawn``),
+        so the member's bytes are not drawn twice.
+
         ``translate`` is the translator of a codec ``inner`` was opened with
         (:func:`~archivey.internal.streams.codecs.registry.open_codec_raw`). It is asked
         before the backend's, as it would be had ``inner`` been the codec's own
         ``ArchiveStream`` collapsed into this one.
         """
         if track_output:
-            inner = self._track_decompressed(inner)
+            inner = self._track_decompressed(inner, draw_budget=draw_budget)
         if seekable is None and (
             # A nested ``ArchiveStream`` is asked now, as its own declaration counts.
             # Any other stream is asked on first use, if ever: a lazy handle that
@@ -4060,6 +4097,10 @@ class BaseArchiveReader(ArchiveReader):
             # read that reaches the damage; each member stream repeats its own.
             repeat_verdict=streaming,
         )
+        # The archive stream is the decode stage: it draws every byte decoded, the
+        # headers and the members a walk skips too, so its members draw nothing more
+        # (``draw_budget=False``).
+        decoded = self._budget_drawn(decoded)
         limits = self._ratio_limits()
         if limits.max_ratio is None:
             return decoded

@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from archivey.config import ProcessIsolation
+from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.config import StreamConfig
 from archivey.internal.excluded_libraries import (
@@ -158,8 +158,9 @@ def _content_probe(probe: Callable[[bytes], bool]) -> Callable[..., bool]:
         read_at: object = None,
         charge_decode: object = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
-        del self, source_length, read_at, charge_decode, isolation
+        del self, source_length, read_at, charge_decode, isolation, decoder_limits
         return check(prefix)
 
     return content_probe
