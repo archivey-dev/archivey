@@ -24,6 +24,7 @@ from archivey.config import ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     PackageNotInstalledError,
+    ResourceLimitError,
     TruncatedError,
     exception_detail,
 )
@@ -54,6 +55,7 @@ from archivey.internal.streams.decompressor_stream import truncated_message
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
+    BackendKindStr,
     ContainerFormat,
     MagicSignature,
     MissingComponent,
@@ -166,17 +168,16 @@ class CodecParams:
     - ``reduce_factor`` — ZIP Reduce's compression factor, 1 to 4 (methods 2 to 5).
       Reduce also needs ``unpack_size``: its data has no end marker.
     - ``single_stream`` — the coder's data is one stream of its codec: a bzip2 ZIP
-      member or 7z coder. The decoder ends at the first stream's end rather than
-      reading a further stream as a concatenated file's, so a further stream is
-      input after the end, which a
-      ``refuse_input_after_end`` stream refuses. Under the bzip2 accelerator, which
-      reads on into a further stream, the read hands over to the standard library
-      where one starts (``bzip2_codec._Bzip2Layout``). A Zstd ZIP member and a 7z
-      Zstd or LZ4 coder do not set it: there concatenated frames count together
-      against the declared size, as RFC 8878 defines Zstd data as one or more frames
-      and the LZ4 frame format lets frames be appended.
-      Raw LZMA1/LZMA2 needs no flag: it is container-only and always ends at its first
-      end marker, refusing any input after it.
+      member or 7z coder, or a bzip2 or LZMA Alone XAR member. The decoder ends at the
+      first stream's end rather than reading a further stream as a concatenated file's,
+      so a further stream is input after the end, which a ``refuse_input_after_end``
+      stream refuses. Under the bzip2 accelerator, which reads on into a further stream,
+      the read hands over to the standard library where one starts
+      (``bzip2_codec._Bzip2Layout``). A Zstd ZIP member and a 7z Zstd or LZ4 coder do
+      not set it: there concatenated frames count together against the declared size, as
+      RFC 8878 defines Zstd data as one or more frames and the LZ4 frame format lets
+      frames be appended. Raw LZMA1/LZMA2 needs no flag: it is container-only and always
+      ends at its first end marker, refusing any input after it.
     - ``input_runs_on`` — the source does not end where the coder's data does: a ZIP
       member read from a stream that cannot seek, its sizes in a data descriptor after
       its data, is followed by the rest of the archive. A codec must then not wait for
@@ -348,22 +349,6 @@ class _ProbeSample(io.BytesIO):
 
 
 # --- the codec descriptors -------------------------------------------------------------
-
-
-# Detection probes decode uncapped: capping a probe would make detection answer "not
-# this format" for a stream whose dictionary is over the cap, and a caller who opened
-# it with ``DecoderLimits.UNLIMITED`` would get the wrong format rather than the read
-# they asked for. ``DecoderLimits`` says so; the open that follows detection applies
-# the caller's limits. Nor does a probe reserve what the archive declares: each one
-# sets ``StreamConfig.probe_read_bound`` to the output it reads, and the LZMA family
-# builds its decoder with only the dictionary that read needs (liblzma would
-# otherwise reserve the declared size, up to 4 GiB, which under ``RLIMIT_AS`` or a
-# strict commit limit is a ``MemoryError`` during detection). zstd cannot shrink a
-# window, so a probe lowers ``window_log_max`` to libzstd's default and a frame over
-# it is "can't tell".
-_PROBE_STREAM_CONFIG = replace(
-    DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits.UNLIMITED
-)
 
 
 class StreamCodec:
@@ -575,6 +560,7 @@ class StreamCodec:
         read_at: ProbeReadAt | None = None,
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
         """Whether ``prefix`` is recognized as this codec's stream.
 
@@ -643,7 +629,7 @@ class StreamCodec:
 
     def available(self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS) -> bool:
         """Whether this codec's decompression backend is importable right now, and
-        ``excluded`` (a call's ``FormatPolicy.exclude_libraries``) does not turn it
+        ``excluded`` (a call's ``FormatPolicy._libraries_off``) does not turn it
         off."""
         return self.requirement is None or (
             not self.excluded_by(excluded) and self._backend_present()
@@ -659,8 +645,15 @@ class StreamCodec:
         ``requirement``, which is also what an absent package's error names."""
         return None
 
+    def backend_uses(self) -> tuple[tuple[BackendKindStr, str], ...]:
+        """What :attr:`~archivey.ArchiveReader.backends_used` lists for a decode, as
+        ``(kind, name)`` pairs: the optional package in use, or nothing for the
+        standard library (zstd names its module, ``compression.zstd`` on 3.14+)."""
+        library = self._excludable()
+        return () if library is None else (("library", str(library)),)
+
     def _excludable(self) -> OptionalLibrary | str | None:
-        """The package ``exclude_libraries`` turns off: the one in use, or
+        """The package ``FormatPolicy._libraries_off`` turns off: the one in use, or
         ``requirement``'s when none is installed, so an excluded package that is
         absent is reported as excluded, not as one to install."""
         if self.requirement is None:
@@ -734,6 +727,7 @@ class StreamCodec:
         require_output: bool = False,
         sample_bytes: int = _PROBE_PREFIX,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
         """Whether a bounded ``prefix`` decodes cleanly through this codec (the probe primitive).
 
@@ -752,7 +746,9 @@ class StreamCodec:
         input). ``require_output`` rejects an empty successful read (LZMA Alone).
         ``sample_bytes`` widens the bounded sample past the detection window for a probe
         that has already read further (the Brotli chain decode); the output drain grows
-        with it.
+        with it. ``decoder_limits`` is the caller's: a decoder over its
+        ``max_decoder_memory`` raises ``ResourceLimitError`` ("can't tell") rather than
+        returning ``False`` ("not this format").
         """
         # The registry imports every codec module, and so this one: import it here.
         from archivey.internal.streams.codecs.registry import open_codec_stream
@@ -768,9 +764,18 @@ class StreamCodec:
             if fully_visible
             else max(len(sample), _PROBE_PREFIX)
         )
+        # Held to the caller's ``DecoderLimits``: a probe that reserved more than
+        # ``max_decoder_memory`` would let detection allocate what the caller ruled
+        # out, and the read that follows would refuse it anyway. ``probe_read_bound``
+        # keeps the reservation to what the read needs where the codec allows it: the
+        # LZMA family builds its decoder with only the dictionary the read needs, and
+        # the cap is checked against that dictionary, not the declared one. zstd
+        # cannot shrink a window, so a frame over the cap (or over libzstd's default,
+        # whichever is smaller) is "can't tell".
         # The most output read below: the budget, then one byte past it.
         config = replace(
-            _PROBE_STREAM_CONFIG,
+            DEFAULT_STREAM_CONFIG,
+            decoder_limits=decoder_limits,
             probe_read_bound=out_budget + 1,
             process_isolation=isolation,
         )
@@ -810,6 +815,11 @@ class StreamCodec:
             # With the whole file in hand, the stream did not terminate; otherwise it
             # decoded fine and just ran out of the bounded prefix.
             return not fully_visible
+        except ResourceLimitError:
+            # The decoder this probe needs is over the caller's ``max_decoder_memory``
+            # (or a probe ceiling), or its child could not run: "can't tell", which
+            # detection records and logs.
+            raise
         except ArchiveyError:
             return False
         except MemoryError:

@@ -502,10 +502,12 @@ however far in it starts.
 A compressed file such as `notes.txt.gz` or `data.zz` counts as an archive here, since it can expand
 as much as one. So do Office documents, JAR files and wheels, which are ZIP archives.
 
-If you need to look inside, keep one budget for the bytes read at every level, and refuse the
-upload when archives are nested more deeply than you allow:
+If you need to look inside, give every level one `archivey.Budget`, and refuse the upload when
+archives are nested more deeply than you allow. Every reader whose config holds the budget draws
+from it, so the bytes decoded and the members listed at all levels count against one total:
 
 ```python
+import dataclasses
 import io
 import tempfile
 import zipfile
@@ -526,36 +528,25 @@ CONFIG = archivey.ArchiveyConfig(
 MAX_DEPTH = 2
 
 
-class Budget:
-    def __init__(self, max_bytes):
-        self.left = max_bytes
-
-    def take(self, n):
-        self.left -= n
-        if self.left < 0:
-            raise RuntimeError("the upload expands too much")
-
-
-def scan(source, budget, depth=0):
+def scan(source, config, depth=0):
     names = []
-    with archivey.open_archive(source, streaming=True, config=CONFIG) as archive:
+    with archivey.open_archive(source, streaming=True, config=config) as archive:
         for member, stream in archive.stream_members():
             names.append("  " * depth + member.name)
             if not member.is_file or stream is None:
                 continue
             with tempfile.TemporaryFile() as copy:
                 while chunk := stream.read(2**20):
-                    budget.take(len(chunk))
                     copy.write(chunk)
                 copy.seek(0)
                 try:
-                    archivey.detect_format(copy, config=CONFIG)
+                    archivey.detect_format(copy, config=config)
                 except archivey.FormatDetectionError:
                     continue
                 if depth + 1 > MAX_DEPTH:
                     raise RuntimeError("archives are nested too deeply")
                 copy.seek(0)
-                names += scan(copy, budget, depth + 1)
+                names += scan(copy, config, depth + 1)
     return names
 
 
@@ -566,9 +557,79 @@ with zipfile.ZipFile("upload.zip", "w") as zf:
     zf.writestr("report.txt", "hello")
     zf.writestr("more.zip", inner.getvalue())
 
-print("\n".join(scan("upload.zip", Budget(100 * 2**20))))
+# A fresh budget for each upload: 100 MiB decoded and 10 000 members, all levels together.
+budget = archivey.Budget(max_decoded_bytes=100 * 2**20, max_members=10_000)
+config = dataclasses.replace(CONFIG, budget=budget)
+print("\n".join(scan("upload.zip", config)))
 ```
 
-Each member is copied to a temporary file, which can seek, so an inner 7z, RAR or ISO archive opens
-too. The copy counts against the budget before anything is opened from it, so a nested archive
-can't use more than what's left. The temporary files take disk space up to the budget at each level.
+Going over the budget raises `ResourceLimitError`. Each member is copied to a temporary file, which
+can seek, so an inner 7z, RAR or ISO archive opens too. The copy is drawn from the budget as it's
+decoded, before anything is opened from it, so a nested archive can't use more than what's left.
+An inner archive's bytes count twice: once as the outer member, and again as it's decoded. The
+temporary files take disk space up to the budget at each level.
+
+### Pin the code that reads uploads
+
+Which packages and programs read a file depends on what's installed: a PPMd 7z member is decoded
+by `pyppmd` if it's there, and a RAR member by whichever `unrar` comes first on `PATH`. On a server,
+you can fix that set in the config, and check after each upload that nothing outside it ran:
+
+```python
+import zipfile
+
+import archivey
+from archivey import OptionalLibrary as L
+
+PINNED = archivey.ArchiveyConfig(
+    formats=archivey.FormatPolicy(
+        # The optional packages archivey may use. Any other one stays off, even one
+        # that a later archivey release starts using. zstd counts as one, even on
+        # Python 3.14 where it's in the standard library.
+        only_libraries={L.CRYPTOGRAPHY, L.BACKPORTS_ZSTD, L.COMPRESSION_ZSTD},
+        plugins=False,
+    ),
+    # The one RAR program to run. PATH isn't searched.
+    unrar_path="/usr/bin/unrar",
+    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+)
+ALLOWED = {"archivey", "cryptography", "backports.zstd", "compression.zstd", "unrar"}
+
+
+def read_all(path):
+    with archivey.open_archive(path, config=PINNED) as archive:
+        for member, stream in archive.stream_members():
+            if stream is not None:
+                stream.read()
+        used = archive.backends_used
+    unexpected = [use for use in used if use.name not in ALLOWED]
+    if unexpected:
+        raise RuntimeError(f"archivey ran code outside the pinned set: {unexpected}")
+    return used
+
+
+with zipfile.ZipFile("pinned.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+    zf.writestr("a.txt", "hello")
+
+for use in read_all("pinned.zip"):
+    print(use)
+```
+
+It prints `BackendUse(kind='reader', name='archivey', used_for='ZIP', path=None)`: the ZIP was
+read by archivey's own reader, with the standard library's `zlib`, which isn't listed. A RAR
+compressed member adds `BackendUse(kind='program', name='unrar', used_for='RAR',
+path='/usr/bin/unrar')`.
+
+A member that needs a package left out of `only_libraries=` raises `PackageNotInstalledError` when
+it's read. The error's `missing` lists the package, and that entry's `reason` says the config turned
+it off. A 7z with a PPMd member fails this way, and the archive's other members can still be read.
+zstd is listed as two optional packages, `backports.zstd` before Python 3.14 and the standard
+library's `compression.zstd` from 3.14 on, so the config names both to keep zstd ZIP members and
+`.tar.zst` files readable. `unrar_path=` must be an absolute path, and a program there that isn't
+RARLAB's, or is older than 6.0, is refused as a missing one is. `format_availability(fmt,
+config=PINNED)` tells you before any upload arrives which formats this setup can read.
+
+`backends_used` grows as members are read, so check it after the last read. It lists each reader,
+optional package and program once, in the order each was first used. It doesn't list the standard
+library's `zlib`, `bz2` and `lzma`, which can't be turned off, or decoding done only to detect the
+format. It's experimental: a later release may add a kind or change what a name holds.

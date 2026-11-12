@@ -1,4 +1,6 @@
-"""Unit tests for ``SlicingStream`` and ``fix_stream_start_position`` (``streams/streamtools/slice.py``).
+"""Unit tests for ``SlicingStream`` and ``fix_stream_start_position``.
+
+Both are in ``streams/streamtools/slice.py``.
 
 These are low-level building blocks every container backend relies on, so they get focused
 corner-case coverage (per CONTRIBUTING's narrow exception for stream primitives).

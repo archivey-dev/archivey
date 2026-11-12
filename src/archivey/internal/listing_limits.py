@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from archivey.config import ListingLimits
+from archivey.config import Budget, ListingLimits
 from archivey.exceptions import ResourceLimitError
 from archivey.types import ArchiveMember
 
@@ -129,10 +129,42 @@ def archive_comment_bytes(comment: str | None) -> int:
 
 
 class ListingLimitTracker:
-    """Accumulate member count + retained metadata; optionally raise when caps are crossed."""
+    """Accumulate member count + retained metadata; optionally raise when caps are crossed.
 
-    def __init__(self, limits: ListingLimits) -> None:
+    ``outer`` is the tracker of the reader this one's reader reads inside
+    (``ReaderContext.open_nested``). One nest of archives has one
+    ``max_metadata_bytes`` budget (maintainer ruling, 2026-11-08: "charge across the
+    nesting"), kept by the outermost tracker. An inner tracker counts its members
+    itself only: each of them reaches the outermost listing as a member that tracker
+    counts, with the same strings. What an inner level keeps beyond the members it
+    hands out (a held member, a walk charge, an archive comment, a link target
+    weighed late, a TAR sparse map) is charged to the outermost tracker too, while
+    the inner level is open, and its checks count it.
+
+    ``budget`` is the config's shared :class:`~archivey.config.Budget`, if any: each
+    tracker draws its own members from it, whatever its nesting.
+    """
+
+    def __init__(
+        self,
+        limits: ListingLimits,
+        *,
+        budget: Budget | None = None,
+        outer: ListingLimitTracker | None = None,
+    ) -> None:
         self._limits = limits
+        # The shared pool members are also drawn from, and how many this reader has
+        # drawn: a listing walked again after ``reset`` draws only past that.
+        self._budget = budget
+        self._budget_members = 0
+        # The outermost tracker of the nest: this one, for a reader not read inside
+        # another.
+        self._root: ListingLimitTracker = outer._root if outer is not None else self
+        # On the outermost tracker: what the open inner levels keep beyond their
+        # members (``_charge_outward``). Always 0 on an inner tracker.
+        self._nested_bytes = 0
+        # On an inner tracker: its share of the outermost tracker's ``_nested_bytes``.
+        self._charged_outward = 0
         self.member_count = 0
         self.metadata_bytes = 0
         self._archive_comment_counted = False
@@ -151,19 +183,58 @@ class ListingLimitTracker:
         self._held = {}
         self._held_bytes = 0
         self._walk_bytes = 0
+        self.leave_nest()
+
+    def leave_nest(self) -> None:
+        """Take off what this inner tracker charged the outermost one: its reader has
+        ended its walk, or closed."""
+        root = self._root
+        if root is not self:
+            root._nested_bytes -= self._charged_outward
+            self._charged_outward = 0
+
+    def _charge_outward(self, nbytes: int, *, enforce: bool, what: str) -> None:
+        """Charge ``nbytes`` this inner tracker keeps to the outermost tracker, and
+        raise when the nest's total would cross ``max_metadata_bytes``. ``what``
+        names them, for the refusal. Nothing to do on the outermost tracker, whose own
+        total is checked with the inner levels' charges."""
+        root = self._root
+        if root is self:
+            return
+        total = root.metadata_bytes + root._nested_bytes + nbytes
+        max_meta = self._limits.max_metadata_bytes
+        if enforce and max_meta is not None and total > max_meta:
+            raise metadata_limit_error(
+                max_meta,
+                f"retained {total} bytes across an archive and the archives inside "
+                f"it, {self._charged_outward + nbytes} of them by an inner archive "
+                f"for {what}",
+            )
+        root._nested_bytes += nbytes
+        self._charged_outward += nbytes
+
+    def _uncharge_outward(self, nbytes: int) -> None:
+        """Take ``nbytes`` this inner tracker charged off the outermost tracker."""
+        root = self._root
+        if root is not self:
+            root._nested_bytes -= nbytes
+            self._charged_outward -= nbytes
 
     def charge_walk(self, nbytes: int, what: str) -> None:
         """Charge ``nbytes`` a reader keeps while it walks (a name table, a header)
         to ``max_metadata_bytes``, with the members, and refuse them before the
         reader allocates them. ``what`` names them, for the refusal. The charge
-        stays until :meth:`release_held`, at the walk's end."""
+        stays until :meth:`release_held`, at the walk's end. An inner tracker
+        charges them to the outermost one too (``_charge_outward``)."""
         next_bytes = self.metadata_bytes + nbytes
         max_meta = self._limits.max_metadata_bytes
-        if max_meta is not None and next_bytes > max_meta:
+        if max_meta is not None and next_bytes + self._nested_bytes > max_meta:
             raise metadata_limit_error(
                 max_meta,
-                f"retained {next_bytes} bytes, {nbytes} of them for {what}",
+                f"retained {next_bytes + self._nested_bytes} bytes, {nbytes} of them "
+                f"for {what}",
             )
+        self._charge_outward(nbytes, enforce=True, what=what)
         self.metadata_bytes = next_bytes
         self._walk_bytes += nbytes
 
@@ -181,6 +252,8 @@ class ListingLimitTracker:
         """Count one registered member and its metadata, refusing it past either cap."""
         # Called once per member of every listing, so the checks are inlined; each
         # raise still goes through the shared helpers.
+        # An inner tracker does not charge its members outward: the outermost
+        # listing counts each of them as it lists it.
         next_count = self.member_count + 1
         next_bytes = self.metadata_bytes + member_metadata_bytes(member)
         limits = self._limits
@@ -188,11 +261,21 @@ class ListingLimitTracker:
         if max_members is not None and next_count > max_members:
             self._check_members(next_count)
         max_meta = limits.max_metadata_bytes
-        if max_meta is not None and next_bytes > max_meta:
+        if max_meta is not None and next_bytes + self._nested_bytes > max_meta:
             self._check_metadata(next_bytes)
+        if self._budget is not None:
+            self._draw_budget_members(next_count)
         # Raises before storing, so a refused member changes neither total.
         self.metadata_bytes = next_bytes
         self.member_count = next_count
+
+    def _draw_budget_members(self, next_count: int) -> None:
+        """Draw the shared budget up to ``next_count`` members, past what this reader
+        has drawn already; the budget refuses, counting none, past its cap."""
+        budget = self._budget
+        if budget is not None and next_count > self._budget_members:
+            budget._draw_members(next_count - self._budget_members)
+            self._budget_members = next_count
 
     def hold_member(self, member: ArchiveMember, reason: str) -> None:
         """Charge a member a reader holds back before yielding it, as one member and
@@ -218,12 +301,22 @@ class ListingLimitTracker:
                 f"{next_count} members, {held} of them {reason})"
             )
         max_meta = limits.max_metadata_bytes
-        if max_meta is not None and next_bytes > max_meta:
+        if max_meta is not None and next_bytes + self._nested_bytes > max_meta:
             raise metadata_limit_error(
                 max_meta,
-                f"retained {next_bytes} bytes, {held_bytes} of them for {held} "
-                f"{reason}",
+                f"retained {next_bytes + self._nested_bytes} bytes, {held_bytes} of "
+                f"them for {held} {reason}",
             )
+        # The nest's check goes first: a refused charge leaves nothing behind, while a
+        # budget draw cannot be taken back. A refused draw takes the charge off.
+        self._charge_outward(nbytes, enforce=True, what=f"{held} {reason}")
+        # Drawn as account_member draws, before the reader keeps it: the high-water
+        # mark means the register after the release does not draw it again.
+        try:
+            self._draw_budget_members(next_count)
+        except BaseException:
+            self._uncharge_outward(nbytes)
+            raise
         self._held[key] = (member, nbytes)
         self._held_bytes = held_bytes
         self.member_count = next_count
@@ -244,12 +337,14 @@ class ListingLimitTracker:
         for _, nbytes in held.values():
             self._uncharge(nbytes)
         self.metadata_bytes -= self._walk_bytes
+        self._uncharge_outward(self._walk_bytes)
         self._walk_bytes = 0
 
     def _uncharge(self, nbytes: int) -> None:
         self._held_bytes -= nbytes
         self.member_count -= 1
         self.metadata_bytes -= nbytes
+        self._uncharge_outward(nbytes)
 
     def account_link_target(self, target: str, *, enforce: bool = True) -> None:
         """Add a link target that was resolved after its member was registered.
@@ -275,6 +370,7 @@ class ListingLimitTracker:
         next_bytes = self.metadata_bytes + nbytes
         if enforce:
             self._check_metadata(next_bytes)
+        self._charge_outward(nbytes, enforce=enforce, what="what it keeps")
         self.metadata_bytes = next_bytes
 
     def assert_within_limits(self) -> None:
@@ -291,7 +387,21 @@ class ListingLimitTracker:
             )
 
     def _check_metadata(self, nbytes: int) -> None:
-        check_metadata_budget(self._limits, nbytes, detail=f"retained {nbytes} bytes")
+        """Check ``nbytes`` of this tracker's own, with what the open inner levels
+        keep when this is the outermost tracker."""
+        nested = self._nested_bytes
+        if nested:
+            total = nbytes + nested
+            check_metadata_budget(
+                self._limits,
+                total,
+                detail=f"retained {total} bytes, {nested} of them by the archives "
+                "inside it",
+            )
+        else:
+            check_metadata_budget(
+                self._limits, nbytes, detail=f"retained {nbytes} bytes"
+            )
 
 
 def check_metadata_budget(limits: ListingLimits, nbytes: int, *, detail: str) -> None:

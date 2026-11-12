@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import BinaryIO, NamedTuple
 
-from archivey.config import ArchiveyConfig, ListingLimits
+from archivey.config import ArchiveyConfig, Budget, ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     ArchiveEofContext,
@@ -70,6 +70,7 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipFolder,
     compression_method_for_coder,
     empty_archive,
+    encoded_header_slice,
     find_signature_offset,
     folder_is_encrypted,
     folder_unpack_size,
@@ -131,13 +132,14 @@ from archivey.internal.password_confirm import (
     plan_password_confirm,
     run_password_confirm_plan,
 )
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     MemberStreamParts,
 )
-from archivey.internal.streams.crypto import _AesCbcTruncatedError
+from archivey.internal.streams.crypto import _AesCbcTruncatedError, note_crypto_use
 from archivey.internal.streams.decompressor_stream import retire_decoder_children
 from archivey.internal.streams.resume import ask_resume_offset, ask_seek_resume_offset
 from archivey.internal.streams.streamtools import (
@@ -357,6 +359,7 @@ def load_sevenzip_archive(
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
     will_read: Callable[[int, int], None] | None = None,
+    budget: Budget | None = None,
 ) -> SevenZipArchive:
     """Two-phase header load: parse → decode encoded → re-parse → materialize.
 
@@ -365,6 +368,7 @@ def load_sevenzip_archive(
     are the reader's ``ListingLimits``; both hold at open (``None`` disables one).
     ``will_read`` takes the next-header range hint
     (:func:`~archivey.internal.backends.sevenzip_parser.read_signature_and_next_header`).
+    ``budget`` draws each decode of an encoded header, before it runs.
     """
     signature = read_signature_and_next_header(fp, will_read=will_read)
     if not signature.header_data:
@@ -384,6 +388,7 @@ def load_sevenzip_archive(
             stream_config=stream_config,
             collector=collector,
             max_members=max_members,
+            budget=budget,
         )
     assert isinstance(block, PlainHeader)
     _check_header_metadata(block, max_metadata_bytes)
@@ -430,6 +435,7 @@ def _decode_encoded_header_block(
     stream_config: StreamConfig | None,
     collector: DiagnosticCollector | None,
     max_members: int | None,
+    budget: Budget | None = None,
 ) -> PlainHeader:
     """Decode an encoded header and parse the plain header it holds.
 
@@ -438,6 +444,11 @@ def _decode_encoded_header_block(
     """
 
     def decode(password: bytes | None) -> bytes:
+        if budget is not None:
+            # Decoded whole into memory: drawn, or refused drawing nothing, before
+            # the decoder runs. Each password candidate decodes it again.
+            size = encoded_header_slice(encoded)[3]
+            budget._draw_whole(size, "the encoded 7z header")
         return decode_encoded_header(
             fp,
             encoded,
@@ -931,6 +942,7 @@ class SevenZipReader(BaseArchiveReader):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> None:
         super().__init__(
             ArchiveFormat.SEVEN_Z,
@@ -1001,6 +1013,9 @@ class SevenZipReader(BaseArchiveReader):
         # view stops there (``_view``), so nothing at or past it is read, and no
         # signature inside the table is taken for the archive's.
         self._end: int | None = end_offset
+        # A PE program's resources, when the archive may be stored as one: bytes
+        # after that resource belong to the program (``_report_trailing_data``).
+        self._program_resources = program_resources
         probe = self._region_view(start_offset)
         try:
             self._origin = start_offset + find_signature_offset(probe)
@@ -1068,6 +1083,7 @@ class SevenZipReader(BaseArchiveReader):
             will_read=lambda start, end: self._will_read(
                 self._origin + start, self._origin + end
             ),
+            budget=self._config.budget,
         )
 
     def _report_trailing_data(self) -> None:
@@ -1082,7 +1098,9 @@ class SevenZipReader(BaseArchiveReader):
         self-extractor's certificate table is not reported: ``_view`` stops before it,
         because it is identified, not unexplained (maintainer decision; see
         ``dev-docs/formats/7z.md`` §6). Any other tail of a self-extractor is reported,
-        measured from the archive's own end.
+        measured from the archive's own end, except a tail that follows the program
+        resource the archive is stored in (``ProgramResources.explains``): that is the
+        rest of the program.
         """
         fp = self._view(self._archive.end_offset)
         try:
@@ -1090,6 +1108,12 @@ class SevenZipReader(BaseArchiveReader):
         finally:
             fp.close()
         if found is None:
+            return
+        archive_end = self._origin + self._archive.end_offset
+        resources = self._program_resources
+        if resources is not None and resources.explains(
+            archive_end, archive_end + found
+        ):
             return
         self._diagnostics_collector.emit(
             code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
@@ -1917,7 +1941,7 @@ class SevenZipReader(BaseArchiveReader):
             # block. Confirm-only, so a False goes on to the anchor plan.
             if tail is None:
                 return False
-            return aes_tail_confirms(
+            confirmed = aes_tail_confirms(
                 self._folder_pack_views(folder_index)[0],
                 tail_pack_size,
                 tail,
@@ -1925,6 +1949,8 @@ class SevenZipReader(BaseArchiveReader):
                 key_cache=self._key_cache,
                 excluded=self._stream_config.excluded_libraries,
             )
+            note_crypto_use(self._usage)
+            return confirmed
 
         # The callbacks below run once per candidate password, inside
         # ``attempt_with_confirm``: each judges the candidate against the folder,
@@ -2355,6 +2381,7 @@ class SevenZipReadBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> SevenZipReader:
         del format
         return SevenZipReader(
@@ -2369,6 +2396,7 @@ class SevenZipReadBackend(ReadBackend):
             open_site=open_site,
             start_offset=start_offset,
             end_offset=end_offset,
+            program_resources=program_resources,
         )
 
 

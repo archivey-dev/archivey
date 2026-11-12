@@ -755,7 +755,9 @@ class ArchiveStreamImpl(ArchiveStream):
                 opened = self._adopt(opened)
             while isinstance(opened, ArchiveStreamImpl):
                 opened = self._collapse_nested(opened)
-            return opened
+            # What the nested handle would have served its inner through.
+            wrap = nested._inner_wrap
+            return opened if wrap is None else wrap(opened)
         raise ArchiveyUsageError(
             "Cannot collapse nested ArchiveStreamImpl: it has no opener and no inner "
             "stream."
@@ -1340,12 +1342,16 @@ class ArchiveStreamImpl(ArchiveStream):
         """Serve the member through ``wrap(inner)`` (a ratio guard), before any read.
 
         A lazy handle wraps the inner stream when it opens it; an open one wraps it now.
+        A second hold wraps outside the first.
         """
-        assert self._inner_wrap is None, "the inner stream is already held"
         if self._inner is not None:
             self._inner = wrap(self._inner)
-        else:
+            return
+        first = self._inner_wrap
+        if first is None:
             self._inner_wrap = wrap
+        else:
+            self._inner_wrap = lambda inner: wrap(first(inner))
 
     def _make_forward_only(self) -> None:
         """Refuse ``seek()`` on this handle from now on, whatever it was built with.

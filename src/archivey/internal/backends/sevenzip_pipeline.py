@@ -101,6 +101,7 @@ from archivey.internal.streams.crypto import (
     AES_BLOCK_SIZE,
     AesParams,
     get_crypto_backend,
+    note_crypto_use,
     open_aes_decrypt_stream,
 )
 from archivey.internal.streams.decompressor_stream import (
@@ -922,13 +923,15 @@ def _execute_stage(
     ``AesDecryptStream`` borrows the pack view (``owns_inner`` default).
     """
     if isinstance(stage, _AesStage):
-        return _open_aes_stage(
+        decrypted = _open_aes_stage(
             stream,
             stage.coder,
             password=password,
             key_cache=key_cache,
             excluded=stream_config.excluded_libraries,
         )
+        note_crypto_use(stream_config.usage)
+        return decrypted
     if isinstance(stage, _CodecStage):
         if stage.pack_size is not None:
             # The coder's input span, which excludes an AES stage's padding. The slice

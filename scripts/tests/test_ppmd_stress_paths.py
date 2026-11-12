@@ -1,10 +1,10 @@
-"""The `pull_request: paths:` list of `ppmd-native-stress.yml`.
+"""The `push: paths:` list of `ppmd-native-stress.yml`.
 
 That workflow is the only place the stress marker, the hard raw-streams soak and the
-valgrind gate run on a pull request. A pull request outside its list starts no run and
-reports no check, so a renamed file or a new script step shows up as nothing rather than
-as a red check. This pins the list against the tree and against the scripts the
-workflow's own steps run.
+valgrind gate run; besides its weekly run, it runs after a merge to main that changes a
+listed path. A merge outside its list starts no run, so a renamed file or a new script
+step shows up as nothing rather than as a red run. This pins the list against the tree
+and against the scripts the workflow's own steps run.
 """
 
 from __future__ import annotations
@@ -13,15 +13,15 @@ import fnmatch
 import re
 from pathlib import Path
 
-from test_ci_doc_paths import _pull_request_paths
+from test_ci_doc_paths import _trigger_paths
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ppmd-native-stress.yml"
 
 
 def _entries() -> list[str]:
-    entries = _pull_request_paths(WORKFLOW.read_text(encoding="utf-8"))
-    assert entries, "ppmd-native-stress.yml has no pull_request paths filter"
+    entries = _trigger_paths(WORKFLOW.read_text(encoding="utf-8"), "push")
+    assert entries, "ppmd-native-stress.yml has no push paths filter"
     return entries
 
 
