@@ -61,9 +61,9 @@ members](extracting.md#what-each-policy-does-with-unusual-members)
 
 **Not catching errors from `extract_all`.** A damaged member raises `CorruptionError`, and by
 default the extraction stops there. The files written before it stay in the destination, but the
-damaged member doesn't leave a partial file. Catch `ArchiveyError` and decide what to do with what's already there, such as
-deleting the folder. `on_error="continue"` extracts the rest and records the failures in the report
-instead. [Damaged members](extracting.md#damaged-members)
+damaged member doesn't leave a partial file. Catch `ArchiveyError` and decide what to do with what's
+already there, such as deleting the folder. `on_error="continue"` extracts the rest and records the
+failures in the report instead. [Damaged members](extracting.md#damaged-members)
 
 ```python
 import shutil
