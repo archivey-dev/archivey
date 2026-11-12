@@ -106,12 +106,17 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   not run.
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
-  files it wrote before then on disk. 7z, RAR and ISO archives check the limits before they give you
-  any member, with or without `streaming=True`. A ZIP read from a file checks the member count its
-  end record declares before any member, and the rest as it reads its index, so an index holding
-  more members than its end record says gives you members up to the limit before the error, as a TAR
-  does. A ZIP read from a pipe is checked like a TAR as its members arrive, and again on its index
-  at the end.
+  files it wrote before then on disk. 7z, RAR, ISO and XAR archives check the limits before they
+  give you any member, with or without `streaming=True`. A SquashFS image checks the member count
+  and its paths before any member, and weighs the rest of each member's text as it lists it, so with
+  `streaming=True`, text that crosses `max_metadata_bytes` gives you members up to that point before
+  the error. ar and CPIO archives check the limits as they go, like a TAR. An RPM checks the member
+  count and the size its headers declare before any member, and weighs the names as it lists them,
+  so names that cross `max_metadata_bytes` give you members up to that point before the error. A ZIP
+  read from a file checks the member count its end record declares before any member, and the rest
+  as it reads its index, so an index holding more members than its end record says gives you members
+  up to the limit before the error, as a TAR does. A ZIP read from a pipe is checked like a TAR as
+  its members arrive, and again on its index at the end.
 - **A ZIP extracted from a pipe is checked on what it stages before its index arrives.** The pass
   writes each member's data into a private `.archivey-tmp-` folder in the destination, and only the
   index at the end says which members the extraction keeps. The extraction limits count what's

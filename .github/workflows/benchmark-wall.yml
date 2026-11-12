@@ -150,7 +150,9 @@ jobs:
       # Same as ci.yml benchmark: RAR data cases need RARLAB unrar on the runner.
       - name: Install unrar (RAR data cases)
         if: steps.guard.outputs.run == 'true'
-        run: sudo apt-get update && sudo apt-get install -y unrar
+        uses: ./.github/actions/apt-install
+        with:
+          packages: unrar
 
       - name: Full realistic wall-time run
         if: steps.guard.outputs.run == 'true'

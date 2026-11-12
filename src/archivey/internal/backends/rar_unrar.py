@@ -887,9 +887,10 @@ def open_unrar_p(
     the part before it, and a longer one is cut to the 127 UTF-16 units RAR hashes —
     see :func:`_password_stdin_bytes`, which also needs ``rar5`` (true for a RAR5
     archive) to tell a wrong password from one ``unrar``'s stdin cannot carry; the
-    default gives the refusal, which claims nothing about the password. That bound is what lets the whole password be
-    written before stdout is read: it always fits in the pipe buffer, so the write
-    cannot block on a child that is itself blocked writing a full stdout.
+    default gives the refusal, which claims nothing about the password. That bound is
+    what lets the whole password be written before stdout is read: it always fits in the
+    pipe buffer, so the write cannot block on a child that is itself blocked writing a
+    full stdout.
 
     Reading ``stdout`` has no time bound. A read waits for as long as the child
     takes to produce bytes, and nothing here stops a child that stalls. A solid

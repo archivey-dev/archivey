@@ -767,6 +767,15 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             if budget is not None and self._charged > budget:
                 raise  # ``_charge`` refused: making the members would hold more
             failure, complete = exc, False
+        limit = limits.max_members
+        if limit is not None and len(entries) > limit:
+            # The walk found more entries than ``max_members`` (it stops one past, or
+            # failed on damage after it): refuse before any member, as without
+            # ``streaming=True``, rather than yield the first ones.
+            raise ResourceLimitError(
+                f"Listing limit reached: max_members={limit} (the SquashFS tree "
+                f"holds more than {limit} entries)"
+            )
         files = self._file_inodes(entries)
         first = _first_with_inode(entries)
         # The members a hard link names: only their names are kept past their record.
@@ -791,8 +800,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
     def _walk(self, entries: list[_Entry], limit: int | None) -> bool:
         """Append every entry of the tree to ``entries``, in listing order, reading only
-        the directories' inodes. ``False`` when it stopped past ``limit`` entries, where
-        archivey refuses the listing anyway. Each entry's path is charged
+        the directories' inodes. ``False`` when it stopped past ``limit`` entries, which
+        the caller refuses before making any member. Each entry's path is charged
         (``_charge``) as the walk finds it."""
         budget = self._context.config.listing_limits.max_metadata_bytes
         charged = self._charged

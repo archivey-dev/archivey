@@ -1779,7 +1779,8 @@ def _load_vstr(buf: bytes | bytearray | memoryview, pos: int) -> tuple[bytes, in
 
 
 def _dos_time_issue(stamp: int, field: str, filename: str) -> TimestampIssue:
-    """The report for a nonzero DOS word :func:`~archivey.internal.timestamps.dos_to_datetime` could not use."""
+    """The report for a nonzero DOS word that
+    :func:`~archivey.internal.timestamps.dos_to_datetime` could not use."""
     return TimestampIssue(
         field=field,
         source="dos",
@@ -2075,9 +2076,9 @@ class _HeaderDecryptStream:
     Not :class:`~archivey.internal.streams.crypto.AesDecryptStream`: folding
     this class into it would take three header-only behaviours (refusing
     ``read(-1)``, flagging a cut instead of ``finalize``, and not seeking the
-    shared archive handle), and each would be a flag on that class. The decrypt *stage* is shared; the pull stream is not. The
-    measurement is the "Keep ``_HeaderDecryptStream``" row in
-    ``dev-docs/formats/rar.md``.
+    shared archive handle), and each would be a flag on that class. The decrypt *stage*
+    is shared; the pull stream is not. The measurement is the "Keep
+    ``_HeaderDecryptStream``" row in ``dev-docs/formats/rar.md``.
 
     ``read`` rejects unbounded ``n < 0``. It has no per-read size cap: the
     caller already bounds the ask. RAR5 refuses ``hdrlen > _RAR5_MAX_HEADER``

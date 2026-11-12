@@ -823,8 +823,9 @@ class ForwardArchiveReader(ABC):
         checks, so it sees unsafe members too; it may rename/sanitize a member (return
         a ``.replace()``d copy) or skip it (return ``None``), and the safety checks run
         on what it returns. The call runs under the config the reader was opened with;
-        ``limits`` overrides its extraction limits for this call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
-        summary is the delta for this extraction call.
+        ``limits`` overrides its extraction limits for this call only. Returns an
+        :class:`~archivey.ExtractionReport` whose diagnostic summary is the delta for
+        this extraction call.
 
         ``abort_on`` names events that end the whole call the first time they occur —
         raising instead of returning a report. It is independent of ``on_error``: see

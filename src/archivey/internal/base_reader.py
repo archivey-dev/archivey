@@ -4,10 +4,11 @@
 the backend's ``open_read`` builds a reader: a :class:`BaseArchiveReader` subclass for
 one format. The reader subclass supplies four hooks: list the members
 (``_iter_members``), open one member's data (``_open_member``), describe the archive
-(``_get_archive_info``) and release what it built (``_close_archive``). The base class turns those into the public
-:class:`~archivey.ArchiveReader` surface and owns everything that does not depend on
-the format: who may call when, the member list, links, limits, verification and
-diagnostics. The class docstring of :class:`BaseArchiveReader` is the full contract.
+(``_get_archive_info``) and release what it built (``_close_archive``). The base class
+turns those into the public :class:`~archivey.ArchiveReader` surface and owns everything
+that does not depend on the format: who may call when, the member list, links, limits,
+verification and diagnostics. The class docstring of :class:`BaseArchiveReader` is the
+full contract.
 
 How a call flows. ``members()``, ``get()`` and ``open()`` first build the member list
 once (``_materialize_members``). The list comes from the reader's single *member walk*
@@ -2581,8 +2582,9 @@ class BaseArchiveReader(ArchiveReader):
         the default lists every member first, with the limits enforced, so nothing is
         written from an archive over them. A backend whose listing is itself a scan of
         the data may instead list as members arrive during the pass (TAR, a sequential
-        format: :meth:`_pass_reads_through_walk`), and not decode the archive twice. A streaming reader always does that: its one pass is
-        the listing. Every pass enforces the limits as it registers members.
+        format: :meth:`_pass_reads_through_walk`), and not decode the archive twice. A
+        streaming reader always does that: its one pass is the listing. Every pass
+        enforces the limits as it registers members.
 
         A listing that ends in damage does not raise here: the pass writes the
         members listed before it and then raises the damage, as a TAR pass does.
@@ -3610,11 +3612,11 @@ class BaseArchiveReader(ArchiveReader):
         A hard link is always bounded by its own id, so a caller passes no other
         ``before_id`` for one. It takes the latest entry listed before itself, across
         both spellings, and never one listed after it, in any format or mode: a hard
-        link names a file already archived. ``tar(1)`` and ``unrar`` extract one by linking to what they
-        have already written, and ``unrar`` fails a link whose target comes later ("You
-        need to unpack the link target first"). The other formats store no hard-link
-        record. A backward answer also never changes as a streaming walk lists more
-        members, so it can be memoized.
+        link names a file already archived. ``tar(1)`` and ``unrar`` extract one by
+        linking to what they have already written, and ``unrar`` fails a link whose
+        target comes later ("You need to unpack the link target first"). The other
+        formats store no hard-link record. A backward answer also never changes as a
+        streaming walk lists more members, so it can be memoized.
         """
         if not member.link_target:
             return None
@@ -4044,6 +4046,11 @@ class BaseArchiveReader(ArchiveReader):
                     usage=self._usage,
                 ),
                 report_trailing_data=True,
+                # The members are read through this stream, several small ones to
+                # one read (the TAR walk reads ahead): a failing call that lost its
+                # bytes would take whole members before the damage with it. So it
+                # recovers them whatever the caller set.
+                recover_partial_data=True,
             ),
             stamp=lambda exc: self._stamp_error_context(exc),
             collector=self._diagnostics_collector,

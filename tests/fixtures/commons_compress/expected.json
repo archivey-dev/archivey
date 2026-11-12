@@ -1965,7 +1965,12 @@
     "digest": "8254257615b4c909"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "arj/uncompressed",
+    "members": 2,
+    "digest": "8254257615b4c909"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "bla.cpio": {
@@ -2219,7 +2224,12 @@
     "digest": "8254257615b4c909"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "arj/uncompressed",
+    "members": 2,
+    "digest": "8254257615b4c909"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "bla.xml.bz2": {
@@ -3097,7 +3107,10 @@
     "error": "ArchiveException"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "error": "CorruptionError"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "org/apache/commons/compress/bzip2/hbCreateDecodeTables.bin": {
@@ -3965,7 +3978,12 @@
     "digest": "8c71f1732cb1da79"
    },
    "path": {
-    "error": "FormatDetectionError"
+    "format": "arj/uncompressed",
+    "members": 1,
+    "digest": "8c71f1732cb1da79"
+   },
+   "pipe": {
+    "error": "StreamNotSeekableError"
    }
   },
   "synthetic/long-name/long-name.dump": {

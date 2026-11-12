@@ -71,12 +71,13 @@ OPEN_ENUMS = frozenset(
     }
 )
 #: The experimental names: the format and codec plugin interface and the names that
-#: exist only for it, and the verification level (DR-12a). The stability policy leaves them out (``docs/how-it-is-built.md``
-#: §Versioning and stability): any release may change or remove them, with no
-#: deprecation release. A line whose own name is one of them (or under one) never makes
-#: a release a minor; a stable line that only mentions one in a signature still does,
-#: and the maintainer judges it (see :func:`classify`). ``tests/test_api_surface.py``
-#: pins the list: adding a name takes away a promise to callers.
+#: exist only for it, and the verification level (DR-12a). The stability policy leaves
+#: them out (``docs/how-it-is-built.md`` §Versioning and stability): any release may
+#: change or remove them, with no deprecation release. A line whose own name is one of
+#: them (or under one) never makes a release a minor; a stable line that only mentions
+#: one in a signature still does, and the maintainer judges it (see :func:`classify`).
+#: ``tests/test_api_surface.py`` pins the list: adding a name takes away a promise to
+#: callers.
 EXPERIMENTAL = (
     "archivey.formats",
     "archivey.PluginContainer",

@@ -709,6 +709,7 @@ def test_the_containers_a_plugin_can_replace() -> None:
         C.XAR,
         C.CAB,
         C.LHA,
+        C.ARJ,
     }
 
 

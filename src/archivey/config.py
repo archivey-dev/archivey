@@ -116,8 +116,8 @@ class ProcessIsolation(Enum):
     """The default: only the decoders seen to crash on some input run in a child
     process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``), pyppmd (every PPMd
     member) and libbzip3 (every ``.bz3`` file, a young library with memory-safety fixes
-    in its 2023 releases). Every other decoder runs in the caller's process. Processes are reused for
-    later decoders. Measured on one Linux machine
+    in its 2023 releases). Every other decoder runs in the caller's process. Processes
+    are reused for later decoders. Measured on one Linux machine
     (``scripts/investigations/bench_process_isolation.py``), each PPMd decoder costs
     about 1.4 to 2 ms more than in-process: a non-solid 7z of 1024 PPMd members of 4 KiB
     took about twice as long. A ZIP member or a non-solid 7z member has a decoder of its
@@ -150,11 +150,11 @@ class ProcessIsolation(Enum):
     """No child process at all: every decoder runs in the caller's process.
 
     Not recommended for archives you do not trust: rapidgzip, pyppmd and libbzip3 are
-    isolated by default because they crash the process on some input or may, and here a crash takes the
-    caller with it. It suits trusted files where speed matters, tests, and environments
-    that cannot start processes. PPMd members and ``.bz3`` files decode in-process, and
-    rapidgzip is not used: ``use_rapidgzip`` and ``use_indexed_bzip2`` under ``AUTO`` use
-    the standard library, and ``ON`` is refused with
+    isolated by default because they crash the process on some input or may, and here a
+    crash takes the caller with it. It suits trusted files where speed matters, tests,
+    and environments that cannot start processes. PPMd members and ``.bz3`` files decode
+    in-process, and rapidgzip is not used: ``use_rapidgzip`` and ``use_indexed_bzip2``
+    under ``AUTO`` use the standard library, and ``ON`` is refused with
     :class:`~archivey.ArchiveyUsageError` when the config is built."""
 
 
@@ -480,17 +480,17 @@ class DecoderLimits:
     block, ``.lzma`` and each lzip member — the window each zstd frame declares,
     on ``.zst``, ZIP method 93 and 7z, and twice the decoded size a mozlz4 header
     declares (the decode buffer and its copy), and the block size a ``.bz3`` header
-    declares, at what libbzip3 allocates for it (about 10 times the block size). RAR's dictionary is checked too, before
-    ``unrar`` or ``unar`` is started, at what that program allocates for it. ``unar``
-    writes to the whole declared dictionary, so the declared size counts. ``unrar``
-    writes to it only as output is produced, so the declared size counts only up
-    to the unpacked bytes the read decodes: the member's own size, or in a solid
-    archive the members up to and including it. The two decoders that allocate what
-    the header says, pyppmd and liblzma, differ. A refused allocation inside pyppmd
-    takes its process down (a child process unless ``process_isolation`` is ``NONE``).
-    liblzma does raise ``MemoryError`` when it cannot reserve the dictionary, but a
-    reservation that succeeds is its real cost: the dictionary fills as output is
-    written, so a 151 KB stream declaring 4 GiB held 1.1 GiB resident after
+    declares, at what libbzip3 allocates for it (about 10 times the block size). RAR's
+    dictionary is checked too, before ``unrar`` or ``unar`` is started, at what that
+    program allocates for it. ``unar`` writes to the whole declared dictionary, so the
+    declared size counts. ``unrar`` writes to it only as output is produced, so the
+    declared size counts only up to the unpacked bytes the read decodes: the member's
+    own size, or in a solid archive the members up to and including it. The two decoders
+    that allocate what the header says, pyppmd and liblzma, differ. A refused allocation
+    inside pyppmd takes its process down (a child process unless ``process_isolation``
+    is ``NONE``). liblzma does raise ``MemoryError`` when it cannot reserve the
+    dictionary, but a reservation that succeeds is its real cost: the dictionary fills
+    as output is written, so a 151 KB stream declaring 4 GiB held 1.1 GiB resident after
     producing 1 GiB, where the same stream declaring 1 MiB held 59 MB. The
     dictionary bounds how much of the output the decoder keeps, and the archive
     picks it.
@@ -997,6 +997,29 @@ class ArchiveyConfig:
     ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
     ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
 
+    recover_partial_data: bool = True
+    """Whether a read that meets damaged compressed data first hands back the bytes
+    before the damage.
+
+    ``True``: on a source that can seek, a read with a size that meets a decoder error
+    returns every byte the decoder gives before it, and the next read raises. Finding
+    those bytes means decompressing that part again, from the last point the stream can
+    restart at, so it costs a second decode on damaged data. ``False``: archivey does not
+    decode again for them, and on a pipe a gzip, zlib or deflate decoder does not copy
+    its state before each step. The read that meets the damage raises, and the bytes the
+    failing decoder step gave before it are lost; the bytes the read's earlier steps
+    gave still come back, as do the bytes the in-house decoders (``.Z``, lzop, the old
+    ZIP methods) and bzip3 return before an error at no extra cost. Use it when a
+    damaged member is thrown away whole anyway. (Brotli still decodes again to tell
+    bytes after its stream from damage: that decides which error is raised, not which
+    bytes come back.)
+
+    A compressed TAR's own stream recovers its bytes either way, so every member that
+    ends before the damage is still read whole; the member the damage cuts may still
+    hand back its first bytes. The same archive gives the same members and the same
+    error either way: only the partial bytes before an error differ.
+    """
+
     def __post_init__(self) -> None:
         """Check the fields at construction, and convert the ones that hold enums or
         program paths.
@@ -1084,6 +1107,7 @@ def _check_guard_switches(config: ArchiveyConfig) -> None:
     for field_name in (
         "rar_allow_glob_member_concatenation",
         "read_link_targets",
+        "recover_partial_data",
         "always_probe_content",
         "discover_volumes",
     ):

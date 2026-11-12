@@ -8,14 +8,16 @@ name: fsspec consumers
 # tests archivey against their latest releases. A red run after a quiet week on main
 # most likely means a new pandas, pyarrow, dask or fsspec release changed something.
 #
-# Runs daily on main, on demand, and on a pull request that changes the fsspec file
+# Runs daily on main, on demand, and after a merge to main that changes the fsspec file
 # system, the remote source under it, its tests, the dependency pins or this file. It
-# is not a required check and the merge queue does not run it. It is a release gate
+# never runs on a pull request (CI cost), it is not a required check and the merge
+# queue does not run it. It is a release gate
 # (RELEASE_GATE_WORKFLOWS in scripts/release/release.py).
 on:
   schedule:
     - cron: "37 4 * * *"
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - "src/archivey/fsspec.py"
       - "src/archivey/internal/remote.py"
@@ -28,7 +30,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: fsspec-consumers-${{ github.event.pull_request.number || github.ref }}
+  group: fsspec-consumers-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
