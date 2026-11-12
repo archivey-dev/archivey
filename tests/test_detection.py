@@ -1716,7 +1716,8 @@ def test_empty_listing_rescan_detects_under_the_config_budget(
 
 def test_empty_listing_rescan_stays_internal(tmp_path: Path) -> None:
     """Under a policy that raises on the conflict, the rescan's own findings neither
-    reach the caller nor raise inside it: an empty ZIP named ``x.tar.gz`` opened with ``format=ZIP`` reports the
+    reach the caller nor raise inside it: an empty ZIP named ``x.tar.gz`` opened with
+    ``format=ZIP`` reports the
     empty archive and nothing else, because detection does identify it as ZIP."""
     from archivey import open_archive
     from archivey.diagnostics import Diagnostic, DiagnosticCode, DiagnosticPolicy

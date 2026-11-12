@@ -205,9 +205,9 @@ How they were made is in libarchive's `test_read_format_cab.c` (`mkcab1` to `mkc
 
 ## `lha_lhasa/`
 
-Twenty-two LHA archives from lhasa's test suite (`test/archives/<tool>/<file>`, renamed
-`<tool>_<file>`; lhasa commit `75ed835`, v0.6.0), copied on 2026-11-09. Each was written
-by the tool its directory names, most on the system it ran on; no tool on the test image
+Twenty-nine LHA archives from lhasa's test suite (`test/archives/<tool>/<file>`, renamed
+`<tool>_<file>`; lhasa commit `75ed835`, v0.6.0), copied on 2026-11-09 (the MacLHA ones
+on 2026-11-10). Each was written by the tool its directory names, most on the system it ran on; no tool on the test image
 writes LHA, so `tests/test_lha.py` reads them beside the archives `tests/lha_util.py`
 writes. Their expected bytes are what lhasa 0.4.0 extracts.
 
@@ -226,6 +226,7 @@ writes. Their expected bytes are what lhasa 0.4.0 extracts.
 | OS-9/68k LHA 2.01 | `lha_osk_201_h2_lh0.lzh` | the level-2 header two bytes longer than its size; OS-9 permissions |
 | MorphOS LhA 2.7.17 | `morphos_lha_2717_h2_metadata.lzh` | a `0x71` comment record, skipped |
 | LH/2 2.22 (OS/2) | `lh2_222_eas.lzh` | mixed levels 0 and 1, OS/2 extended attributes as a file |
+| MacLHA 2.24 | `maclha_224_*` | MacBinary-wrapped members at levels 0 to 2 (`-lh0-`, `-lh1-`, `-lh5-`), one made with "non-Mac" (no wrapper), TeachText files in subdirectories; lhasa's `test-decompress` gives their CRC-32s |
 
 lhasa is under the ISC license:
 
@@ -241,6 +242,25 @@ lhasa is under the ISC license:
 > DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
 > IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 > CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+## `arj_310/`
+
+ARJ archives written 2026-11-09 by ARJ 3.10 for Linux (`arj` 3.10.22 in Ubuntu), the
+open-source continuation of Robert Jung's ARJ. Nothing on the CI image writes ARJ.
+
+- `method1.arj` to `method4.arj`: the same four files (`words.txt`, 15 995 bytes of
+  random words; `runs.bin`, 37 353 bytes of repeated random runs and zeros; `small.txt`;
+  `empty`) with `arj a -m1` to `-m4`. ARJ stores `small.txt` and `empty` with method 0.
+  `tests/test_arj.py` pins their sizes and SHA-256.
+- `stored.arj`: `small.txt` with `-m0`.
+- `links.arj`: `arj a -a1 -r` of a file, a symlink to it, a hard link to it, a FIFO and a
+  directory, which ARJ for Unix stores as type-6 members with `U` extended headers.
+- `garbled.arj`: `small.txt` garbled with `-gsecret`.
+- `cc_bla_dos.arj` and `cc_bla_unix.arj`: Commons Compress's `bla.arj` (ARJ for Windows,
+  host 11) and `bla.unix.arj` (Apache-2.0, github.com/apache/commons-compress
+  `src/test/resources`), fetched 2026-11-09.
+
+See [`dev-docs/formats/arj.md`](../../../dev-docs/formats/arj.md).
 
 ## `reduce_pkzip092/`
 

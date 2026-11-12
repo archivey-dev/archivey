@@ -1237,7 +1237,8 @@ def _seven_zip_decompress(
     result = run_7z(["e", "-so", str(path)], program=program)
     if result.returncode != 0:
         pytest.fail(
-            f"{program} (7-Zip {sevenzip_version_text(sevenzip_version(program))}) exited {result.returncode} on "
+            f"{program} (7-Zip {sevenzip_version_text(sevenzip_version(program))}) "
+            f"exited {result.returncode} on "
             f"{path.name}: {result.stderr.decode(errors='replace').strip()}"
         )
     return result.stdout
@@ -3647,7 +3648,8 @@ def test_no_source_file_advertises_a_deleted_extra() -> None:
     fails on any new hardcoded hint, not only the ones a test happens to reach.
     """
     deleted = re.compile(
-        r"archivey\[(?:7z|crypto|iso|lz4|zstd|cli|rar|recommended-lite)\]|'(?:7z|crypto|iso|lz4|zstd|cli|rar|recommended-lite)' extra"
+        r"archivey\[(?:7z|crypto|iso|lz4|zstd|cli|rar|recommended-lite)\]"
+        r"|'(?:7z|crypto|iso|lz4|zstd|cli|rar|recommended-lite)' extra"
     )
     src = Path(__file__).resolve().parent.parent / "src"
     offenders = [

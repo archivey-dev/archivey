@@ -24,7 +24,9 @@ zeros are recorded as `ARCHIVE_TRAILING_DATA`, which `DiagnosticPolicy.STRICT` t
 exception. Behind more than 64 KiB of trailing bytes, zeros included, a ZIP's index is found by
 walking its members from the start, which takes longer. A file object that can't seek, such as a
 pipe or an HTTP response, needs `streaming=True` and works only for some formats, which [Reading
-once](reading.md#reading-once) lists.
+once](reading.md#reading-once) lists. An archive on S3, an HTTP server or another remote store
+opens from `fsspec.open(url)` without downloading it, and can seek
+([Remote archives](remote.md)).
 
 ??? note "Why not refuse bytes after the archive?"
     They aren't part of any member, so every member is still read correctly. GNU gzip and bzip2 also
@@ -132,7 +134,7 @@ and U+DCFF.
 
 If you know the encoding, pass it as `encoding=`, and archivey uses it in place of that default for
 names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR is listed as `'caf\udce9.txt'` without it
-and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar, RPM, makeself, SquashFS, CAB, XAR and LHA read
+and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar, RPM, makeself, SquashFS, CAB, XAR, LHA and ARJ read
 `encoding=`. The other formats decode names their own way, and a value passed to them is ignored and
 noted in the diagnostics.
 

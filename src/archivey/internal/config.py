@@ -159,6 +159,14 @@ class StreamConfig:
     there. A detection probe builds its config without one, so a probe's sizes are
     never recorded."""
 
+    recover_partial_data: bool = True
+    """The caller's ``ArchiveyConfig.recover_partial_data``: whether a decompressing
+    stream decodes again to hand back the bytes before a decoder error
+    (:func:`~archivey.internal.streams.decompressor_stream.partial_data_recovery`). A
+    container's own stream (a compressed TAR) sets it ``True`` whatever the caller
+    says: one read of it can hold several whole members before the damage, which a
+    lost decoder call would take with it."""
+
     excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS
     """The packages the caller's ``FormatPolicy`` turns off (``FormatPolicy._libraries_off``,
     from ``exclude_libraries`` and ``only_libraries``): a codec whose package it names
@@ -192,6 +200,7 @@ def stream_config_from_archivey(
         use_indexed_bzip2=config.use_indexed_bzip2,
         decoder_limits=config.decoder_limits,
         process_isolation=config.process_isolation,
+        recover_partial_data=config.recover_partial_data,
         excluded_libraries=config.formats._libraries_off,
     )
 

@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Repo pre-commit hook: auto-fix + format staged Python the same way CI checks.
+# Repo pre-commit hook: auto-fix + format staged Python the same way CI checks, and
+# check that staged Markdown adds no line over 100 columns.
 # Install with: ./scripts/install-git-hooks.sh
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+
+# Markdown: checked, not rewritten, since a partly staged file would mix the rewrap
+# into what is staged. The message names the fixer.
+if git diff --cached --name-only --diff-filter=ACMR -- '*.md' | grep -q .; then
+  python3 scripts/checks/check_line_width.py --staged
+fi
 
 files=()
 while IFS= read -r -d '' f; do
