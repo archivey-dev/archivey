@@ -71,7 +71,7 @@ SFX_MAX = 2 * 1024 * 1024
 # not carry hundreds of format magics, and the native parsers that call this have no
 # detection budget. Each parser scans for one format, so the detector counts each
 # format's rejections apart (:class:`HitSelector`) and caps only the formats whose
-# parser scans (``ReadBackend.SFX_PARSER_SCANS``: RAR and 7z). Decoys of one format
+# parser scans (those that set ``ReadBackend.SFX_PARSER_SCANS``). Decoys of one format
 # do not spend another's allowance, and a ZIP is never capped: its seekable reader
 # finds the end of central directory from the tail and runs no scan, and the forward
 # walk's scan (``zip_local_walk``) is bounded by the window alone, its validator
@@ -129,7 +129,7 @@ class HitOutcome(Enum):
     ``VALID_SHORT`` — identity and structure hold, but the archive declares an end
     before the source ends, which a decoy can do and a payload appended last does
     not. A scan keeps the first one as a fallback and looks on for a ``VALID`` hit;
-    only a validator that knows where its format ends (7z) returns it, and only when
+    only a validator that knows where its format ends (7z, LHA) returns it, and only when
     ``remaining`` is known. Trailing bytes are legitimate (SFX configuration, a
     signature), so it is never a reject.
     ``DAMAGED`` — identity holds, structure does not (a 7z whose ``StartHeaderCRC``
@@ -447,6 +447,8 @@ _SIZE_OF_HEADERS = 60
 _DATA_DIRECTORIES = {_PE32_MAGIC: (92, 96), _PE32_PLUS_MAGIC: (108, 112)}
 _SECURITY_DIRECTORY = 4
 _SECTION_HEADER_SIZE = 40
+# The PE format defines 16 data directories; a larger declared count adds none.
+_MAX_DATA_DIRECTORIES = 16
 
 
 class ExecutableLayout(NamedTuple):
@@ -466,18 +468,51 @@ class ExecutableLayout(NamedTuple):
     payload_end: int | None
 
 
-def pe_layout(prefix: bytes, total_size: int | None) -> ExecutableLayout | None:
-    """The :class:`ExecutableLayout` of a PE whose headers sit in ``prefix``, or ``None``.
+class PeSection(NamedTuple):
+    """One entry of a PE's section table: where the section sits in memory (a size
+    and an RVA) and where its bytes sit in the file (a size and an offset)."""
 
-    Reads only ``prefix[:LAYOUT_PREFIX]``, so every caller holding at least that
-    many leading bytes gets the same answer. ``None`` when ``prefix`` is not a PE, a
-    header or the section table does not fit, a field is out of range, or a section
-    ends past ``total_size``: a layout that does not parse means "scan as before",
-    never an error. The certificate entry (data directory 4) holds a file offset,
-    not an RVA; it counts only when it starts at or past the overlay start and ends
-    at ``total_size``. So the end is never before the overlay start, as the same
-    headers declare it; nothing checks that a table starts there, so headers that
-    name one inside the archive cut it, and the archive then fails to open.
+    virtual_size: int
+    virtual_address: int
+    raw_size: int
+    raw_pointer: int
+
+    def file_offset(self, rva: int, length: int) -> int | None:
+        """The file offset of ``[rva, rva + length)`` when the span lies inside this
+        section's bytes in the file, else ``None``."""
+        start = rva - self.virtual_address
+        if start < 0 or start + length > self.raw_size:
+            return None
+        return self.raw_pointer + start
+
+
+class PeHeaders(NamedTuple):
+    """The parts of a PE's headers the self-extractor code reads.
+
+    ``data_directories`` holds the ``(address, size)`` pairs the optional header has
+    room for and declares, in order: an RVA for every entry but the certificate
+    table (index 4), which holds a file offset.
+    """
+
+    headers_size: int
+    sections: tuple[PeSection, ...]
+    data_directories: tuple[tuple[int, int], ...]
+
+    def file_offset(self, rva: int, length: int) -> int | None:
+        """The file offset of the RVA span ``[rva, rva + length)``, when one section's
+        bytes in the file hold all of it."""
+        for section in self.sections:
+            offset = section.file_offset(rva, length)
+            if offset is not None:
+                return offset
+        return None
+
+
+def pe_headers(prefix: bytes) -> PeHeaders | None:
+    """The :class:`PeHeaders` of a PE whose headers sit in ``prefix``, or ``None``.
+
+    Reads only ``prefix[:LAYOUT_PREFIX]``. ``None`` when ``prefix`` is not a PE, or
+    the optional header or the section table does not fit.
     """
     head = bytes(prefix[:LAYOUT_PREFIX])
     if not head.startswith(_MZ) or not _is_pe(head):
@@ -495,27 +530,56 @@ def pe_layout(prefix: bytes, total_size: int | None) -> ExecutableLayout | None:
     count_at, first_at = directories
     if _SIZE_OF_HEADERS + 4 > optional_size or count_at + 4 > optional_size:
         return None
-    sections = optional + optional_size
-    sections_end = sections + section_count * _SECTION_HEADER_SIZE
-    if sections_end > len(head):
+    sections_at = optional + optional_size
+    if sections_at + section_count * _SECTION_HEADER_SIZE > len(head):
         return None
     (headers_size,) = struct.unpack_from("<I", head, optional + _SIZE_OF_HEADERS)
-    overlay_start = headers_size
-    for index in range(section_count):
-        raw_size, raw_pointer = struct.unpack_from(
-            "<II", head, sections + index * _SECTION_HEADER_SIZE + 16
+    sections = tuple(
+        PeSection(
+            *struct.unpack_from(
+                "<IIII", head, sections_at + index * _SECTION_HEADER_SIZE + 8
+            )
         )
-        if raw_size:
-            overlay_start = max(overlay_start, raw_pointer + raw_size)
+        for index in range(section_count)
+    )
+    # From byte 8 of each entry: VirtualSize, VirtualAddress, SizeOfRawData,
+    # PointerToRawData, the order of PeSection's fields.
+    (directory_count,) = struct.unpack_from("<I", head, optional + count_at)
+    room = max(0, (optional_size - first_at) // 8)
+    data_directories = tuple(
+        struct.unpack_from("<II", head, optional + first_at + index * 8)
+        for index in range(min(directory_count, room, _MAX_DATA_DIRECTORIES))
+    )
+    return PeHeaders(headers_size, sections, data_directories)
+
+
+def pe_layout(prefix: bytes, total_size: int | None) -> ExecutableLayout | None:
+    """The :class:`ExecutableLayout` of a PE whose headers sit in ``prefix``, or ``None``.
+
+    Reads only ``prefix[:LAYOUT_PREFIX]``, so every caller holding at least that
+    many leading bytes gets the same answer. ``None`` when ``prefix`` is not a PE, a
+    header or the section table does not fit, a field is out of range, or a section
+    ends past ``total_size``: a layout that does not parse means "scan as before",
+    never an error. The certificate entry (data directory 4) holds a file offset,
+    not an RVA; it counts only when it starts at or past the overlay start and ends
+    at ``total_size``. So the end is never before the overlay start, as the same
+    headers declare it; nothing checks that a table starts there, so headers that
+    name one inside the archive cut it, and the archive then fails to open.
+    """
+    headers = pe_headers(prefix)
+    if headers is None:
+        return None
+    overlay_start = headers.headers_size
+    for section in headers.sections:
+        if section.raw_size:
+            overlay_start = max(overlay_start, section.raw_pointer + section.raw_size)
     if total_size is None:
         return ExecutableLayout(overlay_start, None)
     if overlay_start > total_size:
         return None
-    (directory_count,) = struct.unpack_from("<I", head, optional + count_at)
-    entry = first_at + _SECURITY_DIRECTORY * 8
-    if directory_count <= _SECURITY_DIRECTORY or entry + 8 > optional_size:
+    if len(headers.data_directories) <= _SECURITY_DIRECTORY:
         return ExecutableLayout(overlay_start, None)
-    cert_start, cert_size = struct.unpack_from("<II", head, optional + entry)
+    cert_start, cert_size = headers.data_directories[_SECURITY_DIRECTORY]
     if (
         cert_size
         and overlay_start <= cert_start
@@ -556,7 +620,7 @@ def overlay_start_of(source: BinaryIO) -> int | None:
     """The overlay start (:func:`executable_layout`) of the seekable ``source`` from
     its current position, or ``None``; the position is restored.
 
-    For the RAR and 7z parsers' scans, which judge the candidate there first, as
+    For the RAR, 7z and LHA parsers' scans, which judge the candidate there first, as
     detection does (``format-detection``, *Overlay start first*). One read of the
     bytes the scan reads anyway.
     """
@@ -956,12 +1020,13 @@ class _ForwardWindow:
 
         return view
 
-    def keep_tail(self, overlap: int) -> None:
-        """Drop all but the last ``overlap`` bytes, so a magic that straddles the
-        next chunk boundary still matches."""
-        if len(self.data) > overlap:
-            self.start += len(self.data) - overlap
-            del self.data[: len(self.data) - overlap]
+    def keep_tail(self, keep: int) -> None:
+        """Drop all but the last ``keep`` bytes, so a magic that straddles the next
+        chunk boundary still matches, with the bytes before it that its needle's
+        offset puts in the candidate."""
+        if len(self.data) > keep:
+            self.start += len(self.data) - keep
+            del self.data[: len(self.data) - keep]
 
 
 def _judge_first_at(
@@ -980,13 +1045,14 @@ def _judge_first_at(
     no second needle can match at the same offset.
     """
     for needle in needles:
-        if first_at + len(needle.magic) > limit:
+        at = needle.offset
+        if first_at + at + len(needle.magic) > limit:
             continue
-        if window.peek(len(needle.magic), origin=first_at) != needle.magic:
+        if window.peek(at + len(needle.magic), origin=first_at)[at:] != needle.magic:
             continue
         outcome = validator(window.view(first_at), remaining)
         if outcome in (HitOutcome.VALID, HitOutcome.VALID_SHORT):
-            return MagicScan(MagicHit(first_at, needle.magic, 0), None, 0)
+            return MagicScan(MagicHit(first_at, needle.magic, at), None, 0)
         break
     return None
 
@@ -1041,14 +1107,16 @@ def scan_for_magic(
     uses: a candidate-relative ``peek_more(n)`` plus known remaining from that origin.
     Candidates are chosen by :class:`HitSelector` with the damaged fallback kept and
     :data:`MAX_VALIDATED_CANDIDATES` as the rejection cap. Each caller passes the
-    needles of one format (the 7z and RAR parsers). With no validator the first
+    needles of one format (the parsers of the formats that set
+    ``SFX_PARSER_SCANS``). With no validator the first
     structural match wins and there is no cap.
 
     ``peek_more`` is served from the scan window and may pull extra bytes *forward*
     if the header extends past what has been read. It does not seek back. The source
-    does not have to be seekable. A non-zero :class:`ScanNeedle` offset together with
-    a validator is an error — the origin can sit behind the overlap trim, and a short
-    peek would silently mis-grade it. ``remaining`` is filled from a size probe taken
+    does not have to be seekable. The window keeps the largest :class:`ScanNeedle`
+    offset's bytes behind each match, so a validator judges a candidate whose magic
+    sits past its origin (LHA's method at offset 2) from that origin. ``remaining`` is
+    filled from a size probe taken
     once at scan start when both ``tell()`` and the total size are known, otherwise
     ``None``.
 
@@ -1060,13 +1128,10 @@ def scan_for_magic(
     normalized = _normalize_needles(needles)
     if not normalized:
         return MagicScan(None, ScanMiss.NO_MATCH, 0)
-    if validator is not None and any(needle.offset != 0 for needle in normalized):
-        raise ValueError(
-            "scan_for_magic(validator=...) requires offset-0 needles; "
-            "a non-zero ScanNeedle.offset leaves the origin behind the window"
-        )
-    # Bytes carried between chunks so a magic straddling a chunk boundary still matches.
+    # Bytes carried between chunks so a magic straddling a chunk boundary still
+    # matches, and its candidate's origin (``offset`` bytes before it) is still held.
     overlap = max(len(needle.magic) for needle in normalized) - 1
+    keep = overlap + max(needle.offset for needle in normalized)
 
     window = _ForwardWindow(source)
     search_from = 0
@@ -1151,7 +1216,7 @@ def scan_for_magic(
             search_from = index + 1
 
         search_from = 0
-        window.keep_tail(overlap)
+        window.keep_tail(keep)
         searched = len(window.data)
 
     return finish()
@@ -1187,7 +1252,7 @@ def iter_magic_in_prefix(
         if step <= searched:
             continue
         # The detector never gets here today: it drops only capped formats' magics
-        # (RAR, 7z), and ZIP's is never capped, so it stays searched.
+        # (those that set ``SFX_PARSER_SCANS``), and ZIP's is never capped, so it stays searched.
         if magics <= dropped:
             return
         data = peek_more(min(step, limit))

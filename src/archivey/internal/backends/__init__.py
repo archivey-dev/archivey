@@ -36,6 +36,9 @@ added from outside would be: a ``*Handler`` declares the format and opens a
 - :mod:`.squashfs_reader` — SquashFS 4.0
 - :mod:`.xar_reader` — XAR (``.xar``, macOS ``.pkg`` and ``.xip``)
 - :mod:`.cab_reader` — Microsoft cabinets (stored, MSZIP, LZX)
+- :mod:`.lha_reader` — LHA (header levels 0-3; stored, ``-lh1-``, ``-lh4-`` to
+  ``-lh7-``, ``-lhx-``, ``-lk7-``, ``-lzs-``, ``-lz5-``)
+- :mod:`.arj_reader` — ARJ (methods 0 to 4)
 
 Format-specific helpers that are not readers live here too, next to the parser they share
 logic with: the scan-hit validators :mod:`.zip_detect`, :mod:`.sevenzip_detect` and
@@ -58,10 +61,12 @@ from archivey.internal.backends import deb_reader as _deb_reader  # noqa: F401
 # isort: on
 from archivey.internal.backends import (
     ar_reader as _ar_reader,  # noqa: F401
+    arj_reader as _arj_reader,  # noqa: F401
     cab_reader as _cab_reader,  # noqa: F401
     cpio_reader as _cpio_reader,  # noqa: F401
     directory_reader as _directory_reader,  # noqa: F401
     iso_reader as _iso_reader,  # noqa: F401
+    lha_reader as _lha_reader,  # noqa: F401
     makeself_reader as _makeself_reader,  # noqa: F401
     rar_reader as _rar_reader,  # noqa: F401
     rpm_reader as _rpm_reader,  # noqa: F401

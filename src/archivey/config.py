@@ -1,4 +1,17 @@
-"""Public configuration types for archivey."""
+"""Public configuration types for archivey: :class:`ArchiveyConfig` and its parts.
+
+A caller builds one :class:`ArchiveyConfig` and passes it as ``config=`` to the
+functions that open, detect or report on archives: :func:`~archivey.open_archive`,
+:func:`~archivey.open_stream`, :func:`~archivey.detect_format`,
+:func:`~archivey.format_availability` and :func:`~archivey.list_supported_formats`. Its
+fields are grouped into the limit classes here (:class:`ExtractionLimits`,
+:class:`ListingLimits`, :class:`DecoderLimits`, :class:`SpoolLimits`), the enums that
+pick an accelerator, an external program, or which decoders run in a child process
+(:class:`AcceleratorMode`, :class:`RarDecompressor`, :class:`ProcessIsolation`), and
+policies defined in their own modules (diagnostics, formats, detection budget). Every
+field is checked when the config is built, so a wrong value fails at the caller's line
+rather than deep inside a read. This module also holds the password types.
+"""
 
 from __future__ import annotations
 
@@ -103,8 +116,8 @@ class ProcessIsolation(Enum):
     """The default: only the decoders seen to crash on some input run in a child
     process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``), pyppmd (every PPMd
     member) and libbzip3 (every ``.bz3`` file, a young library with memory-safety fixes
-    in its 2023 releases). Every other decoder runs in the caller's process. Processes are reused for
-    later decoders. Measured on one Linux machine
+    in its 2023 releases). Every other decoder runs in the caller's process. Processes
+    are reused for later decoders. Measured on one Linux machine
     (``scripts/investigations/bench_process_isolation.py``), each PPMd decoder costs
     about 1.4 to 2 ms more than in-process: a non-solid 7z of 1024 PPMd members of 4 KiB
     took about twice as long. A ZIP member or a non-solid 7z member has a decoder of its
@@ -137,11 +150,11 @@ class ProcessIsolation(Enum):
     """No child process at all: every decoder runs in the caller's process.
 
     Not recommended for archives you do not trust: rapidgzip, pyppmd and libbzip3 are
-    isolated by default because they crash the process on some input or may, and here a crash takes the
-    caller with it. It suits trusted files where speed matters, tests, and environments
-    that cannot start processes. PPMd members and ``.bz3`` files decode in-process, and
-    rapidgzip is not used: ``use_rapidgzip`` and ``use_indexed_bzip2`` under ``AUTO`` use
-    the standard library, and ``ON`` is refused with
+    isolated by default because they crash the process on some input or may, and here a
+    crash takes the caller with it. It suits trusted files where speed matters, tests,
+    and environments that cannot start processes. PPMd members and ``.bz3`` files decode
+    in-process, and rapidgzip is not used: ``use_rapidgzip`` and ``use_indexed_bzip2``
+    under ``AUTO`` use the standard library, and ``ON`` is refused with
     :class:`~archivey.ArchiveyUsageError` when the config is built."""
 
 
@@ -467,17 +480,17 @@ class DecoderLimits:
     block, ``.lzma`` and each lzip member — the window each zstd frame declares,
     on ``.zst``, ZIP method 93 and 7z, and twice the decoded size a mozlz4 header
     declares (the decode buffer and its copy), and the block size a ``.bz3`` header
-    declares, at what libbzip3 allocates for it (about 10 times the block size). RAR's dictionary is checked too, before
-    ``unrar`` or ``unar`` is started, at what that program allocates for it. ``unar``
-    writes to the whole declared dictionary, so the declared size counts. ``unrar``
-    writes to it only as output is produced, so the declared size counts only up
-    to the unpacked bytes the read decodes: the member's own size, or in a solid
-    archive the members up to and including it. The two decoders that allocate what
-    the header says, pyppmd and liblzma, differ. A refused allocation inside pyppmd
-    takes its process down (a child process unless ``process_isolation`` is ``NONE``).
-    liblzma does raise ``MemoryError`` when it cannot reserve the dictionary, but a
-    reservation that succeeds is its real cost: the dictionary fills as output is
-    written, so a 151 KB stream declaring 4 GiB held 1.1 GiB resident after
+    declares, at what libbzip3 allocates for it (about 10 times the block size). RAR's
+    dictionary is checked too, before ``unrar`` or ``unar`` is started, at what that
+    program allocates for it. ``unar`` writes to the whole declared dictionary, so the
+    declared size counts. ``unrar`` writes to it only as output is produced, so the
+    declared size counts only up to the unpacked bytes the read decodes: the member's
+    own size, or in a solid archive the members up to and including it. The two decoders
+    that allocate what the header says, pyppmd and liblzma, differ. A refused allocation
+    inside pyppmd takes its process down (a child process unless ``process_isolation``
+    is ``NONE``). liblzma does raise ``MemoryError`` when it cannot reserve the
+    dictionary, but a reservation that succeeds is its real cost: the dictionary fills
+    as output is written, so a 151 KB stream declaring 4 GiB held 1.1 GiB resident after
     producing 1 GiB, where the same stream declaring 1 MiB held 59 MB. The
     dictionary bounds how much of the output the decoder keeps, and the archive
     picks it.
@@ -984,9 +997,32 @@ class ArchiveyConfig:
     ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
     ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
 
+    recover_partial_data: bool = True
+    """Whether a read that meets damaged compressed data first hands back the bytes
+    before the damage.
+
+    ``True``: on a source that can seek, a read with a size that meets a decoder error
+    returns every byte the decoder gives before it, and the next read raises. Finding
+    those bytes means decompressing that part again, from the last point the stream can
+    restart at, so it costs a second decode on damaged data. ``False``: archivey does not
+    decode again for them, and on a pipe a gzip, zlib or deflate decoder does not copy
+    its state before each step. The read that meets the damage raises, and the bytes the
+    failing decoder step gave before it are lost; the bytes the read's earlier steps
+    gave still come back, as do the bytes the in-house decoders (``.Z``, lzop, the old
+    ZIP methods) and bzip3 return before an error at no extra cost. Use it when a
+    damaged member is thrown away whole anyway. (Brotli still decodes again to tell
+    bytes after its stream from damage: that decides which error is raised, not which
+    bytes come back.)
+
+    A compressed TAR's own stream recovers its bytes either way, so every member that
+    ends before the damage is still read whole; the member the damage cuts may still
+    hand back its first bytes. The same archive gives the same members and the same
+    error either way: only the partial bytes before an error differ.
+    """
+
     def __post_init__(self) -> None:
-        """Check the fields at construction, and convert the two that hold enums and
-        the two program paths.
+        """Check the fields at construction, and convert the ones that hold enums or
+        program paths.
 
         A config field is read wherever it is needed, which is never where it was
         written: ``ArchiveyConfig(extraction_limits="none")`` builds fine and then
@@ -996,73 +1032,16 @@ class ArchiveyConfig:
         points does not reach this: the object passed there *is* an ``ArchiveyConfig``,
         and the wrong type is one field in.
 
-        The two accelerator fields are **converted** rather than only checked, because
-        their consumers test them with ``is`` (:meth:`AcceleratorMode.enabled_for`): a
-        string that survived construction would not be refused on use, it would read as
-        "neither ON nor OFF" and silently take the AUTO path. Converting here means the
-        field always holds a member, and a bad spelling names itself at the call site
-        that wrote it rather than during some later stream open.
-
-        They stay annotated ``AcceleratorMode`` rather than ``AcceleratorMode | str``
-        because that is what they hold once constructed, and it keeps every consumer
-        honest. A string is still accepted at construction — a type checker flags it,
-        which is the right answer for a typed caller who has the enum imported anyway,
-        and an untyped script gets the conversion.
-
-        That conversion goes through ``object.__setattr__`` because the dataclass is
-        frozen and it *rewrites* the field rather than only inspecting it. The checks
-        above reject without writing, so they need no such thing.
+        The steps run in this order, not field order: with several bad fields, the
+        first check that fails is the error the caller sees.
         """
-        # The checks below run in this order, not field order: with several bad
-        # fields, the first check that fails is the error the caller sees.
-        instance_fields: tuple[tuple[str, type], ...] = (
-            ("extraction_limits", ExtractionLimits),
-            ("listing_limits", ListingLimits),
-            ("decoder_limits", DecoderLimits),
-            ("spool_limits", SpoolLimits),
-            ("diagnostic_policy", DiagnosticPolicy),
-            ("formats", FormatPolicy),
-        )
-        for field_name, expected in instance_fields:
-            check_instance(
-                getattr(self, field_name),
-                expected,
-                call=f"ArchiveyConfig({field_name}=…)",
-                allow_none=False,
-            )
-        if not isinstance(self.detection_budget, DetectionBudget):
-            # A preset member, or its name, is converted here so the field always
-            # holds the budget detection reads. The annotation stays the budget alone,
-            # as it does for ``use_rapidgzip`` below: it is read by every consumer of
-            # the attribute, not only by the constructor's callers, and after
-            # construction it always holds a ``DetectionBudget``.
-            # ``tests/test_enum_arguments.py`` records the exemption.
-            preset = coerce_enum(
-                self.detection_budget,
-                DetectionBudgetPreset,
-                call="ArchiveyConfig()",
-                param="detection_budget=",
-                also_accepts="DetectionBudget",
-            )
-            object.__setattr__(
-                self, "detection_budget", DetectionBudget.for_preset(preset)
-            )
-        # Guard switches: a string such as "false" is truthy, so it would silently
-        # turn a refusal off. Only a real bool is accepted.
-        for field_name in (
-            "rar_allow_glob_member_concatenation",
-            "read_link_targets",
-            "always_probe_content",
-            "discover_volumes",
-        ):
-            check_instance(
-                getattr(self, field_name),
-                bool,
-                call=f"ArchiveyConfig({field_name}=…)",
-                allow_none=False,
-            )
+        _check_policy_fields(self)
+        _convert_detection_budget(self)
+        _check_guard_switches(self)
         # Archivey's own copies of a caller's config (``copy_config_quietly``) pass
         # the field on as if it were set again; only the caller's construction warns.
+        # The warning stays in this method so that ``stacklevel=3`` names the caller's
+        # line: one level is this method, the next is the dataclass ``__init__``.
         if self.rar_allow_glob_member_concatenation and not copying_config():
             warnings.warn(
                 "ArchiveyConfig.rar_allow_glob_member_concatenation is deprecated and "
@@ -1071,84 +1050,193 @@ class ArchiveyConfig:
                 DeprecationWarning,
                 stacklevel=3,
             )
-        check_callable(self.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
-        check_encoding(
-            self.zip_unflagged_fallback_encoding,
-            call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
+        _check_scalar_fields(self)
+        _convert_enum_fields(self)
+        _convert_program_paths(self)
+        _refuse_unusable_forced_accelerator(self)
+
+
+# The helpers below are the steps of ``ArchiveyConfig.__post_init__``. The ones that
+# convert a field write it with ``object.__setattr__``, because the dataclass is
+# frozen; the checks reject without writing, so they need no such thing.
+
+
+def _check_policy_fields(config: ArchiveyConfig) -> None:
+    """Refuse a limits or policy field that does not hold an object of its own class."""
+    instance_fields: tuple[tuple[str, type], ...] = (
+        ("extraction_limits", ExtractionLimits),
+        ("listing_limits", ListingLimits),
+        ("decoder_limits", DecoderLimits),
+        ("spool_limits", SpoolLimits),
+        ("diagnostic_policy", DiagnosticPolicy),
+        ("formats", FormatPolicy),
+    )
+    for field_name, expected in instance_fields:
+        check_instance(
+            getattr(config, field_name),
+            expected,
+            call=f"ArchiveyConfig({field_name}=…)",
             allow_none=False,
         )
-        check_limit(
-            self.max_read_through,
-            cls="ArchiveyConfig",
-            field_name="max_read_through",
+
+
+def _convert_detection_budget(config: ArchiveyConfig) -> None:
+    """Replace a :class:`DetectionBudgetPreset` member, or its name, with its budget.
+
+    The field then always holds the :class:`DetectionBudget` that detection reads. The
+    annotation stays the budget alone, for the reason :func:`_convert_enum_fields`
+    gives. ``tests/test_enum_arguments.py`` records the exemption.
+    """
+    if isinstance(config.detection_budget, DetectionBudget):
+        return
+    preset = coerce_enum(
+        config.detection_budget,
+        DetectionBudgetPreset,
+        call="ArchiveyConfig()",
+        param="detection_budget=",
+        also_accepts="DetectionBudget",
+    )
+    object.__setattr__(config, "detection_budget", DetectionBudget.for_preset(preset))
+
+
+def _check_guard_switches(config: ArchiveyConfig) -> None:
+    """Refuse a boolean switch that does not hold a real ``bool``.
+
+    A string such as ``"false"`` is truthy, so it would silently turn a refusal off.
+    """
+    for field_name in (
+        "rar_allow_glob_member_concatenation",
+        "read_link_targets",
+        "recover_partial_data",
+        "always_probe_content",
+        "discover_volumes",
+    ):
+        check_instance(
+            getattr(config, field_name),
+            bool,
+            call=f"ArchiveyConfig({field_name}=…)",
             allow_none=False,
         )
-        check_limit(
-            self.max_retained_diagnostic_references,
-            cls="ArchiveyConfig",
-            field_name="max_retained_diagnostic_references",
-            allow_none=False,
-        )
-        # These two are coerced at a public boundary with no ``Literal`` alias beside
-        # them (as are ``ArchiveFormat``'s two fields), and that is deliberate: the
-        # annotation is read by every consumer of the attribute, not only by the
-        # constructor's callers, and after construction the field always holds a
-        # member. ``tests/test_enum_arguments.py``
-        # records the exemption so the gap is not "fixed" back into a union.
-        for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
-            object.__setattr__(
-                self,
-                field_name,
-                coerce_enum(
-                    getattr(self, field_name),
-                    AcceleratorMode,
-                    call="ArchiveyConfig()",
-                    param=f"{field_name}=",
-                ),
-            )
-        for field_name in ("unrar_path", "unar_path"):
-            object.__setattr__(
-                self,
-                field_name,
-                _coerce_program_path(field_name, getattr(self, field_name)),
-            )
+
+
+def _check_scalar_fields(config: ArchiveyConfig) -> None:
+    """Check the callback, the ZIP fallback encoding and the two integer limits."""
+    check_callable(config.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
+    check_encoding(
+        config.zip_unflagged_fallback_encoding,
+        call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
+        allow_none=False,
+    )
+    check_limit(
+        config.max_read_through,
+        cls="ArchiveyConfig",
+        field_name="max_read_through",
+        allow_none=False,
+    )
+    check_limit(
+        config.max_retained_diagnostic_references,
+        cls="ArchiveyConfig",
+        field_name="max_retained_diagnostic_references",
+        allow_none=False,
+    )
+
+
+def _convert_enum_fields(config: ArchiveyConfig) -> None:
+    """Replace each enum field's value, a member or its name, with the member.
+
+    The fields are **converted** rather than only checked because their consumers
+    test them with ``is`` (:meth:`AcceleratorMode.enabled_for`, for one): a string
+    that survived construction would not be refused on use, it would read as "neither
+    ON nor OFF" and silently take the AUTO path. Converting here means the field
+    always holds a member, and a bad spelling names itself at the call site that
+    wrote it rather than during some later stream open.
+
+    The fields stay annotated with the enum alone, with no ``Literal`` alias beside
+    it (as do ``ArchiveFormat``'s two fields), because that is what they hold once
+    constructed, and the annotation is read by every consumer of the attribute, not
+    only by the constructor's callers. A string is still accepted at construction: a
+    type checker flags it, which is the right answer for a typed caller who has the
+    enum imported anyway, and an untyped script gets the conversion.
+    ``tests/test_enum_arguments.py`` records the exemption so the gap is not "fixed"
+    back into a union.
+    """
+    # Each call names its enum class directly: ``tests/test_enum_arguments.py`` reads
+    # the coerced classes from the second argument of every ``coerce_enum`` call.
+    for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
         object.__setattr__(
-            self,
-            "rar_decompressor",
+            config,
+            field_name,
             coerce_enum(
-                self.rar_decompressor,
-                RarDecompressor,
+                getattr(config, field_name),
+                AcceleratorMode,
                 call="ArchiveyConfig()",
-                param="rar_decompressor=",
+                param=f"{field_name}=",
             ),
         )
-        object.__setattr__(
-            self,
-            "process_isolation",
-            coerce_enum(
-                self.process_isolation,
-                ProcessIsolation,
-                call="ArchiveyConfig()",
-                param="process_isolation=",
-            ),
+    object.__setattr__(
+        config,
+        "rar_decompressor",
+        coerce_enum(
+            config.rar_decompressor,
+            RarDecompressor,
+            call="ArchiveyConfig()",
+            param="rar_decompressor=",
+        ),
+    )
+    object.__setattr__(
+        config,
+        "process_isolation",
+        coerce_enum(
+            config.process_isolation,
+            ProcessIsolation,
+            call="ArchiveyConfig()",
+            param="process_isolation=",
+        ),
+    )
+
+
+def _refuse_unusable_forced_accelerator(config: ArchiveyConfig) -> None:
+    """Refuse an accelerator set to ``ON`` that the rest of the config turns off.
+
+    rapidgzip runs only in a child process, so ``process_isolation=NONE`` rules it
+    out, and so does excluding the library in :attr:`ArchiveyConfig.formats`. ``ON``
+    asks for the accelerator by name, so the conflict is refused when the config is
+    built rather than when a stream opens.
+    """
+    forced = next(
+        (
+            field_name
+            for field_name in ("use_rapidgzip", "use_indexed_bzip2")
+            if getattr(config, field_name) is AcceleratorMode.ON
+        ),
+        None,
+    )
+    if forced is None:
+        return
+    if config.process_isolation is ProcessIsolation.NONE:
+        raise ArchiveyUsageError(
+            f"ArchiveyConfig({forced}=ON) cannot be combined with "
+            "process_isolation=NONE: rapidgzip runs only in a child "
+            "process. Use AUTO or OFF, or another process_isolation."
         )
-        if self.process_isolation is ProcessIsolation.NONE:
-            for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
-                if getattr(self, field_name) is AcceleratorMode.ON:
-                    raise ArchiveyUsageError(
-                        f"ArchiveyConfig({field_name}=ON) cannot be combined with "
-                        "process_isolation=NONE: rapidgzip runs only in a child "
-                        "process. Use AUTO or OFF, or another process_isolation."
-                    )
-        if OptionalLibrary.RAPIDGZIP in self.formats.exclude_libraries:
-            for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
-                if getattr(self, field_name) is AcceleratorMode.ON:
-                    raise ArchiveyUsageError(
-                        f"ArchiveyConfig({field_name}=ON) cannot be combined with "
-                        "formats=FormatPolicy(exclude_libraries=) naming rapidgzip, "
-                        "which turns that accelerator off. Use AUTO or OFF, or drop "
-                        "the exclusion."
-                    )
+    if OptionalLibrary.RAPIDGZIP in config.formats.exclude_libraries:
+        raise ArchiveyUsageError(
+            f"ArchiveyConfig({forced}=ON) cannot be combined with "
+            "formats=FormatPolicy(exclude_libraries=) naming rapidgzip, "
+            "which turns that accelerator off. Use AUTO or OFF, or drop "
+            "the exclusion."
+        )
+
+
+def _convert_program_paths(config: ArchiveyConfig) -> None:
+    """Replace ``unrar_path`` and ``unar_path`` with an absolute ``str``, or refuse
+    them (:func:`_coerce_program_path`)."""
+    for field_name in ("unrar_path", "unar_path"):
+        object.__setattr__(
+            config,
+            field_name,
+            _coerce_program_path(field_name, getattr(config, field_name)),
+        )
 
 
 def _coerce_program_path(field_name: str, value: object) -> str | None:

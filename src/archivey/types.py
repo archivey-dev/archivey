@@ -1,4 +1,14 @@
-"""Core data types for the Archivey public API."""
+"""Core data types for the Archivey public API.
+
+The values a caller gets back from a reader or passes to one: formats
+(:class:`ArchiveFormat` and the enums it is built from), members
+(:class:`ArchiveMember` and its ``extra``), archive-level :class:`ArchiveInfo`,
+format availability, and the extraction policies, progress and results. Readers build
+these values; nothing here reads an archive. :mod:`archivey` re-exports the names a
+caller uses, and callers should import them from there. The few it leaves out
+(:class:`MemberStreams`, :class:`MagicSignature` and :class:`TrailerSignature`) are
+used by archivey's own readers and detector, not by callers.
+"""
 
 from __future__ import annotations
 
@@ -109,6 +119,15 @@ class ContainerFormat(StrEnum):
     CAB = "cab"
     """A Microsoft cabinet (``.cab``): Windows updates, drivers and installer
     payloads. Stored, MSZIP and LZX folders are read; needs a source that can seek."""
+    LHA = "lha"
+    """An LHA archive (``.lzh``, ``.lha``), from DOS, the Amiga and Japanese PCs.
+    Header levels 0 to 3 are read, with stored members (``-lh0-``, ``-lz4-``,
+    ``-pm0-``) and the ``-lh1-``, ``-lh4-`` to ``-lh7-``, ``-lhx-``, ``-lk7-``,
+    ``-lzs-`` and ``-lz5-`` methods; needs a source that can seek."""
+    ARJ = "arj"
+    """An ARJ archive (``.arj``), from DOS and ARJ for Unix. Methods 0 to 4 are read;
+    garbled (password-protected) members and members split across volumes are listed
+    but not read. Needs a source that can seek."""
     DMG = "dmg"
     """An Apple disk image. archivey recognises one so that opening it can refuse it by
     name, but cannot read it."""
@@ -129,10 +148,10 @@ class PluginContainer(StrEnum):
     A plugin subclasses it with one member per container it adds, and builds its
     :class:`~archivey.ArchiveFormat` from that member::
 
-        class LhaContainer(PluginContainer):
-            LHA = "lha"
+        class ZooContainer(PluginContainer):
+            ZOO = "zoo"
 
-        LHA = ArchiveFormat(LhaContainer.LHA, StreamFormat.UNCOMPRESSED)
+        ZOO = ArchiveFormat(ZooContainer.ZOO, StreamFormat.UNCOMPRESSED)
 
     Experimental, with the rest of ``archivey.formats``: any release may change it.
     Code that matches on ``ArchiveFormat.container`` needs a default case once a plugin
@@ -192,6 +211,14 @@ class StreamFormat(StrEnum):
     """Firefox's ``mozLz40`` files (``.jsonlz4``, ``.mozlz4``, ``.baklz4``, and
     ``addonStartup.json.lz4``): one raw LZ4 block behind a magic and the decoded size.
     Needs ``lz4``, as LZ4 does."""
+    UU = "uu"
+    """uuencoded files (``.uu``, ``.uue``), including the ``begin-base64`` variant
+    ``uuencode -m`` writes. Text before the ``begin`` line (a mail or news post's
+    headers) is skipped."""
+    BASE64 = "b64"
+    """Bare base64 text (``.b64``, ``.base64``), in lines of one length or one long
+    line. Detected without such a name only when it decodes to a known format's
+    magic."""
 
 
 @dataclass(frozen=True)
@@ -269,6 +296,8 @@ class ArchiveFormat:
     LZOP: ClassVar[ArchiveFormat]
     MOZLZ4: ClassVar[ArchiveFormat]
     BZIP3: ClassVar[ArchiveFormat]
+    UU: ClassVar[ArchiveFormat]
+    BASE64: ClassVar[ArchiveFormat]
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
@@ -280,6 +309,8 @@ class ArchiveFormat:
     SQUASHFS: ClassVar[ArchiveFormat]
     XAR: ClassVar[ArchiveFormat]
     CAB: ClassVar[ArchiveFormat]
+    LHA: ClassVar[ArchiveFormat]
+    ARJ: ClassVar[ArchiveFormat]
     DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
@@ -356,6 +387,8 @@ ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_CO
 ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)
 ArchiveFormat.MOZLZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.MOZLZ4)
 ArchiveFormat.BZIP3 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP3)
+ArchiveFormat.UU = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UU)
+ArchiveFormat.BASE64 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BASE64)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(
     ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED
 )
@@ -373,6 +406,8 @@ ArchiveFormat.SQUASHFS = ArchiveFormat(
 )
 ArchiveFormat.XAR = ArchiveFormat(ContainerFormat.XAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CAB = ArchiveFormat(ContainerFormat.CAB, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.LHA = ArchiveFormat(ContainerFormat.LHA, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.ARJ = ArchiveFormat(ContainerFormat.ARJ, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
@@ -710,6 +745,13 @@ class CompressionAlgorithm(Enum):
     LZX = "lzx"
     """Microsoft's LZX, as cabinets store it: LZ77 with Huffman codes over a window
     of 32 KiB to 2 MiB."""
+    LZH = "lzh"
+    """LHA's LZ77 methods: with Huffman codes, ``-lh1-`` to ``-lh7-`` and their kin,
+    and without, LArc's ``-lzs-`` and ``-lz5-``; and ARJ's methods 1 to 3.
+    ``ArchiveMember.extra["lha.method"]`` or ``["arj.method"]`` names the exact
+    method."""
+    ARJ_FAST = "arj_fast"
+    """ARJ's method 4, "fastest": LZ77 with no Huffman codes."""
     QUANTUM = "quantum"
     """Quantum, an older cabinet method. archivey lists its members but cannot read
     them."""
@@ -753,6 +795,9 @@ class CreateSystem(Enum):
     - RAR 1.5 to 4: ``FAT`` (MS-DOS), ``OS2_HPFS``, ``WINDOWS_NTFS``, ``UNIX``,
       ``MACINTOSH`` or ``BEOS``; ``UNKNOWN`` for any other host byte.
     - RAR5: ``WINDOWS_NTFS`` or ``UNIX``.
+    - ARJ: ``FAT`` (MS-DOS), ``UNIX`` (and NeXT), ``AMIGA``, ``MACINTOSH``,
+      ``OS2_HPFS``, ``ATARI_ST``, ``OPENVMS``, ``VFAT`` (Windows 95) or
+      ``WINDOWS_NTFS`` (Win32); ``UNKNOWN`` for any other host byte.
     - 7z records no host. archivey reports ``UNIX`` when the member stores a Unix mode,
       and ``WINDOWS_NTFS`` otherwise.
     - TAR, ISO, a directory and a single-file format such as ``.gz`` leave
@@ -977,9 +1022,24 @@ class MemberExtra(dict[str, object]):
       ``size`` stays ``None`` until a full read fills it in.
     * ``lzop.original_filename`` (``str``) — the name the lzop header stores, as
       ``gzip.original_filename`` is for gzip.
+    * ``uu.original_filename`` (``str``) — the name a uuencode ``begin`` line
+      stores, decoded as UTF-8 (other bytes kept as surrogates). The member keeps the
+      name it gets from the file's own name; ``raw_name`` holds the stored bytes.
     * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
       stripped from the name. Versions of one name share it; the highest is
       listed last and is the current one.
+    * ``lha.method`` (``str``) — the LHA method id as stored (``"-lh5-"``), or
+      ``"-lk7-"`` for LHARK's own ``-lh7-``.
+    * ``lha.header_level`` (``int``) — the LHA header level, 0 to 3.
+    * ``lha.os_id`` (``str``) — the one-character OS id an LHA header names
+      (``"U"`` for LHa for UNIX, ``"M"`` for DOS), when it has one.
+    * ``lha.mac_type`` (``bytes``) — the Mac file type code (``b"TEXT"``) of a MacLHA
+      member whose MacBinary wrapper archivey strips; the member then reads as its
+      data fork, or as its resource fork when the data fork is empty.
+    * ``lha.mac_creator`` (``bytes``) — that member's Mac creator code (``b"ttxt"``).
+    * ``arj.method`` (``int``) — the ARJ method, 0 (stored) to 4.
+    * ``arj.file_type`` (``int``) — the ARJ file type: 0 binary, 1 text, 3 directory,
+      4 volume label, 5 chapter label, 6 Unix special file.
     """
 
     __slots__ = ()
@@ -1039,7 +1099,23 @@ class MemberExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["lzop.original_filename"], /) -> str: ...
     @overload
+    def __getitem__(self, key: Literal["uu.original_filename"], /) -> str: ...
+    @overload
     def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.method"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.header_level"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.os_id"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.mac_type"], /) -> bytes: ...
+    @overload
+    def __getitem__(self, key: Literal["lha.mac_creator"], /) -> bytes: ...
+    @overload
+    def __getitem__(self, key: Literal["arj.method"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["arj.file_type"], /) -> int: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
@@ -1205,7 +1281,12 @@ class ArchiveMember:
     - A 7z member stored with no name is named after the archive source, and
       ``raw_name`` is ``b""``.
     - A RAR5 file-version-history member gets a ``;n`` suffix in ``name`` (as
-      WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it."""
+      WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it.
+    - LHA: ``raw_name`` is the directory record and the name joined with ``/``, with
+      ``0xFF`` separators turned into ``/``, without an Amiga file note (the bytes
+      after a NUL, which go to ``comment``) and, for a symlink, without the
+      ``|target`` after the name (kept when a ``0x7C`` byte in the name is the
+      second byte of a cp932 character, as the cut cannot be placed in the bytes)."""
 
     size: int | None = None
     """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry).
@@ -1369,13 +1450,15 @@ class ArchiveMember:
     walk ends). Cleared once the listing's links are resolved, when the walk stops
     keeping members, when the reader closes, and on a :meth:`replace` copy; not when
     the walk ends, since a peek ends it before any link is resolved. Read it through
-    the public :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
+    the public :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the
+    public contract."""
     _link_target_unread: bool = field(default=False, repr=False, compare=False)
     """Set while this symlink's target is stored as member data nobody has read yet.
 
     Reading it can set ``link_target`` and, for a Windows reparse point whose data is
     not a link buffer, change ``type``. Cleared once the backend has looked, found or
-    not. Read it through :attr:`~archivey.ArchiveMember.member_state_final`. Not part of the public contract."""
+    not. Read it through :attr:`~archivey.ArchiveMember.member_state_final`. Not part
+    of the public contract."""
     _size_unread: bool = field(default=False, repr=False, compare=False)
     """Set while ``size`` is ``None`` and a full read of the member would fill it in.
 
@@ -1546,8 +1629,9 @@ class ArchiveMember:
         :meth:`~archivey.ForwardArchiveReader.verify_all`, or a read of a whole 7z
         folder whose checksum covers this member. A stream opened from a
         ``replace()`` copy raises the reader's own member, not the copy. It never goes
-        down. Not part of equality, and not covered by :attr:`~archivey.ArchiveMember.member_state_final`: it
-        can still rise after that is ``True``.
+        down. Not part of equality, and not covered by
+        :attr:`~archivey.ArchiveMember.member_state_final`: it can still rise after that
+        is ``True``.
 
         Experimental: any release, a patch included, may change or remove this property,
         its levels or what they mean.
@@ -1558,7 +1642,8 @@ class ArchiveMember:
 
     @property
     def verifiable(self) -> Verification:
-        """The most :attr:`~archivey.ArchiveMember.verified` can reach if the archive is not damaged.
+        """The most :attr:`~archivey.ArchiveMember.verified` can reach if the archive is
+        not damaged.
 
         ``CHECKSUM`` when a checksum archivey can compute covers the member's data,
         ``LENGTH`` when none does, and ``NONE`` for an encrypted member whose password
@@ -1721,7 +1806,8 @@ class ArchiveInfo:
     """Archive-level comment, if the format records one."""
 
     is_encrypted: bool
-    """Header-level encryption (7z, RAR5) — not per-member encryption (see ``ArchiveMember.is_encrypted``)."""
+    """Header-level encryption (7z, RAR5) — not per-member encryption (see
+    ``ArchiveMember.is_encrypted``)."""
 
     is_multivolume: bool
     """Whether the archive spans multiple volumes."""

@@ -100,6 +100,7 @@ from archivey.internal.naming import emit_member_name_normalized, normalize_memb
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.source import ArchiveSource
@@ -299,6 +300,7 @@ class _PluginAdapter(BaseArchiveReader):
             usage=self._usage,
         )
         context._spanning_check = self._new_spanning_check
+        context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)
         self._reader_open = True
 
@@ -322,7 +324,7 @@ class _PluginAdapter(BaseArchiveReader):
 
     def _refuse_codec_off_by_policy(self, method: object) -> None:
         """Refuse a codec ``config.formats`` turns off, before its code runs."""
-        if not isinstance(method, (StreamFormat, PluginStream)):
+        if not isinstance(method, (StreamFormat, PluginStream, CompressionAlgorithm)):
             return
         refusal = self._config.formats._codec_refusal(method)
         if refusal is not None:
@@ -330,14 +332,27 @@ class _PluginAdapter(BaseArchiveReader):
                 refusal, source_format=self._format, archive_name=self._archive_name
             )
 
+    def _decompress_coder(
+        self, data: BinaryIO, stream_format: StreamFormat, size: int | None
+    ) -> BinaryIO:
+        """``ReaderContext._decompress_coder``: ``stream_format`` data that is a
+        container coder's whole data, decoded as a member's method is: bzip2 and LZMA
+        Alone end at their first stream, and a byte after the end is refused."""
+        return self._decompress(data, stream_format, size, None, whole_file=False)
+
     def _decompress(
         self,
         data: BinaryIO,
         method: CompressionAlgorithm | AnyStreamFormat,
         size: int | None,
         properties: bytes | None,
+        *,
+        whole_file: bool = True,
     ) -> BinaryIO:
-        """``ReaderContext.decompress``: ``data`` through archivey's codec layer."""
+        """``ReaderContext.decompress``: ``data`` through archivey's codec layer.
+
+        ``whole_file=False`` (``_decompress_coder``) keeps the member decoder
+        config's ``refuse_input_after_end`` for a stream format too."""
         self._refuse_codec_off_by_policy(method)
         is_stream = isinstance(method, (StreamFormat, PluginStream))
         codec: CodecId | None
@@ -355,13 +370,13 @@ class _PluginAdapter(BaseArchiveReader):
                 archive_name=self._archive_name,
             )
         params = self._codec_params(
-            codec, method, size, properties, is_stream=is_stream
+            codec, method, size, properties, is_stream=is_stream and whole_file
         )
         # Per call, as ZIP fills them per member (``_member_decoder_config``): the
         # output size, and the input size while ``data`` is at its start. The
         # accelerators choose by them, and rapidgzip's length check needs the first.
         changes: dict[str, Any] = {"expected_decompressed_size": size}
-        if is_stream:
+        if is_stream and whole_file:
             # A whole stream reads as a file of its format does: bytes after its end
             # are reported (``ARCHIVE_TRAILING_DATA``), not refused. Most stream
             # codecs have no refusal; the report is what they all share.
@@ -395,14 +410,19 @@ class _PluginAdapter(BaseArchiveReader):
     ) -> CodecParams:
         """The codec parameters for one ``decompress`` call: what ``codec`` needs
         beyond the bytes, read from the call's ``size`` and ``properties``.
-        ``is_stream`` says ``method`` is a whole stream format, not a member's
-        compression method."""
-        # Only a bzip2 member is one stream, as in ZIP and 7z: a further stream after
-        # its end is refused. Zstd and LZ4 data may be several frames, read together
-        # (RFC 8878, the LZ4 frame format), and the other codecs read no flag. A
-        # stream format is read as a file of that format is, so a ``.bz2`` stream may
-        # hold several, as bzip2 itself decodes them.
-        params = CodecParams(single_stream=codec is Codec.BZIP2 and not is_stream)
+        ``is_stream`` says ``method`` is a stream format read as a whole file
+        (``decompress``), not a member's method or a container coder's data
+        (``_decompress_coder``)."""
+        # A bzip2 member is one stream, as in ZIP and 7z: a further stream after its
+        # end is refused. So is LZMA Alone, which has no further streams of its own,
+        # in a container coder (``_decompress_coder``, a XAR member). Zstd and LZ4 data
+        # may be several frames, read together (RFC 8878, the LZ4 frame format), and xz
+        # several streams with their padding, as a ZIP xz member may. A stream format
+        # read as a file (``decompress``) is read as a file of that format is, so a
+        # ``.bz2`` stream may hold several, as bzip2 itself decodes them.
+        params = CodecParams(
+            single_stream=not is_stream and codec in (Codec.BZIP2, Codec.LZMA_ALONE)
+        )
         if isinstance(method, PluginStream):
             # A registered codec parses its own properties (``CodecCall``).
             params = CodecParams(unpack_size=size, properties=properties)
@@ -847,7 +867,7 @@ class _PluginAdapter(BaseArchiveReader):
         with self._translated_errors(), self._handle_guard():
             info = self._reader.archive_info()
         cost = self._cost(info)
-        # A plugin's keys are its own, namespaced by its format (``"lha.method"``), so
+        # A plugin's keys are its own, namespaced by its format (``"zoo.method"``), so
         # they are not in the inventory of built-in keys and are copied in as data. A
         # built-in format-API reader's keys (``"cpio.variant"``) are in that inventory.
         extra = ArchiveInfoExtra()
@@ -903,12 +923,35 @@ class IndexedReaderAdapter(_PluginAdapter):
     """Serves an :class:`~archivey.formats.IndexedReader` through the internal reader
     contract."""
 
+    # The archive's region inside the source, ``[_origin, _region_end)``: set only for
+    # a built-in format that ships behind a self-extracting stub (``SFX_MAGIC``), from
+    # detection's ``payload_offset`` and ``payload_end`` (``ReadBackend.open_read``).
+    # The reader sees the region as its whole source.
+    def __init__(
+        self, *args: Any, region: tuple[int, int | None] = (0, None), **kwargs: Any
+    ) -> None:
+        self._origin, self._region_end = region
+        super().__init__(*args, **kwargs)
+
+    @override
+    def _will_read(self, start: int, end: int) -> None:
+        # The reader's offsets count from the region's start.
+        super()._will_read(self._origin + start, self._origin + end)
+
     @override
     def _open_reader(self, context: ReaderContext) -> IndexedReader[Any]:
         source = self._source
         assert source is not None
+        region: BinaryIO = source
+        if self._origin or self._region_end is not None:
+            end = self._region_end
+            region = SlicingStream(
+                source,
+                start=self._origin,
+                length=None if end is None else max(0, end - self._origin),
+            )
         self._shared = shared = SharedSource(
-            source, wrap_handle=self._seek_handle_wrapper()
+            region, wrap_handle=self._seek_handle_wrapper()
         )
         plugin_source = ReaderSource(
             self._marked_view, shared.size, source.path, shared.read_at
@@ -1867,6 +1910,10 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._decoder_config,
             refuse_input_after_end=False,
             report_trailing_data=True,
+            # The container's members are read through this stream, several small
+            # ones to one read: a failing call that lost its bytes would take whole
+            # members with it. So it recovers them whatever the caller set.
+            recover_partial_data=True,
         )
         if self._streaming:
             # The parent is done (the ForwardStream that called this refuses reads
@@ -2718,14 +2765,9 @@ class _PluginBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> _PluginAdapter:
-        reject_start_offset(start_offset, format, archive_name, end_offset)
-        adapter = (
-            SequentialReaderAdapter
-            if issubclass(self.PLUGIN, SequentialFormatHandler)
-            else IndexedReaderAdapter
-        )
-        return adapter(
+        common = (
             self.PLUGIN(),
             source,
             format,
@@ -2733,9 +2775,25 @@ class _PluginBackend(ReadBackend):
             encoding if self.USES_ENCODING else None,
             archive_name,
             config,
-            collector=collector,
-            member_streams=member_streams,
-            open_site=open_site,
+        )
+        options: dict[str, Any] = {
+            "collector": collector,
+            "member_streams": member_streams,
+            "open_site": open_site,
+        }
+        if issubclass(self.PLUGIN, SequentialFormatHandler):
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
+            return SequentialReaderAdapter(*common, **options)
+        # Only a built-in format that declares SFX magic is handed a region, which its
+        # reader reads as the whole source (``IndexedReaderAdapter``).
+        if not self.SFX_MAGIC:
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
+        return IndexedReaderAdapter(
+            *common, region=(start_offset, end_offset), **options
         )
 
 
@@ -2925,6 +2983,8 @@ REPLACEABLE_CONTAINERS = frozenset(
         ContainerFormat.SQUASHFS,
         ContainerFormat.XAR,
         ContainerFormat.CAB,
+        ContainerFormat.LHA,
+        ContainerFormat.ARJ,
     }
 )
 

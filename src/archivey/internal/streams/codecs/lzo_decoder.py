@@ -382,6 +382,10 @@ class LzopDecompressor:
     refuse it.
     """
 
+    # A damaged block raises only once the blocks before it are handed out
+    # (``_raise_after``): see ``Decoder.holds_back_errors``.
+    holds_back_errors = True
+
     def __init__(
         self,
         decode_block: Callable[[bytes, int], bytes],

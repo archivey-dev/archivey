@@ -2125,8 +2125,8 @@ def _above_stream_cap_archive(*, solid: bool) -> bytes:
       ``kNumUnPackStream`` of 65 537 with 65 536 ``kSize`` entries (F1);
     * non-solid: one Copy folder and one pack stream per file, 65 537 of each,
       and no ``kNumUnPackStream`` because every folder holds one stream (F2);
-    * both: the ``_ABOVE_CAP_DIRS`` (67) directories as leading empty-stream entries, a CRC for every
-      file stream, names and Windows attributes, and the whole header
+    * both: the ``_ABOVE_CAP_DIRS`` (67) directories as leading empty-stream entries, a
+      CRC for every file stream, names and Windows attributes, and the whole header
       LZMA-encoded behind a ``kEncodedHeader``, as 7-Zip's default does.
 
     The fields 7-Zip writes that no limit reads are left out: modification times
@@ -2440,8 +2440,9 @@ def test_bcj_member_whose_length_is_not_a_whole_number_of_blocks(
     IA64 is the one that was broken: pybcj's decoder dropped the final incomplete
     16-byte block, so a 2911-byte member came back as 2896 bytes and archivey
     raised ``TruncatedError`` on an archive 7-Zip writes and reads back fine
-    (dev-docs/investigations/pybcj-upstream-report.md). 2911 is not a multiple of any filter's block size,
-    so the same payload covers the other five through the liblzma path.
+    (dev-docs/investigations/pybcj-upstream-report.md). 2911 is not a multiple of any
+    filter's block size, so the same payload covers the other five through the liblzma
+    path.
     """
     payload = (_BCJ_CODE_PATTERN * 200)[:2911]
     src = tmp_path / "payload.bin"
@@ -2461,9 +2462,9 @@ def test_bcj_decoder_accepts_an_unpack_size_above_two_gib() -> None:
     pybcj takes the stream size as a C signed ``int``, so ``BCJDecoder(2**31)``
     raised a bare ``OverflowError`` — not even an ``ArchiveyError`` — before any byte
     was read, on archives 7-Zip writes with ``-m0=BCJ -m1=LZMA`` and reads back fine
-    (dev-docs/investigations/pybcj-upstream-report.md). The declared size no longer reaches the filter at
-    all, so the same bytes decode the same way whatever it says; this pins that
-    without building a 2 GiB fixture.
+    (dev-docs/investigations/pybcj-upstream-report.md). The declared size no longer
+    reaches the filter at all, so the same bytes decode the same way whatever it says;
+    this pins that without building a 2 GiB fixture.
     """
     import lzma
 

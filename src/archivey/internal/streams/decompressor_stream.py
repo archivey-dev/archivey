@@ -32,6 +32,7 @@ from __future__ import annotations
 import bisect
 import io
 import lzma
+import math
 import os
 import zlib
 from collections.abc import Callable, Container, Generator, Sequence
@@ -414,6 +415,17 @@ class Decoder(Protocol):
         ...
 
     @property
+    def holds_back_errors(self) -> bool:
+        """True when a ``feed`` that meets bad data first returns every byte decoded
+        before it, and raises only from a later call that returns nothing.
+
+        A stream then gets every byte before an error from the calls themselves, so it
+        does not decode again to find them (``_redecode_to_error``): a second decode
+        would find nothing more.
+        """
+        ...
+
+    @property
     def pending_error(self) -> BaseException | None: ...
 
     def clear_pending_error(self) -> None:
@@ -504,6 +516,11 @@ class BaseDecoder:
     @property
     def pending_error(self) -> BaseException | None:
         return self._pending_error
+
+    @property
+    def holds_back_errors(self) -> bool:
+        """See :attr:`Decoder.holds_back_errors`: the in-house decoders and bzip3 do."""
+        return False
 
     @property
     def trailing_bytes(self) -> int | None:
@@ -608,6 +625,39 @@ def probe_streams() -> Generator[None]:
         _PROBE_STREAM.reset(token)
 
 
+# Set to the caller's ``recover_partial_data`` while its codec stream opens
+# (:func:`partial_data_recovery`).
+_RECOVER_PARTIAL: ContextVar[bool] = ContextVar(
+    "archivey_recover_partial", default=True
+)
+
+
+@contextmanager
+def partial_data_recovery(recover: bool) -> Generator[None]:
+    """Streams built inside this block decode again to hand back the bytes before an
+    error only when ``recover`` is true (``ArchiveyConfig.recover_partial_data``).
+
+    Without it, a stream does no extra work for those bytes: on a source that can seek
+    it does not decode again to the failing byte (``_redecode_to_error``), and on a pipe
+    a deflate decoder does not copy its state before each call
+    (``keep_output_before_errors``). The read that meets the error raises, and the
+    bytes its decoder call would have returned are lost. Bytes a decoder hands back
+    before an error at no extra cost (the in-house decoders, bzip3) still come back.
+    """
+    token = _RECOVER_PARTIAL.set(recover)
+    try:
+        yield
+    finally:
+        _RECOVER_PARTIAL.reset(token)
+
+
+def recovers_partial_data() -> bool:
+    """Whether a stream built here would recover the bytes before an error: what a
+    stream built later, outside the :func:`partial_data_recovery` block, re-enters it
+    with (the accelerator's standard-library fallback)."""
+    return _RECOVER_PARTIAL.get()
+
+
 # The step of large bounded reads over a decompressed stream; this module does not
 # use it. ``verify._SIZED_DRAIN_CHUNK`` and ``tar_parser.DATA_READ_STEP`` follow it,
 # and the latter is TAR's stated allocation bound (``tar.md``, ``threat-model.md``
@@ -621,6 +671,41 @@ _SEEK_OUTPUT_CHUNK = 65536
 # makes between outputs (a header, a block's input), and still a bounded loop over a
 # hostile stream. Giving up only hands back no bytes; the error still raises.
 _REDECODE_IDLE_LIMIT = 4096
+# How a re-decode searches for the failing byte (``_redecode_probe``). A probe that
+# gives its bytes costs one call; one that raises costs a restart, a second decode from
+# the seek point to where the search stands, unless it asked for one byte, which names
+# the failing byte. So the probes follow the cost of a restart, counted in calls: about
+# ``_REDECODE_RESTART_CALLS`` plus one call per ``_REDECODE_BYTES_PER_CALL`` bytes it
+# decodes again. One byte per call while the search has covered less than that (the
+# error is usually near the start of the failing call's output: a call is fed at most
+# 64 KiB of compressed input) and over any bracket that small; otherwise probes of
+# about the square root of twice the bracket, so a probe that raises leaves a bracket
+# small enough to finish one byte per call. Measured on gzip, xz and PPMd with the
+# damage 3 MB to 100 MB deep (``dev-docs/investigations/redecode-probe-strategies.md``):
+# about half the extra time of the fixed 2 KiB stretch and 1/64 splits before it.
+_REDECODE_RESTART_CALLS = 128
+_REDECODE_BYTES_PER_CALL = 1024
+
+
+def _redecode_probe(done: int, hi: int, met: bool, behind: int) -> int:
+    """How many bytes the next probe of a re-decode asks for, from 1 to ``hi - done``.
+
+    ``done`` bytes past the start of the failing call decoded; the error is at most
+    ``hi`` bytes past it, and ``met`` says whether a probe has raised yet (before that,
+    ``hi`` is only where the search gives up). ``behind`` is how far the seek point a
+    restart decodes from lies before the start of the failing call.
+    """
+    left = hi - done
+    if done == 0 or left <= 1:
+        # A decoder that fails a whole block fails at the first byte: one call finds it.
+        return 1
+    restart = _REDECODE_RESTART_CALLS + (behind + done) // _REDECODE_BYTES_PER_CALL
+    # The tail also takes the first square-root probe's size, so a probe that raises
+    # always leaves a bracket the tail finishes one byte per call.
+    if (not met and done < restart) or left <= restart + math.isqrt(2 * restart):
+        return 1
+    # ``left`` is at least 144 here, so this is at least 16 and less than ``left``.
+    return math.isqrt(2 * left)
 
 
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
@@ -661,8 +746,8 @@ class SnapshotState(Protocol):
     two passes can offer them at different offsets (the :class:`DecodeOut` rule does
     not hold for them). The stream keeps them apart instead: one closer than
     ``min_gap`` to a point it holds is dropped, and one at an output offset the table
-    already has a point for yields to that point. ``held_bytes`` is what the snapshot holds in memory, counted
-    against :data:`MAX_SNAPSHOT_BYTES`.
+    already has a point for yields to that point. ``held_bytes`` is what the snapshot
+    holds in memory, counted against :data:`MAX_SNAPSHOT_BYTES`.
     """
 
     @property
@@ -983,6 +1068,7 @@ class DecompressorStream(ReadOnlyIOStream):
         self._owned_inner: BinaryIO | None = None
         # A probe's stream raises where it meets an error (probe_streams).
         self._probe = _PROBE_STREAM.get()
+        self._recover = _RECOVER_PARTIAL.get()
         # Used once, in place of the decoder's index scan (see _ensure_index_built).
         self._initial_index = initial_index
         self._refuse_input_after_end = refuse_input_after_end
@@ -1052,7 +1138,7 @@ class DecompressorStream(ReadOnlyIOStream):
             seekable = self._inner.seekable()
             # The most output one bounded decoder call asks for (see _FEED_OUTPUT).
             self._call_output = _SEEKABLE_FEED_OUTPUT if seekable else _FEED_OUTPUT
-            if not seekable and not self._probe:
+            if not seekable and not self._probe and self._recover:
                 # A pipe cannot be decoded again (_redecode_to_error): a decoder that
                 # can snapshot its state keeps the bytes before an error itself.
                 keep = getattr(self._decoder, "keep_output_before_errors", None)
@@ -1683,58 +1769,109 @@ class DecompressorStream(ReadOnlyIOStream):
         A standard-library decoder drops the output of a call that raises, and a call
         asks for up to ``_call_output`` bytes, so the bytes just before damage would be
         lost to a large read. This restarts a decoder at the last seek point at or
-        before ``before``, decodes to ``before`` in calls that stop there, then on one
-        output byte per call until the error comes back, and hands back what came
-        before it. The new decoder replaces the one that raised; the stream is spent
-        either way, and a seek restarts it.
+        before ``before``, decodes to ``before`` in calls that stop there, then searches
+        for the failing byte with probes (:func:`_redecode_probe`): a probe that gives
+        all its bytes moves the search past them on the same decoder, and one that
+        raises bounds where the error is and costs a restart from the seek point.
+        It hands back what came before the error: the bytes a decode that asked for
+        one output byte per call would give, given that a decoder call raises if and
+        only if it asks past the failing byte, whatever sizes the calls before it asked
+        for (``test_probes_find_the_byte_one_byte_calls_find`` checks that for each
+        codec family). A decoder whose failing byte moved with the call sizes would
+        break it. The new decoder replaces the one that
+        raised; the stream is spent either way, and a seek restarts it.
 
-        Only on a source that can seek back, and not in a probe's stream
-        (:func:`probe_streams`). It returns ``b""`` when it cannot run or
+        Only on a source that can seek back, not in a probe's stream
+        (:func:`probe_streams`), and not when the caller turned recovery off
+        (:func:`partial_data_recovery`). It returns ``b""`` when it cannot run or
         recovers nothing, and the error raises as it would have. The cost is a second
-        decode from the seek point, paid only on damaged data.
+        decode from the seek point and one more per probe that raises, paid only on
+        damaged data.
         """
-        if self._probe or not self._inner.seekable():
+        if (
+            self._probe
+            or not self._recover
+            or self._decoder.holds_back_errors
+            or not self._inner.seekable()
+        ):
             return b""
         point = self._find_best_seek_point(before)
+        behind = before - point.decompressed_offset
         got = bytearray()
-        pos = -1
+        # The error is at an offset from ``before`` of at most ``hi``; ``hi`` stays
+        # ``limit`` until a probe raises (``met``). Past ``_call_output`` bytes the
+        # search gives up, as a decode that never meets the error again does.
+        limit = self._call_output + 1
+        hi = limit
+        met = False
+        self._decoder_pos = before
         try:
-            self._inner.seek(point.compressed_offset)
-            old = self._decoder
-            old.close()
-            self._frame_checks.merge(getattr(old, "frame_checks", None))
-            decoder = self._decoder = old.recreate(point, self._inner)
-            self._decode_from_index = point.from_index
-            self._compressed_read = self._feed_origin = point.compressed_offset
-            self._decoder_pos = before
-            pos = point.decompressed_offset
-            idle = 0
-            while pos < before and idle < _REDECODE_IDLE_LIMIT:
-                out = self._redecode_step(decoder, min(self._call_output, before - pos))
-                if out is None:
+            while True:
+                decoder = self._redecode_restart(point, before + len(got))
+                if decoder is None:
                     return b""
-                idle = 0 if out else idle + 1
-                pos += len(out)
-            if pos != before:
-                return b""
-            idle = 0
-            while len(got) <= self._call_output and idle < _REDECODE_IDLE_LIMIT:
-                out = self._redecode_step(decoder, 1)
-                if out is None:
-                    got += decoder.flush().data
-                    break
-                idle = 0 if out else idle + 1
-                got += out
+                last_ask = 0
+                try:
+                    idle = 0
+                    while len(got) < hi:
+                        p = len(got)
+                        want = p + _redecode_probe(p, hi, met, behind)
+                        while len(got) < want and idle < _REDECODE_IDLE_LIMIT:
+                            last_ask = want - len(got)
+                            out = self._redecode_step(decoder, last_ask)
+                            if out is None:
+                                # The input ended. A ``flush`` that raises reaches the
+                                # handler below as a one-byte probe at ``len(got)``, so
+                                # the bytes so far come back; a clean end hands back
+                                # nothing, as the second decode did not meet the error.
+                                last_ask = 1
+                                decoder.flush()
+                                return b""
+                            idle = 0 if out else idle + 1
+                            got += out
+                        if idle >= _REDECODE_IDLE_LIMIT:
+                            return b""
+                except Exception as exc:
+                    if isinstance(exc, MemoryError) or not _may_recover(exc):
+                        raise
+                    # The call that raised asked for ``last_ask`` bytes at ``len(got)``.
+                    hi = len(got) + last_ask - 1
+                    met = True
+                    if len(got) == hi:
+                        return bytes(got)
+                    continue
+                # Every byte up to ``hi`` decoded. After a probe raised, the error is
+                # the next byte; before, the search reached its limit.
+                return bytes(got) if met else b""
         except Exception as exc:
             # Only the verdict met again is the error this hands bytes back before: a
             # failed source read or a MemoryError during the second decode is its own
             # error, and raises.
             if isinstance(exc, MemoryError) or not _may_recover(exc):
                 raise
-            return bytes(got) if pos == before else b""
-        # The decode did not meet the error again where it was met: hand back nothing
-        # rather than bytes the first decode never reached.
-        return b""
+            return b""
+
+    def _redecode_restart(self, point: SeekPoint, target: int) -> Decoder | None:
+        """A new decoder from ``point``, decoded to ``target`` in calls that stop there.
+
+        For :meth:`_redecode_to_error`; ``None`` when it cannot get there.
+        """
+        self._inner.seek(point.compressed_offset)
+        old = self._decoder
+        old.close()
+        self._frame_checks.merge(getattr(old, "frame_checks", None))
+        decoder = self._decoder = old.recreate(point, self._inner)
+        self._decode_from_index = point.from_index
+        self._compressed_read = self._feed_origin = point.compressed_offset
+        pos = point.decompressed_offset
+        idle = 0
+        while pos < target and idle < _REDECODE_IDLE_LIMIT:
+            out = self._redecode_step(decoder, min(self._call_output, target - pos))
+            if out is None:
+                return None
+            idle = 0 if out else idle + 1
+            pos += len(out)
+        return decoder if pos == target else None
 
     def _redecode_step(self, decoder: Decoder, max_length: int) -> bytes | None:
         """One call of :meth:`_redecode_to_error`; ``None`` at the end of the input."""

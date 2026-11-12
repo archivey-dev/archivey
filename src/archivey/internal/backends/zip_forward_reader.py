@@ -618,6 +618,10 @@ class _PassData:
         member = self.member
         header = self.entry.header
         reader = self._reader
+        # The walk drains a member nobody read through this decoder too: a member
+        # whose method the policy excludes is refused here, and the drain skips its
+        # data undecoded as it skips any member it cannot decode.
+        reader._check_member_method(member)
         if header.flags & _ZIP_MASK_COMPRESSED_PATCHED_DATA:
             raise UnsupportedFeatureError(
                 "ZIP compressed patched data (general-purpose bit 5) is not supported",

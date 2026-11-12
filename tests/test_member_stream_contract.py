@@ -896,7 +896,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
     ("7z-bcj2", "no corpus builder for 7z BCJ2 (py7zr cannot write it)"),
     (
         "7z-compressed-nonsolid",
-        "py7zr multi-file writes are solid (LZMA2, or PPMd in sevenzip-ppmd); sevenzip-stored is a single COPY file (non-solid stored)",
+        (
+            "py7zr multi-file writes are solid (LZMA2, or PPMd in sevenzip-ppmd); "
+            "sevenzip-stored is a single COPY file (non-solid stored)"
+        ),
     ),
     (
         "rar4",
@@ -916,6 +919,14 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
             "no corpus builder (the bzip3 package is an opt-in extra); "
             "tests/test_bzip3.py seeks in a file"
         ),
+    ),
+    (
+        "uu",
+        "no corpus builder for uuencode; tests/test_text_codecs.py seeks in a file",
+    ),
+    (
+        "base64",
+        "no corpus builder for base64; tests/test_text_codecs.py seeks in a file",
     ),
     (
         "ar",
@@ -948,6 +959,14 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         ),
     ),
     (
+        "lha",
+        "no corpus builder (needs an LHA writer); tests/test_lha.py seeks inside members",
+    ),
+    (
+        "arj",
+        "no corpus builder (needs an ARJ writer); tests/test_arj.py reads in small pieces",
+    ),
+    (
         "rpm",
         "no corpus builder (needs rpmbuild); tests/test_rpm.py seeks inside members",
     ),
@@ -974,8 +993,14 @@ _UNTESTED_FORMATS = {
     ArchiveFormat.SQUASHFS: "squashfs",
     ArchiveFormat.BZIP3: "bzip3",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP3): "bzip3",
+    ArchiveFormat.UU: "uu",
+    ArchiveFormat(ContainerFormat.TAR, StreamFormat.UU): "uu",
+    ArchiveFormat.BASE64: "base64",
+    ArchiveFormat(ContainerFormat.TAR, StreamFormat.BASE64): "base64",
     ArchiveFormat.XAR: "xar",
     ArchiveFormat.CAB: "cab",
+    ArchiveFormat.LHA: "lha",
+    ArchiveFormat.ARJ: "arj",
     **{ArchiveFormat(ContainerFormat.RPM, s): "rpm" for s in StreamFormat},
     **{ArchiveFormat(ContainerFormat.MAKESELF, s): "makeself" for s in StreamFormat},
 }
