@@ -620,7 +620,7 @@ def overlay_start_of(source: BinaryIO) -> int | None:
     """The overlay start (:func:`executable_layout`) of the seekable ``source`` from
     its current position, or ``None``; the position is restored.
 
-    For the RAR, 7z and LHA parsers' scans, which judge the candidate there first, as
+    For the RAR, 7z, LHA and ARJ parsers' scans, which judge the candidate there first, as
     detection does (``format-detection``, *Overlay start first*). One read of the
     bytes the scan reads anyway.
     """

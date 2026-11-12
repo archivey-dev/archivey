@@ -30,15 +30,20 @@ from __future__ import annotations
 import io
 import struct
 import zlib
-from collections.abc import Iterator
-from typing import TYPE_CHECKING, BinaryIO, NamedTuple
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, BinaryIO, NamedTuple, Protocol
 
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     MemberTimestampContext,
 )
-from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.formats import (
     IndexedFormatHandler,
     IndexedReader,
@@ -52,6 +57,15 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.internal.sfx import (
+    SFX_MAX,
+    VALIDATOR_PEEK_MAX,
+    HitOutcome,
+    ScanNeedle,
+    describe_scan_miss,
+    overlay_start_of,
+    scan_for_magic,
+)
 from archivey.internal.streams.codecs.arj_fast_decoder import ArjFastDecoder
 from archivey.internal.streams.codecs.lzh_decoder import LzhDecoder
 from archivey.internal.timestamps import dos_to_datetime, unix32_to_datetime
@@ -63,6 +77,7 @@ from archivey.types import (
     CompressionMethod,
     CreateSystem,
     HashAlgorithm,
+    MagicSignature,
     MemberType,
 )
 
@@ -80,6 +95,10 @@ _FIXED = struct.Struct("<BBBBBBBBIIIIHHBB")
 _FLAG_GARBLED = 0x01
 _FLAG_VOLUME = 0x04  # the member goes on in the next volume
 _FLAG_EXTFILE = 0x08  # the member started in the previous volume
+# In the main header: the archive carries an ARJ-SECURITY envelope (a signature
+# made by a registered ARJ) right after its end header. The main header's size field
+# holds where the envelope starts and its mode field the envelope's length.
+_FLAG_SECURED = 0x40
 
 _TYPE_TEXT = 1
 _TYPE_MAIN = 2
@@ -183,20 +202,26 @@ class _Header:
         """Where the member's stored bytes start."""
 
 
-class ArjReader(IndexedReader[_Location]):
-    """One open ARJ archive."""
+class _HeaderSource(Protocol):
+    """What reading headers needs of a source: a :class:`ReaderSource`, or the bytes
+    the self-extracting scan peeks at a candidate (:class:`_PeekSource`)."""
 
-    # The listing walks the headers through the file: there is no index.
-    member_list_upfront = False
+    @property
+    def size(self) -> int | None: ...
 
-    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+    def read_at(self, offset: int, n: int) -> bytes: ...
+
+    def read_exact(self, offset: int, n: int) -> bytes: ...
+
+
+class _Headers:
+    """Reads headers, checking each one's CRC-32 as it is read."""
+
+    def __init__(self, source: _HeaderSource, *, probe_cut: bool = True) -> None:
         self._source = source
-        self._context = context
-        main = self._read_header(0)
-        if main is None or main.file_type != _TYPE_MAIN:
-            raise CorruptionError("the ARJ archive has no main header")
-        self._main = main
-        self._first_member = main.end
+        # Whether a source of unknown size is asked for a member's last byte. The
+        # self-extracting scan's peek does not: a byte past the peek says nothing.
+        self._probe_cut = probe_cut
 
     # ── Headers ──────────────────────────────────────────────────────────────────────
 
@@ -289,7 +314,11 @@ class ArjReader(IndexedReader[_Location]):
             cut = data_end > source_size
         else:
             # A source whose size is not known: is the member's last byte there?
-            cut = header.stored > 0 and not self._source.read_at(data_end - 1, 1)
+            cut = (
+                self._probe_cut
+                and header.stored > 0
+                and not self._source.read_at(data_end - 1, 1)
+            )
         if cut:
             raise TruncatedError(
                 f"the ARJ archive ends inside the data of the member at offset {offset}"
@@ -313,6 +342,25 @@ class ArjReader(IndexedReader[_Location]):
         if length > len(body):
             raise CorruptionError("an ARJ Unix special header is cut short")
         header.unix_special = (kind, body[:length])
+
+
+class ArjReader(_Headers, IndexedReader[_Location]):
+    """One open ARJ archive."""
+
+    # The listing walks the headers through the file: there is no index.
+    member_list_upfront = False
+
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+        source = _payload(source)
+        super().__init__(source)
+        # The same source, for the member views the header protocol does not offer.
+        self._payload = source
+        self._context = context
+        main = self._read_header(0)
+        if main is None or main.file_type != _TYPE_MAIN:
+            raise CorruptionError("the ARJ archive has no main header")
+        self._main = main
+        self._first_member = main.end
 
     # ── Listing ──────────────────────────────────────────────────────────────────────
 
@@ -354,7 +402,10 @@ class ArjReader(IndexedReader[_Location]):
         )
 
     def _check_end(self, end: int) -> None:
-        """Report data after the end header."""
+        """Report data after the end header, past an ARJ-SECURITY envelope there."""
+        main = self._main
+        if main.flags & _FLAG_SECURED and main.size == end:
+            end += main.mode
         tail = self._source.read_at(end, _TAIL_SCAN)
         stripped = tail.lstrip(_PADDING)
         if stripped:
@@ -489,7 +540,7 @@ class ArjReader(IndexedReader[_Location]):
         method = locator.method
         if method == _METHOD_STORED:
             return MemberData(
-                self._source.view(locator.offset, locator.stored), digests=digests
+                self._payload.view(locator.offset, locator.stored), digests=digests
             )
         if method not in _METHODS_LZH and method != _METHOD_FAST:
             raise UnsupportedFeatureError(
@@ -497,7 +548,7 @@ class ArjReader(IndexedReader[_Location]):
                 "not read"
             )
         span = ((locator.offset, locator.offset + locator.stored),)
-        stream = _ArjStream(self._source, locator, member.size or 0)
+        stream = _ArjStream(self._payload, locator, member.size or 0)
         return MemberData(stream, digests=digests, bounded=True, ranges=span)
 
     @override
@@ -547,6 +598,105 @@ class _ArjStream(io.RawIOBase):
         super().close()
 
 
+# ── Self-extracting archives ───────────────────────────────────────────────────────
+
+# An archive behind a stub (ARJ's own ARJSFX modules, a DOS ``MZ`` program or, from ARJ
+# for Unix, an ELF one) is found by its main header's two magic bytes. Two bytes turn
+# up in any stub's code; the header's CRC-32 tells the main header from them.
+_SFX_NEEDLES = (ScanNeedle(_MAGIC, 0),)
+
+
+class _ShortPeek(Exception):
+    """The scan's peek ends before the header does: the candidate was not checked."""
+
+
+class _PeekSource:
+    """A candidate's bytes, as the self-extracting scan peeks them. The peek grows by
+    doubling and is kept."""
+
+    _FIRST_PEEK = 4096
+
+    def __init__(self, peek_more: Callable[[int], bytes], remaining: int | None):
+        self._peek_more = peek_more
+        self.size = remaining
+        self._peeked = b""
+        self._ended = False  # the peek returned fewer bytes than asked: no more exist
+
+    def read_at(self, offset: int, n: int) -> bytes:
+        end = offset + n
+        if end > VALIDATOR_PEEK_MAX:
+            raise _ShortPeek
+        if end > len(self._peeked) and not self._ended:
+            want = min(
+                max(end, 2 * len(self._peeked), self._FIRST_PEEK), VALIDATOR_PEEK_MAX
+            )
+            self._peeked = self._peek_more(want)
+            self._ended = len(self._peeked) < want
+        return self._peeked[offset:end]
+
+    def read_exact(self, offset: int, n: int) -> bytes:
+        data = self.read_at(offset, n)
+        if len(data) < n:
+            if self.size is None or offset + n <= self.size:
+                raise _ShortPeek
+            raise TruncatedError("the candidate ends inside its header")
+        return data
+
+
+def _validate_main_header(
+    peek_more: Callable[[int], bytes], remaining: int | None
+) -> HitOutcome:
+    """Whether an ARJ main header starts at the candidate: its size, CRC-32, layout
+    and extended headers check out, and its file type is the main header's.
+
+    The CRC-32 leaves a stub's ``60 EA`` bytes a chance of 1 in 2^32, so, unlike LHA's
+    8-bit sum, one header is enough: the validator does not walk on to the members. A
+    main header the source ends inside is ``DAMAGED``.
+    """
+    headers = _Headers(_PeekSource(peek_more, remaining), probe_cut=False)
+    try:
+        header = headers._read_header(0)
+    except _ShortPeek:
+        return HitOutcome.NOT_THIS_FORMAT
+    except TruncatedError:
+        return HitOutcome.DAMAGED
+    except ArchiveyError:
+        return HitOutcome.NOT_THIS_FORMAT
+    if header is None or header.file_type != _TYPE_MAIN:
+        return HitOutcome.NOT_THIS_FORMAT
+    return HitOutcome.VALID
+
+
+def _payload(source: ReaderSource) -> ReaderSource:
+    """``source`` from its main header: byte 0, or past a self-extracting stub, found
+    as detection finds it (the same needle, validator and window), so a forced
+    ``format=`` reads the archive detection would."""
+    if source.read_at(0, 2) == _MAGIC:
+        return source
+    view = source.view(0)
+    try:
+        scan = scan_for_magic(
+            view,
+            _SFX_NEEDLES,
+            validator=_validate_main_header,
+            first_at=overlay_start_of(view),
+        )
+    finally:
+        view.close()
+    if scan.hit is None:
+        raise CorruptionError(
+            "Not an ARJ archive: " + describe_scan_miss(scan, limit=SFX_MAX)
+        )
+    origin = scan.hit.candidate_origin
+    size = source.size
+    return ReaderSource(
+        lambda start, length: source.view(origin + start, length),
+        None if size is None else size - origin,
+        source.path,
+        lambda offset, n: source.read_at(origin + offset, n),
+    )
+
+
 class ArjHandler(IndexedFormatHandler):
     """ARJ archives: ``.arj``."""
 
@@ -563,4 +713,9 @@ class ArjHandler(IndexedFormatHandler):
         return ArjReader(source, context)
 
 
-ArjReadBackend = register_builtin_format(ArjHandler)
+ArjReadBackend = register_builtin_format(
+    ArjHandler,
+    SFX_MAGIC=(MagicSignature(0, _MAGIC, ArchiveFormat.ARJ),),
+    SFX_HIT_VALIDATOR=staticmethod(_validate_main_header),
+    SFX_PARSER_SCANS=True,
+)

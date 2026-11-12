@@ -32,6 +32,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from tests.pe_build import elf_file, pe_file
 from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "external" / "arj_310"
@@ -182,6 +183,7 @@ def _header(
     extended: tuple[bytes, ...] = (),
     host: int = 0,  # MS-DOS
     modified: int = 0x5A6E_5000,  # a DOS time in 2025
+    mode: int = 0x20,
 ) -> bytes:
     fixed = struct.pack(
         "<BBBBBBBBIIIIHHBB",
@@ -198,7 +200,7 @@ def _header(
         size,
         crc,
         0,
-        0x20,
+        mode,
         0,
         0,
     )
@@ -520,3 +522,113 @@ def test_windows_hosts(host: int, system: CreateSystem) -> None:
 def test_a_garbled_flag_marks_any_member_encrypted() -> None:
     (members, _codes, _reads) = _one(_header(b"d", file_type=3, flags=0x01))
     assert members[0].is_encrypted
+
+
+# --- self-extracting archives -------------------------------------------------------
+
+
+def test_a_self_extractor_from_arj_for_unix() -> None:
+    # ``arj a -je1``: ARJ's ARJSFXJR stub, an ELF program, then the archive.
+    path = _FIXTURES / "sfx_junior"
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.ARJ
+    assert info.payload_offset == 23_104
+    for fmt in (None, ArchiveFormat.ARJ):
+        with open_archive(path, format=fmt) as reader:
+            (member,) = reader.members()
+            data = reader.read(member)
+            assert not reader.diagnostics.retained
+        assert member.name == "small.txt"
+        assert hashlib.sha256(data).hexdigest() == _CONTENTS["small.txt"][1]
+
+
+def _decoys() -> bytes:
+    # Stub code with the two magic bytes in it, as any stub has: once bare, once with
+    # a size the header allows but no CRC to match, and once with the main header's
+    # bytes behind a CRC that fails.
+    main = _header(b"test.arj", file_type=2)
+    broken = main[:-8] + bytes([main[-8] ^ 1]) + main[-7:]
+    return b"\x60\xea\x90\x90" + b"\x60\xea\x40\x00" + bytes(64) + broken
+
+
+# Stubs: a DOS program (``MZ`` with no PE header, as ARJ's own DOS modules are), a PE,
+# an ELF, and bytes with no executable cue, which detection scans last.
+_STUBS = {
+    "dos": b"MZ" + bytes(0x3E) + _decoys() + bytes(range(256)) * 4,
+    "pe": pe_file(0x1000, payload=_decoys()),
+    "elf": elf_file(0x1000, payload=_decoys()),
+    "none": b"\xe9\x10\x02" + _decoys() + bytes(range(256)) * 4,
+}
+
+
+@pytest.mark.parametrize("stub", sorted(_STUBS))
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_an_archive_behind_a_stub(stub: str, forced: bool) -> None:
+    head = _STUBS[stub]
+    data = head + _archive((b"a.txt", b"alpha"))
+    if not forced:
+        info = detect_format(io.BytesIO(data))
+        assert info.format == ArchiveFormat.ARJ
+        assert info.payload_offset == len(head)
+    fmt = ArchiveFormat.ARJ if forced else None
+    with open_archive(io.BytesIO(data), format=fmt) as reader:
+        assert {m.name: reader.read(m) for m in reader.members()} == {"a.txt": b"alpha"}
+        assert not reader.diagnostics.retained
+
+
+def test_a_forced_open_of_a_file_with_no_archive_is_corruption() -> None:
+    with pytest.raises(CorruptionError, match="Not an ARJ archive"):
+        open_archive(io.BytesIO(b"MZ" + bytes(512)), format=ArchiveFormat.ARJ)
+    # With only decoys, the scan falls back to the first, as the RAR and 7z scans do,
+    # and the error names what is wrong there.
+    with pytest.raises(CorruptionError, match="ARJ header"):
+        open_archive(
+            io.BytesIO(b"MZ" + _decoys() + bytes(512)), format=ArchiveFormat.ARJ
+        )
+
+
+def test_a_stub_cut_inside_the_main_header_is_truncated() -> None:
+    main = _header(b"test.arj", file_type=2)
+    data = b"MZ" + bytes(0x3E) + main[:20]
+    with pytest.raises(TruncatedError):
+        open_archive(io.BytesIO(data), format=ArchiveFormat.ARJ)
+
+
+def _secured(envelope: bytes, *, at_end: bool = True) -> bytes:
+    """An archive with an ARJ-SECURITY envelope after its end header, as a registered
+    ARJ writes one: the main header's flag, the envelope's start in its size field and
+    its length in its mode field."""
+    member = _header(b"a.txt", file_type=0, stored=5, size=5, crc=zlib.crc32(b"alpha"))
+    plain_main = _header(b"test.arj", file_type=2)
+    end = len(plain_main) + len(member) + 5 + 4
+    main = _header(
+        b"test.arj",
+        file_type=2,
+        flags=0x40,
+        size=end if at_end else end + 1,
+        mode=len(envelope),
+    )
+    return main + member + b"alpha" + b"\x60\xea\0\0" + envelope
+
+
+def test_a_security_envelope_after_the_end_header_is_not_trailing_data() -> None:
+    data = _secured(bytes(8) + b"\xa5\x63" * 56)
+    with open_archive(io.BytesIO(data)) as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
+        assert not reader.diagnostics.retained
+
+
+def test_data_after_a_security_envelope_is_reported() -> None:
+    data = _secured(b"\xa5" * 16) + b"more"
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.members()
+        (diagnostic,) = reader.diagnostics.retained
+    assert diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+
+
+def test_an_envelope_the_main_header_does_not_place_there_is_trailing_data() -> None:
+    data = _secured(b"\xa5" * 16, at_end=False)
+    with open_archive(io.BytesIO(data)) as reader:
+        reader.members()
+        (diagnostic,) = reader.diagnostics.retained
+    assert diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
