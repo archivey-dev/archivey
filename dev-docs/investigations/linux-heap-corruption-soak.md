@@ -108,7 +108,7 @@ All during the gzip/zlib truncation-recovery work in 2026-07:
   `test_ppmd_raw_streams` and `test_rapidgzip_deflate_zlib` in collection order. This one
   motivated the accelerator and PPMd-stream process split.
 
-## Soak after rapidgzip moved to a child (2026-11-10)
+## Soak after rapidgzip moved to a child (2026-11-10 and 2026-11-11)
 
 `.github/workflows/heap-corruption-soak.yml` runs recipe (1) on `ubuntu-latest`: the whole
 suite in one pytest process, serial, pytest-cov on, `PYTHONFAULTHANDLER=1`, one job per
@@ -126,14 +126,19 @@ a `Fatal Python error`), so an ordinary test failure is listed but does not coun
 | | 3.13 `[all]` | 3 | 0 |
 | | 3.14 `[all]` | 3 | 0 |
 | | 3.11 `[all-lowest]` | 3 | 0 |
+| `ubuntu-latest`, run 43108671291 (5cbc64d) | the same five rows | 15 | 0 |
 | Linux container (1648599) | 3.11 `[all]` | 2 | 0 |
 
-Each CI pass ran about 21,860 tests in 25 to 47 minutes; the only test failure was the XAR
-timeout above, in every pass. `[all-lowest]` runs on 3.11 only, as in `ci.yml`: its
-floors (pyyaml 6.0 among them) do not build on 3.12 and later.
+Run 42834255485 shows red: its nine py3.12, 3.13 and 3.14 `[all-lowest]` jobs failed in
+`uv sync --resolution lowest-direct` and never started pytest. Its floors (pyyaml 6.0
+among them) do not build on 3.12 and later, so `[all-lowest]` now runs on 3.11 only, as in
+`ci.yml`. The table counts only the 15 jobs that ran the suite. In that run each pass took
+about 15 to 46 minutes and ran 21,857 to 21,860 tests, with 534 skipped (537 on 3.14). Two
+passes, both py3.11 `[all]`, failed the XAR test above by timeout; the other 13 had no test
+failure. Run 43108671291 is green: all 15 passes ran the suite and none died.
 
-Zero deaths in 17 passes bounds the per-pass rate below about 18% at 95% confidence. The
-2026-07 runs below crashed on two of the Linux legs of one run more than once, so the rate
+Zero deaths in 32 passes bounds the per-pass rate below about 9% at 95% confidence. The
+2026-07 runs above crashed on two of the Linux legs of one run more than once, so the rate
 then was well above that. The crash is not reproduced; it is not shown fixed, because
 its cause was never found.
 

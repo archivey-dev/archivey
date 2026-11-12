@@ -303,7 +303,7 @@ handles large buffers under PyPy (its cpyext build), or a pure-Python Deflate64 
 **Evidence.** The `pypy3.11` job logs in CI; PyPy is not a supported interpreter
 ([`docs/install.md`](../docs/install.md) §PyPy).
 
-## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash; not seen since 2026-07)
+## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash; open, the 2026-11 soak did not reproduce it)
 
 **Symptom.** On GitHub Actions `ubuntu-latest` required legs with `--extra all` or
 `all-lowest` (py3.11 to 3.13, sometimes 3.14), the suite process dies with
@@ -338,14 +338,14 @@ stacks are not in a PPMd decode.
 steps so a corrupted heap in one cannot take down another. That is CI hygiene, not a
 product fix.
 
-**Measured 2026-11-10.** 17 whole-suite passes in the shape the crashes came from (one
-long-lived pytest process, serial, pytest-cov on, `PYTHONFAULTHANDLER=1`), and no process
-died: 15 on `ubuntu-latest` (`heap-corruption-soak.yml`, run 42834255485 at 7a0bfab: py3.11,
-3.12, 3.13 and 3.14 `[all]` three passes each, py3.11 `[all-lowest]` three passes; about
-21,860 tests and 25 to 47 minutes per pass) and 2 in a Linux container (py3.11 `[all]`).
-In 2026-07 the same shape crashed in four CI runs within days, often on two legs of one
-run. Zero in 17 puts the per-pass rate below about 18% at 95% confidence (the rule of
-three), far under what those runs showed. The crash is not reproduced in the current tree;
+**Measured 2026-11-10 and 2026-11-11.** 32 whole-suite passes in the shape the crashes
+came from (one long-lived pytest process, serial, pytest-cov on, `PYTHONFAULTHANDLER=1`),
+and no process died. 30 ran on `ubuntu-latest` in two runs of `heap-corruption-soak.yml`
+(42834255485 at 7a0bfab and 43108671291 at 5cbc64d), each with py3.11, 3.12, 3.13 and 3.14
+`[all]` and py3.11 `[all-lowest]`, three passes each; 2 ran in a Linux container (py3.11
+`[all]`). In 2026-07 the same shape crashed in four CI runs within days, often on two legs
+of one run. Zero in 32 puts the per-pass rate below about 9% at 95% confidence (the rule
+of three), far under what those runs showed. The crash is not reproduced in the current tree;
 the cause was never found, so it is not shown fixed either.
 
 **What remains.** Re-run `heap-corruption-soak.yml` (on demand) after a native dependency

@@ -7,8 +7,10 @@ name: Linux heap-corruption soak
 # pytest-cov on (the addopts default), on ubuntu-latest with [all] or [all-lowest]. That is
 # the shape the recorded crashes came from, before CI split the suite into four steps. The
 # required CI legs no longer run that shape, so they cannot tell us whether the crash is
-# still there; this job can. A job that dies with exit 139 (SIGSEGV) or 134 (SIGABRT) is the
-# finding: its log ends with the faulthandler stack and the last test names.
+# still there; this job can. A job fails only when the pytest process dies: exit 128 or
+# more (the 2026-07 crashes were 139 SIGSEGV and 134 SIGABRT; 137 is an out-of-memory kill)
+# or a "Fatal Python error" in the log, which then ends with the faulthandler stack and the
+# last test names.
 #
 # Runs on demand and on a PR that changes this file. Not a required check.
 on:
@@ -23,7 +25,7 @@ on:
         default: "3"
 
 concurrency:
-  group: heap-soak-${{ github.event.pull_request.number || github.run_id }}
+  group: heap-soak-${{ github.event.pull_request.number || 'dispatch' }}
   cancel-in-progress: true
 
 jobs:
@@ -32,10 +34,19 @@ jobs:
     outputs:
       reps: ${{ steps.reps.outputs.reps }}
     steps:
+      # The input reaches the script only through the environment, and only an
+      # integer from 1 to 20 is accepted (5 matrix rows x 20 = 100 jobs).
       - id: reps
+        env:
+          REPEATS: ${{ inputs.repeats || '3' }}
         run: |
-          n="${{ inputs.repeats || '3' }}"
-          echo "reps=$(python3 -c "import json; print(json.dumps(list(range(1, int('$n') + 1))))")" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          raw = os.environ["REPEATS"].strip()
+          if not raw.isdigit() or not 1 <= int(raw) <= 20:
+              raise SystemExit(f"repeats must be an integer from 1 to 20, got {raw!r}")
+          print("reps=" + json.dumps(list(range(1, int(raw) + 1))))
+          PY
 
   soak:
     needs: plan
@@ -80,13 +91,14 @@ jobs:
           uv sync --python ${{ matrix.python-version }}
           --group dev --extra all --resolution lowest-direct
 
-      # unrar is on the path of one recorded crash (open_unrar_p); xorriso and bgzip
-      # keep the suite's shape close to CI's. The unar and 7-Zip source builds are
-      # left out: their tests skip, and no recorded crash stacks in them.
-      - name: Install unrar, xorriso and bgzip
+      # unrar is on the path of one recorded crash (open_unrar_p); p7zip-full (the 7z
+      # the encrypted-ZIP corpus and BCJ2 oracle call, as in ci.yml), xorriso and
+      # bgzip keep the suite's shape close to CI's. The unar and 7-Zip source builds
+      # are left out: their tests skip, and no recorded crash stacks in them.
+      - name: Install p7zip-full, unrar, xorriso and bgzip
         uses: ./.github/actions/apt-install
         with:
-          packages: unrar xorriso tabix
+          packages: p7zip-full unrar xorriso tabix
 
       - name: Record versions
         run: >
@@ -104,7 +116,7 @@ jobs:
           # on a slow test (os._exit), which would end the soak at the first test
           # that runs past 60 s serially under coverage. With "signal" only that
           # test fails and the pass goes on.
-          uv run --no-sync pytest tests/ -v -p no:cacheprovider --cov-report= \
+          uv run --no-sync pytest tests/ -v -p no:cacheprovider \
             -o timeout_method=signal > soak.log 2>&1 || rc=$?
           echo "rc=$rc secs=$(( $(date +%s) - start ))" | tee soak-result.txt
           tail -n 3 soak.log
@@ -116,8 +128,8 @@ jobs:
             echo "py${{ matrix.python-version }} ${{ matrix.install }} pass ${{ matrix.rep }}: $(cat soak-result.txt)"
             echo '```'; tail -n 1 soak.log; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          # Only a dead process is the finding (139 SIGSEGV, 134 SIGABRT, or a
-          # faulthandler report). Ordinary test failures are listed, not fatal here.
+          # Only a dead process is the finding (exit 128 or more, or a faulthandler
+          # report). Ordinary test failures are listed, not fatal here.
           if [ "$rc" -ge 128 ] || grep -q "Fatal Python error" soak.log; then
             echo "::error::process died (rc=$rc)"; exit 1
           fi
