@@ -1165,6 +1165,10 @@ class ArchiveyConfig:
     To read a set then, pass its volumes as a list. That suits a directory other users
     can write to, where a planted part (a hard link to a file the caller can read and
     they cannot, which looks like any file) would end up inside an extracted member.
+
+    An ``fsspec.core.OpenFile`` is never searched, whatever this says: pass a remote
+    set as a list of ``OpenFile`` objects. With this ``True`` a lone remote
+    ``x.7z.001`` is still refused by its name, and the message says to pass the list.
     """
 
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)

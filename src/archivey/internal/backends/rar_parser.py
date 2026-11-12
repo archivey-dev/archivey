@@ -1031,8 +1031,17 @@ def _settle_rar15_solid(archive: RarArchive) -> None:
         seen_file = True
 
 
+# The refusal of a later volume read as the first. The reader matches it to add the
+# remedy for a lone remote part (``REMOTE_VOLUMES_AS_LIST``).
+NEED_FIRST_VOLUME_MSG = "Need first volume of multi-volume RAR archive"
+
+
 def mark_missing_next_volume(
-    archive: RarArchive, *, volumes_read: int, missing: Sequence[int] = ()
+    archive: RarArchive,
+    *,
+    volumes_read: int,
+    missing: Sequence[int] = (),
+    remedy: str | None = None,
 ) -> None:
     """Record the volumes a set is missing as a truncation.
 
@@ -1044,7 +1053,7 @@ def mark_missing_next_volume(
     fails only on the ones that run into a missing volume. Those keep
     ``split_after`` or ``split_before``, which is what the reader refuses their
     data on. A cut the walk already recorded is the earlier fault and keeps its
-    own message.
+    own message. ``remedy``, when given, ends the message.
     """
     if archive.truncated is not None:
         return
@@ -1062,6 +1071,8 @@ def mark_missing_next_volume(
         )
     if reasons:
         archive.truncated = "Incomplete RAR multi-volume set: " + "; ".join(reasons)
+        if remedy is not None:
+            archive.truncated += f". {remedy}"
 
 
 def _append_damaged_service_header(
@@ -1292,7 +1303,7 @@ def _parse_rar_volume(
     # The emit rule appends a split_before member only to an empty list, so
     # members[0] is the only place a continuation can show on volume 1.
     if volume_index == 0 and archive.members and archive.members[0].split_before:
-        raise UnsupportedFeatureError("Need first volume of multi-volume RAR archive")
+        raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
     return archive
 
 
@@ -2860,9 +2871,7 @@ class _Rar3Walk:
             # A later volume whose first member starts on its boundary: no
             # member continues from an earlier volume, so only this number
             # tells it from volume 1 (RAR5 reads MAIN's instead).
-            raise UnsupportedFeatureError(
-                "Need first volume of multi-volume RAR archive"
-            )
+            raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
         self.trailing_at = _scan_after_end_block(
             source, _packed_span_end(block.data_offset, block.add_size)
         )
@@ -4036,9 +4045,7 @@ class _Rar5Walk:
             # RAR5: first volume omits the field (implicit 0); later volumes
             # store 1 for the second volume, 2 for the third, …
             if volume_index == 0 and volnr != 0:
-                raise UnsupportedFeatureError(
-                    "Need first volume of multi-volume RAR archive"
-                )
+                raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
             if volume_index > 0 and volnr != volume_index:
                 raise TruncatedError(
                     f"Out-of-order RAR volume: expected volume index "
