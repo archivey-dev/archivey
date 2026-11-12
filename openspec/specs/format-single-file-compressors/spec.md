@@ -363,7 +363,7 @@ reader SHALL say so where it is stated.
 | Zero-byte source, codec whose decoder rejects it | `open_archive` raises the translated error |
 | Zero-byte source, `unix-compress` | `open_archive` raises `TruncatedError` (the decoder rejects a source shorter than its header) |
 | A `.tar.bz2` of 60 KB cut to two thirds, from a pipe with `streaming=True` and from a file | `open_archive` raises `TruncatedError` from both |
-| Non-seekable source | Validation deferred to the first read |
+| Non-seekable source that detection did not read to its end (a longer pipe, or `format=` given) | Validation deferred to the first read |
 
 #### Scenario: the failure carries honest provenance
 

@@ -1288,23 +1288,20 @@ def _open_verdict(source: Any, **kwargs: Any) -> str | None:
         return type(exc).__name__
 
 
-@pytest.mark.parametrize(
-    "compress",
-    [bz2.compress, gzip.compress, lambda d: lzma.compress(d, format=lzma.FORMAT_XZ)],
-    ids=["bz2", "gz", "xz"],
-)
+@pytest.mark.parametrize("suffix", _codec_params())
 def test_a_short_cut_stream_fails_at_open_from_a_pipe_as_from_a_file(
-    compress: Callable[[bytes], bytes],
+    suffix: str,
 ) -> None:
     """A stream that detection's peek holds whole is probed at open from a pipe too,
     from a copy of what the peek holds, so the pipe and the file give the same
     verdict at open. A cut bzip2 block was the case that differed."""
+    compress, _marks = _SINGLE_FILE_CODECS[suffix]
     packed = compress(_tar_of(60_000))
     cut = packed[: len(packed) * 2 // 3]
     from_file = _open_verdict(io.BytesIO(cut))
-    # bzip2 gives no byte before its block decodes: the cut fails the open's probe.
-    # gzip and xz give bytes before the cut, so both open and the read raises.
-    assert from_file == ("TruncatedError" if compress is bz2.compress else None)
+    if suffix == ".bz2":
+        # bzip2 gives no byte before its block decodes: the cut fails the probe.
+        assert from_file == "TruncatedError"
     assert _open_verdict(NonSeekableBytesIO(cut), streaming=True) == from_file
 
 

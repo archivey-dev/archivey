@@ -200,7 +200,8 @@ class SingleFileReader(BaseArchiveReader):
     A seekable source is validated by :meth:`_validate_at_open`, which ``open_archive``
     calls after setting format provenance: it decodes one byte, so a source that is not
     the claimed codec raises from ``open_archive`` rather than the first ``read``. A
-    non-seekable source is not validated until that read.
+    non-seekable source is validated the same way, on a copy, when detection's peek
+    already holds all of it; otherwise not until that read.
     """
 
     _MEMBER_LIST_UPFRONT = True
@@ -294,7 +295,8 @@ class SingleFileReader(BaseArchiveReader):
             # only under measurement, so the source's seeks are visible.
             self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         if not self._seekable:
-            # Non-seekable: validation waits for the first read (see _validate_at_open).
+            # Non-seekable: validation probes a copy when detection's peek holds the
+            # whole source, else waits for the first read (see _validate_at_open).
             self._pending_parts = self._open_codec_parts()
 
     @override
