@@ -700,9 +700,12 @@ def _redecode_probe(done: int, hi: int, met: bool, behind: int) -> int:
         # A decoder that fails a whole block fails at the first byte: one call finds it.
         return 1
     restart = _REDECODE_RESTART_CALLS + (behind + done) // _REDECODE_BYTES_PER_CALL
+    # The tail also takes the first square-root probe's size, so a probe that raises
+    # always leaves a bracket the tail finishes one byte per call.
     if (not met and done < restart) or left <= restart + math.isqrt(2 * restart):
         return 1
-    return max(2, min(left - 1, math.isqrt(2 * left)))
+    # ``left`` is at least 144 here, so this is at least 16 and less than ``left``.
+    return math.isqrt(2 * left)
 
 
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
