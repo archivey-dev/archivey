@@ -29,7 +29,8 @@ from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
-# Solid, so every member goes through unrar and needs the copy.
+# Solid, so every member goes through unrar. A read on the mask route
+# (``unrar_mask_route``) copies the whole archive; a synthetic one copies its stream.
 _SOLID = _FIXTURES / "basic_solid__.rar"
 # Compressed, so unrar reads it and needs the volumes on disk; a stored member split
 # across volumes is joined natively and copies nothing.
@@ -300,7 +301,7 @@ def test_stream_within_the_limit_reads(temp_artifacts: list[Path]) -> None:
 
 
 def test_stream_over_the_limit_refuses_before_writing_or_spawning(
-    temp_artifacts: list[Path], no_unrar: None
+    unrar_mask_route: None, temp_artifacts: list[Path], no_unrar: None
 ) -> None:
     blob = _SOLID.read_bytes()
     with open_archive(io.BytesIO(blob), config=_config(len(blob) - 1)) as archive:
@@ -318,7 +319,7 @@ def test_stream_over_the_limit_refuses_before_writing_or_spawning(
 
 
 def test_stream_of_unknown_size_stops_at_the_limit_and_removes_the_copy(
-    temp_artifacts: list[Path], no_unrar: None
+    unrar_mask_route: None, temp_artifacts: list[Path], no_unrar: None
 ) -> None:
     blob = _SOLID.read_bytes()
     source = _UnsizedStream(blob)
@@ -370,11 +371,14 @@ def _only_note(source: object, max_bytes: int | None) -> str:
 
 def test_cost_note_names_the_limit() -> None:
     blob = _SOLID.read_bytes()
+    # A solid archive: a read copies its solid stream up to the member.
     note = _only_note(io.BytesIO(blob), len(blob))
-    assert "will copy the whole archive to disk" in note
+    assert "will copy the packed bytes of its solid stream" in note
+    assert "copies whole solid streams a few at a time" in note
     assert f"SpoolLimits.max_bytes={len(blob)}" in note
+    # A nonsolid set: unrar reads each member from a copy of that member alone.
     note = _only_note(_volume_streams(), _volume_total())
-    assert "will copy every volume to a temp directory" in note
+    assert "will copy that member's packed bytes to disk" in note
     assert f"SpoolLimits.max_bytes={_volume_total()}" in note
     for source in (io.BytesIO(blob), _volume_streams()):
         note = _only_note(source, None)
@@ -400,18 +404,15 @@ def test_cost_note_names_the_limit() -> None:
         ),
         pytest.param(
             lambda: io.BytesIO(_SOLID.read_bytes()),
-            _SOLID.stat().st_size - 1,
-            f"a copy of the archive would be {_SOLID.stat().st_size} bytes",
-            id="stream-over",
+            0,
+            "max_bytes=0 allows no copy of a solid stream",
+            id="solid-zero",
         ),
         pytest.param(
             _volume_streams,
-            _volume_total() - 1,
-            f"a copy of every volume would be {_volume_total()} bytes",
-            id="volumes-over",
-        ),
-        pytest.param(
-            _volume_streams, 0, "max_bytes=0 allows no copy", id="volumes-zero"
+            0,
+            "max_bytes=0 allows no copy of a member",
+            id="volumes-zero",
         ),
     ],
 )
@@ -428,12 +429,12 @@ def test_cost_note_says_refused_when_the_limit_decides_at_open(
 def test_cost_note_for_an_unknown_size_names_the_limit() -> None:
     blob = _SOLID.read_bytes()
     note = _only_note(_UnsizedStream(blob), len(blob) - 1)
-    assert "will copy the whole archive to disk" in note
+    assert "will copy the packed bytes of its solid stream" in note
     assert f"SpoolLimits.max_bytes={len(blob) - 1}" in note
 
 
 def test_over_default_limit_is_refused(
-    tmp_path: Path, temp_artifacts: list[Path], no_unrar: None
+    unrar_mask_route: None, tmp_path: Path, temp_artifacts: list[Path], no_unrar: None
 ) -> None:
     """The 1 GiB default itself, driven with a sparse file one byte over it.
 
@@ -479,18 +480,21 @@ def test_volume_set_within_the_limit_reads(temp_artifacts: list[Path]) -> None:
     assert not temp_artifacts[0].exists()
 
 
-def test_volume_set_limit_weighs_the_total_not_each_volume(
-    temp_artifacts: list[Path], no_unrar: None
+@requires_binary("unrar")
+def test_volume_set_under_its_total_reads_through_a_member_copy(
+    temp_artifacts: list[Path],
 ) -> None:
-    # Every volume fits on its own; the set does not.
+    """A limit below the set's total no longer refuses: only the member is copied.
+
+    The read copies the member's joined parts into one synthetic archive
+    (``rar_synthetic``) rather than every volume, so the limit weighs that copy.
+    """
     limit = _volume_total() - 1
-    assert all(path.stat().st_size <= limit for path in _VOLUMES)
-    with (
-        open_archive(_volume_streams(), config=_config(limit)) as archive,
-        pytest.raises(ResourceLimitError, match=r"every volume"),
-    ):
-        archive.read("payload.bin")
-    assert temp_artifacts == []
+    with open_archive(_volume_streams(), config=_config(limit)) as archive:
+        assert archive.read("payload.bin") == _VOLUME_PAYLOAD
+        # One synthetic archive, removed when the member stream closed.
+        assert len(temp_artifacts) == 1
+        assert not temp_artifacts[0].exists()
 
 
 @pytest.mark.parametrize(
@@ -520,9 +524,11 @@ def test_volume_set_limit_stops_mid_copy_and_removes_the_directory(
     """The copy itself enforces the limit, not only the up-front total.
 
     The up-front check is switched off, so what refuses here is the budget running
-    out during the copy.
+    out during the copy. A member copy refused for its size (``check_fits``) is
+    switched off too, so the read reaches the copy of the volumes.
     """
     monkeypatch.setattr(SpoolBudget, "check_total", lambda self, total: None)
+    monkeypatch.setattr(SpoolBudget, "check_fits", lambda self, total: None)
     with (
         open_archive(sources(), config=_config(limit)) as archive,
         pytest.raises(ResourceLimitError),
@@ -660,13 +666,16 @@ def test_prefixed_path_within_the_limit_reads_under_unar(
         (note,) = archive.cost.notes
         assert "SpoolLimits.max_bytes=" in note
         assert archive.read("zeros.bin") == b"\x00" * 8192
-    # unar's private directory, and the copy made inside it.
-    assert len(temp_artifacts) == 2
+    # unar's private directory, and the copy made inside it. The spy sees every
+    # mkdtemp in the process, so the unar identification probe's own directory shows
+    # up when this test is the first in its worker to run unar: leave it out.
+    made = [p for p in temp_artifacts if not p.name.startswith("archivey-unar-probe-")]
+    assert len(made) == 2
     assert not any(path.exists() for path in temp_artifacts)
 
 
 def test_refusal_is_remembered_so_a_retry_writes_nothing(
-    temp_artifacts: list[Path], no_unrar: None
+    unrar_mask_route: None, temp_artifacts: list[Path], no_unrar: None
 ) -> None:
     """One reader's limit holds across retries, not per attempt.
 

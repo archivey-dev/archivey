@@ -1,5 +1,13 @@
 # Blind exception handlers
 
+**In one minute.** archivey never catches every exception and calls it corruption: an
+error it does not recognize propagates unchanged. A few places still need
+`except Exception` (cleanup, combining two errors, a finalizer). This page lists the seven
+shapes such a handler may take. Each one either re-raises the same exception or says on
+the same line why dropping it is correct. The guide's
+[errors and diagnostics](../guide/09-errors-and-diagnostics.md) page describes the error
+model around it.
+
 When `except Exception` or `except BaseException` is the right handler in `src/`, and
 which shape it takes. The contract these serve is `CONTRIBUTING.md` §Exception
 translation: archive problems surface as `ArchiveyError` subclasses through a translator,
@@ -26,7 +34,7 @@ shape.
 
 | Shape | Catches | What leaves | Example |
 |---|---|---|---|
-| **Cleanup and re-raise** | `BaseException` | the original | `core.open_archive`, `TarReader.__init__`, `_bounded_member_pipe` |
+| **Cleanup and re-raise** | `BaseException` | the original | `core.open_archive`, `TarReader.__init__`, `rar_reader._close_on_error` |
 | **Error combination** | `Exception` (or `BaseException` when an interrupt must not skip the mandatory step) | the first error, or an `ExceptionGroup`; never nothing | `ArchiveStream.close`, `_maybe_teardown`, `ProcessOutputStream.close` |
 | **Primary error wins** | `Exception` | the error already in flight; the cleanup failure is attached as a note or dropped | `BaseArchiveReader.open`, `note_raised_seek` |
 | **Translator handoff** | `Exception` | a translated `ArchiveyError` `from` the original, or the original unchanged | `ArchiveStreamImpl._fail`, `_TranslatedErrorBoundary` |

@@ -1,6 +1,17 @@
 """rapidgzip for the DEFLATE family and bzip2: whether to use it, opening it in a child
-process, translating its errors, and the wrappers that keep the standard library's seek and length
-contract around it.
+process, translating its errors, and the wrappers that keep the standard library's seek
+and length contract around it.
+
+rapidgzip is an optional accelerator: it decodes on several threads and builds a seek
+index as it reads, where the standard-library path re-decodes a backward seek from the
+nearest point it knows, often the start. Whether a stream goes through it depends on
+``use_rapidgzip`` / ``use_indexed_bzip2`` (``ON``, ``OFF`` or ``AUTO``), seek demand and
+the input size, and for the DEFLATE family on whether a truncation can be detected: see
+:func:`_rapidgzip_wanted` here (:func:`_rapidgzip_enabled` adds the child-process
+check) and ``_bzip2_uses_accelerator`` in ``bzip2_codec``. ``AUTO`` falls back to the
+standard library whenever rapidgzip cannot run; ``ON`` raises instead. The stream itself
+comes from ``rapidgzip_child``, and ``stdlib_takeover`` hands it to the standard library
+on a data error.
 """
 
 from __future__ import annotations
@@ -47,7 +58,7 @@ from archivey.internal.streams.codecs.rapidgzip_child import (
     reported_by_child,
 )
 from archivey.internal.streams.decompressor_stream import (
-    _StreamChecksumError,
+    StreamChecksumError,
     truncated_message,
 )
 from archivey.internal.streams.resume import ask_resume_offset
@@ -249,17 +260,16 @@ def _rapidgzip_rewind_warning(
     """How to phrase a rewind report for the DEFLATE-family codecs rapidgzip accelerates.
 
     Always names the accelerator; whether to report at all is the seek's re-decode
-    distance. An *engaged* accelerator no longer suppresses it — measured, rapidgzip's
+    distance. An *engaged* accelerator does not suppress it — measured, rapidgzip's
     index over a ``gzip.compress`` output is sparse (three points across 5 MB), so a
     backward seek into a gap re-decodes megabytes with the accelerator running.
 
-    The old "below the AUTO size threshold, stay quiet" arm is gone: the distance
-    threshold covers it, and covers it better (a small member cannot produce a large
-    re-decode distance). ``suggest_install`` stays False when the accelerator is present
-    or engaged, so a caller is never told to install what they already have. On an
-    interpreter where archivey does not use it, or under a policy that excludes it,
-    ``unused_reason`` carries why (``_rapidgzip_unused_reason``) and the report says
-    that instead.
+    Nor does a stream below the ``AUTO`` size threshold: the distance threshold covers
+    it (a small member cannot produce a large re-decode distance). ``suggest_install``
+    stays False when the accelerator is present or engaged, so a caller is never told to
+    install what they already have. On an interpreter where archivey does not use it, or
+    under a policy that excludes it, ``unused_reason`` carries why
+    (``_rapidgzip_unused_reason``) and the report says that instead.
     """
     engaged = _deflate_family_uses_accelerator(config)
     unused_reason = _rapidgzip_unused_reason(config)
@@ -448,7 +458,7 @@ def _open_rapidgzip(
     reason = _no_child_reason(label)
     _require_rapidgzip_child(label)
     try:
-        return RapidgzipChildStream(
+        child = RapidgzipChildStream(
             source,
             label=label,
             bzip2=bzip2,
@@ -461,6 +471,9 @@ def _open_rapidgzip(
             ) from exc
         _warn_child_fallback(str(exc), field_name)
         return None
+    if config.usage is not None:
+        config.usage.note_backend("library", OptionalLibrary.RAPIDGZIP.value, label)
+    return child
 
 
 def _translate_child_or_stdlib(
@@ -518,7 +531,7 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
     """Map rapidgzip exceptions for a DEFLATE-family codec (gzip / zlib / deflate)."""
     text = str(exc)
     if isinstance(exc, ValueError) and "Mismatching CRC32" in text:
-        return _StreamChecksumError(
+        return StreamChecksumError(
             f"Error reading {label} stream (rapidgzip): {exception_detail(exc)}"
         )
     if isinstance(exc, RuntimeError) and "IsalInflateWrapper" in text:

@@ -133,9 +133,11 @@ byte there SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="7z"`,
 offset of that byte past the end. It is a warning by default and raises under
 `DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. A
 non-zero byte at 1 MiB or more past the end goes unseen: the bound is an effort limit,
-as for the TAR trailer scan. A self-extractor's tail (the certificate table of a
-code-signed one) is reported the same way, measured from the archive's own end, not the
-file's. 7-Zip 23.01 warns "There are data after the end of archive" for any tail, zeros
+as for the TAR trailer scan. The scan SHALL stop at the payload end (`archive-reading`,
+*Honour detection payload_offset at open*): a code-signed self-extractor's certificate
+table is identified, not data after the archive, and SHALL raise no diagnostic. Any
+other tail of a self-extractor is reported the same way as above, measured from the
+archive's own end, not the file's. 7-Zip 23.01 warns "There are data after the end of archive" for any tail, zeros
 included; archivey keeps an all-zero tail silent, the DR-3 rule shared with TAR.
 
 #### Scenario: 7z trailing bytes
@@ -149,6 +151,9 @@ included; archivey keeps an all-zero tail silent, the DR-3 rule shared with TAR.
 | `b"JUNK"` at 1 MiB or more past the end | Nothing (past the scan bound) | Opens |
 | Packed stream after the next header, nothing after it | Nothing | Opens |
 | Empty archive (`NextHeaderSize` 0) followed by `b"JUNK"` | `ARCHIVE_TRAILING_DATA` at 0 | `DiagnosticRaisedError` |
+| Signed PE SFX: 7z, certificate (`payload_end` known) | Nothing | Opens |
+| Signed PE SFX: 7z, `b"JUNK"`, certificate | `ARCHIVE_TRAILING_DATA` for `JUNK`; nothing for the certificate | `DiagnosticRaisedError` |
+| Unsigned 7z SFX with a tail | `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
 
 ### Requirement: Bound 7z header count fields before allocation
 
@@ -465,10 +470,26 @@ other than `0x3F` SHALL be accepted only when `≤ 24`; values 25–62 SHALL rai
 `EncryptionError`.
 
 Because 7z AES carries no password check value in the format, wrong-password detection
-relies on integrity anchors and codec rejection, applied as the `archive-reading`
-confirmation ladder. 7z fills that ladder's cheap-key-check rung in
-`sevenzip-aes-tail-key-check`; this requirement starts at the anchor. The reader SHALL
-cache derived keys by `(password, salt, cycles)` and try known-good passwords first.
+relies on a derived cheap key check, integrity anchors and codec rejection, applied as
+the `archive-reading` confirmation ladder. The reader SHALL cache derived keys by
+`(password, salt, cycles)` and try known-good passwords first.
+
+**Cheap key check (tail padding).** Where the AES coder decrypts the folder's only pack
+stream, that stream is CBC over a plaintext padded to a 16-byte boundary, and the
+coder's declared output length gives the unpadded length, so `pack_size - unpack_size`
+tail bytes are padding. 7-Zip and py7zr pad with zeros. Where the pack stream is a whole
+number of blocks and the padding is **4 to 15 bytes**, the reader SHALL decrypt the
+final CBC block from the last two ciphertext blocks (the coder's IV and the only block,
+for a one-block stream), without decoding the folder, and treat an all-zero padding
+tail as `CONFIRMED`. A wrong key passes it at most once in 2³², so it proves the key as
+an anchor does: the folder's members are not watched for an unconfirmed password, and
+their verification level starts at `UNLOCKED`. A non-zero tail SHALL NOT reject the
+candidate: the padding value is a writer convention, not a format guarantee, so the
+ladder goes on to the anchor. Below 4 bytes the check SHALL NOT run, in either
+direction. An AES coder that declares more output than its pack stream holds SHALL
+raise `CorruptionError` before any candidate is tried: AES-CBC never outputs more than
+it reads, and the short decrypt would otherwise read as a wrong password under the
+correct one.
 
 **Integrity anchor.** Confirmation SHALL stop at the earliest sufficient anchor rather
 than decoding the folder: per-member CRCs are consulted in substream order, and the plan
@@ -493,7 +514,8 @@ When an encrypted folder has **no** folder digest and a member has **no** CRC
 (format-legal for store/copy), the system SHALL still return decoded bytes (best-effort,
 matching 7-Zip) and SHALL emit `DIGEST_UNVERIFIABLE` with
 `DigestContext.reason="no_integrity_anchor"` — it MUST NOT imply the decryption was
-authenticated. The reader SHALL NOT decode such a folder merely to discover that nothing
+authenticated. A tail-padding confirmation SHALL NOT suppress it: that check attests the
+key, not the data. The reader SHALL NOT decode such a folder merely to discover that nothing
 can be checked — several candidates do not change that. After decoding a
 header-encrypted `kEncodedHeader`, a parsed result with zero file records SHALL raise
 `EncryptionError` (legitimate writers never encrypt an empty header) so a wrong password
@@ -512,11 +534,17 @@ cannot open as a silent empty listing.
 | `NumCyclesPower` 25–62 | `UnsupportedFeatureError` (not remapped to wrong-password) |
 | Repeated salt/cycles/password | Derived key cache avoids repeated key derivation |
 | Sole wrong password, LZMA2, CRC at 200 MiB | `EncryptionError` at open (codec rejects in the prefix; no 200 MiB read) |
-| Correct password, LZMA2, CRC at 200 MiB, `read(1)` then close | `INCONCLUSIVE`; `ENCRYPTED_MEMBER_UNVERIFIED` |
+| Correct password, LZMA2, CRC at 200 MiB, AES tail check not confirming, `read(1)` then close | `INCONCLUSIVE`; `ENCRYPTED_MEMBER_UNVERIFIED` |
+| Correct password, LZMA2, CRC at 200 MiB, zero AES tail padding of 4 bytes or more, `read(1)` then close | `CONFIRMED` on the tail; no diagnostic |
 | Sole wrong password, store/copy, CRC at 200 MiB | Walk to the CRC; `EncryptionError` at open |
 | Correct password, store/copy, CRC at 200 MiB, `read(1)` then close | No diagnostic (anchor confirmed) |
 | Sole wrong password, store/copy, no CRC at all | Accepted at open; surfaces on the caller's read; `ENCRYPTED_MEMBER_UNVERIFIED` on an abandoned partial read |
-| Store/copy, no CRC, two candidates | First candidate; `DIGEST_UNVERIFIABLE`; confirmation ≤ budget |
+| Store/copy, no CRC, two candidates, AES tail padding under 4 bytes or not zero | First candidate; `DIGEST_UNVERIFIABLE`; confirmation ≤ budget |
+| No integrity anchor, several candidates, zero AES tail padding of 4 bytes or more | The candidate whose tail is zero is chosen; `DIGEST_UNVERIFIABLE` still emitted |
+| AES tail padding of 4 to 15 bytes, all zero for one candidate | `CONFIRMED` with no folder decode |
+| AES tail padding non-zero for every candidate | No candidate dropped; the ladder goes on to the anchor |
+| AES tail padding under 4 bytes, or a pack stream that is not a whole number of blocks | Check skipped; the ladder starts at the anchor |
+| AES coder declares more output than its pack stream holds | `CorruptionError` before any candidate, not a wrong password |
 | Ambiguous candidates, store/copy folder, only CRC at folder end | Unbounded pass; the candidate matching the CRC wins |
 | AES → Delta → Copy or AES → BCJ → Copy | Treated as non-rejecting (the filter does not reject random input) |
 | Rejecting chain, packed input past 1 MiB before the prefix is decoded | Input capped at `PASSWORD_CONFIRM_MAX_INPUT_BYTES`; running out of it is `INCONCLUSIVE`, not a rejection |

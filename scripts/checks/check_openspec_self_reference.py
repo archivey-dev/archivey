@@ -46,7 +46,6 @@ SELF_REF = re.compile(r"\bthis change(?:'s)?\b(?!s)", re.IGNORECASE)
 # that change's deltas are cleaned up; the check below fails on a stale entry, so this
 # list shrinks to nothing rather than quietly becoming permanent.
 PENDING = {
-    "prefixed-archive-detection",
     "single-file-open-time-validation",
 }
 

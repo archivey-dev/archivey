@@ -462,16 +462,20 @@ which built-in format detection reports (see `format-detection` for plugin forma
 - **THEN** the open raises `UnsupportedFeatureError` that names `StreamFormat.GZIP`
 - **AND** `detect_format` on the same file still reports `ArchiveFormat.TAR_GZ`
 
-### Requirement: The format policy reaches nested decodes only through plugins and libraries
+### Requirement: The format policy reaches nested decodes only through plugins, libraries and methods
 
-`FormatPolicy.only` and `FormatPolicy.exclude` SHALL check only the format of the file
-the call opens. A stream format there is the compression around that whole file, not
+The container and stream format entries of `FormatPolicy.only` and
+`FormatPolicy.exclude` SHALL check only the format of the file the call opens (a
+`CompressionAlgorithm` entry is a member method: see *A method the format policy
+excludes is not decoded*). A stream format there is the compression around that whole file, not
 a codec: a member's compression, or a compression stream a reader decodes inside its
 archive (`ReaderContext.decompress`, `ForwardStream.decompress`), SHALL NOT be refused
 by them. `FormatPolicy.plugins` and `FormatPolicy.exclude_libraries` SHALL hold for
 every decode in the call. Under `plugins=False`, a `ReaderContext.decompress` or
 `ForwardStream.decompress` call for a `PluginStream` SHALL raise
-`UnsupportedFeatureError` that names `plugins=False`, before the codec's code runs. A
+`UnsupportedFeatureError` that names `plugins=False`, before the codec's code runs, and
+so SHALL a `ReaderContext.open_nested` call whose format has a `PluginContainer` or a
+`PluginStream`, before the inner reader runs. A
 package `exclude_libraries` names SHALL read as not installed for a nested decode as
 for the outer file (`packaging-and-extras`, *An excluded optional library reads as not
 installed*).
@@ -484,6 +488,55 @@ installed*).
 - **THEN** reading the member raises `UnsupportedFeatureError` that names `plugins=False`
 - **AND** that codec's decoder is not created
 
+#### Scenario: A plugin format nested inside an archive is refused under plugins=False
+
+- **WHEN** a reader's walk calls `ReaderContext.open_nested` with an `ArchiveFormat`
+  whose container is a registered `PluginContainer`, under `FormatPolicy(plugins=False)`
+- **THEN** the walk raises `UnsupportedFeatureError` that names `plugins=False`
+- **AND** that format's reader is not created
+
+### Requirement: A method the format policy excludes is not decoded
+
+`FormatPolicy.exclude` SHALL accept `CompressionAlgorithm` members, except `STORED` and
+`UNKNOWN`, which SHALL be refused as a usage error; `FormatPolicy.only` SHALL refuse
+them as a usage error. Such an entry SHALL refuse a file whose whole-file compression
+decodes with that method (gzip and zlib with DEFLATE, bzip2 with BZIP2, xz with XZ,
+LZMA Alone and lzip with LZMA, zstd with ZSTD, LZ4 and mozLz4 with LZ4, Brotli with
+BROTLI, lzop with LZO), as the stream format's own entry does. A
+`ReaderContext.decompress` or `ForwardStream.decompress` call for the method or for
+such a stream format, a `ReaderContext.open_nested` call for a format with such a
+stream format, and a built-in reader's own decode of its blocks with the method (the
+SquashFS LZ4 decoder) SHALL raise `UnsupportedFeatureError` before the codec runs, so a
+format that compresses data inside itself without listing the method on its members
+(`.deb`, RPM, SquashFS, makeself) is refused when it opens. A member
+whose `compression` chain lists an excluded method SHALL still be listed; opening,
+reading or extracting it SHALL raise `UnsupportedFeatureError` that names the method
+and `exclude=`, before the member's decoder is created, on every path that hands out
+member data: `open()`, `read()`, a `stream_members()` pass (where the yielded stream
+raises on its first read, and a member the caller skips raises nothing), extraction,
+and a forward pass over a source that cannot seek, which skips the member's data
+without decoding it. A symbolic link whose target is stored as such data SHALL be
+listed without a target and reported with `SYMLINK_TARGET_UNAVAILABLE`, reason
+`target_data_unsupported`.
+
+`FormatPolicy.COMMON` SHALL be `FormatPolicy(only={ZIP, TAR, RAR, SEVEN_Z, RAW_STREAM,
+GZIP, BZIP2, XZ, ZSTD}, exclude={SHRINK, IMPLODE, REDUCE, DCL_IMPLODE})`. A change to
+its entries is a user-visible change.
+
+#### Scenario: An imploded ZIP member is refused before it decodes
+
+- **WHEN** a caller opens a ZIP holding an Implode member and a stored member with
+  `FormatPolicy(exclude={CompressionAlgorithm.IMPLODE})`
+- **THEN** `members()` lists both
+- **AND** reading the Implode member raises `UnsupportedFeatureError` and no Implode
+  decoder is created
+- **AND** the stored member reads
+
+#### Scenario: A method entry refuses a file compressed with it
+
+- **WHEN** a caller opens a `.tar.xz` file with `FormatPolicy(exclude={CompressionAlgorithm.XZ})`
+- **THEN** the open raises `UnsupportedFeatureError` that names `CompressionAlgorithm.XZ`
+
 ### Requirement: A replacement plugin reads a built-in container
 
 A `FormatPolicy(replace={container: plugin})` SHALL open that built-in container with
@@ -493,7 +546,8 @@ built-in format, and `format_info.from_plugin` SHALL stay false.
 The replacement SHALL NOT be given a multi-volume set or an archive found behind an SFX
 stub; each SHALL raise `UnsupportedFeatureError` that names the replacement. A read-once
 source SHALL raise `StreamNotSeekableError`, as it does for any indexed plugin. A raw CD
-sector image detected as ISO SHALL be refused as the built-in reader refuses it. Each
+sector image detected as ISO SHALL be refused, including the layouts the built-in reader
+reads: only the built-in reader strips the sectors. Each
 refusal SHALL come before the plugin's `open` runs.
 
 #### Scenario: A ZIP opens with the replacement
@@ -507,3 +561,44 @@ refusal SHALL come before the plugin's `open` runs.
   `FormatPolicy(replace={ContainerFormat.ZIP: P})`
 - **THEN** the open raises `UnsupportedFeatureError` that names `P`
 - **AND** `P.open` is not called
+
+### Requirement: A reader lists the backends it ran
+
+`ForwardArchiveReader.backends_used` SHALL return a tuple of `BackendUse(kind, name,
+used_for, path)`, in the order each was first used, without repeats. It is
+experimental.
+
+- The format reader SHALL come first: `("reader", "archivey", <format>)` for a reader
+  archivey ships, including one built on the plugin interface (CAB, XAR, ISO), and
+  `("reader", "module.QualName", <format>)` for a plugin, a `replace=` one included.
+  The packages a handler reads with (`OPTIONAL_DEPENDENCY`, a plugin's `requires`) SHALL
+  follow as `"library"` entries.
+- An optional package SHALL be listed as `("library", <import name>, <what>)` once it
+  decodes: a codec's package (the zstd module in use, `pyppmd`, `lz4`, `brotli`, …),
+  the rapidgzip accelerator when a child decodes, `python-lzo` when chosen, SquashFS's
+  `lz4.block`, and `cryptography` once a reader decrypts AES with it.
+- A plugin codec SHALL be listed as `("codec", "module.QualName", <stream>)`, followed
+  by one `("library", <module>, <stream>)` entry per module its `requires` names, as a
+  format plugin's are.
+- An archive a plugin reads through `ReaderContext.open_nested` SHALL add what its
+  reader ran to the outer reader's list: its own `("reader", "archivey", <format>)`
+  entry, then its packages and programs.
+- An external program SHALL be listed as `("program", "unrar" | "unar", "RAR",
+  <absolute path>)` when it is spawned for a read.
+- A standard-library codec SHALL NOT be listed, except zstd, which SHALL name the module
+  in use (`compression.zstd` on Python 3.14 and later, `backports.zstd` before). Nothing
+  a detection probe decoded SHALL be listed, even when a recorder reaches the probe.
+
+#### Scenario: backends_used
+
+| Case | Expected |
+| --- | --- |
+| Deflate ZIP read | `(BackendUse("reader", "archivey", "ZIP"),)` |
+| `.zst` file read | reader, then `("library", <zstd module>, "zstd")` |
+| `.gz` read under `use_rapidgzip="on"` | includes `("library", "rapidgzip", "gzip")`; under `"off"`, only the reader |
+| Stored encrypted RAR member read | includes `("library", "cryptography", "AES decryption")` |
+| Member read through `unrar` | includes `("program", "unrar", "RAR", <path>)` |
+| ZIP under `replace={C.ZIP: Plugin}` | `("reader", "<module>.Plugin", "ZIP")` |
+| AES ZIP member read from a non-seekable source | includes `("library", "cryptography", "AES decryption")` |
+| Plugin reading a nested `.tar.zst` | the plugin, then the inner `("reader", "archivey", <format>)` and the zstd module |
+| Plugin codec with `requires=("json",)` | `("codec", "<module>.Handler", <stream>)`, then `("library", "json", <stream>)` |

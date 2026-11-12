@@ -43,9 +43,11 @@ do.
 
 A format is two classes:
 
-- A **`FormatHandler`** subclass. Its class attributes say what the format is called and
-  how to recognise it: an `ArchiveFormat`, file extensions, and magic bytes. Its `open()`
-  method returns a reader.
+- An **`IndexedFormatHandler`** subclass. Its class attributes say what the format is
+  called and how to recognise it: an `ArchiveFormat`, file extensions, and magic bytes.
+  Its `open()` method returns a reader. Its `non_seekable_reason` says, in a few words,
+  why the format needs a seekable source (`"its index is at the end of the file"`), for
+  the error a pipe gets.
 - An **`IndexedReader`** subclass. It lists the members with `iter_members()`, and returns
   the data of one member with `open_member()`.
 
@@ -88,7 +90,7 @@ from archivey import (
     StreamFormat,
 )
 from archivey.formats import (
-    FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -141,7 +143,7 @@ class ToyReader(IndexedReader[Locator]):
         return MemberData(self._source.view(offset, size))
 
 
-class ToyHandler(FormatHandler):
+class ToyHandler(IndexedFormatHandler):
     format = TOYA
     extensions = (".toya",)
     magic = (Magic(0, b"TOYARC1\n"),)
@@ -189,9 +191,27 @@ Each record holds an `ArchiveMember` and a locator. The member carries the publi
 your format stores: at least `type`, `name` and, for a file, `size`. The name is decoded
 but not cleaned up. archivey normalizes it (`./a//b` becomes `a/b`) and reports
 `MEMBER_NAME_NORMALIZED` when that changes it, as for a built-in format. A leading `./`
-alone, or a directory's added `/`, is not reported.
+alone, or a directory's added `/`, is not reported. A hard link's `link_target` names
+another member, so archivey normalizes it the same way: give it as the archive stores
+it too.
 `ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
 UTF-8 wins, then the caller's `encoding=`, then UTF-8 with no byte lost.
+
+Three helpers fill fields many formats store the same way, and report a bad value as a
+built-in format does:
+
+- `unix_member_type(mode, has_data=...)` turns a Unix `st_mode` into the member's `type`,
+  and names a device, FIFO or socket for `extra["special_file_type"]`. Such a file is
+  `OTHER`, or a `FILE` when the archive stores data for it. Type bits it does not know
+  come back as `"unknown"`: store that in `extra` as well, and report it as
+  `MEMBER_TYPE_UNKNOWN`.
+- `ReaderContext.set_unix_time(member, "modified", seconds, nanoseconds=0, source="cpio")`
+  sets a UTC time from seconds since 1970.
+- `ReaderContext.set_dos_time(member, "modified", stamp, source="dos")` sets a local time
+  from a DOS date and time word (`date << 16 | time`). Zero means no time.
+
+A time no `datetime` can hold leaves the field unset and is reported as
+`MEMBER_TIMESTAMP_INVALID` on the member.
 
 The locator is anything your reader needs to find the member's data again: an offset, a
 tuple, or an object from the library you wrap. archivey keeps it and hands it back to
@@ -212,6 +232,14 @@ other fields say how archivey can check those bytes, as described in
 ### Where the bytes come from
 
 There are four ways to build the stream. Pick the first one that fits your format.
+
+Whichever you pick, an archive read by range from an `fsspec` file system fetches a
+member's bytes in one request, rather than in steps that start small, when archivey knows
+where they are. It knows when the stream is a `ReaderSource.view()`, a
+`ReaderContext.decompress()` over one, or a `block_stream()` whose blocks are those, as
+TOYA's is. For any other stream, such as one from your own library, name the spans it
+reads in `MemberData.ranges` as `(start, end)` pairs; they win over what archivey
+infers. On a local file the spans do nothing, and they never change what a read returns.
 
 **Stored bytes.** `ReaderSource.view(start, length)` is a stream over part of the archive
 with its own position, so two members open at the same time do not move each other. A
@@ -371,9 +399,9 @@ A format of header, data, header, data has no index to list from: the only way t
 the members is to read the archive from the start. Such a format can be read from a pipe,
 and a plugin for it has two other classes:
 
-- A **`SequentialFormatHandler`** subclass. It declares the format as a `FormatHandler`
-  does, but implements `open_sequential(context)` instead of `open()`. There is no
-  `ReaderSource`, because the archive may be a pipe.
+- A **`SequentialFormatHandler`** subclass. It declares the format as an
+  `IndexedFormatHandler` does, but implements `open_sequential(context)` instead of
+  `open()`. There is no `ReaderSource`, because the archive may be a pipe.
 - A **`SequentialReader`** subclass. Its `walk(stream)` is a generator that reads headers
   from a `ForwardStream` and yields one `MemberSpan` per member.
 
@@ -458,7 +486,9 @@ What archivey does with the spans:
   the bytes, extraction creates the directory, and the listing reports
   `MEMBER_DIRECTORY_DATA_IGNORED`, as for a built-in format.
 
-`SequentialFormatHandler` takes the same class attributes as `FormatHandler`. The format's
+`SequentialFormatHandler` takes the same class attributes as `IndexedFormatHandler`, except
+`non_seekable_reason`: it reads a pipe. Both share the base class `FormatHandler`, which
+holds those attributes and `translate_exception()`. The format's
 `archive.info.cost` says the listing needs a scan, and `format_availability()` reports
 that it can be read from a source that cannot seek.
 
@@ -514,10 +544,54 @@ The compressed stream is taken to run to the end of the archive: bytes after its
 reported with `ARCHIVE_TRAILING_DATA`, not refused. A pass over such an archive decodes
 it once, as one inside a compression stream does (see **Cost** above).
 
+### An archive inside the archive
+
+Some formats store whole archives as members: a `.deb` is an `ar` archive holding
+`control.tar.xz` and `data.tar.xz`, and what a user wants is the files inside them. A
+walk hands such a member to archivey's own reader for the inner format and yields its
+members as its own:
+
+```python
+def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+    size, inner_format = read_box_header(stream)
+    for span in self._context.open_nested(stream.take(size), inner_format):
+        span.member.name = "payload/" + span.member.name
+        yield span
+    read_next_header(stream)  # resumes after the inner archive's bytes
+```
+
+- **`stream.take(n)`** gives the next `n` bytes as a stream of their own, read forward
+  from the archive as they come, from a pipe too. The walk resumes after them: the next
+  `read()`, `skip()`, `take()` or `decompress()` first skips what the inner reader left
+  unread, such as padding after a tar's end. A `read(0)` or `skip(0)` moves nothing
+  and leaves the stream open.
+- **`context.open_nested(data, format)`** reads `data` with archivey's reader for
+  `format` (`ArchiveFormat.TAR_XZ`, say), in one forward pass, and yields one
+  `MemberSpan` per inner member, its decoded data in `MemberSpan.data`. A format that
+  needs a seekable source (7z, RAR) raises `UnsupportedFeatureError`, and so does an
+  archive nested more than 8 deep, which a format that reads its inner format from its
+  own bytes can be made to reach. Under `FormatPolicy(plugins=False)` a plugin format
+  inside raises it too. Call it from `walk()` only. Stop early by closing the
+  iterator it returns; archivey closes one left open when the archive closes.
+- **One archive to the caller.** The inner reader works for the outer one: its listing
+  limits and decoder limits are the caller's, and what it reports (a TAR header it had
+  to guess at, bytes after its end) goes into the outer reader's diagnostics, naming
+  the member as the caller sees it, and reaches that member's `diagnostics`, while the
+  data is read too. Its errors raise from the walk. Names are checked once, by the
+  outer listing, after the walk renames them.
+- **Yield every span, in order.** The inner reader numbers its members as the outer
+  listing will, so yield each span before taking the next. The walk may change the
+  member first: rename it (and a hard link's `link_target` with it, as the inner
+  archive stores it; archivey normalizes both), or add `MemberSpan.digests` from a
+  checksum list the outer archive keeps.
+- **Cost.** Inner members are decoded data, so the rules of the next section hold: a
+  pass reads them once, and `open()` of one afterwards walks the archive again to it.
+  Have `archive_info()` return `ReaderArchiveInfo(is_solid=True)`.
+
 ### Data a library decodes
 
-Some formats compress each member on its own, with a method only a library decodes (LHA,
-ARJ), or are read through a library that decodes as it walks (a libarchive wrapper).
+Some formats compress each member on its own, with a method only a library decodes (ACE,
+Zoo), or are read through a library that decodes as it walks (a libarchive wrapper).
 There are no stored bytes to describe with `data_length`. Hand archivey the decoded
 data instead, as a stream in `MemberSpan.data`, and leave `data_length` at 0:
 
@@ -610,7 +684,7 @@ def translate_exception(self, exc: Exception) -> archivey.ArchiveyError | None:
     return None
 ```
 
-Define it on the `FormatHandler` to cover `open()` too, where there is no reader yet. The
+Define it on the handler to cover `open()` too, where there is no reader yet. The
 plugin's `translate_exception()` is also asked about anything the reader's returns
 `None` for, so a translation that needs nothing from the open archive is written once,
 on the plugin.
@@ -640,14 +714,21 @@ self._context.report(
 
 Leave `archive_name` and `member_id` unset: archivey fills them in. Pass `member` to
 attach the report to a member, either while listing it (before it is yielded) or while
-opening it. The caller's `DiagnosticPolicy` applies, so a code the caller raises on
-raises from `report()`.
+opening it.
 
-A report made while listing a member should name it as callers will see it, and
-archivey normalizes names only after `iter_members()` yields them. So normalize the
-name first with `ReaderContext.normalize_name()`, set `member.name` to the result, and
-yield the name you started from as `MemberRecord(member, locator, stored_name=...)`.
-archivey then reports the change from that name, as it would have.
+Name the member in the report as the archive stores it, the same name you give
+`member.name`. archivey normalizes names only once `iter_members()` or `walk()` yields
+them, so it holds a report made while listing until then, and sends it with the
+normalized name as the context's `member_name`. The message goes out as you wrote it,
+so it can quote `./dev` for the member listed as `dev`: callers match a report to its
+member by `member_name`, not by the message. The caller's `DiagnosticPolicy` applies
+when the report is sent, so a code the caller raises on raises from the listing. A
+report on a member you never yield is sent when the walk ends, under your name and
+with no member id, or when the reader closes if the walk's first step, taken at open,
+was never listed. It raises only if the walk reached its end: when the caller stopped
+the listing early, or damage ended it, the report is recorded and the policy does not
+raise. In a walk archivey starts over to reach member data, a report names the member
+as listed.
 
 A symlink whose target cannot be read is reported with
 `ReaderContext.link_target_unavailable()`, which also leaves `link_target` unset and
@@ -660,13 +741,21 @@ limits to the members it is handed in any case.
 A reader that keeps members back to yield them later, such as a CPIO hard link held
 until the link that carries its data, passes each one to `ReaderContext.hold()` when it
 keeps it, from `walk()` or `iter_members()`; a call made anywhere else raises
-`ArchiveyUsageError`. The member then counts toward `max_members` and `max_metadata_bytes` with the
-members already listed, and `hold()` raises `ResourceLimitError` when it would cross
-either. Pass the name you will yield it with as `stored_name=`, and what the held
-members are as `reason=`, for the error. Yielding that same member object takes the
-hold off before archivey lists it, so it is counted once; a copy would count twice
-until the walk ends. In a walk archivey starts over to reach a
-member's data, `hold()` does nothing.
+`ArchiveyUsageError`. The member then counts toward `max_members` and
+`max_metadata_bytes` with the members already listed, and `hold()` raises
+`ResourceLimitError` when it would cross either. Pass what the held members are as
+`reason=`, for the error. Yielding that same member object takes the hold off before
+archivey lists it, so it is counted once; a copy would count twice until the walk
+ends. In a walk archivey starts over to reach a member's data, `hold()` does nothing.
+
+A walk that keeps something in memory beyond its members, such as an ar long-name
+table or an RPM header, passes its size to `ReaderContext.charge_metadata(nbytes,
+what=...)` before reading it. The bytes count toward `max_metadata_bytes` with the
+members, and the call raises `ResourceLimitError` when they would cross it. The charge
+lasts until the walk ends. Like `hold()`, it is called from `walk()` or
+`iter_members()` only. A name read only to put on the member it yields needs no
+charge, since archivey counts the member. A table kept to look names up in is
+charged, though its entries become names.
 
 ## Archive details
 
@@ -707,7 +796,7 @@ A plugin that wraps a library names its modules in `requires` and what to instal
 `install_hint`:
 
 ```python
-class CabHandler(FormatHandler):
+class CabHandler(IndexedFormatHandler):
     requires = ("cabarchive",)
     install_hint = "pip install cabarchive"
 ```
@@ -716,12 +805,13 @@ When a module is missing, `format_availability()` reports the format as
 `FormatSupport.NONE` with the hint, and opening a file of that format raises
 `PackageNotInstalledError`, as for a built-in format whose extra is not installed.
 
-A caller can turn an optional package off with `FormatPolicy(exclude_libraries=)`.
+A caller can turn an optional package off with `FormatPolicy(exclude_libraries=)`, or
+allow only some with `FormatPolicy(only_libraries=)`.
 archivey checks `requires` against it, so a plugin that names the package there needs
 nothing more: the format is reported as not available, and its content probe does not run. A
 probe is not handed the policy, so it must not import anything `requires` does not
 name. A plugin that imports an optional package only for some files, outside
-`requires`, checks `context.config.formats.exclude_libraries` itself before it imports
+`requires`, checks `context.config.formats.allows_library("pyppmd")` itself before it imports
 the package, and raises `PackageNotInstalledError` with a `MissingComponent` whose
 `reason` says the policy turned it off. The helper the built-in readers use for that
 reason is internal, so a plugin writes its own.
@@ -747,7 +837,8 @@ with open_archive("a.zip", config=MY_ZIP) as reader:
 The replacement is an indexed plugin whose `format` is the built-in one, here
 `ArchiveFormat.ZIP`, and it declares no `extensions`, `magic` or `probe`: the file is
 found by the built-in detection, which does not change. `reader.format` is the built-in
-format and `format_info.from_plugin` is false. ZIP, 7z, RAR, ISO and SquashFS can be replaced.
+format and `format_info.from_plugin` is false. ZIP, 7z, RAR, ISO, SquashFS, XAR, CAB, LHA and
+ARJ can be replaced.
 `FormatPolicy` checks the plugin when it is built, so a plugin that does not fit fails
 there, before any open.
 
@@ -755,8 +846,8 @@ The replacement gets what any indexed plugin gets: a source that can seek, from 
 start of the archive. archivey refuses, before `open()` runs, a multi-volume set and an
 archive behind a prefix (a self-extracting stub or other leading bytes) with
 `UnsupportedFeatureError`, a source that
-cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO as
-the built-in reader refuses it, since its bytes are not an ISO 9660 image. The format's own config options, such as
+cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO,
+since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it reads). The format's own config options, such as
 `zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
 `ReaderContext.config`; honouring them is the plugin's job. `password=` does not reach a
 replacement, as it reaches no plugin, so a replaced ZIP, 7z or RAR cannot read an encrypted
@@ -880,7 +971,8 @@ can turn plugin formats and plugin codecs off for a call with
 `ArchiveyConfig(formats=FormatPolicy(plugins=False))`; a format turned off is not detected
 either, so its code does not run. A plugin codec is off inside an archive too: a
 `ReaderContext.decompress` or `ForwardStream.decompress` call that asks for it raises
-`UnsupportedFeatureError`. A
+`UnsupportedFeatureError`, and so does a `ReaderContext.open_nested` call for a plugin
+format. A
 [replacement](#replacing-a-built-in-reader) is not a plugin format, so `plugins=False` does not
 turn it off: a replacement runs only in a call whose config names it in `replace=`.
 

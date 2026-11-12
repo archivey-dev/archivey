@@ -180,6 +180,21 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 
 The legacy format is what Linux kernel images and initramfs files compressed with LZ4 use.
 
+**mozlz4** (`ArchiveFormat.MOZLZ4`, `mozlz4_codec.py`) is a separate format on the same
+library: Firefox's `mozLz40\0`, a 4-byte little-endian decoded size, then one raw LZ4 block
+to the end of the file, with no checksum and no end mark. archivey detects it by the magic,
+so a Firefox `addonStartup.json.lz4` reads as mozlz4 (the extension's LZ4 claim is logged as
+a format conflict). The size is listed from the header and enforced: the block must decode
+to exactly that many bytes. The block decodes only at the end of the input, so a pipe gives
+its first byte when the writer closes. The decode holds the buffer, python-lz4's copy of
+it and the compressed block, so a block of incompressible data peaks at about three times
+the size. Twice the size is checked against `max_decoder_memory` from the header, and twice
+the size plus the block's length again before the decode. A detection probe decodes at most
+1 MiB, and the size is checked against what the block can decode to (255 bytes per input byte) before
+the decode allocates it; a block longer than `LZ4_COMPRESSBOUND(size)` is refused as it
+arrives. Found by the backup-drive scan
+([`../investigations/2026-10-backup-scan.md`](../investigations/2026-10-backup-scan.md) §6).
+
 ## 4. Threat surface
 
 Specific to these formats; the shared items are [`single-file.md`](single-file.md) §4.
@@ -201,10 +216,11 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   `LZ4_COMPRESSBOUND(8 MiB)` ends the stream instead, so the input held for one block
   stays under about 8 MiB and each block decodes into an 8 MiB buffer. Both numbers are
   the format's, so `DecoderLimits` has nothing to cap here.
-- **Detection lifts the cap, not the window.** The inner-TAR probe decodes with
-  `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG` in `codecs/base.py`, the same rule as
-  liblzma's dictionary), but with `window_log_max` at libzstd's default 27 (128 MiB),
-  what `zstd -d` decodes without `--long`. libzstd reserves the declared window of a
+- **Detection keeps the cap and lowers the window.** The inner-TAR probe decodes under
+  the caller's `DecoderLimits`, with `window_log_max` at the smaller of the cap's and
+  libzstd's default 27 (128 MiB), what `zstd -d` decodes without `--long`. A frame over
+  the cap is "can't tell", reported as `DETECTION_DECODER_LIMITED`; the read of the bare
+  `.zst` that follows refuses the same window. libzstd reserves the declared window of a
   frame without a content size when it reads the header (measured: a 2 GiB window under
   a 256 MiB `RLIMIT_AS` fails with "Allocation error"), and a window cannot be shrunk to
   what the read needs the way an LZMA dictionary can. A frame over 128 MiB is "can't
@@ -299,6 +315,6 @@ formats; `tests/streams_util.py::make_seekable_zstd` adds a seek table. `zstd`, 
   [`library-analysis.md`](../library-analysis.md) §zstd, §lz4
 - Code: `internal/streams/codecs/zstd_codec.py` (`ZstdCodec`), `lz4_codec.py` (`Lz4Codec`) ·
   `internal/streams/codecs/zstd_framing.py` · `internal/streams/codecs/zstd_seek_table.py` ·
-  `internal/streams/codecs/lz4_legacy.py`
+  `internal/streams/codecs/lz4_legacy.py` · `internal/streams/codecs/mozlz4_codec.py`
 - Handbook: [`single-file.md`](single-file.md) · [`zip.md`](zip.md) (zstd method) ·
   [`7z.md`](7z.md) (LZ4 coder) · [`tar.md`](tar.md)

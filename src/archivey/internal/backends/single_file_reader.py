@@ -9,6 +9,12 @@ per-codec :class:`~archivey.internal.streams.codecs.MetadataContext` hooks when 
 (gzip FNAME/mtime, xz/lzip size, …); otherwise they are filled/verified on read via
 the shared codec layer.
 
+How it fits: :class:`SingleFileBackend` declares ``RAW_STREAMS``, so the registry
+routes every ``(RAW_STREAM, <codec>)`` format that detection or the caller names to
+it, and ``open_archive`` gets a :class:`SingleFileReader` back. The reader lists its
+one member at open and decodes it through ``open_codec_stream``, like a member of
+any other archive.
+
 The backend is codec-agnostic; adding a standalone codec is "add codec + enum +
 detection" — no new backend class (see ``format-single-file-compressors``). Basic
 ZST/LZ4 read is already here; remaining seekable-index / accelerator work for those
@@ -50,8 +56,9 @@ from archivey.internal.naming import (
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
-from archivey.internal.source import ArchiveSource
+from archivey.internal.source import ArchiveSource, seeks_to_end_are_cheap
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.codecs import (
     Codec,
@@ -61,11 +68,18 @@ from archivey.internal.streams.codecs import (
     single_file_codecs,
     stream_codec_for_format,
 )
-from archivey.internal.streams.codecs.lzip_decoder import peek_index_summary
+from archivey.internal.streams.codecs.lzip_decoder import (
+    last_member_is_the_whole_file,
+    peek_index_summary,
+)
+from archivey.internal.streams.codecs.xz_decoder import (
+    last_stream_is_the_whole_file,
+)
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     IndexReport,
     PrebuiltIndex,
+    probe_streams,
 )
 from archivey.internal.streams.streamtools import (
     SharedSource,
@@ -81,6 +95,14 @@ from archivey.types import (
 )
 
 _T = TypeVar("_T")
+# The last bytes a remote tail probe hints: the xz stream footer (12 bytes) or the
+# lzip member trailer (20 bytes), with their padding before them. The planner places
+# the window by the end of the object (design D2 rule 5), so a later walk steps back
+# from it (rule 6); a hint of a whole window would be placed by its start instead.
+_TAIL_HINT = 64
+# The xz stream padding a remote probe looks past: one minimum planner fetch, the
+# window the hint above brings in.
+_TAIL_PEEK = 64 * 1024
 
 
 def _compression_exts() -> frozenset[str]:
@@ -92,6 +114,13 @@ def _compression_exts() -> frozenset[str]:
 
 
 _TAR_SHORT_TO_TAR: dict[str, str] = dict.fromkeys(COMPRESSED_TAR_SHORT_SUFFIXES, ".tar")
+# One-word suffixes whose file decodes to a file with its own extension: a compressed
+# tar, and Firefox's mozlz4 files (``sessionstore.jsonlz4`` holds ``sessionstore.json``).
+_SUFFIX_REPLACEMENTS: dict[str, str] = {
+    **_TAR_SHORT_TO_TAR,
+    ".jsonlz4": ".json",
+    ".baklz4": ".bak",
+}
 
 
 class _IndexReportRecorder(DiagnosticCollector):
@@ -144,11 +173,18 @@ class _IndexReportRecorder(DiagnosticCollector):
 
 
 def _infer_member_name(archive_name: str | None) -> str:
-    """Infer the single member's name from the source filename (see the spec)."""
+    """Infer the single member's name from the source filename.
+
+    A known compressor extension is stripped (``notes.txt.gz`` gives ``notes.txt``),
+    a one-word suffix in ``_SUFFIX_REPLACEMENTS`` is swapped (``a.tgz`` gives
+    ``a.tar``), and any other name gets ``.uncompressed`` appended. With no usable
+    source name (a pipe, a nameless stream) the member is called ``data``. The full
+    table, edge cases included, is in the ``format-single-file-compressors`` spec.
+    """
     return infer_member_name_from_archive(
         archive_name,
-        strip_suffixes=_compression_exts(),
-        replace_suffixes=_TAR_SHORT_TO_TAR,
+        strip_suffixes=_compression_exts() - _SUFFIX_REPLACEMENTS.keys(),
+        replace_suffixes=_SUFFIX_REPLACEMENTS,
     )
 
 
@@ -164,7 +200,8 @@ class SingleFileReader(BaseArchiveReader):
     A seekable source is validated by :meth:`_validate_at_open`, which ``open_archive``
     calls after setting format provenance: it decodes one byte, so a source that is not
     the claimed codec raises from ``open_archive`` rather than the first ``read``. A
-    non-seekable source is not validated until that read.
+    non-seekable source is validated the same way, on a copy, when detection's peek
+    already holds all of it; otherwise not until that read.
     """
 
     _MEMBER_LIST_UPFRONT = True
@@ -220,10 +257,10 @@ class SingleFileReader(BaseArchiveReader):
         # their own config. `seekable_members` declares what the caller wants to do with
         # the *member stream*; the xz index and lzip trailer are bounded backward peeks
         # that hand nobody a stream, so reading them is decided by the source's shape.
-        # Gating them on the declaration made the same .xz report size=None on a plain
-        # open and 44 with the flag — a capability flag changing metadata. Accelerators
-        # stay OFF: a probe reads no member data, so an accelerator's startup cost buys
-        # nothing the native index does not already have.
+        # Gating them on the declaration would make the same .xz report size=None on a
+        # plain open and its real size with the flag: a capability flag must not change
+        # metadata. Accelerators stay OFF: a probe reads no member data, so an
+        # accelerator's startup cost buys nothing the native index does not already have.
         self._metadata_config = without_accelerators(
             stream_config_from_archivey(
                 self._config,
@@ -258,7 +295,8 @@ class SingleFileReader(BaseArchiveReader):
             # only under measurement, so the source's seeks are visible.
             self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         if not self._seekable:
-            # Non-seekable: validation waits for the first read (see _validate_at_open).
+            # Non-seekable: validation probes a copy when detection's peek holds the
+            # whole source, else waits for the first read (see _validate_at_open).
             self._pending_parts = self._open_codec_parts()
 
     @override
@@ -272,8 +310,11 @@ class SingleFileReader(BaseArchiveReader):
         ``_open_member`` builds a fresh one. The error names no member, since nobody asked
         for one yet.
 
-        A non-seekable source is not probed: the read would consume a byte of the one
-        pass the first ``open_member`` hands out, so it still fails on that read.
+        A non-seekable source is probed only when detection's peek already holds all of
+        it (``ArchiveSource.held_rest``): the probe then decodes a copy, and the pass
+        the first ``open_member`` hands out reads nothing less. So a short damaged
+        stream from a pipe fails at open as it does from a file. Otherwise the read
+        would consume a byte of the one pass, so the stream still fails on that read.
 
         The probe decodes with the standard library: rapidgzip runs in a child process,
         and one byte does not pay for starting one (about 30 ms) that the member read then
@@ -282,11 +323,25 @@ class SingleFileReader(BaseArchiveReader):
         process possible fails at open. ``AUTO`` is left to the read, which resolves it
         against the config the registry prepares.
         """
+        held: bytes | None = None
         if not self._seekable:
-            return
-        with self._member_stream(
-            self._open_codec_parts(attribute_member=False, accelerated=False)
-        ) as probe:
+            assert self._source is not None  # always set in __init__
+            held = self._source.held_rest()
+            if held is None:
+                return
+        # Inside probe_streams an error raises where the decoder meets it: no bytes
+        # handed back before it and no second decode to find them, so damage at the
+        # start fails the open here. The one-byte read asks the decoder for one byte.
+        with (
+            probe_streams(),
+            self._member_stream(
+                self._open_codec_parts(
+                    attribute_member=False,
+                    accelerated=False,
+                    held=None if held is None else io.BytesIO(held),
+                )
+            ) as probe,
+        ):
             probe.read(1)
 
     def _build_member(self, archive_name: str | None) -> ArchiveMember:
@@ -384,16 +439,16 @@ class SingleFileReader(BaseArchiveReader):
         """:meth:`_on_seekable_source` for a metadata probe that reads the source's tail.
 
         ``OSError`` gives ``None``. So does a source whose seek may re-decode
-        (``seek_is_expensive``, any member stream): the xz index and the lzip trailer sit
-        at the end, and on a member that decompresses, reaching them decompresses the
-        whole member, then the restore decompresses it again. The test covers member
-        streams as a group, so a stored ZIP entry or a TAR member, whose seek is a slice,
-        is skipped too. Those probes only fill metadata (``size``, the lzip CRC-32); the
-        decoder still checks its own index and trailers on read.
+        (``seeks_to_end_are_cheap``): the xz index and the lzip trailer sit at the end, and
+        on a member that decompresses, reaching them decompresses the whole member, then
+        the restore decompresses it again. A stored ZIP entry or an uncompressed TAR member, whose
+        seek is a slice of its archive, is probed like a file. Those probes only fill
+        metadata (``size``, the lzip CRC-32, ``gzip.isize``); the decoder still checks
+        its own index and trailers on read.
         """
         src = self._source
         assert src is not None  # always set in __init__
-        if src.seek_is_expensive:
+        if not seeks_to_end_are_cheap(src):
             return None
         try:
             return self._on_seekable_source(fn)
@@ -417,12 +472,12 @@ class SingleFileReader(BaseArchiveReader):
 
         What separates the pipe from the seekable caller stream is seekability, not
         trust: both carry an unchecked ``size`` claim, and the seekable one's is
-        reported. On a pipe there is no ``SEEK_END`` to answer, so ``None`` is the
-        answer it always had. The value is not only metadata. Two extraction ratio
-        guards divide by a source length: the per-member guard by ``compressed_size``,
-        and the archive-wide guard by ``BaseArchiveReader.compressed_source_size``
-        (``_trusted_source_size``). Both follow this rule, so a pipe's ``size`` claim
-        reaches neither, and the live byte counter stays. Nothing here checks a
+        reported. On a pipe there is no ``SEEK_END`` to answer, so it reports ``None``.
+        The value is not only metadata. Two extraction ratio guards divide by a source
+        length: the per-member guard by ``compressed_size``, and the archive-wide guard
+        by ``BaseArchiveReader.compressed_source_size`` (``_trusted_source_size``). Both
+        follow this rule, so a pipe's ``size`` claim reaches neither, and the live byte
+        counter stays. Nothing here checks a
         member stream's declared length, and a ``SEEK_END`` could not do better: a TAR
         member stream answers it from the same declared length. A ZIP member that holds
         fewer bytes than it declares is refused with ``TruncatedError`` only after its
@@ -442,13 +497,14 @@ class SingleFileReader(BaseArchiveReader):
         if not src.seekable():
             # No ``SEEK_END`` here to measure the end, so only a declared length can
             # answer. A member stream's is its container's header (``seek_is_expensive``
-            # is true exactly when the source borrows an ``ArchiveStream``; a joined set
-            # with one is seekable and never reaches here). A caller's pipe reports
-            # ``None`` even with a ``size`` attribute.
+            # is true when the source borrows an ``ArchiveStream``, and for a standard-
+            # library decompressing file object, which has no cheap size, so its hint
+            # is ``None``; a joined set with one is seekable and never reaches here). A
+            # caller's pipe reports ``None`` even with a ``size`` attribute.
             return src.size_hint if src.seek_is_expensive else None
         if src.size_hint is not None:
             return src.size_hint
-        # ``_try_on_seekable_source`` gives ``None`` for an expensive seek.
+        # ``_try_on_seekable_source`` gives ``None`` unless the seek is cheap.
         return self._try_on_seekable_source(lambda f: f.seek(0, io.SEEK_END))
 
     def _read_source_prefix(self, length: int) -> bytes:
@@ -467,6 +523,46 @@ class SingleFileReader(BaseArchiveReader):
         assert data is not None  # the source is a path or seekable
         return data
 
+    def _remote_with_earlier_streams(self, f: BinaryIO, size: int) -> bool:
+        """Whether a remote source holds more than one xz stream or lzip member.
+
+        On a remote source (an fsspec ``OpenFile``) the index walk that gives the size
+        reads one step per stream, each a range request past the planner's window, so
+        the open reads only the last stream's footer and index (or the last member's
+        trailer) and stops when an earlier stream exists. The listing then reports no
+        size, and a seek walks the rest when it needs it (maintainer ruling,
+        2026-11-08: lazy for multi-stream files, remote only). A local file keeps the
+        whole walk.
+
+        xz stream padding (zeros after the last stream) has no length limit, and
+        the scan back over it reads every byte, so on a remote source a padded file
+        would cost about three times its size to list. When the last
+        :data:`_TAIL_PEEK` bytes are all zeros the answer is "cannot tell", treated
+        as here: no size, no walk. The forward decoder still checks the padding on
+        read.
+        """
+        src = self._source
+        if src is None or not src.remote_sources:
+            return False
+        # The tail is a run of its own, placed by its end, so the read does not
+        # read through from the head and drop the head's window, and a later walk
+        # steps back from it (design D2 rules 3, 5 and 6).
+        peek = min(size, _TAIL_PEEK)
+        src.will_read(max(0, size - _TAIL_HINT), size)
+        try:
+            if self._codec is Codec.XZ:
+                if size > peek:
+                    f.seek(size - peek)
+                    if not f.read(peek).strip(b"\0"):
+                        return True
+                return not last_stream_is_the_whole_file(f, size)
+            if self._codec is Codec.LZIP:
+                return not last_member_is_the_whole_file(f, size)
+        except ArchiveyError:
+            # The full probe meets the same damage and answers ``None`` itself.
+            return False
+        return False
+
     def _probe_lzip_index(self) -> tuple[int, int] | None:
         """Decompressed size + combined CRC-32 from one seekable lzip index scan.
 
@@ -482,6 +578,8 @@ class SingleFileReader(BaseArchiveReader):
         def probe(f: BinaryIO) -> tuple[int, int] | None:
             size = f.seek(0, io.SEEK_END)
             if size < 26:  # header(6) + trailer(20)
+                return None
+            if self._remote_with_earlier_streams(f, size):
                 return None
             try:
                 return peek_index_summary(f, size)
@@ -518,6 +616,8 @@ class SingleFileReader(BaseArchiveReader):
         config = replace(self._metadata_config, collector=recorder)
 
         def probe(f: BinaryIO) -> int | None:
+            if self._remote_with_earlier_streams(f, f.seek(0, io.SEEK_END)):
+                return None
             try:
                 backend = resolve_codec(self._codec, config)
                 stream = backend.open(SlicingStream(f, start=0))
@@ -548,7 +648,11 @@ class SingleFileReader(BaseArchiveReader):
         yield self._member
 
     def _open_codec_parts(
-        self, *, attribute_member: bool = True, accelerated: bool = True
+        self,
+        *,
+        attribute_member: bool = True,
+        accelerated: bool = True,
+        held: BinaryIO | None = None,
     ) -> MemberStreamParts:
         """Open a fresh decompression stream over the source, as the member's parts.
 
@@ -561,7 +665,8 @@ class SingleFileReader(BaseArchiveReader):
         source is passed through as a path (the codec opens an independent handle — the
         same concurrent-open shape as ZIP path-source), except under measurement, where it
         shares one handle too so its seeks stay visible. A non-seekable source is read
-        once, forward-only.
+        once, forward-only. ``held`` replaces the source with a copy of the bytes the
+        source still holds, for the open-time probe of a non-seekable source.
         """
         member_name = self._member.name if attribute_member else None
 
@@ -575,7 +680,9 @@ class SingleFileReader(BaseArchiveReader):
         # source has no trusted size (``_trusted_source_size``), so the live ratio guard
         # has a denominator. A path
         # source always has a cheap ``stat`` size, so the path branch needs none.
-        if self._shared is not None:
+        if held is not None:
+            codec_source = held
+        elif self._shared is not None:
             # Whole-source view + fresh codec per open (no per-member byte range for a
             # single-file archive). The view is non-owning; the SharedSource outlives it.
             codec_source = self._wrap_compressed_input(self._shared.view(0))
@@ -705,8 +812,12 @@ class SingleFileBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> SingleFileReader:
-        reject_start_offset(start_offset, format, archive_name)
+        reject_start_offset(
+            start_offset, format, archive_name, end_offset, program_resources
+        )
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.
         return SingleFileReader(

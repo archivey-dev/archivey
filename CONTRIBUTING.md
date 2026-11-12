@@ -73,6 +73,14 @@ problems; it does not rewrite files. Prefer the script over `uv run pre-commit i
 Cursor remaps `core.hooksPath`, and the script installs into the chained original hooks
 directory so the hook still runs.
 
+**Line width.** Prose is wrapped at 88 columns (100 under `docs/`), and no line may pass
+100: ruff's E501 checks every Python line, comments and docstrings included, and
+`scripts/checks/check_line_width.py` checks the Markdown lines a branch adds (in
+`check.sh`, CI and the git hook). After an edit, `./scripts/check.sh --fix` rewraps only
+the paragraphs it touched, Markdown, comment or docstring, from the edited line to where
+the old line breaks resume, so the diff stays the edit. A whole-file formatter would
+rewrap every paragraph instead.
+
 **From a `git worktree`,** both scripts work unchanged. A worktree starts without a
 `.venv`, so they create one for it (about a second; uv hardlinks from its cache), and the
 tree gets its own environment. One trap if you bypass the scripts: a bare
@@ -129,12 +137,19 @@ pytest tests/test_zip.py` stays one process.
 CI also matrixes supported **Python versions** (3.11–3.15 on Linux; 3.11/3.15 on
 macOS/Windows, plus an allowed-to-fail 3.16 prerelease leg). A pull request push runs a
 reduced set (Linux 3.11 and 3.15, one core-only leg, Windows 3.15, free-threaded 3.13t, the benchmark and plugin jobs); the
-merge queue runs every leg plus PyPy, the distribution unar packages and the short
-Atheris fuzz, and a failure there takes the pull request out of the queue. A queued
+merge queue adds macOS 3.15, 3.15 core-only, the 3.16 prerelease, 3.15t, PyPy and the
+distribution unar packages, plus the minimum-versions leg when the change touches
+`pyproject.toml`, `uv.lock`, `.python-version` or `ci.yml`, and a failure there takes the
+pull request out of the queue. Linux 3.12–3.14 and macOS and Windows 3.11 run only on the
+daily run and a dispatched run, so the release gate's dispatch is their last run before
+a release; Atheris runs nightly and in the release gates. A queued
 change that touches no path on `FULL` in `scripts/ci/ci_scope.py` (the library, the
-library tests, the dependencies, the CI, and every script outside the folders its
-`NOT_FULL` lists, [`scripts/README.md`](scripts/README.md)) runs only the pull request
-set plus the free-threaded 3.15t leg there, and skips the short fuzz. `ci.yml` does not
+library tests and the files they read, the benchmarks, the dependencies, the CI, and
+every script outside the folders its `NOT_FULL` lists,
+[`scripts/README.md`](scripts/README.md)) runs only the pull request
+set plus the free-threaded 3.15t leg there. On a pull request
+push, such a change runs the lint job alone (it runs the script tests); the library
+legs wait for the queue. `ci.yml` does not
 run again after the merge; a daily run tests `main` with every job. To run the whole set
 before queueing, dispatch `ci.yml` on your branch. The note at the top of `ci.yml` lists
 which job runs where. Repo `.python-version` pins the default local env to 3.11, so a
@@ -491,7 +506,8 @@ new tests and new message-formatting code for each of these:
 
 ### Fuzzing
 
-Atheris coverage-guided fuzz runs on every PR (short sharded budgets) and nightly; the
+Atheris coverage-guided fuzz runs nightly and in the release gates (not on pull requests
+or in the merge queue); the
 workflow, local smoke runs and per-target budgets are in
 [`dev-docs/fuzzing.md`](dev-docs/fuzzing.md). Mutation fuzz
 (`tests/test_mutation_fuzz.py`) and the `ARCHIVEY_FUZZ=1` parser harnesses run in the

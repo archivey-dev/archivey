@@ -1,5 +1,13 @@
 # Stream-wrapper ownership
 
+**In one minute.** archivey stacks streams on streams (a slice of the file, a decryptor, a
+decompressor), and each layer must know whether closing itself also closes the layer
+below. The rule that matters to callers: archivey never closes a stream the caller handed
+it, and closes only what it opened itself. This page lists which wrapper types borrow and
+which own, and why. The guide's [life of an open](../guide/03-life-of-an-open.md) and
+[bugs and lessons](../guide/11-bugs-and-lessons.md#a-caller-stream-got-closed) pages tell
+how the rule came to be.
+
 Who calls `close()` on the stream underneath a wrapper. Not file-mode bits, not
 archive member Unix uid/gid.
 
@@ -15,7 +23,7 @@ decoder means "do not close the inner." Silence on a `DelegatingStream` means
 | `SharedView` | borrow, hardcoded | none — Parcel B split this class so `lock=` could not switch modes |
 | `DecompressorStream` | borrow | `owns_inner=True` on later staged BCJ filters (first-stage Copy+BCJ / BCJ-alone borrows the pack view) |
 | `DelegatingStream` | **own** | none; `_SUBCLASS_CLOSES_INNER` is *who* closes, not *whether* |
-| `AesDecryptStream` | borrow | `owns_inner=True` — 7z AES-CBC pull stream; default matches other transform wrappers. Production 7z borrows the pack `SharedView`. |
+| `AesDecryptStream` | borrow | `owns_inner=True` — 7z AES-CBC pull stream; default matches other transform wrappers. Production 7z borrows the pack `SharedView`. `tell` is plaintext; `cipher_tell()` is the ciphertext cursor in the source. |
 | `_HeaderDecryptStream` | borrow, hardcoded | none — RAR header cursor must not close the archive; ciphertext `tell`, not a member stream |
 | `WinZipAesDecryptStream` | **own**, hardcoded | none — ZIP AE-x payload slice has no borrow caller; CTR+HMAC, not CBC |
 | `ArchiveSource` | borrow the caller's object; own what it opened or built | none — how it was built decides: `for_path` owns its lazy handle, `for_stream` borrows (and detaches, never closes, a buffer it put in front), `for_volumes` owns the join, which borrows its caller-stream parts |
@@ -175,12 +183,6 @@ An `ArchiveSource` is not pinned: it is neither a `SlicingStream` nor a
 tests check directly.
 Renaming those without updating `tests/leak_oracle.py` pins nothing, and the
 tests being edited are the ones that would have caught it.
-
-Confirm the gate still fires: delete `owns_inner=True` at
-`src/archivey/internal/backends/rar_reader.py` (`_bounded_member_pipe`) and run
-`pytest tests/test_rar_reader.py -q --no-cov`. Expect the two
-`assert inner.closed` unit tests plus the oracle's live-`unrar` errors. Restore
-before committing.
 
 ## 6. Verify
 

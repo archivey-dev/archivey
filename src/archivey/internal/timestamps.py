@@ -3,7 +3,8 @@
 The NTFS FILETIME conversion (100 ns ticks since 1601-01-01 UTC → ``datetime``) is used by
 every backend that reads Windows-origin timestamps — ZIP's NTFS extra field, the native
 7z reader, and RAR5 FILETIME extras — and the Unix-seconds ones by TAR, ZIP's extended
-timestamp, RAR, gzip and the directory backend, so each lives here rather than being
+timestamp, RAR, gzip, the directory backend and ``archivey.formats`` (for ar, CPIO,
+RPM and plugins), so each lives here rather than being
 copy-pasted per backend. The answers are ``datetime`` + ``timedelta`` arithmetic, which
 gives the same value on every platform and raises ``OverflowError`` everywhere for a
 value outside ``datetime``'s range. For a field wide enough to hold such a value that
@@ -114,3 +115,32 @@ def filetime_to_datetime(
             value_repr=repr(value),
             message=f"Invalid NTFS timestamp for {quoted(filename)}: {value!r}",
         )
+
+
+def dos_to_datetime(stamp: int) -> datetime | None:
+    """A DOS date/time word as a naive datetime, or ``None`` when it names no date.
+
+    The date is the high 16 bits and the time the low 16, as RAR stores them; a
+    cabinet stores the two apart and joins them. Zero is the unset value, as in ZIP.
+    Any other word that is not a real date (month 13, day 0, 25 o'clock) is also
+    ``None``, which the caller reports. It is not clamped to a nearby date, because a
+    clamped date is a fabricated one that nothing downstream could tell from a real
+    one.
+    """
+    if stamp == 0:
+        return None
+    sec = (stamp & 0x1F) * 2
+    stamp >>= 5
+    minute = stamp & 0x3F
+    stamp >>= 6
+    hour = stamp & 0x1F
+    stamp >>= 5
+    day = stamp & 0x1F
+    stamp >>= 5
+    month = stamp & 0x0F
+    stamp >>= 4
+    year = (stamp & 0x7F) + 1980
+    try:
+        return datetime(year, month, day, hour, minute, sec)
+    except ValueError:
+        return None

@@ -1,4 +1,6 @@
-"""Guardrails for the simplicity & consistency review (`review/archive/2026-08-15-simplicity-consistency/`).
+"""Guardrails for the simplicity & consistency review.
+
+The review is in `review/archive/2026-08-15-simplicity-consistency/`.
 
 The file started as two kinds of test: **guardrails** (plain assertions pinning a rule
 the review classified as *format law* or *settled*) and **red halves**
@@ -811,7 +813,7 @@ def test_bidi_diagnostic_is_emitted_once_per_presentation(
             reader.members()
             reader.members()
         else:
-            reader.extract_all(tmp_path / "out")
+            reader.extract_all(tmp_path / "out", on_blocked="skip")
         assert reader.diagnostics.counts[DiagnosticCode.MEMBER_NAME_BIDI_CONTROL] == 1
 
 

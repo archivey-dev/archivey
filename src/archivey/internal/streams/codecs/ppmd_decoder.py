@@ -38,10 +38,10 @@ from archivey.internal.streams.decompressor_stream import (
 # ``unpack_size``.
 _PPMD_UNSIZED_DECODE_CHUNK = 65536
 
-# Per-call ceiling for extra-NUL recovery and post-NUL empty drains. When the container pack is known-complete, empty ``decode(b"", 64)``
-# drains may still finish a large tail (including past premature ``eof``); when the
-# pack is known-incomplete, we refuse those post-eof drains (near-EOF MemoryError
-# otherwise).
+# Per-call ceiling for extra-NUL recovery and post-NUL empty drains. When the container
+# pack is known-complete, empty ``decode(b"", 64)`` drains may still finish a large tail
+# (including past premature ``eof``); when the pack is known-incomplete, we refuse those
+# post-eof drains (near-EOF MemoryError otherwise).
 _PPMD_EXTRA_NUL_MAX_OUTPUT = 64
 
 # Bounded number of single-symbol NUL decodes used to quiesce a parked native
@@ -228,6 +228,8 @@ class PpmdDecoder(BaseDecoder):
         # ``DecoderLimits.max_ppmd_held_input``: a member up to it is handed to
         # pyppmd whole, one past it in pieces, under every ``isolation`` (which decides
         # only where the decode runs). ``None``: held whole whenever the size is known.
+        # Held input goes to the child in one request; ``decoder_worker.FRAME``'s 64-bit
+        # payload length carries any size.
         self._max_held_input = max_held_input
         # Compressed input held back from pyppmd until the whole member is here, or
         # compressed EOF, or ``max_held_input`` is passed. ``None`` once handed

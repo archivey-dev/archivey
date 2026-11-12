@@ -35,6 +35,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_reported
 from archivey.internal.overrides import override
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -48,6 +49,15 @@ from archivey.types import ArchiveFormat, MissingComponent, OptionalLibrary
 # The package name surfaced to users, and the single install hint every AES raise site
 # (here and in zip_aes) formats its message from.
 CRYPTO_PACKAGE = OptionalLibrary.CRYPTOGRAPHY
+
+
+def note_crypto_use(usage: ResourceUsageRecorder | None) -> None:
+    """Record ``cryptography`` in ``ArchiveReader.backends_used``: a reader calls it
+    once it decrypts with the package (WinZip AES, 7z AES, RAR's own AES)."""
+    if usage is not None:
+        usage.note_backend("library", CRYPTO_PACKAGE.value, "AES decryption")
+
+
 CRYPTO_REQUIREMENT = MissingComponent(
     CRYPTO_PACKAGE, "pip install archivey[recommended]", ("aes",)
 )
@@ -169,9 +179,10 @@ class _CryptographyDecryptStage:
             # AES_BLOCK_SIZE. Writer pad is discarded by the AES coder's
             # unpack_size, not here.
             leftover = len(self._buf)
-            # View not block-aligned. Header malformed vs short file is a
-            # header check (sevenzip-aes-tail-key-check task 1.1), not a
-            # leftover split here — see that change's design.md.
+            # View not block-aligned: a short file, or a pack size the header
+            # got wrong. The 7z reader refuses an AES coder that declares more
+            # output than its pack stream holds before it gets here
+            # (``check_aes_tail_sizes``); this cannot tell the two apart.
             raise _AesCbcTruncatedError(
                 f"AES-CBC ciphertext ended mid-block ({leftover} leftover "
                 "byte(s); a truncated block cannot be decrypted)"
@@ -262,7 +273,7 @@ def crypto_missing(
     source_format: ArchiveFormat | None = None,
 ) -> PackageNotInstalledError:
     """The refusal for AES without ``cryptography``: absent, or turned off by
-    ``excluded`` (the call's ``FormatPolicy.exclude_libraries``)."""
+    ``excluded`` (the call's ``FormatPolicy._libraries_off``)."""
     requirement = as_reported(CRYPTO_REQUIREMENT, excluded)
     return PackageNotInstalledError(
         requirement.message(purpose),
@@ -280,7 +291,7 @@ def get_crypto_backend(
 
     This is the single entry point to crypto for the whole library; format parsers call it
     rather than importing any crypto library themselves. ``excluded`` is the call's
-    ``FormatPolicy.exclude_libraries``: naming ``cryptography`` refuses as if it were
+    ``FormatPolicy._libraries_off``: naming ``cryptography`` refuses as if it were
     absent. Every caller passes it, which ``tests/test_exclude_libraries.py`` checks.
     """
     if CRYPTO_PACKAGE in excluded or not _crypto_available():
@@ -319,15 +330,10 @@ class AesDecryptStream(ReadOnlyIOStream):
     the same backend and keeps its own pull loop, because its ``read`` also
     feeds the HMAC and checks it at the end.
 
-    Folding ``_HeaderDecryptStream`` in is blocked by the header walk, not by
-    flags this class is missing:
-
-    - ``tell()`` is archive offset for both arms. ``header_fd`` is either the
-      raw handle or the decrypt stream; a second method does not help while
-      the raw handle is the other arm.
-    - The stream sits mid-file on the shared archive handle, unbounded.
-      Without a ``length=`` bound it would treat the rest of the file as
-      ciphertext and report seekable; seeking would reposition the archive.
+    ``_HeaderDecryptStream`` (RAR headers) stays a separate class: it refuses
+    ``read(-1)``, flags a cut instead of calling ``finalize``, and must not
+    seek the shared archive handle. The measurement is the "Keep
+    ``_HeaderDecryptStream``" row in ``dev-docs/formats/rar.md``.
 
     Ownership is ``owns_inner`` (both borrow). ``read`` already gathers short
     source reads. A short last ciphertext block raises ``TruncatedError``
@@ -372,6 +378,11 @@ class AesDecryptStream(ReadOnlyIOStream):
         self._eof = False
         self._pos = 0
 
+    def decoder_layers_below(self) -> tuple[BinaryIO]:
+        """``source``, for ``retire_decoder_children``: a 7z folder may decrypt the
+        output of a decoder."""
+        return (self._source,)
+
     def _raise_if_closed(self) -> None:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
@@ -382,18 +393,17 @@ class AesDecryptStream(ReadOnlyIOStream):
         if n == 0:
             return b""
         while not self._eof and (n < 0 or len(self._buf) < n):
-            # Round the source ask up to a block so CBC does not withhold a
-            # partial block (and so the ciphertext cursor is derivable as
-            # ``_cipher_start + _pos + len(_buf)`` for a full-count source —
-            # ADR 0014). A short non-empty source read leaves bytes in the
-            # stage buffer and the identity does not hold.
+            # Round the source ask up to a block and gather a short source read,
+            # so the stage never holds a partial block before the end and the
+            # ciphertext cursor is ``_cipher_start + _pos + len(_buf)``
+            # (``cipher_tell``).
             if n < 0:
                 ask = 65536
             else:
                 want = max(n - len(self._buf), 1)
                 extra = want % AES_BLOCK_SIZE
                 ask = want if extra == 0 else want + (AES_BLOCK_SIZE - extra)
-            chunk = self._source.read(ask)
+            chunk = read_exact(self._source, ask)
             if not chunk:
                 self._buf.extend(self._stage.finalize())
                 self._eof = True
@@ -412,6 +422,20 @@ class AesDecryptStream(ReadOnlyIOStream):
     def tell(self, /) -> int:
         self._raise_if_closed()
         return self._pos
+
+    def cipher_tell(self) -> int:
+        """Ciphertext offset in the source that the next source read starts at.
+
+        The plaintext handed out, plus the plaintext decrypted and not yet read,
+        past the ciphertext origin. Exact while reading forward and after a seek
+        that lands inside the plaintext, because ``read`` gathers whole blocks
+        from the source and the stage holds no partial block before the end. Not
+        defined after a seek past the end or once a read has reached a truncated
+        last block. On a non-seekable source it counts from where this wrapper
+        started, not from the start of the source.
+        """
+        self._raise_if_closed()
+        return self._cipher_start + self._pos + len(self._buf)
 
     @override
     def seekable(self) -> bool:

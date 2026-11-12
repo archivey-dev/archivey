@@ -1,5 +1,13 @@
 # Verification levels
 
+**In one minute.** Each member says how much of its data archivey has proved intact so
+far (`verified`) and how much a full read could prove (`verifiable`), on four levels from
+`NONE` to `CHECKSUM`. A level is never claimed for a check that did not run. This page has
+every rule behind those two fields, including what seeks and checks covering several
+members do. The guide's
+[errors and diagnostics](../guide/09-errors-and-diagnostics.md#verification-levels) page is
+the short version.
+
 What archivey can say about how much of a member's data it has checked, how each check
 feeds that answer, and how the two calls that run the checks behave. The public names are
 `Verification`, `ArchiveMember.verified` and `.verifiable`, the same two properties on
@@ -167,8 +175,14 @@ doubt until the member's own checksum matches.
   Folders can use different passwords. `_folder_key_proved` raises each member of the
   folder from `NONE`, and its ceiling to `CHECKSUM` or `LENGTH`. A member read before
   that keeps the level it had, and `verify_all()` reads it again.
+- **In 7z, zero AES padding proves the key at open.** Where the folder's last AES block
+  holds 4 to 15 padding bytes and they decrypt to zeros (7-Zip and py7zr pad with zeros),
+  the key is confirmed without decoding, so the folder's members start at `UNLOCKED`
+  ([7z handbook](../formats/7z.md), the cheap key check). A wrong key passes it once in
+  2³² or less. Non-zero or shorter padding proves nothing, and the CRC decides.
 - **A key nothing can prove stays `NONE`, even after a clean full read.** That is a 7z
-  AES member with no CRC of its own and none in its folder. Its `verified` and
+  AES member with no CRC of its own and none in its folder, whose AES padding is under
+  4 bytes or not zero. Its `verified` and
   `verifiable` are both `NONE`. `verify()` still reads it to the end each time, so its
   length checks run, and `verify_all()` reads it on every call.
 - **Closing or seeking a weakly accepted member before its checksum** reports
@@ -235,7 +249,7 @@ Until it passes, each member's `verified` stays where its own reads left it, usu
   reader, since a random-access listing is walked once, and leaves only when the check
   runs (`_spanning_check_ran`). An xz or bzip2 check failure looks like damage to
   archivey and goes the same way. A failed gzip, zlib, lzip, zstd or LZ4 checksum
-  (`_StreamChecksumError`) returns every listed file (§3.2). A walk the caller cut
+  (`StreamChecksumError`) returns every listed file (§3.2). A walk the caller cut
   short changes nothing. Listing such an archive on a random-access reader reads it to
   the end, so its members are often at `CHECKSUM` before any read.
 - **7z folders.** A folder can store one CRC for its whole unpacked stream and none per
@@ -314,8 +328,12 @@ is lower). It never reads past its own member, so a spanning check is not reache
 
 ### 3.2 `reader.verify_all()`
 
-Returns `tuple[tuple[ArchiveMember, ArchiveyError], ...]`, the failures in listing order.
-An empty tuple means everything checked out. It runs one `stream_members()` pass over a
+Returns a `VerifyReport`. `failures` holds each failed member with its error, in listing
+order; `structure_error` holds damage that stopped the walk through the archive (the same
+object as `members_report().error`); `diagnostics` holds what this call emitted. `ok` is
+`True` only when both of the first two are empty, and it is the one answer to "did every
+check pass". `raise_for_failure()` raises `structure_error`, else the first failure. The
+report has no length or truth value: `bool(report)` raises `TypeError`. It runs one `stream_members()` pass over a
 selector that keeps the members with something left to prove:
 
 - a member below its `verifiable`;
@@ -338,8 +356,8 @@ the pass goes on. Then:
   checksum may cover only some of the files (a concatenated `.tar.gz`, a `.tar.zst` of
   several frames) and nothing says which, so all are returned rather than pass a damaged
   one (DR-1). A member that already failed keeps its own error.
-- **Damage that stops the listing ends the call without raising.**
-  `members_report().error` holds it.
+- **Damage that stops the listing ends the call without raising.** The report's
+  `structure_error` holds it, and `ok` is `False`.
 - **Damage that keeps a spanning check from running** (a 7z folder decode that stops
   early, a `.tar.gz` cut before its trailer) returns each member only that check would
   prove, with a `SpanningCheckError` whose cause is the damage.
@@ -355,14 +373,16 @@ the pass goes on. Then:
 - **A `.zst`, `.lz4` or `.xz` member read only past a jump** is read again, once, so its
   frames can still prove `CHECKSUM`.
 
-Afterwards every listed member has `verified == verifiable`, except the ones returned.
+Afterwards every listed member has `verified == verifiable`, except the ones in
+`failures`.
 
 ### 3.3 Checking everything about an archive
 
 ```python
-failures = reader.verify_all()       # each member's data
-report = reader.members_report()     # report.error: damage that stopped the listing
-findings = reader.diagnostics        # archive-level findings
+report = reader.verify_all()
+if not report.ok:                    # a member failed, or the listing stopped early
+    report.raise_for_failure()
+findings = report.diagnostics        # archive-level findings from this call
 ```
 
 Archive-level damage, such as a missing end-of-archive marker
@@ -374,7 +394,8 @@ policy escalates it, and it is never a verification level.
 The design states twelve items, each with a test in `tests/test_verification_contract.py`
 or `tests/test_verification_scenarios.py`. In short:
 
-1. `verify_all()` returns per-member failures and raises only the errors listed in §3.2.
+1. `verify_all()` returns a `VerifyReport` (member failures and the damage that stopped
+   the listing) and raises only the errors listed in §3.2.
 2. After `verify_all()`, every member has `verified == verifiable` except the failures.
 3. A member stream's levels equal its member's at every moment, opened or not.
 4. `stream.verify()` reads nothing once the target is reached above `NONE`.
@@ -388,7 +409,7 @@ or `tests/test_verification_scenarios.py`. In short:
 10. `verify_all()` leaves the caller's streams alone, and a second call re-reads exactly
     the members §3.2 selects.
 11. On a streaming-only reader, `members_report()` after `verify_all()` reads nothing.
-12. "Check everything" is §3.3.
+12. "Check everything" is §3.3: one `verify_all()` call and its report's `ok`.
 
 ## 4. Per format
 
@@ -398,7 +419,7 @@ get there. "Weak" is a password check a wrong password can pass by chance.
 | Format | Checks on member data | `verifiable` | Notes |
 | --- | --- | --- | --- |
 | ZIP | CRC-32 per member; WinZip AES code | `CHECKSUM` | ZipCrypto and WinZip AES accept a password on a weak check: `NONE` until the CRC or the code matches. AE-2 has no CRC and lists at `LENGTH`, then settles at `CHECKSUM` at open. A CRC of 0 on a directory entry is no digest |
-| 7z | CRC per file, or one per folder | `CHECKSUM` (a file's own CRC, or its folder's CRC) | No password check value: an AES member is `NONE` until a CRC in its folder matches. AES with no CRC anywhere in the folder stays `NONE` (§2.1). Folder CRC: §2.5 |
+| 7z | CRC per file, or one per folder | `CHECKSUM` (a file's own CRC, or its folder's CRC) | No password check value: an AES member is `NONE` until a CRC in its folder matches, or until zero AES padding of 4 bytes or more confirms the key at open (`UNLOCKED`). AES with no CRC anywhere in the folder and no such padding stays `NONE` (§2.1). Folder CRC: §2.5 |
 | RAR 5 | CRC-32 or BLAKE2sp per member | `CHECKSUM` | The password check value is reliable, so an encrypted member is `UNLOCKED` before its digest. Tweaked digests are checked through the key (§2.3) |
 | RAR 3-4 | CRC-32 per member | `CHECKSUM` | An encrypted member has no password check: `NONE` until its CRC matches. An archive with encrypted headers has checked the password already |
 | TAR, CPIO, ar | None per member | `LENGTH` | Header checksums do not count |
@@ -414,8 +435,8 @@ get there. "Weak" is a password check a wrong password can pass by chance.
 
 | What you see | Where | More |
 | --- | --- | --- |
-| A ZipCrypto or 7z AES member read halfway reports `NONE`, even with the right password | **format** | Only its checksum proves the key (§2.1) |
-| A clean full read of a 7z AES member with no CRC stays `NONE` | **format** | Nothing in the archive can prove the key. `DIGEST_UNVERIFIABLE` (`no_integrity_anchor`) says so too |
+| A ZipCrypto or 7z AES member read halfway reports `NONE`, even with the right password | **format** | Only its checksum proves the key, unless a 7z folder's AES padding did (§2.1) |
+| A clean full read of a 7z AES member with no CRC stays `NONE` | **format** | Nothing in the archive can prove the key: the AES padding is under 4 bytes or not zero. `DIGEST_UNVERIFIABLE` (`no_integrity_anchor`) says so too |
 | A file of a `.tar.gz`, or a 7z file covered only by its folder CRC, read to its end is `LENGTH` while its `verifiable` is `CHECKSUM` | **format** | The checksum covers several members. `stream.verify()` never reads past its member; `verify_all()` or a pass to the end raises it (§2.5) |
 | `verify_all()` on a `.tar.gz` with a bad trailer returns every file | **archivey** | Nothing says which files the failed checksum covers (§3.2, DR-1) |
 | A damaged 7z folder or a cut `.tar.gz` makes `verify_all()` return files whose own bytes are intact | **format** | The check that would prove them cannot run, and `verifiable` stays what an undamaged archive reaches (§2.5) |

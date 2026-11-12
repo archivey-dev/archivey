@@ -27,7 +27,7 @@ from array import array
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields, replace
-from typing import BinaryIO, Literal, cast
+from typing import BinaryIO, Literal, NamedTuple, cast
 
 from archivey.config import ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -123,6 +123,7 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.codecs import open_codec_stream
+from archivey.internal.streams.crypto import note_crypto_use
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from archivey.internal.streams.streamtools import (
     OneReadEachStream,
@@ -618,6 +619,10 @@ class _PassData:
         member = self.member
         header = self.entry.header
         reader = self._reader
+        # The walk drains a member nobody read through this decoder too: a member
+        # whose method the policy excludes is refused here, and the drain skips its
+        # data undecoded as it skips any member it cannot decode.
+        reader._check_member_method(member)
         if header.flags & _ZIP_MASK_COMPRESSED_PATCHED_DATA:
             raise UnsupportedFeatureError(
                 "ZIP compressed patched data (general-purpose bit 5) is not supported",
@@ -800,6 +805,7 @@ class _PassData:
                     compress_size=header.compressed_size,
                     excluded=excluded,
                 )
+                note_crypto_use(reader._usage)
                 if not probe:
                     self._aes_stage = stage
                 return stage
@@ -810,6 +816,7 @@ class _PassData:
                 hold_back=None if ends_with_data else _AES_HOLD_BACK,
                 excluded=excluded,
             )
+            note_crypto_use(reader._usage)
             if not probe:
                 self._aes_stage = forward
                 if not ends_with_data:
@@ -1161,6 +1168,11 @@ class _PassData:
             # the overrun, refused as the file read refuses it. The raise below
             # keeps ``_size`` at or under ``declared``, so this asks for one at least.
             n = min(n, declared + 1 - self._size)
+        # A codec member's decoded bytes are drawn here, not by the caller's stream
+        # (``_open_member``), so a drain past a member nobody read draws them too.
+        budget = self._reader._config.budget if self._method() != 0 else None
+        if budget is not None:
+            n = budget._read_cap(n)
         try:
             chunk = decoded.read(n)
         except DataAfterEndError:
@@ -1174,6 +1186,8 @@ class _PassData:
             raise CorruptionError(
                 f"Decompressed content exceeds its declared size of {declared} bytes."
             )
+        if budget is not None:
+            budget._draw_bytes(len(chunk))
         if chunk:
             self._crc = zlib.crc32(chunk, self._crc)
             self._size += len(chunk)
@@ -1303,6 +1317,22 @@ class _PassData:
 
     def drain(self) -> None:
         """Read past what is left of the data, so the walk can go on.
+
+        How much is decoded depends on what the directory, read later, may need:
+
+        - Data short enough to be a link target is decoded and kept. Encrypted data
+          nobody read keeps its ciphertext instead, unless its ciphertext is over
+          ``_MAX_KEPT_CIPHERTEXT``.
+        - Longer data with a stated size is skipped by that size, after decoding the
+          start a Windows reparse buffer's parse reads, unless it is encrypted and
+          nobody read it.
+        - Bit-3 data, whose size only its end gives, is decoded no further than the
+          byte past the target cap, then the reparse prefix and one byte more; the
+          walk's scan finds the end on the stored bytes. A bit-3 STORED member is
+          read to its end. Encrypted bit-3 data that is STORED, or that nobody read,
+          is not decoded.
+
+        The details follow.
 
         A member whose local header states its size is skipped without decoding, unless
         it is short enough to be a link target: the directory may yet make it one, and
@@ -1762,6 +1792,30 @@ class _PassStream(ReadOnlyIOStream):
         return data.read(n)
 
 
+class _DirectoryMatch(NamedTuple):
+    """How the directory's entries matched the members the walk built
+    (``ZipForwardReader._match_directory``)."""
+
+    #: Each matched member and the entry that describes it, in directory order.
+    updates: list[tuple[ArchiveMember, CentralEntry]]
+    #: Member id -> the name its local header gave, when the entry's differs.
+    renamed: dict[int, bytes]
+    #: Member id -> the method its local header gave, when the entry's differs.
+    remethoded: dict[int, int]
+    #: The local header offsets some entry matched.
+    matched: set[int]
+    #: The matched members, in directory order.
+    order: list[ArchiveMember]
+    #: Positions of entries over a local header an earlier entry already took.
+    shared: list[int]
+    #: ``(position, member, error)`` for each member that fails at the end.
+    failed: list[tuple[int, ArchiveMember, CorruptionError]]
+    #: Listed and missing members in directory order, for ``is_current``.
+    placed: list[ArchiveMember]
+    #: Whether some entry names a local header the walk never met.
+    any_missing: bool
+
+
 class ZipForwardReader(ZipReader):
     """Reads a ZIP front to back through its local headers (``LocalHeaderWalk``).
 
@@ -1775,9 +1829,16 @@ class ZipForwardReader(ZipReader):
     _REVISES_YIELDED_MEMBERS = True
 
     @override
-    def _open_index(self, source: ArchiveSource, start_offset: int) -> None:
+    def _open_index(
+        self, source: ArchiveSource, start_offset: int, end_offset: int | None
+    ) -> None:
         self._fp = None
         self._walker = LocalHeaderWalk(source, offset=0, find_start=True)
+        # ``end_offset`` is not used: detection reports no payload end for a source
+        # that cannot seek, because it cannot tell where such a stream starts in the
+        # object a size counts from, and a seekable source goes to ``ZipReader``.
+        # ``open_archive`` reads none for a forced ``format=ZIP`` on it either, so the
+        # two agree: a certificate after the archive is reported as trailing data.
         if start_offset:
             # The detector found a stub: read past it, so the walk starts at the
             # first local header and its offsets stay those of the file.
@@ -2080,8 +2141,6 @@ class ZipForwardReader(ZipReader):
         directory entry with no local entry and two entries for one local entry.
         """
         limits = self._config.listing_limits
-        max_members = limits.max_members
-        max_meta = limits.max_metadata_bytes
         with self._translated_errors():
             tail = self._walker.read_rest(_tail_bound(limits))
             end = tail.end_record()
@@ -2091,6 +2150,107 @@ class ZipForwardReader(ZipReader):
         self._account_archive_comment()
         self._refuse_declared_count_over_limit()
         self._report_zip64_damage()
+        walk, offsets, entries, damage = self._walk_directory(tail, end)
+        yield from self._walk_held_members(tail, offsets)
+        # A walk that met damage read no count.
+        self._entries_read = None if damage is not None else walk.entries_read
+        match = self._match_directory(offsets, entries)
+        updates = match.updates
+        order = match.order
+        failed = match.failed
+        unlisted = sorted(self._local_offsets - match.matched)
+        if damage is not None:
+            # Past the damage, the members keep their local headers, in file order
+            # after the directory's, as the seekable read lists them; they take part
+            # in which copy of a name is current.
+            kept = [self._by_offset[offset] for offset in unlisted]
+            order.extend(kept)
+            match.placed.extend(kept)
+            unlisted = []
+        for member, central in updates:
+            self._update_from_directory(member, central)
+            local_name = match.renamed.get(cast("int", member._member_id))
+            if local_name is not None:
+                # A file or link only, as from a file (``_report_local_name``).
+                self._report_local_name(
+                    cast("_ZipLocator", member._raw), member, local_name
+                )
+            local_method = match.remethoded.get(cast("int", member._member_id))
+            if local_method is not None and _WINZIP_AES_METHOD not in (
+                local_method,
+                central.method,
+            ):
+                # The pass decoded by the local method, as a file read does
+                # (``_with_local_method``); a file or link only, as from a file. A
+                # file read reports once its local-header checks pass and before it
+                # decodes, so it reports a member whose data then fails on a CRC-32
+                # or size the directory contradicts, and so does the pass, which
+                # fails that member at the end. It reports nothing for a member those
+                # checks refuse: WinZip AES on one side, skipped here, and a central
+                # compressed size the overlap guard refuses, not skipped. The pass
+                # would have to rebuild the guard's bound (the next local header or
+                # the directory, per member) to tell those apart, so it reports
+                # them: a crafted-only difference (DR-5a), in the spec and zip.md.
+                self._report_local_method(
+                    cast("_ZipLocator", member._raw), member, local_method
+                )
+        if match.any_missing:
+            # A missing entry has a name too, and takes part in last-entry-wins as the
+            # seekable read's listing does: a listed copy it follows is not current.
+            # The stamp over the listed members alone (``_end_walk``) leaves a member
+            # made not current here as it is.
+            _apply_last_entry_wins_is_current(match.placed)
+        self._directory_order = order
+        self._failed_at_end = [(member, error) for _, member, error in failed]
+        self._keep_link_data_only(updates)
+        self._report_unlisted(unlisted)
+        # The names are the directory's now, and the unlisted members are gone.
+        self._emit_name_duplicates(order)
+        for finding in () if damage is not None else walk.findings:
+            self._emit_walk_finding(finding)
+        # The kept bytes end where the stream does, so the last ``trailing`` of them
+        # follow the end record and its declared comment.
+        trailing = tail.data[len(tail.data) - end.trailing :]
+        found = first_nonzero_offset(io.BytesIO(trailing))
+        if found is not None:
+            self._emit_trailing_data(found)
+        self._forget_walk()
+        if damage is not None:
+            # The listing's error, as from a file; a member that fails a check of its
+            # own fails at the end of the pass (``_failed_at_end``).
+            raise damage
+        shared = match.shared
+        if shared:
+            first = shared[0]
+            raise CorruptionError(
+                f"ZIP central directory entry {self._directory_entry_label(entries, first)} "
+                f"points to the local header at offset {offsets[first]}, "
+                f"which an earlier entry already describes ({len(shared)} such entries); "
+                "a source that cannot seek reads that data once, for one member",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        if failed:
+            _, _, error = failed[0]
+            raise error
+
+    def _walk_directory(
+        self, tail: ForwardTail, end: EndRecord
+    ) -> tuple[
+        CentralDirectoryWalk, array[int], list[CentralEntry], CorruptionError | None
+    ]:
+        """Read every central directory entry from the bytes kept after the members.
+
+        Returns the walk (for its count and findings), each entry's local header
+        offset in directory order, the entries, and the damage that stopped the walk
+        part way, if any. The entries before the damage still update their members;
+        the members after it keep their local headers, and the caller raises the
+        damage at the end, as the seekable read lists past it (``_past_damage``).
+        ``max_members`` and ``max_metadata_bytes`` are charged as entries arrive.
+        """
+        limits = self._config.listing_limits
+        max_members = limits.max_members
+        max_meta = limits.max_metadata_bytes
         by_offset = self._by_offset
 
         def local_name_at(offset: int) -> bytes | None:
@@ -2108,13 +2268,9 @@ class ZipForwardReader(ZipReader):
             local_name_at=local_name_at,
             local_data_start_at=self._mac_data_starts.get,
         )
-        # Every entry's local header offset, in directory order, and the entries.
         offsets = array("q")
         entries: list[CentralEntry] = []
         held = 0
-        # Damage part way through the directory: the entries before it update their
-        # members, the members after it keep their local headers, and the damage is
-        # raised at the end, as the seekable read lists past it (``_past_damage``).
         damage: CorruptionError | None = None
         try:
             with self._translated_errors():
@@ -2132,9 +2288,20 @@ class ZipForwardReader(ZipReader):
                     entries.append(central)
         except CorruptionError as exc:
             damage = exc
-        yield from self._walk_held_members(tail, offsets)
-        # A walk that met damage read no count.
-        self._entries_read = None if damage is not None else walk.entries_read
+        return walk, offsets, entries, damage
+
+    def _match_directory(
+        self, offsets: array[int], entries: list[CentralEntry]
+    ) -> _DirectoryMatch:
+        """Match each directory entry to the member the walk built at its offset.
+
+        Nothing is changed or reported here; :meth:`_read_directory` acts on the
+        result. A directory entry with no local header the walk met becomes a missing
+        member that fails at the end. A second entry over one local header is
+        ``shared``. A matched member whose local header or data descriptor the entry
+        contradicts fails at the end too.
+        """
+        by_offset = self._by_offset
         local_offsets = self._local_offsets
         updates: list[tuple[ArchiveMember, CentralEntry]] = []
         # Members whose local header named them differently, by member id: the name
@@ -2177,7 +2344,7 @@ class ZipForwardReader(ZipReader):
             central = entries[position]
             local_name = cast("_ZipLocator", member._raw).name
             if central.name != local_name:
-                # Reported once the member has the directory's name, below.
+                # Reported once the member has the directory's name (``_read_directory``).
                 assert member._member_id is not None
                 renamed[member._member_id] = local_name
             local_method = cast("_ZipLocator", member._raw).method
@@ -2186,7 +2353,7 @@ class ZipForwardReader(ZipReader):
                 remethoded[member._member_id] = local_method
             updates.append((member, central))
             # ``_raw`` still holds the local header's fields: the directory replaces
-            # it only in ``_update_from_directory``, after this loop.
+            # it only in ``_update_from_directory``, after the match.
             local = cast("_ZipLocator", member._raw)
             differ = _header_disagreements(
                 local, central, crc_used=local.aes is None or not local.aes.is_ae2
@@ -2198,55 +2365,29 @@ class ZipForwardReader(ZipReader):
                 failed.append(
                     (position, member, _descriptor_error(member, descriptor, central))
                 )
-        unlisted = sorted(local_offsets - matched)
-        if damage is not None:
-            # Past the damage, the members keep their local headers, in file order
-            # after the directory's, as the seekable read lists them; they take part
-            # in which copy of a name is current.
-            kept = [by_offset[offset] for offset in unlisted]
-            order.extend(kept)
-            placed.extend(kept)
-            unlisted = []
-        for member, central in updates:
-            self._update_from_directory(member, central)
-            local_name = renamed.get(cast("int", member._member_id))
-            if local_name is not None:
-                # A file or link only, as from a file (``_report_local_name``).
-                self._report_local_name(
-                    cast("_ZipLocator", member._raw), member, local_name
-                )
-            local_method = remethoded.get(cast("int", member._member_id))
-            if local_method is not None and _WINZIP_AES_METHOD not in (
-                local_method,
-                central.method,
-            ):
-                # The pass decoded by the local method, as a file read does
-                # (``_with_local_method``); a file or link only, as from a file. A
-                # file read reports once its local-header checks pass and before it
-                # decodes, so it reports a member whose data then fails on a CRC-32
-                # or size the directory contradicts, and so does the pass, which
-                # fails that member at the end. It reports nothing for a member those
-                # checks refuse: WinZip AES on one side, skipped here, and a central
-                # compressed size the overlap guard refuses, not skipped. The pass
-                # would have to rebuild the guard's bound (the next local header or
-                # the directory, per member) to tell those apart, so it reports
-                # them: a crafted-only difference (DR-5a), in the spec and zip.md.
-                self._report_local_method(
-                    cast("_ZipLocator", member._raw), member, local_method
-                )
-        if any_missing:
-            # A missing entry has a name too, and takes part in last-entry-wins as the
-            # seekable read's listing does: a listed copy it follows is not current.
-            # The stamp over the listed members alone (``_end_walk``) leaves a member
-            # made not current here as it is.
-            _apply_last_entry_wins_is_current(placed)
-        self._directory_order = order
-        self._failed_at_end = [(member, error) for _, member, error in failed]
-        # Only a link's bytes are read again, for its target; of data over the
-        # target cap, only a Windows reparse point's start. This frees memory and
-        # guards nothing: a plain symlink over the cap is refused by its size before
-        # its bytes are asked for. ``size`` is the central entry's by now; the
-        # ``None`` arm is for the type.
+        return _DirectoryMatch(
+            updates=updates,
+            renamed=renamed,
+            remethoded=remethoded,
+            matched=matched,
+            order=order,
+            shared=shared,
+            failed=failed,
+            placed=placed,
+            any_missing=any_missing,
+        )
+
+    def _keep_link_data_only(
+        self, updates: list[tuple[ArchiveMember, CentralEntry]]
+    ) -> None:
+        """Drop the data kept for every member the directory did not make a link.
+
+        Only a link's bytes are read again, for its target; of data over the target
+        cap, only a Windows reparse point's start. This frees memory and guards
+        nothing: a plain symlink over the cap is refused by its size before its bytes
+        are asked for. ``size`` is the central entry's by now; the ``None`` arm is
+        for the type.
+        """
         links = {
             member._member_id
             for member, _ in updates
@@ -2269,39 +2410,14 @@ class ZipForwardReader(ZipReader):
         }
         self._kept_heap = []
         self._kept_bytes = 0
-        self._report_unlisted(unlisted)
-        # The names are the directory's now, and the unlisted members are gone.
-        self._emit_name_duplicates(order)
-        for finding in () if damage is not None else walk.findings:
-            self._emit_walk_finding(finding)
-        # The kept bytes end where the stream does, so the last ``trailing`` of them
-        # follow the end record and its declared comment.
-        trailing = tail.data[len(tail.data) - end.trailing :]
-        found = first_nonzero_offset(io.BytesIO(trailing))
-        if found is not None:
-            self._emit_trailing_data(found)
+
+    def _forget_walk(self) -> None:
+        """Free the maps the walk filled, once the directory has settled every member."""
         self._by_offset = {}
         self._local_offsets = set()
         self._mac_data_starts = {}
         self._descriptors = {}
         self._rejected_headers = {}
-        if damage is not None:
-            # The listing's error, as from a file; a member that fails a check of its
-            # own fails at the end of the pass (``_failed_at_end``).
-            raise damage
-        if shared:
-            first = shared[0]
-            raise CorruptionError(
-                f"ZIP central directory entry {self._directory_entry_label(entries, first)} "
-                f"points to the local header at offset {offsets[first]}, "
-                f"which an earlier entry already describes ({len(shared)} such entries); "
-                "a source that cannot seek reads that data once, for one member",
-                archive_name=self._archive_name,
-                source_format=ArchiveFormat.ZIP,
-            )
-        if failed:
-            _, _, error = failed[0]
-            raise error
 
     @override
     def _local_crc_for(self, entry: CentralEntry) -> int | None:
@@ -2536,7 +2652,14 @@ class ZipForwardReader(ZipReader):
                 digest="integrity check",
                 why="the password was accepted on a weaker check",
             )
-        return self._member_parts(stream, member.name, size=member.size)
+        # A codec member's bytes are drawn as they decode (``_PassData._read_chunk``),
+        # read or drained; a STORED member's, decoded by nothing, as the caller reads.
+        return self._member_parts(
+            stream,
+            member.name,
+            size=member.size,
+            draw_budget=current._method() == 0,
+        )
 
     @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:

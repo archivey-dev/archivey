@@ -1,27 +1,32 @@
-"""Decompressors for the two DOS-era ZIP methods: Shrink (1) and Implode (6).
+"""Decompressors for the DOS-era ZIP methods: Shrink (1), Reduce (2 to 5), Implode (6)
+and PKWARE DCL Implode (10).
 
-Opened via :class:`~.zip_legacy_codec.ShrinkCodec` and
-:class:`~.zip_legacy_codec.ImplodeCodec`, which ``FramedDecoder`` drives. Both are
-pure Python (DR-20). Only archives from PKZIP 1.x and its contemporaries use them, so
-the decoders favour plain code over speed.
+Opened via the codecs in :mod:`~.zip_legacy_codec`, which ``FramedDecoder`` drives. All
+are pure Python (DR-20). Only archives from PKZIP 1.x, PKZIP 0.9x and DCL-based writers
+use them, so the decoders favour plain code over speed.
 
-The formats are PKWARE's APPNOTE (sections 5.1 and 5.3). Where APPNOTE leaves a detail
-open, the decoders do what Info-ZIP ``unzip`` (``unshrink.c``, ``explode.c``) does:
+The formats are PKWARE's APPNOTE (sections 5.1 to 5.3; DCL Implode is not in APPNOTE).
+Where the format leaves a detail open, each decoder follows a reference: Shrink and
+Implode do what Info-ZIP ``unzip`` (``unshrink.c``, ``explode.c``) does, Reduce follows
+``unreduce.c``, and DCL Implode follows zlib's ``contrib/blast/blast.c``:
 
 - Shrink: a code that names a free slot is the "KwKwK" case, the entry being added
   now; a partial clear frees every code above 256 that is no other code's prefix, and
   new codes reuse the lowest free slot.
-- Implode: a copy that reaches before the start of the output reads zeros, and the
-  last copy stops at the member's declared size.
+- Implode and Reduce: a copy that reaches before the start of the output reads zeros,
+  and the last copy stops at the member's declared size.
+- DCL Implode: a copy before the start of the output is refused.
 
-Neither stream has an end marker. Implode always ends at the declared size, so it needs
-one, and clamps its last copy to it. Shrink stops after the first code that reaches the
-size when the size is known, and otherwise where the input does (``end_input``); a last
-entry that runs past the size is refused by the member's size check above the decoder.
-The bits left in the last byte are padding. A whole byte after the end is
-``unused_data``, which ``FramedDecoder`` reports as input after the end.
+Shrink, Reduce and Implode have no end marker. Reduce and Implode always end at the
+declared size, so they need one, and clamp their last copy to it. Shrink stops after
+the first code that reaches the size when the size is known, and otherwise where the
+input does (``end_input``); a last entry that runs past the size is refused by the
+member's size check above the decoder. DCL Implode ends at its own end code, so it
+needs no size and reads from a pipe. The bits left in the last byte are padding. A
+whole byte after the end is ``unused_data``, which ``FramedDecoder`` reports as input
+after the end.
 
-Both decode forward only: a seek goes back to the start and decodes again.
+All four decode forward only: a seek goes back to the start and decodes again.
 """
 
 from __future__ import annotations
@@ -67,6 +72,9 @@ class _BitDecompressor:
     """
 
     label = ""
+    # A corrupt code raises only once the bytes before it are handed out
+    # (``_raise_after``): see ``Decoder.holds_back_errors``.
+    holds_back_errors = True
 
     def __init__(self, unpack_size: int | None) -> None:
         self._unpack_size = unpack_size
@@ -78,6 +86,9 @@ class _BitDecompressor:
         self._limit = -1
         # Output decoded but not yet returned, and the total decoded so far.
         self._out = bytearray()
+        # A corrupt code met with output held: that output is handed out first, and
+        # this raises once it is gone (spec ``compressed-streams``).
+        self._raise_after: CorruptionError | None = None
         self._produced = 0
         self._paused = False
         self._done = False
@@ -152,6 +163,10 @@ class _BitDecompressor:
         return data
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        if self._raise_after is not None:
+            if self._out:
+                return self._hand_out(max_length)
+            raise self._raise_after
         if data:
             if self._done:
                 self._unused += data
@@ -160,7 +175,12 @@ class _BitDecompressor:
                 self._data_pos = 0
         if max_length < 0 or len(self._out) < max_length:
             self._limit = max_length
-            self._run()
+            try:
+                self._run()
+            except CorruptionError as exc:
+                if not self._out:
+                    raise
+                self._raise_after = exc
         return self._hand_out(max_length)
 
     def end_input(self) -> None:
@@ -188,7 +208,8 @@ class _BitDecompressor:
 
     @property
     def needs_input(self) -> bool:
-        return not self._out and not self._paused
+        # False after a corrupt code, so the next call is made at once and raises.
+        return self._raise_after is None and not self._out and not self._paused
 
 
 # --- Shrink (method 1): LZW with 9- to 13-bit codes and partial clearing ---
@@ -501,6 +522,264 @@ class ImplodeDecompressor(_BitDecompressor):
                     source = position - distance
                     history.append(history[source - trimmed] if source >= 0 else 0)
                 self._emit(history[len(history) - length :])
+            yield from self._budget()
+            if len(history) > 4 * window:
+                trimmed += len(history) - window
+                del history[: len(history) - window]
+
+
+# --- Reduce (methods 2 to 5): follower sets, then an LZ77 layer escaped by 0x90 ---
+
+#: Bits of a follower-set index, by the set's size (0 to 32): the fewest that hold the
+#: size less one, and at least one. APPNOTE 5.2's ``B(N)``.
+_REDUCE_INDEX_BITS = bytes([8, 1, 1, 2, 2] + [3] * 4 + [4] * 8 + [5] * 16)
+_REDUCE_MAX_FOLLOWERS = 32
+_REDUCE_ESCAPE = 0x90
+
+
+class ReduceDecompressor(_BitDecompressor):
+    """Reduce with compression factor 1 to 4 (ZIP methods 2 to 5), APPNOTE 5.2.
+
+    Two layers. The first gives bytes: 256 follower sets (for each byte, the up to 32
+    bytes that most often come after it) are read first, then each byte is either 8 bits
+    or, when the last byte has followers and a 0 bit comes first, an index into its set.
+    The second reads those bytes as literals, with 0x90 as an escape: 0x90 0x00 is a
+    literal 0x90, and 0x90 then one or two more bytes is a copy of 3 or more bytes from
+    up to ``256 << factor`` bytes back.
+
+    Where APPNOTE leaves a detail open, the decoder does what Info-ZIP ``unreduce``
+    does: a copy that reaches before the start of the output reads zeros, and the last
+    copy stops at the declared size. A set of more than 32 followers, or an index past
+    the end of its set, has no meaning and is refused.
+    """
+
+    label = "Reduce"
+
+    def __init__(self, unpack_size: int | None, *, factor: int) -> None:
+        if unpack_size is None:
+            raise CorruptionError(
+                "Reduce data has no end marker, so it needs the member's size"
+            )
+        if not 1 <= factor <= 4:
+            raise ValueError(f"Reduce compression factor {factor} is not 1 to 4")
+        self._factor = factor
+        super().__init__(unpack_size)
+
+    @override
+    def _decode(self) -> _Step:
+        size = self._unpack_size
+        assert size is not None
+        followers: list[bytes] = [b""] * 256
+        for byte in range(255, -1, -1):
+            count = yield from self._bits_value(6)
+            if count > _REDUCE_MAX_FOLLOWERS:
+                raise CorruptionError(
+                    f"Reduce follower set of byte {byte} has {count} entries, over 32"
+                )
+            members = bytearray()
+            for _ in range(count):
+                members.append((yield from self._bits_value(8)))
+            followers[byte] = bytes(members)
+
+        length_bits = 8 - self._factor
+        length_mask = (1 << length_bits) - 1
+        window = (256 << self._factor) + 256
+        history = bytearray()
+        trimmed = 0
+        last = 0
+        state = 0
+        escaped = 0
+        length = 0
+        while self._produced < size:
+            chosen = followers[last]
+            if not chosen or (yield from self._bits_value(1)):
+                byte = yield from self._bits_value(8)
+            else:
+                index = yield from self._bits_value(_REDUCE_INDEX_BITS[len(chosen)])
+                if index >= len(chosen):
+                    raise CorruptionError(
+                        f"Reduce index {index} is past the {len(chosen)} followers "
+                        f"of byte {last}"
+                    )
+                byte = chosen[index]
+            last = byte
+
+            if state == 0:
+                if byte == _REDUCE_ESCAPE:
+                    state = 1
+                    continue
+                history.append(byte)
+                self._emit(history[-1:])
+            elif state == 1:
+                if byte == 0:
+                    history.append(_REDUCE_ESCAPE)
+                    self._emit(history[-1:])
+                    state = 0
+                else:
+                    escaped = byte
+                    length = byte & length_mask
+                    state = 2 if length == length_mask else 3
+                    continue
+            elif state == 2:
+                length += byte
+                state = 3
+                continue
+            else:
+                state = 0
+                distance = ((escaped >> length_bits) << 8) + byte + 1
+                count = min(length + 3, size - self._produced)
+                end = trimmed + len(history)
+                for position in range(end, end + count):
+                    source = position - distance
+                    history.append(history[source - trimmed] if source >= 0 else 0)
+                self._emit(history[len(history) - count :])
+            yield from self._budget()
+            if len(history) > 4 * window:
+                trimmed += len(history) - window
+                del history[: len(history) - window]
+
+
+# --- DCL Implode (method 10): PKWARE's Data Compression Library format ---
+
+
+def _dcl_lengths(packed: bytes) -> list[int]:
+    """Code lengths from the run-length form ``blast.c`` keeps them in: per byte, the
+    count less one (high nibble) and the length (low nibble)."""
+    lengths: list[int] = []
+    for byte in packed:
+        lengths.extend([byte & 0x0F] * ((byte >> 4) + 1))
+    return lengths
+
+
+#: The longest code of the DCL tables (a literal), and the bits a lookup peeks at.
+_DCL_PEEK = 13
+
+
+def _dcl_table(lengths: list[int]) -> list[tuple[int, int]]:
+    """A lookup table over the next ``_DCL_PEEK`` input bits, read LSB first: each
+    entry is the (symbol, code length) whose code those bits start with.
+
+    The codes are canonical (shorter codes first, symbols in order within a length),
+    and the format stores each code bit inverted, the code's highest bit first, as
+    ``blast.c``'s ``decode`` reads them.
+    """
+    table = [(-1, 0)] * (1 << _DCL_PEEK)
+    code = 0
+    for length in range(1, max(lengths) + 1):
+        for symbol, symbol_length in enumerate(lengths):
+            if symbol_length != length:
+                continue
+            inverted = code ^ ((1 << length) - 1)
+            first_bits = 0
+            for i in range(length):
+                first_bits |= ((inverted >> (length - 1 - i)) & 1) << i
+            for rest in range(1 << (_DCL_PEEK - length)):
+                table[first_bits | (rest << length)] = (symbol, length)
+            code += 1
+        code <<= 1
+    return table
+
+
+# The fixed codes of the format (from zlib's ``contrib/blast/blast.c``, by Mark Adler,
+# under the zlib license): literals when the literal byte is 1, length symbols, and the
+# high bits of a distance.
+_DCL_LITERAL_CODES = _dcl_table(
+    _dcl_lengths(
+        bytes.fromhex(
+            "0b7c08071c07bc0d4c040a080c0a0c0a08170809070607080706370817180c0b"
+            "07090b0c060716050718060b09060716070b26070908190b080b090c080c0526"
+            "0526050b07050615060a350807180a1b2cfdfdfdfcfcfc0d0c2d0c2d0c3d0c2d"
+            "2cad"
+        )
+    )
+)
+_DCL_LENGTH_CODES = _dcl_table(_dcl_lengths(bytes([2, 35, 36, 53, 38, 23])))
+_DCL_DISTANCE_CODES = _dcl_table(_dcl_lengths(bytes([2, 20, 53, 230, 247, 151, 248])))
+_DCL_LENGTH_BASE = (3, 2, 4, 5, 6, 7, 8, 9, 10, 12, 16, 24, 40, 72, 136, 264)
+_DCL_LENGTH_EXTRA = (0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8)
+#: The length that ends the stream: the last symbol with all its extra bits set.
+_DCL_END = 519
+
+
+def _read_dcl_symbol(
+    decoder: _BitDecompressor, table: list[tuple[int, int]]
+) -> Generator[bool, None, int]:
+    """Read one code of ``table`` (:func:`_dcl_table`).
+
+    The bits not yet read look like zeros to the lookup, so its answer stands once the
+    code it finds fits in the bits that are there; only then is more input waited for.
+    """
+    mask = (1 << _DCL_PEEK) - 1
+    while True:
+        while decoder._nbits < _DCL_PEEK and decoder._data_pos < len(decoder._data):
+            decoder._bits |= decoder._data[decoder._data_pos] << decoder._nbits
+            decoder._data_pos += 1
+            decoder._nbits += 8
+        symbol, length = table[decoder._bits & mask]
+        if length <= decoder._nbits:
+            decoder._take(length)
+            return symbol
+        if decoder._eof:
+            raise _InputEnded
+        yield False
+
+
+class DclImplodeDecompressor(_BitDecompressor):
+    """PKWARE DCL Implode (ZIP method 10), as zlib's ``blast.c`` decodes it.
+
+    Two header bytes: 0 or 1 for raw or coded literals, then 4 to 6 for a window of
+    1, 2 or 4 KiB. Then per symbol a flag bit: a literal, or a length (2 to 518) and a
+    distance from fixed Huffman codes. The length 519 ends the stream, so the data
+    needs no size; the bits after it in the last byte are padding. As in ``blast.c``,
+    a copy from before the start of the output is refused.
+    """
+
+    label = "DCL Implode"
+
+    @override
+    def _decode(self) -> _Step:
+        coded = yield from self._bits_value(8)
+        if coded > 1:
+            raise CorruptionError(
+                f"DCL Implode header has literal mode {coded}, not 0 or 1"
+            )
+        window_bits = yield from self._bits_value(8)
+        if not 4 <= window_bits <= 6:
+            raise CorruptionError(
+                f"DCL Implode header has window size {window_bits}, not 4 to 6"
+            )
+        window = 64 << window_bits
+        history = bytearray()
+        trimmed = 0
+        while True:
+            if (yield from self._bits_value(1)):
+                symbol = yield from _read_dcl_symbol(self, _DCL_LENGTH_CODES)
+                extra = _DCL_LENGTH_EXTRA[symbol]
+                length = _DCL_LENGTH_BASE[symbol]
+                if extra:
+                    length += yield from self._bits_value(extra)
+                if length == _DCL_END:
+                    return
+                low_bits = 2 if length == 2 else window_bits
+                high = yield from _read_dcl_symbol(self, _DCL_DISTANCE_CODES)
+                low = yield from self._bits_value(low_bits)
+                distance = (high << low_bits) + low + 1
+                end = trimmed + len(history)
+                if distance > end:
+                    raise CorruptionError(
+                        f"DCL Implode copy reaches {distance} bytes back, before the "
+                        f"start of the output ({end} bytes)"
+                    )
+                for position in range(end, end + length):
+                    history.append(history[position - distance - trimmed])
+                self._emit(history[len(history) - length :])
+            else:
+                if coded:
+                    byte = yield from _read_dcl_symbol(self, _DCL_LITERAL_CODES)
+                else:
+                    byte = yield from self._bits_value(8)
+                history.append(byte)
+                self._emit(history[-1:])
             yield from self._budget()
             if len(history) > 4 * window:
                 trimmed += len(history) - window

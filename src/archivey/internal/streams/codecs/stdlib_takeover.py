@@ -1,5 +1,15 @@
 """Hand a rapidgzip decode to the standard library when rapidgzip fails on data, so an
 accelerator changes speed and never the verdict.
+
+The accelerated open paths of gzip, zlib, raw DEFLATE (``deflate_family_codec``) and
+bzip2 (``bzip2_codec``) wrap rapidgzip's stream in :class:`_StdlibOnAcceleratorError`.
+On a data error it reopens the same source with the standard-library decoder, from a
+resume point when it has one (``deflate_resume``, ``bzip2_resume``), and carries on at
+the position already delivered. The rest of the module is what those wrappers and the
+per-codec end checks share: fresh views of the source that leave rapidgzip's position
+alone (:func:`_accelerator_backstop_source`), the end-of-output test for a seek
+(:func:`_seek_reached_end`), a bounded drain (:func:`_drain_into`) and a running
+checksum of the output (:class:`_OutputChecksum`).
 """
 
 from __future__ import annotations
@@ -24,6 +34,8 @@ from archivey.internal.streams.codecs.rapidgzip_select import _translate_rapidgz
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
+    partial_data_recovery,
+    recovers_partial_data,
 )
 from archivey.internal.streams.resume import ResumeReachedStreamEnd, ask_resume_offset
 from archivey.internal.streams.streamtools import (
@@ -123,8 +135,8 @@ _ResumePoints = Callable[[BinaryIO, int, Callable[[], BinaryIO]], list[SeekPoint
 class _StdlibOnAcceleratorError(DelegatingStream):
     """Finish a rapidgzip decode with the standard library when rapidgzip fails on data.
 
-    The DEFLATE family (rapidgzip in a child process) and bzip2 (rapidgzip's bzip2
-    decoder, in this process) both use it; the defaults below are the DEFLATE family's,
+    The DEFLATE family and bzip2 (rapidgzip's bzip2 decoder) both use it, each with
+    rapidgzip in a child process; the defaults below are the DEFLATE family's,
     and the bzip2 differences are at the end.
 
     rapidgzip decodes ahead in chunks and raises as soon as one fails, without handing
@@ -233,9 +245,12 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         super().__init__(inner)
         self._views = views
         self._open_stdlib = open_stdlib
+        # The fallback is built at a later read or seek, after the codec registry's
+        # ``partial_data_recovery`` block ended: it re-enters the caller's setting.
+        self._recover = recovers_partial_data()
         self._label = label
         self._limit = limit
-        self._data_error = takes_over
+        self._is_data_error = takes_over
         self._resume_points = resume_points
         self._translate = translate
         self._empty_to_stdlib = empty_to_stdlib
@@ -299,8 +314,8 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         """Whether the standard library takes over after ``exc`` from rapidgzip."""
         if self.switched or from_callers_source(exc):
             return False
-        if self._data_error is not None:
-            return self._data_error(exc)
+        if self._is_data_error is not None:
+            return self._is_data_error(exc)
         return (
             crashed_on_data(exc) or _translate_rapidgzip(exc, self._label) is not None
         )
@@ -343,6 +358,9 @@ class _StdlibOnAcceleratorError(DelegatingStream):
             self._switch()
 
     def _switch(self, *, resume: bool = False) -> None:
+        """Replace rapidgzip's stream with the standard-library decoder at the position
+        delivered so far. With ``resume``, it starts from the newest resume point at or
+        before that position, when rapidgzip knows one; otherwise from the start."""
         old = self._inner
         points: list[SeekPoint] = []
         if resume and self._resume_points is not None:
@@ -357,7 +375,8 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         """The standard-library decoder at the position delivered so far, resuming from
         the newest of ``points``, in ascending order, at or before it. A point past it
         would only serve a later seek: the seek here ignores it."""
-        stdlib = self._open_stdlib(self._views.for_stdlib())
+        with partial_data_recovery(self._recover):
+            stdlib = self._open_stdlib(self._views.for_stdlib())
         # A view of a seekable source gives a seekable decoder. The wrappers above this
         # stream cached seekable() from the accelerator, and the seek below needs it.
         assert is_seekable(stdlib), "a standard-library fallback must be seekable"

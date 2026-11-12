@@ -38,7 +38,7 @@ from archivey.internal.overrides import override
 from archivey.terminal import escape_control_chars
 
 if TYPE_CHECKING:
-    from archivey.diagnostics import Diagnostic
+    from archivey.diagnostics import Diagnostic, ExtractionReport
     from archivey.types import ArchiveFormat, MemberType, MissingComponent
 
 
@@ -232,6 +232,18 @@ class LinkTargetNotFoundReason(StrEnum):
     loops."""
 
 
+class SourceChangedError(ReadError):
+    """The remote object an ``fsspec.core.OpenFile`` source names changed while
+    archivey was reading it.
+
+    A fetch inside the size read at open came back short: the object is now shorter,
+    so the bytes after that point belong to another object, or to none. It is not
+    damage, so it is not a :class:`CorruptionError`: reopen the archive and retry. A
+    replacement of the same length, or a longer one, returns full ranges and is not
+    detected (``SOURCE_CHANGE_UNDETECTABLE``).
+    """
+
+
 class LinkTargetNotFoundError(ReadError):
     """A symlink/hardlink target, or a file copy's source, is absent from the archive.
 
@@ -276,7 +288,34 @@ class FilterRejectionError(ExtractionError):
     destination OS cannot store safely under the active policy (see ``safe-extraction``),
     and a name built to display as something it is not (a Unicode bidi override or
     isolate). The member is ``BLOCKED`` whichever check fired, and the message says which.
+
+    ``report`` is the :class:`~archivey.ExtractionReport` of the whole call when
+    ``extract_all()`` raised this at its end under ``on_blocked="raise"``, after
+    extracting every member it could: every refused member is in it as ``BLOCKED``.
+    It is ``None`` when the error stopped the call at the first refusal
+    (``abort_on=["blocked_member"]``), and on the error a ``BLOCKED`` result holds.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        source_format: ArchiveFormat | None = None,
+        archive_name: str | None = None,
+        member_name: str | None = None,
+        link_target: str | None = None,
+        format_unconfirmed: bool = False,
+        report: ExtractionReport | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            source_format=source_format,
+            archive_name=archive_name,
+            member_name=member_name,
+            link_target=link_target,
+            format_unconfirmed=format_unconfirmed,
+        )
+        self.report = report
 
 
 class NameCollisionError(ExtractionError):
@@ -324,7 +363,9 @@ class ResourceUnavailableError(ResourceLimitError):
     Raised when a decoder or helper program is ended by SIGKILL (most often the
     out-of-memory killer), when a decoder that
     :class:`~archivey.config.ProcessIsolation` runs only in a child process cannot
-    have one (a frozen application, a refused spawn), when a PPMd decoder process
+    have one (a frozen application, a refused spawn), when a helper program such as
+    ``unrar`` or ``unar`` cannot start because the system has no file descriptor,
+    memory or process slot for it, when a PPMd decoder process
     cannot allocate the member's model (a container memory limit), and when a volume
     file cannot be opened because the process is out of file descriptors. The data may
     be valid: read it again with more memory, more descriptors, or where child
@@ -338,7 +379,7 @@ class ResourceUnavailableError(ResourceLimitError):
 class UnsupportedFeatureError(ArchiveyError):
     """The archive is recognized, but uses something archivey cannot handle.
 
-    A variant, codec or layout of a known format (a raw CD sector image, a UDIF disk
+    A variant, codec or layout of a known format (a Mode 2 Form 2 CD image, a UDIF disk
     image, a 7z coder graph that is not a tree of chains, a multi-volume set where the
     format has none),
     or a request this archive or backend cannot serve (a password ``unrar`` cannot be
@@ -361,16 +402,17 @@ class UnsupportedFeatureError(ArchiveyError):
 
 class PackageNotInstalledError(ArchiveyError):
     """A required optional package or external tool is absent, or the call's
-    ``FormatPolicy(exclude_libraries=)`` turns the package off.
+    ``FormatPolicy`` turns the package off (``exclude_libraries=`` or
+    ``only_libraries=``).
 
     Raised both when a whole format needs it (opening an ISO without ``pycdlib``) and
     when one member does (a PPMd member without ``pyppmd``). The message names what to
     install, or for an excluded package says the policy turned it off.
 
     :attr:`missing` holds what is absent as data, so a caller can act on a refusal
-    without parsing its message. A component whose ``name`` is in the caller's
-    ``exclude_libraries`` was refused by that policy, and has it as its ``reason``; any
-    other one needs installing.
+    without parsing its message. A component whose ``name`` the caller's
+    ``config.formats.allows_library(name)`` answers ``False`` for was refused by that
+    policy, and has it as its ``reason``; any other one needs installing.
     """
 
     missing: tuple[MissingComponent, ...]

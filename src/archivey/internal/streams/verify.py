@@ -9,7 +9,9 @@ Two delivery shapes (same rules, different wrappers):
   :class:`~archivey.internal.streams.archive_stream.ArchiveStreamImpl` on the member
   hot path (one fewer Python layer; nested codec ``ArchiveStream``s can collapse).
 - :class:`VerifyingStream` — standalone ``BinaryIO`` wrapper around an inner +
-  verifier. Kept for codec length backstops and tests; prefer fusion for members.
+  verifier, for checks that must sit below another wrapper: an accelerated codec's
+  length backstop, and a ZipCrypto member whose CRC is the only password check.
+  Prefer fusion for members.
 
 Per ADR 0014 / ``compressed-streams``:
 
@@ -67,7 +69,7 @@ from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
 from archivey.internal.overrides import override
 from archivey.internal.streams.decompressor_stream import (
-    _COMPRESSED_READ_SIZE_MAX,
+    _LARGE_READ_STEP,
     retire_decoder_children,
 )
 from archivey.internal.streams.resume import (
@@ -101,9 +103,9 @@ _DigestTransforms = Mapping[HashAlgorithm, Callable[[bytes], bytes]]
 # sized branch: ``expected_size`` is a decompression-bomb cap. The step itself is not
 # the bound (the drain stops at ``expected_size`` whatever the step), so it is sized
 # for speed: a member up to one step arrives as one piece, which ``b"".join`` returns
-# without copying, and it is the decoder's largest compressed feed, so one step is one
-# inflate call.
-_SIZED_DRAIN_CHUNK = _COMPRESSED_READ_SIZE_MAX
+# without copying. The decoder underneath makes its own calls: up to 1 MiB on a file,
+# 64 KiB on a pipe.
+_SIZED_DRAIN_CHUNK = _LARGE_READ_STEP
 
 
 def _algo_key(algorithm: HashAlgorithm | str) -> str:
@@ -157,7 +159,9 @@ def hasher_factory(
         # RAR5 BLAKE2sp — not in hashlib; zero-dep tree hash on blake2s (see hashing/).
         return Blake2sp
     if name in hashlib.algorithms_available:
-        return lambda: hashlib.new(name)
+        # These digests check integrity, not security: an OpenSSL in FIPS mode
+        # refuses MD5 (a .deb's md5sums) and SHA-1 unless the call says so.
+        return lambda: hashlib.new(name, usedforsecurity=False)
     return None
 
 
@@ -606,6 +610,7 @@ class MemberVerifier:
         return data
 
     def _abandon(self) -> None:
+        """Stop every end-of-stream check: a decoder error is the member's verdict."""
         self._abandoned = True
 
     def _read_sized_all(self, inner: BinaryIO) -> bytes:
@@ -632,7 +637,7 @@ class MemberVerifier:
                 except BaseException:
                     # The decoder's own error is the verdict, as on the bounded path
                     # in read(): the translator above this verifier classifies it.
-                    # Relabelling every raw error as TruncatedError here made a
+                    # Relabelling every raw error as TruncatedError here would make a
                     # corrupt deflate body read as truncated through read() and as
                     # corrupt through read(n).
                     self._abandon()
@@ -969,8 +974,11 @@ def build_member_verifier(
 class VerifyingStream(ReadOnlyIOStream):
     """Wrap ``inner`` and verify digests/length via a :class:`MemberVerifier`.
 
-    Kept for codec length backstops and tests. Member backends fuse the same
-    verifier into :class:`~archivey.internal.streams.archive_stream.ArchiveStreamImpl`.
+    For checks that must sit below another wrapper: the length backstop over an
+    accelerated codec (``rapidgzip_select``), and the CRC under ZIP's wrapper for a
+    ZipCrypto member whose password only that CRC confirms (``zip_reader``), and
+    tests. Member backends otherwise fuse the same verifier into
+    :class:`~archivey.internal.streams.archive_stream.ArchiveStreamImpl`.
     """
 
     def __init__(
@@ -986,7 +994,7 @@ class VerifyingStream(ReadOnlyIOStream):
     ) -> None:
         super().__init__()
         self._inner = inner
-        # This wrapper is used explicitly (codec length backstops, tests), so it always
+        # This wrapper is used explicitly (see the class docstring), so it always
         # owns a verifier even when there is nothing to check — unlike the fused path,
         # which uses ``build_member_verifier`` to skip the wrapper entirely in that case.
         try:

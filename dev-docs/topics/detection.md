@@ -1,5 +1,13 @@
 # Format detection
 
+**In one minute.** When the caller does not say what a file is, archivey looks for the
+strongest evidence first and stops at the first match: magic bytes at the start, a
+self-extractor stub, magic further in or at the end, a header that checks itself, a trial
+decode, a scan of the leading bytes, and the file extension last. It reads only the front
+of the source plus, when a seek is cheap, one fixed block at the end, so detection stays
+cheap and works on a pipe. The guide's [life of an open](../guide/03-life-of-an-open.md)
+and [pipes and files](../guide/07-pipes-and-files.md) pages show where detection sits.
+
 How `detect_format()` decides what a source is, and why it decides that way. `open_archive`
 and `open_stream` run the same detection when the caller passes no `format=`, under the
 same budget, so everything here applies to them too.
@@ -7,11 +15,11 @@ same budget, so everything here applies to them too.
 Three other pages own parts of this, and this page links them rather than repeating them:
 
 - [`prefixed-archives.md`](prefixed-archives.md) owns the SFX scan: the cue, the window,
-  the hit validators, and the tail probe that is not shipped.
+  the hit validators, and the PE-gated ZIP tail probe.
 - [`formats/single-file.md`](../formats/single-file.md) §2.1 owns the codec side of
-  content probing: what each probe checks, its lifted memory limits, and the inner-TAR
-  probe's per-codec detail. [`formats/brotli.md`](../formats/brotli.md) owns the Brotli
-  probe, which is the one with a false-positive history.
+  content probing: what each probe checks, how it is held to the memory cap, and the
+  inner-TAR probe's per-codec detail. [`formats/brotli.md`](../formats/brotli.md) owns
+  the Brotli probe, which is the one with a false-positive history.
 - Each format page's §2.1 owns that format's magic and what the magic cannot tell.
 
 ## At a glance
@@ -22,9 +30,11 @@ Three other pages own parts of this, and this page links them rather than repeat
   `_detect_format_body` in `internal/detection.py`.
 - **Detection reads the front of the source, and one fixed block at the end.** The block
   is the last 512 bytes, and only to look for a UDIF `koly` signature on a cheap seek
-  (§2.4). No ZIP tail probe is shipped, and the budget has no field for one. A ZIP
-  appended to a JPEG is found from the front by the leading-bytes scan (step 7) when it
-  starts within the 2 MiB window; one that starts further in is not detected, and
+  (§2.4). The one other tail read is the ZIP tail probe after the SFX scan, run only
+  for a PE whose overlay runs past the window
+  ([`prefixed-archives.md`](prefixed-archives.md) §3); the budget has no field for it. A
+  ZIP appended to a JPEG is found from the front by the leading-bytes scan (step 7) when
+  it starts within the 2 MiB window; one that starts further in is not detected, and
   `format=ZIP` still opens it.
 - **Detection never consumes bytes the backend needs.** A path gets its own handle. A
   seekable stream is put back where the caller left it. A non-seekable stream is peeked
@@ -179,7 +189,10 @@ the file is read as an ISO. It runs before the content probes, so a zlib-first i
 is named as the image. What a compressed block contains, and why that is not a
 signature detection can use, is on [`formats/dmg.md`](../formats/dmg.md) §1. The read is
 one seek to the last 512 bytes on a path or a plain seekable stream, then a seek back to
-the end of the prefix. A pipe and an `ArchiveStream` are not seeked to the end. When
+the end of the prefix. A remote source (an fsspec `OpenFile`) is read the same way, at
+one range request (`seeks_to_end_are_cheap`), and so is a member stream whose seek is a
+slice of its archive: a stored ZIP entry or an uncompressed TAR member. A pipe and an
+`ArchiveStream` that would re-decode to reach its tail are not seeked to the end. When
 the source is 512 bytes or more, the receipt records `trailer` as
 `CAPABILITY_UNAVAILABLE`; a shorter source records nothing, as it has no block to
 miss. When the length is unknown the
@@ -192,7 +205,8 @@ A hit is `DMG` / `CERTAIN` / `magic`. Nothing reads the image. `open_archive` ra
 empty `missing`: there is nothing to install. The `.dmg` suffix is not registered, so a
 zip with that name stays a zip.
 
-The step is not a ZIP tail probe. It looks at one fixed block for one signature. A ZIP
+The step is not the ZIP tail probe, which runs only behind a PE and is part of the SFX
+step. It looks at one fixed block for one signature. A ZIP
 appended to a JPEG is found from the front by step 7, within its window (§5).
 
 ### 2.5 Self-checking headers
@@ -499,7 +513,7 @@ A backward seek puts the handle back. It does not re-read the prefix:
   takes that path on an `ArchiveStream`, where a rewind would re-decode.
 - The UDIF trailer read seeks back to the end of the prefix after its 512-byte read
   (§2.4). On a source that reached the step, that is a second backward seek, ahead of
-  the exit restore. A pipe and an `ArchiveStream` are not asked.
+  the exit restore. A pipe and an `ArchiveStream` that would re-decode are not asked.
 
 ### 4.3 Source kinds
 
@@ -509,7 +523,8 @@ A backward seek puts the handle back. It does not re-read the prefix:
 | Seekable stream | Reads forward from the caller's position, restores it; the archive is taken to start where the caller positioned it | Nothing missing |
 | Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when detection reaches that step and the source is 512 bytes or more). Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
 | Non-seekable, raw, to `detect_format` | Reads what it peeks | The caller loses those bytes unless it buffers the stream itself |
-| Member stream (`ArchiveStream`): bare, under a buffer, through `open_archive`, or one volume of a list | Reads forward from the caller's position and restores it, like any seekable stream | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when the source is 512 bytes or more), and probe reads at an offset grow the prefix (§4.2): a seek would re-decode. `seek_is_expensive` in `internal/source.py` looks through pass-through layers, an `ArchiveSource` keeps the answer for the stream it borrows, and a joined set answers for its volumes |
+| Remote (fsspec `OpenFile`) | Reads forward through the fetch planner; reads the `koly` block and the PE tail at one range request each, as on a path (`fsspec-integration` design D1) | Probe reads at an offset grow the prefix (§4.2): each seek would be a request |
+| Member stream (`ArchiveStream`): bare, under a buffer, through `open_archive`, or one volume of a list | Reads forward from the caller's position and restores it, like any seekable stream. A stored ZIP entry or an uncompressed TAR member, whose seek is a slice, has its tail read too (`seeks_to_end_are_cheap`) | No tail on a member that decodes, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when the source is 512 bytes or more), and probe reads at an offset grow the prefix (§4.2): a seek would re-decode. `seek_is_expensive` in `internal/source.py` looks through pass-through layers, an `ArchiveSource` keeps the answer for the stream it borrows, and a joined set answers for its volumes |
 | Directory | Nothing | Nothing to do |
 
 A non-seekable source is read for what has arrived, not to fill the window, and the near
@@ -541,7 +556,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | What you see | Where | More |
 | --- | --- | --- |
 | A two-byte file `1f 8b` detects as `GZ` / `CERTAIN`, then fails at open with `TruncatedError` | **archivey** | Magic hits are not graded by length (§2.1, §3.2). The open still fails loudly |
-| A ZIP appended to a JPEG, or behind any prefix that raises no cue, is detected only when it starts within the 2 MiB window (256 KiB under `FAST`), and only for a source with no known extension | **archivey** | Step 7 scans from the front; there is no ZIP tail probe (§2.4). On a pipe it scans only the bytes already read. `format=ZIP` reads one further in. [`prefixed-archives.md`](prefixed-archives.md) §6 |
+| A ZIP appended to a JPEG, or behind any prefix that raises no cue, is detected only when it starts within the 2 MiB window (256 KiB under `FAST`), and only for a source with no known extension | **archivey** | Step 7 scans from the front; the ZIP tail probe runs only behind a PE (§2.4). On a pipe it scans only the bytes already read. `format=ZIP` reads one further in. [`prefixed-archives.md`](prefixed-archives.md) §6 |
 | An uncompressed `.dmg` whose disk is ISO 9660 opens as `ISO` | **archivey** | Far magic runs before the trailer (§2.4). [`formats/dmg.md`](../formats/dmg.md) §2.1 |
 | Some binary files (COFF) detect as LZMA Alone or Brotli and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.6). Threat-model O10 |
 | A zero-filled `backup.gz` detects as `GZ` / `GUESS`; the read raises `CorruptionError` with `format_unconfirmed=True` | **format** | Extension was the only evidence (§2.7) |

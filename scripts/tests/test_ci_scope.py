@@ -1,9 +1,10 @@
 """`scripts/ci/ci_scope.py` and the `scope` job in ci.yml that uses it.
 
-A merge group that changes no library, library test, dependency or CI path skips the
-queue-only jobs. A wrong answer here either runs the whole matrix for nothing or, worse,
-lets a library change into main without the legs only the queue runs, so both the path
-rule and the wiring are pinned.
+A pull request or merge group that changes no library, library test, dependency or CI
+path skips some jobs: the library legs of the pull request set on a pull request push,
+the queue-only jobs in the merge queue. A wrong answer here either runs the whole
+matrix for nothing or, worse, lets a library change into main without the legs only the
+queue runs, so both the path rule and the wiring are pinned.
 """
 
 from __future__ import annotations
@@ -19,7 +20,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "ci" / "ci_scope.py"
 CI = ROOT / ".github" / "workflows" / "ci.yml"
-QUEUE_ONLY = ("test-queue", "unar-distro-packages", "pypy", "atheris")
+QUEUE_ONLY = ("test-queue", "unar-distro-packages", "pypy")
+#: The pull request set's library legs: a pull request push skips them when `scope`
+#: says ``full=false``; the merge queue always runs them.
+PR_LIBRARY = ("test", "free-threaded-concurrency", "benchmark")
 
 _spec = importlib.util.spec_from_file_location("ci_scope", SCRIPT)
 assert _spec and _spec.loader
@@ -46,6 +50,16 @@ _spec.loader.exec_module(scope)
         ["scripts/ci/ci_scope.py"],
         ["scripts/investigations/scan_archives.py"],
         ["scripts/checks/api_surface.py"],
+        # Files outside the code that a library test or a skipped job reads.
+        ["benchmarks/harness.py"],
+        ["benchmarks/conftest.py"],
+        ["docs/api.md"],
+        ["dev-docs/api-surface.txt"],
+        ["dev-docs/tar-minefield-results.md"],
+        ["LICENSE"],
+        [".github/workflows/publish.yml"],
+        [".python-version"],
+        [".gitattributes"],
         # A script in no folder yet, or in a new one, counts until it is sorted.
         ["scripts/new_tool.py"],
         ["scripts/newfolder/x.py"],
@@ -71,12 +85,37 @@ def test_a_library_test_dependency_or_ci_change_runs_everything(
         [".claude/skills/code-review-skill/SKILL.md", "AGENTS.md"],
         [".github/workflows/review-loop.yml"],
         ["dev-docs/review-eval/results.md"],
+        # Read by pre-commit on a developer's machine, by no CI job.
+        [".pre-commit-config.yaml"],
+        [".github/workflows/pr-gate.yml"],
+        # Read by the script tests, which the lint job runs on every push.
+        ["review/problem-catalogue/catalogue.md"],
         # A name that only starts like a FULL path.
         ["src_notes.md", "pyproject.toml.bak"],
     ],
 )
-def test_other_changes_run_the_pull_request_set(paths: list[str]) -> None:
+def test_other_changes_are_not_full_paths(paths: list[str]) -> None:
     assert not scope.needs_full(paths)
+
+
+def test_every_doc_ci_re_includes_for_a_library_test_is_a_full_path() -> None:
+    """ci.yml's path filter re-includes a doc file a test reads so a change to it starts
+    the workflow. A library test's doc must also be on `FULL`, or that run skips the
+    test that reads it."""
+    spec = importlib.util.spec_from_file_location(
+        "ci_doc_paths", Path(__file__).with_name("test_ci_doc_paths.py")
+    )
+    assert spec and spec.loader
+    doc_paths = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doc_paths)
+    library_docs = {
+        path: reader
+        for path, reader in doc_paths.TEST_READ.items()
+        if (ROOT / "tests" / f"{reader}.py").exists()
+    }
+    assert "docs/api.md" in library_docs, "the scan found nothing"
+    uncovered = sorted(p for p in library_docs if not scope.needs_full([p]))
+    assert not uncovered, f"add these to FULL: {uncovered}"
 
 
 def test_a_cut_off_diff_runs_everything() -> None:
@@ -93,9 +132,10 @@ def test_the_script_writes_a_github_output_line() -> None:
             check=True,
         ).stdout
 
-    assert run("AGENTS.md\n\n") == "full=false\n"
-    assert run("AGENTS.md\nsrc/archivey/core.py\n") == "full=true\n"
-    assert run("AGENTS.md\n", "--truncated") == "full=true\n"
+    assert run("AGENTS.md\n\n") == "full=false\nlowest=false\n"
+    assert run("AGENTS.md\nsrc/archivey/core.py\n") == "full=true\nlowest=false\n"
+    assert run("AGENTS.md\nuv.lock\n") == "full=true\nlowest=true\n"
+    assert run("AGENTS.md\n", "--truncated") == "full=true\nlowest=true\n"
 
 
 def test_the_full_paths_exist() -> None:
@@ -188,7 +228,9 @@ def test_the_queue_only_jobs_wait_on_scope_and_run_when_it_did_not() -> None:
     runs it with the dev group, which has PyYAML."""
     yaml = pytest.importorskip("yaml")
     jobs = yaml.safe_load(CI.read_text())["jobs"]
-    assert jobs["scope"]["if"] == "github.event_name == 'merge_group'"
+    assert jobs["scope"]["if"] == (
+        "github.event_name == 'merge_group' || github.event_name == 'pull_request'"
+    )
     for name in QUEUE_ONLY:
         job = jobs[name]
         assert _needs(job) == ["scope"], name
@@ -196,6 +238,138 @@ def test_the_queue_only_jobs_wait_on_scope_and_run_when_it_did_not() -> None:
         assert "needs.scope.outputs.full != 'false'" in job["if"], name
     # The gate fails a group whose scope failed, and every queue-only job counts.
     assert {"scope", *QUEUE_ONLY} <= set(_needs(jobs["gate"]))
-    # Nothing else waits on scope: the pull request set starts at once.
+    # Besides those, only the pull request set's library legs wait on scope; lint,
+    # which runs the script tests, starts at once.
     waiting = {n for n, j in jobs.items() if "scope" in _needs(j)}
-    assert waiting - {"gate"} == set(QUEUE_ONLY)
+    assert waiting - {"gate"} == {*QUEUE_ONLY, *PR_LIBRARY, "test-lowest"}
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["pyproject.toml"],
+        ["uv.lock"],
+        [".github/workflows/ci.yml"],
+        [".python-version"],
+    ],
+)
+def test_a_dependency_or_ci_change_runs_the_minimum_versions(paths: list[str]) -> None:
+    assert scope.needs_lowest(paths)
+    assert scope.needs_full(paths)
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["src/archivey/core.py"],
+        ["tests/test_zip.py"],
+        ["packages/archivey-cli/src/archivey_cli/main.py"],
+        ["pyproject.toml.bak"],
+    ],
+)
+def test_a_code_change_alone_skips_the_minimum_versions(paths: list[str]) -> None:
+    assert not scope.needs_lowest(paths)
+
+
+def test_an_unknown_diff_runs_the_minimum_versions() -> None:
+    assert scope.needs_lowest([])
+    assert scope.needs_lowest(["src/archivey/core.py"], truncated=True)
+
+
+def test_every_minimum_versions_path_is_a_full_path() -> None:
+    """So ``lowest=true`` never comes with ``full=false``."""
+    for path in scope.DEPS:
+        assert scope.needs_full([path]), path
+        assert (ROOT / path).exists(), path
+
+
+def test_the_minimum_versions_leg_runs_unless_scope_said_lowest_false() -> None:
+    """`test-lowest` never runs on a pull request; in the merge queue it runs when
+    `scope` found a dependency or CI path (or failed); the daily run and a dispatch
+    skip `scope` and run it. The gate needs it, so a failure ejects the group."""
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load(CI.read_text())["jobs"]
+    job = jobs["test-lowest"]
+    assert _needs(job) == ["scope"]
+    assert job["if"] == (
+        "${{ !cancelled() && github.event_name != 'pull_request' "
+        "&& needs.scope.outputs.lowest != 'false' }}"
+    )
+    assert "test-lowest" in _needs(jobs["gate"])
+    assert jobs["scope"]["outputs"]["lowest"] == "${{ steps.scope.outputs.lowest }}"
+    rows = job["strategy"]["matrix"]["include"]
+    assert [row["install"] for row in rows] == ["all-lowest"]
+    others = [
+        row
+        for name in ("test", "test-queue", "test-daily")
+        for row in jobs[name]["strategy"]["matrix"]["include"]
+    ]
+    assert all(row["install"] != "all-lowest" for row in others)
+
+
+def test_a_script_only_pull_request_skips_the_library_legs_only_there() -> None:
+    """Each library leg of the pull request set runs unless it is a pull request push
+    whose scope said `full=false`: the merge queue, the daily run and a dispatch run it,
+    and so does a pull request whose scope failed or found library paths."""
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load(CI.read_text())["jobs"]
+    expected = (
+        "${{ !cancelled() && (github.event_name != 'pull_request' "
+        "|| needs.scope.outputs.full != 'false') }}"
+    )
+    for name in PR_LIBRARY:
+        job = jobs[name]
+        assert _needs(job) == ["scope"], name
+        assert job["if"] == expected, name
+        assert {name} <= set(_needs(jobs["gate"])), name
+    env = next(
+        step["env"] for step in jobs["scope"]["steps"] if step.get("id") == "scope"
+    )
+    assert "github.event.pull_request.base.sha" in env["BASE"]
+    assert "github.event.pull_request.head.sha" in env["HEAD"]
+
+
+def test_the_daily_only_legs_run_on_the_daily_run_and_a_dispatch_only() -> None:
+    """`test-daily` (the Pythons between min and max, macOS and Windows on the min) never
+    runs on a pull request or in the merge queue, and the release gates still see it
+    because they dispatch ci.yml.
+    The gate does not wait on it: it would be skipped in every merge group anyway."""
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load(CI.read_text())["jobs"]
+    job = jobs["test-daily"]
+    assert job["if"] == (
+        "${{ github.event_name == 'schedule' "
+        "|| github.event_name == 'workflow_dispatch' }}"
+    )
+    assert not _needs(job)
+    assert "test-daily" not in _needs(jobs["gate"])
+
+    def legs(name: str) -> set[tuple[str, str, str]]:
+        return {
+            (row["os"], row["python-version"], row["install"])
+            for row in jobs[name]["strategy"]["matrix"]["include"]
+        }
+
+    daily = legs("test-daily")
+    assert daily == {
+        ("ubuntu-latest", "3.12", "all"),
+        ("ubuntu-latest", "3.13", "all"),
+        ("ubuntu-latest", "3.14", "all"),
+        ("macos-latest", "3.11", "all"),
+        ("windows-latest", "3.11", "all"),
+    }
+    assert not daily & (legs("test") | legs("test-queue"))
+    # Each platform keeps a leg in the queue.
+    queued_os = {os for os, _, _ in legs("test") | legs("test-queue")}
+    assert {"ubuntu-latest", "macos-latest", "windows-latest"} <= queued_os
+    on = yaml.safe_load(CI.read_text())[True]
+    assert "schedule" in on and "workflow_dispatch" in on
+    # The release gate's dispatch is the legs' only run between daily runs.
+    spec = importlib.util.spec_from_file_location(
+        "release_script_gate", ROOT / "scripts" / "release" / "release.py"
+    )
+    assert spec and spec.loader
+    release = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = release
+    spec.loader.exec_module(release)
+    assert "ci.yml" in release.RELEASE_GATE_WORKFLOWS

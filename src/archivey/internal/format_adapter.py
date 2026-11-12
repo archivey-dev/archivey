@@ -1,16 +1,34 @@
 """The adapter between ``archivey.formats`` and the internal reader machinery.
 
-A format reader does not subclass :class:`BaseArchiveReader`. Two subclasses serve every
-one, built-in or plugin: :class:`IndexedReaderAdapter` implements the four abstract methods by calling an
-:class:`~archivey.formats.IndexedReader`, and :class:`SequentialReaderAdapter` by
-walking a :class:`~archivey.formats.SequentialReader`, so the walk, the passes, link
-handling and extraction stay internal (the ``plugin-api`` OpenSpec change, design §1
-and §2a).
+A :class:`~archivey.formats.FormatHandler` (a plugin's, or a built-in format written
+against the public API, such as ar or CPIO) becomes a reader in three steps:
 
-:func:`register_plugin` builds one :class:`ReadBackend` subclass per plugin and
-registers it after the built-in backends, so a built-in signal always wins (§4).
-:func:`register_builtin_format` builds one for a built-in format, registered with the
-other built-in backends.
+1. **Registration.** :func:`register_plugin` (``archivey.formats.register_format``)
+   checks the handler (:func:`_check_plugin`) and builds one :class:`ReadBackend`
+   subclass for it (:func:`_backend_class`), whose class attributes carry the
+   handler's format, extensions, magic and probe. It registers that class after the
+   built-in backends, so a built-in signal always wins detection.
+   :func:`register_builtin_format` builds the same class for a built-in format and
+   registers it among the built-in backends. A ``FormatPolicy(replace=…)`` entry gets
+   its class from :func:`replacement_backend`, which is never registered.
+2. **Selection.** Detection names the format from the registered classes' magic,
+   extensions and probes. ``open_archive`` (and ``ReaderContext.open_nested``) then
+   get the class from ``registry.BackendRegistry.reader_for_format``, which returns
+   the :func:`replacement_backend` class when the call's policy replaces the format.
+3. **Opening.** :meth:`_PluginBackend.open_read` builds the adapter for the handler's
+   shape. A format reader does not subclass :class:`BaseArchiveReader`: two adapter
+   subclasses serve every one. :class:`IndexedReaderAdapter` implements the abstract
+   reader methods by calling an :class:`~archivey.formats.IndexedReader`, and
+   :class:`SequentialReaderAdapter` by walking a
+   :class:`~archivey.formats.SequentialReader`. The walk, the passes, link handling,
+   verification and extraction stay internal, and the handler reaches archivey's
+   services (codecs, diagnostics, limits) through the
+   :class:`~archivey.formats.ReaderContext` the adapter builds.
+
+The file holds, in order: the shared adapter base, the indexed adapter,
+the sequential adapter with the walk helpers it uses, then the backend class and the
+registration functions. ``codec_adapter`` does the same for a
+:class:`~archivey.formats.CodecHandler`.
 """
 
 from __future__ import annotations
@@ -20,12 +38,13 @@ import io
 import logging
 import lzma
 import threading
+import weakref
 from collections.abc import Callable, Generator, Iterator, Mapping
-from contextlib import contextmanager, nullcontext, suppress
-from dataclasses import replace
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
+from dataclasses import fields, replace
 from typing import Any, BinaryIO, ClassVar, NoReturn, TypeVar, cast
 
-from archivey.config import ArchiveyConfig, ProcessIsolation
+from archivey.config import ArchiveyConfig, DecoderLimits, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -47,6 +66,7 @@ from archivey.formats import (
     FormatReader,
     ForwardStream,
     Hasher,
+    IndexedFormatHandler,
     IndexedReader,
     MemberData,
     MemberDigest,
@@ -80,7 +100,10 @@ from archivey.internal.naming import emit_member_name_normalized, normalize_memb
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import ContentProbe, get_registry
+from archivey.internal.remote import MAX_PENDING_HINTS
+from archivey.internal.resource_usage import handler_name
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
@@ -96,7 +119,8 @@ from archivey.internal.streams.codecs import (
     single_file_codecs,
 )
 from archivey.internal.streams.codecs.registry import save_codec_state
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.decompressor_stream import StreamChecksumError
+from archivey.internal.streams.read_hints import mark_read_span, read_span_hint
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
@@ -112,8 +136,13 @@ from archivey.internal.streams.streamtools import (
     read_arrived,
     source_byte_size,
 )
-from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.streamtools.binaryio import (
+    ReadableStream,
+    read_blocking,
+    read_within_reach,
+)
 from archivey.internal.streams.verification import (
+    SpanningCheckError,
     ask_verification_proofs,
     drop_spanning_ceiling,
     mark_spanning_checksum,
@@ -171,6 +200,12 @@ def _reads_full(stream: object) -> bool:
     return _type_reads_full(type(stream))
 
 
+# How many archives deep ``ReaderContext.open_nested`` reads. The formats that nest
+# go one level (a ``.deb``'s tars) or two (a ``.pkg``'s XAR payload); the bound turns
+# a walk that keeps naming its own format into an archivey error before Python's
+# recursion limit does, since each level holds a reader and a few generator frames.
+MAX_NESTED_DEPTH = 8
+
 # The walk steps ``ReaderContext.hold()`` tells apart (``_PluginAdapter._walk_step``).
 _LISTING = "listing"
 _REWALK = "rewalk"
@@ -181,6 +216,11 @@ class _PluginAdapter(BaseArchiveReader):
     archive info and close."""
 
     _reader: FormatReader
+
+    @override
+    def _note_reader_backend(self, format: ArchiveFormat) -> None:
+        # Recorded once ``_plugin`` is set: the plugin, not archivey, reads the format.
+        pass
 
     def __init__(
         self,
@@ -209,6 +249,14 @@ class _PluginAdapter(BaseArchiveReader):
         )
         self._source = source
         self._plugin = plugin
+        self._usage.note_backend("reader", handler_name(plugin), format.display_name)
+        # The caller's ``encoding=``, for a nested reader (``_open_nested``).
+        self._encoding = encoding
+        # Iterators ReaderContext.open_nested() returned, closed with the archive at the
+        # latest.
+        self._nested_iterators: weakref.WeakSet[Iterator[MemberSpan]] = (
+            weakref.WeakSet()
+        )
         # The plugin may hold a handle of its own (a library over ``source.path``), so
         # under CONCURRENT every call into it, and every read of a stream it returned,
         # takes one lock (``_handle_guard``). The exception is ``translate_exception``,
@@ -242,6 +290,10 @@ class _PluginAdapter(BaseArchiveReader):
         # ``_LISTING`` charges the listing, ``_REWALK`` (a walk started over to reach
         # member data) charges nothing, and ``None`` (no step) is a plugin bug.
         self._walk_step: str | None = None
+        # Reports on a member being listed, held until it is yielded and named
+        # (``_send_held_reports``), by the member's id(): each sends one, naming the
+        # member as it is named when called, with the member id it is given.
+        self._held_reports: dict[int, list[Callable[[int | None], None]]] = {}
         context = ReaderContext(
             encoding=encoding,
             archive_name=archive_name,
@@ -250,13 +302,24 @@ class _PluginAdapter(BaseArchiveReader):
             report=self._report,
             link_target_unavailable=self._link_target_unavailable,
             hold=self._hold,
+            charge_metadata=self._charge_metadata,
+            open_nested=self._open_nested,
+            usage=self._usage,
         )
+        context._usage = self._usage
+        context._spanning_check = self._new_spanning_check
+        context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)
         self._reader_open = True
 
     def _open_reader(self, context: ReaderContext) -> FormatReader:
         """Call the plugin's ``open``, and check what it returned."""
         raise NotImplementedError
+
+    def _new_spanning_check(self, key: object) -> SpanningCheck:
+        """``ReaderContext._spanning_check()``: a check over several members' data
+        that the reader runs itself, named ``key``."""
+        return SpanningCheck(self, key)
 
     def _wrong_reader(self, reader: object, method: str, noun: str) -> NoReturn:
         # Every interface check raises through ``_plugin_bug()``, wherever it runs.
@@ -269,7 +332,7 @@ class _PluginAdapter(BaseArchiveReader):
 
     def _refuse_codec_off_by_policy(self, method: object) -> None:
         """Refuse a codec ``config.formats`` turns off, before its code runs."""
-        if not isinstance(method, (StreamFormat, PluginStream)):
+        if not isinstance(method, (StreamFormat, PluginStream, CompressionAlgorithm)):
             return
         refusal = self._config.formats._codec_refusal(method)
         if refusal is not None:
@@ -277,14 +340,27 @@ class _PluginAdapter(BaseArchiveReader):
                 refusal, source_format=self._format, archive_name=self._archive_name
             )
 
+    def _decompress_coder(
+        self, data: BinaryIO, stream_format: StreamFormat, size: int | None
+    ) -> BinaryIO:
+        """``ReaderContext._decompress_coder``: ``stream_format`` data that is a
+        container coder's whole data, decoded as a member's method is: bzip2 and LZMA
+        Alone end at their first stream, and a byte after the end is refused."""
+        return self._decompress(data, stream_format, size, None, whole_file=False)
+
     def _decompress(
         self,
         data: BinaryIO,
         method: CompressionAlgorithm | AnyStreamFormat,
         size: int | None,
         properties: bytes | None,
+        *,
+        whole_file: bool = True,
     ) -> BinaryIO:
-        """``ReaderContext.decompress``: ``data`` through archivey's codec layer."""
+        """``ReaderContext.decompress``: ``data`` through archivey's codec layer.
+
+        ``whole_file=False`` (``_decompress_coder``) keeps the member decoder
+        config's ``refuse_input_after_end`` for a stream format too."""
         self._refuse_codec_off_by_policy(method)
         is_stream = isinstance(method, (StreamFormat, PluginStream))
         codec: CodecId | None
@@ -301,12 +377,60 @@ class _PluginAdapter(BaseArchiveReader):
                 source_format=self._format,
                 archive_name=self._archive_name,
             )
-        # Only a bzip2 member is one stream, as in ZIP and 7z: a further stream after
-        # its end is refused. Zstd and LZ4 data may be several frames, read together
-        # (RFC 8878, the LZ4 frame format), and the other codecs read no flag. A
-        # stream format is read as a file of that format is, so a ``.bz2`` stream may
-        # hold several, as bzip2 itself decodes them.
-        params = CodecParams(single_stream=codec is Codec.BZIP2 and not is_stream)
+        params = self._codec_params(
+            codec, method, size, properties, is_stream=is_stream and whole_file
+        )
+        # Per call, as ZIP fills them per member (``_member_decoder_config``): the
+        # output size, and the input size while ``data`` is at its start. The
+        # accelerators choose by them, and rapidgzip's length check needs the first.
+        changes: dict[str, Any] = {"expected_decompressed_size": size}
+        if is_stream and whole_file:
+            # A whole stream reads as a file of its format does: bytes after its end
+            # are reported (``ARCHIVE_TRAILING_DATA``), not refused. Most stream
+            # codecs have no refusal; the report is what they all share.
+            changes["refuse_input_after_end"] = False
+            changes["report_trailing_data"] = True
+        if not is_seekable(data) or data.tell() == 0:
+            input_size = source_byte_size(data)
+            if input_size is not None:
+                changes["compressed_input_size"] = input_size
+        decoded = open_codec_stream(
+            codec,
+            data,
+            config=copy_with(self._decoder_config, **changes),
+            params=params,
+            collector=self._diagnostics_collector,
+        )
+        # A decoder over a view reads the view's span.
+        hint = read_span_hint(data)
+        if hint is not None:
+            mark_read_span(decoded, hint)
+        return decoded
+
+    def _codec_params(
+        self,
+        codec: CodecId,
+        method: CompressionAlgorithm | AnyStreamFormat,
+        size: int | None,
+        properties: bytes | None,
+        *,
+        is_stream: bool,
+    ) -> CodecParams:
+        """The codec parameters for one ``decompress`` call: what ``codec`` needs
+        beyond the bytes, read from the call's ``size`` and ``properties``.
+        ``is_stream`` says ``method`` is a stream format read as a whole file
+        (``decompress``), not a member's method or a container coder's data
+        (``_decompress_coder``)."""
+        # A bzip2 member is one stream, as in ZIP and 7z: a further stream after its
+        # end is refused. So is LZMA Alone, which has no further streams of its own,
+        # in a container coder (``_decompress_coder``, a XAR member). Zstd and LZ4 data
+        # may be several frames, read together (RFC 8878, the LZ4 frame format), and xz
+        # several streams with their padding, as a ZIP xz member may. A stream format
+        # read as a file (``decompress``) is read as a file of that format is, so a
+        # ``.bz2`` stream may hold several, as bzip2 itself decodes them.
+        params = CodecParams(
+            single_stream=not is_stream and codec in (Codec.BZIP2, Codec.LZMA_ALONE)
+        )
         if isinstance(method, PluginStream):
             # A registered codec parses its own properties (``CodecCall``).
             params = CodecParams(unpack_size=size, properties=properties)
@@ -338,29 +462,11 @@ class _PluginAdapter(BaseArchiveReader):
                     archive_name=self._archive_name,
                 )
             params = CodecParams(unpack_size=size)
-        # Per call, as ZIP fills them per member (``_member_decoder_config``): the
-        # output size, and the input size while ``data`` is at its start. The
-        # accelerators choose by them, and rapidgzip's length check needs the first.
-        changes: dict[str, Any] = {"expected_decompressed_size": size}
-        if is_stream:
-            # A whole stream reads as a file of its format does: bytes after its end
-            # are reported (``ARCHIVE_TRAILING_DATA``), not refused. Most stream
-            # codecs have no refusal; the report is what they all share.
-            changes["refuse_input_after_end"] = False
-            changes["report_trailing_data"] = True
-        if not is_seekable(data) or data.tell() == 0:
-            input_size = source_byte_size(data)
-            if input_size is not None:
-                changes["compressed_input_size"] = input_size
-        return open_codec_stream(
-            codec,
-            data,
-            config=copy_with(self._decoder_config, **changes),
-            params=params,
-            collector=self._diagnostics_collector,
-        )
+        return params
 
     def _member_id(self, member: ArchiveMember | None) -> int | None:
+        """The id a report on ``member`` carries: its registered id once listed,
+        else the walk position it is about to be listed at."""
         if member is None:
             return None
         return member._member_id if member._member_id is not None else self._walk_index
@@ -383,28 +489,115 @@ class _PluginAdapter(BaseArchiveReader):
             validate_code_context(code, details)
         except ValueError as exc:
             raise ArchiveyUsageError(f"ReaderContext.report(): {exc}") from None
+        if member is None:
+            self._send_report(code, message, details, None, None)
+        elif self._walk_step == _REWALK:
+            # A walk started over yields fresh members under their stored names:
+            # report on the one the listing named.
+            name = normalize_member_name(
+                member.name, member.type, backslash_is_separator=False
+            )
+            listed = self._listed_named(name)
+            member_id = listed[0]._member_id if len(listed) == 1 else None
+            self._send_report(code, message, _named(details, name), member, member_id)
+        elif not self._hold_report(
+            member,
+            lambda member_id: self._send_report(
+                code, message, _named(details, member.name), member, member_id
+            ),
+        ):
+            self._send_report(code, message, details, member, self._member_id(member))
+
+    def _hold_report(
+        self, member: ArchiveMember, send: Callable[[int | None], None]
+    ) -> bool:
+        """Hold ``send`` until ``member`` is yielded, if the listing has not yielded
+        it yet: until then it is not named as callers see it. ``send`` takes the
+        member's id, ``None`` for a member never yielded."""
+        if member._member_id is not None or self._walk_step != _LISTING:
+            return False
+        self._held_reports.setdefault(id(member), []).append(send)
+        return True
+
+    def _send_report(
+        self,
+        code: DiagnosticCode,
+        message: str,
+        details: DiagnosticContext,
+        member: ArchiveMember | None,
+        member_id: int | None,
+    ) -> None:
+        """Emit one diagnostic, filling in the archive name and member id where the
+        plugin left them ``None``."""
         fill: dict[str, object] = {}
         if getattr(details, "archive_name", "") is None:
             fill["archive_name"] = self._archive_name
-        if getattr(details, "member_id", "") is None and member is not None:
-            fill["member_id"] = self._member_id(member)
+        if getattr(details, "member_id", "") is None and member_id is not None:
+            fill["member_id"] = member_id
         self._diagnostics_collector.emit(
             code=code,
             message=message,
-            context=replace(details, **fill) if fill else details,  # type: ignore[type-var]
+            context=_with_fields(details, fill),
             member=member,
             attach_to_member=member is not None,
         )
 
+    def _send_held_reports(self, member: ArchiveMember) -> None:
+        """Send the reports held for ``member`` (``_hold_report``), now that archivey
+        has named it and the walk is at it."""
+        sends = self._held_reports.pop(id(member), ())
+        if sends:
+            member_id = self._member_id(member)
+            for send in sends:
+                send(member_id)
+
+    def _send_unyielded_reports(self, *, may_raise: bool) -> None:
+        """Send the reports held for members the walk never yielded, under the names
+        the reader gave them and with no member id: archivey listed no such member.
+
+        A report the caller's policy raises on raises only when ``may_raise`` (the
+        walk ended normally). On a walk closed part-way, or ended by an error, the
+        report is still recorded, but its raise is dropped: it would replace the
+        error, or be lost in a generator's close."""
+        with self._diagnostics_collector.deferring_raises() as first_held:
+            while self._held_reports:
+                _key, sends = self._held_reports.popitem()
+                for send in sends:
+                    send(None)
+        held = first_held()
+        if may_raise and held is not None:
+            raise held
+
+    def _name_member(self, member: ArchiveMember, index: int) -> None:
+        """Give a listed member the names callers see, and send what was reported on
+        it before: the name normalized, and a hard link's target the same way, since
+        a link names another member by its listed name."""
+        presented = member.name
+        member.name = normalize_member_name(
+            presented, member.type, backslash_is_separator=False
+        )
+        if member.type is MemberType.HARDLINK and member.link_target:
+            member.link_target = normalize_member_name(
+                member.link_target, MemberType.FILE, backslash_is_separator=False
+            )
+        self._send_held_reports(member)
+        self._report_listed(member, presented, index)
+
     @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
+        ended = False
         try:
             yield from self._walk_members()
-        except _StreamChecksumError:
+            ended = True
+        except StreamChecksumError:
             # The codec reported its checksum failing (gzip, zlib, lzip, zstd, LZ4):
             # it stays the ceiling of the members it covers, which verify_all()
             # returns. An xz or bzip2 check failure reads as damage, handled below.
             self._spanning_check_ran("codec")
+            raise
+        except SpanningCheckError:
+            # A check the reader ran failed (``SpanningCheck.failed``), which records
+            # the members it covers itself.
             raise
         except ArchiveyError as e:
             # Damage ended the walk before the outer codec's end, so its checksum
@@ -416,10 +609,25 @@ class _PluginAdapter(BaseArchiveReader):
             # Members held and never yielded stop counting with the walk that held
             # them, however it ends: at its end, on damage, or closed part-way.
             self._listing_tracker.release_held()
+            self._send_unyielded_reports(may_raise=ended)
 
     def _walk_members(self) -> Iterator[ArchiveMember]:
         """The listing walk of the reader's shape (``_iter_members``)."""
         raise NotImplementedError
+
+    def _close_steps(
+        self, steps: Iterator[object], guard: AbstractContextManager[object]
+    ) -> None:
+        """Close the plugin's walk when the listing stops before its end: closed
+        part-way, or ended by an error. Closing archivey's own generator does not
+        close it on every interpreter (PyPy's collector does, later), so its
+        ``finally`` blocks would run after the archive closed. An error from it is
+        dropped: on a walk an error ended, that error stands; on one the caller
+        stopped, nothing is raised or reported, as when the collector closed it."""
+        close = getattr(steps, "close", None)
+        if close is not None:
+            with suppress(Exception), guard:
+                close()
 
     def _walk_next(self, steps: Iterator[object], step: str = _LISTING) -> object:
         """The next step of a walk, or ``_END`` once it ends: the listing's, during
@@ -431,9 +639,7 @@ class _PluginAdapter(BaseArchiveReader):
         finally:
             self._walk_step = None
 
-    def _hold(
-        self, member: ArchiveMember, stored_name: str | None, reason: str | None
-    ) -> None:
+    def _hold(self, member: ArchiveMember, reason: str | None) -> None:
         """``ReaderContext.hold()``: charge a held member to the listing's limits.
         A walk started over to reach member data was listed already: no charge."""
         step = self._walk_step
@@ -451,12 +657,115 @@ class _PluginAdapter(BaseArchiveReader):
             )
         try:
             self._listing_tracker.hold_member(
-                member, stored_name, reason or "members held back by the reader"
+                member, reason or "members held back by the reader"
             )
         except ValueError:
             raise ArchiveyUsageError(
                 f"ReaderContext.hold(): {quoted(member.name)} is held already"
             ) from None
+
+    def _charge_metadata(self, nbytes: int, what: str) -> None:
+        """``ReaderContext.charge_metadata()``: charge the listing for what the walk
+        keeps. A walk started over to reach member data was charged already."""
+        step = self._walk_step
+        if step is None:
+            raise ArchiveyUsageError(
+                "ReaderContext.charge_metadata() counts bytes only while walk() or "
+                "iter_members() is listing"
+            )
+        if step == _REWALK:
+            return
+        if not isinstance(nbytes, int) or isinstance(nbytes, bool) or nbytes < 0:
+            raise ArchiveyUsageError(
+                "ReaderContext.charge_metadata() takes a size of 0 or more, got "
+                f"{nbytes!r}"
+            )
+        self._listing_tracker.charge_walk(nbytes, what)
+
+    def _open_nested(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
+        """``ReaderContext.open_nested()``: archivey's reader for ``fmt`` over
+        ``data``, working for this reader."""
+        if self._walk_step is None:
+            raise ArchiveyUsageError(
+                "ReaderContext.open_nested() reads an inner archive only while walk() "
+                "is listing"
+            )
+        if not isinstance(fmt, ArchiveFormat):
+            raise TypeError(
+                f"ReaderContext.open_nested() takes an ArchiveFormat, not "
+                f"{type(fmt).__name__}"
+            )
+        registry = get_registry()
+        policy = self._config.formats
+        refusal = policy._nested_refusal(fmt)
+        if refusal is not None:
+            raise UnsupportedFeatureError(refusal, source_format=fmt)
+        backend_cls = registry.reader_for_format(
+            fmt,
+            replacement=policy._replacement_for(fmt),
+            excluded=policy._libraries_off,
+        )
+        if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
+            raise UnsupportedFeatureError(
+                f"{fmt.display_name} cannot be read inside another archive: it needs "
+                "a seekable source",
+                source_format=fmt,
+            )
+        if self._nested_depth >= MAX_NESTED_DEPTH:
+            raise UnsupportedFeatureError(
+                f"{fmt.display_name} archive nested more than {MAX_NESTED_DEPTH} "
+                "archives deep",
+                source_format=fmt,
+            )
+        spans = self._nested_spans(backend_cls, data, fmt, first=self._walk_index)
+        self._nested_iterators.add(spans)
+        return spans
+
+    def _nested_spans(
+        self,
+        backend_cls: type[ReadBackend],
+        data: BinaryIO,
+        fmt: ArchiveFormat,
+        *,
+        first: int,
+    ) -> Iterator[MemberSpan]:
+        """The spans of the inner archive ``data``: its members, numbered from
+        ``first`` in what it reports, and their decoded data."""
+        collector = self._diagnostics_collector
+        with collector.member_ids_from(first):
+            reader = backend_cls().open_read(
+                ArchiveSource.for_stream(data),
+                format=fmt,
+                streaming=True,
+                passwords=None,
+                encoding=self._encoding,
+                archive_name=self._archive_name,
+                config=self._config,
+                collector=collector,
+            )
+        # The inner archive's reader and packages are listed in the outer reader's
+        # ``backends_used``, which is the only one the caller holds.
+        reader._usage.report_backends_to(self._usage)
+        try:
+            pairs = iter(reader.stream_members())
+            while True:
+                with collector.member_ids_from(first):
+                    pair = next(pairs, None)
+                if pair is None:
+                    return
+                member, stream = pair
+                outer = _outer_copy(member)
+                yield MemberSpan(
+                    outer,
+                    data=None
+                    if stream is None
+                    else _NestedData(
+                        cast(BinaryIO, stream), collector, first, member, outer
+                    ),
+                )
+        finally:
+            with collector.member_ids_from(first):
+                reader.close()
 
     def _link_target_unavailable(
         self,
@@ -465,14 +774,21 @@ class _PluginAdapter(BaseArchiveReader):
         message: str,
         target_in_archive: bool,
     ) -> None:
+        """``ReaderContext.link_target_unavailable``: clear the member's link target
+        and report why, held like any report until the member is named."""
         member.link_target = None
-        self._emit_link_target_unavailable(
-            member,
-            reason=reason,
-            message=message,
-            target_in_archive=target_in_archive,
-            member_id=self._member_id(member),
-        )
+
+        def send(member_id: int | None) -> None:
+            self._emit_link_target_unavailable(
+                member,
+                reason=reason,
+                message=message,
+                target_in_archive=target_in_archive,
+                member_id=member_id,
+            )
+
+        if not self._hold_report(member, send):
+            send(self._member_id(member))
 
     @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
@@ -562,7 +878,7 @@ class _PluginAdapter(BaseArchiveReader):
         with self._translated_errors(), self._handle_guard():
             info = self._reader.archive_info()
         cost = self._cost(info)
-        # A plugin's keys are its own, namespaced by its format (``"lha.method"``), so
+        # A plugin's keys are its own, namespaced by its format (``"zoo.method"``), so
         # they are not in the inventory of built-in keys and are copied in as data. A
         # built-in format-API reader's keys (``"cpio.variant"``) are in that inventory.
         extra = ArchiveInfoExtra()
@@ -605,6 +921,8 @@ class _PluginAdapter(BaseArchiveReader):
     @override
     def _close_archive(self) -> None:
         try:
+            for spans in list(self._nested_iterators):
+                cast(Generator[MemberSpan, None, None], spans).close()
             with self._translated_errors(), self._handle_guard():
                 self._reader.close()
         finally:
@@ -616,23 +934,61 @@ class IndexedReaderAdapter(_PluginAdapter):
     """Serves an :class:`~archivey.formats.IndexedReader` through the internal reader
     contract."""
 
+    # The archive's region inside the source, ``[_origin, _region_end)``: set only for
+    # a built-in format that ships behind a self-extracting stub (``SFX_MAGIC``), from
+    # detection's ``payload_offset`` and ``payload_end`` (``ReadBackend.open_read``).
+    # The reader sees the region as its whole source.
+    def __init__(
+        self, *args: Any, region: tuple[int, int | None] = (0, None), **kwargs: Any
+    ) -> None:
+        self._origin, self._region_end = region
+        super().__init__(*args, **kwargs)
+
+    @override
+    def _will_read(self, start: int, end: int) -> None:
+        # The reader's offsets count from the region's start.
+        super()._will_read(self._origin + start, self._origin + end)
+
     @override
     def _open_reader(self, context: ReaderContext) -> IndexedReader[Any]:
         source = self._source
         assert source is not None
+        region: BinaryIO = source
+        if self._origin or self._region_end is not None:
+            end = self._region_end
+            region = SlicingStream(
+                source,
+                start=self._origin,
+                length=None if end is None else max(0, end - self._origin),
+            )
         self._shared = shared = SharedSource(
-            source, wrap_handle=self._seek_handle_wrapper()
+            region, wrap_handle=self._seek_handle_wrapper()
         )
         plugin_source = ReaderSource(
-            shared.view, shared.size, source.path, shared.read_at
+            self._marked_view, shared.size, source.path, shared.read_at
         )
+        plugin = self._plugin
+        assert isinstance(plugin, IndexedFormatHandler)
         with self._translated_errors(), self._handle_guard():
-            reader = self._plugin.open(plugin_source, context)
+            reader = plugin.open(plugin_source, context)
         if not isinstance(reader, IndexedReader):
             self._wrong_reader(reader, "open", "an IndexedReader")
         self._indexed = reader
         self._MEMBER_LIST_UPFRONT = reader.member_list_upfront
         return reader
+
+    def _marked_view(self, start: int, length: int | None) -> BinaryIO:
+        """``ReaderSource.view``: a view of the shared source, marked with its span
+        for the range hint archivey gives when the view is read as a member's data."""
+        shared = self._shared
+        assert shared is not None
+        view = shared.view(start, length)
+        size = view.size
+        if size:
+            mark_read_span(
+                view, functools.partial(self._will_read, start, start + size)
+            )
+        return view
 
     @override
     def _cost(self, info: ReaderArchiveInfo) -> CostReceipt:
@@ -662,7 +1018,21 @@ class IndexedReaderAdapter(_PluginAdapter):
                 records = iter(self._indexed.iter_members())
             finally:
                 self._walk_step = None
+        try:
+            yield from self._walk_records(records, boundary, guard)
+        except BaseException:
+            self._close_steps(records, guard)
+            raise
+
+    def _walk_records(
+        self,
+        records: Iterator[object],
+        boundary: AbstractContextManager[object],
+        guard: AbstractContextManager[object],
+    ) -> Iterator[ArchiveMember]:
+        """The members of the plugin's ``iter_members()`` steps, typed and named."""
         index = 0
+        tracker = self._listing_tracker
         while True:
             self._walk_index = index
             with boundary, guard:
@@ -686,16 +1056,8 @@ class IndexedReaderAdapter(_PluginAdapter):
                 )
             # A held member is counted as listed from here on, not twice.
             tracker.release_member(member)
-            # A reader that reports while listing normalizes the name itself, and
-            # hands over the one it started from.
-            presented = (
-                record.stored_name if record.stored_name is not None else member.name
-            )
-            member.name = normalize_member_name(
-                presented, member.type, backslash_is_separator=False
-            )
             member._raw = record.locator
-            self._report_listed(member, presented, index)
+            self._name_member(member, index)
             index += 1
             yield member
 
@@ -711,6 +1073,13 @@ class IndexedReaderAdapter(_PluginAdapter):
                     f"{type(data).__name__}, not MemberData"
                 )
             )
+        if data.ranges:
+            self._hint_ranges(data)
+        else:
+            # A view, or a decoder over one, says its span itself.
+            hint = read_span_hint(data.stream)
+            if hint is not None:
+                hint()
         stream = cast(BinaryIO, data.stream)
         if not data.bounded and _bounded(stream, member.size):
             data = data._replace(bounded=True)
@@ -719,6 +1088,29 @@ class IndexedReaderAdapter(_PluginAdapter):
         if self._handle_lock is not None:
             stream = LockedStream(stream, self._handle_lock)
         return data, stream
+
+    def _hint_ranges(self, data: MemberData) -> None:
+        """Pass ``MemberData.ranges`` to the source, as the planner's hints. The first
+        ``MAX_PENDING_HINTS`` are kept: the planner holds no more at once."""
+        ranges = data.ranges
+        if not ranges:
+            return
+        if not isinstance(ranges, tuple) or not all(
+            isinstance(r, tuple)
+            and len(r) == 2
+            and all(isinstance(x, int) and not isinstance(x, bool) for x in r)
+            for r in ranges
+        ):
+            with suppress(Exception):
+                data.stream.close()
+            raise _plugin_bug(
+                TypeError(
+                    f"{type(self._reader).__name__}.open_member() returned "
+                    f"MemberData.ranges={ranges!r}, not a tuple of (start, end) ints"
+                )
+            )
+        for start, end in ranges[:MAX_PENDING_HINTS]:
+            self._will_read(start, end)
 
     @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
@@ -767,11 +1159,139 @@ class IndexedReaderAdapter(_PluginAdapter):
             raise
 
 
+_PUBLIC_MEMBER_FIELDS = tuple(
+    f.name for f in fields(ArchiveMember) if not f.name.startswith("_")
+)
+
+
+def _outer_copy(member: ArchiveMember) -> ArchiveMember:
+    """A nested reader's member as the outer listing takes it: its public fields
+    and what was reported on it so far. The inner reader keeps its own object, whose
+    internal state it reads again (TAR's span, at the end of its walk)."""
+    copy = ArchiveMember(
+        **{
+            name: getattr(member, name)
+            for name in _PUBLIC_MEMBER_FIELDS
+            if name != "link_target_member"
+        }
+    )
+    copy.extra = type(member.extra)(member.extra)
+    copy.hashes = dict(member.hashes)
+    copy._diagnostics = member._diagnostics
+    # The inner listing settled the target (an empty one it reported): the outer
+    # listing does not look for it in the data, nor report it again.
+    copy._link_target_resolved = member._link_target_resolved
+    return copy
+
+
+class SpanningCheck:
+    """A check over the data of several members that a built-in reader runs itself,
+    such as a makeself payload's MD5, which covers every file of the TAR in it.
+
+    The reader calls :meth:`cover` on each member the check covers before yielding
+    it, and :meth:`passed` or :meth:`failed` once the check ran. Until it passes, a
+    covered file's ``verifiable`` is ``CHECKSUM``, as for a ``.tar.gz`` trailer; a
+    pass raises every covered file to ``CHECKSUM``, read or not, and a failure makes
+    each one a failure of ``verify_all()``. A walk that stops before the check runs
+    leaves the covered files as failures too (``_note_spanning_unreachable``).
+    """
+
+    __slots__ = ("_adapter", "_covers", "_key")
+
+    def __init__(self, adapter: _PluginAdapter, key: object) -> None:
+        self._adapter = adapter
+        self._key = key
+        self._covers: list[ArchiveMember] = []
+
+    def cover(self, member: ArchiveMember) -> None:
+        """Count ``member`` as covered, if it is a file: other members have no data."""
+        if member.is_file:
+            mark_spanning_checksum(member)
+            self._covers.append(member)
+
+    def passed(self) -> None:
+        """The check matched: every covered file is checked."""
+        self._adapter._spanning_check_ran(self._key)
+        for member in self._covers:
+            raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+
+    def failed(self, message: str) -> SpanningCheckError:
+        """The check did not match. Returns the error for the reader to raise; every
+        later ``verify_all()`` returns each covered file with it."""
+        error = SpanningCheckError(message, covers=tuple(self._covers))
+        error.archive_name = self._adapter._archive_name
+        # Kept until a later walk passes the check: a read of a covered member that
+        # stops before the payload's end does not run it again.
+        self._adapter._spanning_unreachable[self._key] = error
+        return error
+
+
+class _NestedData(io.RawIOBase):
+    """An inner member's data (``ReaderContext.open_nested``): what the inner reader
+    reports while it is read names the member as the outer listing numbers it."""
+
+    # What close() reads, set before __init__ runs.
+    _stream: BinaryIO | None = None
+
+    def __init__(
+        self,
+        stream: BinaryIO,
+        collector: DiagnosticCollector,
+        first: int,
+        inner: ArchiveMember,
+        outer: ArchiveMember,
+    ) -> None:
+        self._stream = stream
+        self._collector = collector
+        self._first = first
+        # What the inner reader attaches to its member while the data is read is
+        # attached to the member the caller holds too.
+        self._inner = inner
+        self._outer = outer
+        self._seen = len(inner._diagnostics)
+
+    def _pass_on_diagnostics(self) -> None:
+        attached = self._inner._diagnostics
+        if len(attached) > self._seen:
+            outer = self._outer
+            new = outer._diagnostics + attached[self._seen :]
+            object.__setattr__(outer, "_diagnostics", new)
+            self._seen = len(attached)
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, buffer: Any) -> int:
+        stream = self._stream
+        assert stream is not None
+        try:
+            with self._collector.member_ids_from(self._first):
+                data = stream.read(len(buffer))
+        finally:
+            self._pass_on_diagnostics()
+        buffer[: len(data)] = data
+        return len(data)
+
+    @override
+    def close(self) -> None:
+        if not self.closed:
+            try:
+                stream = self._stream
+                if stream is not None:
+                    with self._collector.member_ids_from(self._first):
+                        stream.close()
+                    self._pass_on_diagnostics()
+            finally:
+                super().close()
+
+
 class _Walk:
     """One walk of the archive: the layer it reads now (the archive's, or the last
     stream it decompressed), and, in random access, the buffered views it opened, one
     per layer. The listing walk is one; a walk started to reach a member's decoded
-    data again (``_DataWalks``) is another, with views of its own."""
+    data again (``_DataWalk``) is another, with views of its own."""
 
     __slots__ = ("layer", "views")
 
@@ -792,13 +1312,18 @@ class _Layer:
     ``forward`` is the walk's stream over it. ``stream`` is what ``forward`` reads: the
     streaming buffer, or a random-access walk's own view. ``shared`` (random access
     only) gives member data views of it, at the offsets ``forward`` counts.
+    ``drawn`` says a decode stage under ``stream`` draws every byte it decodes from
+    the config's budget, skipped members' bytes too, so its members draw nothing more.
     """
 
-    __slots__ = ("forward", "shared", "stream")
+    __slots__ = ("drawn", "forward", "shared", "stream")
 
-    def __init__(self, stream: BinaryIO, shared: SharedSource | None) -> None:
+    def __init__(
+        self, stream: BinaryIO, shared: SharedSource | None, *, drawn: bool
+    ) -> None:
         self.stream = stream
         self.shared = shared
+        self.drawn = drawn
         self.forward: ForwardStream
 
 
@@ -826,14 +1351,29 @@ class _Span:
         self.decoded = decoded
 
 
-def _span_names(span: MemberSpan) -> tuple[str, str]:
-    """The name a span's member was presented by, and the one archivey lists it by:
-    the same in the listing walk and in every walk started over."""
+def _named(details: DiagnosticContext, name: str) -> DiagnosticContext:
+    """``details`` naming its member ``name``, when it names a member."""
+    if getattr(details, "member_name", None) is None:
+        return details
+    return _with_fields(details, {"member_name": name})
+
+
+def _with_fields(
+    details: DiagnosticContext, fields: Mapping[str, object]
+) -> DiagnosticContext:
+    """``details`` with ``fields`` replaced: only fields the caller checked
+    ``details`` has (``getattr``). ``DiagnosticContext`` is a union of dataclasses,
+    some without those fields, so ``replace`` is called on it as ``Any``."""
+    if not fields:
+        return details
+    return cast(DiagnosticContext, replace(cast(Any, details), **fields))
+
+
+def _listed_name(span: MemberSpan) -> str:
+    """The name archivey lists a span's member by: the same in the listing walk
+    (``_name_member``) and in every walk started over."""
     member = span.member
-    presented = span.stored_name if span.stored_name is not None else member.name
-    return presented, normalize_member_name(
-        presented, member.type, backslash_is_separator=False
-    )
+    return normalize_member_name(member.name, member.type, backslash_is_separator=False)
 
 
 def _full_count(data: BinaryIO | io.RawIOBase) -> BinaryIO:
@@ -935,6 +1475,23 @@ _SKIP_BY_READING = 64 * 1024
 _WALK_BUFFER = 64 * 1024
 
 
+class _BlockingReads:
+    """A ``read`` that refuses a non-blocking stream's ``None`` (``read_blocking``),
+    as the inner of ``read_within_reach``."""
+
+    __slots__ = ("read",)
+
+    def __init__(self, read: Callable[[int], bytes]) -> None:
+        self.read = read
+
+
+# What one read of header bytes may ask the walk's stream for at a time. A header read
+# larger than this is served in steps of it, so a size field that lies costs at most
+# one step more than the bytes the stream really has (``tar_parser.READ_STEP`` is the
+# same size).
+_HEADER_READ_STEP = 64 * 1024
+
+
 class _ForwardInput(ReadOnlyIOStream):
     """A compression stream that starts part-way through a streaming walk: the rest of
     the walk's buffer, read forward. Each read takes what the buffer holds or one
@@ -1000,14 +1557,30 @@ class _SpanWindow(ReadOnlyIOStream):
         want = left if whole else min(n, left)
         if want <= 0:
             return b""
-        data = self._forward.read(want)
-        self._done += len(data)
-        if len(data) < want and (whole or not data):
-            raise TruncatedError(
-                f"{self._what} is truncated inside a member's data at offset "
-                f"{span.offset + self._done}"
-            )
-        return data
+        if not whole:
+            data = self._forward.read(want)
+            self._done += len(data)
+            if not data:
+                raise self._cut()
+            return data
+        # A read with no size goes on after a short read, so that an error the walk's
+        # stream holds for its next read (a ratio guard's refusal, after the bytes
+        # before it) comes out as itself; only a stream that has ended is a cut.
+        chunks: list[bytes] = []
+        while left > 0:
+            chunk = self._forward.read(left)
+            if not chunk:
+                raise self._cut()
+            chunks.append(chunk)
+            self._done += len(chunk)
+            left -= len(chunk)
+        return b"".join(chunks)
+
+    def _cut(self) -> TruncatedError:
+        return TruncatedError(
+            f"{self._what} is truncated inside a member's data at offset "
+            f"{self._span.offset + self._done}"
+        )
 
 
 class _DecodedWindow(ReadOnlyIOStream):
@@ -1239,7 +1812,9 @@ class SequentialReaderAdapter(_PluginAdapter):
         if self._streaming:
             stream = self._owned_stream
             assert stream is not None
-            layer = _Layer(stream, None)
+            # A compressed archive's codec stream draws from the budget
+            # (``_open_outer_codec_stream``).
+            layer = _Layer(stream, None, drawn=self._compressed)
             # Read forward only: the source may not start at offset 0 of its handle.
             walk.layer = self._layer_forward(walk, layer, seekable=False)
         else:
@@ -1268,7 +1843,11 @@ class SequentialReaderAdapter(_PluginAdapter):
             shared.view(0, None), _WALK_BUFFER, rewind_oversize=not compressed
         )
         walk.views.append(view)
-        return self._layer_forward(walk, _Layer(view, shared), seekable=not compressed)
+        # A codec under ``shared`` draws from the budget: an outer one
+        # (``_open_outer_codec_stream``) or a ``decompress()`` layer's.
+        return self._layer_forward(
+            walk, _Layer(view, shared, drawn=compressed), seekable=not compressed
+        )
 
     def _layer_forward(self, walk: _Walk, layer: _Layer, *, seekable: bool) -> _Layer:
         """Give ``layer`` the walk's ``ForwardStream`` over its stream."""
@@ -1299,8 +1878,26 @@ class SequentialReaderAdapter(_PluginAdapter):
                     )
                 left -= len(chunk)
 
+        # Each step refuses a ``None`` read, as ``skip`` does: ``read_within_reach`` takes
+        # its inner's results as bytes.
+        refusing = cast(
+            "ReadableStream", _BlockingReads(functools.partial(read_blocking, stream))
+        )
+
+        def read(n: int) -> bytes:
+            # A walk reads header bytes a size field of the archive asked for, so the
+            # read must not allocate what the field says before the stream shows it
+            # has the bytes (threat model, "Allocations sized by a header field").
+            # A plain file of known size clamps the read to what is left, as ``skip``
+            # trusts that size: no step copies, so a large honest table (an ar ``//``
+            # member) costs one buffer, not the steps and their join.
+            remaining = size - stream.tell() if seekable and size is not None else None
+            return read_within_reach(
+                refusing, n, remaining=remaining, step=_HEADER_READ_STEP
+            )
+
         layer.forward = ForwardStream(
-            functools.partial(read_blocking, stream),
+            read,
             skip,
             functools.partial(self._decompress_layer, walk, layer),
         )
@@ -1335,6 +1932,10 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._decoder_config,
             refuse_input_after_end=False,
             report_trailing_data=True,
+            # The container's members are read through this stream, several small
+            # ones to one read: a failing call that lost its bytes would take whole
+            # members with it. So it recovers them whatever the caller set.
+            recover_partial_data=True,
         )
         if self._streaming:
             # The parent is done (the ForwardStream that called this refuses reads
@@ -1350,13 +1951,15 @@ class SequentialReaderAdapter(_PluginAdapter):
                 collector=self._diagnostics_collector,
             )
             self._layer_streams.append(decoded)
-            decoded = self._guarded_layer(decoded)
+            decoded = self._guarded_layer(self._budget_drawn(decoded))
             assert self._source is not None
             buffered = ReadAheadStream(
                 decoded, _WALK_BUFFER, fill_arrived=not self._source.seekable()
             )
             self._layer_streams.append(buffered)
-            layer = self._layer_forward(walk, _Layer(buffered, None), seekable=False)
+            layer = self._layer_forward(
+                walk, _Layer(buffered, None, drawn=True), seekable=False
+            )
         else:
             assert parent.shared is not None
             # The parent's source is held for the reader's life (``self._shared``, or
@@ -1377,7 +1980,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 )
                 self._layer_streams.append(decoded)
                 shared = self._layer_sources[key] = SharedSource(
-                    self._guarded_layer(decoded)
+                    self._guarded_layer(self._budget_drawn(decoded))
                 )
             layer = self._random_access_layer(walk, shared, compressed=True)
         walk.layer = layer
@@ -1425,6 +2028,20 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._walk_index = 0
             with boundary, guard:
                 span = self._walk_next(walk)
+        try:
+            yield from self._walk_spans(walk, span, boundary, guard)
+        except BaseException:
+            self._close_steps(walk, guard)
+            raise
+
+    def _walk_spans(
+        self,
+        walk: Iterator[object],
+        span: object,
+        boundary: AbstractContextManager[object],
+        guard: AbstractContextManager[object],
+    ) -> Iterator[ArchiveMember]:
+        """The members of the plugin's ``walk()`` steps, from ``span`` on."""
         index = 0
         # Decoded bytes of the members walked so far (``_Decoded.prefix``).
         prefix = 0
@@ -1515,8 +2132,8 @@ class SequentialReaderAdapter(_PluginAdapter):
         outer = self._owned_stream if self._streaming else self._shared
         return (
             member.is_file
+            and self._member_data_is_stream_bytes(member)
             and isinstance(record, _Span)
-            and record.decoded is None
             and (record.layer.stream if self._streaming else record.layer.shared)
             is outer
         )
@@ -1546,6 +2163,8 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _take_span_checked(
         self, span: object, layer: _Layer, index: int
     ) -> ArchiveMember:
+        """Check a span the plugin's walk yielded against the interface, then name
+        its member and record where its data is (``member._raw``)."""
         name = type(self._reader).__name__
         if not isinstance(span, MemberSpan):
             raise _plugin_bug(
@@ -1603,7 +2222,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                         f"and data_length {length}: a member's data is stored as it is"
                     )
                 )
-        presented, member.name = _span_names(span)
+        self._name_member(member, index)
         expected: dict[HashAlgorithm, bytes] | None = None
         custom: CustomDigests | None = None
         if span.digests:
@@ -1615,28 +2234,38 @@ class SequentialReaderAdapter(_PluginAdapter):
         forward = layer.forward
         record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
         member._raw = record
-        self._report_listed(member, presented, index)
         if (
             member.type is MemberType.SYMLINK
             and self._sequential.link_target_in_data
             and member.link_target is None
+            and not member._link_target_resolved
         ):
-            if decoded is not None:
-                with self._translated_errors(member.name), self._handle_guard():
-                    target = _read_up_to(decoded, MAX_LINK_TARGET_BYTES + 1)
-                if len(target) > MAX_LINK_TARGET_BYTES:
-                    self._emit_link_target_too_long(member, member_id=index)
-                else:
-                    member.link_target = target.decode(
-                        "utf-8", errors="surrogateescape"
-                    )
-            elif length > MAX_LINK_TARGET_BYTES:
+            self._read_link_target(member, decoded, forward, length, index)
+        return member
+
+    def _read_link_target(
+        self,
+        member: ArchiveMember,
+        decoded: _Decoded | None,
+        forward: ForwardStream,
+        length: int,
+        index: int,
+    ) -> None:
+        """Set a symlink's target from its data, for a format that stores it there
+        (``SequentialReader.link_target_in_data``), or report it too long."""
+        if decoded is not None:
+            with self._translated_errors(member.name), self._handle_guard():
+                target = _read_up_to(decoded, MAX_LINK_TARGET_BYTES + 1)
+            if len(target) > MAX_LINK_TARGET_BYTES:
                 self._emit_link_target_too_long(member, member_id=index)
             else:
-                with self._translated_errors(member.name), self._handle_guard():
-                    target = forward.read_exact(length)
                 member.link_target = target.decode("utf-8", errors="surrogateescape")
-        return member
+        elif length > MAX_LINK_TARGET_BYTES:
+            self._emit_link_target_too_long(member, member_id=index)
+        else:
+            with self._translated_errors(member.name), self._handle_guard():
+                target = forward.read_exact(length)
+            member.link_target = target.decode("utf-8", errors="surrogateescape")
 
     @override
     def _pass_reads_through_walk(self) -> bool:
@@ -1644,6 +2273,13 @@ class SequentialReaderAdapter(_PluginAdapter):
         compressed archive (``.cpio.gz``, or one a walk decompresses part-way) is
         decoded once for the headers and the data, not once for each."""
         return True
+
+    @override
+    def _member_data_is_stream_bytes(self, member: ArchiveMember) -> bool:
+        # A span's ``data_length`` bytes are stored as they are (CPIO, ar). A member
+        # the reader decodes itself (``MemberSpan.data``) is compressed on its own.
+        record = member._raw
+        return isinstance(record, _Span) and record.decoded is None
 
     @override
     def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
@@ -1865,7 +2501,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     decoded.name,
                 )
             # A member on the way, read past under the name it is listed by.
-            name = _span_names(span)[1]
+            name = _listed_name(span)
             with self._translated_errors(name), guard:
                 if data is not None:
                     _Decoded(
@@ -1895,7 +2531,7 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _check_rewalked(self, span: MemberSpan, decoded: _Decoded) -> None:
         """Refuse a walk started over that does not yield, at the member's place, the
         member the listing walk did: ``walk()`` must repeat itself."""
-        found = _span_names(span)[1]
+        found = _listed_name(span)
         if found != decoded.name:
             raise _plugin_bug(
                 ValueError(
@@ -1988,6 +2624,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             # A window and a view both stop at the data's end.
             bounded=True,
             custom_digests=record.custom,
+            # A layer a codec decodes draws there, members skipped on the way too.
+            draw_budget=not record.layer.drawn,
         )
 
     @override
@@ -2069,14 +2707,19 @@ class SequentialReaderAdapter(_PluginAdapter):
     def _close_archive(self) -> None:
         # A walk taken at open and never listed is still suspended in the plugin's
         # walk(): finish it first, so its own cleanup runs before close() and over an
-        # open stream, not later in the collector.
+        # open stream, not later in the collector. It never ran in _iter_members, so
+        # the reports its first step held are sent here, as for a walk stopped
+        # part-way: recorded, never raised.
         try:
             if self._open_walk is not None:
                 close = getattr(self._open_walk[0], "close", None)
                 self._open_walk = None
-                if close is not None:
-                    with self._translated_errors(), self._handle_guard():
-                        close()
+                try:
+                    if close is not None:
+                        with self._translated_errors(), self._handle_guard():
+                            close()
+                finally:
+                    self._send_unyielded_reports(may_raise=False)
         finally:
             try:
                 super()._close_archive()
@@ -2147,14 +2790,10 @@ class _PluginBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> _PluginAdapter:
-        reject_start_offset(start_offset, format, archive_name)
-        adapter = (
-            SequentialReaderAdapter
-            if issubclass(self.PLUGIN, SequentialFormatHandler)
-            else IndexedReaderAdapter
-        )
-        return adapter(
+        common = (
             self.PLUGIN(),
             source,
             format,
@@ -2162,10 +2801,33 @@ class _PluginBackend(ReadBackend):
             encoding if self.USES_ENCODING else None,
             archive_name,
             config,
-            collector=collector,
-            member_streams=member_streams,
-            open_site=open_site,
         )
+        options: dict[str, Any] = {
+            "collector": collector,
+            "member_streams": member_streams,
+            "open_site": open_site,
+        }
+        reader: _PluginAdapter
+        if issubclass(self.PLUGIN, SequentialFormatHandler):
+            reject_start_offset(
+                start_offset, format, archive_name, end_offset, program_resources
+            )
+            reader = SequentialReaderAdapter(*common, **options)
+        else:
+            # Only a built-in format that declares SFX magic is handed a region, which
+            # its reader reads as the whole source (``IndexedReaderAdapter``).
+            if not self.SFX_MAGIC:
+                reject_start_offset(
+                    start_offset, format, archive_name, end_offset, program_resources
+                )
+            reader = IndexedReaderAdapter(
+                *common, region=(start_offset, end_offset), **options
+            )
+        # The packages the handler reads with: pycdlib for ISO, a plugin's ``requires``.
+        for library in (self.OPTIONAL_DEPENDENCY, *self.REQUIRED_MODULES):
+            if library is not None:
+                reader._usage.note_backend("library", str(library), format.display_name)
+        return reader
 
 
 def prefix_probe(probe: object) -> ContentProbe:
@@ -2186,6 +2848,7 @@ def prefix_probe(probe: object) -> ContentProbe:
         read_at: Callable[[int, int], bytes | None] | None = None,
         charge_decode: Callable[[int], bool] | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
         nonlocal warned
         # A probe that raises (a struct.unpack past a short prefix, say) is no match:
@@ -2211,9 +2874,21 @@ def prefix_probe(probe: object) -> ContentProbe:
 
 
 def _check_plugin(plugin: type[FormatHandler]) -> ArchiveFormat:
-    if not (isinstance(plugin, type) and issubclass(plugin, FormatHandler)):
+    """Refuse a handler ``register_format`` cannot take, before anything is
+    registered; return its format.
+
+    The handler must be one of the two shapes, with a new :class:`PluginContainer`
+    and an ``UNCOMPRESSED`` stream. Its ``format=`` spellings and extensions (with a
+    sequential format's compressed pairs) must be new, so registering it never
+    changes what an existing spelling or extension means.
+    """
+    if not (
+        isinstance(plugin, type)
+        and issubclass(plugin, (IndexedFormatHandler, SequentialFormatHandler))
+    ):
         raise ArchiveyUsageError(
-            f"register_format() takes a FormatHandler subclass, got {plugin!r}"
+            "register_format() takes an IndexedFormatHandler or a "
+            f"SequentialFormatHandler subclass, got {plugin!r}"
         )
     fmt = getattr(plugin, "format", None)
     if not isinstance(fmt, ArchiveFormat):
@@ -2340,6 +3015,10 @@ REPLACEABLE_CONTAINERS = frozenset(
         ContainerFormat.RAR,
         ContainerFormat.ISO,
         ContainerFormat.SQUASHFS,
+        ContainerFormat.XAR,
+        ContainerFormat.CAB,
+        ContainerFormat.LHA,
+        ContainerFormat.ARJ,
     }
 )
 
@@ -2362,17 +3041,17 @@ def check_replacement(container: object, plugin: object) -> None:
         raise _UsageValueError(
             f"{call} cannot replace ContainerFormat.{container.name}; it takes {names}."
         )
-    if not (isinstance(plugin, type) and issubclass(plugin, FormatHandler)):
+    if isinstance(plugin, type) and issubclass(plugin, SequentialFormatHandler):
+        raise _UsageValueError(
+            f"{call}: {plugin.__name__} is a SequentialFormatHandler; a replacement "
+            "reads an indexed container and subclasses IndexedFormatHandler."
+        )
+    if not (isinstance(plugin, type) and issubclass(plugin, IndexedFormatHandler)):
         raise _UsageTypeError(
-            f"{call} takes a FormatHandler subclass for ContainerFormat."
+            f"{call} takes an IndexedFormatHandler subclass for ContainerFormat."
             f"{container.name}, got {plugin!r}."
         )
     name = plugin.__name__
-    if issubclass(plugin, SequentialFormatHandler):
-        raise _UsageValueError(
-            f"{call}: {name} is a SequentialFormatHandler; a replacement reads an "
-            "indexed container and subclasses FormatHandler."
-        )
     expected = ArchiveFormat(container, StreamFormat.UNCOMPRESSED)
     fmt = getattr(plugin, "format", None)
     if fmt != expected:
@@ -2397,6 +3076,13 @@ def replacement_backend(plugin: type[FormatHandler]) -> type[ReadBackend]:
 def _backend_class(
     plugin: type[FormatHandler], fmt: ArchiveFormat, overrides: Mapping[str, object]
 ) -> type[_PluginBackend]:
+    """The :class:`ReadBackend` subclass that reads ``fmt`` with ``plugin``.
+
+    It translates the handler's public declarations into the class attributes the
+    registry and detection read (``FORMATS``, ``EXTENSIONS``, ``MAGIC``,
+    ``CONTENT_PROBES``, ...), and its ``open_read`` builds the adapter. ``overrides``
+    sets attributes a plugin cannot declare (:func:`register_builtin_format`).
+    """
     probe = plugin.probe
     sequential = issubclass(plugin, SequentialFormatHandler)
     magic = tuple(MagicSignature(m.offset, m.data, fmt) for m in plugin.magic)
@@ -2419,7 +3105,12 @@ def _backend_class(
             {}
             if sequential
             else {
-                "NON_SEEKABLE_REASON": "its reader needs random access to the archive"
+                # Not sequential, so indexed: ``_check_plugin`` and
+                # ``check_replacement`` admit no other shape.
+                "NON_SEEKABLE_REASON": cast(
+                    "type[IndexedFormatHandler]", plugin
+                ).non_seekable_reason
+                or "its reader needs random access to the archive"
             }
         ),
         "INSTALL_HINT": plugin.install_hint,
@@ -2453,7 +3144,7 @@ def register_builtin_format(
     built-in backends, so detection does not change and ``FormatInfo.from_plugin`` is
     false. A sequential format's compressed pairs are spelled as a plugin's are
     (``"ar.gz"``). ``overrides`` sets backend attributes a plugin cannot declare
-    (``NON_SEEKABLE_REASON``, ``OPTIONAL_DEPENDENCY``). Returns the backend class.
+    (``OPTIONAL_DEPENDENCY``, ``INSTALL_HINT``). Returns the backend class.
     """
     backend = _backend_class(plugin, plugin.format, overrides)
     get_registry().register_reader(backend)

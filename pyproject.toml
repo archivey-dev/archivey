@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archivey"
-version = "0.3.0"
+version = "0.3.1.dev0"
 description = "Python library for reading, streaming, and safely extracting archives"
 readme = "README.md"
 license = { text = "MIT" }
@@ -50,9 +50,15 @@ Issues = "https://github.com/archivey-dev/archivey/issues"
 [project.scripts]
 archivey = "archivey.cli.main:main"
 
+# fsspec finds the archivey:// protocol here without an import of archivey. fsspec is
+# not a dependency: archivey.fsspec imports it, and nothing else does.
+[project.entry-points."fsspec.specs"]
+archivey = "archivey.fsspec:ArchiveyFileSystem"
+
 # Four extras, each answering a question a user asks about their own environment
 # ("will it just work?", "do I need fast seeking?", "am I on free-threaded Python?",
-# "give me everything") rather than naming an internal dependency group. The previous
+# "give me everything"), plus [bzip3] for the one format whose library is in none of them,
+# rather than naming an internal dependency group. The previous
 # format-named table ([7z], [rar], [crypto], [iso], [zstd], [lz4], [cli],
 # [recommended-lite]) was capability-scoped in fact — [7z] was a codec bundle shared with
 # ZIP and TAR, [rar] was byte-identical to [crypto] — so install hints named the wrong
@@ -62,7 +68,12 @@ archivey = "archivey.cli.main:main"
 recommended = [
     # >=1.3.1: 1.1.x/1.2.0 return silently wrong bytes on chunked bounded PPMd
     # decodes (premature eof mid-stream); 1.3.1 fixes that.
-    "pyppmd>=1.3.1",
+    # <2: 2.0 changes Ppmd7Decoder.decode (new keyword-only `final`; without it the
+    # last symbols are held back), which PpmdDecoder (internal/streams/codecs/
+    # ppmd_decoder.py) does not pass yet; it still feeds the trailing b"\0" that
+    # 1.x needs instead. The pyppmd maintainer asked for the cap until archivey
+    # migrates (issue #1187).
+    "pyppmd>=1.3.1,<2",
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
     # >=1.2.0: process(output_buffer_limit=) / can_accept_more_data (CVE-2025-6176).
@@ -87,6 +98,15 @@ recommended = [
 # free-threaded build) is unaffected.
 seekable = [
     "rapidgzip>=0.16.0",
+]
+# bzip3 reads .bz3 files, a format little else reads, so it is in neither [recommended]
+# nor [all]. Its wheels bundle libbzip3 (LGPL-3). 0.1.10 publishes wheels for CPython
+# 3.11 to 3.14 on Linux and Windows only, and no sdist, so the extra does not install on
+# macOS, PyPy or 3.15 yet (docs/install.md says so). archivey decodes it in a child process unless process_isolation is
+# NONE, as PPMd: libbzip3 had seven memory-safety CVEs in 2023 (fixed in 1.2.3).
+# >=0.1.10: bundles libbzip3 1.5.3, whose block decoder checks the sizes it is given.
+bzip3 = [
+    "bzip3>=0.1.10",
 ]
 # The measured subset that leaves sys._is_gil_enabled() False after import on a
 # free-threaded build — NOT a claim that archivey is only free-thread-safe with it.
@@ -157,6 +177,10 @@ dev = [
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "lz4>=4.4.5",
     "brotli>=1.2.1",
+    # The [bzip3] extra, so tests/test_bzip3.py runs in the default dev env. 0.1.10 has
+    # wheels for CPython 3.11 to 3.14 on Linux and Windows only, and no sdist, so the
+    # markers keep `uv sync` working on macOS, PyPy and 3.15; the tests skip there.
+    "bzip3>=0.1.10; sys_platform != 'darwin' and platform_python_implementation == 'CPython' and python_version < '3.15'",
     # pycdlib (the [iso] extra) is in the dev group like the other optional format libs, so
     # the ISO backend's tests run in the default dev env and the type checkers can resolve the
     # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent
@@ -225,7 +249,17 @@ extend-select = [
     "I", "F", "C4", "ISC", "RET", "BLE", "UP",
     "E401", "E402", "E701", "E702", "E703", "E711", "E712", "E713", "E714", "E721",
     "E731", "E741", "E742", "E743",
+    "E501",
 ]
+
+[tool.ruff.lint.pycodestyle]
+# E501 reports a line over 100 columns, code, comment or docstring. `ruff format` keeps
+# wrapping code at 88 (the default `line-length`), and prose is wrapped at 88 too, so the
+# 12 columns between are slack: an edit that runs a little long passes, and one that
+# runs a sentence long fails. `scripts/checks/check_line_width.py --fix` rewraps the
+# comment or docstring paragraphs a change touched; the same script holds Markdown to
+# the same 100.
+max-line-length = 100
 
 [tool.ruff.lint.isort]
 # One `from m import (...)` per module, aliases included (`Set as AbstractSet`).

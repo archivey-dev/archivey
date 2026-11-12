@@ -57,6 +57,7 @@ from archivey import (
     ArchiveFormat,
     ArchiveReader,
     ArchiveyConfig,
+    Budget,
     DecoderLimits,
     DiagnosticPolicy,
     ExtractionLimits,
@@ -223,6 +224,19 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: open_archive(archive, encoding=b),
             ),
         ]
+
+    # A program path must be absolute: a relative one would depend on the current
+    # directory, so it is no pin.
+    for program_field in ("unrar_path", "unar_path"):
+        for bad in ("", "unrar", 0, b"/usr/bin/unrar", "/bin/un\0rar"):
+            rows.append(
+                _case(
+                    "ArchiveyConfig",
+                    program_field,
+                    bad,
+                    lambda b=bad, f=program_field: ArchiveyConfig(**{f: b}),
+                )
+            )
 
     # Object shape of detection_budget=, not preset spellings. ``"balanced"`` is a real
     # DetectionBudgetPreset value, coerced by ``enum_args`` and asserted in
@@ -522,6 +536,24 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _with_config(archive, out(), formats=b),
             )
         )
+    for bad in ("x", 10, Budget, frozenset()):
+        rows.append(
+            _case(
+                "ArchiveyConfig",
+                "budget",
+                bad,
+                lambda b=bad: _with_config(archive, out(), budget=b),
+            )
+        )
+    for bad in ("x", -1, True, 1.5, None):
+        rows.append(
+            _case(
+                "ArchiveyConfig",
+                "max_read_through",
+                bad,
+                lambda b=bad: _with_config(archive, out(), max_read_through=b),
+            )
+        )
     for bad in ("x", -1, True, 1.5, None):
         rows.append(
             _case(
@@ -548,6 +580,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         "read_link_targets",
         "always_probe_content",
         "discover_volumes",
+        "recover_partial_data",
     ):
         for bad in ("false", 0, 1, None):
             rows.append(
@@ -689,6 +722,7 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("extract_all", "policy"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "overwrite"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "on_error"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract_all", "on_blocked"): "coerced by enum_args; test_enum_arguments.py",
     # Collection[AbortOn], not an enum, so the container shape is a second way to get
     # it wrong. ``coerce_enum_collection`` refuses both: a bare string, which would
     # otherwise iterate into characters and silently disable every abort, and a

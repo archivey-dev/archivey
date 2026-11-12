@@ -337,10 +337,15 @@ def test_verifying_stream_forwards_resume_offset() -> None:
     assert s.nearest_resume_offset(1) == 7
 
 
+# A module that exists to plug archivey into another package, and the package it needs.
+_PLUGS_INTO = {"archivey.fsspec": "fsspec"}
+
+
 def _import_all_archivey_modules() -> None:
     """Import every archivey module so ``__subclasses__()`` is not collection-order-blind.
 
-    ``archivey.__main__`` calls ``main()`` at import, so it is skipped.
+    ``archivey.__main__`` calls ``main()`` at import, so it is skipped, and
+    ``archivey.fsspec`` is skipped when fsspec is not installed (``_PLUGS_INTO``).
 
     This walk also proves every ``archivey.*`` module imports with no extras
     (the ``[core-only]`` lazy-optional-import boundary). A top-level extra
@@ -356,6 +361,16 @@ def _import_all_archivey_modules() -> None:
             continue
         try:
             importlib.import_module(module.name)
+        except ModuleNotFoundError as exc:
+            # The one module that exists to plug into another package: it imports
+            # that package, and no archivey extra installs it.
+            if _PLUGS_INTO.get(module.name) != exc.name:
+                raise ImportError(
+                    f"{module.name} failed to import while walking archivey modules "
+                    "for the ReadOnlyIOStream resume-offset inventory. This walk also "
+                    "proves every archivey module imports with no extras "
+                    "([core-only]); a top-level extra import fails here."
+                ) from exc
         except Exception as exc:  # any import-time failure is this check
             raise ImportError(
                 f"{module.name} failed to import while walking archivey modules "
@@ -461,6 +476,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
         counting.OutputCountingStream,
+        counting.BudgetDrawStream,  # the decoded stream's offsets
         bomb_tracker.DecodeRatioGuard,  # the codec's offsets
         bomb_tracker.MemberRatioGuard,  # the member stream's offsets
         readahead.ReadAheadStream,  # the inner's offsets
@@ -470,6 +486,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         sevenzip_reader._FolderChecks,  # the folder decode's offsets
         sevenzip_reader._FolderEndCheck,  # the member slice's offsets
         tar_reader._DecodeThroughSkips,  # the codec stream's offsets
+        rar_reader._ClosesSyntheticFile,  # the member stream's offsets
         slice_mod.SlicingStream,  # translates remapped offset space; clamp at 0
         verify.VerifyingStream,
     }
@@ -519,6 +536,12 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         detection._BoundedPeekReader,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
+        # The same pass's output from several unrar runs back to back: subprocess
+        # stdout, with nothing below it that has a table.
+        rar_reader._SolidPassPipe,
+        # One batch's unrar stdout held to its planned bytes, for a nonsolid pass:
+        # subprocess output, with nothing below it that has a table.
+        rar_reader._CheckedRun,
         # A member's stored bytes, read forward from the walk's stream (for .tar.gz,
         # the decompressed stream) in one pass. TAR stores member data as is, so no
         # codec above it has a table, and a pass's member streams are forward-only.
@@ -705,6 +728,7 @@ def test_delegating_stream_close_inventory() -> None:
         fullcount.FullCountStream,
         counting.CountingReader,
         counting.OutputCountingStream,
+        counting.BudgetDrawStream,
         counting.SeekCountingStream,
         bomb_tracker._RatioGuard,
         bomb_tracker.DecodeRatioGuard,
@@ -721,6 +745,7 @@ def test_delegating_stream_close_inventory() -> None:
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
         rar_copy_sources._TeeBlock,
+        rar_reader._ClosesSyntheticFile,
         sparse.SparseStream,
         readahead.ReadAheadStream,
         walk_handoff.MemberDataView,

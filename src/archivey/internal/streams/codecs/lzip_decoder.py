@@ -46,6 +46,7 @@ from archivey.exceptions import (
 from archivey.internal.config import (
     DecoderLimits,
     check_decoder_memory,
+    probe_dictionary_origin,
     probe_lzma_dictionary,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -62,12 +63,13 @@ from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
     SpacedCollector,
-    _StreamChecksumError,
+    StreamChecksumError,
     build_index_backwards,
     damaged_stream_error,
     near_stream_magic,
     release_decoder,
 )
+from archivey.terminal import quoted
 
 if TYPE_CHECKING:
     from archivey.formats import Decompressor
@@ -249,7 +251,8 @@ def _iter_trailers_backwards(
         if header[:4] != _MAGIC:
             raise CorruptionError(
                 f"Lzip magic not found at expected member start {compressed_start} "
-                f"(got {header[:4]!r}); member_size in trailer may be corrupt"
+                f"(got {quoted(header[:4].decode('ascii', 'surrogateescape'))}); "
+                "member_size in trailer may be corrupt"
             )
         _check_version(header, compressed_start)
         yield compressed_start, int(data_size), int(member_size), int(crc32)
@@ -286,6 +289,34 @@ def _read_index_backwards(
         _MemberBounds(comp_start, end - dist, comp_size, decomp_size)
         for dist, (comp_start, decomp_size, comp_size, _crc) in reversed(kept.items)
     ]
+
+
+def last_member_is_the_whole_file(stream: BinaryIO, file_size: int) -> bool:
+    """Whether the last lzip member starts at offset 0, read from its trailer.
+
+    Reads the last 20 bytes only when they hold a plausible trailer, so on a remote
+    source a multi-member file costs no more requests than a single-member one
+    (fsspec-integration design D1): a member size equal to the file size is one
+    member, a smaller valid one is an earlier member. Anything else (data appended
+    after the last member, damage) falls back to the first step of the full walk,
+    which looks past appended data and checks the member's header. A wrong "earlier
+    member" answer only leaves the size unknown; the forward decoder still checks
+    every member.
+    """
+    if file_size >= _TRAILER_SIZE:
+        stream.seek(file_size - _TRAILER_SIZE)
+        trailer = stream.read(_TRAILER_SIZE)
+        if len(trailer) == _TRAILER_SIZE:
+            member_size = int.from_bytes(trailer[12:20], "little")
+            if member_size == file_size:
+                return True
+            if _HEADER_SIZE + _TRAILER_SIZE <= member_size < file_size:
+                return False
+    for start, _data_size, _member_size, _crc in _iter_trailers_backwards(
+        stream, file_size
+    ):
+        return start == 0
+    return True
 
 
 def peek_index_summary(stream: BinaryIO, file_size: int) -> tuple[int, int]:
@@ -367,7 +398,8 @@ class _LzipState:
                 # trailing data is allowed only *after* a member (lzip spec §7).
                 if head != _MAGIC[: len(head)]:
                     raise CorruptionError(
-                        f"Not a valid lzip file: expected magic {_MAGIC!r}, got {head!r}"
+                        f"Not a valid lzip file: expected magic {_MAGIC!r}, "
+                        f"got {quoted(head.decode('ascii', 'surrogateescape'))}"
                     )
                 self.truncated = True
                 return b"", []
@@ -483,7 +515,8 @@ class _LzipState:
         if header[:4] != _MAGIC:
             if self._members_seen == 0:
                 raise CorruptionError(
-                    f"Not a valid lzip file: expected magic {_MAGIC!r}, got {header[:4]!r}"
+                    f"Not a valid lzip file: expected magic {_MAGIC!r}, "
+                    f"got {quoted(header[:4].decode('ascii', 'surrogateescape'))}"
                 )
             if near_stream_magic(header, _MAGIC):
                 # lzip's own rule: "corrupt header in multimember file".
@@ -496,16 +529,23 @@ class _LzipState:
                 f"Invalid lzip dict_size exponent {exp}: valid range is 12-29"
             )
         dict_size = 1 << exp
+        # A detection probe decodes with only the dictionary its read needs, and that
+        # is what the cap is checked against: the dictionary liblzma reserves.
+        decode_dict = probe_lzma_dictionary(dict_size, self._read_bound)
         # The format's own ceiling is 512 MiB (exponent 29), under the default cap, so
         # this refuses only for a caller who set a smaller one.
+        probe = self._read_bound is not None
         check_decoder_memory(
-            dict_size,
+            decode_dict,
             limits=self._limits,
-            what="lzip dictionary size",
+            what=(
+                "the lzip dictionary a detection probe reserves"
+                if probe
+                else "lzip dictionary size"
+            ),
+            counted_from=probe_dictionary_origin(dict_size) if probe else None,
             usage=self._usage,
         )
-        # A detection probe decodes with only the dictionary its read needs.
-        decode_dict = probe_lzma_dictionary(dict_size, self._read_bound)
         lzma_alone_header = _PROPS_BYTE + struct.pack("<I", decode_dict) + _UNKNOWN_SIZE
         try:
             self._dec = self._natives.lzma_decompressor(format=lzma.FORMAT_ALONE)
@@ -521,12 +561,12 @@ class _LzipState:
     def _verify_trailer(self, trailer: bytes) -> tuple[int, int]:
         crc32_stored, data_size, member_size = struct.unpack_from("<IQQ", trailer, 0)
         if (self._crc & 0xFFFFFFFF) != crc32_stored:
-            raise _StreamChecksumError(
+            raise StreamChecksumError(
                 f"Lzip CRC32 mismatch: stored {crc32_stored:#010x}, "
                 f"computed {self._crc & 0xFFFFFFFF:#010x}"
             )
         if self._member_size != data_size:
-            raise _StreamChecksumError(
+            raise StreamChecksumError(
                 f"Lzip size mismatch: stored {data_size}, actual {self._member_size}"
             )
         actual_member_size = self._member_comp_size + _TRAILER_SIZE

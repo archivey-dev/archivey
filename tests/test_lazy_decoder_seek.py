@@ -130,11 +130,18 @@ def test_a_seek_past_a_truncation_raises_at_the_read() -> None:
 
 
 def test_damage_in_the_gap_raises_at_the_read_and_keeps_the_target() -> None:
-    members = [make_multi_member_lzip([part]) for part in PARTS]
+    # The first member is over 64 KiB of output, so the read from the start after the
+    # seek back gets its bytes from a decoder call that ends before the damage (each
+    # call asks for 64 KiB of output, whatever the read size).
+    parts = [PARTS[0] * 30, *PARTS[1:]]
+    members = [make_multi_member_lzip([part]) for part in parts]
     second = bytearray(members[1])
     second[len(second) // 2] ^= 0xFF
     data = members[0] + bytes(second) + members[2] + members[3]
-    target = len(PARTS[0]) + len(PARTS[1]) // 2 + 100
+    # The damaged member's last byte: an LZMA decode can give bytes after the damage
+    # before it notices it, and those come back before the error, but the call that
+    # meets the member's check never gives its byte.
+    target = len(parts[0]) + len(parts[1]) - 1
     with LzipDecompressorStream(io.BytesIO(data)) as stream:
         assert stream.seek(target) == target
         with pytest.raises(CorruptionError):

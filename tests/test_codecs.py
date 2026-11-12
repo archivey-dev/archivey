@@ -1237,7 +1237,8 @@ def _seven_zip_decompress(
     result = run_7z(["e", "-so", str(path)], program=program)
     if result.returncode != 0:
         pytest.fail(
-            f"{program} (7-Zip {sevenzip_version_text(sevenzip_version(program))}) exited {result.returncode} on "
+            f"{program} (7-Zip {sevenzip_version_text(sevenzip_version(program))}) "
+            f"exited {result.returncode} on "
             f"{path.name}: {result.stderr.decode(errors='replace').strip()}"
         )
     return result.stdout
@@ -1612,14 +1613,16 @@ def test_decompressor_read_one_bounds_internal_buffer() -> None:
     deflate = co.compress(payload) + co.flush()
     with ZlibDecompressorStream(io.BytesIO(deflate)) as stream:
         assert stream.read(1) == b"A"
-        assert len(stream._buffer) < 64_000
+        # One call asks for 64 KiB of output whatever the read size (fixed feeding).
+        assert len(stream._buffer) < 65_536
         assert stream.read(1000) == b"A" * 1000
 
     # xz
     xz = lzma.compress(payload, format=lzma.FORMAT_XZ)
     with XzDecompressorStream(io.BytesIO(xz)) as stream:
         assert stream.read(1) == b"A"
-        assert len(stream._buffer) < 64_000
+        # One call asks for 64 KiB of output whatever the read size (fixed feeding).
+        assert len(stream._buffer) < 65_536
 
 
 def test_decompressor_owns_inner_closes_private_source(tmp_path: Path) -> None:
@@ -1671,8 +1674,9 @@ def test_unix_compress_read_one_bounds_internal_buffer() -> None:
     compressed = make_unix_compress(payload)
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
         assert stream.read(1) == b"A"
-        # DecompressorStream buffer after a budgeted feed.
-        assert len(stream._inner._buffer) < 64_000
+        # DecompressorStream buffer after a budgeted feed: one decoder call asks for
+        # 64 KiB of output (fixed feeding), and LZW may finish the code it is in.
+        assert len(stream._inner._buffer) < 2 * 65_536
 
 
 @requires("brotli")
@@ -1718,7 +1722,8 @@ def test_deflate64_read_one_bounds_internal_buffer(tmp_path: Path) -> None:
     comp = data[30 + nlen + elen : 30 + nlen + elen + csize]
     with Deflate64DecompressorStream(io.BytesIO(comp)) as stream:
         assert stream.read(1) == b"A"
-        assert len(stream._buffer) < 64_000
+        # One call asks for 64 KiB of output whatever the read size (fixed feeding).
+        assert len(stream._buffer) < 65_536
         assert stream.read(1000) == b"A" * 1000
 
 
@@ -3197,7 +3202,7 @@ def test_verify_fused_archive_stream_slurp_raises() -> None:
 
 # The extras that exist after the 11 → 4 consolidation. Anything else in a hint is a name
 # a user cannot install: `pip install archivey[7z]` now fails outright.
-_REAL_EXTRAS = frozenset({"recommended", "seekable", "free-threaded", "all"})
+_REAL_EXTRAS = frozenset({"recommended", "seekable", "free-threaded", "all", "bzip3"})
 _EXTRA_IN_HINT = re.compile(r"archivey\[([a-z0-9,\-.]+)\]")
 
 
@@ -3217,6 +3222,7 @@ def _assert_hint_is_installable(message: str) -> None:
         (Codec.BROTLI, "brotli"),
         (Codec.LZ4, "lz4_frame"),
         (Codec.ZSTD, "zstd"),
+        (Codec.BZIP3, "bzip3"),
     ],
 )
 def test_absent_codec_backend_hint_is_installable(
@@ -3462,7 +3468,8 @@ def test_rewind_report_gives_the_policy_when_rapidgzip_is_excluded(
     for message in messages:
         assert message.endswith(
             "The 'rapidgzip' accelerator is not available: "
-            "ArchiveyConfig.formats.exclude_libraries turns it off."
+            "ArchiveyConfig.formats turns it off (exclude_libraries= lists it, "
+            "or only_libraries= does not)."
         ), message
 
 
@@ -3557,6 +3564,7 @@ _NOT_OPTIONAL_LIBRARIES = {
     "_typeshed": "type-checking stubs, imported only under TYPE_CHECKING",
     "typing_extensions": "the type checkers' override, imported only under TYPE_CHECKING",
     "tqdm": "the CLI's progress bar, a dependency of archivey-cli, not a decoder",
+    "fsspec": "the OpenFile source type, imported only under TYPE_CHECKING",
 }
 
 
@@ -3640,7 +3648,8 @@ def test_no_source_file_advertises_a_deleted_extra() -> None:
     fails on any new hardcoded hint, not only the ones a test happens to reach.
     """
     deleted = re.compile(
-        r"archivey\[(?:7z|crypto|iso|lz4|zstd|cli|rar|recommended-lite)\]|'(?:7z|crypto|iso|lz4|zstd|cli|rar|recommended-lite)' extra"
+        r"archivey\[(?:7z|crypto|iso|lz4|zstd|cli|rar|recommended-lite)\]"
+        r"|'(?:7z|crypto|iso|lz4|zstd|cli|rar|recommended-lite)' extra"
     )
     src = Path(__file__).resolve().parent.parent / "src"
     offenders = [

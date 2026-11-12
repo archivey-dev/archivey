@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from archivey import (
+    ExtractionProgress,
     ExtractionReport,
     ExtractionResult,
     ExtractionStatus,
@@ -1727,6 +1728,52 @@ def test_progress_pipe_closed_mid_pass_exits_141(
     assert main(argv, out=io.StringIO(), err=err) == EXIT_BROKEN_PIPE
     assert progress.calls == 1
     assert err.getvalue() == ""
+
+
+class _ProgressFailsOnMemberDone:
+    """A progress bar whose stream fails (``EIO``) on the first member's last event."""
+
+    def __call__(self, progress: ExtractionProgress) -> None:
+        if progress.member.name == "a.txt" and progress.members_done == 1:
+            raise OSError(errno.EIO, "Input/output error")
+
+    def close(self) -> None:
+        pass
+
+
+def test_progress_error_on_member_done_counts_the_member_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A member whose read passed, then whose last progress event failed, is counted
+    once: as failed, not as both OK and failed."""
+    archive = _zip(tmp_path / "two.zip", {"a.txt": b"a" * 10, "b.txt": b"b" * 10})
+    progress = _ProgressFailsOnMemberDone()
+    monkeypatch.setattr(test_cmd, "make_progress_callback", lambda **_: progress)
+    err = io.StringIO()
+    assert main(["test", str(archive)], out=io.StringIO(), err=err) == EXIT_FAIL
+    assert err.getvalue().splitlines()[-1] == "1 OK, 1 failed"
+
+
+class _ErrFullOnLine(io.StringIO):
+    """A report stream whose disk fills (``ENOSPC``) on writing one given line."""
+
+    def __init__(self, line: str) -> None:
+        super().__init__()
+        self.line = line
+
+    def write(self, s: str) -> int:
+        if s == self.line:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return super().write(s)
+
+
+def test_verbose_line_error_counts_the_member_once(tmp_path: Path) -> None:
+    """A member whose read passed, then whose ``-v`` OK line failed to write, is
+    counted once: as failed, not as both OK and failed."""
+    archive = _zip(tmp_path / "two.zip", {"a.txt": b"a" * 10, "b.txt": b"b" * 10})
+    err = _ErrFullOnLine("OK   a.txt")
+    assert main(["test", "-v", str(archive)], out=io.StringIO(), err=err) == EXIT_FAIL
+    assert err.getvalue().splitlines()[-1] == "1 OK, 1 failed"
 
 
 class _ClosedPipeStdout(io.StringIO):
@@ -5340,3 +5387,148 @@ def test_without_probe_content_the_refusal_names_the_flag(
     src = _raw_lzma(tmp_path / "data.bi5", b"payload")
     assert main(["list", str(src)]) == EXIT_FAIL
     assert "on the command line, pass --probe-content" in capsys.readouterr().err
+
+
+def test_info_prints_prefixed_and_payload_end(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tests.pe_build import FILE_ALIGNMENT, pe_file
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("f.txt", b"hello\n")
+    path = tmp_path / "setup.exe"
+    path.write_bytes(
+        pe_file(0x1000, payload=payload.getvalue(), certificate_size=0x800)
+    )
+    assert main(["info", str(path)]) == EXIT_OK
+    lines = [line.split() for line in capsys.readouterr().out.splitlines()]
+    overlay = FILE_ALIGNMENT + 0x1000
+    assert ["sfx_offset:", str(overlay)] in lines
+    assert ["prefixed:", "True"] in lines
+    assert ["payload_end:", str(overlay + len(payload.getvalue()))] in lines
+
+
+def _zip_with_links(path: Path, entries: list[tuple[str, bytes, bool]]) -> Path:
+    """A ZIP of ``(name, data, is_symlink)`` entries; a symlink's data is its target."""
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data, is_link in entries:
+            info = zipfile.ZipInfo(name)
+            if is_link:
+                info.create_system = 3
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            zf.writestr(info, data)
+    return path
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+@pytest.mark.parametrize("overwrite", ["rename", "replace"])
+def test_indexed_single_root_with_a_symlink_cannot_write_into_the_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+) -> None:
+    """An indexed archive with one top-level name, a symlink inside it pointing at the
+    cwd, and a member under the link: extracted straight into the cwd, the link stays
+    inside the destination and the member lands in the operator's ``.ssh``. Through
+    the wrapper the link is checked against the wrapper and the hoist's link walk,
+    so nothing outside the wrapper is written."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".ssh").mkdir()
+    archive = _zip_with_links(
+        tmp_path / "docs.zip",
+        [
+            ("docs/README", b"readme", False),
+            ("docs/up", b"..", True),
+            ("docs/up/.ssh/authorized_keys", b"ATTACKER", False),
+        ],
+    )
+    assert main(["x", str(archive), "--overwrite", overwrite]) == EXIT_OK
+    capsys.readouterr()
+    assert not (tmp_path / ".ssh" / "authorized_keys").exists()
+    # The link leads to the wrapper, which then holds two entries and is not hoisted.
+    assert (tmp_path / "docs" / ".ssh" / "authorized_keys").read_bytes() == b"ATTACKER"
+
+
+@pytest.mark.parametrize("overwrite", ["rename", "replace"])
+def test_indexed_drive_rooted_names_go_through_the_wrapper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+) -> None:
+    """``C:/a`` and ``C:/b`` share the top-level name ``C:`` as stored, but a policy
+    that re-roots them writes ``a`` and ``b``: two names at the top of the cwd, one of
+    them the operator's. They go through the wrapper instead."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.txt").write_bytes(b"MINE")
+    archive = _zip(
+        tmp_path / "bomb.zip", {"C:/notes.txt": b"ARCHIVE", "C:/a.txt": b"A"}
+    )
+    args = ["x", str(archive), "--policy", "standard", "--overwrite", overwrite]
+    assert main(args) == EXIT_OK
+    capsys.readouterr()
+    assert (tmp_path / "notes.txt").read_bytes() == b"MINE"
+    assert not (tmp_path / "a.txt").exists()
+    assert (tmp_path / "bomb" / "notes.txt").read_bytes() == b"ARCHIVE"
+
+
+def test_indexed_lone_symlink_root_still_lands_in_the_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A lone symlink has no member to write through it, so it does not need the
+    wrapper: it extracts straight into the cwd, as before."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "target.txt").write_bytes(b"TARGET")
+    archive = _zip_with_links(tmp_path / "one.zip", [("t", b"target.txt", True)])
+    assert main(["x", str(archive)]) == EXIT_OK
+    capsys.readouterr()
+    assert not (tmp_path / "one").exists()
+    assert (tmp_path / "t").read_bytes() == b"TARGET"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real"])
+def test_hoist_does_not_merge_a_tree_with_a_symlink_into_an_existing_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    dry_run: bool,
+) -> None:
+    """``top/l -> e`` passes in the wrapper, where ``e`` does not exist. Merged into
+    the operator's ``top/``, which holds ``e -> <outside>``, it would resolve outside
+    the cwd. The hoist keeps the tree in the wrapper instead, and a dry run says so."""
+    import tarfile
+
+    work = tmp_path / "work"
+    outside = tmp_path / "outside"
+    work.mkdir()
+    outside.mkdir()
+    monkeypatch.chdir(work)
+    (work / "top").mkdir()
+    (work / "top" / "e").symlink_to(outside)
+    archive = work / "pkg.tar"
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo("top")
+        info.type = tarfile.DIRTYPE
+        tf.addfile(info)
+        info = tarfile.TarInfo("top/l")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "e"
+        tf.addfile(info)
+        info = tarfile.TarInfo("top/readme")
+        info.size = 2
+        tf.addfile(info, io.BytesIO(b"hi"))
+    args = ["x", str(archive)] + (["--dry-run"] if dry_run else [])
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    prefix = "would keep in " if dry_run else "kept in "
+    reason = (
+        "it holds a symlink, and merging it into the existing top/ "
+        "could make the link point through entries the archive did not make"
+    )
+    assert _report_lines(err, prefix) == [f"{prefix}pkg/: {reason}"]
+    assert not os.path.lexists(work / "top" / "l")
+    if not dry_run:
+        assert os.readlink(work / "pkg" / "top" / "l") == "e"

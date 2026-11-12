@@ -313,29 +313,32 @@ def test_dot_named_member_never_reads_a_siblings_bytes(tmp_path: Path) -> None:
         target = members[2]
         assert target.name == "..."
         assert target.hashes == {}
-        try:
-            data = archive.read(target)
-        except ArchiveyError:
-            return  # refusing is acceptable; the sibling's bytes are not
+        data = archive.read(target)
     assert data != payloads["@atfile"]
     assert data == payloads["-inul"]
 
 
 @requires_binary("unrar")
-def test_member_unrar_cannot_address_is_refused_not_reported_corrupt(
-    tmp_path: Path,
+def test_member_unrar_cannot_address_reads_through_a_synthetic_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``rar.md`` §5: such a name raises ``UnsupportedFeatureError`` on the unrar path.
-
-    ``unrar`` emits nothing for it. With a CRC the empty pipe surfaces as
-    ``TruncatedError``; without one, exit 10 ("no files matched") maps to
-    ``CorruptionError``. Both tell the caller the archive is damaged, and ``unar``
-    (which addresses entries by index) reads the member fine.
-    """
-    path, _payloads = _dot_named_archive(tmp_path)
+    """``rar.md`` §5: ``unrar`` emits nothing for a mask naming this member, which
+    once read as damage. It now gets a synthetic archive and reads its bytes; with
+    no synthetic archive possible, the name is not plain, and the read is refused as
+    unsupported rather than reported corrupt."""
+    path, payloads = _dot_named_archive(tmp_path)
     with open_archive(path, config=_UNRAR_ONLY) as archive:
-        member = archive.members()[1]
-        with pytest.raises(UnsupportedFeatureError):
+        members = archive.members()
+        assert [archive.read(m) for m in members[2:]] == [
+            payloads["-inul"],
+            payloads["@atfile"],
+        ]
+    from archivey.internal.backends.rar_reader import RarReader
+
+    monkeypatch.setattr(RarReader, "_synthetic_entry", lambda self, *args: None)
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
+        member = archive.members()[2]
+        with pytest.raises(UnsupportedFeatureError, match="not plain enough"):
             archive.read(member)
 
 

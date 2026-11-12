@@ -17,7 +17,7 @@ this page states the behaviour and links the row.
 | Write | **Not shipped** |
 | Backends | The standard library's `lzma`, always available. `streams/codecs/xz_decoder.py` and `streams/codecs/lzip_decoder.py` are archivey's own framing parsers over it |
 | Seeking | xz: from the nearest block or stream. lzip: from the nearest member. LZMA Alone: a backward seek decodes again from the start |
-| Size | xz: from the index. lzip: from the member trailers. LZMA Alone: from the header, unless it holds the "unknown" marker. xz and lzip need a seekable source that is not another archive's member stream |
+| Size | xz: from the index. lzip: from the member trailers. LZMA Alone: from the header, unless it holds the "unknown" marker. xz and lzip need a seekable source whose end is cheap to reach (a stored ZIP entry or an uncompressed TAR member is; a deflated member stream, a standard-library decompressor and usually a member of a compressed TAR are not) |
 | Digests | lzip only: the CRC-32 of the whole content, combined from each member's trailer. xz checks (CRC-32, CRC-64, SHA-256) are verified on read, not listed. A check ID liblzma cannot compute (2, 3, 5 to 9, 11 to 15) reads unverified with `DIGEST_UNVERIFIABLE`. LZMA Alone has no check at all (§4), and reports nothing |
 | Metadata | None beyond the shared fields |
 | Truncation | Always raised, as `TruncatedError` |
@@ -85,7 +85,7 @@ before it decodes a byte, so the number is attacker-chosen memory (§4).
 
 xz is the magic `fd 37 7a 58 5a 00` at offset 0 and lzip `LZIP`, each `CERTAIN`. The
 inner-TAR probe then decodes 512 bytes and upgrades a match to `TAR_XZ`, or
-to TAR over lzip ([`single-file.md`](single-file.md) §2.1).
+to TAR over lzip ([`single-file.md`](single-file.md) §2.2).
 
 LZMA Alone is found by the first of the three content probes. That probe runs only for a
 `.lzma`, `.tar.lzma` or `.tlz` name, under `open_stream`, or with
@@ -113,9 +113,11 @@ lzip trailers backwards from the end at open, whether or not seeking was declare
 (`SingleFileReader._probe_lzip_index` and the xz equivalent). For xz that gives the size;
 for lzip, the size and the CRC-32 of the whole content, combined from each member's
 trailer CRC with `crc32_combine`, in one walk that holds no per-member state. On a pipe,
-neither is known before the read ends. Another archive's member stream, passed to
-`open_archive(member_stream)`, is not peeked either, seekable or not: availability is
-decided by the source's shape, and member streams are excluded as a group
+neither is known before the read ends. On a remote source a file of several streams or
+members skips the walk at open and reports neither ([`single-file.md`](single-file.md)
+§2.2). Another archive's member stream, passed to
+`open_archive(member_stream)`, is peeked only when its seek resumes near each probe
+target: a stored ZIP entry or an uncompressed TAR member is, a deflated one is not
 ([`single-file.md`](single-file.md) §2.2).
 
 When seeking was declared, the xz scan made at open is kept, and each member stream
@@ -332,12 +334,12 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | LZMA Alone: zero bytes end the data unless they run to the end of the file; a stream after them is `ARCHIVE_TRAILING_DATA` (maintainer ruling, 2026-10-10). xz keeps reading past its Stream Padding | Match the official tool (DR-6): `xz --format=lzma` stops at the zeros and fails, as do the gzip, bzip2, zstd and LZ4 tools; xz defines padding between streams and LZMA Alone defines none. Zeros at the end stay silent although `xz` refuses them: one rule for every codec ([`single-file.md`](single-file.md) §6) | Reading a stream after the zeros, as `lzma.LZMAFile` does |
 | Combine the lzip trailer CRCs into one whole-content CRC-32 (PR #160) | It is a real digest of the content, known from one backward walk | Listing it only for single-member files |
 | Read the xz index and lzip trailers whenever the source is seekable (PR #232); narrowed by PR #732, below | Size must not depend on a flag about member-stream seeking | Gating them on `seekable_members` |
-| Do not peek another archive's member stream, stored ZIP entries and TAR members included (PR #732; davitf, 2026-10-10: fix later) | A seek to the end of a deflated member decompresses it twice, and `seek_is_expensive`, the signal detection already uses, covers member streams only as a group. A nested `.xz` or `.lz` loses `size` and the lzip `CRC32`; both are metadata, and the decoder still checks the index and trailers on read. Reopen with a per-stream cheap-seek signal, which would keep both for a stored ZIP entry or a TAR member | Keeping the peek for member streams whose seek is a slice, which needs that signal, shared with detection |
+| Peek another archive's member stream only when its seek is cheap (PR #732 excluded all member streams; the per-stream signal came on 2026-11-07, [`single-file.md`](single-file.md)) | A seek to the end of a deflated member decompresses it twice; a stored ZIP entry or an uncompressed TAR member is a slice, and keeps `size` and the lzip `CRC32` | Excluding member streams as a group |
 | Keep the xz index scanned at open on the reader for its whole lifetime when seeking was declared, whether or not a stream ever seeks; bounded by `MAX_SEEK_POINTS` (2**18) points | A crafted file of many tiny streams makes the scan cost seconds, and each member stream would repeat it. Peak memory is unchanged; steady-state memory grows by at most the capped table while the reader is open | Freeing the scan after open and rebuilding it on the first seek, which repeats the slow scan per stream |
 | Cold seeks trust a self-consistent index (O17) | Verifying a seek means decoding from the start, which removes the reason to have an index; a forward read still verifies | Verifying every seek |
 | Check lzip `member_size` on the forward read (PR #407) | An unchecked member size let a seek serve another member's bytes | Trusting it |
 | Cap every declared dictionary before allocation (PR #413) | The number is the attacker's | Letting liblzma allocate what the header asks |
-| Detection probes decode with the dictionary their read needs, not the declared one | liblzma reserves the declaration, up to 4 GiB, which under `RLIMIT_AS` or Windows' commit limit was a `MemoryError` out of `detect_format`; a match never reaches past output already produced, so the bytes are identical. xz decodes each block raw with its filter chain (rewriting the header would need its CRC recomputed) and walks the index, stream padding and later streams as the reader does | Capping the probe, which changes the format a caller with `UNLIMITED` gets |
+| Detection probes decode with the dictionary their read needs, not the declared one | liblzma reserves the declaration, up to 4 GiB, which under `RLIMIT_AS` or Windows' commit limit was a `MemoryError` out of `detect_format`; a match never reaches past output already produced, so the bytes are identical. xz decodes each block raw with its filter chain (rewriting the header would need its CRC recomputed) and walks the index, stream padding and later streams as the reader does | Checking the declared dictionary against the cap, which would report a `.tar.xz` over the cap as a bare `.xz`; the cap is checked against the clamped dictionary instead |
 | Refuse an over-cap `.lzma` on read, not open | Keeps the `format_unconfirmed` stamp on a probe-only claim | Refusing at open |
 | Map liblzma errors by cause (PR #432) | A missing filter or a cap refusal is not damage, and callers act differently on each | Everything as `CorruptionError` |
 | The Alone probe accepts any dictionary size and refuses a declared size of zero (PR #270) | Every dictionary size is legal and real streams use zero; zero padding is a valid empty stream | Gating on the dictionary size, which missed real files |

@@ -1,4 +1,8 @@
-"""LZ4 (frame format and the legacy format)."""
+"""LZ4: the frame format and the legacy format, as ``.lz4`` files and 7z coders.
+
+``lz4.frame`` decodes frames and ``lz4.block`` the blocks of a legacy stream
+(``lz4_legacy``), both driven one stream at a time by ``FramedDecoder``.
+"""
 
 from __future__ import annotations
 
@@ -24,7 +28,7 @@ from archivey.internal.streams.codecs.framed_decoder import (
     stream_magic,
 )
 from archivey.internal.streams.codecs.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.decompressor_stream import StreamChecksumError
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,
@@ -114,7 +118,7 @@ class Lz4Codec(StreamCodec):
             if "contentChecksum" in str(exc):
                 # The frame's content checksum, over everything the frame decoded; a
                 # block checksum covers one block and stays a plain corruption.
-                return _StreamChecksumError(
+                return StreamChecksumError(
                     f"Error reading lz4 stream: {exception_detail(exc)}"
                 )
             return CorruptionError(f"Error reading lz4 stream: {exception_detail(exc)}")

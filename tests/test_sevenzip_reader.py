@@ -2125,8 +2125,8 @@ def _above_stream_cap_archive(*, solid: bool) -> bytes:
       ``kNumUnPackStream`` of 65 537 with 65 536 ``kSize`` entries (F1);
     * non-solid: one Copy folder and one pack stream per file, 65 537 of each,
       and no ``kNumUnPackStream`` because every folder holds one stream (F2);
-    * both: the ``_ABOVE_CAP_DIRS`` (67) directories as leading empty-stream entries, a CRC for every
-      file stream, names and Windows attributes, and the whole header
+    * both: the ``_ABOVE_CAP_DIRS`` (67) directories as leading empty-stream entries, a
+      CRC for every file stream, names and Windows attributes, and the whole header
       LZMA-encoded behind a ``kEncodedHeader``, as 7-Zip's default does.
 
     The fields 7-Zip writes that no limit reads are left out: modification times
@@ -2440,8 +2440,9 @@ def test_bcj_member_whose_length_is_not_a_whole_number_of_blocks(
     IA64 is the one that was broken: pybcj's decoder dropped the final incomplete
     16-byte block, so a 2911-byte member came back as 2896 bytes and archivey
     raised ``TruncatedError`` on an archive 7-Zip writes and reads back fine
-    (dev-docs/investigations/pybcj-upstream-report.md). 2911 is not a multiple of any filter's block size,
-    so the same payload covers the other five through the liblzma path.
+    (dev-docs/investigations/pybcj-upstream-report.md). 2911 is not a multiple of any
+    filter's block size, so the same payload covers the other five through the liblzma
+    path.
     """
     payload = (_BCJ_CODE_PATTERN * 200)[:2911]
     src = tmp_path / "payload.bin"
@@ -2461,9 +2462,9 @@ def test_bcj_decoder_accepts_an_unpack_size_above_two_gib() -> None:
     pybcj takes the stream size as a C signed ``int``, so ``BCJDecoder(2**31)``
     raised a bare ``OverflowError`` — not even an ``ArchiveyError`` — before any byte
     was read, on archives 7-Zip writes with ``-m0=BCJ -m1=LZMA`` and reads back fine
-    (dev-docs/investigations/pybcj-upstream-report.md). The declared size no longer reaches the filter at
-    all, so the same bytes decode the same way whatever it says; this pins that
-    without building a 2 GiB fixture.
+    (dev-docs/investigations/pybcj-upstream-report.md). The declared size no longer
+    reaches the filter at all, so the same bytes decode the same way whatever it says;
+    this pins that without building a 2 GiB fixture.
     """
     import lzma
 
@@ -2673,6 +2674,56 @@ def test_comment_terminator_is_trimmed_a_code_unit_at_a_time() -> None:
     assert _read_comment(_Cursor(b"\x00" + "\x00".encode("utf-16le"))) is None
     with raises_corruption_not_truncation(match="odd byte length"):
         _read_comment(_Cursor(b"\x00abc"))
+
+
+def test_comment_terminator_trim_is_one_pass_over_a_long_run_of_nuls() -> None:
+    """Trimming two bytes per loop pass copied the payload on every pass.
+
+    A comment of 4 MiB of NULs in a 762-byte archive (LZMA2-compressed header) took
+    over 300 s to list. Counting the calls the trim makes keeps the check
+    deterministic: the old loop made one ``endswith`` call per code unit, 32 768 here.
+    The trimmed result must still be the per-code-unit one, checked against the old
+    loop over every short tail.
+    """
+    import itertools
+    import sys
+
+    from archivey.internal.backends.sevenzip_parser import _Cursor, _read_comment
+
+    payload = "hi".encode("utf-16le") + b"\x00" * 65_536
+    calls = 0
+
+    def count(frame: object, event: str, arg: object) -> None:
+        nonlocal calls
+        if event in ("call", "c_call"):
+            calls += 1
+
+    sys.setprofile(count)
+    try:
+        result = _read_comment(_Cursor(b"\x00" + payload))
+    finally:
+        sys.setprofile(None)
+    assert result == "hi"
+    assert calls < 50, calls
+
+    def loop_trim(data: bytes) -> bytes:
+        while data.endswith(b"\x00\x00"):
+            data = data[:-2]
+        return data
+
+    for length in range(7):
+        for tail in itertools.product((b"\x00", b"a"), repeat=length):
+            data = b"".join(tail)
+            expected = loop_trim(data)
+            if not expected:
+                assert _read_comment(_Cursor(b"\x00" + data)) is None
+            elif len(expected) % 2:
+                with raises_corruption_not_truncation(match="odd byte length"):
+                    _read_comment(_Cursor(b"\x00" + data))
+            else:
+                assert _read_comment(_Cursor(b"\x00" + data)) == expected.decode(
+                    "utf-16le", errors="surrogatepass"
+                )
 
 
 def _encode_7z_number(value: int) -> bytes:
@@ -3052,7 +3103,7 @@ def test_real_7z_cli_fifo_is_other_and_not_extracted(tmp_path: Path) -> None:
     with open_archive(archive) as reader:
         types = {m.name: m.type for m in reader.members()}
         assert types == {"fifo": MemberType.OTHER, "reg.txt": MemberType.FILE}
-        reader.extract_all(tmp_path / "out")
+        reader.extract_all(tmp_path / "out", on_blocked="skip")
     assert not (tmp_path / "out" / "fifo").exists()
     assert (tmp_path / "out" / "reg.txt").read_bytes() == b"hi"
 

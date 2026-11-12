@@ -17,9 +17,12 @@ compressed TAR is solid, and so are most 7z archives, since 7-Zip creates solid 
 default. RAR archives are solid only when created with that option. On a solid archive,
 reading members by name can decompress the same data again and again. `stream_members`
 decompresses it once. archivey tells you when this happens: on a solid 7z or RAR archive, the
-first open that decompresses data an earlier open already decompressed logs one INFO message
-on the `archivey.backends` logger. Reading the same member twice counts only the data before it in the archive. The message
-shows only if your application turns logging on.
+first open that decompresses data an earlier open already decompressed records the diagnostic
+`SOLID_OPEN_REDECOMPRESSES`, once per reader. Reading the same member twice counts only the data
+before it in the archive. The diagnostic is in `reader.diagnostics` and logged at INFO on the
+`archivey.backends` logger, so the message shows only if your application turns logging on. To
+make it an error instead, pass `DiagnosticPolicy(raise_on={"solid_open_redecompresses"})`: every
+open that would decompress data again then raises `DiagnosticRaisedError`.
 
 If your code needs to know whether an archive is solid, `archive.cost` tells you before you read
 anything. Its `access_cost` is `AccessCost.SOLID` when reaching a member means decompressing others
@@ -34,6 +37,17 @@ seek, and `StreamCapability.FORWARD_ONLY` when it can only be read forward, as a
 costs, but it never allows or refuses one: the options below do that.
 
 ## Reading once
+
+!!! warning "A member from a pass may not be final yet"
+    A `stream_members` loop gives you each member as soon as archivey reaches it, before it has
+    read the rest of the archive, and archivey updates that same object when it learns more. A ZIP
+    from a pipe keeps permissions and symlinks in an index at its end, so until the pass gets
+    there a symlink looks like a file. A member whose name a later member reuses can have
+    `is_current` set to `True` until the loop ends. Check `member.member_state_final` before you do
+    something with a member that you can't take back, such as uploading it or recording it in a
+    database. The end of the loop settles the listing, but a link target or size that nothing has
+    read yet can still be pending then, so check the flag after the loop too. `extract_all` already
+    waits.
 
 ```python
 import sys
@@ -75,6 +89,14 @@ what has arrived. A short one can still wait at open, and a read past its last b
 sender to close the pipe ([Single-file compressors](formats.md#single-file-compressors) says
 where).
 
+Damaged compressed data can raise sooner from a pipe than from a file. From a file, a read with a
+size that meets the damage first gives you every byte before it: archivey goes back and
+decompresses that part again. (`read()` with no size raises and gives you nothing.) A pipe can't be
+read twice, so the read that meets the damage raises, and up to 64 KiB before the damage can be
+lost (none for gzip and other deflate data). On a compressed tar the decompressor reads ahead of the members, so
+damage near the start of a `.tar.xz` from a pipe can make the open fail with no members listed,
+where the same bytes in a file list the members before the damage first.
+
 ??? note "Why can't the others come from a pipe?"
     7z keeps its index at the end of the file, and reading an ISO means jumping between places in
     it. RAR stores a header before each member, as ZIP does, so archivey could read it from a
@@ -95,8 +117,9 @@ raises from the read after it, not from the seek. If you install the `seekable` 
 reads bzip2 data, and large DEFLATE data, through an
 [accelerator](security.md#where-the-guarantees-stop) that marks places it can restart from as it
 reads, and every seek resumes from the nearest marked place before its target. DEFLATE is the
-compression in gzip files and in most ZIP members. Without the extra, a gzip file made of several
-members, such as one `bgzip` writes, resumes from the nearest member start. A zstd file made of
+compression in gzip files and in most ZIP members. Without the extra, DEFLATE data resumes from the
+nearest place a read has passed: one of the places archivey marks about every MiB, each holding
+about 40 KiB of memory, or in gzip a member start. A zstd file made of
 several frames, such as one in the Seekable Zstandard format, always resumes from the nearest frame
 start. For a `bgzip` file or a Seekable Zstandard file, archivey finds those starts without
 decompressing anything. A forward seek keeps the checksum check when reaching the target means
@@ -154,8 +177,9 @@ With the `seekable` extra installed, archivey reads large DEFLATE data, and bzip
 which is faster on large files. It returns the same data and errors as the standard library and
 tools such as 7-Zip and unzip, except for a few files built on purpose, which no known tool writes:
 a ZIP or 7z member holding two DEFLATE streams under one CRC
-([Where the guarantees stop](security.md#where-the-guarantees-stop)), and a cut `.gz` whose last
-bytes are made to look like its trailer
+([Where the guarantees stop](security.md#where-the-guarantees-stop)), a `.zz` file holding several
+zlib streams under a last checksum that covers them all, read with `use_rapidgzip=ON`, and a cut
+`.gz` whose last bytes are made to look like its trailer
 ([Limits and accelerators](formats.md#limits-and-accelerators)). For the first, the result can also
 change with how many cores the machine has and with the platform. If your code must give the same
 answer as other tools, on every machine, and you would rather it be slower than differ, turn the
@@ -170,8 +194,9 @@ with archivey.open_archive("data.zip", config=config) as archive:
     ...
 ```
 
-The standard library then decodes everything. A backward seek in gzip or bzip2 data decompresses
-again from the start of the member, and a large gzip file is read on one core.
+The standard library then decodes everything. A backward seek in bzip2 data decompresses again from
+the start of the member, one in DEFLATE data from the nearest place a read has passed (above), and a
+large gzip file, or a large bzip2 file on disk, is read on one core.
 
 ## Why these aren't on by default
 

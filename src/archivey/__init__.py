@@ -11,8 +11,13 @@ Public surface layout (this package root only — not ``internal`` / ``cli``):
 - :mod:`archivey.cost` — listing/access cost receipt
 - :mod:`archivey.diagnostics` — advisory codes, summaries, extraction reports
 - :mod:`archivey.exceptions` — error hierarchy
+- :mod:`archivey.format_policy` — ``FormatPolicy``, which formats one open may use
 - :mod:`archivey.detection_cost` — detection budgets and receipts; public, not re-exported
 - :mod:`archivey.terminal` — terminal-safe display helpers; public, not re-exported
+- :mod:`archivey.paths` — destination naming and member globs for front ends; public,
+  not re-exported
+- :mod:`archivey.formats` — the experimental interface for adding formats; public, not
+  re-exported
 
 Names in ``__all__`` are the documented API, and the root exposes no other public
 name apart from submodules. Niche names, such as the ``*Context`` diagnostic payloads
@@ -28,6 +33,7 @@ from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
     AcceleratorMode,
     ArchiveyConfig,
+    Budget,
     DecoderLimits,
     ExtractionLimits,
     ListingLimits,
@@ -63,6 +69,7 @@ from archivey.diagnostics import (
     ExtractionReport,
     MemberListReport,
     OnDiagnostic,
+    VerifyReport,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -82,6 +89,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     ResourceUnavailableError,
+    SourceChangedError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -101,6 +109,8 @@ from archivey.types import (
     ArchiveInfo,
     ArchiveInfoExtra,
     ArchiveMember,
+    BackendKindStr,
+    BackendUse,
     CompressionAlgorithm,
     CompressionMethod,
     ContainerFormat,
@@ -117,6 +127,7 @@ from archivey.types import (
     MemberType,
     MissingComponent,
     NameRewrite,
+    OnBlocked,
     OnError,
     OptionalLibrary,
     OverwritePolicy,
@@ -141,6 +152,9 @@ __all__ = [
     "ArchiveyConfig",
     "ArchiveyError",
     "ArchiveyUsageError",
+    "BackendKindStr",
+    "BackendUse",
+    "Budget",
     "CompressionAlgorithm",
     "CompressionMethod",
     "ContainerFormat",
@@ -185,6 +199,7 @@ __all__ = [
     "NameCollisionError",
     "NameRewrite",
     "NameRewrittenError",
+    "OnBlocked",
     "OnDiagnostic",
     "OnError",
     "OpenError",
@@ -201,6 +216,7 @@ __all__ = [
     "ReadError",
     "ResourceLimitError",
     "ResourceUnavailableError",
+    "SourceChangedError",
     "SpoolLimits",
     "StreamCapability",
     "StreamFormat",
@@ -208,6 +224,7 @@ __all__ = [
     "TruncatedError",
     "UnsupportedFeatureError",
     "Verification",
+    "VerifyReport",
     "__version__",
     "detect_format",
     "format_availability",

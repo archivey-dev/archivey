@@ -5,6 +5,16 @@ archive readers. Declared member-stream capabilities (`MemberStreams.CONCURRENT`
 `SEEKABLE`) gate concurrent opens and seekability here exactly as for ZIP/TAR/ISO —
 the directory backend exists to keep archive-vs-directory code uniform, not to offer a
 more permissive escape hatch.
+
+``open_archive`` routes a directory path here (``ArchiveSource.is_directory``); there is
+no magic or extension to detect. Listing is a depth-first ``os.scandir`` walk that
+turns each entry's ``lstat`` into a member: a regular file, a directory, a symlink (a
+Windows junction lists as one too), a hardlink to the first name of a multiply-linked
+file, or ``OTHER`` for devices, FIFOs and sockets. The tree can change between listing
+and reading, so ``DirectoryReader._open_member``, and the walk where the platform has
+the descriptor calls (``_SCAN_BY_FD``), check that a path still holds what was listed.
+On POSIX a symlink swapped in then cannot lead a read out of the root. Windows has no
+``O_NOFOLLOW`` and is weaker: see threat-model O21 and its Windows residual.
 """
 
 from __future__ import annotations
@@ -12,6 +22,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import NamedTuple
@@ -36,13 +47,14 @@ from archivey.internal.logs import backends as logger
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.timestamps import unix_to_datetime
 from archivey.internal.windows_reparse import (
     FILE_ATTRIBUTE_REPARSE_POINT,
-    IO_REPARSE_TAG_MOUNT_POINT,
+    entry_is_junction,
 )
 from archivey.terminal import display_path, quoted
 from archivey.types import (
@@ -128,6 +140,50 @@ def _file_attributes(path: str) -> int:
     return getattr(os.lstat(path), "st_file_attributes", 0)
 
 
+# The filesystems whose regular files report a ``st_size`` that is not their content's
+# (procfs 0, sysfs 4096), as ``/proc/self/mountinfo`` names them. Their files list with
+# ``size=None`` and read to the end (``DirectoryReader._make_member``).
+_PSEUDO_FILESYSTEMS = frozenset({"proc", "sysfs"})
+
+
+def _pseudo_filesystem_devices(mountinfo: str) -> frozenset[tuple[int, int]]:
+    """The ``(major, minor)`` device of each procfs and sysfs mount in ``mountinfo``.
+
+    A line is ``id parent major:minor root mountpoint options [optional...] - fstype
+    source super-options`` (proc(5)); the filesystem type is the first field after
+    the lone ``-``.
+    """
+    devices = set()
+    for line in mountinfo.splitlines():
+        head, sep, tail = line.partition(" - ")
+        fields = head.split()
+        fstype = tail.split()[:1]
+        if not sep or len(fields) < 3 or not fstype:
+            continue
+        if fstype[0] in _PSEUDO_FILESYSTEMS:
+            major, _, minor = fields[2].partition(":")
+            if major.isdigit() and minor.isdigit():
+                devices.add((int(major), int(minor)))
+    return frozenset(devices)
+
+
+def _read_pseudo_filesystem_devices() -> frozenset[tuple[int, int]]:
+    """The procfs and sysfs mounts of this process (Linux only), read once per walk.
+
+    From ``/proc/self/mountinfo``: Python has no ``statfs`` with the filesystem magic.
+    Where that file cannot be read (another OS, a container without ``/proc``) the set
+    is empty, and every file lists its ``st_size``: a size that grows is then refused
+    at open, the safe side.
+    """
+    if not sys.platform.startswith("linux"):
+        return frozenset()
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8", errors="replace") as f:
+            return _pseudo_filesystem_devices(f.read())
+    except OSError:
+        return frozenset()
+
+
 def _changed_since_listing(name: str, what: str, action: str = "reading") -> OSError:
     """The refusal for a member whose path no longer holds the file the walk listed.
 
@@ -139,20 +195,6 @@ def _changed_since_listing(name: str, what: str, action: str = "reading") -> OSE
         errno.ESTALE,
         f"{quoted(name)} {what} since the directory was listed; not {action} it",
     )
-
-
-def _is_junction(entry: os.DirEntry[str], st: os.stat_result) -> bool:
-    """True if a scandir entry is a Windows NTFS junction.
-
-    ``st`` is the entry's ``stat(follow_symlinks=False)``. ``os.DirEntry.is_junction()``
-    only exists on Python 3.12+; before it, the junction's reparse tag in ``st`` says
-    so (``st_reparse_tag``, set on Windows only). On every other platform, where
-    junctions don't exist, this returns False.
-    """
-    is_junction = getattr(entry, "is_junction", None)
-    if is_junction is not None:
-        return bool(is_junction())
-    return getattr(st, "st_reparse_tag", 0) == IO_REPARSE_TAG_MOUNT_POINT
 
 
 class DirectoryReader(BaseArchiveReader):
@@ -189,6 +231,8 @@ class DirectoryReader(BaseArchiveReader):
         # pwd/grp lookups hit the system database (nss) on every call, so we memoize.
         self._uname_cache: dict[int, str | None] = {}
         self._gname_cache: dict[int, str | None] = {}
+        # procfs and sysfs devices, read on the first file (_on_pseudo_filesystem).
+        self._pseudo_devices: frozenset[tuple[int, int]] | None = None
 
     @override
     def _check_extraction_dest(self, dest: Path) -> None:
@@ -203,7 +247,7 @@ class DirectoryReader(BaseArchiveReader):
         # refused with ExtractionError. A source root that does not resolve skips the
         # check too, and the walk fails on it a moment later. So neither case writes
         # members into the source, but in the second the dest directory itself may
-        # already be created inside the source, as it was with 3.13's resolve().
+        # already be created inside the source.
         try:
             root = resolve_or_raise_on_loop(self._root)
             target = resolve_or_raise_on_loop(dest)
@@ -348,7 +392,7 @@ class DirectoryReader(BaseArchiveReader):
                 if _STAT_LACKS_IDENTITY and stat.S_ISREG(st.st_mode):
                     st = self._stat_with_identity(entry_path, st)
                 is_symlink = stat.S_ISLNK(st.st_mode)
-                is_junction = not is_symlink and _is_junction(entry, st)
+                is_junction = not is_symlink and entry_is_junction(entry, st)
                 link_target = (
                     self._read_link_target(entry_path, entry.name, dir_fd)
                     if is_symlink or is_junction
@@ -470,10 +514,10 @@ class DirectoryReader(BaseArchiveReader):
         Hardlink detection needs them and scandir's data has them all zero. The fresh
         stat takes a path where scandir needed none, so a path past ``MAX_PATH``
         without long-path support can fail here with ``FileNotFoundError`` for a file
-        that exists. That is not a vanished entry: keep scandir's data, which lists it
-        as a plain ``FILE``, as before hardlinks were detected. A file that really did
-        vanish in this window lists the same way, as it did then; opening it fails
-        later. Any other ``OSError`` propagates like every genuine error in the walk.
+        that exists. That is not a vanished entry: keep scandir's data, so the file
+        lists as a plain ``FILE`` with no hardlink grouping. A file that really did
+        vanish in this window lists the same way; opening it fails later. Any other
+        ``OSError`` propagates like every genuine error in the walk.
         """
         try:
             return _identity_stat(path)
@@ -524,8 +568,8 @@ class DirectoryReader(BaseArchiveReader):
         # Unix, NOT creation, so we never use it for `created`. Hence the getattr.
         birthtime = getattr(st, "st_birthtime", None)
         created = unix_to_datetime(birthtime) if birthtime is not None else None
-        # On Windows st_ctime was the creation time before 3.12 (deprecated since),
-        # so it is only an inode change time elsewhere.
+        # On Windows st_ctime has meant the creation time (deprecated since 3.12), so
+        # it is reported as the inode change time only on other platforms.
         ctime = unix_to_datetime(st.st_ctime) if os.name != "nt" else None
 
         # os.stat_result always defines st_uid/st_gid (both 0 on Windows), so no
@@ -534,6 +578,10 @@ class DirectoryReader(BaseArchiveReader):
         gid = st.st_gid
 
         size = st.st_size if member_type == MemberType.FILE else None
+        if size is not None and self._on_pseudo_filesystem(st.st_dev):
+            # procfs reports 0 and sysfs 4096 for files whose content is neither: the
+            # size is unknown, and the read goes to the end.
+            size = None
 
         return ArchiveMember(
             type=member_type,
@@ -554,6 +602,14 @@ class DirectoryReader(BaseArchiveReader):
             extra=_link_extra(member_type, is_junction),
             _raw=identity,
         )
+
+    def _on_pseudo_filesystem(self, st_dev: int) -> bool:
+        if self._pseudo_devices is None:
+            self._pseudo_devices = _read_pseudo_filesystem_devices()
+        if not self._pseudo_devices:
+            # Off Linux the set is empty, and Windows has no ``os.major``.
+            return False
+        return (os.major(st_dev), os.minor(st_dev)) in self._pseudo_devices
 
     def _lookup_uname(self, uid: int) -> str | None:
         if uid not in self._uname_cache:
@@ -602,9 +658,10 @@ class DirectoryReader(BaseArchiveReader):
         must not block the open). The handle must then be a regular file, and the same
         ``(st_dev, st_ino)`` the listing recorded when it had one. A symlink in the path
         fails with ``ELOOP`` from the kernel; anything else that changed fails with
-        ``ESTALE``, as does a file whose size is no longer the listed one (a listed size
-        of 0 is exempt: procfs and sysfs list 0 for files that have content). A member
-        listed with no identity (``st_ino`` 0) is checked on type and size alone.
+        ``ESTALE``, as does a file whose size is no longer the listed one, 0 included.
+        A file on procfs or sysfs is listed with no size (``_make_member``), so it has
+        none to check and reads to the end. A member listed with no identity
+        (``st_ino`` 0) is checked on type and size alone.
         Windows has no ``O_NOFOLLOW``, so there the identity check carries it, with a
         reparse-point check on the path when the listing had no identity.
         """
@@ -624,9 +681,9 @@ class DirectoryReader(BaseArchiveReader):
             if expected is not None and (st.st_dev, st.st_ino) != expected:
                 raise _changed_since_listing(name, "was replaced")
             # The listed size is part of what was listed, not advisory: a caller treating
-            # the listing as a manifest must not read bytes it never described (chosen
-            # over a diagnostic in PR #501; directory.md §6).
-            if listed_size and st.st_size != listed_size:
+            # the listing as a manifest must not read bytes it never described. A
+            # diagnostic would let those bytes through, so this refuses (directory.md §6).
+            if listed_size is not None and st.st_size != listed_size:
                 raise _changed_since_listing(
                     name, f"changed size ({listed_size} to {st.st_size} bytes)"
                 )
@@ -713,8 +770,12 @@ class DirectoryReadBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> DirectoryReader:
-        reject_start_offset(start_offset, format, archive_name)
+        reject_start_offset(
+            start_offset, format, archive_name, end_offset, program_resources
+        )
         # `format` is always DIRECTORY here (single-format backend); accepted for the
         # uniform ReadBackend signature. Password rejection is central (SUPPORTS_PASSWORD).
         if not source.is_directory or source.path is None:

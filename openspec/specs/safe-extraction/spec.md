@@ -33,6 +33,8 @@ def extract_all(
     policy: ExtractionPolicy = ExtractionPolicy.STRICT,
     overwrite: OverwritePolicy = OverwritePolicy.ERROR,
     on_error: OnError = OnError.STOP,
+    on_blocked: OnBlocked = OnBlocked.RAISE,
+    abort_on: Collection[AbortOn] = (),
     on_progress: Callable[[ExtractionProgress], None] | None = None,
     limits: ExtractionLimits | None = None,
 ) -> ExtractionReport: ...
@@ -507,6 +509,19 @@ a solid archive decodes the solid stream a second time. A hardlink that merely p
 its selected source is linked after the source is written, with one read and one
 bomb-limit count for the source bytes.
 
+A link held back for the second pass SHALL hold its name from its place in archive
+order, so the outcome is the one a link made there would give. A later member that
+collides with it meets the overwrite policy against that link: refused under `ERROR`,
+skipped under `SKIP`, given a free name under `RENAME`, and under `REPLACE` it replaces
+the link, which the second pass then does not make (the link and the member it would
+have replaced are `OVERWRITTEN`). A second held-back link of the same key meets the
+first the same way, so under `REPLACE` it replaces the first. A directory, and a parent
+that a later member implies, meets the held-back link only where the filesystem would
+find the made link: at its own path, or under another case on a filesystem that folds
+case. A directory there meets the overwrite policy, and a member under the link's name
+fails, as a non-directory already extracted is in the way. If the second pass cannot
+make the link, no other member gets the name, as with any refused member.
+
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
 bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the
 whole rule for the target: the target string is a member name, never a path, so it
@@ -559,6 +574,12 @@ refuses its links; any other is recovered as above.
 | HARDLINK `hl` → SYMLINK with no target (`/s` under `STRICT`, or `s`) | `hl` `FAILED`, not refused for `/s`'s name: `ExtractionError` naming the source's type when the listing was read first, else `LinkTargetNotFoundError` |
 | HARDLINK whose target names no earlier member (`../x`, `C:x`, `/abs` with no such member) | `LinkTargetNotFoundError`, a failure; the target string is never refused as a path |
 | Caller filter rewrites a HARDLINK's `link_target` | Ignored; the link is made to the member the stored target names |
+| `S`, `s` (not written: same key as `S` under `STRICT`), HARDLINK `h` → `s` (held back), then `H`, seekable | `h` written with `s`'s bytes in the second pass; `H` meets `h` as an existing link: `FAILED` under `ERROR`, `NOT_OVERWRITTEN` under `SKIP`, `H (1)` under `RENAME` |
+| HARDLINK `H` → an excluded source (held back), then a file `h`, `REPLACE` | `h` replaces the held-back link: `H` `OVERWRITTEN`, never made; `h` `EXTRACTED` |
+| Directory `H/` after a held-back HARDLINK `h`, case-sensitive filesystem | Both written |
+| Directory `H/` after a held-back HARDLINK `h`, case-insensitive filesystem | `H/` meets `h` as an existing link: `FAILED` under `ERROR`, `NOT_OVERWRITTEN` under `SKIP`, `H (1)/` under `RENAME` |
+| File `h/x` after a held-back HARDLINK `h` | `h/x` `FAILED`, as `h` is a non-directory already extracted; `h` written in the second pass |
+| HARDLINKs `ab` then `AB` to an excluded source (both held back), then a file `Ab`, `REPLACE` | `ab` and `AB` `OVERWRITTEN`, neither made; `Ab` `EXTRACTED` |
 | `REPLACE` routes a HARDLINK onto a path that holds its own source's content: `a`, then `A` → `a` under `STRICT`/`STANDARD`, either mode; or, in the seekable second pass, two links `L`, `l` whose source was excluded | The earlier member `OVERWRITTEN`, the link `EXTRACTED` at that path; the file is left as it is, content intact. On a forward-only stream the `L`, `l` links fail as the "Excluded source on a forward-only stream" row says |
 
 ### Requirement: Policy-Specific Metadata Transforms
@@ -971,6 +992,66 @@ turns it off.
 | `DecoderLimits(max_ratio=None)` in the reader's config | Reads, lists and extracts unchanged |
 | Deprecated `extract_all(limits=ExtractionLimits(max_ratio=None))` | Extracts; reads of the same reader stay held |
 
+### Requirement: A shared budget holds many readers to one total
+
+`ArchiveyConfig.budget` SHALL take an `archivey.Budget(max_decoded_bytes=,
+max_members=)` or `None` (the default: no shared budget). Every reader opened with a
+config holding a budget SHALL draw from it, whether the readers run one after another,
+nest, or run on several threads; copies of the config (`copy`, `deepcopy`,
+`dataclasses.replace`) SHALL share the same budget, and a budget SHALL refuse to be
+pickled.
+
+- **Bytes.** Every byte a member stream delivers (a read, `stream_members()`, an
+  extraction's writes) SHALL be drawn, and so SHALL the gap a forward seek skips past
+  the furthest offset reached, and the byte a compressed single file's open-time check
+  decodes. A seek whose target is known SHALL be refused before the decoder moves,
+  drawing nothing, when the gap does not fit; a seek to an end the stream cannot size
+  SHALL read to it, drawn. A read that would cross `max_decoded_bytes` SHALL decode at
+  most one byte past what is left, then raise the always-stop `ResourceLimitError`, so
+  an extraction stops at that member. This holds for a buffer's read-ahead over a
+  source that cannot seek too. Readers on several threads MAY each overshoot by one
+  read, since each sizes its read against the same room. Once spent, a budget SHALL
+  refuse every later read before it decodes.
+- **Skipped bytes.** Bytes a decoder produces to get past a member nobody reads SHALL
+  be drawn too, in every format: a compressed TAR's, cpio's or RPM payload's skipped
+  members and headers (a compressed TAR's listing included), a CAB folder's output
+  before the member read, the part of a streaming ZIP member the pass decodes, the
+  solid prefix `unrar` or `unar` decodes and does not emit for a solid RAR member,
+  and a 7z header stored compressed. They SHALL be drawn where they are decoded, so a
+  member that is read SHALL be drawn once, not again as its stream delivers it. A step
+  that decodes all at once (a RAR prefix, a 7z header) SHALL be drawn before it runs,
+  and refused, drawing nothing, when it does not fit. A sparse TAR member's holes
+  SHALL be drawn as they are read. Other metadata a format decodes into memory
+  (SquashFS metadata blocks, XAR's table of contents) is held by the listing limits.
+- **Members.** Each member a reader lists SHALL be drawn once per reader. A member a
+  reader holds back before listing it (a cpio or RPM hard-link set) SHALL be drawn
+  when it is held. The listing that would pass `max_members` SHALL raise
+  `ResourceLimitError`, and the refused member SHALL NOT be counted.
+- The per-reader limits SHALL still apply. Decoder memory stays per decoder.
+
+#### Scenario: Two readers share one budget
+
+- **GIVEN** `Budget(max_decoded_bytes=350_000)` and a ZIP of five 100 000-byte members
+- **WHEN** one reader reads two members, closes, and a second reader with the same
+  config reads two more
+- **THEN** the second reader's second read raises `ResourceLimitError` naming
+  `max_decoded_bytes=350000`
+- **AND** the budget has drawn 350 001 bytes
+
+#### Scenario: Skipping members of a compressed TAR draws them
+
+- **GIVEN** an unlimited `Budget()` and a `.tar.gz` of three 100 000-byte members
+- **WHEN** `stream_members()` reads only the third member
+- **THEN** the budget has drawn at least 300 000 bytes
+- **AND** reading all three instead draws no more than the decoded tar's size
+
+#### Scenario: Extraction stops at a spent budget
+
+- **GIVEN** `Budget(max_decoded_bytes=2 * 100_000 + 10)` and the same ZIP
+- **WHEN** `extract_all` runs
+- **THEN** it raises `ResourceLimitError`, two members are written whole, and no later
+  member is opened
+
 ### Requirement: Progress Reporting via on_progress Callback
 
 The system SHALL accept optional `on_progress` callbacks on both extraction APIs
@@ -1238,10 +1319,10 @@ per-member ratio violation. A policy **block** (a `FilterRejectionError` from a 
 path-safety check or a policy filter) is NOT a failure: it SHALL always be recorded as a
 `BLOCKED` `ExtractionResult`, have its partial output removed, and let extraction
 proceed — under **either** `OnError.STOP` or `OnError.CONTINUE`. `OnError.STOP`
-therefore never raises on a blocked member; a STOP run can complete and return an
-`ExtractionReport` whose results include `BLOCKED`. Aborting the whole extraction on the
-first unsafe member (fail-closed strict security) SHALL be expressed through
-`AbortOn.BLOCKED_MEMBER`, not through `OnError`.
+therefore never stops at a blocked member. What the call does once every member is
+processed is `on_blocked`'s ("A refused member raises once the rest are extracted").
+Aborting the whole extraction on the first unsafe member (fail-closed strict security)
+SHALL be expressed through `AbortOn.BLOCKED_MEMBER`, not through `OnError`.
 
 Under `CONTINUE`, a member-scoped failure records `FAILED`, removes partial output,
 and proceeds.
@@ -1265,14 +1346,14 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | --- | --- |
 | Member blocked by policy/path-safety under `STOP` | `BLOCKED` result; partial output removed; extraction does **not** halt; later members continue |
 | Member blocked by policy/path-safety under `CONTINUE` | `BLOCKED` result; partial output removed; later members continue |
-| First member blocked, remaining members extractable, under `STOP` | Run completes; report contains `BLOCKED` + later `EXTRACTED`; no exception escapes |
+| First member blocked, remaining members extractable, under `STOP` | Run completes; `BLOCKED` + later `EXTRACTED` recorded; no exception at the blocked member; the call ends as `on_blocked` says |
 | Corrupt member under `CONTINUE` | Partial output removed; `FAILED` result; later members continue |
 | Default `STOP` member failure (e.g. `CorruptionError`) | Original error propagates immediately; failing partial file removed; earlier outputs remain (from a ZIP read from a pipe, less the files that could still be links: `format-zip`) |
 | Filesystem `OSError` while writing under `CONTINUE` | Partial output removed; `FAILED` result; extraction proceeds |
 | A member under a non-directory this run extracted (file `d`, then `d/f` or directory `d/y`) | Per-member `ExtractionError` naming `d`, not a raw `OSError`, under every `OverwritePolicy` |
 | A member under a non-directory already in `dest` before the run (`d/f` over the caller's file `d`) | `d` meets `OverwritePolicy` as an explicit `d/` entry would (see the overwrite requirement); under `ERROR` a per-member `ExtractionError`, not a raw `OSError` |
 | Cumulative bytes/live ratio/max entries exceed limit under any `OnError` | `ResourceLimitError` propagates and halts; no later member processed |
-| Mixed good/corrupt/blocked archive under `CONTINUE` | Extractable members written; report includes `EXTRACTED` plus `FAILED`/`BLOCKED`; no per-member exception escapes |
+| Mixed good/corrupt/blocked archive under `CONTINUE` | Extractable members written; report includes `EXTRACTED` plus `FAILED`/`BLOCKED`; no per-member exception escapes; the call ends as `on_blocked` says |
 | Reading diagnostic resolves to `RAISE` under `CONTINUE` (e.g. `MEMBER_TIMESTAMP_INVALID`) | `DiagnosticRaisedError` halts; no report returned |
 
 ### Requirement: A ZIP extracted from a non-seekable source is settled at the end of the pass
@@ -1795,7 +1876,7 @@ expresses "raise on the first failure".
 | Case | Expected |
 | --- | --- |
 | Absolute-path member, `abort_on={BLOCKED_MEMBER}`, `OnError.CONTINUE` | `FilterRejectionError` raised at that member; no report; later members untouched |
-| Same archive, `abort_on=()` | `BLOCKED` result; extraction completes; report returned |
+| Same archive, `abort_on=()` | `BLOCKED` result; extraction completes; `FilterRejectionError` carrying the report (`on_blocked="skip"`: report returned) |
 | `REPLACE` collision, `abort_on={NAME_COLLISION}` | `NameCollisionError` at the second member; no report; first member's bytes remain on disk |
 | `SKIP` collision, `abort_on={NAME_COLLISION}` | Aborts — the trigger is the collision, not the resolution |
 | `RENAME` collision, `abort_on={NAME_COLLISION}` | Aborts, even though the rename loses nothing; parity with the escalation this replaces |
@@ -1805,6 +1886,42 @@ expresses "raise on the first failure".
 | Collision under `TRUSTED`, `abort_on={NAME_COLLISION}` | No collision event, so no abort |
 | `abort_on={BLOCKED_MEMBER}` with `OnError.STOP` and a corrupt member | Failure still raises via `OnError`; abort applies only to blocks |
 | ZIP from a pipe, `abort_on={NAME_COLLISION}`, two members colliding | `NameCollisionError` when the second is placed; the first stays placed |
+
+### Requirement: A refused member raises once the rest are extracted
+
+`extract_all()` SHALL take `on_blocked: OnBlocked = OnBlocked.RAISE`:
+
+```python
+class OnBlocked(StrEnum):
+    RAISE = "raise"
+    SKIP = "skip"
+```
+
+A refused member never stops the pass (`OnError` above). Once the pass ends and the
+report is built, under `RAISE`, if any result is `BLOCKED`, the call SHALL raise a
+`FilterRejectionError` whose `report` attribute is that report, whose `member_name` is
+the first `BLOCKED` member's, whose message counts the other refused members, and
+whose `__cause__` is the first refusal's own error. Under `SKIP` it SHALL return the
+report. `FilterRejectionError.report` SHALL be `None` on every other
+`FilterRejectionError`: the one a `BLOCKED` result holds, and the one
+`AbortOn.BLOCKED_MEMBER` raises. A dry run SHALL follow the same rule. The raised error
+SHALL survive pickle, copy and deepcopy with its report.
+
+`ExtractionReport.ok` SHALL be `True` when no result is `BLOCKED` or `FAILED`, and
+`raise_for_failure()` SHALL raise the first such result's error, in report order, and
+do nothing when `ok`. Diagnostics SHALL NOT count toward `ok`.
+
+The CLI passes `OnBlocked.SKIP`: it reports refused members itself.
+
+#### Scenario: on_blocked matrix
+
+| Case | Expected |
+| --- | --- |
+| `good1`, `../escape`, `good2`, defaults | both good members written; `FilterRejectionError` naming `../escape`, `report` holding all three results |
+| Same archive, `on_blocked="skip"` | report returned; `ok` is `False`; `raise_for_failure()` raises the `BLOCKED` result's error |
+| Same archive, `abort_on={BLOCKED_MEMBER}` | `FilterRejectionError` at `../escape`, `report` is `None`; `good2` not written |
+| Same archive, `dry_run=True` | `FilterRejectionError` with the report; nothing kept |
+| No refused member | report returned under either value |
 
 ### Requirement: Dry-run extraction
 

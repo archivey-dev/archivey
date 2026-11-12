@@ -42,7 +42,9 @@ through the shared `compressed-streams` codec layer (bounded local-header parse
 with stdlib `lzma`), the PKZIP 1.x methods Shrink (method 1) and Implode (method 6,
 its window size and tree count from general-purpose bits 1 and 2), decoded in core in
 pure Python and ended at the member's declared size since neither has an end marker,
-and extended codecs when their backends are
+the PKZIP 0.9x method Reduce (methods 2 to 5, compression factors 1 to 4), decoded and
+ended the same way, PKWARE DCL Implode (method 10), decoded in core in pure Python and
+ended by its own end code, and extended codecs when their backends are
 installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93), PPMD
 (method 98, ZIP PPMd8 framing via `[recommended]`/`pyppmd`). A missing optional backend
 SHALL raise `PackageNotInstalledError`. An unknown/unsupported method id SHALL
@@ -60,6 +62,8 @@ methods through the same codec layer, after a decrypt stage.
 | Member uses unknown method id | Listing succeeds; reading raises `UnsupportedFeatureError` |
 | Shrink (1) or Implode (6) member | Decodes in core; `compression` is `SHRINK` or `IMPLODE` |
 | Shrink or Implode member from a pipe whose size is only in a data descriptor (bit 3) | `UnsupportedFeatureError`: neither method marks its end |
+| Reduce (2 to 5) or DCL Implode (10) member | Decodes in core; `compression` is `REDUCE` or `DCL_IMPLODE` |
+| Reduce member from a pipe whose size is only in a data descriptor (bit 3) | `UnsupportedFeatureError`: Reduce does not mark its end; a DCL Implode member reads |
 | Shrink stream whose code table fills with no partial clear | `CorruptionError` (`unzip` and 7-Zip 26.05 refuse it too) |
 | Deflate64/Zstd/PPMd member, backend present | Decodes via the shared codec layer |
 | Deflate64/Zstd/PPMd member, backend absent | `PackageNotInstalledError` |
@@ -662,7 +666,13 @@ SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="zip"`,
 offset of that byte past the end. It is a warning by default and raises under
 `DiagnosticPolicy.STRICT` (DR-3). Zero bytes after the end SHALL be silent. Bytes inside
 the declared comment are the comment, whatever they hold. The end record is searched for
-in the last 65 558 bytes of the file. When a longer tail hides it, the reader SHALL walk
+in the last 65 558 bytes before the payload end (`archive-reading`, *Honour detection
+payload_offset at open*), which is the end of the file when there is none. A forced
+`format=ZIP` is passed the same end (`archive-reading`), so it searches the same span and
+reports the same bytes as auto-detect. Bytes at or past
+the payload end are the executable's certificate, not data after the archive, and SHALL
+raise no diagnostic; a non-zero byte between the archive's end and the payload end is
+reported as above. When a longer tail hides the end record, the reader SHALL walk
 the local headers from the start, without decoding any member, to where the members end,
 and step over the directory and the ZIP64 end records there to the end record, which is
 then read as one the search found. Each local header the walk meets SHALL count toward
@@ -681,6 +691,9 @@ Info-ZIP `unzip` says nothing.
 | `JUNK` after the end record under `STRICT` | `DiagnosticRaisedError` |
 | 1 MiB of non-zero bytes after the end record, from a file or a pipe | One `ARCHIVE_TRAILING_DATA`, `observed_bytes` 0; members list and read |
 | The same with the directory gone | Members listed from their local headers, then `CorruptionError` (see the next requirement) |
+| Signed PE SFX: ZIP, zero padding, certificate (`payload_end` known) | No diagnostic; `STRICT` opens it |
+| Signed PE SFX: ZIP, `JUNK`, certificate | One `ARCHIVE_TRAILING_DATA` for `JUNK`; nothing for the certificate |
+| ZIP whose offsets count from byte 0, followed by a certificate over 64 KiB | The search before the payload end finds the end record; members list and read |
 
 ### Requirement: List a ZIP whose end record is missing
 

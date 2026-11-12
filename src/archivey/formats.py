@@ -7,16 +7,17 @@ policy: any release may change or remove it, a patch release included, with no
 deprecation warning first. Pin the exact archivey version a plugin is tested with.
 
 A format that fits the model is two classes, whether it is built in (ISO 9660) or added
-by a program or a separate package (a plugin). A :class:`FormatHandler` subclass
-declares the format: its :class:`~archivey.ArchiveFormat`, file extensions, magic bytes,
-and an ``open()`` that returns a reader. The reader subclasses :class:`IndexedReader` (a
-format with an index: list the members first, then open any one of them) or
-:class:`SequentialReader` (a format of header, data, header, data, read in one forward
-pass, from a pipe too). The reader hands archivey members and bytes; archivey does the
-rest the same way for every format: name normalization and the name checks, listing
-limits, link resolution, safe extraction and its limits, and the size and digest checks
-on member data. Formats that do not fit, or need special features or more speed, are
-written against archivey's internal reader classes instead.
+by a program or a separate package (a plugin). A handler declares the format: its
+:class:`~archivey.ArchiveFormat`, file extensions and magic bytes, and opens a reader.
+An :class:`IndexedFormatHandler` opens an :class:`IndexedReader` (a format with an
+index: list the members first, then open any one of them); a
+:class:`SequentialFormatHandler` opens a :class:`SequentialReader` (a format of header,
+data, header, data, read in one forward pass, from a pipe too). The reader hands
+archivey members and bytes; archivey does the rest the same way for every format: name
+normalization and the name checks, listing limits, link resolution, safe extraction and
+its limits, and the size and digest checks on member data. Formats that do not fit, or
+need special features or more speed, are written against archivey's internal reader
+classes instead.
 
 A program registers a format with :func:`register_format`. Nothing is loaded
 automatically. Plugin code runs in the caller's process as trusted code: archivey's
@@ -30,10 +31,13 @@ decode it.
 
 A sequential format is also read inside each single-file compression stream archivey
 decodes (``.cpio.gz``), and its walk can hand the rest of the archive to one of
-archivey's codecs part-way (:meth:`ForwardStream.decompress`). What the first version
-leaves out: an indexed format inside a compression stream, member data a library decodes
-in a sequential format, self-extracting stubs, multi-volume sets, passwords, and new
-diagnostic codes.
+archivey's codecs part-way (:meth:`ForwardStream.decompress`). Its walk can also read a
+member that is an archive in turn, a ``.deb``'s ``data.tar.xz`` say, as members of its
+own (:meth:`ForwardStream.take` and :meth:`ReaderContext.open_nested`). A sequential
+format whose library decodes each member hands archivey a stream of the decoded bytes
+(:attr:`MemberSpan.data`) instead of a count of stored bytes. What the first version
+leaves out: an indexed format inside a compression stream, self-extracting stubs,
+multi-volume sets, passwords, and new diagnostic codes.
 """
 
 from __future__ import annotations
@@ -45,15 +49,33 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, ClassVar, Generic, NamedTuple, Protocol, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    BinaryIO,
+    ClassVar,
+    Generic,
+    Literal,
+    NamedTuple,
+    Protocol,
+    TypeVar,
+    cast,
+)
 
 from archivey.config import ArchiveyConfig, DecoderLimits
-from archivey.diagnostics import DiagnosticCode, DiagnosticContext
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticContext,
+    MemberTimestampContext,
+)
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.overrides import override
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
+from archivey.internal.timestamps import dos_to_datetime, unix_to_datetime
+from archivey.internal.unix_mode import special_file_type
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
@@ -61,8 +83,12 @@ from archivey.types import (
     MemberType,
     PluginContainer,
     PluginStream,
+    SpecialFileType,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 __all__ = [
     "CodecCall",
@@ -72,6 +98,7 @@ __all__ = [
     "FormatReader",
     "ForwardStream",
     "Hasher",
+    "IndexedFormatHandler",
     "IndexedReader",
     "Magic",
     "MemberData",
@@ -89,7 +116,12 @@ __all__ = [
     "buffered_stream",
     "register_codec",
     "register_format",
+    "unix_member_type",
 ]
+
+TimeField = Literal["modified", "accessed", "created"]
+"""An ``ArchiveMember`` time field a reader sets with :meth:`ReaderContext.set_unix_time`
+or :meth:`ReaderContext.set_dos_time`."""
 
 
 class Magic(NamedTuple):
@@ -107,17 +139,13 @@ class MemberRecord(NamedTuple, Generic[LocatorT]):
     """One member, as :meth:`IndexedReader.iter_members` yields it."""
 
     member: ArchiveMember
-    """The member, with its public fields filled in. ``name`` is decoded; archivey
-    normalizes it and reports the change, as for a built-in format."""
+    """The member, with its public fields filled in. ``name`` is decoded, as the
+    archive stores it; archivey normalizes it and reports the change, as for a
+    built-in format, and normalizes a hard link's ``link_target`` the same way."""
 
     locator: LocatorT
     """Anything the reader needs to find the member's data again. archivey stores it
     and hands it back to :meth:`IndexedReader.open_member`."""
-
-    stored_name: str | None = None
-    """The decoded name before :meth:`ReaderContext.normalize_name`, when the reader
-    normalized ``member.name`` itself so that a report it made while listing names
-    the member as callers see it. archivey reports the change from this name."""
 
 
 class Hasher(Protocol):
@@ -197,6 +225,22 @@ class MemberData(NamedTuple):
     more than ``size`` bytes either way, but a stream that breaks the promise has
     its extra bytes go unreported, where they would raise ``CorruptionError``."""
 
+    ranges: tuple[tuple[int, int], ...] = ()
+    """The spans ``(start, end)`` of the archive the stream reads, in archive
+    offsets, end exclusive: the member's stored or compressed bytes. An archive read
+    by range from an ``fsspec`` file system then fetches each span in one request (up
+    to the largest fetch archivey makes) when the stream first reads it, not in steps
+    that start small; any other source ignores them. They never change what a read
+    returns, and a wrong one costs only a fetch. archivey learns them when
+    ``open_member`` returns, so a read the plugin makes inside ``open_member`` is not
+    covered.
+
+    Leave it empty when the stream is a :meth:`ReaderSource.view`, or a
+    :meth:`ReaderContext.decompress` over one: archivey then hints the view's span
+    itself. A :func:`block_stream` whose blocks are such streams hints each block
+    when it reads it. Set it for a stream from your own library, or to name more
+    than the view (several extents)."""
+
 
 class MemberSpan(NamedTuple):
     """One member, as :meth:`SequentialReader.walk` yields it: the member, and either
@@ -204,9 +248,10 @@ class MemberSpan(NamedTuple):
     of its decoded data (``data``)."""
 
     member: ArchiveMember
-    """The member, with its public fields filled in. ``name`` is decoded; archivey
-    normalizes it and reports the change, as for a built-in format. A ``FILE`` listed
-    with no ``size`` gets ``data_length``."""
+    """The member, with its public fields filled in. ``name`` is decoded, as the
+    archive stores it; archivey normalizes it and reports the change, as for a
+    built-in format, and normalizes a hard link's ``link_target`` the same way. A
+    ``FILE`` listed with no ``size`` gets ``data_length``."""
 
     data_length: int = 0
     """How many bytes after the header, from where the stream is when the span is
@@ -221,13 +266,9 @@ class MemberSpan(NamedTuple):
     :attr:`MemberData.digests` are. One with a ``HashAlgorithm`` name is also listed
     in ``ArchiveMember.hashes``."""
 
-    stored_name: str | None = None
-    """As :attr:`MemberRecord.stored_name`: the decoded name, when the reader
-    normalized ``member.name`` itself to report on the member before yielding it."""
-
     data: BinaryIO | io.RawIOBase | None = None
     """The member's decoded bytes, for a format whose library decodes each member
-    (LHA, ARJ, a libarchive wrapper), which has no stored bytes to describe with
+    (ACE, Zoo, a libarchive wrapper), which has no stored bytes to describe with
     ``data_length``; that stays 0. The stream need only be good until the walk moves
     on: archivey reads what the caller leaves of it, up to ``member.size``, before it
     asks the walk for the next member, so the library is past it, and then closes it.
@@ -258,7 +299,7 @@ class ReaderArchiveInfo(NamedTuple):
     comment: str | None = None
     extra: Mapping[str, object] = {}
     """Format-specific values, under keys that start with the format's name
-    (``"lha.method"``)."""
+    (``"zoo.method"``)."""
 
 
 class ReaderSource:
@@ -344,6 +385,8 @@ class ForwardStream:
         self._offset = 0
         # Set once decompress() has handed the rest of the bytes to a decoded stream.
         self._handed_off = False
+        # The stream take() returned last, until the walk moves past its bytes.
+        self._taken: _TakenBytes | None = None
 
     @property
     def offset(self) -> int:
@@ -356,6 +399,10 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.read() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
+        if not n:
+            # Moves no bytes, so an open take() stays open.
+            return b""
+        self._end_take()
         data = self._read_fn(n)
         self._offset += len(data)
         return data
@@ -384,8 +431,44 @@ class ForwardStream:
         if n < 0:
             raise ValueError(f"ForwardStream.skip() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
+        if not n:
+            return
+        self._end_take()
         self._skip_fn(self._offset, n)
         self._offset += n
+
+    def take(self, n: int) -> BinaryIO:
+        """The next ``n`` bytes as a stream of their own, read forward: a member that
+        is an archive in turn, to hand :meth:`ReaderContext.open_nested`.
+
+        The stream reads the archive's bytes as they come, from a pipe too, so nothing
+        is held in memory. It ends after ``n`` bytes, or raises ``TruncatedError`` where
+        the archive ends first. The walk resumes after the ``n`` bytes: the next
+        :meth:`read`, :meth:`skip`, :meth:`take` or :meth:`decompress` first skips what
+        the stream left unread, and the stream reads nothing after that. A
+        :meth:`read` or :meth:`skip` of 0 bytes moves nothing and leaves the stream
+        open.
+        """
+        if n < 0:
+            raise ValueError(f"ForwardStream.take() takes a size of 0 or more, got {n}")
+        self._check_not_handed_off()
+        self._end_take()
+        taken = self._taken = _TakenBytes(self, n)
+        # Unbuffered, so that a read after the walk moved on raises at once rather than
+        # returning what a buffer pulled in earlier.
+        return cast(BinaryIO, taken)
+
+    def _end_take(self) -> None:
+        """Move past what the last :meth:`take` left unread, and close it."""
+        taken = self._taken
+        if taken is None:
+            return
+        self._taken = None
+        left = taken.end - self._offset
+        taken.ended = True
+        if left:
+            self._skip_fn(self._offset, left)
+            self._offset += left
 
     def decompress(self, stream_format: StreamFormat | PluginStream) -> ForwardStream:
         """The rest of the archive, from :attr:`offset` on, decoded as a
@@ -408,14 +491,19 @@ class ForwardStream:
 
         The caller's ``FormatPolicy`` holds here as for a member: under
         ``plugins=False`` a ``PluginStream`` raises ``UnsupportedFeatureError``, and a
-        package ``exclude_libraries`` turns off reads as missing. ``only`` and
-        ``exclude`` do not apply, since they check only the file the call opens.
+        package the policy turns off (``exclude_libraries`` or ``only_libraries``)
+        reads as missing. ``only`` and the
+        format entries of ``exclude`` do not apply, since they check only the file the
+        call opens. A :class:`~archivey.CompressionAlgorithm` in ``exclude`` does: a
+        format whose method it lists (``StreamFormat.XZ`` under
+        ``exclude={CompressionAlgorithm.XZ}``) raises ``UnsupportedFeatureError``.
 
         Raises ``ValueError`` for a format that is not a compression stream
         (``UNCOMPRESSED``), and ``ArchiveyUsageError`` when this stream has already
         handed off, or was not built by archivey.
         """
         self._check_not_handed_off()
+        self._end_take()
         if self._decompress_fn is None:
             raise ArchiveyUsageError(
                 "this ForwardStream was not built by archivey and cannot decompress"
@@ -432,8 +520,71 @@ class ForwardStream:
             )
 
 
+class _TakenBytes(io.RawIOBase):
+    """What :meth:`ForwardStream.take` reads: the next bytes of its stream, up to
+    ``end``. A read fills what it asks for, up to ``end``, as a buffered stream's
+    does."""
+
+    def __init__(self, forward: ForwardStream, n: int) -> None:
+        self._forward = forward
+        self.end = forward.offset + n
+        # Set once the walk moved past these bytes: a read then is a plugin bug.
+        self.ended = False
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, buffer: Any) -> int:
+        if self.ended:
+            raise ArchiveyUsageError(
+                "the stream ForwardStream.take() returned was read after the walk "
+                "moved past its bytes"
+            )
+        forward = self._forward
+        want = min(len(buffer), self.end - forward._offset)
+        got = 0
+        while got < want:
+            data = forward._read_fn(want - got)
+            if not data:
+                raise TruncatedError(
+                    f"the archive ends at offset {forward._offset}, inside the "
+                    f"{self.end - forward._offset} bytes up to offset {self.end}"
+                )
+            forward._offset += len(data)
+            buffer[got : got + len(data)] = data
+            got += len(data)
+        return got
+
+
+class _SpanningCheck(Protocol):
+    """A check over the data of several members, which a built-in reader runs itself
+    (a makeself payload's digests). The adapter's ``SpanningCheck`` implements it."""
+
+    def cover(self, member: ArchiveMember) -> None: ...
+
+    def passed(self) -> None: ...
+
+    def failed(self, message: str) -> ArchiveyError: ...
+
+
 class ReaderContext:
     """What an open archive needs from archivey. archivey builds it."""
+
+    # ``_spanning_check(key)`` returns the check for one spanning check of the
+    # archive. Internal, set by the adapter; not for plugins.
+    _spanning_check: Callable[[object], _SpanningCheck] | None = None
+    # ``_decompress_coder(data, stream_format, size)`` decodes ``data``, a container
+    # coder's whole data in ``stream_format``, as ``decompress`` does, except that a
+    # byte after the end raises ``CorruptionError`` (as for a ZIP member) instead of
+    # being reported as trailing data, and bzip2 and LZMA Alone end at their first
+    # stream, as a ZIP or 7z member's bzip2 does. Continuations the codec's data
+    # defines for a member (further xz streams and their padding, zstd and LZ4
+    # frames) still read. Internal, set by the adapter; not for plugins.
+    _decompress_coder: (
+        Callable[[BinaryIO, StreamFormat, int | None], BinaryIO] | None
+    ) = None
 
     def __init__(
         self,
@@ -454,15 +605,28 @@ class ReaderContext:
             [DiagnosticCode, str, DiagnosticContext, ArchiveMember | None], None
         ],
         link_target_unavailable: Callable[[ArchiveMember, str, str, bool], None],
-        hold: Callable[[ArchiveMember, str | None, str | None], None],
+        hold: Callable[[ArchiveMember, str | None], None],
+        charge_metadata: Callable[[int, str], None],
+        open_nested: Callable[[BinaryIO, ArchiveFormat], Iterator[MemberSpan]]
+        | None = None,
+        usage: ResourceUsageRecorder | None = None,
     ) -> None:
         self._encoding = encoding
+        # The open reader's resource-usage recorder, for a built-in reader that checks
+        # a declared allocation itself (``check_decoder_memory``). Not part of the
+        # plugin interface.
+        self._usage = usage
         self._archive_name = archive_name
         self._config = config
         self._decompress = decompress
         self._report = report
         self._link_target_unavailable = link_target_unavailable
         self._hold = hold
+        self._charge_metadata = charge_metadata
+        self._open_nested = open_nested
+        # Set by archivey's adapter: where a built-in reader that calls a package
+        # itself (SquashFS's lz4) records it for ``ArchiveReader.backends_used``.
+        self._usage: ResourceUsageRecorder | None = None
 
     @property
     def encoding(self) -> str | None:
@@ -496,8 +660,21 @@ class ReaderContext:
         mismatch raises ``ArchiveyUsageError``. Leave ``archive_name`` and
         ``member_id`` in ``details`` unset: archivey fills them in. With ``member``,
         the report is attached to that member as well: pass the member being listed,
-        before it is yielded, or the member being opened. The caller's
-        ``DiagnosticPolicy`` applies, so a code it raises on raises here.
+        before it is yielded, or the member being opened.
+
+        A report on a member being listed is held until the member is yielded, and
+        sent then: archivey sets the ``member_name`` of ``details`` to the name the
+        member is listed by, normalized, so a reader reports with the name as the
+        archive stores it. The ``message`` is sent as written, stored name and all:
+        callers match a report to a member by ``member_name``. The caller's
+        ``DiagnosticPolicy`` applies when the report is sent, so a code it raises on
+        raises then, from the listing. A report on a member that is never yielded is
+        sent when the walk ends, under the reader's name and with no member id (or at
+        close, for a sequential walk's first step taken at open and never listed); it
+        raises only from a walk that reached its end, and is recorded without raising
+        when the walk was stopped part-way, ended by an error, or never listed. In a
+        walk archivey starts over to reach member data, a report names the member as
+        listed.
 
         For ``SYMLINK_TARGET_UNAVAILABLE`` use :meth:`link_target_unavailable`.
         """
@@ -524,7 +701,6 @@ class ReaderContext:
         self,
         member: ArchiveMember,
         *,
-        stored_name: str | None = None,
         reason: str | None = None,
     ) -> None:
         """Count a member the reader holds back to yield later, as if it were listed.
@@ -534,32 +710,160 @@ class ReaderContext:
         meanwhile, where the listing's limits do not see it. ``hold()`` counts it
         now, against the same ``max_members`` and ``max_metadata_bytes`` as the
         members already listed, and raises ``ResourceLimitError`` when it would cross
-        either. ``stored_name`` is the name the member will be yielded with as
-        ``stored_name``, weighed too when it differs from ``member.name``.
-        ``reason`` names what the held members are, for that error ("CPIO hard links
-        waiting for their data").
+        either. ``reason`` names what the held members are, for that error ("CPIO
+        hard links waiting for their data").
 
         Call it from ``walk()`` or ``iter_members()``, as the members are listed.
         The charge is on that member object: yielding the same object takes it off
         before archivey counts it as listed, so it is counted once. Yield a copy
         instead and both count until the walk ends. A member never yielded stays
-        counted until the walk ends. In a walk archivey starts over to reach a member's data again,
-        every member was counted when listed, and ``hold()`` does nothing. A call
-        from anywhere else (at open, in ``open_member``), or for a member held
-        already, raises ``ArchiveyUsageError``.
+        counted until the walk ends. In a walk archivey starts over to reach a
+        member's data again, every member was counted when listed, and ``hold()``
+        does nothing. A call from anywhere else (at open, in ``open_member``), or for
+        a member held already, raises ``ArchiveyUsageError``.
         """
-        self._hold(member, stored_name, reason)
+        self._hold(member, reason)
+
+    def charge_metadata(self, nbytes: int, *, what: str) -> None:
+        """Count ``nbytes`` the walk keeps in memory beyond its members, a long-name
+        table or a package header say, against ``max_metadata_bytes``.
+
+        The bytes count with the members already listed, and ``ResourceLimitError``
+        is raised when they would cross the limit, so call it before reading them,
+        with the size the archive declares. ``what`` names them, for that error
+        ("the long-name table"). The charge lasts until the walk ends. A name read
+        only to put on the member it yields needs no charge, since archivey charges
+        the member; a table kept to look names up in is charged, though its entries
+        become names.
+
+        Call it from ``walk()`` or ``iter_members()``, as :meth:`hold` is called. In
+        a walk archivey starts over to reach a member's data, the bytes were counted
+        when listed, and it does nothing. A call from anywhere else (at open, in
+        ``open_member``) raises ``ArchiveyUsageError``; a reader that keeps a table
+        for the life of the archive bounds it by ``config.listing_limits`` itself.
+        """
+        self._charge_metadata(nbytes, what)
+
+    def open_nested(
+        self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat
+    ) -> Iterator[MemberSpan]:
+        """Read ``data``, an archive stored inside this one, as members of this one.
+
+        ``data`` is the inner archive's bytes, read forward, usually a
+        :meth:`ForwardStream.take` of the member that holds them; ``format`` is the
+        inner archive's, such as ``ArchiveFormat(ContainerFormat.TAR,
+        StreamFormat.XZ)`` for a ``.deb``'s ``data.tar.xz``. archivey reads it with its
+        own reader for that format, in one forward pass, and yields one
+        :class:`MemberSpan` per inner member, with the decoded data as
+        :attr:`MemberSpan.data` (``None`` for a member with no data). The inner reader
+        works for this archive: its listing limits are this archive's, what it
+        reports goes into this archive's diagnostics, under the caller's
+        ``DiagnosticPolicy``, and its errors raise from the walk.
+
+        Yield every span, in order, from :meth:`SequentialReader.walk` before taking
+        the next one: the inner reader numbers its members as the outer listing will,
+        so its reports name the right member. The walk may change a span's member
+        before yielding it: rename it, under a prefix say (and the ``link_target`` of
+        a hard link with it; archivey normalizes both), or add
+        ``MemberSpan.digests``. Stop early by closing the iterator; one left open is
+        closed when Python collects it, and at the latest when the archive is closed.
+
+        The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
+        format is read by its replacement, ``exclude_libraries`` and ``only_libraries``
+        hold, and under
+        ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``,
+        and so does a format whose compression decodes with a
+        :class:`~archivey.CompressionAlgorithm` ``exclude`` lists. ``only`` and the
+        format entries of ``exclude`` check only the file the call opens, and a method
+        entry holds for the inner reader's members too. A format that needs a
+        seekable source (7z, RAR) raises ``UnsupportedFeatureError``, and so does an
+        archive nested more than 8 deep (an inner reader calling ``open_nested`` in
+        turn). What the inner reader attaches to a member while its data is read
+        reaches the member the walk yielded. Call it from
+        :meth:`SequentialReader.walk` only; anywhere else it raises
+        ``ArchiveyUsageError``.
+        """
+        if self._open_nested is None:
+            raise ArchiveyUsageError(
+                "ReaderContext.open_nested() is not available for this reader"
+            )
+        return self._open_nested(cast(BinaryIO, data), format)
 
     def normalize_name(self, name: str, member_type: MemberType) -> str:
         """The name archivey gives a member: ``./a//b`` becomes ``a/b``, and a
         directory's name ends in ``/``.
 
-        archivey normalizes every name a reader yields, so most readers never call
-        this. A reader that reports on a member before yielding it calls it first, so
-        the report and the member carry one name: it sets ``member.name`` to the
-        result and yields the name it started from as ``MemberRecord.stored_name``.
+        archivey normalizes every name a reader yields, and every hard link's
+        ``link_target``, so a reader yields names as the archive stores them. It
+        calls this only to match a name from elsewhere in the archive with the name
+        a member is listed by: a checksum list that names files, say.
         """
         return normalize_member_name(name, member_type, backslash_is_separator=False)
+
+    def set_unix_time(
+        self,
+        member: ArchiveMember,
+        field: TimeField,
+        seconds: int,
+        *,
+        nanoseconds: int = 0,
+        source: str,
+    ) -> None:
+        """Set ``member``'s ``field`` to the UTC time ``seconds`` after the Unix
+        epoch, before it or after it, plus ``nanoseconds`` (to the microsecond).
+
+        A time past what a ``datetime`` holds (the years 1 to 9999) leaves the field
+        unset, and is reported as ``MEMBER_TIMESTAMP_INVALID`` on the member, as a
+        built-in format reports it; ``source`` names the stored field's kind for that
+        report (``"cpio"``, ``"ar"``). ``nanoseconds`` outside 0 to 999 999 999 are
+        reported the same way. Call it while the member is being listed or opened.
+        """
+        if not 0 <= nanoseconds < 1_000_000_000:
+            self._report_bad_time(
+                member, field, source, f"{seconds} s + {nanoseconds} ns"
+            )
+            return
+        stamp = unix_to_datetime(seconds)
+        if stamp is None:
+            self._report_bad_time(member, field, source, str(seconds))
+            return
+        # Whole seconds, so the microseconds are 0 and adding them cannot overflow.
+        setattr(member, field, stamp.replace(microsecond=nanoseconds // 1000))
+
+    def set_dos_time(
+        self, member: ArchiveMember, field: TimeField, stamp: int, *, source: str
+    ) -> None:
+        """Set ``member``'s ``field`` from a DOS date and time word: the date in the
+        high 16 bits and the time in the low 16, as RAR stores it (a format that
+        stores the two apart joins them, ``date << 16 | time``). The result is the
+        local time the word records, without a time zone, as ZIP gives it.
+
+        Zero means no time and leaves the field unset. Any other word that names no
+        real time (month 13, 25 o'clock) leaves it unset too and is reported as
+        ``MEMBER_TIMESTAMP_INVALID``, as :meth:`set_unix_time` reports.
+        """
+        value = dos_to_datetime(stamp)
+        if value is None:
+            if stamp:
+                self._report_bad_time(member, field, source, f"0x{stamp:08x}")
+            return
+        setattr(member, field, value)
+
+    def _report_bad_time(
+        self, member: ArchiveMember, field: TimeField, source: str, value_repr: str
+    ) -> None:
+        self.report(
+            DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+            f"Invalid {source} time for {quoted(member.name)}: {value_repr}; "
+            f"{field} is left unset",
+            MemberTimestampContext(
+                member_name=member.name,
+                field=field,
+                source=source,
+                value_repr=value_repr,
+            ),
+            member=member,
+        )
 
     def decode_name(self, raw: bytes) -> str:
         """Decode a stored name the way built-in formats do.
@@ -611,10 +915,14 @@ class ReaderContext:
 
         The caller's ``FormatPolicy`` holds for each member: under ``plugins=False`` a
         ``PluginStream`` raises ``UnsupportedFeatureError`` before the codec runs, and
-        a package ``exclude_libraries`` turns off raises ``PackageNotInstalledError``.
-        ``only`` and ``exclude`` do not apply: they check only the file the call opens,
-        so a member stored with ``StreamFormat.XZ`` decodes under
-        ``exclude={StreamFormat.XZ}``.
+        a package the policy turns off (``exclude_libraries`` or ``only_libraries``)
+        raises ``PackageNotInstalledError``.
+        ``only`` and the format entries of ``exclude`` do not apply: they check only the
+        file the call opens, so a member stored with ``StreamFormat.XZ`` decodes under
+        ``exclude={StreamFormat.XZ}``. A :class:`~archivey.CompressionAlgorithm` in
+        ``exclude`` does apply: ``exclude={CompressionAlgorithm.XZ}`` refuses that
+        call, for ``CompressionAlgorithm.XZ`` or ``StreamFormat.XZ``, with
+        ``UnsupportedFeatureError`` before the codec runs.
 
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
         is one or more frames, decoded together, and ``XZ`` data is one or more xz
@@ -714,8 +1022,10 @@ class SequentialReader(FormatReader):
 
 
 class FormatHandler(ABC):
-    """One format: what identifies it, and how to open it. Never instantiated by a
-    caller; archivey calls :meth:`open` on an instance it makes."""
+    """What every format declares: what identifies it, and the modules it needs.
+    Subclass :class:`IndexedFormatHandler` or :class:`SequentialFormatHandler`, not
+    this class: each adds the method that opens its shape of reader. Never
+    instantiated by a caller; archivey makes the instance it opens with."""
 
     format: ClassVar[ArchiveFormat]
     """The format, with ``StreamFormat.UNCOMPRESSED``. A plugin builds it from a
@@ -725,7 +1035,7 @@ class FormatHandler(ABC):
     ``ArchiveFormat.ZIP``, and is not registered."""
 
     extensions: ClassVar[tuple[str, ...]] = ()
-    """File extensions with the dot (``".lha"``). An extension a built-in format uses
+    """File extensions with the dot (``".zoo"``). An extension a built-in format uses
     (``".cpio"``) is refused at registration. A replacement plugin declares none: the
     built-in detection finds its files."""
 
@@ -760,16 +1070,25 @@ class FormatHandler(ABC):
         """
         return None
 
+
+class IndexedFormatHandler(FormatHandler):
+    """A format with an index, read from a seekable source: :meth:`open` returns an
+    :class:`IndexedReader`. A pipe is refused before :meth:`open` is called."""
+
+    non_seekable_reason: ClassVar[str | None] = None
+    """Why the format needs a seekable source: the clause the ``StreamNotSeekableError``
+    a pipe gets gives (``"its index is at the end of the file"``). ``None`` gives a
+    generic reason."""
+
     @abstractmethod
-    def open(self, source: ReaderSource, context: ReaderContext) -> FormatReader:
+    def open(self, source: ReaderSource, context: ReaderContext) -> IndexedReader[Any]:
         """Open the archive. Raise ``CorruptionError`` or ``TruncatedError`` when its
         structure is damaged, as a built-in reader does."""
 
 
 class SequentialFormatHandler(FormatHandler):
-    """A format read in one forward pass. Subclass this instead of
-    :class:`FormatHandler`, and implement :meth:`open_sequential` instead of
-    :meth:`~FormatHandler.open`: there is no seekable source to hand over, since the
+    """A format read in one forward pass: :meth:`open_sequential` returns a
+    :class:`SequentialReader`. There is no seekable source to hand over, since the
     archive may be a pipe. Its bytes reach :meth:`SequentialReader.walk`.
 
     Registering one also registers the format inside each single-file compression
@@ -779,7 +1098,7 @@ class SequentialFormatHandler(FormatHandler):
     :attr:`~FormatHandler.magic` in the first 512 decoded bytes, so each magic must end
     within them. A format with no reliable magic is found there by its
     :attr:`~FormatHandler.probe` on those same 512 bytes, where the extension names it
-    inside the compressor (``.lha.gz``) or ``always_probe_content`` is set, as on an
+    inside the compressor (``.zoo.gz``) or ``always_probe_content`` is set, as on an
     uncompressed source."""
 
     @abstractmethod
@@ -788,20 +1107,13 @@ class SequentialFormatHandler(FormatHandler):
         raises from the first step of :meth:`SequentialReader.walk`, which archivey
         takes when it opens the archive."""
 
-    @override
-    def open(self, source: ReaderSource, context: ReaderContext) -> FormatReader:
-        """Not called for a sequential format: archivey calls
-        :meth:`open_sequential`."""
-        raise TypeError(
-            f"{type(self).__name__} is a SequentialFormatHandler: archivey calls "
-            "open_sequential(), not open()"
-        )
-
 
 _register_lock = threading.Lock()
 
 
-def register_format(handler: type[FormatHandler]) -> None:
+def register_format(
+    handler: type[IndexedFormatHandler | SequentialFormatHandler],
+) -> None:
     """Make archivey read the format ``handler`` declares, in this process.
 
     Register before other threads open archives: detection reads the registry
@@ -811,9 +1123,10 @@ def register_format(handler: type[FormatHandler]) -> None:
     format lists and ``format="<extension>"`` all know the format. There is no way to
     remove a registration.
 
-    Raises ``ArchiveyUsageError`` when the format is registered already, when its
-    container value is a built-in's or another plugin's, or when one of its
-    extensions is a built-in format's.
+    Raises ``ArchiveyUsageError`` when ``handler`` subclasses neither
+    :class:`IndexedFormatHandler` nor :class:`SequentialFormatHandler`, when the format
+    is registered already, when its container value is a built-in's or another
+    plugin's, or when one of its extensions is a built-in format's.
     """
     # Imported here: the registry imports the backends, and they import this module's
     # neighbours, so a module-level import would be circular for a caller that imports
@@ -981,6 +1294,35 @@ def register_codec(handler: type[CodecHandler]) -> None:
         register_plugin_codec(handler)
 
 
+_UNIX_TYPES = {
+    0o100000: MemberType.FILE,
+    0o040000: MemberType.DIRECTORY,
+    0o120000: MemberType.SYMLINK,
+}
+
+
+def unix_member_type(
+    mode: int, *, has_data: bool
+) -> tuple[MemberType, SpecialFileType | None]:
+    """The member type a Unix ``st_mode``'s file-type bits give, and the special file
+    they name, for ``ArchiveMember.extra["special_file_type"]``.
+
+    A regular file, a directory and a symlink map to their types, with no special
+    file. A device, a FIFO or a socket is ``OTHER``, as in every format archivey
+    reads, unless the archive stores data for it (``has_data``): then it is a
+    ``FILE`` whose bytes are the content, and the special file still says what the
+    mode named. Other type bits, none included, give ``"unknown"`` and the same
+    type. Store the special file in ``extra`` whenever it is not ``None``,
+    ``"unknown"`` included, as every built-in format does, and report
+    ``"unknown"`` as ``MEMBER_TYPE_UNKNOWN`` too.
+    """
+    member_type = _UNIX_TYPES.get(mode & 0o170000)
+    if member_type is not None:
+        return member_type, None
+    special = special_file_type(mode) or "unknown"
+    return (MemberType.FILE if has_data else MemberType.OTHER), special
+
+
 def block_stream(
     size: int, block_size: int, read_block: Callable[[int], bytes | BinaryIO]
 ) -> BinaryIO:
@@ -1013,7 +1355,8 @@ def buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO:
 
 
 def _bind_policy_hint() -> None:
-    """Bind ``FormatHandler`` where :class:`~archivey.FormatPolicy` is defined.
+    """Bind ``IndexedFormatHandler`` where :class:`~archivey.FormatPolicy` is
+    defined.
 
     ``FormatPolicy.replace`` is annotated with it, but that module cannot import this
     one (this module imports the config, which imports the policy), so it names it only
@@ -1022,7 +1365,7 @@ def _bind_policy_hint() -> None:
     """
     from archivey import format_policy
 
-    format_policy.FormatHandler = FormatHandler
+    format_policy.IndexedFormatHandler = IndexedFormatHandler
 
 
 _bind_policy_hint()

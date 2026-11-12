@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import sys
+import warnings
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -77,7 +78,11 @@ def outer_format(
         )
     # Every content probe runs, as open_stream's detection does for cat --outer: the
     # flag says the source is a compressed stream, so a probe only says which codec.
-    probing = replace(config or DEFAULT_ARCHIVEY_CONFIG, always_probe_content=True)
+    # The caller's config already warned about any deprecated field it sets; the
+    # copy passes it on and must not warn again (the CLI is single-threaded).
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        probing = replace(config or DEFAULT_ARCHIVEY_CONFIG, always_probe_content=True)
     fmt = detect_format(archive, config=probing).format
     outer = outer_layer_format(fmt)
     if outer is None:
@@ -96,7 +101,15 @@ def outer_layer_format(fmt: ArchiveFormat) -> ArchiveFormat | None:
     if fmt.container is ContainerFormat.RAW_STREAM:
         return fmt
     if (
-        fmt.container in (ContainerFormat.TAR, ContainerFormat.AR, ContainerFormat.CPIO)
+        fmt.container
+        in (
+            ContainerFormat.TAR,
+            ContainerFormat.AR,
+            ContainerFormat.DEB,
+            ContainerFormat.CPIO,
+            ContainerFormat.RPM,
+            ContainerFormat.MAKESELF,
+        )
         or isinstance(fmt.container, PluginContainer)
     ) and fmt.stream is not StreamFormat.UNCOMPRESSED:
         return ArchiveFormat(ContainerFormat.RAW_STREAM, fmt.stream)

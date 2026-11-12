@@ -25,7 +25,7 @@ from __future__ import annotations
 import struct
 import zlib
 from collections.abc import Callable
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import (
     CorruptionError,
@@ -42,6 +42,9 @@ from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
 )
 from archivey.types import OptionalLibrary
+
+if TYPE_CHECKING:
+    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 
 class LzoError(ValueError):
@@ -84,11 +87,17 @@ def _python_lzo(
 def lzo1x_decompressor(
     excluded: frozenset[OptionalLibrary] = frozenset(),
     natives: Natives = IN_PROCESS,
+    usage: ResourceUsageRecorder | None = None,
 ) -> Callable[[bytes, int], bytes]:
     """The LZO1X block decoder to use: ``python-lzo`` when present and allowed, else
     :func:`lzo1x_decompress_python`, which is Python and so runs in this process
-    whatever ``natives`` says."""
-    return _python_lzo(excluded, natives) or lzo1x_decompress_python
+    whatever ``natives`` says. ``usage`` records ``python-lzo`` when it is chosen."""
+    package = _python_lzo(excluded, natives)
+    if package is None:
+        return lzo1x_decompress_python
+    if usage is not None:
+        usage.note_backend("library", OptionalLibrary.LZO.value, "lzo")
+    return package
 
 
 def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
@@ -382,6 +391,10 @@ class LzopDecompressor:
     refuse it.
     """
 
+    # A damaged block raises only once the blocks before it are handed out
+    # (``_raise_after``): see ``Decoder.holds_back_errors``.
+    holds_back_errors = True
+
     def __init__(
         self,
         decode_block: Callable[[bytes, int], bytes],
@@ -391,6 +404,10 @@ class LzopDecompressor:
         self._check_block = check_block
         self._in = bytearray()
         self._out = bytearray()
+        # A block that fails its decode or check while a good block's output is still
+        # held: that output is handed out first, and this raises once it is gone
+        # (spec ``compressed-streams``).
+        self._raise_after: CorruptionError | None = None
         self._header: LzopHeader | None = None
         self._ended = False
         self.unused_data = b""
@@ -401,9 +418,12 @@ class LzopDecompressor:
 
     @property
     def needs_input(self) -> bool:
-        return not self._out and not self._ended
+        # False after a failed block, so the next call is made at once and raises.
+        return self._raise_after is None and not self._out and not self._ended
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        if self._raise_after is not None:
+            raise self._raise_after
         if self._ended:
             if data:
                 self.unused_data += data
@@ -415,7 +435,12 @@ class LzopDecompressor:
         del self._out[:n]
         # With the output used up, decode the next block the input holds, so
         # ``needs_input`` is true only when no whole block is left unread.
-        self._fill()
+        try:
+            self._fill()
+        except CorruptionError as exc:
+            if not out:
+                raise
+            self._raise_after = exc
         return out
 
     def _fill(self) -> None:

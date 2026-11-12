@@ -50,6 +50,7 @@ import io
 import struct
 import zlib
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import BinaryIO, NoReturn
 
@@ -92,10 +93,12 @@ from archivey.internal.backends.zip_parser import (
 )
 from archivey.internal.overrides import override
 from archivey.internal.sfx import (
+    LAYOUT_PREFIX,
     SFX_MAX,
     VALIDATOR_PEEK_MAX,
     HitOutcome,
     cut_signature_error,
+    executable_layout,
     is_cut_signature,
 )
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
@@ -1141,6 +1144,9 @@ class LocalHeaderWalk:
         return f"after member #{self._index - 1}"
 
     def _start(self) -> None:
+        """With ``find_start``, scan past a stub to the first ZIP record, and refuse
+        a stream with none in reach or one cut inside its first signature. Without
+        it, leave the stream as it is for ``next_entry`` to judge."""
         # Anything next_entry knows how to handle opens the stream: a local header, the
         # directory or end records of an archive whose members are gone, or the Strong
         # Encryption record it names. Only other bytes are a stub to scan past.
@@ -1190,23 +1196,39 @@ class LocalHeaderWalk:
         the window bounds the work, and the validator reads only the header.
         """
         window = bytearray()
+
+        def peek_at(pos: int) -> Callable[[int], bytes]:
+            def peek_more(n: int) -> bytes:
+                while (
+                    len(window) < pos + n and len(window) < SFX_MAX + VALIDATOR_PEEK_MAX
+                ):
+                    more = self.source.read(_READ_CHUNK)
+                    if not more:
+                        break
+                    window.extend(more)
+                return bytes(window[pos : pos + n])
+
+            return peek_more
+
+        # An executable's overlay start first, as detection and the RAR and 7z scans judge it:
+        # a decoy header in the program's own sections never competes with the payload.
+        layout = executable_layout(peek_at(0)(LAYOUT_PREFIX), None)
+        if (
+            layout is not None
+            and layout.overlay_start + len(LOCAL_HEADER_SIGNATURE) <= SFX_MAX
+        ):
+            first = peek_at(layout.overlay_start)
+            if (
+                first(len(LOCAL_HEADER_SIGNATURE)) == LOCAL_HEADER_SIGNATURE
+                and validate_zip_local_header(first, None) is HitOutcome.VALID
+            ):
+                self.source.unread(window[layout.overlay_start :])
+                return None
         searched = 0
         while True:
             pos = window.find(LOCAL_HEADER_SIGNATURE, searched, SFX_MAX)
             if pos >= 0:
-
-                def peek_more(n: int, _pos: int = pos) -> bytes:
-                    while (
-                        len(window) < _pos + n
-                        and len(window) < SFX_MAX + VALIDATOR_PEEK_MAX
-                    ):
-                        more = self.source.read(_READ_CHUNK)
-                        if not more:
-                            break
-                        window.extend(more)
-                    return bytes(window[_pos : _pos + n])
-
-                if validate_zip_local_header(peek_more, None) is HitOutcome.VALID:
+                if validate_zip_local_header(peek_at(pos), None) is HitOutcome.VALID:
                     self.source.unread(window[pos:])
                     return None
                 searched = pos + 1
@@ -1220,6 +1242,11 @@ class LocalHeaderWalk:
             window.extend(more)
 
     def _read_local_header(self) -> LocalEntry:
+        """Consume the local header at the current position and return its entry.
+
+        A header with bit 3 clear that defers a size to a ZIP64 extra field must hold
+        it there, since nothing after the data would supply it.
+        """
         offset = self.source.offset
         fixed = self.source.read(LOCAL_HEADER_SIZE)
         if len(fixed) != LOCAL_HEADER_SIZE:
@@ -1342,6 +1369,13 @@ class LocalHeaderWalk:
         crc: int | None,
         file_size: int | None,
     ) -> DataDescriptor:
+        """Consume the data descriptor that follows ``entry``'s data, which ended
+        after ``compressed_size`` bytes.
+
+        ``crc`` and ``file_size`` are what the decoded data gave, when known. A
+        descriptor whose values disagree with them is still returned, found by its
+        size alone, for the caller to judge.
+        """
         buffer = self.source.read(_DESCRIPTOR_LOOKAHEAD)
         at_end = len(buffer) < _DESCRIPTOR_LOOKAHEAD
         descriptor = match_descriptor(

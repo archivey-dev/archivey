@@ -24,18 +24,32 @@ stay a local path whatever it contains, and the `OpenFile` check SHALL run only 
 | `open_archive(fs.open("a.zip"))`, an already-open fsspec file | Read as any seekable `BinaryIO`, through the caller's object; not closed by the reader |
 | `import archivey; archivey.open_archive(path)` without fsspec imported | `fsspec` is not in `sys.modules` afterwards |
 
-### Requirement: OpenFile fields archivey cannot honour are refused
+### Requirement: How archivey honours the OpenFile fields
 
-An `OpenFile` whose `mode` is not `"rb"`, or whose `compression` is not `None` after
-fsspec resolves it, SHALL be refused with an `ArchiveyUsageError` that is a `ValueError`,
-naming the field and its value, before any range is read. Its `encoding`, `errors` and
+An `OpenFile` whose `mode` is not `"rb"` SHALL be refused with an `ArchiveyUsageError`
+that is a `ValueError`, naming the mode, before any range is read. An `OpenFile` whose
+`compression` is not `None` after fsspec resolves it SHALL be read through fsspec's
+decompressing stream, as `of.open()` builds it but without entering `of`. archivey opened
+that stream and the file system's file under it, and SHALL close both when the source
+closes, the open fails or detection ends, with one WARNING
+on the `archivey.streams` logger saying it reads no ranges; for a codec archivey decodes
+itself, the warning SHALL say that `compression=None` reads by range. Its `compression`
+SHALL NOT become a `format=`: the archive is what the decompressed bytes hold. In a
+volume sequence, and in `open_stream()`, which reads a compressed stream and would get
+the decoded bytes, an `OpenFile` with a `compression` SHALL be refused with an
+`ArchiveyUsageError` before any read. A `FormatDetectionError` from a compressed
+`OpenFile` SHALL carry a note that the bytes were decoded by fsspec and that
+`compression=None` reads the compressed file itself. Its `encoding`, `errors` and
 `newline` SHALL be ignored, as binary mode ignores them.
 
-#### Scenario: refused OpenFile fields
+#### Scenario: OpenFile fields
 
 | Case | Expected |
 | --- | --- |
-| `fsspec.open("memory://x.zip.gz", compression="infer")` | `ArchiveyUsageError` naming `compression='gzip'`; no read |
+| `fsspec.open("memory://x.zip.gz", compression="infer")` | Opens the ZIP inside; one WARNING suggesting `compression=None`; closing the reader closes fsspec's stream |
+| `[fsspec.open("memory://a.7z.001", compression="gzip"), ...]` | `ArchiveyUsageError` naming the compression; no read |
+| `open_stream(fsspec.open("memory://y.txt.gz", compression="infer"))` | `ArchiveyUsageError` naming `compression='gzip'` and `compression=None`; no read |
+| `open_archive(fsspec.open("memory://y.txt.gz", compression="infer"))` | `FormatDetectionError` with a note naming fsspec's `compression='gzip'` |
 | `fsspec.open("memory://x.zip.gz")` | Opens the gzip stream (single-file reader with one member) |
 | `fsspec.open("memory://x.zip", mode="rt")` | `ArchiveyUsageError` naming the mode |
 
@@ -48,8 +62,22 @@ The `ArchiveSource` built from an `OpenFile` SHALL settle its facts once, at ope
 | `size` | `fs.size(path)`, as a fact: it clamps reads as a path's `stat` size does |
 | `size_hint` | The same value |
 | `path`, `volume_paths` | `None` |
-| `name` | `of.path` |
+| `name` | `of.path`, without the `user:password@` of a URL and, for `http`/`https`, without the query and fragment |
 | `seek_is_expensive` | `True` |
+| A seek to the tail | Decodes nothing (`nearest_resume_offset(target)` is `target`) and costs one range request |
+
+The reads that look at the end of a source (detection's UDIF trailer and PE tail
+probe, the xz index, the lzip trailer, the gzip ISIZE) SHALL run on an `OpenFile`
+source as they run on a path, so the same bytes give the same detected format and the
+same member facts, with one exception (maintainer ruling, 2026-11-08: lazy for
+multi-stream files, remote only). For a `.xz` or `.lz` file on an `OpenFile` source,
+the open SHALL read only the last stream's footer and index (the last member's
+trailer). If that read shows an earlier stream or member, the open SHALL NOT walk the
+rest: the member's `size` SHALL be `None`, and the facts the walk fills (the lzip
+combined CRC) SHALL be absent. A path source SHALL keep the full walk. A seek in the
+member SHALL still work, walking the index when it needs it. A `.xz` on an `OpenFile`
+source whose last 64 KiB are all zeros (stream padding) SHALL be treated the same way,
+without scanning back over the padding.
 
 A backend that needs a local path SHALL treat the source as any non-path stream (RAR's
 spool under `SpoolLimits`). Closing the reader SHALL NOT close the `OpenFile`'s file
@@ -60,8 +88,14 @@ system.
 | Case | Expected |
 | --- | --- |
 | `detect_format(fsspec.open("memory://d/data.tar.zst"))` | The name `d/data.tar.zst` drives the name-keyed checks as a path's name does |
+| `OpenFile` path `https://u:pw@host/a.zip?X-Amz-Signature=…` | `archive_name` and archivey's own messages, diagnostics and logs show `https://host/a.zip`; every fetch uses the path as given. An I/O error the file system raises propagates unchanged (DR-15a) and can carry the URL as given |
 | Object grows after open | Reads stop at the open-time size; detecting the change is the planner's (`fsspec-integration`) |
 | RAR, compressed member, `OpenFile` source | The archive is spooled under `SpoolLimits`, with the existing cost note |
+| A bzip2 stream that ends in a UDIF `koly` block | `DMG`, as from a path |
+| A single-stream `.xz` or `.lz` file | The member's `size` from the stream index (the trailer), as from a path |
+| A multi-stream `.xz` or multi-member `.lz` file | `size` is `None`, in the same requests whatever the stream count; from a path, the size |
+| A seek in that member, with `seekable_members=True` | The right bytes; the index walk runs then |
+| A `.gz` file | `extra["gzip.isize"]` from the trailer, as from a path |
 
 ## MODIFIED Requirements
 
@@ -114,12 +148,12 @@ class ArchiveyConfig:
     listing_limits: ListingLimits = ListingLimits()
     decoder_limits: DecoderLimits = DecoderLimits()
     spool_limits: SpoolLimits = SpoolLimits()
-    max_read_through: int = 2**20
     detection_budget: DetectionBudget = BALANCED_BUDGET
     always_probe_content: bool = False
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
     on_diagnostic: Callable[[Diagnostic], None] | None = None
+    max_read_through: int = 2**20
 ```
 
 `max_retained_diagnostic_references` SHALL be non-negative. `max_read_through` is the

@@ -11,14 +11,18 @@ oracle, which run unchanged over this object.
 
 from __future__ import annotations
 
+import bz2
 import gzip
 import io
+import lzma
 import os
+import random
 import subprocess
 import sys
 import tarfile
 import tempfile
-from collections.abc import Callable
+import zipfile
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, cast
 
@@ -1605,3 +1609,66 @@ def test_bytes_reached_after_a_rebase_counts_reads_from_the_new_start() -> None:
     # A seek inside the data with no read after it reaches nothing new.
     wrapped.seek(25)
     assert wrapped.bytes_reached == 10
+
+
+# --- the cheap-seek signal ---------------------------------------------------------
+
+
+def _member_source(method: int) -> Iterator[ArchiveSource]:
+    payload = random.Random(5).randbytes(64 * 1024)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", method) as zf:
+        zf.writestr("m.bin", payload)
+    buf.seek(0)
+    with (
+        open_archive(buf, seekable_members=True) as outer,
+        outer.open("m.bin") as member,
+    ):
+        member.read(1)
+        member.seek(0)
+        yield ArchiveSource.for_stream(member)
+
+
+def test_a_file_source_resumes_at_the_target() -> None:
+    src = ArchiveSource.for_stream(io.BytesIO(b"x" * 100))
+    assert src.nearest_resume_offset(70) == 70
+    assert source_module.seeks_to_end_are_cheap(src)
+
+
+def test_a_non_seekable_source_has_no_resume_offset() -> None:
+    src = ArchiveSource.for_stream(NonSeekableBytesIO(b"x" * 100))
+    assert src.nearest_resume_offset(70) is None
+    assert not source_module.seeks_to_end_are_cheap(src)
+
+
+def test_a_stored_member_source_resumes_at_the_target() -> None:
+    for src in _member_source(zipfile.ZIP_STORED):
+        assert src.seek_is_expensive
+        end = src.size_hint
+        assert end is not None
+        assert src.nearest_resume_offset(end - 10) == end - 10
+        assert source_module.seeks_to_end_are_cheap(src)
+
+
+def test_a_deflated_member_source_resumes_from_its_start() -> None:
+    for src in _member_source(zipfile.ZIP_DEFLATED):
+        end = src.size_hint
+        assert end is not None
+        assert src.nearest_resume_offset(end - 10) == 0
+        assert not source_module.seeks_to_end_are_cheap(src)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: gzip.GzipFile(fileobj=io.BytesIO(gzip.compress(b"abc"))),
+        lambda: bz2.BZ2File(io.BytesIO(bz2.compress(b"abc"))),
+        lambda: lzma.LZMAFile(io.BytesIO(lzma.compress(b"abc"))),  # noqa: SIM115
+    ],
+)
+def test_a_standard_library_decompressor_is_expensive_to_seek(
+    make: Callable[[], BinaryIO],
+) -> None:
+    stream = make()
+    assert source_module.seek_is_expensive(stream)
+    assert not source_module.seeks_to_end_are_cheap(stream)

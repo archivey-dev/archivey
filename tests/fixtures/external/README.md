@@ -152,3 +152,127 @@ rebuilt in `tests/test_lzop.py`, each with mtime 2024-03-01 12:00 UTC and mode 0
 - `empty.lzo`: an empty file: a header and the end block.
 - `two-files.lzo`: `lzop -c a.txt b.txt`, two lzop files back to back.
 - `files.tar.lzo`: a USTAR archive of `dir/one.txt` and `dir/two.txt`.
+
+## `bzip3/`
+
+Four `.bz3` files written by the **`bzip3` 1.4.0** tool (Ubuntu 24.04's `bzip3`
+package) on 2026-11-07, with `bzip3 -e -k -c`. No other common tool writes the format.
+`tests/test_bzip3.py` reads them beside files the `bzip3` package's `BZ3Compressor`
+writes.
+
+| File | Made from | Notes |
+| --- | --- | --- |
+| `tiny.txt.bz3` | `hi\n` | one literal block (BWT index -1) |
+| `empty.txt.bz3` | an empty file | the 9-byte header and no block |
+| `lines.txt.bz3` | 30 000 lines `%07d the quick brown fox jumps over the lazy dog\n` | `-b 1`: two blocks, 1 MiB and 511 424 bytes |
+| `files.tar.bz3` | a GNU tar of `tiny.txt` and an empty `empty.txt` | 16 MiB block size (the default) |
+
+## `xar_bsdtar/`
+
+Five XAR archives written by **bsdtar 3.7.2** (libarchive) on 2026-11-07, one per
+`--options xar:compression=` value: `none.xar`, `gzip.xar`, `bzip2.xar`, `lzma.xar`
+and `xz.xar`. Each holds the same tree, every time stamp 2024-03-01 12:00 UTC:
+
+- `b.txt` (mode 0640): 1 500 words drawn from eight, a line of about 8 KB.
+- `dir/` and `dir/a.txt` (`hello\n`).
+- `link`, a symlink to `dir/a.txt`.
+- `hard.txt`, a hard link to `dir/a.txt`. bsdtar keeps the data on `dir/a.txt`
+  (`<type link="original">`) and writes `hard.txt` after it.
+- a file whose name on disk was `caf\xe9.txt`. bsdtar could not convert the byte to
+  UTF-8, wrote U+FFFD in its place and stored the name base64-encoded
+  (`<name enctype="base64">`), so it reads back as `caf�.txt`.
+
+Made with `bsdtar --format xar --options xar:compression=<c> -cf <c>.xar b.txt dir link
+hard.txt 'caf'$'\xe9''.txt'`. 7-Zip cannot list them. `tests/test_xar.py` reads them
+beside the archives `tests/xar_util.py` writes.
+
+## `cab_libarchive/`
+
+Four cabinets written by Microsoft's **`makecab.exe`**, copied from libarchive's test
+suite (`libarchive/test/test_read_format_cab_*.cab.uu`, decoded; libarchive is
+BSD-2-Clause) on 2026-11-07. No tool on the test image writes LZX, and the other two
+show what Microsoft's own writer does with stored and MSZIP folders, so
+`tests/test_cab.py` reads them beside the cabinets `tests/cab_util.py` writes.
+
+| File | Folder | Notes |
+| --- | --- | --- |
+| `test_read_format_cab_1.cab` | stored | `empty`, `dir1/file1`, `dir2/file2` |
+| `test_read_format_cab_2.cab` | MSZIP | the same, and `zero` (33 000 zero bytes, two blocks) |
+| `test_read_format_cab_3.cab` | LZX | as `_2` |
+| `test_read_format_cab_filename_cp932.cab` | MSZIP | two names in cp932 (`表だよ/漢字.txt`, `表だよ/一覧表.txt`) |
+
+How they were made is in libarchive's `test_read_format_cab.c` (`mkcab1` to `mkcab3`).
+
+## `lha_lhasa/`
+
+Twenty-nine LHA archives from lhasa's test suite (`test/archives/<tool>/<file>`, renamed
+`<tool>_<file>`; lhasa commit `75ed835`, v0.6.0), copied on 2026-11-09 (the MacLHA ones
+on 2026-11-10). Each was written by the tool its directory names, most on the system it ran on; no tool on the test image
+writes LHA, so `tests/test_lha.py` reads them beside the archives `tests/lha_util.py`
+writes. Their expected bytes are what lhasa 0.4.0 extracts.
+
+| Tool | Files | What they hold |
+| --- | --- | --- |
+| LHa for UNIX 1.14i | `lha_unix114i_*` | `-lh5-` level 0, `-lh6-` level 1, `-lh7-` level 2; symlinks; directories with Unix modes |
+| LHA for OS/2 2.08 | `lha_os2_208_*` | level 3, `-lh5-` and directories |
+| UNLHA32.DLL 2.67a | `unlha32_h2_lhx.lzh` | `-lhx-` |
+| LHARK-A 0.4d | `lhark04d_lh7.lzh` | LHARK's `-lh7-`, read as `-lk7-` |
+| LArc 3.33 | `larc333_lz4.lzs` | `-lz4-` (stored) |
+| PMARC2 (MSX-DOS) | `pmarc2_pm0.pma` | `-pm0-` (stored), no time |
+| LhA 1.22 (Amiga) | `lha_amiga_122_*` | `-lh4-`, `-lh1-`, a file in subdirectories |
+| LHarc 1.13 | `lharc113_lh1.lzh` | `-lh1-` |
+| LArc 3.33 | `larc333_lz5.lzs`, `larc333_initial.lzs` | `-lz5-`; one crafted to copy the whole starting ring (`initial.bin`), with no end byte |
+| By hand (lhasa's `lz5-to-lzs` script) | `generated_lzs.lzs` | `-lzs-`, with no end byte |
+| OS-9/68k LHA 2.01 | `lha_osk_201_h2_lh0.lzh` | the level-2 header two bytes longer than its size; OS-9 permissions |
+| MorphOS LhA 2.7.17 | `morphos_lha_2717_h2_metadata.lzh` | a `0x71` comment record, skipped |
+| LH/2 2.22 (OS/2) | `lh2_222_eas.lzh` | mixed levels 0 and 1, OS/2 extended attributes as a file |
+| MacLHA 2.24 | `maclha_224_*` | MacBinary-wrapped members at levels 0 to 2 (`-lh0-`, `-lh1-`, `-lh5-`), one made with "non-Mac" (no wrapper), TeachText files in subdirectories; lhasa's `test-decompress` gives their CRC-32s |
+
+lhasa is under the ISC license:
+
+> Copyright (c) 2011-2025, Simon Howard
+>
+> Permission to use, copy, modify, and/or distribute this software for any purpose with
+> or without fee is hereby granted, provided that the above copyright notice and this
+> permission notice appear in all copies.
+>
+> THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD
+> TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO
+> EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
+> DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
+> IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+> CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+## `arj_310/`
+
+ARJ archives written 2026-11-09 by ARJ 3.10 for Linux (`arj` 3.10.22 in Ubuntu), the
+open-source continuation of Robert Jung's ARJ. Nothing on the CI image writes ARJ.
+
+- `method1.arj` to `method4.arj`: the same four files (`words.txt`, 15 995 bytes of
+  random words; `runs.bin`, 37 353 bytes of repeated random runs and zeros; `small.txt`;
+  `empty`) with `arj a -m1` to `-m4`. ARJ stores `small.txt` and `empty` with method 0.
+  `tests/test_arj.py` pins their sizes and SHA-256.
+- `stored.arj`: `small.txt` with `-m0`.
+- `links.arj`: `arj a -a1 -r` of a file, a symlink to it, a hard link to it, a FIFO and a
+  directory, which ARJ for Unix stores as type-6 members with `U` extended headers.
+- `garbled.arj`: `small.txt` garbled with `-gsecret`.
+- `cc_bla_dos.arj` and `cc_bla_unix.arj`: Commons Compress's `bla.arj` (ARJ for Windows,
+  host 11) and `bla.unix.arj` (Apache-2.0, github.com/apache/commons-compress
+  `src/test/resources`), fetched 2026-11-09.
+
+See [`dev-docs/formats/arj.md`](../../../dev-docs/formats/arj.md).
+
+## `reduce_pkzip092/`
+
+Two raw ZIP Reduce streams (method 5, compression factor 4) that PKZIP 0.92 wrote under
+DOSBox, from the Rust `zip` crate's test data (`tests/data/legacy/`, MIT licence,
+github.com/zip-rs/zip2), fetched 2026-11-09. No tool on the test image writes Reduce, and
+Info-ZIP `unzip` is built without it, so these are the only bytes from a real writer.
+
+- `reduce_hamlet_2048.bin`: the first 2048 bytes of Project Gutenberg's *Hamlet*, which
+  are `hamlet_2048.txt` (CRLF line ends, as PKZIP read them; the crate's copy lost them
+  to a git text conversion).
+- `reduce_zero_reduced.bin`: the same 2048 bytes then 1024 zero bytes, which reach a copy
+  from before the start of the output.
+
+The crate's comment on `reduce_zero_reduced.bin` gives the commands that made them.

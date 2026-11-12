@@ -13,6 +13,24 @@ allows, the directory walk is a loop that refuses a directory reached twice, and
 compressed block goes through ``ReaderContext.decompress``, so archivey's decoder limits
 apply, or, for LZ4, through ``lz4.block`` capped at the block's size.
 
+How a listing is built:
+
+1. When the image opens, :func:`_read_superblock` checks the superblock, which says
+   where each table starts. The other steps run in :meth:`SquashfsReader.iter_members`.
+2. :meth:`SquashfsReader._walk` walks the directory table from the root inode, depth
+   first, and keeps one :class:`_Entry` per name. It reads only the directories'
+   inodes, since it needs their listings to go on.
+3. :meth:`SquashfsReader._file_inodes` reads every other inode once, in table order,
+   and keeps a packed record of each inode that reads, with a symlink's target beside
+   it. An inode that fails keeps only its reference, and its member raises.
+4. :meth:`SquashfsReader._make_member` turns each entry into an ``ArchiveMember``. The
+   type, mode, mtime and owner (through the id table) come from the inode. A later
+   entry that is not a directory and names the inode of an earlier entry is a hard
+   link to that entry, whatever its type.
+
+A file's bytes are its data blocks, decoded one at a time, then its tail, which may sit
+in a fragment block shared by many small files (:meth:`SquashfsReader._file_stream`).
+
 The reader is written against ``archivey.formats``. Beyond it, it uses archivey's own
 handling of the ``lz4`` package (the PyPy rule, ``exclude_libraries`` and process
 isolation) rather than a copy of it. Handbook page: ``dev-docs/formats/squashfs.md``.
@@ -36,7 +54,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import (
-    FormatHandler,
+    IndexedFormatHandler,
     IndexedReader,
     Magic,
     MemberData,
@@ -162,6 +180,13 @@ class _Superblock(NamedTuple):
 
 
 def _read_superblock(source: ReaderSource) -> _Superblock:
+    """The image's superblock, refused unless it is a SquashFS 4.0 one that fits.
+
+    Checks only what the rest of the reader relies on before it reads a table: the
+    version, the block size, that the image holds the bytes it declares (when its size
+    is known), and that the inode, directory and id tables start inside them, the
+    inode table first.
+    """
     raw = source.read_at(0, _SUPERBLOCK.size)
     if raw[:4] == _SWAPPED_MAGIC:
         raise UnsupportedFeatureError(
@@ -215,6 +240,7 @@ class _Inode(NamedTuple):
 
 
 def _listing(inode: _Inode) -> tuple[int, int, int]:
+    """A directory inode's listing: (metadata block, offset in it, size in bytes)."""
     assert isinstance(inode.body, tuple), "a directory inode's body is its listing"
     return inode.body
 
@@ -244,6 +270,8 @@ _NO_LOCATION = (0,) * len(FileLocation._fields)
 
 
 def _lists_over() -> CorruptionError:
+    """The error for block lists that add up to more than the decoded inode table
+    holds (:meth:`SquashfsReader._block_list_fits`)."""
     return CorruptionError(
         "the files' block lists add up to more than the inode table holds"
     )
@@ -295,7 +323,7 @@ def _decodes_twice(keys: Iterable[tuple[int, int]], capacity: int) -> bool:
     return False
 
 
-def _firsts(entries: list[_Entry]) -> list[int]:
+def _first_with_inode(entries: list[_Entry]) -> list[int]:
     """For each entry, the first entry listed with its inode: itself, or for a hard link
     the member it names. -1 for a directory."""
     first: list[int] = []
@@ -336,7 +364,7 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         ``NONE``), or ``PackageNotInstalledError`` when lz4 is missing, unused on this
         interpreter, or turned off by the caller's policy."""
         config = self._context.config
-        excluded = config.formats.exclude_libraries
+        excluded = config.formats._libraries_off
         if deps.lz4_block is None or OptionalLibrary.LZ4 in excluded:
             requirement = as_reported(LZ4_REQUIREMENT, excluded)
             raise PackageNotInstalledError(
@@ -380,7 +408,17 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
             return through_archivey
         if compressor == "lz4":
+            # Decoded here, not through ``ReaderContext.decompress``, so the policy's
+            # method entry is asked here as that call would ask it.
+            refusal = self._context.config.formats._codec_refusal(
+                CompressionAlgorithm.LZ4
+            )
+            if refusal is not None:
+                raise UnsupportedFeatureError(f"{refusal}.")
             natives = self._lz4_natives()
+            usage = self._context._usage
+            if usage is not None:
+                usage.note_backend("library", OptionalLibrary.LZ4.value, "lz4")
             block_error = cast("Any", deps.lz4_block).LZ4BlockError
 
             def lz4_block(start: int, length: int, limit: int) -> bytes:
@@ -491,6 +529,12 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         return data
 
     def fragment_tail(self, location: FileLocation, length: int) -> bytes:
+        """The last ``length`` bytes of a file, from the fragment block that holds them.
+
+        Writers pack the tails of many small files into one fragment block, so the
+        decoded block is cached: reading those files one after another decodes it
+        once.
+        """
         start, stored = self._fragment(location.fragment)
         # ``_decodes_twice`` replays this cache's policy; change both together.
         key = (start, stored)
@@ -529,6 +573,12 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
     # ── Listing ──────────────────────────────────────────────────────────────────────
 
     def _inode(self, block: int, offset: int) -> _Inode:
+        """The inode at ``offset`` in metadata block ``block`` of the inode table.
+
+        An extended inode type is folded into its basic one, the owner's id indexes
+        are looked up in the id table, and the body is what the type needs: a
+        directory's listing, a file's :class:`FileLocation`, a symlink's target.
+        """
         cursor = self._cursor(self._sb.inode_table, block, offset)
         kind, mode, uid_index, gid_index, mtime, _ = _INODE_HEADER.unpack(
             cursor.read(_INODE_HEADER.size)
@@ -672,13 +722,13 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         keeps the last ``_FRAGMENT_CACHE`` of them. When reading the files in listing
         order would decode a fragment block a second time (the cache replayed over
         their blocks' starts and stored sizes, read from the fragment table, which
-        needs no block decoded), the files with a tail come sorted by block and offset instead, so
-        each block decodes once. Writers that fill fragments in name order never reach
-        this: mksquashfs and gensquashfs keep one fragment in progress and mksquashfs
-        ``-tailends`` two. sqfstar and tar2sqfs fill fragments in the tar's order, so
-        they keep listing order when the tar is in name order. An image built from a
-        tar in another order can reach the sort, and so can a crafted one, which in
-        listing order would decode a whole fragment block for each small file.
+        needs no block decoded), the files with a tail come sorted by block and offset
+        instead, so each block decodes once. Writers that fill fragments in name order
+        never reach this: mksquashfs and gensquashfs keep one fragment in progress and
+        mksquashfs ``-tailends`` two. sqfstar and tar2sqfs fill fragments in the tar's
+        order, so they keep listing order when the tar is in name order. An image built
+        from a tar in another order can reach the sort, and so can a crafted one, which
+        in listing order would decode a whole fragment block for each small file.
 
         An image that lists one name twice keeps listing order, which says which entry
         is current.
@@ -717,8 +767,17 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
             if budget is not None and self._charged > budget:
                 raise  # ``_charge`` refused: making the members would hold more
             failure, complete = exc, False
+        limit = limits.max_members
+        if limit is not None and len(entries) > limit:
+            # The walk found more entries than ``max_members`` (it stops one past, or
+            # failed on damage after it): refuse before any member, as without
+            # ``streaming=True``, rather than yield the first ones.
+            raise ResourceLimitError(
+                f"Listing limit reached: max_members={limit} (the SquashFS tree "
+                f"holds more than {limit} entries)"
+            )
         files = self._file_inodes(entries)
-        first = _firsts(entries)
+        first = _first_with_inode(entries)
         # The members a hard link names: only their names are kept past their record.
         targets = {f for i, f in enumerate(first) if f not in (-1, i)}
         order: Sequence[int] = range(len(entries))
@@ -728,7 +787,9 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         # then raises, as a walk that reads each inode as it goes would.
         names: dict[int, tuple[bytes, str, _Inode | None]] = {}
         for index in order:
-            made = self._record(entries, index, files, first[index], names, targets)
+            made = self._make_member(
+                entries, index, files, first[index], names, targets
+            )
             # The member holds the name now. A directory's entry stays: a later
             # member's message names the path through it (``_raw_name``).
             if entries[index].kind != _DIR:
@@ -739,8 +800,8 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
 
     def _walk(self, entries: list[_Entry], limit: int | None) -> bool:
         """Append every entry of the tree to ``entries``, in listing order, reading only
-        the directories' inodes. ``False`` when it stopped past ``limit`` entries, where
-        archivey refuses the listing anyway. Each entry's path is charged
+        the directories' inodes. ``False`` when it stopped past ``limit`` entries, which
+        the caller refuses before making any member. Each entry's path is charged
         (``_charge``) as the walk finds it."""
         budget = self._context.config.listing_limits.max_metadata_bytes
         charged = self._charged
@@ -927,13 +988,14 @@ class SquashfsReader(IndexedReader[FileLocation | None]):
         return b"/".join(reversed(parts))
 
     def _check_type(self, entries: list[_Entry], entry: _Entry, kind: int) -> None:
+        """Refuse an entry whose directory gives it another type than its inode does."""
         if kind != entry.kind:
             raise CorruptionError(
                 f"{_shown(self._raw_name(entries, entry))} is listed as type "
                 f"{entry.kind}, its inode is {kind}"
             )
 
-    def _record(
+    def _make_member(
         self,
         entries: list[_Entry],
         index: int,
@@ -1065,6 +1127,7 @@ class _MetadataCursor:
         return self._pos - self._table
 
     def read(self, n: int) -> bytes:
+        """The next ``n`` bytes, crossing into the next metadata block as needed."""
         parts = []
         while n:
             data, next_pos = self._reader._metadata_block(self._pos)
@@ -1082,11 +1145,13 @@ class _MetadataCursor:
         return b"".join(parts)
 
 
-class SquashfsHandler(FormatHandler):
+class SquashfsHandler(IndexedFormatHandler):
     """SquashFS 4.0 images: ``.squashfs``, ``.sqfs`` and snap packages."""
 
     format = ArchiveFormat.SQUASHFS
     extensions = (".squashfs", ".sqfs", ".snap")
+    # The tables are at offsets the superblock gives, past the data blocks.
+    non_seekable_reason = "its directory and inode tables come after the file data"
     # ``sqsh`` too, so an older big-endian image is refused by name, not left undetected.
     magic = (Magic(0, MAGIC), Magic(0, _SWAPPED_MAGIC))
     uses_encoding = True
@@ -1096,8 +1161,4 @@ class SquashfsHandler(FormatHandler):
         return SquashfsReader(source, context)
 
 
-SquashfsReadBackend = register_builtin_format(
-    SquashfsHandler,
-    # The tables are at offsets the superblock gives, past the data blocks.
-    NON_SEEKABLE_REASON="its directory and inode tables come after the file data",
-)
+SquashfsReadBackend = register_builtin_format(SquashfsHandler)

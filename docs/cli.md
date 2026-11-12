@@ -74,9 +74,11 @@ To choose the folder yourself, pass `-d out/`, or `-d .` for the current directo
     as `notes (1).txt`; with `error`, `skip` or `replace`, the folder stays in `photos/` instead.
 
     For an archive that doesn't list its members up front, such as a TAR, archivey extracts into
-    `photos/` first and moves the folder out at the end. It leaves the folder in `photos/`, and
-    prints why, if the move could change what a link points to (the folder is a symlink, or holds
-    one that leads outside it), or if part of it couldn't be listed.
+    `photos/` first and moves the folder out at the end. It does the same for any archive whose
+    single folder holds a link, or whose member names start with `/`, `\` or a drive letter. It
+    leaves the folder in `photos/`, and prints why, if the move could change what a link points to
+    (the folder is a symlink, holds one that leads outside it, or holds one and would merge into a
+    folder of the same name that is already there), or if part of it couldn't be listed.
 
 Extraction uses the `strict` policy by default: a member that would land outside the destination,
 or a link that points outside it, is refused and reported, and the rest are still extracted.
@@ -90,6 +92,7 @@ report instead of stopping at the first problem:
 | --- | --- | --- |
 | A file with the member's name is already there | writes the member as `photo (1).jpg` | raises an error |
 | A member fails | reports it, carries on, and exits with `1` at the end | raises an error at once |
+| A member is refused | reports it and carries on | writes the rest, then raises `FilterRejectionError` |
 
 `--overwrite error --stop-on-error` makes the command behave like the library. `--overwrite` also
 takes `skip` (keep the file that's there) and `replace` (write over it).
@@ -101,15 +104,17 @@ and `--abort-on name-sanitized` when a name had to be changed to be written. `--
 given more than once. Files written before the stop stay on disk.
 
 `--dry-run` runs every check and reads every member, but writes nothing. It prints the same report
-and exits with the same code as a real extraction into an empty folder. Before the summary it
-adds one line, `peak use of the reader limits:`. It gives the largest decoder allocation
-archivey checked and what it was for, the bytes spooled to a temporary file at their peak, and
-two totals: the key-derivation rounds and the listing's members and metadata bytes. These are
-the numbers to compare with [`DecoderLimits`, `SpoolLimits` and `ListingLimits`](security.md)
-before you open an untrusted archive with tighter limits. A part that is zero is left out, and
-when every part is zero there is no line. A run that stops before its summary, such as a limit
-refusal or `--abort-on`, prints no line either. Decoder memory counts only the allocations
-archivey checks itself: xz, LZMA Alone and zstd leave that check to their library.
+and exits with the same code as a real extraction into the destination as it is now: a member that
+would clash with a file already there is reported as renamed under the default
+`--overwrite rename`, and fails under `--overwrite error`, as it would for real. Before the summary it adds one
+line, `peak use of the reader limits:`. It gives the largest decoder allocation archivey checked
+and what it was for, the bytes spooled to a temporary file at their peak, and two totals: the
+key-derivation rounds and the listing's members and metadata bytes. These are the numbers to
+compare with [`DecoderLimits`, `SpoolLimits` and `ListingLimits`](security.md) before you open an
+untrusted archive with tighter limits. A part that is zero is left out, and when every part is zero
+there is no line. A run that stops before its summary, such as a limit refusal or `--abort-on`,
+prints no line either. Decoder memory counts only the allocations archivey checks itself: xz, LZMA
+Alone and zstd leave that check to their library.
 
 `--outer` removes only the compression layer: `archivey extract data.tgz --outer` writes
 `data.tar` and keeps the original, as `gunzip -k` does.

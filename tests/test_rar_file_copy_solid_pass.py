@@ -37,6 +37,7 @@ from archivey.exceptions import (
 from archivey.internal.backends import rar_copy_sources, rar_reader
 from tests.conftest import binary_refusal
 from tests.extract_util import open_and_extract
+from tests.rar_util import flag_size_unknown
 
 _COPIES = 6
 _COPY_NAMES = [f"d_copy{i}.txt" for i in range(_COPIES)]
@@ -147,6 +148,34 @@ def test_stream_members_serves_every_copy_from_one_decode(
         assert seen[name] == payload, name
     assert seen["c_other.txt"] == b"other"
     assert spawns == [decompressor]
+
+
+@pytest.mark.parametrize("decompressor", _DECOMPRESSORS)
+@pytest.mark.parametrize("flagged", ["source", "copies"])
+def test_copies_of_a_member_of_unknown_size(
+    tmp_path: Path, decompressor: str, flagged: str
+) -> None:
+    """A copy holds its source's bytes, so it lists its source's size. When the
+    source's header leaves the size unknown, every copy lists no size either, and
+    reads the source's bytes; when only the copies' headers do, they list the
+    source's size."""
+    config = _config(decompressor)
+    archive, payload = _solid_with_copies(tmp_path)
+    data = archive.read_bytes()
+    if flagged == "source":
+        data = flag_size_unknown(data, only=1)
+    else:
+        for index in range(3, 3 + _COPIES):
+            data = flag_size_unknown(data, only=index)
+    archive.write_bytes(data)
+    want = None if flagged == "source" else len(payload)
+    with open_archive(archive, config=config) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert [members[name].size for name in _COPY_NAMES] == [want] * _COPIES
+        assert reader.read(members[_COPY_NAMES[0]]) == payload
+    with open_archive(archive, config=config) as reader:
+        seen = {m.name: s.read() for m, s in reader.stream_members() if s}
+    assert all(seen[name] == payload for name in ["b_source.txt", *_COPY_NAMES])
 
 
 @pytest.mark.parametrize("decompressor", _DECOMPRESSORS)
@@ -599,3 +628,181 @@ def test_file_copy_streams_takes_a_bool(tmp_path: Path) -> None:
         pytest.raises(ArchiveyUsageError, match="file_copy_streams"),
     ):
         reader.stream_members(file_copy_streams=0)  # type: ignore[arg-type]
+
+
+def _two_sources_with_copies(tmp_path: Path) -> tuple[Path, bytes, bytes]:
+    """A solid RAR5 of a first source and its copy, then a second source and its
+    copy, then a last member (``rar`` stores names sorted)."""
+    src = tmp_path / "src2"
+    src.mkdir()
+    first, second = _text(3, 5000), _text(4, 5000)
+    (src / "a_first.txt").write_bytes(first)
+    (src / "b_first_copy.txt").write_bytes(first)
+    (src / "c_second.txt").write_bytes(second)
+    (src / "d_second_copy.txt").write_bytes(second)
+    (src / "e_last.txt").write_bytes(b"last")
+    archive = tmp_path / "two.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ma5", "-s", "-oi:1000", str(archive)]
+        + sorted(p.name for p in src.iterdir()),
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    listing = subprocess.run(
+        ["rar", "lt", str(archive)], capture_output=True, check=True, timeout=60
+    ).stdout
+    assert listing.count(b"File reference") == 2
+    return archive, first, second
+
+
+def test_a_source_is_let_go_after_its_last_copy(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the pass is past a source's last copy, the source's spool charge is given
+    back, so a later source fits in a limit with room for one source only. Without
+    that, the second source would not be kept and its copy would start a named
+    ``unrar`` open."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    _config("unrar")  # skips without rar and unrar
+    archive, first, second = _two_sources_with_copies(tmp_path)
+    config = _config(
+        "unrar", spool_limits=SpoolLimits(max_bytes=len(first) + len(first) // 2)
+    )
+    expected = {"b_first_copy.txt": first, "d_second_copy.txt": second}
+    with open_archive(archive, config=config) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            data = stream.read()
+            if member.name in expected:
+                assert data == expected[member.name], member.name
+    assert spawns == ["unrar"]
+
+
+def test_a_released_memory_source_frees_its_room() -> None:
+    """A source let go after its last copy frees its share of the in-memory
+    allowance, and a copy reached after that falls back to a named open."""
+    charged: list[int] = []
+    sources = rar_copy_sources.FileCopySources(
+        {1: 1, 2: 1}, lambda n: charged.append(n) or True, lambda n: None
+    )
+    size = rar_copy_sources._MEMORY_LIMIT
+    sources.register(1, 0, size)
+    block = sources.tee(io.BytesIO(b"x" * size + b"y" * size))
+    assert block.read(size) == b"x" * size
+    sources.copy_reached(1)
+    with sources.open(1, lambda end: None) as kept:  # type: ignore[union-attr]
+        assert kept.read() == b"x" * size
+    sources.advance()
+    assert sources.open(1, lambda end: None) is None
+    # The second source fits in memory now: nothing is charged to the spool.
+    sources.register(2, size, size)
+    assert block.read() == b"y" * size
+    assert charged == []
+    with sources.open(2, lambda end: None) as kept:  # type: ignore[union-attr]
+        assert kept.read() == b"y" * size
+    sources.close()
+
+
+def test_a_source_let_go_before_the_pipe_reaches_it_is_never_charged() -> None:
+    """The caller skipped a source and its copy, so the source is let go while still
+    pending. The pipe then passes it: nothing is charged and no file opens, and a
+    later source still fits in memory. Fails if ``_release`` leaves the source in the
+    pending list (the pipe would then place it in the spool)."""
+    charged: list[int] = []
+    sources = rar_copy_sources.FileCopySources(
+        {1: 1, 2: 1}, lambda n: charged.append(n) or True, lambda n: None
+    )
+    size = rar_copy_sources._MEMORY_LIMIT
+    sources.register(1, 0, size)
+    block = sources.tee(io.BytesIO(b"x" * size + b"y" * size))
+    sources.copy_reached(1)
+    sources.advance()
+    sources.register(2, size, size)
+    assert block.read() == b"x" * size + b"y" * size
+    assert charged == []
+    assert sources._file is None
+    with sources.open(2, lambda end: None) as kept:  # type: ignore[union-attr]
+        assert kept.read() == b"y" * size
+    sources.close()
+
+
+def test_a_name_selector_keeps_no_source_for_unselected_copies(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``members=`` name set that leaves out every copy keeps no source: the pass
+    asks the set up front which copies it will yield. Fails if the source's copies
+    are counted without the selector (the source would sit in the spool)."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    config = _config("unrar")
+    archive, payload = _solid_with_copies(tmp_path)
+    names = ["a_prefix.txt", "b_source.txt", "c_other.txt"]
+    with open_archive(archive, config=config) as reader:
+        seen = []
+        for member, stream in reader.stream_members(members=names):
+            assert stream is not None
+            data = stream.read()
+            if member.name == "b_source.txt":
+                assert data == payload
+            seen.append(member.name)
+            assert reader._resource_usage().spool_bytes == 0
+        assert seen == names
+    assert spawns == ["unrar"]
+
+
+def test_a_name_selector_still_serves_the_copies_it_selects(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With one copy in the name set, its source is kept and the copy is served from
+    the one decode."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    config = _config("unrar")
+    archive, payload = _solid_with_copies(tmp_path)
+    names = ["b_source.txt", _COPY_NAMES[-1]]
+    with open_archive(archive, config=config) as reader:
+        got = {}
+        for member, stream in reader.stream_members(members=names):
+            assert stream is not None
+            got[member.name] = stream.read()
+            if member.name == "b_source.txt":
+                assert reader._resource_usage().spool_bytes == len(payload)
+    assert got == dict.fromkeys(names, payload)
+    assert spawns == ["unrar"]
+
+
+def test_extract_with_a_predicate_keeps_no_source_for_unselected_copies(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``extract_all`` asks a ``members=`` predicate over the listing first and passes
+    the pass a collection, so a source that neither it nor any of its copies selects
+    is not kept. (A source it writes is never kept, so the source is left out too.)"""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    config = _config("unrar")
+    archive, _payload = _solid_with_copies(tmp_path)
+    dest = tmp_path / "out"
+    with open_archive(archive, config=config) as reader:
+        reader.extract_all(
+            dest, members=lambda m: m.name in ("a_prefix.txt", "c_other.txt")
+        )
+        assert reader._resource_usage().spool_bytes == 0
+    assert sorted(p.name for p in dest.iterdir()) == ["a_prefix.txt", "c_other.txt"]
+    assert spawns == ["unrar"]
+
+
+def test_a_predicate_still_counts_every_copy(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``stream_members`` predicate is asked once per member, in order, never ahead,
+    so every copy counts: the source is kept even when the predicate selects none of
+    its copies. Fails if the pass starts asking predicates up front."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    config = _config("unrar")
+    archive, payload = _solid_with_copies(tmp_path)
+    with open_archive(archive, config=config) as reader:
+        for member, stream in reader.stream_members(
+            members=lambda m: m.name == "b_source.txt"
+        ):
+            assert stream is not None
+            assert stream.read() == payload, member.name
+        assert reader._resource_usage().spool_bytes == len(payload)
+    assert spawns == ["unrar"]

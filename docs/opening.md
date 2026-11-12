@@ -11,8 +11,12 @@ open file objects, you can pass a list of them, in order. A ZIP split by 7-Zip i
 archive. A RAR set with a volume missing still opens, as `unrar` would, but `members()` raises
 `TruncatedError` naming the missing volume, and so does reading a member with data in it. A part
 archivey finds on its own that is a symbolic link is refused with `OpenError`; pass the parts as a
-list to read it. `ArchiveyConfig(discover_volumes=False)` turns the search off, so a path opens
-only the file it names ([Security](security.md#hardening) says when that is worth it).
+list to read it. If listing the folder fails with an `OSError`, such as no permission to list it,
+or a server refuses the listing for a remote file (an HTTP 4xx status), archivey finds no other
+volumes: the path opens alone, and a missing part is reported as above. Any other error from the
+listing is raised as is.
+`ArchiveyConfig(discover_volumes=False)` turns the search off, so a path opens only the file it
+names ([Security](security.md#hardening) says when that is worth it).
 
 A file object is read from its current position to its end, so an archive that starts partway
 through a larger file opens as is. Bytes after the archive don't stop it opening. Any that aren't
@@ -20,7 +24,9 @@ zeros are recorded as `ARCHIVE_TRAILING_DATA`, which `DiagnosticPolicy.STRICT` t
 exception. Behind more than 64 KiB of trailing bytes, zeros included, a ZIP's index is found by
 walking its members from the start, which takes longer. A file object that can't seek, such as a
 pipe or an HTTP response, needs `streaming=True` and works only for some formats, which [Reading
-once](reading.md#reading-once) lists.
+once](reading.md#reading-once) lists. An archive on S3, an HTTP server or another remote store
+opens from `fsspec.open(url)` without downloading it, and can seek
+([Remote archives](remote.md)).
 
 ??? note "Why not refuse bytes after the archive?"
     They aren't part of any member, so every member is still read correctly. GNU gzip and bzip2 also
@@ -36,11 +42,18 @@ the file isn't in the specified format, it fails like a damaged one.
 `archivey.detect_format(path)` tells you the format without opening the archive. It returns a
 `FormatInfo` with the format and how sure archivey is about it: `CERTAIN` when the format's
 signature matched where the format puts it, `PROBABLE` when a test of its contents matched, and
-`GUESS` when the evidence is weak, such as only the file name. `payload_offset` is more than 0 for a
+`GUESS` when the evidence is weak, such as only the file name. `prefixed` is `True` for a
 self-extracting archive, where the archive starts after a program, and for any other archive found
-behind leading bytes. A file in no format archivey
-knows raises `FormatDetectionError`. The confidence grade is for a person reading it and may change
-between releases, so decide what to do from the format, not the grade.
+behind leading bytes; `payload_offset` says where reading starts. Test `prefixed`, not
+`payload_offset > 0`, to ask whether the archive came after something else: a ZIP whose own
+offsets count from the start of the file starts at 0 even behind a program. `prefixed` says what
+detection found, so `False` is not proof that nothing comes first: a file named for its format
+whose first bytes are neither an archive signature nor a program or `#!` header is taken at its
+name's word, with no search for leading bytes. For a signed Windows
+program, `payload_end` is where its signature starts, and archivey reads the archive only up to
+there. A file in no format archivey knows raises `FormatDetectionError`. The confidence grade is
+for a person reading it and may change between releases, so decide what to do from the format,
+not the grade.
 
 ## Single compressed files
 
@@ -121,7 +134,7 @@ and U+DCFF.
 
 If you know the encoding, pass it as `encoding=`, and archivey uses it in place of that default for
 names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR is listed as `'caf\udce9.txt'` without it
-and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar and SquashFS read
+and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar, RPM, makeself, SquashFS, CAB, XAR, LHA and ARJ read
 `encoding=`. The other formats decode names their own way, and a value passed to them is ignored and
 noted in the diagnostics.
 
@@ -168,8 +181,11 @@ formats a call opens. A format is a container and its compression, and both have
 ```python
 from archivey import ArchiveyConfig, ContainerFormat as C, FormatPolicy, StreamFormat as S
 
+# The formats people send today, for files you didn't make. See below.
+UPLOADS = ArchiveyConfig(formats=FormatPolicy.COMMON)
+
 # ZIP, and TAR with or without gzip or xz. Nothing else opens.
-UPLOADS = ArchiveyConfig(formats=FormatPolicy(only={C.ZIP, C.TAR, S.GZIP, S.XZ}))
+ZIP_OR_TAR = ArchiveyConfig(formats=FormatPolicy(only={C.ZIP, C.TAR, S.GZIP, S.XZ}))
 
 # Everything except RAR, and no plugin formats.
 NO_RAR = ArchiveyConfig(formats=FormatPolicy(exclude={C.RAR}, plugins=False))
@@ -179,6 +195,14 @@ A file in a format the policy turns off raises `UnsupportedFeatureError`, and th
 which entry would let it open. `format=` doesn't get around it. `detect_format` still reports
 what a file is, and `config.formats.allows(info.format)` tells you whether it would open. A plugin
 format that's turned off isn't detected at all, so its code doesn't run.
+
+`FormatPolicy.COMMON` is a preset for files you didn't make, such as uploads. It opens ZIP, TAR,
+RAR and 7z, and gzip, bzip2, xz and zstd, as a whole file or around a TAR. It refuses ZIP members
+compressed with Shrink, Implode, Reduce or DCL Implode, methods only PKZIP 1.x and earlier wrote.
+Everything else is refused: disk images, packages, cabinets, the rarer compressions, plugin
+formats, and any format a later release adds. Their readers and their pure-Python decoders then
+never run on what you're sent. To add a format, build on it:
+`FormatPolicy(only=FormatPolicy.COMMON.only | {S.LZ4}, exclude=FormatPolicy.COMMON.exclude)`.
 
 `exclude_libraries=` turns off optional packages for the call, even when they're installed:
 
@@ -197,11 +221,33 @@ and any other name is refused, so a typo can't leave a package on. The setting o
 made with that config: other calls in the same program, on any thread, still use the package.
 `format_availability(fmt, config=...)` and `list_supported_formats(config=...)` answer with the
 excluded packages counted as missing. A plugin reader that imports a package itself honours the setting
-only if it checks `config.formats.exclude_libraries` itself.
+only if it checks `config.formats.allows_library(name)` itself.
+
+`only_libraries=` is the allowlist form, as `only=` is of `exclude=`: every optional package it
+doesn't list is turned off, including any that a later archivey release adds. `only_libraries=set()`
+runs with no optional package. On Python 3.14 that also turns off the standard library's
+`compression.zstd`, which is listed as an optional package; list it to keep zstd:
+
+```python
+STDLIB_ONLY = ArchiveyConfig(formats=FormatPolicy(only_libraries=set()))
+WITH_AES = ArchiveyConfig(formats=FormatPolicy(only_libraries={L.CRYPTOGRAPHY}))
+```
+
+It covers archivey's own optional packages, not a plugin's own modules: `plugins=False` turns
+plugins off. Zstandard comes from `compression.zstd` on Python 3.14 and `backports.zstd` before
+that, so list both to keep zstd on every version.
 
 `only=` and `exclude=` check the file you open, not what's inside it. `S.XZ` there means a file
 compressed with xz as a whole, such as a `.xz` or `.tar.xz` file, not the xz codec: a ZIP member
 compressed with xz can still be read under `exclude={S.XZ}`, because the file is a ZIP.
-`plugins=False` and `exclude_libraries=` are different, since they turn off the code that
-decodes, wherever it runs. Under `plugins=False`, no plugin codec runs in the call, even for a
-member inside an archive: reading a member that needs one raises `UnsupportedFeatureError`.
+A [`CompressionAlgorithm`][archivey.CompressionAlgorithm] in `exclude=` reaches further: it turns
+that decoder off, for a file compressed with it as a whole and for every member compressed with it.
+`exclude={CompressionAlgorithm.XZ}` refuses a `.xz` or `.tar.xz` file and still lists an
+xz-compressed ZIP member, but opening, reading or extracting that member raises
+`UnsupportedFeatureError` before anything is decoded. A format that compresses data inside itself
+without naming the method on each member, such as a `.deb` with a `data.tar.xz`, an RPM package or
+a SquashFS image, doesn't open at all when you exclude that method. `only=` takes no methods.
+`plugins=False`, `exclude_libraries=` and `only_libraries=` are different, since they turn off the
+code that decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format runs in
+the call, even for a member or an archive inside an archive: reading a member that needs one raises
+`UnsupportedFeatureError`.

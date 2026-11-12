@@ -16,7 +16,7 @@ behaviour and links the row.
 | Read | gzip and zlib as one-member archives; raw DEFLATE as a ZIP or 7z coder, and inside `.tar.gz` |
 | Write | **Not shipped** |
 | Backends | The standard library's `zlib` under `DecompressorStream`, always available. `rapidgzip` from `[seekable]`, used when `use_rapidgzip` selects it (§2.3) |
-| Seeking | Without `rapidgzip`, a backward seek decodes again from the start, or, on declared seek demand, from the nearest member start: those a forward read has passed, and every member of a BGZF (`bgzip`) file, walked without decoding (§2.3). With `rapidgzip`, from the nearest point of the index it builds while decoding |
+| Seeking | Without `rapidgzip`, a backward seek decodes again from the start, or, on declared seek demand, from the nearest point a forward read has passed: a member start, or a zlib snapshot taken about every MiB inside a member; every member of a BGZF (`bgzip`) file is walked without decoding (§2.3). With `rapidgzip`, from the nearest point of the index it builds while decoding |
 | Size | `None`, for both. gzip's ISIZE is the last member's size mod 2³²; zlib has no size field |
 | Digests | None listed. Every gzip member's CRC-32 is checked on read, and a zlib stream's Adler-32 too; under `rapidgzip`, archivey checks the Adler-32 when the stream is read to its end (§2.3) |
 | Metadata | gzip only: `MTIME` → `modified`, `FNAME` → `raw_name` and `extra["gzip.original_filename"]` |
@@ -28,9 +28,10 @@ in `member.hashes`, even for a one-member file: proving there is one member mean
 the whole file (§6). `member.size` is `None` although the trailer holds a size, for the
 same reason. With `rapidgzip`, a truncated stream is reported with the same certainty as
 without it only for a one-member gzip; a truncated raw DEFLATE stream read alone through
-`rapidgzip` under `ON` can come back short with no error (§5). And under `AUTO`,
-`rapidgzip` never decodes a stream opened without declared seeking, whatever its size
-(§2.3), so a plain open read front to back gets the standard library.
+`rapidgzip` under `ON` can come back short with no error (§5). And under `AUTO`, a
+stream opened without declared seeking gets `rapidgzip` only on Linux and macOS, when
+its compressed size is known to be at least 16 MiB and it compresses 3:1 or less (§2.3).
+Any other plain open read front to back gets the standard library.
 
 ## 1. Shape
 
@@ -46,7 +47,8 @@ raw DEFLATE:  DEFLATE blocks …  (the container knows the sizes)
 **DEFLATE can only be decoded from the start.** Each block may copy from anywhere in the
 32 KiB before it, so resuming at a block needs the 32 KiB window that preceded it. Nothing
 in the stream records one. So a backward seek decodes again from byte zero unless someone
-saved windows on the way; `rapidgzip` does, which is what its index is (§2.3). A new member
+saved windows on the way; `rapidgzip` does, which is what its index is (§2.3), and so do
+the standard library engine's zlib snapshots (§2.3). A new member
 starts a fresh window, so a member start is a restart point, and BGZF names every
 member's size (§2.3). `pigz -i` resets the window inside one member, which archivey does
 not look for (§7).
@@ -154,6 +156,48 @@ the whole file and a size query must be cheap (`GzipDecoder.index_reads_whole_so
 The size is `None`, as for plain gzip, until a seek walks the file or a read reaches the
 end. A `.gzi` index is a separate file, which a stream cannot find, so it is not read. Under
 `rapidgzip` none of this applies: its own index serves the seeks.
+
+**zlib snapshots.** On declared seek demand, `GzipDecoder` also records a seek point
+inside a member, and `ZlibDecoder` (zlib, and raw DEFLATE such as a ZIP member's) inside
+its stream, about every MiB of output (`SNAPSHOT_SPACING`), whose state is
+`decompressobj.copy()` (`ZlibSnapshot`). Python's `zlib` reports no DEFLATE block
+boundary, so the window-and-bit-offset points `deflate_resume.py` builds from
+`rapidgzip`'s index cannot be found here; a copy needs none, because it holds the whole
+inflate state, mid-block included. It holds the running checksum too (gzip's CRC-32 and
+length, zlib's Adler-32), so a decode resumed from it still checks a gzip or zlib
+trailer, which a `deflate_resume.py` point cannot. Raw DEFLATE carries no checksum; a
+ZIP member's CRC-32 is checked above the codec, by the member verifier. A copy is taken
+at the start of a feed; in gzip, never before a member's first output, which is the
+member's own point. It keeps `unconsumed_tail`, the input an earlier feed left undecoded
+under its output bound, so its compressed offset is where the feed's new input starts,
+after that tail; the tail counts toward the snapshot's memory. Taking copies on those
+feeds too keeps the spacing near 1 MiB on data that compresses better than about 16:1,
+where one 64 KiB read decodes to more than one feed's 1 MiB. Each resume decodes from a
+copy of the copy, so a point is never changed. A copy costs about 1 µs and 39 KiB; a seek
+then decodes about half a MiB on average: about 2 ms against about 50 ms from the start
+of a 64 MiB gzip member, and 1.6 ms in a 64 MiB ZIP member. A full read costs the same
+as without copies (64 MiB text, 4 cores). Snapshots differ between passes, since where a feed starts
+depends on the reads, so `DecompressorStream` keeps them apart instead of comparing them:
+one within half the spacing of a point it holds is dropped, and of two at one offset the
+first is kept. Their memory is capped at `MAX_SNAPSHOT_BYTES` (32 MiB, about 800
+snapshots, one per MiB up to about 800 MiB of output). Past it only snapshots are thinned,
+to half of it, by doubling their spacing, silently: they are this library's own
+accelerator, not an index the file carries. A decompressor in a decoder child has no
+`copy()` and takes none.
+
+**mgzip members.** When the first member carries an `MZ` subfield instead of `BC`, the walk
+reads mgzip: the subfield holds the size of the member's DEFLATE data (not of the whole
+member, whatever mgzip's own `get_index` assumes), so the member size is the header
+parsed to its end (`FNAME`, `FCOMMENT`, `FHCRC`), that size and the 8-byte trailer. Its
+members are large, so here the walk does jump: a 512-byte header read per member (up to
+64 KiB for a long name) and a 4-byte ISIZE read at its end. ISIZE is the input size
+modulo 2^32, so a member written from 4 GiB of input or more gives wrong points after it.
+A forward read through that member catches it like any other contradicted index; a cold
+seek past it serves bytes from the wrong offset with no error (O17). mgzip's own reader
+cannot read such a member back either (it inflates `max_length=ISIZE`, then fails its CRC
+check), so no mgzip round trip produces one. The rest matches BGZF:
+it stops quietly at the first member without `MZ`, trusts the sizes (O17), and thins past
+the seek-table cap with scan `mgzip_blocks`.
 
 **When `rapidgzip` is used.** `use_rapidgzip` is an `AcceleratorMode`, `AUTO` by default:
 
@@ -423,19 +467,10 @@ body or trailer decodes with no error, sometimes short. `_ZlibAdlerCheckStream` 
 Adler-32 of the output from offset 0 up to a frontier and compares it with the source's last
 four bytes when the frontier reaches the end. Two shapes skip that comparison, because the
 Adler-32 of no output is 1: a stream `rapidgzip` ends before any output goes to the standard
-library first (a cut stream's last four bytes can read `00 00 00 01`), and a trailer match
-counts only when no second zlib stream may follow the first. `rapidgzip` delivers every
-stream, so the last one's trailer can be forged to the Adler-32 of all of them, and after
-empty streams it needs no forging. `zlib_stream_may_follow` scans the source for 2-byte zlib
-headers (about one offset in 2000 of compressed data matches by chance; a byte map through
-`bytes.translate` finds them without a Python loop) and probes each with a raw DEFLATE
-decode: a candidate counts when its DEFLATE data ends four bytes before the end of the
-source, or the probe runs out of its bounds. The probes share a budget, as gzip's member
-probes do, and a scan that spends it counts as a candidate. On a candidate the standard
-library confirms. Measured on 17 MiB of compressed text, the scan costs about 45% of a
-standard-library decode. Under process isolation there is no scan: each probe's decoder
-would be a child-process object, about 20 ms apiece, so the confirmation runs at once. A
-seek back stays behind the frontier, and a seek forward past it reads the bytes in between,
+library first (a cut stream's last four bytes can read `00 00 00 01`). `rapidgzip` delivers
+every zlib stream in the source, so a last trailer that matches all of them (forged, or
+after empty streams, unforged) is taken as good, and a read to the end returns every stream
+as content (§5). A seek back stays behind the frontier, and a seek forward past it reads the bytes in between,
 so the check survives the TAR reader, which skips member data by seeking. The child decodes
 those bytes to seek past them anyway; the read-through adds their transfer out of it. For a
 reader that only skips, that transfer is the whole cost: listing a `.tar.zz` under `ON`
@@ -449,9 +484,12 @@ end of the first stream: a completing `read()` returns the first stream's bytes,
 the end lands there, and the rest is reported as `ARCHIVE_TRAILING_DATA`, as with
 `use_rapidgzip=OFF`. A caller that read on in bounded reads already has bytes of the second
 stream when the end shows up, and they cannot be taken back; there the decode goes on stream
-by stream up to the delivered length, and that output is accepted (§5). Whichever decode
+by stream up to the delivered length, and that output is accepted (§5). In a container
+coder's data (`refuse_input_after_end`, a XAR member) there is no second stream to accept:
+the read or seek that reached the end raises `DataAfterEndError`, as the standard library
+does at the first stream's end. Whichever decode
 runs must reproduce the delivered bytes; failing that, the read or seek that reached the end
-raises `_StreamChecksumError`, a `CorruptionError`. The TAR end-of-archive scan, which
+raises `StreamChecksumError`, a `CorruptionError`. The TAR end-of-archive scan, which
 otherwise ignores a tail that fails to decode, re-raises it, because the checksum covers
 members it already handed out. A stream never read to its end is not checked, and the
 standard library does not check one either: it verifies the trailer only when it consumes
@@ -577,6 +615,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `gzip -n` | Reads; no name, `modified=None` |
 | `pigz`, `pigz -i` | Reads. `-i` resets the window at each block, which archivey does not use for seeking |
 | `bgzip` (BGZF, the genomics format) | Reads, as a run of 64 KiB members; no `FNAME`. On declared seek demand the block size in `FEXTRA` gives a seek point per member (§2.3) |
+| `mgzip` (multi-threaded Python writer) | Reads, as a run of large members (100 MB of input by default), each with the base name in `FNAME`. On declared seek demand the `MZ` subfield (the member's DEFLATE size) gives a seek point per member (§2.3) |
 | Two `gzip` files concatenated | Reads both payloads |
 | A member followed by NUL padding | Reads; the padding is skipped. GNU `gzip -dc` does the same, silently |
 | A member, 4 NUL bytes, a member (crafted: no known writer emits this) | Reads the first payload, then `ARCHIVE_TRAILING_DATA` at the second member's first byte, with or without `rapidgzip`; `DiagnosticPolicy.STRICT` raises. GNU `gzip -dc` writes the first payload, warns "decompression OK, trailing garbage ignored" and exits 0. 7-Zip and `bsdcat` stop after the first member; `rapidgzip` raises "Invalid gzip/zlib wrapper". Python's `gzip` reads both members (§6) |
@@ -640,14 +679,15 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- | --- |
 | `member.size` is `None` and `hashes` is empty for a `.gz` whose trailer holds both | **format** / **archivey** | The trailer describes the last member only (§1); decided in PR #441 (§6) |
 | `extra["gzip.original_filename"]` is mojibake for a non-ASCII name | **format** | RFC 1952 says Latin-1; GNU gzip writes the bytes it was given. `raw_name` has them |
-| A backward seek on a single-member `.gz` re-decodes from the start | **format** | No restart points (§1). Install `[seekable]` and pass `seekable_members=True`; under `AUTO`, only from 16 MiB |
+| A backward seek on a single-member `.gz` re-decodes from the start | **format** | The file records no restart points (§1). Pass `seekable_members=True` (`open_stream(seekable=True)`): the standard library engine then keeps a zlib snapshot about every MiB a read passes (§2.3), and `[seekable]` adds `rapidgzip`'s index, under `AUTO` only from 16 MiB |
 | The same truncated `.gz` raises `TruncatedError` on Linux and `CorruptionError` on Windows under `rapidgzip` | **library** | Windows loses the message detail (§2.3). Catch `ReadError` for both |
 | A multi-member `.gz` read through `rapidgzip` reads back up to 4 MiB of output at the end | **archivey** | The backstop checks the last member's trailer (§2.3), as `rapidgzip` ends a cut last member softly. The member's CRC-32 comes from CRC-32 checkpoints saved every 4 MiB, so each of at most four candidates costs a read-back of under 4 MiB, whatever the member's size. A BGZF file pays nothing. After a seek that skipped output, the skipped part of the last member is read back too, up to 64 MiB in all; past that the standard library engine decodes the whole file a second time |
 | A member after the first with a header CRC that does not match, or with reserved `FLG` bits, raises the same error with `rapidgzip` as without it | **archivey** | Measured on rapidgzip 0.16.0 (2026-10-18). A later header CRC makes rapidgzip raise, and the read falls back to zlib (`CorruptionError`). A later reserved flag is accepted by rapidgzip, but the further-member scan skips that header, the single-member trailer check fails, and the read falls back to zlib (`UnsupportedFeatureError`). The pre-start probe still sees only the first member (§2.3) |
 | A wrong ISIZE on any member but the last reads clean under `rapidgzip` builds that do not compare the size; the standard library raises | **library** / **archivey** | Every member's CRC-32 is still checked, so the data is right; the spec accepts this difference (§2.3). `rapidgzip` 0.16.0 compares it only in its own chunk decoder, for a stream that lies wholly in one chunk; the inflate-wrapper decoder (ISA-L, in the Linux wheels) appends the footer without comparing. The last member's ISIZE is checked by the backstop, which finds the trailer by the CRC-32 of the output, or in a file of several members by the CRC-32 of the end of the output. After a seek that skipped output there is no CRC-32 and the file's last four bytes stand in for the ISIZE in a file of one member; in that case only, four bytes appended after a wrong ISIZE, equal to the length, pass for the trailer. In a file with a further member the last member's trailer is checked whatever the last four bytes say. Found by the `gzip_accel` fuzz target |
 | A truncated bare raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size or checksum to check it against (§2.3). `AUTO` never does this. A stream cut before its first byte of output raises, as with the accelerator off |
 | `rapidgzip` does not check a zlib stream's Adler-32 | **library** | archivey checks it after `rapidgzip`, once the stream is read to its end (§2.3) |
-| Several zlib streams one after another, read in bounded reads to the end under `use_rapidgzip=ON`, read as one; the standard library reads the first alone and reports the rest as bytes after the stream | **library** | RFC 1950 defines one stream per file. A completing `read()` and a seek to the end stop at the first stream as with the accelerator off; bounded reads have the second stream's bytes before the end shows up, and the Adler-32 check accepts them when the standard library reproduces them stream by stream (§2.3), so they get those bytes as content and no `ARCHIVE_TRAILING_DATA` |
+| Several zlib streams whose last trailer matches the Adler-32 of all of them (after empty streams it does unforged; otherwise it is forged) read as one under `use_rapidgzip=ON` when read to the end (completing `read()` and bounded reads included) or after a seek to the end, which lands past every stream | **library** / **archivey** | No known writer makes the shape. Telling it apart from one stream costs a second decode, or a scan for further zlib headers with a probe at each: one was built, cost about 45% of a standard-library decode on every accelerated read to the end, and was removed after 0.3.0, since bounded reads of honest streams (next row) already differ (maintainer ruling, 2026-11-04). The ZIP two-stream member is the same trade ([`zip.md`](zip.md) §5); a caller who needs the standard library's result sets `use_rapidgzip=OFF` |
+| Several zlib streams one after another, read in bounded reads to the end under `use_rapidgzip=ON`, read as one; the standard library reads the first alone and reports the rest as bytes after the stream | **library** | RFC 1950 defines one stream per file. A completing `read()` and a seek to the end stop at the first stream as with the accelerator off; bounded reads have the second stream's bytes before the end shows up, and the Adler-32 check accepts them when the standard library reproduces them stream by stream (§2.3), so they get those bytes as content and no `ARCHIVE_TRAILING_DATA`. In a container coder's data (a XAR member) the second stream raises `CorruptionError` with or without the accelerator ([`xar.md`](xar.md) §2) |
 | Trailing junk after a `.gz` is a warning, where `GzipFile` raises | **archivey** | The rule is shared by every codec ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.STRICT` raises |
 | A `.gz` with bytes after it under `rapidgzip` decodes part of the file twice | **archivey** | The switch to the standard library replays up to where `rapidgzip` failed (§2.3); a resumed replay that reaches a member's end starts over to check its CRC-32 |
 | One warning on `archivey.streams` that `rapidgzip` cannot run | **archivey** | No child process can start here; `AUTO` used the standard library. `use_rapidgzip=OFF` silences it |
@@ -686,9 +726,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   do not enumerate streams at decode time. So the backstop's byte scan for a further
   `1f 8b 08` stays, and the per-member sum cannot use the index. A change proposal to
   detect multi-member files through the index was closed on this finding.
-- **mgzip and `pigz -i` restart points.** mgzip names each member's size in an `MZ`
-  subfield, which the BGZF walk could read too (the `seekable-gzip-and-block-writing`
-  proposal). `pigz -i` resets the window inside one member, which only a decode finds.
+- **`pigz -i` restart points.** `pigz -i` resets the window inside one member, which
+  only a decode finds.
 - **Replaying the standard library engine after a `rapidgzip` abort**, to deliver the rest
   of a cut stream's prefix. Tracked internally.
 
@@ -727,7 +766,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Under `rapidgzip`: the gzip check survives seeks; a chance `1f 8b 08` does not silence it; a seek that fails on data is handed over; a second zlib stream is trailing data |
 | A raw DEFLATE source that looks like gzip, zlib or bzip2, a zlib source whose header `rapidgzip` does not take for zlib (none at all, or one with a preset dictionary), a raw DEFLATE stream cut before any output, and a declared-empty stream that does not decode give the bytes and error of `OFF` under `ON` |
 | A cut bare zlib stream under `ON` without a size raises |
-| Under `ON`, a zlib stream cut before any output whose last four bytes read `00 00 00 01` raises, and a zlib stream after empty ones, or after a stream whose trailer is forged, is trailing data; the header scan finds no stream in a single one |
+| Under `ON`, a zlib stream cut before any output whose last four bytes read `00 00 00 01` raises; after empty streams, or with a last trailer forged to cover every stream, a seek to the end lands past every stream and a read to the end returns them all (§5) |
 | Close guard on shutdown; one accelerator library |
 
 **Building fixtures.** The standard library writes gzip and zlib (`gzip.compress`,

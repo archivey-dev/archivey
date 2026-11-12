@@ -63,12 +63,12 @@ hardlink never falls back to a copy: ``bytes_written`` is a floor for
 (``reader._resource_usage()``). The three peaks are read when the reader closes, even
 if the scan raised, since a failing archive is a row they are for; ``metadata_bytes``
 is written once the listing was reached, so a row that never listed leaves it empty.
-The record is internal, so the script checks it is there and prints ``warning:
-resource usage not recorded`` rather than leaving the columns silently empty. ``decoder_memory`` is the largest allocation
-an archive *declared* that archivey checks itself; xz, LZMA Alone and zstd hand the
-limit to liblzma / libzstd and are not counted, and neither is a size a detection
-probe checks. A file the reader could not open has no record, so its row leaves these
-columns empty.
+The record is internal, so the script checks it is there and prints
+``warning: resource usage not recorded`` rather than leaving the columns silently empty.
+``decoder_memory`` is the largest allocation an archive *declared* that archivey checks
+itself; xz, LZMA Alone and zstd hand the limit to liblzma / libzstd and are not counted,
+and neither is a size a detection probe checks. A file the reader could not open has no
+record, so its row leaves these columns empty.
 """
 
 from __future__ import annotations
@@ -380,6 +380,7 @@ def _scan_open_reader(
                 Path(tmp) / "out",
                 dry_run=True,
                 on_error="continue",
+                on_blocked="skip",
                 on_progress=on_progress,
             )
     except Exception as exc:  # noqa: BLE001

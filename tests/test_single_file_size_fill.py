@@ -14,7 +14,9 @@ import bz2
 import gzip
 import io
 import lzma
+import random
 import tarfile
+import zipfile
 import zlib
 from collections.abc import Callable
 from pathlib import Path
@@ -247,9 +249,9 @@ def test_xz_from_a_pipe_fills_size() -> None:
         assert member.size == len(PAYLOAD)
 
 
-def test_gz_inside_a_tar_fills_size_without_isize(tmp_path: Path) -> None:
-    """A member stream is seekable but costly to seek to its end: no ``gzip.isize``,
-    and the full read still fills the size."""
+def test_gz_inside_a_tar_reports_isize_and_fills_size(tmp_path: Path) -> None:
+    """A TAR member is a slice of its archive, so its end is cheap to reach: it gets
+    ``gzip.isize``, and the full read still fills the size."""
     tar_path = tmp_path / "outer.tar"
     data = gzip.compress(PAYLOAD)
     with tarfile.open(tar_path, "w") as tar:
@@ -262,10 +264,34 @@ def test_gz_inside_a_tar_fills_size_without_isize(tmp_path: Path) -> None:
         open_archive(inner_src) as reader,
     ):
         member = reader.members()[0]
-        assert "gzip.isize" not in member.extra
+        assert member.extra["gzip.isize"] == len(PAYLOAD)
+        assert member.size is None
         with reader.open(member) as stream:
             assert stream.read() == PAYLOAD
         assert member.size == len(PAYLOAD)
+
+
+def test_gz_inside_a_deflated_zip_entry_fills_size_without_isize(
+    tmp_path: Path,
+) -> None:
+    """A deflated member stream is seekable but costly to seek to its end: no
+    ``gzip.isize``, and the full read still fills the size. The payload does not
+    compress, so the ``.gz`` is far longer than the few KiB a seek may re-decode."""
+    zip_path = tmp_path / "outer.zip"
+    payload = random.Random(3).randbytes(64 * 1024)
+    data = gzip.compress(payload)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("inner.txt.gz", data)
+    with (
+        open_archive(zip_path, seekable_members=True) as outer,
+        outer.open("inner.txt.gz") as inner_src,
+        open_archive(inner_src) as reader,
+    ):
+        member = reader.members()[0]
+        assert "gzip.isize" not in member.extra
+        with reader.open(member) as stream:
+            assert stream.read() == payload
+        assert member.size == len(payload)
 
 
 # --- gzip.isize --------------------------------------------------------------------

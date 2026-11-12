@@ -15,6 +15,23 @@ python3 scripts/investigations/exploration/rar_decompressor_matrix.py
 python3 scripts/investigations/exploration/rar_decompressor_matrix.py --json /tmp/matrix.json
 ```
 
+## Synthetic RAR archives for `unrar`
+
+`rar_synthetic_probe.py` checks that RARLAB `unrar` reads a small RAR built from one
+member's own FILE header and packed bytes (signature, made-up MAIN and ENDARC), for
+RAR4 and RAR5, plain, `-p` and `-hp`, solid chains and split members, and times it
+against today's `-n` masked read of the original. Evidence for
+`openspec/changes/rar-synthetic-archives/design.md`.
+
+Needs `rar` and `unrar` on PATH and the repo venv (it reuses archivey's KDF helpers).
+RAR4 rows need a `rar` that still writes `-ma4`; `scripts/fixtures/gen_rar_fixtures.py` fetches
+the pinned 6.23 one into the user cache.
+
+```bash
+uv run python scripts/investigations/exploration/rar_synthetic_probe.py
+uv run python scripts/investigations/exploration/rar_synthetic_probe.py --files 5000 --json /tmp/s.json
+```
+
 ## Brotli content probe — field survey
 
 `brotli_probe_field_survey.py` collects the evidence
@@ -138,8 +155,8 @@ uv run python scripts/investigations/exploration/probe_writer_timestamps.py --ou
 ```
 
 The Linux/macOS/Windows matrix runs in CI: the `Writer timestamp probe` workflow
-(`.github/workflows/writer-timestamps.yml`) on demand from the Actions tab, and on PRs
-that change the probe.
+(`.github/workflows/writer-timestamps.yml`), on demand from the Actions tab only;
+dispatch it on your branch after changing the probe.
 
 ## rapidgzip on this platform
 

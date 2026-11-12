@@ -277,6 +277,16 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.sevenzip_reader._FolderEndCheck": (
         "no __init__ of its own; close() is DelegatingStream's"
     ),
+    "archivey.internal.backends.rar_reader._SolidPassPipe": (
+        "assigns every field close() reads before ReadOnlyIOStream.__init__"
+    ),
+    "archivey.internal.backends.rar_reader._CheckedRun": (
+        "assigns every field close() reads before ReadOnlyIOStream.__init__"
+    ),
+    "archivey.internal.backends.rar_reader._ClosesSyntheticFile": (
+        "assigns _synthetic, all close() reads beyond the base, before "
+        "DelegatingStream.__init__"
+    ),
     "archivey.internal.streams.streamtools.sparse.SparseStream": (
         "DelegatingStream.__init__ first; close() reads nothing assigned after it"
     ),
@@ -285,6 +295,7 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.bomb_tracker._RatioGuard": "plain assignments only",
     "archivey.internal.streams.counting.CountingReader": "plain assignments only",
     "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
+    "archivey.internal.streams.counting.BudgetDrawStream": "plain assignments only",
     "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",
     "archivey.internal.streams.codecs.zlib_codec._DeflateEndCheckStream": (
         "plain assignments only"
@@ -301,7 +312,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.codecs.stdlib_takeover._StdlibOnAcceleratorError": (
         "plain assignments only"
     ),
-    "archivey.internal.streams.codecs.rapidgzip_select._StdlibSeekContract": "plain assignments only",
+    "archivey.internal.streams.codecs.rapidgzip_select._StdlibSeekContract": (
+        "plain assignments only"
+    ),
     "archivey.internal.volumes.JoinedViews": (
         "assigns _views, then ConcatenatedFile.__init__, which sets its close state "
         "first; its views come from SharedSource.view, which has already checked them"

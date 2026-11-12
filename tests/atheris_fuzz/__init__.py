@@ -21,8 +21,14 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "tar": 10,
     "iso": 8,
     "squashfs": 8,
+    "xar": 8,
+    "cab": 8,
+    "lha": 8,
+    "arj": 8,
     "ar": 6,
     "cpio": 8,
+    "rpm": 8,
+    "makeself": 6,
     "rar_header": 30,
     "rar": 15,
     # Auto-detect open: SFX payload offset, single-file reader, compressed tar, UDIF.
@@ -46,6 +52,11 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "zlib_accel": 10,
     "deflate_accel": 10,
     "bzip2_accel": 15,
+    # Oracles (oracles.py): each input is read two to four ways and compared.
+    "diff_modes": 20,
+    "seek_member": 10,
+    "extract_diff": 15,
+    "tiny_limits": 8,
 }
 
 TARGET_NAMES: tuple[str, ...] = tuple(DEFAULT_BUDGETS)

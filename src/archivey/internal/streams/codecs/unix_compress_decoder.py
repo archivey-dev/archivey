@@ -181,6 +181,11 @@ class LzwState:
         self._pending_skip = 0
         self._skip_may_end_at = 0
         self._skip_reason = "after a CLEAR"
+        # The output of the step being decoded, so a step that raises can hand back
+        # what it decoded first; the error then raises from the next call
+        # (``_raise_after``).
+        self._step_output = bytearray()
+        self._raise_after: CorruptionError | None = None
         if not self._need_header:
             assert max_width is not None and block_mode is not None
             self._init_dictionary(max_width, block_mode)
@@ -221,7 +226,10 @@ class LzwState:
             # while padding is still owed was cut inside it. The one exception: padding
             # at a width bump is written only when another code follows, so a stream
             # may end there with none of it.
-            self._truncation = f"it ends {self._pending_skip} byte(s) short of the padding {self._skip_reason}"
+            self._truncation = (
+                f"it ends {self._pending_skip} byte(s) short of the padding "
+                f"{self._skip_reason}"
+            )
         # Finished compressors zero-pad the last incomplete code slot. Nonzero leftover
         # bits are a best-effort truncation / corrupt-padding signal (exact mid-code
         # cuts that leave only zero bits remain undetectable — no length trailer).
@@ -291,6 +299,13 @@ class LzwState:
         # is one step, ``b"".join`` hands a lone piece back without copying it, and a
         # step can be megabytes (a run of zeros), so staging it in a ``bytearray`` and
         # copying it out again would cost two more passes over those bytes.
+        #
+        # A corrupt code hands back the bytes decoded before it, and the error raises
+        # from the next call: a caller that reads the decoder in calls of a fixed
+        # output size then gets every byte before the damage, as it would from calls
+        # of any other size (spec ``compressed-streams``).
+        if self._raise_after is not None:
+            raise self._raise_after
         parts: list[bytes] = []
         got = 0
         units: list[tuple[int, int]] = []
@@ -299,10 +314,17 @@ class LzwState:
         while not self._at_nine_bit_fill or self._settle_nine_bit_fill(eof):
             if parts and 0 <= max_length <= got:
                 break
-            more, more_units = self._process_step(
-                eof=eof,
-                max_length=-1 if max_length < 0 else max_length - got,
-            )
+            try:
+                more, more_units = self._process_step(
+                    eof=eof,
+                    max_length=-1 if max_length < 0 else max_length - got,
+                )
+            except CorruptionError as exc:
+                parts.append(bytes(self._step_output))
+                if not any(parts):
+                    raise
+                self._raise_after = exc
+                return b"".join(parts), units
             parts.append(more)
             got += len(more)
             units += more_units
@@ -427,7 +449,7 @@ class LzwState:
     def _process_step(
         self, *, eof: bool, max_length: int = -1
     ) -> tuple[bytes, list[tuple[int, int]]]:
-        output = bytearray()
+        output = self._step_output = bytearray()
         units: list[tuple[int, int]] = []
 
         if self._need_header:
@@ -660,6 +682,13 @@ class LzwState:
 
 class UnixCompressDecoder(BaseDecoder):
     """LZW decoder: CLEAR seek points (after-placement) + deferred truncation."""
+
+    @property
+    @override
+    def holds_back_errors(self) -> bool:
+        # A bad code raises only once the bytes before it are handed out
+        # (``LzwState._raise_after``).
+        return True
 
     def __init__(
         self,

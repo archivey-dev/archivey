@@ -1,11 +1,17 @@
-"""Zstandard."""
+"""Zstandard: ``.zst`` files and Zstd member data in ZIP and 7z.
+
+The decoder is the standard library's ``compression.zstd`` on Python 3.14+, else
+``backports.zstd``, driven one frame at a time by ``FramedDecoder``. Under seek demand
+every regular frame is a seek point, and a Seekable Zstandard table at the end of the
+file lists them all without decoding (``zstd_seek_table``). Detection also finds a
+frame behind a run of skippable frames (``zstd_framing``).
+"""
 
 from __future__ import annotations
 
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
-    ResourceLimitError,
     UnsupportedFeatureError,
     exception_detail,
 )
@@ -13,6 +19,7 @@ from archivey.formats import Decompressor
 from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
+    decoder_cap_error,
 )
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
@@ -36,7 +43,7 @@ from archivey.internal.streams.codecs.zstd_framing import (
     regular_frame_behind_skippable_frames,
 )
 from archivey.internal.streams.codecs.zstd_seek_table import build_seek_table_index
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
+from archivey.internal.streams.decompressor_stream import StreamChecksumError
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,
@@ -123,11 +130,13 @@ def _zstd_window_refusal(exc: Exception, limits: DecoderLimits) -> ArchiveyError
             if 1 << window_log_max <= cap
             else "the smallest window libzstd can be limited to"
         )
-        return ResourceLimitError(
+        return decoder_cap_error(
             f"Decoder limit reached: max_decoder_memory={cap} (a zstd frame declares "
             f"a window over {1 << window_log_max} bytes, {bound}; libzstd refused it "
             f"before allocating). The archive chose this number; raise "
-            f"DecoderLimits.max_decoder_memory if the archive is trusted."
+            f"DecoderLimits.max_decoder_memory if the archive is trusted.",
+            cap=cap,
+            needed=None,
         )
     return UnsupportedFeatureError(
         f"A zstd frame declares a window over {1 << window_log_max} bytes, the "
@@ -229,7 +238,7 @@ class ZstdCodec(StreamCodec):
             if "checksum" in str(exc):
                 # The frame's content checksum ("Restored data doesn't match
                 # checksum"), over everything the frame decoded.
-                return _StreamChecksumError(
+                return StreamChecksumError(
                     f"Error reading zstd stream: {exception_detail(exc)}"
                 )
             return CorruptionError(

@@ -915,6 +915,37 @@ def test_rejected_header_raises_corruption_in_both_modes(
     assert names == ["a"]
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_rejected_header_after_a_member_quotes_the_walker_reason(
+    streaming: bool,
+) -> None:
+    # The report on a bad first header already says why it was refused. A bad header
+    # after a member must say it too, not only that "a member header does not parse".
+    data = (
+        tar_build.block(b"first", size=3)
+        + tar_build.data(b"abc")
+        + tar_build.pax({"size": ""})
+        + tar_build.block(b"hidden", size=3)
+        + tar_build.data(b"xyz")
+        + tar_build.block(b"after", size=3)
+        + tar_build.data(b"def")
+        + tar_build.END
+    )
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    with (
+        pytest.raises(CorruptionError) as excinfo,
+        open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar,
+    ):
+        for _member, _stream in ar.stream_members():
+            pass
+    message = str(excinfo.value)
+    assert "the members after it are not listed" in message
+    assert message.startswith(
+        "TAR archive is corrupt: the member header at offset 1024 does not parse ("
+    )
+    assert "empty size record" in message.split("does not parse (", 1)[1]
+
+
 def test_corrupt_final_header_extract_raises(tmp_path: Path) -> None:
     # Extraction surfaces the corruption too. Random access extracts in one pass, as
     # streaming does, so the EOF check runs after the members before the damage are
@@ -925,7 +956,7 @@ def test_corrupt_final_header_extract_raises(tmp_path: Path) -> None:
         raises_corruption_not_truncation(),
         open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar,
     ):
-        ar.extract_all(dest)
+        ar.extract_all(dest, on_blocked="skip")
     assert (dest / "hello.txt").read_bytes() == b"hello world"
 
 
@@ -1188,7 +1219,7 @@ def test_a_cut_sparse_member_fails_extract_all_with_truncated(
         open_archive(source(cut), format=ArchiveFormat.TAR, streaming=streaming) as ar,
         pytest.raises(TruncatedError),
     ):
-        ar.extract_all(tmp_path / "out")
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
 
 
 def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
@@ -1248,7 +1279,7 @@ def test_corrupt_mid_header_streaming_extract_writes_then_raises(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
         ) as ar,
     ):
-        ar.extract_all(dest)
+        ar.extract_all(dest, on_blocked="skip")
     assert (dest / "a.txt").exists()
     assert (dest / "a.txt").read_bytes() == b"aaa"
     assert not (dest / "b.txt").exists()
@@ -1397,7 +1428,7 @@ def test_damaged_second_eof_block_extracts_every_member(
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
     dest = tmp_path / "out"
     with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
-        ar.extract_all(dest)
+        ar.extract_all(dest, on_blocked="skip")
         assert len(_eof_marker_contexts(ar)) == 1
     assert {p.name: p.read_bytes() for p in dest.iterdir()} == _THREE
 
@@ -2912,7 +2943,7 @@ def test_members_report_finishes_interrupted_pass(tmp_path: Path) -> None:
         with pytest.raises(ArchiveyUsageError):
             list(ar.stream_members())
         with pytest.raises(ArchiveyUsageError):
-            ar.extract_all(tmp_path)
+            ar.extract_all(tmp_path, on_blocked="skip")
 
 
 def test_abandoned_partial_pass_leaves_get_members_none() -> None:
@@ -4070,7 +4101,9 @@ def test_hardlink_resolves_to_an_earlier_member_only(
 
     data = _tar_hardlink_then_target()
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        report = reader.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+        report = reader.extract_all(
+            tmp_path / "out", on_error=OnError.CONTINUE, on_blocked="skip"
+        )
         listed = {m.name: m for m in reader.members_report().members}
     by_name = {r.member.name: r for r in report.results}
     assert listed["h"].link_target_member is None
@@ -4253,7 +4286,7 @@ def test_gnu_dumpdir_entry_is_a_directory(tmp_path: Path) -> None:
         ]
         assert members[0].size is None
         assert reader.read("d/f.txt") == b"hello"
-        reader.extract_all(tmp_path / "out")
+        reader.extract_all(tmp_path / "out", on_blocked="skip")
     assert (tmp_path / "out" / "d").is_dir()
     assert (tmp_path / "out" / "d" / "f.txt").read_bytes() == b"hello"
 
@@ -4410,7 +4443,7 @@ def test_special_entries_are_other_and_name_their_type(
         assert "special_file_type" not in by_name["reg.txt"].extra
         codes = [d.code for d in ar.diagnostics.retained]
         assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
-        ar.extract_all(tmp_path / "out")
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
     assert not (tmp_path / "out" / "dev").exists()
     assert (tmp_path / "out" / "reg.txt").read_bytes() == b"hi"
 
@@ -4594,7 +4627,7 @@ def test_unknown_typeflag_with_data_is_a_file(
         format=ArchiveFormat.TAR,
         streaming=streaming,
     ) as ar:
-        ar.extract_all(out)
+        ar.extract_all(out, on_blocked="skip")
     assert (out / "f").read_bytes() == b"hello"
     assert (out / "after.txt").read_bytes() == b"after\n"
 
@@ -4628,7 +4661,7 @@ def test_unknown_typeflag_with_no_data_is_other(
         format=ArchiveFormat.TAR,
         streaming=streaming,
     ) as ar:
-        ar.extract_all(tmp_path / "out")
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
     assert not (tmp_path / "out" / "f").exists()
     assert (tmp_path / "out" / "after.txt").read_bytes() == b"after\n"
 

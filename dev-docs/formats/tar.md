@@ -163,7 +163,11 @@ every stream it built.
 `ReadAheadStream`, not `io.BufferedReader`, which asks again after a short read. A
 decoder over a cut stream returns the bytes it could decode and raises
 `TruncatedError` on the next read, so asking again in the same read would drop those
-bytes. For the same reason the random-access codec stream does not repeat its first
+bytes. The walker makes one exception, where the bytes would be dropped anyway: after a
+short header read (a header block or an extended header) and in its skip over member
+data, it reads once more, so that a codec's held error raises as itself instead of
+reading as a cut (`TarWalker._read_header_bytes`, `_discard`). For the same reason the
+random-access codec stream does not repeat its first
 error after a seek (`open_codec_stream(repeat_verdict=False)`): its views seek before
 a read when the handle is not already there. Each member stream keeps its own. What a cut
 member's reads return is the contract in the TAR spec's requirement "Detect truncated TAR
@@ -173,7 +177,8 @@ with no size raises with nothing.
 **A random-access member view stops at the end of the archive** and then returns no
 bytes. `MemberDataView` (`internal/walk_handoff.py`, shared with the sequential
 adapter's handoff view) sits on it and knows the member's stored length, so a read that
-ends short raises `TruncatedError` under the same contract. It does not need the source
+ends short raises `TruncatedError` under the same contract. A read with no size asks
+again after a short read before it raises, so a codec's held error comes out as itself. It does not need the source
 size, so a seekable source with no cheap size gets the same errors as a file.
 
 **The first header is parsed at open**, so a file that is not a tar fails there (DR-15b):
@@ -185,8 +190,8 @@ member's `max_metadata_bytes` budget at its declared size before it is read, the
 `read_within_reach` in 64 KiB steps, so the allocation follows the bytes that exist, not
 the size field ([`threat-model.md`](../threat-model.md) O15). A member's data area is
 skipped with one seek on a seekable stream. A forward-only walk skips it in 64 KiB steps
-and raises `TruncatedError` at the first short read, so the skip costs the bytes
-present: a 2 KiB archive declaring a 2**45-byte member fails at once instead of looping
+and raises `TruncatedError` at the first empty read (after a short one it reads again,
+so a codec's held error raises as itself), so the skip costs the bytes present: a 2 KiB archive declaring a 2**45-byte member fails at once instead of looping
 on the declared size. Member data a caller reads through a forward-only walk is read in
 1 MiB steps (`DATA_READ_STEP`, the piece the member verifier reads), so a size field
 there causes at most a 1 MiB allocation. On a seekable stream a seek past the end succeeds, so when
@@ -770,7 +775,7 @@ ours.
 | A zero-filled file is a valid empty tar | It is byte-identical to one, at every block-aligned length ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)) | Refusing zero-member tars; a length rule |
 | Report trailing data, do not read past it | Two archives in one file is a fact worth reporting, and listing both would present members from an archive the caller did not name | `ignore_zeros=True`, which is how `tar -i` reads concatenated archives |
 | Past trailing data, claim nothing about the compressed stream's checksum | The scan cannot tell where the listed members' compressed stream ends. In `cat a.tar.gz b.tar.gz` the trailing bytes are a second gzip member: the first member's CRC-32 was already checked, and the second's covers no listed member. So the first non-zero byte ends the scan, and `ARCHIVE_TRAILING_DATA` is the whole report. Junk inside the same gzip member as the members can therefore leave its CRC-32 unchecked with no `DIGEST_UNVERIFIABLE`. Reopen with a codec signal for where each compressed member ends, which every decoder (gzip with and without the accelerators, zstd and lz4 frames, lzip, bzip2 and xz streams) would have to give | Reading on to the bound to reach the checksum (tried in PR 851, round 1): it reported a false `trailing_scan_limit` on a valid concatenated `.tar.gz`, raised for damage in the second archive while listing the first, and made random access rewind across up to 1 MiB |
-| A tail that fails to decode is reported as "whether the checksum passed cannot be told", not "never reached" | The scan cannot tell whether the bytes that failed are in the members' own compressed stream or in a further member after it (`cat a.tar.gz b.gz` with `b.gz` damaged), whose predecessor's checksum was already checked; the row above gives the reason. The report also depends on the further member's size: the codec loses the output of a read that fails, so a member decoding a few bytes then failing gives `DIGEST_UNVERIFIABLE`, and one decoding 64 KiB or more first gives `ARCHIVE_TRAILING_DATA`. Making the two agree needs the same codec signal | "Never reached", which is false for the concatenated case (PR 851, round 2). Reading in smaller pieces to catch the further member's first bytes: a small read still feeds the codec its default compressed chunk, so the output lost with a failing feed does not shrink |
+| A tail that fails to decode is reported as "whether the checksum passed cannot be told", not "never reached" | The scan cannot tell whether the bytes that failed are in the members' own compressed stream or in a further member after it (`cat a.tar.gz b.gz` with `b.gz` damaged), whose predecessor's checksum was already checked; the row above gives the reason. A further member's bytes before its failure come back whatever its size (on a seekable source the stream decodes again to the failing byte), so that case gives `ARCHIVE_TRAILING_DATA`; a failure with no output past the marker gives `DIGEST_UNVERIFIABLE` | "Never reached", which is false for the concatenated case (PR 851, round 2). Reading in smaller pieces to catch the further member's first bytes: a small read still feeds the codec its default compressed chunk, so the output lost with a failing feed does not shrink |
 | A compressed stream cut or undecodable after the trailer is `DIGEST_UNVERIFIABLE` (davi, 2026-10-16, project thread) | Every member was read whole, so the listing stands either way. For a cut stream the checksum over them was never reached; for a tail that does not decode, whether it passed cannot be told, for the reason the row above gives. Both are what `DIGEST_UNVERIFIABLE` reports; bzip2 and xz already said so, and a plain `.gz` cut the same way raises `TruncatedError` on read. `STRICT` refuses these archives | Ending the scan quietly, the rule from 2026-09-23 to 2026-10-16: it was chosen so a footer-cut archive would still list, before `DIGEST_UNVERIFIABLE` existed on this path, and left `.tar.gz` silent where `.tar.bz2` and `.tar.xz` reported |
 | Bound the trailing-data scan at 1 MiB, as a constant | On a compressed tar the tail must be decoded to be read. A constant can become a config field later; a field cannot become a constant | Scanning to EOF; a `ListingLimits` field whose `None` would mean "unbounded", the reverse of every other field there |
 | Count a sparse member's holes as output (maintainer ruling, 2026-09-25) | Extraction writes them as zeros, so they cost the disk what any decompressed byte costs, and the ratio guard is what protects the disk. Revisit if extraction ever preserves holes, as `tar -x` does, since the disk would then hold only the data | Counting only the data blocks, which would let a few hundred bytes of sparse map fill the disk |

@@ -24,6 +24,9 @@ _spec.loader.exec_module(api_surface)
 
 
 def test_surface_file_is_current() -> None:
+    # archivey.fsspec imports fsspec, which no archivey extra installs; the legs that
+    # have it check its lines.
+    pytest.importorskip("fsspec", reason="archivey.fsspec needs fsspec")
     committed = api_surface.SURFACE_FILE.read_text(encoding="utf-8")
     current = api_surface.render(api_surface.surface_lines())
     assert committed == current, (
@@ -119,6 +122,11 @@ def test_experimental_names_are_pinned() -> None:
         "archivey.ArchiveMember.verifiable",
         "archivey.ForwardArchiveReader.verify_all",
         "archivey.ArchiveReader.verify_all",
+        "archivey.VerifyReport",
+        "archivey.BackendUse",
+        "archivey.BackendKindStr",
+        "archivey.ForwardArchiveReader.backends_used",
+        "archivey.ArchiveReader.backends_used",
     )
 
 

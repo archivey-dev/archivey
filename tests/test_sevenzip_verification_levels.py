@@ -103,7 +103,7 @@ def test_a_folder_crc_raises_every_file_once_the_folder_is_read() -> None:
         assert reader.read(members["a"]) == _A
         assert _levels(members["a"]) == (Verification.LENGTH, Verification.CHECKSUM)
         assert members["c"].verified is Verification.UNLOCKED
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         for member in members.values():
             assert _levels(member) == (Verification.CHECKSUM, Verification.CHECKSUM)
 
@@ -164,7 +164,7 @@ def test_a_folder_crc_that_does_not_match_fails_every_file_it_covers() -> None:
     data = _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C) ^ 1)
     with open_archive(io.BytesIO(data)) as reader:
         members = _by_name(reader.members())
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         assert [m.name for m, _e in failures] == ["a", "b", "c"]
         assert all(isinstance(e, CorruptionError) for _m, e in failures)
         assert "folder 0" in str(failures[0][1])
@@ -177,7 +177,7 @@ def test_a_folder_crc_that_does_not_match_fails_every_file_it_covers() -> None:
             "c": (Verification.UNLOCKED, Verification.CHECKSUM),
         }
         # A second call reads c again, which reaches the folder's end again.
-        assert [m.name for m, _e in reader.verify_all()] == ["a", "b", "c"]
+        assert [m.name for m, _e in reader.verify_all().failures] == ["a", "b", "c"]
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -218,7 +218,7 @@ def test_a_folder_crc_finds_the_folders_last_file_once(
             read[member.name] = stream.read()
         assert read == files
         if not streaming:
-            assert reader.verify_all() == ()
+            assert reader.verify_all().failures == ()
     assert scans == [0]
 
 
@@ -267,9 +267,9 @@ def test_a_mismatched_folder_crc_spares_a_file_with_its_own_crc(
     # The file's own CRC matches, so the damage the folder CRC found is not in it.
     with open_archive(io.BytesIO(_folder_with_one_own_crc(own))) as reader:
         members = _by_name(reader.members())
-        assert [m.name for m, _e in reader.verify_all()] == failed
+        assert [m.name for m, _e in reader.verify_all().failures] == failed
         assert _levels(members[own]) == (Verification.CHECKSUM, Verification.CHECKSUM)
-        assert [m.name for m, _e in reader.verify_all()] == failed
+        assert [m.name for m, _e in reader.verify_all().failures] == failed
 
 
 def test_a_last_file_whose_own_crc_fails_keeps_its_own_error() -> None:
@@ -283,7 +283,7 @@ def test_a_last_file_whose_own_crc_fails_keeps_its_own_error() -> None:
         assert "folder" not in str(caught.value)
     with open_archive(io.BytesIO(data)) as reader:
         for _ in range(2):
-            failures = {m.name: e for m, e in reader.verify_all()}
+            failures = {m.name: e for m, e in reader.verify_all().failures}
             assert sorted(failures) == ["a", "b", "c"]
             assert "Digest mismatch" in str(failures["c"])
             assert "folder 0" in str(failures["a"])
@@ -300,7 +300,7 @@ def test_repeated_reads_of_a_damaged_last_file_hold_one_folder_error() -> None:
             with pytest.raises(CorruptionError, match="Digest mismatch"):
                 reader.read(members["c"])
         assert len(reader._unraised_spanning) == 1  # type: ignore[attr-defined]
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         assert sorted(m.name for m, _e in failures) == ["a", "b", "c"]
         by_name = {m.name: e for m, e in failures}
         assert isinstance(by_name["a"], SpanningCheckError)
@@ -312,7 +312,7 @@ def test_a_folder_crc_leaves_files_with_their_own_crc_to_it() -> None:
     data = _copy_folder(_THREE, folder_crc=_crc(_A + _B + _C), file_crcs=True)
     with open_archive(io.BytesIO(data)) as reader:
         members = reader.members()
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert {m.verified for m in members} == {Verification.CHECKSUM}
 
 
@@ -327,7 +327,7 @@ def test_seekable_member_reads_never_claim_the_folder_crc() -> None:
         assert {m.verified for m in members.values()} == {Verification.LENGTH}
         # Each file is at its LENGTH ceiling, but the folder CRC has not run: a pass
         # over the whole folder still raises them, and verify_all() makes it.
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
         assert reader._awaiting_spanning_checks() == set()  # type: ignore[attr-defined]
 
@@ -373,7 +373,7 @@ def test_verify_all_after_seekable_reads_still_finds_a_mismatched_folder(
             if name in failed
         )
         for _ in range(2):
-            failures = reader.verify_all()
+            failures = reader.verify_all().failures
             assert [m.name for m, _e in failures] == failed
             assert all(isinstance(e, SpanningCheckError) for _m, e in failures)
 
@@ -405,7 +405,7 @@ def test_a_seekable_read_of_the_last_file_checks_a_compressed_folder_crc(
         assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
         assert reader._awaiting_spanning_checks() == set()  # type: ignore[attr-defined]
         opens = _CountFolderOpens(reader, monkeypatch)
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert opens.count == 0
 
 
@@ -421,7 +421,7 @@ def test_a_seekable_read_of_the_last_file_raises_a_mismatched_folder_crc() -> No
             assert caught.value.member_name == "c"
             assert [m.name for m in caught.value.covers] == ["a", "b", "c"]
             errors.append(str(caught.value))
-            failures = reader.verify_all()
+            failures = reader.verify_all().failures
             assert [m.name for m, _e in failures] == ["a", "b", "c"]
     assert errors[0] == errors[1]
 
@@ -486,7 +486,7 @@ def test_a_decode_error_in_a_hashed_gap_raises_from_the_read() -> None:
             for _ in range(2):
                 with pytest.raises(CorruptionError, match="Corrupt input data"):
                     stream.read(10)
-        assert [m.name for m, _e in reader.verify_all()] == ["a", "b", "c"]
+        assert [m.name for m, _e in reader.verify_all().failures] == ["a", "b", "c"]
 
 
 def test_a_seekable_read_of_a_stored_folder_leaves_the_crc_to_verify_all(
@@ -501,7 +501,7 @@ def test_a_seekable_read_of_a_stored_folder_leaves_the_crc_to_verify_all(
         assert members["a"].verified < Verification.CHECKSUM
         assert reader._awaiting_spanning_checks()  # type: ignore[attr-defined]
         opens = _CountFolderOpens(reader, monkeypatch)
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert opens.count > 0
         assert {m.verified for m in members.values()} == {Verification.CHECKSUM}
 
@@ -517,9 +517,13 @@ _SMALL = random.Random(8).randbytes(2_000)
 def _aes_lzma2_folder(
     payload: bytes, password: str
 ) -> tuple[bytes, bytes, list[list[int]]]:
-    """``(folder, packed, coder unpack sizes)`` for one AES + LZMA2 folder."""
+    """``(folder, packed, coder unpack sizes)`` for one AES + LZMA2 folder.
+
+    Padded with residue, not zeros, so the tail key check cannot confirm the
+    password: these folders are the ones whose key only a CRC can prove.
+    """
     compressed = _lzma2(payload, 1 << 20)
-    packed = _aes_encrypt(compressed, password)
+    packed = _aes_encrypt(compressed, password, pad=b"\xa5")
     coders = [_coder(_AES, props=b"\x00"), _coder(_LZMA2, props=bytes([16]))]
     return _linear(coders), packed, [[len(compressed), len(payload)]]
 
@@ -590,7 +594,7 @@ def test_verify_all_on_an_aes_folder_with_no_crc_stays_none() -> None:
     )
     with open_archive(io.BytesIO(data), password="pw") as reader:
         members = reader.members()
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert {_levels(m) for m in members} == {(Verification.NONE, Verification.NONE)}
 
 
@@ -602,12 +606,12 @@ def test_a_crc_in_the_same_pass_confirms_the_folder_for_a_second_verify_all() ->
     )
     with open_archive(io.BytesIO(data), password="pw") as reader:
         members = _by_name(reader.members())
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         # a1 was read before a2's CRC proved the password.
         assert _levels(members["a1"]) == (Verification.NONE, Verification.LENGTH)
         assert members["a2"].verified is Verification.CHECKSUM
         # A second call reads again what is below its ceiling.
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert _levels(members["a1"]) == (Verification.LENGTH, Verification.LENGTH)
 
 
@@ -652,7 +656,7 @@ def test_damage_before_the_folder_end_keeps_the_ceiling_and_fails_the_files(
     with open_archive(io.BytesIO(bytes(data)), seekable_members=seekable) as reader:
         members = _by_name(reader.members())
         for _ in range(2):  # a second call agrees
-            failures = reader.verify_all()
+            failures = reader.verify_all().failures
             assert sorted(m.name for m, _e in failures) == ["a", "b", "c"]
             for name in ("a", "b"):
                 assert members[name].verified is Verification.LENGTH

@@ -74,12 +74,17 @@ _LINK_RE = re.compile(r"^\[[^\]]+\]: ", re.MULTILINE)
 RELEASE_GATE_WORKFLOWS = (
     "accelerator-crash-search.yml",
     "accelerator-fuzz-soak.yml",
-    # Its merge-queue mode runs each target for 1 to 3 seconds; a dispatched run uses
-    # the nightly budgets, about ten times longer.
+    # Nothing else fuzzes before a release: the nightly skips when main has been quiet
+    # for three days, and neither pull requests nor the merge queue run it.
     "atheris-fuzz.yml",
+    # pandas, pyarrow and dask are installed nowhere else, so their archivey:// tests
+    # skip in ci.yml.
+    "fsspec-consumers.yml",
     "rapidgzip-resume-stress.yml",
     # Pull requests run a reduced set of jobs and the merge queue skips PyPy's core-only
-    # suite; a dispatched run includes everything, as the daily run on main does.
+    # suite; a dispatched run includes everything, as the daily run on main does. The
+    # `test-daily` legs (Linux 3.12-3.14, macOS and Windows 3.11) run nowhere else
+    # before a release, and the minimum versions only when the dependencies change.
     "ci.yml",
 )
 

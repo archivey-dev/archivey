@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import zlib
+from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -34,6 +37,52 @@ from archivey.internal.streams.decompressor_stream import (
     zlib_error,
 )
 
+# Output between two snapshot seek points one decode records (:class:`ZlibSnapshot`).
+# A seek decodes about half of it on average: about 2 ms on a 4-core machine.
+SNAPSHOT_SPACING = 1 << 20
+# What one ``decompressobj.copy()`` holds: zlib's inflate state, about 7 KiB, and its
+# 32 KiB window (``tracemalloc`` counts 39 KiB on zlib 1.3).
+SNAPSHOT_HELD_BYTES = 40 << 10
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ZlibSnapshot:
+    """A :class:`SeekPoint` state: ``decompressobj.copy()`` taken between two feeds.
+
+    It holds everything the decode carries forward, mid-block too: the window, the bit
+    position, the Huffman tables, and the running checksum (gzip's CRC-32 and length,
+    zlib's Adler-32; raw DEFLATE has none), so a decode resumed from it still checks a
+    gzip or zlib trailer. ``decomp`` is never decoded from: each resume takes a copy of
+    it (:meth:`resume`), so the point can be shared.
+    The copy is taken at the start of a feed and keeps ``unconsumed_tail``, the input
+    an earlier feed left undecoded, so its compressed offset is where that feed's new
+    input starts, past the tail: a resumed decoder prepends the tail to what it reads
+    from there, as the decoder it was copied from would have. Taking copies on those
+    continuation feeds too keeps the spacing near :data:`SNAPSHOT_SPACING` when one
+    read decodes to more than a feed's output. ``held_bytes`` counts the tail, which
+    the copy keeps alive. A :class:`~decompressor_stream.SnapshotState`.
+    """
+
+    decomp: Any
+    held_bytes: int = SNAPSHOT_HELD_BYTES
+    min_gap: int = SNAPSHOT_SPACING // 2
+
+    def resume(self) -> Any:
+        return self.decomp.copy()
+
+
+def _snapshot_point(decomp: Any, produced: int, fed_end: int) -> SeekPoint:
+    """A snapshot seek point taken at the start of a feed: output offset ``produced``,
+    compressed offset ``fed_end``, where the feed's new input starts."""
+    return SeekPoint(
+        produced,
+        fed_end,
+        ZlibSnapshot(
+            decomp.copy(),
+            held_bytes=SNAPSHOT_HELD_BYTES + len(decomp.unconsumed_tail),
+        ),
+    )
+
 
 def _zlib_label(wbits: int) -> str:
     """The name of a ``wbits`` stream in messages: a positive ``wbits`` reads the zlib
@@ -41,17 +90,110 @@ def _zlib_label(wbits: int) -> str:
     return "zlib" if wbits > 0 else "deflate"
 
 
-class ZlibDecoder(BaseDecoder):
-    """Inflate a raw-deflate or zlib-wrapped stream via ``zlib.decompressobj``."""
+class _KeepsOutputBeforeErrors(BaseDecoder):
+    """Inflate steps that keep the bytes zlib decodes before an error, on a pipe.
+
+    CPython's ``decompressobj.decompress`` drops a call's output when the call raises,
+    and a pipe cannot be decoded again (``DecompressorStream._redecode_to_error``).
+    Once :meth:`keep_output_before_errors` is called, each step first takes
+    ``decompressobj.copy()`` (the 32 KiB window and the state). When the step raises,
+    the copy decodes the same input again one output byte per call up to the error;
+    those bytes are handed back, and the next call raises the error. Only a bounded
+    step takes the copy: an unbounded ``read()`` raises without the prefix
+    (``compressed-streams``), and replaying a whole unbounded step one byte per call
+    could cost millions of calls. Only a zlib error is replayed; any other error,
+    ``MemoryError`` included, raises at once. The copy costs within 1% on a 40 MB
+    pipe read; a source that can seek is decoded again instead, so it never takes
+    one. A decompressor in a decoder child has no ``copy()``, and keeps the stream's
+    behaviour.
+    """
+
+    _decomp: Any
+    _keep = False
+    _raise_next: Exception | None = None
+
+    @override
+    def keep_output_before_errors(self) -> None:
+        self._keep = hasattr(self._decomp, "copy")
+
+    def _raise_pending(self) -> None:
+        if self._raise_next is not None:
+            raise self._raise_next
+
+    def _inflate_step(
+        self, data: bytes, max_length: int, error: Callable[[zlib.error], Exception]
+    ) -> bytes:
+        if not self._keep or max_length <= 0:
+            # ``_inflate`` reads 0 as no limit too.
+            return _inflate(self._decomp, data, max_length, error)
+        snapshot = self._decomp.copy()
+        try:
+            return _inflate(self._decomp, data, max_length, error)
+        except Exception as exc:
+            if not isinstance(exc.__cause__, zlib.error):
+                raise
+            recovered = _decode_to_error(snapshot, data, max_length)
+            if not recovered:
+                raise
+            self._raise_next = exc
+            return recovered
+
+
+def _decode_to_error(decomp: Any, data: bytes, max_length: int) -> bytes:
+    """The bytes ``decomp`` gives from ``data`` before it raises, one per call, at
+    most ``max_length`` (positive) of them.
+
+    Empty when the input runs out, the stream ends or ``max_length`` is reached
+    first: the call that raised did not stop there, so the error was not met again
+    and nothing is handed back.
+    """
+    got = bytearray()
+    pending = data
+    try:
+        while len(got) < max_length:
+            out = decomp.decompress(pending, 1)
+            pending = decomp.unconsumed_tail
+            if not out or decomp.eof:
+                return b""
+            got += out
+    except zlib.error:
+        return bytes(got)
+    return b""
+
+
+class ZlibDecoder(_KeepsOutputBeforeErrors):
+    """Inflate a raw-deflate or zlib-wrapped stream via ``zlib.decompressobj``.
+
+    With ``index`` (declared seek demand), a :class:`ZlibSnapshot` is a seek point
+    about every :data:`SNAPSHOT_SPACING` of output, at the start of a feed, as in
+    :class:`GzipDecoder` (in process only). A zlib stream's copy carries the running
+    Adler-32, so a decode resumed from it still checks the trailer. ``start`` is the
+    point this decoder resumes from.
+    """
 
     def __init__(
-        self, wbits: int = RAW_DEFLATE_WBITS, *, natives: Natives = IN_PROCESS
+        self,
+        wbits: int = RAW_DEFLATE_WBITS,
+        *,
+        index: bool = False,
+        start: SeekPoint | None = None,
+        natives: Natives = IN_PROCESS,
     ) -> None:
         self._wbits = wbits
+        self._index = index
         self._natives = natives
-        self._decomp = natives.zlib_decompressobj(wbits)
+        if start is not None and isinstance(start.state, ZlibSnapshot):
+            self._decomp = start.state.resume()
+        else:
+            self._decomp = natives.zlib_decompressobj(wbits)
         self._label = _zlib_label(wbits)
         self._error = partial(zlib_error, label=self._label)
+        # Source offset just past every byte fed, and output offset just past every
+        # byte produced, for snapshot points; counted only on declared seek demand.
+        self._fed_end = start.compressed_offset if start is not None else 0
+        self._produced = start.decompressed_offset if start is not None else 0
+        self._snapshots = index and hasattr(self._decomp, "copy")
+        self._last_snapshot = self._produced
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
         del inner
@@ -63,7 +205,9 @@ class ZlibDecoder(BaseDecoder):
                 truncated=truncated_message(self._label),
                 natives=self._natives,
             )
-        return ZlibDecoder(self._wbits, natives=self._natives)
+        return ZlibDecoder(
+            self._wbits, index=self._index, start=point, natives=self._natives
+        )
 
     @override
     def close(self) -> None:
@@ -74,21 +218,30 @@ class ZlibDecoder(BaseDecoder):
             super().close()
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        self._raise_pending()
         if self._decomp.eof:
             # Past the end; the stream stops reading once these hold a non-zero byte.
             self._past_end(chunk)
             return DecodeOut(b"")
         # unconsumed_tail holds input not yet consumed under a prior max_length cap;
         # prepend it exactly once (mirrors gzip._GzipReader).
-        data = self._decomp.unconsumed_tail + chunk
+        tail = self._decomp.unconsumed_tail
+        data = tail + chunk
         if not data:
             return DecodeOut(b"")
-        out = _inflate(self._decomp, data, max_length, self._error)
-        if self._decomp.eof:
+        points: list[SeekPoint] = []
+        if self._snapshots and self._produced - self._last_snapshot >= SNAPSHOT_SPACING:
+            self._last_snapshot = self._produced
+            points.append(_snapshot_point(self._decomp, self._produced, self._fed_end))
+        self._fed_end += len(chunk)
+        out = self._inflate_step(data, max_length, self._error)
+        self._produced += len(out)
+        if self._raise_next is None and self._decomp.eof:
             self._past_end(self._decomp.unused_data)
-        return DecodeOut(out)
+        return DecodeOut(out, points)
 
     def flush(self) -> DecodeOut:
+        self._raise_pending()
         leftover = _inflate_rest(self._decomp, self._error)
         if not self._decomp.eof:
             self._pending_error = TruncatedError(truncated_message(self._label))
@@ -101,10 +254,10 @@ class ZlibDecoder(BaseDecoder):
     @property
     @override
     def needs_input(self) -> bool:
-        return not self._decomp.unconsumed_tail
+        return self._raise_next is None and not self._decomp.unconsumed_tail
 
 
-class GzipDecoder(BaseDecoder):
+class GzipDecoder(_KeepsOutputBeforeErrors):
     """gzip-window inflate with multi-member chaining.
 
     Uses ``wbits=16+MAX_WBITS`` so zlib validates CRC/ISIZE. Right after a member,
@@ -129,11 +282,15 @@ class GzipDecoder(BaseDecoder):
 
     With ``index`` (declared seek demand), every member after the first that has output
     is a seek point, recorded when the decode reaches it, and :meth:`build_index` walks
-    a BGZF file's members without decoding (:mod:`.bgzf_index`). ``start`` is the point
-    this decoder resumes from.
+    a BGZF or mgzip file's members without decoding (:mod:`.bgzf_index`). Inside a
+    member, a :class:`ZlibSnapshot` is a seek point about every
+    :data:`SNAPSHOT_SPACING` of output, at the start of a feed (in process only: a
+    decompressor in a decoder child has no ``copy()``). ``start`` is the point this
+    decoder resumes from.
     """
 
-    # The BGZF walk reads the whole file, so a size query does not run it.
+    # The BGZF walk reads the whole file (the mgzip walk jumps, but runs only after the
+    # first header says mgzip), so a size query does not run it.
     index_reads_whole_source = True
 
     def __init__(
@@ -159,7 +316,14 @@ class GzipDecoder(BaseDecoder):
         # The current member's start, recorded once the member has output: an empty
         # member (BGZF's end marker) shares its offset with whatever follows.
         self._pending_point: SeekPoint | None = None
-        self._decomp = natives.zlib_decompressobj(GZIP_WBITS)
+        if start is not None and isinstance(start.state, ZlibSnapshot):
+            self._decomp = start.state.resume()
+        else:
+            self._decomp = natives.zlib_decompressobj(GZIP_WBITS)
+        # Snapshot seek points (ZlibSnapshot): only on declared seek demand, and only
+        # where ``copy()`` exists. The output offset of the last one, or of the start.
+        self._snapshots = index and hasattr(self._decomp, "copy")
+        self._last_snapshot = self._produced
         # Post-member bytes not yet resolved (NUL padding / next magic / junk).
         # Never store unconsumed_tail here — that lives on the decompressobj.
         self._retained = b""
@@ -223,20 +387,27 @@ class GzipDecoder(BaseDecoder):
         return b""
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        self._raise_pending()
         if self._finished or self._pending_error is not None:
             return DecodeOut(b"")
 
+        points: list[SeekPoint] = []
         if self._between_members:
             data = self._retained + chunk
             self._retained = b""
         else:
-            data = self._decomp.unconsumed_tail + chunk
+            tail = self._decomp.unconsumed_tail
+            data = tail + chunk
+            if data and self._snapshot_due():
+                self._last_snapshot = self._produced
+                points.append(
+                    _snapshot_point(self._decomp, self._produced, self._fed_end)
+                )
         self._fed_end += len(chunk)
 
         # Output pieces, joined once at the end: one ``decompress`` call is the common
         # case, and ``b"".join`` hands a lone piece back without copying it.
         output: list[bytes] = []
-        points: list[SeekPoint] = []
         produced_total = 0
         while True:
             if self._pending_error is not None or self._finished:
@@ -269,14 +440,16 @@ class GzipDecoder(BaseDecoder):
             # Corrupt deflate body (bad CRC/data check inside a member) raises
             # CorruptionError here so a raw GzipDecompressorStream does not leak
             # zlib.error (GzipCodec.translate maps it too, but the decoder must stand
-            # on its own). A failed CRC-32/ISIZE check is a _StreamChecksumError.
-            produced = _inflate(self._decomp, data, limit, gzip_error)
+            # on its own). A failed CRC-32/ISIZE check is a StreamChecksumError.
+            produced = self._inflate_step(data, limit, gzip_error)
             if produced:
                 if self._pending_point is not None:
                     points.append(self._pending_point)
                     self._pending_point = None
                 output.append(produced)
                 produced_total += len(produced)
+            if self._raise_next is not None:
+                break
 
             if self._decomp.eof:
                 data = self._decomp.unused_data
@@ -293,7 +466,18 @@ class GzipDecoder(BaseDecoder):
         self._produced += produced_total
         return DecodeOut(b"".join(output), points)
 
+    def _snapshot_due(self) -> bool:
+        """Whether a feed inside a member starts with a snapshot seek point
+        (:class:`ZlibSnapshot`). Never before a member's first output, which is the
+        member's own point."""
+        return (
+            self._snapshots
+            and self._pending_point is None
+            and self._produced - self._last_snapshot >= SNAPSHOT_SPACING
+        )
+
     def flush(self) -> DecodeOut:
+        self._raise_pending()
         if self._finished:
             return DecodeOut(b"")
         # Drain mid-member unconsumed_tail / continue member chaining with no new input.
@@ -325,6 +509,8 @@ class GzipDecoder(BaseDecoder):
     @property
     @override
     def needs_input(self) -> bool:
+        if self._raise_next is not None:
+            return False
         if self._pending_error is not None or self._finished:
             return True
         if self._decomp.unconsumed_tail:
@@ -349,12 +535,19 @@ def ZlibDecompressorStream(
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
     refuse_input_after_end: bool = False,
+    index: bool = False,
     natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
-    """Inflate a raw-deflate or zlib-wrapped stream (forward-only)."""
+    """Inflate a raw-deflate or zlib-wrapped stream.
+
+    A backward seek decodes from the start, unless ``index`` (declared seek demand)
+    makes zlib snapshots seek points (:class:`ZlibDecoder`).
+    """
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: ZlibDecoder(wbits, natives=natives),
+        make_decoder=lambda point, _i: ZlibDecoder(
+            wbits, index=index, start=point, natives=natives
+        ),
         collector=collector,
         codec_name=_zlib_label(wbits),
         report_trailing_data=report_trailing_data,
@@ -373,7 +566,7 @@ def GzipDecompressorStream(
     """Inflate a gzip stream with multi-member chaining.
 
     A backward seek decodes from the start, unless ``index`` (declared seek demand)
-    makes member starts and a BGZF file's members seek points (:class:`GzipDecoder`).
+    makes member starts and a BGZF or mgzip file's members seek points (:class:`GzipDecoder`).
     """
     return DecompressorStream(
         path,

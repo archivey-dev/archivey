@@ -3,9 +3,11 @@
 A compressed image stores its blocks as ordinary zlib, bzip2 or xz streams. The
 first of those is a real stream, so a prefix read extracts one block and calls
 the rest of the image trailing data. The image itself is the 512-byte ``koly``
-block: at offset 0 on an old image, or at the end on every image the backup
-scan found. Reading the blocks is a separate feature. This module exists so
-detection can name the image and ``open_archive`` can refuse it.
+block: at offset 0 on an old image, or at the end, where every image in the
+survey of 138 ``.dmg`` files in ``dev-docs/formats/dmg.md`` has it. Reading the
+blocks is a separate feature. This module exists so detection can name the image
+and ``open_archive`` can refuse it: :class:`UdifBackend` registers the ``koly``
+signatures, at offset 0 and as a trailer, and refuses every open.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.types import (
@@ -73,6 +76,8 @@ class UdifBackend(ReadBackend):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
+        end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> BaseArchiveReader:
         # ``open_archive`` refuses before it asks the registry. This is the same
         # answer for a caller that reaches the backend anyway. The unused

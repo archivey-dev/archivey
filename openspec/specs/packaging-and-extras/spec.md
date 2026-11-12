@@ -61,7 +61,8 @@ codecs, encryption, ISO, seeking accelerators, and the CLI.
 | `[recommended]` | `pyppmd`, `inflate64`, `brotli`, `lz4`, `backports.zstd` on Python <3.14, `cryptography`, `pycdlib`, `tqdm` | Every format and codec that installs everywhere: PPMd, Deflate64, Zstd, Brotli, LZ4, AES/crypto (7z, RAR headers, WinZip AES ZIP), ISO, CLI progress |
 | `[seekable]` | `rapidgzip` | Faster gzip/bzip2 decompression and random access via rapidgzip / bundled `IndexedBzip2File` |
 | `[free-threaded]` | `pycdlib`, `lz4`, `tqdm`, `backports.zstd` on Python <3.14, `cryptography` on Python >=3.14 | The subset that keeps the GIL **disabled** on free-threaded builds |
-| `[all]` | `[recommended]` + `[seekable]` | Everything |
+| `[all]` | `[recommended]` + `[seekable]` | Everything above |
+| `[bzip3]` | `bzip3` | `.bz3` files and `.tar.bz3`; in neither `[recommended]` nor `[all]` |
 
 The system SHALL make `[recommended]` the sensible all-useful install and `[seekable]`
 an opt-in on top of it. `[seekable]` MUST remain separate rather than folded into
@@ -70,7 +71,10 @@ into the process (which bzip2 random access does) re-enables the GIL on free-thr
 builds, and it carries the accelerator
 close-before-finalize hazard recorded in `dev-docs/investigations/rapidgzip-upstream-report.md`.
 
-The system SHALL NOT ship an extra per format. Removed names (`[7z]`, `[rar]`,
+The system SHALL NOT ship an extra per format, with one exception: `[bzip3]`. The
+`bzip3` package publishes wheels only for CPython 3.11 to 3.14 on Linux and Windows and no
+source distribution, so it cannot join `[recommended]` ("installs everywhere") or `[all]`,
+and its only use is the one format; its install hint names `archivey[bzip3]`. Removed names (`[7z]`, `[rar]`,
 `[crypto]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`, `[recommended-lite]`) MUST NOT be
 reintroduced as aliases: format-named extras whose contents are capability-scoped are what
 made install hints name the wrong thing.
@@ -82,8 +86,8 @@ table small enough that no user has to reason about it. (Extras, once published,
 be removed; fewer names is the durable choice.)
 
 `PackageNotInstalledError` install hints MUST name the extra that provides the missing
-package (`[recommended]`, or `[seekable]` for rapidgzip) and MUST NOT name a format,
-since member codecs are shared across containers.
+package (`[recommended]`, `[seekable]` for rapidgzip, or `[bzip3]` for bzip3) and MUST NOT
+name another format, since member codecs are shared across containers.
 
 A missing package is reported through two channels — the hint on `MissingComponent` (what
 listing and `format_availability()` surface) and the message of the
@@ -161,7 +165,10 @@ NOT list `uncompresspy` in any user-facing extra or the `dev` group.
 
 The system SHALL treat RARLAB `unrar` or RARLAB `rar` as the preferred external
 decompressors for RAR member data. It MUST identify the binary on `PATH`
-as a RARLAB build before use (`unrar` first, then `rar`) and MUST NOT implement a
+as a RARLAB build before use (`unrar` first, then `rar`). On Windows, when `PATH` has no
+usable RARLAB binary, it SHALL also try `UnRAR.exe`, then `Rar.exe`, in the `WinRAR`
+folder under each Program Files folder (`ProgramW6432`, `ProgramFiles`,
+`ProgramFiles(x86)`), identified the same way. It MUST NOT implement a
 fallback matrix to `unrar-free`, `unar`, `bsdtar`, `7z`, or other tools. The one
 alternative is `unar`, used when `ArchiveyConfig.rar_decompressor` selects it, or
 when it is `auto` (the default) and no RARLAB binary is found, provided it passes the
@@ -177,6 +184,8 @@ needs no program: archivey decrypts it with `cryptography` (`format-rar`).
 | RARLAB `unrar` 6.0+ on `PATH` | Used for compressed member data and encrypted data archivey does not decrypt |
 | RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed member data and encrypted data archivey does not decrypt |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
+| Windows, no usable RARLAB binary on `PATH`, WinRAR 6.0+ in Program Files | WinRAR's `UnRAR.exe` is used |
+| Windows, RARLAB `unrar` 6.0+ on `PATH` and WinRAR in Program Files | The one on `PATH` is used |
 | RARLAB `unrar`/`rar` older than 6.0, or a RARLAB banner with no parseable version | `PackageNotInstalledError` naming the floor and the version found; refused at identification |
 | Only `unrar-free` / `7z` on `PATH`, default config | `PackageNotInstalledError` naming RARLAB `unrar` or `rar`; they are never used |
 | Only a `unar` 1.10+ that passes the RAR5 check on `PATH`, default config | `unar` is used for compressed member data |
@@ -216,7 +225,7 @@ through an explicit documented allowlist in that guard.
 The system SHALL provide a PEP 735 dependency group named `fuzz` that installs
 `atheris` (and any harness-only helpers it needs) for coverage-guided fuzz CI.
 The `fuzz` group is **not** a user-facing runtime extra: it MUST NOT appear in
-`[all]`, `[recommended]`, `[seekable]`, or `[free-threaded]`,
+`[all]`, `[recommended]`, `[seekable]`, `[free-threaded]` or `[bzip3]`,
 and MUST NOT be required to import or use `archivey` at runtime.
 
 #### Scenario: fuzz packaging matrix
@@ -498,6 +507,25 @@ config, since a probe is not handed the policy and may import what `requires` na
 file only that probe recognises is then not detected. A `requires` entry names a module,
 and one inside an excluded package (`lz4.block` when `lz4` is excluded) counts as
 excluded.
+
+`FormatPolicy.only_libraries` SHALL be the allowlist form: `None` (the default) allows
+every package, and a set SHALL turn off every `OptionalLibrary` it does not list,
+exactly as if `exclude_libraries` named it, including a member a later release adds.
+It SHALL take the same spellings and refuse the same names as `exclude_libraries`, and
+a package in both SHALL be refused at construction. It SHALL NOT affect a module that is
+not an `OptionalLibrary` (a plugin's own modules): `plugins` governs those.
+`FormatPolicy.allows_library(module)` SHALL answer whether a module, or the package it
+is part of, may run under the policy, combining both fields, and every check archivey
+makes SHALL agree with it.
+
+#### Scenario: only_libraries turns off every package it does not list
+
+- **WHEN** a caller opens a 7z archive with a PPMd member under
+  `FormatPolicy(only_libraries=set())`, with `pyppmd` installed
+- **THEN** reading the PPMd member raises `PackageNotInstalledError` naming `pyppmd`
+  with the policy as its `reason`
+- **AND** under `FormatPolicy(only_libraries={"pyppmd"})` it reads
+- **AND** `FormatPolicy(only_libraries={"lz4"}, exclude_libraries={"lz4"})` is refused
 
 #### Scenario: An excluded pyppmd refuses only the PPMd member
 

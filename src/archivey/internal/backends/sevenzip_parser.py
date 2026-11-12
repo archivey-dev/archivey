@@ -18,9 +18,21 @@ Plain header (property-tagged nesting)::
     [ArchiveProperties?] [AdditionalStreams?] MainStreamsInfo FilesInfo
     MainStreamsInfo = PackInfo + UnpackInfo(Folders/Coders) + SubstreamsInfo?
     FilesInfo = names, empty/anti bits, times, attrs
-    Non-empty files map 1:1 onto folder substreams in order
-    (``_map_files_to_folders``). A *folder* is the solid pack unit (coder chain +
-    packed slice); files are substreams inside it.
+
+The words the whole 7z backend uses:
+
+- A *pack stream* is one contiguous run of stored bytes in the packed area.
+- A *coder* is one decode step: a decompressor, a filter, or AES. It reads
+  *in-streams* and writes *out-streams*, numbered across its folder.
+- A *folder* is a small graph of coders, and the unit of decoding. Its *bind pairs*
+  wire one coder's out-stream to another coder's in-stream; every other in-stream
+  reads one pack stream. The one out-stream no bind pair consumes is the folder's
+  output.
+- A *substream* is a slice of a folder's output. SubstreamsInfo gives each folder's
+  substream count and sizes, and a folder with more than one is *solid*.
+- Files that own a stream map 1:1 onto the substreams in header order
+  (``_map_files_to_folders``). No file names its folder. A file with no stream (a
+  directory, an empty file, an anti item) has no folder at all.
 
 Call graph: ``read_signature_and_next_header`` → ``parse_header_block`` → (maybe
 ``EncodedHeader``) → ``materialize_archive``. End-to-end open with encoded-header
@@ -56,6 +68,7 @@ from archivey.internal.sfx import (
     cut_signature_error,
     describe_scan_miss,
     is_cut_signature,
+    overlay_start_of,
     scan_for_magic,
 )
 from archivey.internal.streams.streamtools import read_exact
@@ -136,6 +149,15 @@ _PROPERTY_IDS = frozenset(_Property)
 
 @dataclass(slots=True)
 class SevenZipCoder:
+    """One decode step of a folder, as declared in the header.
+
+    ``method`` is the on-disk method id (COPY's id when the header gives an empty
+    one), looked up in
+    :mod:`~archivey.internal.backends.sevenzip_methods`. ``properties`` is the
+    method's own parameter blob (dictionary size, AES salt and IV, ...), parsed only
+    when the folder is decoded.
+    """
+
     method: bytes
     num_in_streams: int
     num_out_streams: int
@@ -144,11 +166,23 @@ class SevenZipCoder:
 
 @dataclass(slots=True)
 class SevenZipFolder:
+    """A coder graph whose output holds zero or more members back to back.
+
+    For an encoded header, the output is the header itself.
+
+    Stream numbers are folder-wide: in-streams and out-streams are each counted
+    across the coders in order (see :class:`FolderGraph`). Which pack streams the
+    folder reads is not stored here: folders take consecutive pack streams in header
+    order, ``len(packed_indices)`` each.
+    """
+
     coders: list[SevenZipCoder]
-    bind_pairs: list[tuple[int, int]]
+    bind_pairs: list[tuple[int, int]]  # (in-stream, the out-stream that feeds it)
+    # The in-streams fed from pack streams. The i-th entry reads this folder's i-th
+    # pack stream.
     packed_indices: list[int]
-    unpack_sizes: list[int]
-    crc: int | None
+    unpack_sizes: list[int]  # one per out-stream; see folder_unpack_size
+    crc: int | None  # CRC32 of the folder output, when digest_defined
     digest_defined: bool
 
 
@@ -243,6 +277,17 @@ def check_packed_indices(
 
 @dataclass(slots=True)
 class SevenZipFileRecord:
+    """One FilesInfo entry, with its place in the folder outputs filled in.
+
+    ``_map_files_to_folders`` sets the last six fields. A record with
+    ``emptystream`` keeps the values :func:`_file_record_from_props` gives them (no
+    folder, size 0, no CRC, not encrypted): the member has no data to decode.
+    Otherwise the member is substream ``file_in_folder`` of folder ``folder_index``,
+    and its bytes start after the earlier substreams of that folder.
+    ``compressed_size`` is the whole folder's packed size, because 7z stores no
+    per-member packed size.
+    """
+
     filename: str
     emptystream: bool
     is_anti: bool
@@ -261,11 +306,21 @@ class SevenZipFileRecord:
 
 @dataclass(slots=True)
 class SevenZipArchive:
+    """The parsed archive: folders, the substream table, and the file records.
+
+    Offsets count from the signature header. ``pack_pos`` is where the packed area
+    starts, with the 32-byte signature header already added (unlike
+    ``_StreamsInfo.pack_pos``). Pack stream ``i`` starts ``pack_positions[i]`` bytes
+    into it and is ``pack_sizes[i]`` long. ``num_unpackstreams_folders`` has one
+    substream count per folder; ``unpack_sizes`` and ``digests`` have one entry per
+    substream, folder after folder.
+    """
+
     major_version: int
     minor_version: int
     pack_pos: int
     pack_sizes: list[int]
-    pack_positions: list[int]
+    pack_positions: list[int]  # running totals of pack_sizes, with a final total
     folders: list[SevenZipFolder]
     num_unpackstreams_folders: list[int]
     unpack_sizes: list[int]
@@ -282,6 +337,14 @@ class SevenZipArchive:
 
 @dataclass(slots=True)
 class _StreamsInfo:
+    """One StreamsInfo block, as read: the raw material of :class:`SevenZipArchive`.
+
+    ``pack_pos`` counts from the end of the signature header, as stored.
+    ``pack_sizes`` and ``pack_positions`` are None without PackInfo. The folder and
+    substream fields are None without UnpackInfo; without SubstreamsInfo they hold one
+    substream per folder (see :func:`_read_streams_info`).
+    """
+
     pack_pos: int = 0
     pack_sizes: list[int] | None = None
     pack_positions: list[int] | None = None
@@ -349,6 +412,11 @@ class EncodedHeader:
 
 @dataclass(slots=True)
 class PlainHeader:
+    """A parsed ``kHeader``: streams info, file properties, and the comment.
+
+    The files are not yet mapped onto folders; :func:`materialize_archive` does that.
+    """
+
     streams: _StreamsInfo
     files: list[SevenZipFileRecord]
     comment: str | None
@@ -515,7 +583,8 @@ class _Cursor:
     """Mutable byte cursor over an in-memory 7z header ``memoryview``.
 
     Structural / cold paths use the methods; hot per-member field loops prefer
-    the free ``_load_*`` functions with ``pos`` as a local (see design Decision 4).
+    the free ``_load_*`` functions with ``pos`` as a local, which saves an attribute
+    read and write per field on a header with many members.
     """
 
     __slots__ = ("buf", "pos")
@@ -570,7 +639,8 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
     ``limit`` bytes (the shared :data:`~archivey.internal.sfx.SFX_MAX`, the same bound
     the RAR parser and ``detect_format`` use), which is what makes forced
     ``format=SEVEN_Z`` work on a stub the way forced ``format=RAR`` already does.
-    A candidate that fails :func:`~archivey.internal.backends.sevenzip_detect.validate_sevenzip_signature_header`
+    A candidate that fails
+    :func:`~archivey.internal.backends.sevenzip_detect.validate_sevenzip_signature_header`
     is skipped while a later ``VALID`` hit is sought; if none validate, the first
     identified candidate is used so a damaged or empty payload still reaches the
     parser.
@@ -601,6 +671,7 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
             (MAGIC_7Z,),
             limit=limit,
             validator=validate_sevenzip_signature_header,
+            first_at=overlay_start_of(fp),
         )
     finally:
         fp.seek(start)
@@ -612,8 +683,20 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
     return scan.hit.candidate_origin
 
 
-def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
+# The span before the next header's end that a remote read is told to expect at open:
+# an encoded header (the 7-Zip and py7zr default) is a short record pointing at a packed
+# header stream that sits just before it, so fetching the two together saves a request.
+NEXT_HEADER_HINT = 64 * 1024
+
+
+def read_signature_and_next_header(
+    fp: BinaryIO, *, will_read: Callable[[int, int], None] | None = None
+) -> SignatureInfo:
     """Read signature header, verify CRCs, return next-header bytes (possibly empty).
+
+    ``will_read(start, end)``, given a span relative to the signature, is told before
+    the next header is read that the ``NEXT_HEADER_HINT`` bytes ending with it are read
+    next (a range hint for a remote source; nothing else).
 
     ``fp`` is expected to begin *at* the signature header: every offset in a 7z archive
     is relative to it, so a self-extracting archive is opened by handing this a view
@@ -654,6 +737,11 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
             SIGNATURE_HEADER_SIZE + fields.next_header_offset,
         )
 
+    if will_read is not None:
+        end = (
+            SIGNATURE_HEADER_SIZE + fields.next_header_offset + fields.next_header_size
+        )
+        will_read(max(SIGNATURE_HEADER_SIZE, end - NEXT_HEADER_HINT), end)
     try:
         fp.seek(SIGNATURE_HEADER_SIZE + fields.next_header_offset)
     except (OSError, OverflowError) as exc:
@@ -913,6 +1001,7 @@ __all__ = [
 
 
 def _parse_plain_header(cur: _Cursor, *, max_members: int | None) -> PlainHeader:
+    """Read the sections of a ``kHeader`` up to its ``kEnd``; ``cur`` is past the tag."""
     streams = _StreamsInfo()
     files: list[SevenZipFileRecord] = []
     comment: str | None = None
@@ -939,6 +1028,11 @@ def _parse_plain_header(cur: _Cursor, *, max_members: int | None) -> PlainHeader
 
 
 def _read_streams_info(cur: _Cursor, *, max_members: int | None) -> _StreamsInfo:
+    """Read PackInfo, UnpackInfo and SubstreamsInfo, each optional, in that order.
+
+    Without SubstreamsInfo, each folder holds one substream: its whole output, with
+    the folder's own CRC.
+    """
     streams = _StreamsInfo()
     # Strict at this level, as 7-Zip's ReadStreamsInfo is: it skips no unknown ID
     # here, only inside the three sections (see _read_section_property).
@@ -993,6 +1087,11 @@ def _read_streams_info(cur: _Cursor, *, max_members: int | None) -> _StreamsInfo
 
 
 def _read_unpack_info(cur: _Cursor, *, max_members: int | None) -> list[SevenZipFolder]:
+    """Read every folder's coder graph, then their out-stream sizes and CRCs.
+
+    The sizes and CRCs come in separate lists after all the graphs, so the folders
+    are built first and filled in afterwards.
+    """
     prop = _read_section_property(cur, "7z UNPACK_INFO")
     if prop != _Property.FOLDER:
         raise CorruptionError(f"Expected FOLDER in 7z UNPACK_INFO, got 0x{prop:02x}")
@@ -1033,6 +1132,12 @@ def _read_unpack_info(cur: _Cursor, *, max_members: int | None) -> list[SevenZip
 
 
 def _read_folder(cur: _Cursor) -> SevenZipFolder:
+    """Read one folder's coders, bind pairs and packed in-stream indices.
+
+    The graph is validated here (see the comment above the bind pairs). Whether the
+    decoder can run its shape is decided later, by ``sevenzip_pipeline.plan_folder``.
+    ``unpack_sizes`` and the CRC are filled in by :func:`_read_unpack_info`.
+    """
     num_coders = cur.uint64()
     _require_folder_graph_count(num_coders, _MAX_FOLDER_CODERS, "coder")
     coders: list[SevenZipCoder] = []
@@ -1122,6 +1227,13 @@ def _read_substreams_info(
     *,
     max_members: int | None,
 ) -> tuple[list[int], list[int], list[int | None]]:
+    """Read how each folder's output is cut into substreams.
+
+    Returns ``(substream count per folder, size per substream, CRC per substream)``.
+    The last size in each folder is not stored: it is the folder output less the
+    others. A folder with exactly one substream and a CRC in UnpackInfo has no CRC
+    slot here, because that CRC already covers the substream.
+    """
     prop = _read_section_property(cur, "7z SUBSTREAMS_INFO")
     if prop == _Property.NUM_UNPACK_STREAM:
         # Remaining bytes do not bound this field: kSize/kCRC may be absent,
@@ -1130,7 +1242,7 @@ def _read_substreams_info(
         # bomb one property later. Header size is the impossibility bound (O1);
         # ``max_members`` is the caller's listing budget (None = UNLIMITED).
         # The per-folder coder-graph caps must not apply here: a solid archive's
-        # unpack-stream count *is* the member count (O13 / review F1).
+        # unpack-stream count *is* the member count (threat model O13).
         header_size = len(cur.buf)
         num_unpackstreams_folders = []
         total_unpack_streams = 0
@@ -1213,9 +1325,15 @@ def _read_substreams_info(
 def _read_files_info(
     cur: _Cursor, *, max_members: int | None
 ) -> tuple[list[SevenZipFileRecord], str | None]:
+    """Read FilesInfo into file records (not yet mapped to folders) and the comment.
+
+    Each per-file property is a vector over all files, or over the stream-less files
+    for ``kEmptyFile`` and ``kAnti``; ``kComment`` is the archive comment.
+    ``_FILES_INFO_HANDLERS`` applies most of them.
+    """
     num_files = cur.uint64()
     # Bound the file count against the header size and the listing budget before
-    # pre-allocating one object per claimed file. See threat-model O1 / review L1.
+    # pre-allocating one object per claimed file. See threat model O1.
     # CRC does NOT make the header trustworthy: an attacker crafting the archive
     # computes a matching CRC.
     _require_member_scaled_count(num_files, len(cur.buf), max_members, "file")
@@ -1260,6 +1378,7 @@ def _read_files_info(
 def _apply_empty_stream_bool(
     files: list[_FileProps], values: list[bool], field_name: str
 ) -> None:
+    """Set ``field_name`` on each stream-less file, taking ``values`` in order."""
     value_index = 0
     for file_props in files:
         if not file_props.emptystream:
@@ -1289,7 +1408,7 @@ def _handle_name(
     if external != 0:
         raise UnsupportedFeatureError("External 7z filename data is not supported")
     # Bulk-decode the whole names blob (known size, null-terminated UTF-16LE
-    # strings). Per-character reads dominated listing before L1.
+    # strings): per-character reads would dominate the listing time.
     view = payload.buf[payload.pos :]
     payload.pos = len(payload.buf)
     names = _decode_utf16_names(bytes(view), expected_count=len(files))
@@ -1301,8 +1420,8 @@ def _handle_name(
 
 def _decode_utf16_names(blob: bytes, *, expected_count: int) -> list[str]:
     """Decode a 7z ``kName`` property payload into ``expected_count`` filenames."""
-    # Zero names: the payload is empty (no terminators). Match the old per-file
-    # loop's no-op; ``endswith(b"\\x00\\x00")`` below would mis-reject ``b""``.
+    # Zero names: the payload is empty (no terminators), and
+    # ``endswith(b"\\x00\\x00")`` below would wrongly reject ``b""``.
     if expected_count == 0:
         if blob:
             raise CorruptionError("7z name payload is non-empty for zero files")
@@ -1338,7 +1457,7 @@ def _handle_time(
     def _handler(
         payload: _Cursor, files: list[_FileProps], _num_empty: int, _n: int
     ) -> None:
-        # Hot per-member loop: free functions keep ``pos`` in a local (Decision 4).
+        # Hot per-member loop: free functions keep ``pos`` in a local (see _Cursor).
         buf = payload.buf
         pos = payload.pos
         defined, pos = _load_boolean(buf, pos, len(files), check_all=True)
@@ -1387,6 +1506,7 @@ def _handle_start_pos(
     payload.pos = pos
 
 
+# Each handler takes (payload, files, stream-less file count, file count).
 _FILES_INFO_HANDLERS: dict[
     int, Callable[[_Cursor, list[_FileProps], int, int], None]
 ] = {
@@ -1434,6 +1554,12 @@ def _map_files_to_folders(
     unpack_sizes: list[int],
     digests: list[int | None],
 ) -> list[SevenZipFileRecord]:
+    """Give each file that owns a stream its folder, substream, size and CRC.
+
+    The header links files to substreams only by position: the n-th file with a
+    stream is the n-th substream, and folders are filled in order. The records are
+    updated in place and returned.
+    """
     folder_compressed_sizes = _folder_compressed_sizes(folders, pack_sizes)
     folder_index = 0
     file_in_folder = 0
@@ -1493,6 +1619,7 @@ def _map_files_to_folders(
 def _folder_compressed_sizes(
     folders: list[SevenZipFolder], pack_sizes: list[int]
 ) -> list[int]:
+    """Each folder's packed size: the sum of the pack streams it takes, in order."""
     sizes: list[int] = []
     pack_index = 0
     for folder in folders:
@@ -1507,6 +1634,7 @@ def _folder_compressed_sizes(
 
 
 def _pack_positions(pack_sizes: list[int]) -> list[int]:
+    """Each pack stream's offset into the packed area, plus the total at the end."""
     positions = [0]
     total = 0
     for size in pack_sizes:
@@ -1544,9 +1672,11 @@ def _read_comment(cur: _Cursor) -> str | None:
     data = data[1:]
     # Trim the null terminator(s) a whole UTF-16 code unit at a time: a byte-wise
     # rstrip eats the high byte of a trailing ASCII character too, and "hi" then
-    # arrives here as an odd-length payload that cannot decode.
-    while data.endswith(b"\x00\x00"):
-        data = data[:-2]
+    # arrives here as an odd-length payload that cannot decode. Find the end once and
+    # slice once: trimming two bytes per loop pass copies the payload each time, which
+    # is quadratic in a comment of megabytes of NULs.
+    trailing_nuls = len(data) - len(data.rstrip(b"\x00"))
+    data = data[: len(data) - (trailing_nuls - trailing_nuls % 2)]
     if not data:
         return None
     if len(data) % 2:

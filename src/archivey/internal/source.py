@@ -1,7 +1,10 @@
 """``ArchiveSource`` — the one object every archive source becomes at the boundary.
 
-``open_archive`` and ``open_stream`` build one of these from whatever the caller passed —
-a path, a stream, or a volume list — and hand it to detection and then to the backend.
+``open_archive`` and ``detect_format`` build one of these from whatever the caller
+passed — a path, a stream, an fsspec ``OpenFile`` or a volume list — through
+:func:`~archivey.internal.volumes.resolve_source`, and hand it to detection and then to
+the backend. ``open_stream`` uses ``resolve_source`` for an ``OpenFile`` and calls
+:meth:`ArchiveSource.for_path` or :meth:`ArchiveSource.for_stream` otherwise.
 It **is** the stream they read (third-party parsers such as ``pycdlib`` get it
 directly), and it carries every guarantee the raw source must give:
 
@@ -41,6 +44,12 @@ A non-seekable source also holds the **detection replay prefix**: :meth:`peek` f
 without consuming, and ``read`` drains it before reaching the source. Detection and the
 backend therefore see the same object, and nothing is swapped in between.
 
+A seekable caller stream needs no replay prefix: detection seeks it back to where it
+found it. The archive may start past offset 0 there, wherever the caller left the
+stream. Before a backend
+reads it, :meth:`ArchiveSource.rebase_to_current_position` **rebases** the source so
+that position reads as offset 0.
+
 Only a size that is a **fact** clamps a read — ``stat`` on a path, a ``BytesIO``'s buffer,
 ``fstat`` on a regular file, a joined set's measured parts. An integer ``size`` attribute
 on a caller's object (the fsspec convention) is a hint: it only steps a read, because
@@ -65,10 +74,14 @@ ownership rules (``dev-docs/topics/stream-ownership.md``).
 
 from __future__ import annotations
 
+import bz2
+import gzip
 import io
+import lzma
 import os
 import stat
 import sys
+import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
@@ -94,6 +107,7 @@ from archivey.internal.streams.streamtools import (
     underlying_stream,
 )
 from archivey.internal.streams.streamtools.binaryio import (
+    ask_resume_offset,
     read_arrived,
     read_blocking,
     readinto_via_read,
@@ -102,6 +116,8 @@ from archivey.internal.streams.streamtools.binaryio import (
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
+
+    from archivey.internal.remote import FsspecDecompressed, RangeSource
 
 
 class JoinedVolumes(Protocol):
@@ -268,6 +284,7 @@ class ArchiveSource(ReadOnlyIOStream):
     path (regular file)           fact        none          none         yes
     path (block device)           ``None``    none          none         yes
     path (FIFO, device, socket)   ``None``    yes           none         no
+    fsspec ``OpenFile``           fact        none          none         yes
     directory                     ``None``    yes (unused)  none         no
     buffered caller stream        fact/None   none          none         yes
     seekable raw caller stream    fact/None   none          none         yes
@@ -303,6 +320,9 @@ class ArchiveSource(ReadOnlyIOStream):
     _replay: bytearray | None = None
     _full_count: _GatheringReader | None = None
     _close_callbacks: tuple[Callable[[], None], ...] = ()
+    _remote: tuple[RangeSource, ...] = ()
+    _owned_beneath: BinaryIO | None = None
+    _fsspec_decompressed: FsspecDecompressed | None = None
 
     def __init__(
         self,
@@ -362,6 +382,9 @@ class ArchiveSource(ReadOnlyIOStream):
         self._seek_target = position
         # Only a non-seekable source replays a prefix; a seekable one is rewound instead.
         self._replay = None if seekable else bytearray()
+        # Whether a peek met the end of a non-seekable source: the replay prefix then
+        # holds every byte not yet read (:meth:`held_rest`).
+        self._peek_met_end = False
         # Set for a non-seekable raw source, whose full-count reads all go through it.
         # ``_reader`` is then the caller's object. Only ``read_arrived`` and
         # ``peek_arrived`` read it directly, because a gatherer waits for a full count.
@@ -490,6 +513,49 @@ class ArchiveSource(ReadOnlyIOStream):
         )
 
     @classmethod
+    def for_fsspec_decompressed(
+        cls, decoded: BinaryIO, raw: BinaryIO, origin: FsspecDecompressed
+    ) -> ArchiveSource:
+        """Own the two files archivey opened for an fsspec ``OpenFile`` with a
+        ``compression``: fsspec's decompressor ``decoded``, read as :meth:`for_stream`
+        reads a caller's stream, and fsspec's file ``raw`` under it. Both close with
+        this source, ``decoded`` first, since a decompressor leaves the file it was
+        handed open. ``origin`` names the object for ``SOURCE_CHANGE_UNDETECTABLE``."""
+        source = cls.for_stream(decoded)
+        source._owned = decoded
+        source._owned_beneath = raw
+        source._fsspec_decompressed = origin
+        return source
+
+    @classmethod
+    def for_range_source(cls, ranged: RangeSource) -> ArchiveSource:
+        """Own a :class:`~archivey.internal.remote.RangeSource` built from an fsspec
+        ``OpenFile``.
+
+        Its size is a fact (``fs.size`` at open), its reads are full-count, and a seek
+        may cost a request, so it is marked ``seek_is_expensive``. A seek decodes
+        nothing (:meth:`nearest_resume_offset` answers the target), so the tail reads
+        run as on a path, one request each (design D1). It has no path: a
+        backend that needs one spools, as for any stream. Closing this source closes the
+        range source, which drops its fetched windows; nothing of the caller's is
+        closed, since no file object was ever opened.
+        """
+        source = cls(
+            path=None,
+            # A RawIOBase whose read is full-count; typeshed keeps it apart from
+            # BinaryIO.
+            reader=cast("BinaryIO", ranged),
+            seekable=True,
+            size=ranged.size,
+            length=ranged.size,
+            name=ranged.name,
+            owned=cast("BinaryIO", ranged),
+            seek_is_expensive=True,
+        )
+        source.adopt_remote((ranged,))
+        return source
+
+    @classmethod
     def for_volumes(
         cls, joined: JoinedVolumes, *, name: str | None = None
     ) -> ArchiveSource:
@@ -517,7 +583,34 @@ class ArchiveSource(ReadOnlyIOStream):
             seek_is_expensive=joined.seek_is_expensive,
         )
 
+    def adopt_remote(self, ranges: tuple[RangeSource, ...]) -> None:
+        """Record the range sources this source reads (one, or a volume list's)."""
+        self._remote = ranges
+
+    def will_read(self, start: int, end: int) -> None:
+        """Say that ``[start, end)`` of this source is read next.
+
+        A remote source (an ``fsspec`` ``OpenFile``) then fetches that span in one
+        request, up to the maximum fetch, when the read comes; any other source
+        ignores it. A hint never changes the bytes a read returns. Offsets are this
+        source's own. A volume list is not hinted: its offsets span several range
+        sources.
+        """
+        remote = self._remote
+        if len(remote) == 1 and self._joined is None:
+            remote[0].will_read(start, end)
+
     # --- cheap facts ---------------------------------------------------------------------
+
+    @property
+    def remote_sources(self) -> tuple[RangeSource, ...]:
+        """The range sources an ``fsspec`` ``OpenFile`` source reads; else empty."""
+        return self._remote
+
+    @property
+    def fsspec_decompressed(self) -> FsspecDecompressed | None:
+        """The ``OpenFile`` read through fsspec's decompressing file; else ``None``."""
+        return self._fsspec_decompressed
 
     @property
     def path(self) -> Path | None:
@@ -609,12 +702,35 @@ class ArchiveSource(ReadOnlyIOStream):
         """Whether a seek on this source may re-decode what it skips.
 
         True when the caller's stream is archivey's own member stream
-        (``ArchiveStreamImpl``), under any pass-through buffer (see
-        :func:`seek_is_expensive`), and for a joined set with such a stream among its
-        volumes: a read near the end of the set seeks that volume. A path, and a caller
-        stream that is a file or a ``BytesIO``, answer ``False``.
+        (``ArchiveStreamImpl``) or a standard-library decompressing file object, under
+        any pass-through buffer (see :func:`seek_is_expensive`), and for a joined set
+        with such a stream among its volumes: a read near the end of the set seeks that
+        volume. A path, and a caller stream that is a file or a ``BytesIO``, answer
+        ``False``. Whether a given seek is still cheap is
+        :meth:`nearest_resume_offset`'s answer: a member stored as-is is a slice.
         """
         return self._seek_is_expensive
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        """The offset, at or before ``target``, that a seek to ``target`` decodes from.
+
+        ``target`` itself on a seekable source whose seek is a pointer move: a path, a
+        file, a ``BytesIO``. A source that borrows a stream whose seek may re-decode
+        (:attr:`seek_is_expensive`) passes the question to that stream, under any
+        pass-through buffer: a stored ZIP entry or an uncompressed TAR member, a slice
+        of its archive's bytes, answers ``target``, and a decoder answers where it
+        would restart. A remote source (a ``RangeSource``) answers ``target``: a
+        range request starts anywhere. A joined set asks the volume that holds
+        ``target``.
+        ``None`` when nothing answers (a stream with no such method) and on a source
+        that cannot seek. Offsets are the borrowed stream's own, as :meth:`seek`'s
+        are.
+        """
+        if not self._seekable:
+            return None
+        if not self._seek_is_expensive:
+            return target
+        return ask_resume_offset(underlying_stream(self._reader), target)
 
     @property
     @override
@@ -635,6 +751,10 @@ class ArchiveSource(ReadOnlyIOStream):
         return self._seekable
 
     def _stream(self) -> BinaryIO:
+        """The stream reads go to, opening a path source's handle on first use.
+
+        Raises once the source is closed, and for a directory, which has no stream.
+        """
         reader = self._reader
         if reader is not None:
             return reader
@@ -659,7 +779,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # which proves there is nothing to replay and no gathering (the class
         # docstring's table). This is ``read_within_reach``'s clamp branch; every read
         # of an archive pays for this method's frames, so the rest of the dispatch is
-        # kept off it (task 8.2 of the change).
+        # kept off it.
         reader = self._reader
         length = self._length
         if length is not None and reader is not None:
@@ -825,6 +945,8 @@ class ArchiveSource(ReadOnlyIOStream):
             chunk = self._full_count_reader().read(missing)
             if chunk:
                 replay.extend(chunk)
+            if len(chunk) < missing:
+                self._peek_met_end = True
         return bytes(replay[start:n])
 
     def read_arrived(self, n: int) -> bytes:
@@ -885,8 +1007,22 @@ class ArchiveSource(ReadOnlyIOStream):
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
         missing = n - len(replay)
         if missing > 0:
-            replay.extend(read_arrived(self._stream(), missing))
+            chunk = read_arrived(self._stream(), missing)
+            if not chunk:
+                self._peek_met_end = True
+            replay.extend(chunk)
         return bytes(replay[start:n])
+
+    def held_rest(self) -> bytes | None:
+        """Every byte of a non-seekable source not yet read, when a peek already holds them.
+
+        That is when a peek met the end of the source: the replay prefix is then the
+        rest of the stream, and this copies it without reading the source. ``None``
+        otherwise, and on a seekable source.
+        """
+        if self._replay is None or not self._peek_met_end:
+            return None
+        return bytes(self._replay)
 
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
@@ -987,18 +1123,25 @@ class ArchiveSource(ReadOnlyIOStream):
         for callback in callbacks:
             callback()
         try:
-            owned = self._owned
-            self._owned = None
-            if owned is not None:
-                owned.close()
+            buffer = self._buffer
+            self._buffer = None
+            if buffer is not None:
+                # A ``_NonClosingBufferedReader``: it detaches, so the caller's raw
+                # stays open. Before the owned stream closes, as detaching a buffer
+                # whose raw is closed raises.
+                buffer.close()
         finally:
             try:
-                buffer = self._buffer
-                self._buffer = None
-                if buffer is not None:
-                    # A ``_NonClosingBufferedReader``: it detaches, so the caller's raw
-                    # stays open.
-                    buffer.close()
+                try:
+                    owned = self._owned
+                    self._owned = None
+                    if owned is not None:
+                        owned.close()
+                finally:
+                    beneath = self._owned_beneath
+                    self._owned_beneath = None
+                    if beneath is not None:
+                        beneath.close()
             finally:
                 if self._replay is not None:
                     self._replay.clear()
@@ -1033,12 +1176,26 @@ def _check_peek_range(n: int, start: int) -> None:
         raise ValueError("peek start must be non-negative")
 
 
+# Streams whose seek decodes what it skips: archivey's own member stream, and the
+# standard library's decompressing file objects, whose backward seek decodes again from
+# the start and whose seek to the end decodes everything (``ZipExtFile`` rewinds the
+# same way, stored or not).
+_DECODING_STREAMS: tuple[type, ...] = (
+    ArchiveStreamImpl,
+    gzip.GzipFile,
+    bz2.BZ2File,
+    lzma.LZMAFile,
+    zipfile.ZipExtFile,
+)
+
+
 def seek_is_expensive(stream: BinaryIO) -> bool:
     """Whether repositioning ``stream`` may cost a re-decode rather than a pointer move.
 
     True for archivey's own member stream (``ArchiveStreamImpl``): many codecs serve a
     backward seek by decoding again from the start, and a seek to the end decodes
-    everything before it.
+    everything before it. True too for the standard library's ``GzipFile``,
+    ``BZ2File``, ``LZMAFile`` and ``ZipExtFile``, which do the same.
     The same holds under a pass-through layer (a ``BufferedReader``, a seek counter),
     which :func:`underlying_stream` peels the way :func:`source_byte_size` does. True as
     well for an :class:`ArchiveSource` that borrows one, which is how ``open_archive``
@@ -1054,7 +1211,60 @@ def seek_is_expensive(stream: BinaryIO) -> bool:
     own = getattr(stream, "seek_is_expensive", None)
     if isinstance(own, bool):
         return own
-    return isinstance(underlying_stream(stream), ArchiveStreamImpl)
+    return isinstance(underlying_stream(stream), _DECODING_STREAMS)
 
 
-__all__ = ["ArchiveSource", "JoinedVolumes", "seek_is_expensive"]
+# How far before a probe's target a resume point may sit and still count as cheap: a
+# cipher block or a small buffer to read again, not a decode.
+_RESUME_TOLERANCE = 4096
+# How far before the end the tail probes start reading: the gzip ISIZE, the xz stream
+# footer and the lzip member trailer all sit in the last 32 bytes.
+_TAIL_WINDOW = 64
+
+
+def seeks_to_end_are_cheap(stream: BinaryIO) -> bool:
+    """Whether a probe may read ``stream``'s tail and seek back without decoding.
+
+    True when the stream can seek and the seek is a pointer move
+    (:func:`seek_is_expensive` is false). A stream whose seek may re-decode still
+    qualifies when it says a seek resumes at, or within
+    a few KiB before, each place the probes go (``ArchiveStream.nearest_resume_offset``):
+    the last bytes, where the trailers sit; the middle, which an index walk may cross;
+    and the current position, which the probe restores. A stored ZIP entry or an
+    uncompressed TAR member, a slice of its archive's bytes, answers every target
+    itself, and so does a remote source, whose tail costs one range request
+    (fsspec-integration design D1). A member of a compressed TAR is a slice of decoded
+    data and answers its decoder's resume point. A resume at 0 for a later target is
+    not cheap, since a member view clamps a point behind its own start to 0. The end itself is not
+    asked: a decoder can resume there, with nothing left to decode, and still decode
+    everything before it. A stream that has no cheap length or does not answer is not
+    cheap.
+    """
+    if not is_seekable(stream):
+        return False
+    if not seek_is_expensive(stream):
+        return True
+    end = getattr(stream, "size_hint", None)
+    if not isinstance(end, int):
+        end = source_byte_size(stream)
+    if end is None:
+        return False
+    for target in (max(end - _TAIL_WINDOW, 0), end // 2, stream.tell()):
+        resume = ask_resume_offset(stream, target)
+        if resume is None or resume < target - _RESUME_TOLERANCE:
+            return False
+        # A member view clamps a resume point behind its own start to 0
+        # (``SlicingStream.nearest_resume_offset``): a small member of a ``.tar.xz``
+        # answers 0, and reaching it decodes the outer stream from its origin. So 0
+        # for a later target is no answer.
+        if resume == 0 and target > 0:
+            return False
+    return True
+
+
+__all__ = [
+    "ArchiveSource",
+    "JoinedVolumes",
+    "seek_is_expensive",
+    "seeks_to_end_are_cheap",
+]

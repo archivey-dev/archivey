@@ -703,7 +703,7 @@ def test_compressed_tar_stream_checksum_after_trailer_is_not_dropped(
     One flipped byte in a stored member body decodes cleanly, so only the stream
     checksum can see it. With a ``tar -b128`` record (64 KiB of zero padding after
     the trailer) the checksum is reached inside the trailing scan, which must raise
-    it (_StreamChecksumError) rather than take it for a tail that failed to decode.
+    it (StreamChecksumError) rather than take it for a tail that failed to decode.
     Past the scan's 1 MiB bound it is never reached, and DIGEST_UNVERIFIABLE says so;
     the same archive without the flipped byte reports the same, and raises nothing."""
     import random
@@ -829,18 +829,14 @@ def test_damaged_further_gzip_member_is_not_called_unreached(
     ``a.tar.gz``'s CRC-32, over the listed members, is checked on the way into
     ``b.gz`` (flipping it raises), so a report must not say that checksum was never
     reached. The scan cannot tell this failure from one in the members' own stream,
-    so it reports ``DIGEST_UNVERIFIABLE`` (``trailing_decode_failed``) worded as
-    "cannot be told". Which report comes out depends on ``b.gz``'s size: the codec
-    loses the output of a feed that fails, so a small member gives the digest report,
-    and one decoding past a scan chunk first gives ``ARCHIVE_TRAILING_DATA``
-    (``dev-docs/formats/tar.md`` §6). Neither is silent, and the listing stands.
-    Random access checks the listing only: a later ``read()`` of ``a`` decodes from
-    the start and its read-ahead reaches ``b.gz``'s failure, which raises
-    ``CorruptionError`` on ``main`` too.
+    so it would report ``DIGEST_UNVERIFIABLE`` (``trailing_decode_failed``) worded as
+    "cannot be told". But ``b.gz``'s bytes before its failure come back whatever its
+    size (the stream decodes again to the failing byte; spec ``compressed-streams``),
+    so the scan finds them past the end-of-archive marker first and reports
+    ``ARCHIVE_TRAILING_DATA`` (``dev-docs/formats/tar.md`` §6). Not silent, and the
+    listing stands. Random access checks the listing only.
     """
     import gzip
-
-    from archivey.internal.backends.tar_reader import _TRAILING_SCAN_CHUNK
 
     second = bytearray(gzip.compress(b"S" * size, mtime=0))
     assert second[10] & 1, "fixture premise: the first deflate block is final"
@@ -857,14 +853,7 @@ def test_damaged_further_gzip_member_is_not_called_unreached(
         else:
             assert [m.name for m in ar.members()] == ["a"]
         found = {d.code: d for d in ar.diagnostics.retained}
-    if size < _TRAILING_SCAN_CHUNK:
-        assert set(found) == {DiagnosticCode.DIGEST_UNVERIFIABLE}
-        digest = found[DiagnosticCode.DIGEST_UNVERIFIABLE]
-        assert getattr(digest.context, "reason", None) == "trailing_decode_failed"
-        assert "cannot be told" in digest.message
-        assert "never reached" not in digest.message
-    else:
-        assert set(found) == {DiagnosticCode.ARCHIVE_TRAILING_DATA}
+    assert set(found) == {DiagnosticCode.ARCHIVE_TRAILING_DATA}
 
 
 def test_gzip_decode_failure_after_trailer_is_not_silent() -> None:
@@ -874,10 +863,9 @@ def test_gzip_decode_failure_after_trailer_is_not_silent() -> None:
     clears BFINAL on the only deflate block: every tar byte decodes, then the decoder
     reads the gzip footer as a block header and fails. ``gzip -t`` fails on it.
 
-    In a stream pass the member is delivered before the failure, so only the scan
-    reports it. In random access the listing's scan reports it too, and the member
-    read, which re-decodes from the start, reaches the failure through the codec's
-    read-ahead and raises ``CorruptionError``.
+    The member is delivered before the failure in a stream pass and in random access
+    alike: the bytes before a decode error do not depend on how the stream is read
+    (spec ``compressed-streams``), so only the scan reports it.
     """
     import gzip
 
@@ -902,8 +890,7 @@ def test_gzip_decode_failure_after_trailer_is_not_silent() -> None:
     with open_archive(io.BytesIO(bytes(data)), format=ArchiveFormat.TAR_GZ) as ar:
         (member,) = ar.members()
         assert _reasons(ar) == ["trailing_decode_failed"]
-        with pytest.raises(CorruptionError):
-            ar.read(member)
+        assert ar.read(member) == b"EVIL DATA\n"
 
 
 def _bad_last_block_check(codec: str, raw: bytes) -> tuple[bytes, bytes]:
@@ -966,12 +953,11 @@ def test_untyped_block_check_after_trailer_is_reported(
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("codec", ["bz2", "xz"])
 def test_untyped_block_check_is_never_silent(codec: str, streaming: bool) -> None:
-    """format-tar: the same failed bzip2/xz check has two outcomes, never silence.
+    """format-tar: a failed bzip2/xz check after the member is reported, never silent.
 
-    With only ``tarfile``'s own record padding, whether the check is reached while
-    the member is read (``CorruptionError`` from ``read()``) or in the trailing scan
-    (``DIGEST_UNVERIFIABLE``) depends on where the codec's input chunking lands, so
-    the member size (and the codec backend) decides it. Neither arm is silent.
+    With only ``tarfile``'s own record padding, the check fails after the member's
+    bytes. The member read hands back every byte before the failure, so the member
+    reads whole and the trailing scan reports ``DIGEST_UNVERIFIABLE`` at every size.
     """
     fmt = ArchiveFormat.TAR_BZ2 if codec == "bz2" else ArchiveFormat.TAR_XZ
     outcomes: set[str] = set()
@@ -989,9 +975,7 @@ def test_untyped_block_check_is_never_silent(codec: str, streaming: bool) -> Non
             continue
         assert DiagnosticCode.DIGEST_UNVERIFIABLE in counts, f"silent at {size}"
         outcomes.add("reported")
-    # Which sizes land in which arm depends on the installed codec backends; the
-    # reporting arm is pinned by the 64 KiB-padding test above.
-    assert "raised" in outcomes
+    assert outcomes == {"reported"}
 
 
 def _checksumless_codec(codec: str, raw: bytes) -> bytes:

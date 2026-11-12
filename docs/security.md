@@ -88,20 +88,35 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   whole member in memory. A container inside a compression stream (a `.tar.gz`, a format handler's
   `.cpio.xz`) is held to it whenever it's decoded, listing included, since listing one decodes all
   of it. So is what a format handler's walk decodes by itself: a compressed payload it opens
-  part-way through the archive, and a member's decoded data. A RAR archive opened from a
-  file object rather than a path is copied to a temporary file the first time a member needs
-  `unrar` or `unar`. `spool_limits.max_bytes` caps that copy, along with the few other temporary
-  files archivey makes for RAR archives, listed in the table below. When the archive records a
-  member's size in `member.size`, archivey never decodes more than that, and a member holding
-  more raises `CorruptionError`.
+  part-way through the archive, and a member's decoded data. When `unrar` reads a member of a RAR
+  archive, archivey copies that member's packed bytes to a temporary file, or for a solid archive
+  its solid stream up to that member, once per stream; a pass copies members in batches, or whole
+  solid streams a few at a time, or the whole archive when that would be one run, a member has an
+  unknown compression version, a volume is missing, or a RAR 1.5-4 member passes 4 GiB. A RAR
+  archive opened from a file object rather than a path is copied whole for `unar`.
+  `spool_limits.max_bytes` caps those copies, along with the few other
+  temporary files archivey makes for RAR archives, listed in the table below. When the archive
+  records a member's size in `member.size`, archivey never decodes more than that, and a member
+  holding more raises `CorruptionError`.
+- **A self-extracting archive's program is not checked.** A self-extracting archive, such as a 7z
+  or RAR `.exe` or a makeself `.run` installer, is a program with an archive inside. Archivey reads
+  the archive and never runs the program, so it lists what the archive holds, not what running the
+  file would do. A malicious program can install other files, or anything else, whatever the
+  archive lists. Treat a self-extracting file you would not run as you would any program you would
+  not run.
 - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
-  files it wrote before then on disk. 7z, RAR and ISO archives check the limits before they give you
-  any member, with or without `streaming=True`. A ZIP read from a file checks the member count its
-  end record declares before any member, and the rest as it reads its index, so an index holding
-  more members than its end record says gives you members up to the limit before the error, as a TAR
-  does. A ZIP read from a pipe is checked like a TAR as its members arrive, and again on its index
-  at the end.
+  files it wrote before then on disk. 7z, RAR, ISO and XAR archives check the limits before they
+  give you any member, with or without `streaming=True`. A SquashFS image checks the member count
+  and its paths before any member, and weighs the rest of each member's text as it lists it, so with
+  `streaming=True`, text that crosses `max_metadata_bytes` gives you members up to that point before
+  the error. ar and CPIO archives check the limits as they go, like a TAR. An RPM checks the member
+  count and the size its headers declare before any member, and weighs the names as it lists them,
+  so names that cross `max_metadata_bytes` give you members up to that point before the error. A ZIP
+  read from a file checks the member count its end record declares before any member, and the rest
+  as it reads its index, so an index holding more members than its end record says gives you members
+  up to the limit before the error, as a TAR does. A ZIP read from a pipe is checked like a TAR as
+  its members arrive, and again on its index at the end.
 - **A ZIP extracted from a pipe is checked on what it stages before its index arrives.** The pass
   writes each member's data into a private `.archivey-tmp-` folder in the destination, and only the
   index at the end says which members the extraction keeps. The extraction limits count what's
@@ -126,13 +141,17 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   it, pass `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
 
-    rapidgzip gives the same results as the standard library except for one crafted shape: a ZIP
-    member or 7z coder holding two DEFLATE streams, with a size and CRC that cover both. With
-    rapidgzip you may get both streams when the second is long. It depends on the data, on
-    how many cores the machine has and on the platform, so the same member may read on one
-    machine and be refused on another. Without rapidgzip you get `CorruptionError`, and 7-Zip
-    and unzip read the first stream and report a bad CRC. No known tool writes such a member.
-    Turn rapidgzip off if your code must refuse it.
+    rapidgzip gives the same results as the standard library except for two crafted shapes. The
+    first is a ZIP member or 7z coder holding two DEFLATE streams, with a size and CRC that cover
+    both. With rapidgzip you may get both streams when the second is long. It depends on the data,
+    on how many cores the machine has and on the platform, so the same member may read on one
+    machine and be refused on another. Without rapidgzip you get `CorruptionError`, and 7-Zip and
+    unzip read the first stream and report a bad CRC. No known tool writes such a member. The second
+    is a `.zz` file holding several zlib streams whose last checksum covers them all, opened with
+    `use_rapidgzip=ON`: reading it to the end, or seeking there, returns every stream, where the
+    standard library returns the first and reports the rest as trailing data. Turn rapidgzip off
+    if your code must refuse the first shape or read only the first stream of the second (add
+    `DiagnosticPolicy.STRICT` to refuse the second).
 
     ??? note "Why not check for it?"
         rapidgzip doesn't say where a DEFLATE stream ends. Archivey checks the end of the data
@@ -172,12 +191,13 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 costs only the member being read:
 
 - **`ProcessIsolation.KNOWN_CRASHES`**, the default, isolates the decoders that have crashed on
-  some input: rapidgzip and pyppmd. The decoders it leaves in your process cost nothing extra;
+  some input: rapidgzip and pyppmd, and libbzip3 (`.bz3`), which fixed several memory-safety
+  bugs in 2023. The decoders it leaves in your process cost nothing extra;
   each PPMd member, or each solid PPMd folder, costs about 1.4 to 2 ms more, and each 4 KiB
   member read from a solid PPMd folder about 0.1 to 0.35 ms, with the copying of larger members
   on top ([why every PPMd member](#where-the-guarantees-stop)). Where no child process can start, such as in a frozen
   application, a PPMd member raises `ResourceUnavailableError`, and rapidgzip gives way to the standard
-  library's decoder with one warning.
+  library's decoder with one warning; a `.bz3` file raises `ResourceUnavailableError` too.
 - **`ProcessIsolation.NATIVE_DECODERS`** also isolates zlib, bz2, lzma, zstd, lz4, brotli and
   inflate64 (Deflate64), detection's trial decodes included. Reads take longer. Measured on one
   Linux machine, a single stream took about 1.05 to 1.5 times as long for bzip2, 1.1 to 1.6 times
@@ -192,7 +212,7 @@ costs only the member being read:
   in the repository measures these costs on your machine.
 - **`ProcessIsolation.NONE`** decodes everything in your process. It's for trusted files, tests,
   and places that can't start processes. A damaged or crafted PPMd member can crash your process,
-  and rapidgzip isn't used.
+  and so can a crafted `.bz3` file; rapidgzip isn't used.
 
 AES decryption and checksums always run in your process. A child that crashes raises
 `CorruptionError`, and one killed from outside raises `ResourceUnavailableError` (SIGKILL, most
@@ -210,11 +230,13 @@ the time-limit recipe [above](#where-the-guarantees-stop).
 ## Hardening
 
 RAR data is decompressed by an external program found on your `PATH`: `unrar` or `rar`, or `unar`
-when neither is installed. Like the optional packages, it's [trusted not to be
-malicious](#what-archivey-relies-on), and archivey checks only that it runs and that archivey works
-with its version, which can be several years old. Older versions can have security bugs that later
-ones fixed, so an up-to-date version is safer. `unar` receives the password on its command line,
-where other users on the same machine can see it while it runs. If you set
+when neither is installed. On Windows, archivey also looks in WinRAR's folder under Program Files.
+To run a binary you chose instead, set `unrar_path=` (or `unar_path=`) in `ArchiveyConfig` to its
+absolute path: archivey then runs that file and searches nowhere else. Like the optional packages,
+it's [trusted not to be malicious](#what-archivey-relies-on), and archivey checks only that it runs
+and that archivey works with its version, which can be several years old. Older versions can have
+security bugs that later ones fixed, so an up-to-date version is safer. `unar` receives the password
+on its command line, where other users on the same machine can see it while it runs. If you set
 `rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig`, archivey never runs `unar`. With
 `RarDecompressor.NONE` it runs no external program at all, so stored RAR members can still be read
 (archivey decrypts an encrypted one itself if `cryptography` is installed, and raises
@@ -224,6 +246,13 @@ The same goes for the optional packages. The `[recommended]` extra sets minimum 
 such as brotli 1.2.1 for a decoder buffer overflow that version fixed, but archivey uses a package
 that's already installed whatever its version. If one came from somewhere else, such as a system
 package, upgrade it, for example with `pip install -U brotli`.
+
+To see what actually ran, read `reader.backends_used` once you've read what you need. It lists the
+format reader, each optional package as it decodes something, and each external program with its
+path, for example `BackendUse("program", "unrar", "RAR", "/usr/bin/unrar")`. What a plugin reads
+through a nested archive is listed too. The standard library's codecs aren't listed, except zstd,
+which names the module in use (`compression.zstd` on Python 3.14 and later). It's experimental, so
+its entries may change in a later release.
 
 Every limit has a default that lets large legitimate archives through. A higher limit lets a
 malicious archive use more memory, disk space or processing time before it's stopped, so if you know
@@ -252,7 +281,9 @@ in the repository measures what each limit costs in time and memory on your mach
   at the default, and up to 64 MiB more for a ZIP read from a pipe.
 - **`decoder_limits.max_decoder_memory`**, default 2 GiB, caps the memory an archive can ask a
   decoder for, and the memory of rapidgzip's process for gzip, zlib and DEFLATE. It costs the memory
-  itself.
+  itself. Detection's trial decodes are held to the same cap. A stream whose decoder is over it is
+  reported as the bare compressed format (a `.tar.zst` as `.zst`), with the diagnostic
+  `DETECTION_DECODER_LIMITED`, and the read refuses the same decoder.
 - **`decoder_limits.max_key_derivation_rounds`**, default 2^25, caps the password-hashing work per
   open archive. It costs 0.2-0.7 µs per round, 7-25 s at the default.
 - **`decoder_limits.max_ppmd_held_input`**, default 16 MiB, caps the largest PPMd member
@@ -260,9 +291,19 @@ in the repository measures what each limit costs in time and memory on your mach
   `process_isolation` keeps in a child process. It costs up to twice the limit in memory
   while a PPMd member decodes, 32 MiB at the default.
 - **`spool_limits.max_bytes`**, default 1 GiB, caps the temporary disk space for RAR archives.
-  `unrar` and `unar` need the archive as a file, so a RAR opened from a file object is copied, and
-  so are volumes archivey can't link into its temporary folder and, for `unar`, an archive with data
-  before it. A pass over a solid RAR also keeps the members that later file copies repeat. It costs
+  `unrar` and `unar` need the archive as a file. Each `unrar` read of a member of an archive that
+  is not solid copies that member's packed bytes into a small RAR file (mode 0600, removed when
+  the member stream closes; for a header-encrypted archive it holds the member's decrypted header,
+  but not its name). A pass over such an archive copies its compressed members in batches of up
+  to 64 MiB of packed bytes, one file per batch, made when one of its members is read and removed when the pass
+  moves to the next batch; reading one member of a batch decodes the members before it in that batch. A solid
+  member's read copies its solid stream up to it into one such file
+  per stream, grown by later reads and removed when the reader closes, and a pass over a solid
+  RAR copies whole solid streams a few at a time, up to 64 MiB of packed bytes or one larger
+  stream, or the whole archive when that would be one run, a member has an unknown compression
+  version, a volume is missing, or a RAR 1.5-4 member passes 4 GiB. A RAR opened from a file
+  object is copied whole for `unar`, and so are volumes archivey can't link into its temporary folder and, for `unar`, an
+  archive with data before it. A pass over a solid RAR also keeps the members that later file copies repeat. It costs
   the disk space itself.
 
 The costs were measured on one 2.8 GHz core.
@@ -278,6 +319,37 @@ The costs were measured on one 2.8 GHz core.
 
 Going over a limit raises `ResourceLimitError`.
 
+These limits hold for one reader. To hold a whole job to one total, such as an upload with archives
+inside it, or a batch of archives read on several threads, put an `archivey.Budget` in the config:
+
+```python
+budget = archivey.Budget(max_decoded_bytes=1 * 2**30, max_members=100_000)
+config = archivey.ArchiveyConfig(budget=budget)
+```
+
+Every reader opened with that config, or with a copy of it, draws the bytes it decodes and the
+members it lists from the one budget, so the total is shared across readers, nested archives and
+threads. Bytes decoded only to get past a member count too: skipping members of a `.tar.gz` or a
+CAB folder to reach a later one is not free. A read that would go past the budget raises
+`ResourceLimitError`, and an extraction stops there.
+
+A budget is the total for one job, and it is meant for processing each archive once. It counts the
+work archivey does, so a byte counts again each time it is decoded again: reading a member twice,
+opening the same archive again, or seeking back in a compressed member and reading on all use more
+of it. Listing a `.tar.gz` decodes it all, so its members count once for the listing and again when
+you read them. Listing again is free: the reader keeps its member list. It never refills, so make a
+new `Budget` for each upload or request rather than keeping one on a long-lived config. The
+per-reader limits still apply. Decoder memory stays a per-decoder limit, and time and memory use are
+bounded by running the job in a process you can stop. See the [archives inside the
+upload](recipes.md#archives-inside-the-upload) recipe.
+
+For files you didn't make, `ArchiveyConfig(formats=FormatPolicy.COMMON)` opens only the formats
+people send today (ZIP, TAR, RAR, 7z, and gzip, bzip2, xz and zstd) and refuses ZIP members in the
+methods only PKZIP 1.x and earlier wrote, so the readers and pure-Python decoders for everything
+else never run on them ([Configuration](opening.md#configuration)). It narrows which code runs,
+not how long it runs: a 7z member's BCJ2 filter and ZipCrypto still decode in Python, so a time
+bound still needs a worker you can stop.
+
 If you know which formats you accept, a [`FormatPolicy`](opening.md#configuration) with an
 `only=` list refuses the rest before any reader runs on them, including formats a later archivey
 release adds and plugin formats that another library registers. An `exclude=` list refuses only
@@ -288,10 +360,11 @@ An optional package that's installed is used whenever a file needs it, even one 
 that your program doesn't depend on. If you'd rather a package didn't parse your input, for
 example because of a bug reported against it, list it in the policy's
 [`exclude_libraries=`](opening.md#configuration). archivey then decodes nothing with it in calls
-made with that config. It doesn't import `brotli`, `pyppmd`, `inflate64` or `rapidgzip` for them;
-`lz4`, `zstd` and `pycdlib` are imported when archivey loads, but not used. The standard library's
-`zlib`, `bz2` and `lzma` can't be excluded; refuse the formats that carry them with `only=` or
-`exclude=` instead.
+made with that config. To allow only the packages you chose, and none that a later archivey release
+adds, list them in `only_libraries=` instead. It doesn't import `brotli`, `pyppmd`, `inflate64` or
+`rapidgzip` for them; `lz4`, `zstd` and `pycdlib` are imported when archivey loads, but not used.
+The standard library's `zlib`, `bz2` and `lzma` can't be excluded; refuse the formats that carry
+them with `only=` or `exclude=` instead.
 
 Opening one part of a multi-volume set by path, such as `x.part1.rar` or `x.7z.001`, also reads
 the other parts in the same folder. A part found that way that is a symbolic link is refused with

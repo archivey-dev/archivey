@@ -29,10 +29,10 @@ Marking the reader closed does not close the archive. A lease is held by whateve
 reads through the source: the reader itself (one lease, from construction until
 ``close()``, kept as ``_reader_lease_held``), each live ``open()`` stream or reservation
 (counted in ``_lease_count``; a pass's streams take none, as the pass's token keeps the
-source open until the pass ends or is wound down), and a ``stream_members()`` pass that ``close()`` found
-suspended at a yield (one lease, ``_pass_wind_down_lease``, from the close transition
-until ``close()`` has wound the pass down and closed the streams; a flag for the same
-reason as the reader's). The underlying file handle or ``unrar`` /
+source open until the pass ends or is wound down), and a ``stream_members()`` pass that
+``close()`` found suspended at a yield (one lease, ``_pass_wind_down_lease``, from the
+close transition until ``close()`` has wound the pass down and closed the streams; a
+flag for the same reason as the reader's). The underlying file handle or ``unrar`` /
 ``7z`` process is torn down by whoever drops the **last** lease. ``close()`` drops the
 reader's lease first and then closes the still-open member streams, so with streams open
 the last lease usually goes with the last stream's close, not with the reader's. That is
@@ -78,8 +78,7 @@ _P = ParamSpec("_P")
 # reference cycle: then it waits for the cycle collector. PyPy frees every dropped
 # object only at a later collection. Until then the next call would be refused as
 # overlapping something nobody can reach, at a moment memory pressure decides.
-
-
+# ``_retry_after_collecting`` runs that cleanup before it lets such a refusal stand.
 _OVERLAP_MARK = "_archivey_overlap_refusal"
 
 
@@ -122,12 +121,17 @@ _OVERLAPPING_PASSES = frozenset({"stream_members", "extract_all"})
 
 
 class CacheState(enum.Enum):
+    """Whether the member list is built: not yet (or the last attempt failed), being
+    built by one elected caller, or published."""
+
     UNMATERIALIZED = "unmaterialized"
     MATERIALIZING = "materializing"
     MATERIALIZED = "materialized"
 
 
 class LifecycleState(enum.Enum):
+    """How far ``close()`` has got: the states of the module docstring's diagram."""
+
     OPEN = "open"
     READER_CLOSED = "reader_closed"
     TEARDOWN_RUNNING = "teardown_running"
@@ -267,10 +271,10 @@ class ReaderState:
         # reader-wide depth counter would silently admit a *foreign* thread's open()
         # during extract_all on a non-CONCURRENT reader — and on backends without a
         # shared-handle lock the interleaved seek+read pairs then serve wrong member
-        # bytes instead of the loud error this gate exists to raise (deep review N3).
+        # bytes instead of the loud error this gate exists to raise.
         self._internal_open_threads: dict[int, int] = {}
         # The thread that currently owns the materialization election, for same-thread
-        # re-entry detection (deep review N4a).
+        # re-entry detection.
         self._materializing_thread: int | None = None
 
     def require_open(self, op: str) -> None:
@@ -278,6 +282,13 @@ class ReaderState:
             self._require_admissible_locked(op)
 
     def begin_internal_opens(self) -> None:
+        """Enter a library-internal open window on this thread; windows nest.
+
+        Inside one, this thread's opens pass the live-stream gate and the same-thread
+        re-entry check, and its worker calls go under the pass this thread works for,
+        when there is one (:meth:`_owner_pass_locked`; see ``_internal_open_threads``).
+        Leave it with :meth:`end_internal_opens`.
+        """
         tid = threading.get_ident()
         with self._lock:
             self._internal_open_threads[tid] = (
@@ -336,6 +347,9 @@ class ReaderState:
         return self._root
 
     def acquire_pass(self, name: str) -> OperationToken:
+        """Take the token for a reader-wide pass named ``name`` (or, inside this thread's
+        internal-open window, a child of the pass it works for), or raise the usage
+        error that says why it cannot start. Release it with :meth:`release_pass`."""
         return _retry_after_collecting(self._acquire_pass_once, name)
 
     def _acquire_pass_once(self, name: str) -> OperationToken:
@@ -436,6 +450,8 @@ class ReaderState:
             raise ExceptionGroup("winding down several passes failed", errors)
 
     def release_pass(self, token: OperationToken) -> None:
+        """End a pass, once. A side pass takes the place of an ending ``_root``, and the
+        children filed under the pass go with it."""
         with self._lock:
             if token._released:
                 return
@@ -471,10 +487,12 @@ class ReaderState:
             self._children.discard(child)
 
     def acquire_worker(self, name: str) -> OperationToken:
+        """Take a short-lived token for one call: see :meth:`_acquire_worker_once`.
+        Release it with :meth:`release_worker`."""
         return _retry_after_collecting(self._acquire_worker_once, name)
 
     def _acquire_worker_once(self, name: str) -> OperationToken:
-        """Short-lived token for random ``open()`` / ``read()`` (D7).
+        """Short-lived token for random ``open()`` / ``read()``.
 
         Rejected while a reader-wide root pass is active (unless under library-internal
         opens), except a ``stream_members()`` or ``extract_all()`` pass on a
@@ -506,6 +524,25 @@ class ReaderState:
                 token = OperationToken(name=name, parent=owner, kind="child")
                 self._children.add(token)
                 return token
+            token = OperationToken(name=name, kind="worker")
+            self._workers.add(token)
+            return token
+
+    def acquire_peek(self, name: str) -> OperationToken:
+        """Worker token for an index-only peek (``members_report_if_available()``).
+
+        Admitted beside any pass, as the peek is: it may run inside a streaming loop's
+        body. It still refuses a closed reader and a callback's re-entry, and while it
+        is held a close() is refused like during any worker call: from a callback on
+        this thread as re-entry, and from another thread as an overlap, so teardown
+        never runs under the walk the peek drains. Release it with
+        :meth:`release_worker`.
+        """
+        with self._lock:
+            self._require_admissible_locked(name)
+            if not self._internal_opens_active_locked():
+                # The library's own call under its pass (extract_all) is not re-entry.
+                self._reject_same_thread_reentry_locked(f"call {name!r}")
             token = OperationToken(name=name, kind="worker")
             self._workers.add(token)
             return token
@@ -551,9 +588,9 @@ class ReaderState:
                     if self._materializing_thread == threading.get_ident():
                         # Same-thread re-entry: a diagnostic/progress callback fired
                         # during materialization called back into the reader. Waiting
-                        # would deadlock this thread on a notify only it can send
-                        # (deep review N4a); a non-CONCURRENT reader would raise the
-                        # generic message below, which misdiagnoses the situation.
+                        # would deadlock this thread on a notify only it can send; a
+                        # non-CONCURRENT reader would raise the generic message below,
+                        # which misdiagnoses the situation.
                         raise ArchiveyUsageError(
                             "Reader re-entered while it is materializing its member "
                             "list on this same thread (e.g. from a diagnostic or "
@@ -732,9 +769,9 @@ class ReaderState:
             while True:
                 # First, before any wait: a thread closing from INSIDE one of its own
                 # calls (a diagnostic/progress callback calling close()) would wait
-                # forever for a call that cannot return until close() does (deep
-                # review N4b), and the generic messages below would send the user
-                # looking for a second caller that does not exist (S21-K4).
+                # forever for a call that cannot return until close() does, and the
+                # generic messages below would send the user looking for a second
+                # caller that does not exist.
                 token = self._same_thread_token_locked()
                 if token is not None:
                     raise ArchiveyUsageError(
@@ -761,8 +798,8 @@ class ReaderState:
                     return False
                 # A pass suspended at a yield is not running: the caller holds its
                 # iterator. Close anyway, as zipfile.ZipFile.close() does with member
-                # handles open; resuming that iterator then raises (maintainer's
-                # ruling, 2026-10-10). Only a pass that is executing refuses the close.
+                # handles open; resuming that iterator then raises. Only a pass that
+                # is executing refuses the close.
                 running = self._executing_pass_locked()
                 if running is not None:
                     raise ArchiveyUsageError(
@@ -878,6 +915,9 @@ class ReaderState:
                 self._stream_shutdown_owner = None
 
     def claim_teardown(self) -> bool:
+        """True for the one caller that should run teardown now: the reader is closed,
+        no lease is left, and nobody claimed it before. Finish with
+        :meth:`complete_teardown`."""
         with self._lock:
             if self._teardown_claimed:
                 return False
@@ -944,9 +984,9 @@ class ReaderState:
     def _reject_same_thread_reentry_locked(self, action: str) -> None:
         """Raise the re-entry usage error before the generic overlap messages.
 
-        Without this, a non-``CONCURRENT`` reader answered a callback's re-entry with
-        "another reader operation is already active", which points at a second caller
-        that does not exist (S21-K4).
+        It runs first because on a non-``CONCURRENT`` reader the overlap message
+        ("another reader operation is already active") would answer a callback's
+        re-entry by pointing at a second caller that does not exist.
         """
         token = self._same_thread_token_locked()
         if token is not None:

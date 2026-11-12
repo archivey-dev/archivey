@@ -2,7 +2,8 @@
 
 ## Purpose
 
-Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z) are exposed
+Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z, LZOP, mozlz4, BZ3), and the
+uuencode and base64 text wrappers, are exposed
 as one-member pseudo-archives through the unified `ArchiveReader`
 interface. Each source contains exactly one file member whose
 name is inferred from the source filename.
@@ -29,15 +30,16 @@ checksum trailer.
 ### Requirement: Present each compressor as a one-member archive
 
 The system SHALL present any GZ, BZ2, XZ, ZST, LZ4, LZIP, LZMA Alone, ZLIB, BR,
-or Z source as an archive containing exactly one `ArchiveMember` of type
+Z, LZOP, mozlz4, BZ3, UU or BASE64 source as an archive containing exactly one `ArchiveMember` of type
 `MemberType.FILE`. No directory members SHALL be synthesized.
 
 The member name SHALL be inferred from the source filename:
 
 | Source filename | Member name |
 | --- | --- |
-| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, or `.Z` (case-insensitive) | Strip exactly that recognized compression extension |
-| Ends in `.tgz`, `.tbz2`, `.tbz`, `.txz`, `.tzst` or `.tlz` (case-insensitive) | Replace that suffix with `.tar`, as `gzip -d` and `xz -d` do |
+| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, `.Z`, `.lzo`, `.mozlz4`, `.bz3`, `.uu`, `.uue`, `.b64` or `.base64` (case-insensitive) | Strip exactly that recognized compression extension |
+| Ends in `.tgz`, `.tbz2`, `.tbz`, `.txz`, `.tzst`, `.tlz` or `.tzo` (case-insensitive) | Replace that suffix with `.tar`, as `gzip -d` and `xz -d` do |
+| Ends in `.jsonlz4` or `.baklz4` (case-insensitive), Firefox's mozlz4 names | Replace that suffix with `.json` or `.bak` |
 | Ends in a recognized extension, but the remaining stem is entirely dots and spaces (`..gz`, `....gz`, ` .gz`) | Append `.uncompressed` instead; `.` and `..` are not member names, and an all-dots segment is refused under `STRICT` and `STANDARD` |
 | Has a filename but no recognized compressor extension | Append `.uncompressed`; do not strip arbitrary extensions |
 | Anonymous stream | `data` |
@@ -56,6 +58,7 @@ is a framed standalone stream and is in scope here.
 | Open `data.txt.gz` | One file member named `data.txt` |
 | Open `data.txt.lzma` | One file member named `data.txt` |
 | Open `data.tgz` with `format=ArchiveFormat.GZ` | One file member named `data.tar` |
+| Open `sessionstore.jsonlz4` | One file member named `sessionstore.json` |
 | Open compressed `mystery.bin` detected by content | One file member named `mystery.bin.uncompressed` |
 | Open `....gz` | One file member named `....gz.uncompressed`, under every extraction policy |
 | Open anonymous non-seekable stream with `streaming=True` | One file member named `data` |
@@ -102,7 +105,7 @@ format-specific reliability limits:
 | BZ2, ZLIB, BR, Z | `None` until full decompression; `.Z` has no size trailer (best-effort truncation via nonzero leftover bits) |
 | XZ, ZST | Header size when encoder wrote it; otherwise `None` until full decompression |
 | LZ4 | Frame content-size field when present; otherwise `None` until full decompression |
-| LZIP | Available from the trailer on a seekable source that is not another archive's member stream; otherwise `None` until full decompression |
+| LZIP | Available from the trailer on a seekable source whose end is cheap to reach; otherwise `None` until full decompression |
 | LZMA Alone | 8-byte Alone header size when not the unknown marker (`0xFFFFFFFFFFFFFFFF`); otherwise `None` until full decompression |
 
 Availability of an index/trailer-derived size SHALL be decided by **the source's shape**,
@@ -113,12 +116,22 @@ family also takes a large sequential read: `seekable-decompressor-streams`), and
 MUST NOT change what metadata a member reports. A seekable source SHALL yield the same
 `member.size` with and without the declaration; a non-seekable source SHALL yield `None` for every
 index/trailer-derived size, and no probe SHALL force a decompression pass to obtain one.
-Another archive's member stream, bare or under a pass-through buffer
-(`seek_is_expensive`), counts as a source that cannot reach its end cheaply, so the size
-is `None`. The xz index and the lzip trailers sit at the end, and on a member stream
-that decompresses (a deflated ZIP entry, a `.gz`'s content) reaching them decompresses
-the whole member. Member streams are treated this way as a group: a stored ZIP entry or
-a TAR member, whose seek is a slice of its container, also reports `size=None`.
+A source whose seek may decode what it skips (`seek_is_expensive`: another archive's
+member stream, bare or under a pass-through buffer, or a standard-library `GzipFile`,
+`BZ2File`, `LZMAFile` or `ZipExtFile`) is probed only when it says the seeks are cheap:
+`ArchiveStream.nearest_resume_offset` SHALL answer, for the last 64 bytes, the middle
+and the current position, an offset at most 4 KiB before each, and not 0 for a later
+target. The xz index and the lzip trailers sit at the end, and on a member stream that
+decompresses (a deflated ZIP entry, a `.gz`'s content) reaching them decompresses the
+whole member, so such a member answers far earlier and its size is `None`. A stored ZIP
+entry or an uncompressed TAR member is a slice of its container's bytes, answers every
+target itself, and is probed as a file is. A member of a compressed TAR (`.tar.xz`,
+`.tar.gz`) is a slice of decoded data: it answers its decoder's resume point, and its
+view clamps a point behind the member's start to 0, which is why 0 does not count. A
+source that does not answer, or has no cheap length, is not probed; a standard-library
+decompressing file object has no `nearest_resume_offset`, so it is never probed. The end
+itself is not asked: a decoder may resume there, with nothing left to decode, after
+decoding all that comes before it.
 
 `member.compressed_size` SHALL be the source's length when that is cheap to learn. A
 member stream from another archive (`seek_is_expensive`) SHALL report its advertised
@@ -173,11 +186,13 @@ A size the format records SHALL NOT be replaced.
 | Same, `read(100)`, `seek(50)`, read to EOF | `size` is the byte count |
 | Same, `streaming=True` pass over a pipe, stream read to EOF | `size` is the byte count read |
 | Same, reader closed with the member never read in full | `size` is `None`; `member_state_final` is `True` |
-| `.lz` opened from a seekable source, not a member stream | Size is available from the trailer |
+| `.lz` opened from a seekable source whose end is cheap to reach | Size is available from the trailer |
 | `.xz` / `.lz`, seekable source, with and without `seekable_members=True` | Same `member.size` both ways |
 | `.xz` / `.lz` from a pipe | Size is `None` until a full read fills it; no decode pass is forced |
-| `.xz` / `.lz` opened from another archive's member stream | Size is `None` until a full read fills it; the member is not seeked to its end |
-| `.xz` / `.lz` opened from a stored ZIP entry or a TAR member | Size is `None` until a full read fills it, as for any member stream, though that seek would be a slice |
+| `.xz` / `.lz` opened from a deflated ZIP entry | Size is `None` until a full read fills it; the member is not seeked to its end |
+| `.xz` / `.lz` opened from a seekable stored ZIP entry or uncompressed TAR member | Size is available from the index or trailer |
+| `.xz` / `.lz` opened from a member of a `.tar.xz` whose decoder cannot resume near it | Size is `None`; the outer stream is not decoded again |
+| `.xz` / `.lz` opened through a standard-library `GzipFile`, `BZ2File`, `LZMAFile` or `ZipExtFile` | Size is `None` until a full read fills it |
 | `.gz` from a path or `BytesIO` | `compressed_size` is the source's length |
 | `.gz` from a caller's pipe with a `size` attribute | `compressed_size` is `None` |
 | `.gz` from a member stream that advertises its length, seekable or not | `compressed_size` is that length; no seek to the end |
@@ -198,8 +213,7 @@ these fields from header data because they carry no embedded filename.
 
 The system SHALL surface the gzip trailer's ISIZE field as `member.extra["gzip.isize"]`
 (an `int`) when the source's end can be reached cheaply, under the same rule as the
-xz index and lzip trailer: a seekable source that is not another archive's member
-stream, at least 18 bytes long (the shortest header, 10 bytes, plus the 8-byte
+xz index and lzip trailer, at least 18 bytes long (the shortest header, 10 bytes, plus the 8-byte
 trailer; anything shorter has no trailer to read). The value is the last four bytes of
 the file, read little-endian. It is the uncompressed size modulo 2^32 only for a file
 of one gzip member with nothing after it; a file of several members (bgzip ends with an
@@ -214,7 +228,8 @@ the whole file tells these apart. It SHALL therefore never fill `member.size`.
 | `.gz` without `FNAME` | No gzip original filename extra; name is derived from source filename |
 | `.gz` of one member from a path or `BytesIO` | `extra["gzip.isize"]` is the uncompressed size modulo 2^32; `size` is `None` |
 | `.gz` of two members | `extra["gzip.isize"]` is the last member's ISIZE; a full read fills `size` with the whole length |
-| `.gz` from a pipe or another archive's member stream | No `gzip.isize` |
+| `.gz` from a pipe or a deflated ZIP entry | No `gzip.isize` |
+| `.gz` from a seekable stored ZIP entry or uncompressed TAR member | `extra["gzip.isize"]` as from a file |
 | `.xz` / `.zst` / `.lz4` / `.lz` / `.bz2` | No gzip filename fields are set |
 
 ### Requirement: Get per-codec metadata from codec descriptors
@@ -275,12 +290,12 @@ caller does a plain `open_archive()` and never asks to `seek()`.
   false-matches in large compressed data). After a full read it would add nothing: the
   decoder has already checked every member's CRC, and a digest is worth having only
   before a read (to skip one) or to verify one.
-- **LZIP:** on a seekable source that is not a member stream, surface `CRC32` of the whole synthetic member from the
+- **LZIP:** on a seekable source whose end is cheap to reach (as for the size), surface `CRC32` of the whole synthetic member from the
   lzip index. For multi-member files, the value SHALL equal
   `crc32(concat(member payloads))` derived by combining per-trailer CRC-32 values with
   each member's exact uncompressed `data_size` (combine algebra). Single-member
   degenerates to the trailer CRC.
-- **Non-seekable source, or one whose seek may re-decode** (a member stream): omit
+- **Non-seekable source, or one whose seek may re-decode** (a deflated member stream): omit
   digests that require a trailer/index peek (no forced decode).
 - **BZ2, XZ, ZLIB, BR, `.Z`:** no cheap whole-member stored digest — omit. (Zlib's
   RFC 1950 Adler-32 trailer is verified by the decompressor on read; it is not surfaced
@@ -298,7 +313,8 @@ caller does a plain `open_archive()` and never asks to `seek()`.
 | Multi-member `.lz`, seekable source | `CRC32` present (= combine of per-member trailers) |
 | `.lz` seekable, with and without `seekable_members=True` | Same `hashes` both ways |
 | `.lz` from a pipe | no digest key |
-| `.lz` opened from another archive's member stream, a stored ZIP entry or a TAR member included | no digest key |
+| `.lz` opened from a deflated ZIP entry | no digest key |
+| `.lz` opened from a seekable stored ZIP entry or uncompressed TAR member | `CRC32` present |
 | `.bz2` / `.xz` / `.zlib` / `.br` / `.Z` | no digest key |
 | Any of the above, full `read()` | verification unchanged; hashes are metadata only |
 
@@ -329,9 +345,14 @@ would be. The error SHALL NOT name a member, since none was requested.
 
 A genuinely valid empty stream SHALL still open and read as empty.
 
-Non-seekable sources are out of scope: the opened stream is handed to the first
-`open_member`, so a probe read there would consume a byte the caller expects. The
-obligation applies to seekable sources, and the reader SHALL say so where it is stated.
+A non-seekable source SHALL be validated the same way when detection's peek already
+holds every byte of it (the peek met the end of the source; a caller that passes
+`format=` skips detection, so nothing is peeked): the probe decodes a copy of
+those bytes, so the pass handed to the first `open_member` reads nothing less, and a pipe
+gives the verdict a file of the same bytes gives at open. Any other non-seekable source is
+out of scope: the opened stream is handed to the first `open_member`, so a probe read
+there would consume a byte the caller expects, and it fails on that read instead. The
+reader SHALL say so where it is stated.
 
 #### Scenario: open-time validation matrix
 
@@ -342,7 +363,8 @@ obligation applies to seekable sources, and the reader SHALL say so where it is 
 | 40 000 zero bytes | `open_archive` raises `CorruptionError`, except LZMA Alone, whose first 18 zero bytes are a complete empty stream: it opens, reads `b""`, and the rest is padding with no diagnostic |
 | Zero-byte source, codec whose decoder rejects it | `open_archive` raises the translated error |
 | Zero-byte source, `unix-compress` | `open_archive` raises `TruncatedError` (the decoder rejects a source shorter than its header) |
-| Non-seekable source | Validation deferred to the first read |
+| A `.tar.bz2` of 60 KB cut to two thirds, from a pipe with `streaming=True` and from a file | `open_archive` raises `TruncatedError` from both |
+| Non-seekable source that detection did not read to its end (a longer pipe, or `format=` given) | Validation deferred to the first read |
 
 #### Scenario: the failure carries honest provenance
 
@@ -503,3 +525,82 @@ split carries the general rule).
 | `.Z` with maximum code width 17 or 31 | `UnsupportedFeatureError` |
 | gzip header CRC mismatch | `CorruptionError` |
 | zlib stream whose CM is 7 (zlib: "unknown compression method") | `CorruptionError` |
+
+### Requirement: bzip3 blocks are framed and checked before libbzip3 sees them
+
+A `.bz3` source SHALL be read as the `bzip3` tool writes it: the `BZ3v1` magic, a
+little-endian block size from 65 KiB to 511 MiB, then blocks to the end of the source,
+each a compressed size and a decoded size followed by the block. archivey SHALL split the
+blocks itself and hand libbzip3 one whole block at a time, and SHALL refuse with
+`CorruptionError`, before the block reaches the decoder:
+
+- a block size outside 65 KiB to 511 MiB;
+- a compressed size below 0 or above what a block of the declared size compresses to at
+  most (`n + n/50 + 32`), or a decoded size below 0 or above the block size;
+- a literal block (BWT index -1) longer than 64 bytes, or whose decoded size is not its own
+  length;
+- a block shorter than its own header (9 bytes, plus 4 for each of the LZP and RLE sizes
+  its model byte names).
+
+A block that decodes to a size other than the one its header declares SHALL be refused
+with `CorruptionError` too: libbzip3's CRC-32 covers the declared size, and archivey
+checks the length of what the decoder returns.
+
+The block size SHALL be checked against `DecoderLimits.max_decoder_memory` at what
+libbzip3 allocates for it, before the decoder is built, and refused with
+`ResourceLimitError`. A detection probe, which runs without the caller's cap as every
+detection probe does, SHALL NOT build a decoder for blocks over 16 MiB nor wait for a
+first block over 1 MiB compressed; it reports "can't tell".
+
+The format has no end mark: a source cut between blocks SHALL read short with no error,
+a cut inside the header or a block SHALL raise `TruncatedError`, and bytes after the last
+block SHALL be read as a further block, not as trailing data. libbzip3 SHALL run in a child
+process unless `process_isolation` is `NONE`.
+
+#### Scenario: bzip3 framing
+
+| Source | Expected |
+| --- | --- |
+| A `.bz3` the `bzip3` tool wrote, under every `process_isolation` | Reads the original bytes |
+| A byte flipped inside a block | `CorruptionError` (block CRC) |
+| Block header declaring -8 compressed bytes | `CorruptionError`, nothing passed to libbzip3 |
+| Literal block whose header declares 100 decoded bytes | `CorruptionError` |
+| Header block size of 64 KiB or 512 MiB | `CorruptionError` |
+| Block size whose decoder needs more than `max_decoder_memory` | `ResourceLimitError` |
+| Source cut at a block boundary | Reads the blocks before the cut, no error |
+| Source cut inside the header or a block | `TruncatedError` |
+| A second `.bz3` file after the first | `CorruptionError` |
+| `.tar.bz3` whose first block is over 1 MiB compressed | Detected as `.bz3` with the inner TAR test skipped; `format=` TAR+BZIP3 reads the TAR |
+
+### Requirement: uuencode and base64 are read as single files
+
+uuencode (`.uu`, `.uue`) and bare base64 (`.b64`, `.base64`) text SHALL be read as one-member
+archives like the compressors, and a TAR inside either SHALL be listed as the TAR.
+
+uuencode SHALL be read from its first `begin MODE NAME` line to its `end` line, or from a
+`begin-base64` line to `====`. Detection SHALL accept a `begin` line at offset 0 followed by a
+valid encoded line, for any name, as `PROBABLE` from a content test, not as magic. With a `.uu` or `.uue` name, text before the `begin`
+line SHALL be skipped, up to 64 KiB; past that the source SHALL be refused with
+`CorruptionError`. Bytes after the end line other than whitespace SHALL be trailing data. The
+stored name SHALL be surfaced as `raw_name` and `extra["uu.original_filename"]` and SHALL NOT
+choose the member's name; the stored mode SHALL be the member's `mode`.
+
+Base64 SHALL be decoded with line breaks skipped, ending at `=` padding or the end of the
+input; any other character, a space included, SHALL raise `CorruptionError`. Without a `.b64` or `.base64`
+name, a source SHALL be detected as base64 only when its first four or more lines have one
+length of at least 40 characters, all base64 characters, and decode to a known format's magic,
+and SHALL then be reported as `PROBABLE`.
+
+#### Scenario: uuencode and base64
+
+| Source | Expected |
+| --- | --- |
+| `uuencode` output, any name | Detected, `PROBABLE`; reads the original bytes |
+| A mail post with a uuencoded file, named `.uu` | Reads the file; the signature after `end` is `ARCHIVE_TRAILING_DATA` |
+| The same post with no name | Not detected |
+| A `begin` or `begin-base64` line followed by prose | Not detected |
+| A uuencoded file with no `end` line | `TruncatedError` |
+| Base64 of a ZIP, no name | Detected as base64, `PROBABLE` |
+| Base64 of random bytes, a hex dump or a column of IDs, no name | Not detected |
+| Base64 with a character outside the alphabet | `CorruptionError` |
+| Unpadded base64 followed by a line of prose | `CorruptionError` |

@@ -34,6 +34,7 @@ Each format supplies the two checks: a bounded probe and the full check.
 from __future__ import annotations
 
 import io
+import sys
 import zlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -75,6 +76,8 @@ REJECTING_CODECS = frozenset(
         Codec.XZ,
         Codec.SHRINK,
         Codec.IMPLODE,
+        Codec.REDUCE,
+        Codec.DCL_IMPLODE,
     }
 )
 
@@ -367,20 +370,22 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         self,
         inner: BinaryIO,
         *,
-        size: int,
+        size: int | None,
         on_unverified: Callable[[str], None],
         seek_forfeits: bool = True,
         key_in_doubt: Callable[[], bool] | None = None,
     ) -> None:
         # Set before the base constructor, which ``close()`` must survive: IOBase's
         # finalizer calls ``close()`` on an instance whose ``__init__`` raised.
-        self._watch_size = size
+        # ``None`` is a member of unknown length: no position reaches it, so only
+        # the end of the stream counts as the digest reached (``read``).
+        self._watch_size = sys.maxsize if size is None else size
         self._on_unverified: Callable[[str], None] | None = on_unverified
         self._watch_pos = 0
         self._watch_furthest = 0
         self._watch_hashed = 0
         self._delivered = False
-        self._reached = size <= 0
+        self._reached = self._watch_size <= 0
         self._forfeited = False
         self._seek_forfeits = seek_forfeits
         self._key_in_doubt = key_in_doubt

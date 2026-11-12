@@ -8,6 +8,7 @@ pip install archivey                 # no dependencies
 pip install "archivey[recommended]"  # every format and compression method that installs everywhere
 pip install "archivey[seekable]"     # faster seeking and reading in large gzip, bzip2 and DEFLATE data
 pip install "archivey[all]"          # recommended and seekable together
+pip install "archivey[bzip3]"        # .bz3 files; not part of [recommended] or [all]
 ```
 
 If you only want the `archivey` command, `uvx archivey-cli` runs it with everything
@@ -24,10 +25,21 @@ methods.
 | --- | --- |
 | `archivey` | ZIP, TAR and 7z with their common compression methods, and directories. gzip, bzip2, xz, LZMA, zlib, lzip and `.Z` files, alone or inside a TAR, and Zstandard too on Python 3.14 and later. RAR archives can be listed, and their uncompressed, unencrypted files read. |
 | `[recommended]` adds | ISO images, and LZ4, Brotli and Zstandard files (Zstandard only before Python 3.14). PPMd, Deflate64 and Zstandard inside 7z and ZIP, and Brotli and LZ4 inside 7z. AES decryption for 7z, RAR and WinZip AES ZIP files. Progress bars in the command-line tool. |
+| `[bzip3]` adds | `.bz3` files, alone or inside a TAR ([bzip3](#bzip3)). |
 | `[seekable]` adds | No new format. Faster seeking inside large gzip, zlib and bzip2 data, and large DEFLATE members in ZIP and 7z, when you open with `seekable_members=True`. On Linux and macOS, also faster reading of large DEFLATE data that compresses 3:1 or less, without that option. |
 
 Compressed RAR files, and a few encrypted ones, also need an outside program, which no extra can
 install. The next section covers it.
+
+### bzip3
+
+`.bz3` files need `pip install "archivey[bzip3]"`, which installs the `bzip3` package. It is
+kept out of `[recommended]` and `[all]` for two reasons. The `bzip3` package publishes wheels
+only for CPython 3.11 to 3.14 on Linux and Windows, and no source package, so the extra
+doesn't install on macOS, on PyPy or on Python 3.15. And libbzip3 is young: its 2023 releases
+fixed several memory-safety bugs, so archivey decodes `.bz3` data in a child process unless you
+set `process_isolation=ProcessIsolation.NONE`
+([Decoders in a child process](security.md#decoders-in-a-child-process)).
 
 ## RAR needs an outside program
 
@@ -51,8 +63,23 @@ On Debian and Ubuntu, `sudo apt install unrar` installs RARLAB's program. It's i
 archivey doesn't use. Other Linux distributions have a package of RARLAB's UnRAR under a similar
 name.
 
-On Windows, download the command-line UnRAR from [RARLAB](https://www.rarlab.com/rar_add.htm) and
-put `UnRAR.exe` on your `PATH`.
+On Windows, installing WinRAR is enough: it puts `UnRAR.exe` and `Rar.exe` in a `WinRAR` folder
+under Program Files, and archivey looks there when it finds neither program on your `PATH`.
+Without WinRAR, download the command-line UnRAR from [RARLAB](https://www.rarlab.com/rar_add.htm),
+unpack `UnRAR.exe` into a folder of your choice, and add that folder to your `PATH`. A program on
+your `PATH` is used before WinRAR's. In PowerShell, this adds a folder, here `C:\Tools\UnRAR`, for
+your user account, with no administrator rights needed:
+
+```powershell
+$p = [Environment]::GetEnvironmentVariable('Path', 'User')
+[Environment]::SetEnvironmentVariable('Path', "$p;C:\Tools\UnRAR", 'User')
+```
+
+You can do the same in the Start menu: search for "environment variables", open "Edit environment
+variables for your account", select **Path**, click **Edit**, then **New**, and enter the folder.
+Programs that are already running keep their old `PATH`, so open a new terminal, and restart your
+editor if you run archivey from it. You can also skip the `PATH` search and pass the full path as
+`ArchiveyConfig(unrar_path=...)`.
 
 On macOS, Homebrew no longer ships `unrar`. You can install it from an unofficial Homebrew tap,
 which builds or downloads RARLAB's program:
@@ -88,12 +115,13 @@ and which packages would add the rest. RAR counts as partly supported without RA
 when `unar` is installed. To find out, it runs each `unrar` or `rar` on your `PATH` once to read its
 version, whatever `rar_decompressor` says; pass `check_programs=False` to run nothing. `cryptography`
 isn't counted, because only encrypted members need it. Pass the `config=` you open with to count
-the packages its `FormatPolicy(exclude_libraries=)` turns off as missing.
+the packages its `FormatPolicy(exclude_libraries=)` or `only_libraries=` turns off as missing.
 
 ## Python versions and platforms
 
-Archivey needs Python 3.11 or later. Every change is tested on Linux with CPython 3.11 to 3.15
-and PyPy 3.11, and on macOS and Windows with CPython 3.11 and 3.15. Other platforms aren't
+Archivey needs Python 3.11 or later. Every release is tested on Linux with CPython 3.11 to 3.15
+and PyPy 3.11, and on macOS and Windows with CPython 3.11 and 3.15. Each change runs part of that
+set before it merges, and the whole set runs every day. Other platforms aren't
 tested, and PyPy has some limits ([PyPy](#pypy) lists them). [How it is built](how-it-is-built.md) has the full test
 setup.
 
