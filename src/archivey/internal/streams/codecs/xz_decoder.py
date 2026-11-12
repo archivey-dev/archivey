@@ -131,7 +131,8 @@ def _parse_xz_header(data: bytes) -> int:
         raise CorruptionError(f"XZ stream header too short: {len(data)} bytes")
     if data[:6] != _XZ_STREAM_MAGIC:
         raise CorruptionError(
-            f"XZ stream header magic not found (got {quoted(data[:6].decode('ascii', 'surrogateescape'))})"
+            "XZ stream header magic not found "
+            f"(got {quoted(data[:6].decode('ascii', 'surrogateescape'))})"
         )
     stream_flags = data[6:8]
     stored_crc = struct.unpack_from("<I", data, 8)[0]
@@ -153,7 +154,8 @@ def _parse_xz_footer(data: bytes) -> tuple[int, int]:
         raise CorruptionError(f"XZ stream footer too short: {len(data)} bytes")
     if data[10:12] != _XZ_FOOTER_MAGIC:
         raise CorruptionError(
-            f"XZ stream footer magic 'YZ' not found (got {quoted(data[10:12].decode('ascii', 'surrogateescape'))})"
+            "XZ stream footer magic 'YZ' not found "
+            f"(got {quoted(data[10:12].decode('ascii', 'surrogateescape'))})"
         )
     stored_crc = struct.unpack_from("<I", data, 0)[0]
     backward_size_raw = struct.unpack_from("<I", data, 4)[0]

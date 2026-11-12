@@ -570,6 +570,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         "read_link_targets",
         "always_probe_content",
         "discover_volumes",
+        "recover_partial_data",
     ):
         for bad in ("false", 0, 1, None):
             rows.append(

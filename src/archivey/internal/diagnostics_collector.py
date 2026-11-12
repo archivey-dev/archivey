@@ -794,9 +794,10 @@ def resolve_collector(collector: DiagnosticCollector | None) -> DiagnosticCollec
     Codec streams get the caller's collector through ``StreamConfig.collector``, which
     :func:`~archivey.internal.streams.codecs.open_codec_stream` fills from its
     ``collector`` argument (except a stored stream source, whose codec emits nothing:
-    there the collector reaches only the returned stream). A caller that builds a codec stream without one (the
-    single-file reader's listing-time size probe, detection, direct stream tests) still
-    lands here. Prefer passing the shared collector wherever one exists.
+    there the collector reaches only the returned stream). A caller that builds a codec
+    stream without one (the single-file reader's listing-time size probe, detection,
+    direct stream tests) still lands here. Prefer passing the shared collector wherever
+    one exists.
 
     The fallback logs at DEBUG on ``archivey.diagnostics`` with the caller's
     ``file:line`` (``stacklevel=2``). An application or test that enables DEBUG on

@@ -19,6 +19,7 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.types import (
@@ -76,6 +77,7 @@ class UdifBackend(ReadBackend):
         open_site: OpenSite | None = None,
         start_offset: int = 0,
         end_offset: int | None = None,
+        program_resources: ProgramResources | None = None,
     ) -> BaseArchiveReader:
         # ``open_archive`` refuses before it asks the registry. This is the same
         # answer for a caller that reaches the backend anyway. The unused

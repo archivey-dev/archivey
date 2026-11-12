@@ -1483,8 +1483,28 @@ seeks to `_SIGNATURE_HEADER_SIZE + next_header_offset`) discard caller
 positioning. The system SHALL NOT copy the remainder of the source to a
 temporary file solely to strip an SFX stub.
 
+When detection also reports `payload_end` (`format-detection`: the start of a PE's
+Authenticode certificate table), `open_archive` SHALL pass it the same way, and the
+backend SHALL behave as if handed a view of `[payload_offset, payload_end)`: it reads
+nothing at or past the end and treats the bytes there as identified, not as part of the
+archive or data after it. A backend SHALL NOT read before its start offset to find an end
+for itself. A backend that hands the file to an external program (`unrar`) applies the end
+to its own checks only.
+
 An explicit `format=` that bypasses detection retains each backend’s own
-start-offset / SFX rules (`format-rar`, `format-7z`).
+start-offset / SFX rules (`format-rar`, `format-7z`). For a backend whose format can carry
+a stub (RAR, 7z, ZIP), on a seekable source, `open_archive` SHALL read the
+source's first 4096 bytes and, when they are a PE whose layout parses, SHALL pass the
+payload end derived from them with the PE layout helper detection uses. A volume set is
+read as its joined bytes, as detection reads it, so the last part's table ends the join.
+The same read applies when detection ran but did not judge a prefix (`prefixed` is
+`False`), such as a format taken from the name with the scan off: only a prefixed
+detection answer carries an end of its own. Detection reads
+the layout from the same 4096 bytes whatever `max_prefix_bytes` says. So a forced
+`format=` and auto-detect open the same region and list the same members: what an archive
+holds SHALL NOT depend on whether its format was named. No backend derives an end itself.
+A non-seekable source gets no end either way, since its size is unknown and the table
+cannot be placed.
 
 #### Scenario: payload_offset hand-off
 
@@ -1494,6 +1514,15 @@ start-offset / SFX rules (`format-rar`, `format-7z`).
 | `payload_offset == 0` | Unchanged open-at-current-position behaviour |
 | Explicit `format=` | Detection skipped; backend SFX/start-offset rules apply |
 | Bare seek only (no start-offset / no offset view) | Insufficient for 7z; MUST NOT be the sole hand-off mechanism |
+| Auto-detect, signed PE SFX, `payload_end == E` | Backend reads nothing at or past `E`; the certificate raises no `ARCHIVE_TRAILING_DATA` |
+| Forced `format=` on the same signed SFX (RAR, 7z, or ZIP from a seekable source) | `open_archive` passes the same `E`, read from the same headers; same listing, same diagnostics |
+| Auto-detect with `max_prefix_bytes` below 4096 | Detection still reads the layout from the first 4096 bytes and reports the same `E` |
+| The same SFX from a non-seekable stream, auto-detect or forced | No `E`: the certificate is reported as trailing data, the same both ways |
+| Forced `format=ZIP` on the IRPF installer under `DiagnosticPolicy.STRICT` | Opens, as auto-detect does: the certificate is past `E` |
+| Forced `format=ZIP` on a signed SFX whose certificate holds a second whole ZIP, its offsets counted from its own start or from the start of the file | The archive before `E` is listed, as auto-detect lists it; the ZIP inside the certificate is not |
+| Signed PE split into `signed.zip.001` / `.002`, a second ZIP planted in the certificate table, forced `format=ZIP` | The end read from the joined set's headers; the ZIP before it is listed, as auto-detect lists it |
+| Signed PE named `signed.zip`, detected from its name with `max_scan_bytes=0` | The end read from the headers at open; the ZIP before it is listed, not one planted in the certificate table |
+| No `payload_end` (unsigned, non-PE, or total size unknown) | Unchanged: the archive is read to the end of the source |
 
 ### Requirement: Bounded symlink-target reads from member data
 
@@ -1876,3 +1905,32 @@ verification level.
 | Streaming-only reader, call after `stream_members()` has started | raises `ArchiveyUsageError` |
 | Streaming-only reader, `members_report()` after `verify_all()` | returns the cached report; reads nothing |
 | Random-access reader with a caller stream open at position 100 | the caller's stream stays at position 100 |
+
+### Requirement: An archive stored as a program resource
+
+A PE program can hold an archive as one of its resources, inside its resource section,
+with other resources, other sections and a certificate table after it (Squirrel's setup
+program holds its ZIP this way). For a backend whose format can carry a stub (ZIP, 7z,
+RAR), on a seekable source of known size, `open_archive` SHALL let the backend learn the
+file extents of the resources of a PE program at the start of the source, read from its
+headers and the start of its resource directory, whether the format was detected or
+named. The ZIP, 7z and RAR (lone archive) readers SHALL NOT report
+`ARCHIVE_TRAILING_DATA` for a non-zero byte that lies at or past the end of the resource
+whose data holds the archive's end. A non-zero byte after the archive and before that
+resource's end SHALL be reported as before. An archive whose end lies in no resource
+SHALL be reported as before. The extents SHALL be read only when a reader has found a
+non-zero byte after its archive, at most 4096 header bytes and 64 KiB of resource tables,
+and they SHALL NOT change what the archive lists. LHA is not covered and reports as
+before.
+
+#### Scenario: archive stored as a program resource
+
+| Case | Default policy | `STRICT` |
+| --- | --- | --- |
+| ZIP, 7z or RAR filling one resource, other resources and `.reloc` after it, detected or forced | Nothing reported | Opens |
+| The same, signed | Nothing reported | Opens |
+| Zero padding after the archive inside its resource | Nothing reported | Opens |
+| Non-zero bytes after the archive inside its resource | `ARCHIVE_TRAILING_DATA`, measured from the archive's end | Refused |
+| Archive appended in the overlay of a program that has resources, bytes after it | `ARCHIVE_TRAILING_DATA` | Refused |
+| GitHub Desktop's Squirrel installer | `ZIP` at 169 888, 5 members, nothing reported | Opens |
+| No trailing bytes | The resource table is not read | Opens |
